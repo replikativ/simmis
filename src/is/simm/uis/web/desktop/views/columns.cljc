@@ -125,6 +125,75 @@
                  (js/console.error "[room-settings] load error:" err)
                  (reset! sig/admin-data ok)))))))))
 
+#?(:cljs (defonce ^:private settings-data-loading (atom false)))
+
+#?(:cljs
+   (defn load-settings-data-into-signal!
+     "Fire-and-forget load of user settings into sig/settings-data.
+      Root-spin go-block pattern — see load-room-details-into-signal!."
+     [user-id]
+     (when-not @settings-data-loading
+       (reset! settings-data-loading true)
+       (go
+         (let [ch (promise-chan)]
+           (binding [rtc/*execution-context* runtime]
+             (let [s (settings-remote/load-settings! web/server-id user-id)]
+               (s (fn [result] (put! ch {:ok result}))
+                  (fn [err] (put! ch {:err err})))))
+           (let [{:keys [ok err]} (<! ch)]
+             (reset! settings-data-loading false)
+             (binding [rtc/*execution-context* runtime]
+               (if err
+                 (js/console.error "[settings] load error:" err)
+                 (do (reset! sig/settings-data ok)
+                     (when-let [syn (get-in ok [:ui-prefs :ui-pref/syntax])]
+                       (reset! sig/syntax-pref syn)))))))))))
+
+#?(:cljs (defonce ^:private admin-data-loading (atom false)))
+
+#?(:cljs
+   (defn load-admin-data-into-signal!
+     "Fire-and-forget load of admin data into sig/admin-data.
+      Root-spin go-block pattern — see load-room-details-into-signal!."
+     [user-id]
+     (when-not @admin-data-loading
+       (reset! admin-data-loading true)
+       (go
+         (let [ch (promise-chan)]
+           (binding [rtc/*execution-context* runtime]
+             (let [s (admin-remote/load-admin-data! web/server-id user-id)]
+               (s (fn [result] (put! ch {:ok result}))
+                  (fn [err] (put! ch {:err err})))))
+           (let [{:keys [ok err]} (<! ch)]
+             (reset! admin-data-loading false)
+             (binding [rtc/*execution-context* runtime]
+               (if err
+                 (js/console.error "[admin] load error:" err)
+                 (reset! sig/admin-data ok)))))))))
+
+#?(:cljs (defonce ^:private new-room-humans-loading (atom false)))
+
+#?(:cljs
+   (defn load-new-room-humans-into-signal!
+     "Fire-and-forget load of the human roster (member picker) into
+      sig/admin-data. Root-spin go-block pattern — see
+      load-room-details-into-signal!."
+     []
+     (when-not @new-room-humans-loading
+       (reset! new-room-humans-loading true)
+       (go
+         (let [ch (promise-chan)]
+           (binding [rtc/*execution-context* runtime]
+             (let [s (chat-remote/list-parties! web/server-id :human)]
+               (s (fn [result] (put! ch {:ok result}))
+                  (fn [err] (put! ch {:err err})))))
+           (let [{:keys [ok err]} (<! ch)]
+             (reset! new-room-humans-loading false)
+             (binding [rtc/*execution-context* runtime]
+               (if err
+                 (js/console.error "[new-room] list parties error:" err)
+                 (reset! sig/admin-data {:all-humans ok})))))))))
+
 #?(:cljs (defonce ^:private video-token-loading (atom #{})))
 
 #?(:cljs
@@ -1721,14 +1790,7 @@
          ;; Trigger load if data not yet available
          (when (nil? settings-data)
            (when-let [user @sig/current-user]
-             (let [s (settings-remote/load-settings!
-                       is.simm.runtimes.web/server-id (:id user))]
-               (s (fn [result]
-                    (reset! sig/settings-data result)
-                    (when-let [syn (get-in result [:ui-prefs :ui-pref/syntax])]
-                      (reset! sig/syntax-pref syn)))
-                  (fn [err]
-                    (js/console.error "[settings] load error:" err))))))
+             (load-settings-data-into-signal! (:id user))))
          ;; Render from tracked data (nil = loading)
          (if settings-data
            (settings-view/render-settings-content settings-data)
@@ -1746,18 +1808,13 @@
     #?(:cljs
        (do
          ;; Trigger load if data not yet available
-         (when (nil? (:users admin-data))
+         (when (nil? (:parties admin-data))
            (when-let [user @sig/current-user]
-             (let [s (admin-remote/load-admin-data!
-                       is.simm.runtimes.web/server-id (:id user))]
-               (s (fn [result]
-                    (reset! sig/admin-data result))
-                  (fn [err]
-                    (js/console.error "[admin] load error:" err))))))
-         ;; Render from tracked data. Keyed on :users, not on non-nil: the
+             (load-admin-data-into-signal! (:id user))))
+         ;; Render from tracked data. Keyed on :parties, not on non-nil: the
          ;; signal is shared with five other panels (see the room-settings
          ;; branch), so "non-nil" can mean somebody else's shape.
-         (if (:users admin-data)
+         (if (:parties admin-data)
            (admin-view/render-admin-content admin-data)
            (el/div {:class "admin-page"}
              (el/div {:class "admin-header"}
@@ -1774,13 +1831,8 @@
        (do
          ;; Load all human parties for member picker
          (when (nil? (:all-humans admin-data))
-           (when-let [user @sig/current-user]
-             (let [s (chat-remote/list-parties!
-                       is.simm.runtimes.web/server-id :human)]
-               (s (fn [result]
-                    (reset! sig/admin-data {:all-humans result}))
-                  (fn [err]
-                    (js/console.error "[new-room] list parties error:" err))))))
+           (when @sig/current-user
+             (load-new-room-humans-into-signal!)))
          (new-room-view/render-new-room-content
            (when admin-data (:all-humans admin-data))))
        :clj
