@@ -182,15 +182,24 @@
     :log-fn (fn [level msg]
               (sig/set-connection-status! :disconnected)
               (swap! retry-count inc)
-              (case level
-                :error (do
-                         (js/console.error "[Connection] Error:" (pr-str msg))
-                         ;; Show error in status bar with retry info
-                         (sig/show-error!
-                           (str "Connection lost - retrying in 5s")
-                           (str msg)
-                           :network))
-                :warn (js/console.warn "[Connection]" (pr-str msg))
+              ;; superv.async reports some background failures (notably
+              ;; :stale-error-in-supervisor) at :info while carrying the real
+              ;; throwable in the message. Preserve the semantic severity in
+              ;; DevTools instead of disguising an error as console.log.
+              (cond
+                (or (= level :error) (:error msg))
+                (do
+                  (js/console.error "[Connection] Error:" (pr-str msg))
+                  ;; Show error in status bar with retry info
+                  (sig/show-error!
+                    "Connection lost - retrying in 5s"
+                    (str msg)
+                    :network))
+
+                (= level :warn)
+                (js/console.warn "[Connection]" (pr-str msg))
+
+                :else
                 (js/console.log "[Connection]" (pr-str msg))))))
 
 
