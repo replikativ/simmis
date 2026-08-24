@@ -212,7 +212,6 @@
   - local-db                          (shared DB — used by non-KB tabs)
   - chat-windows                      (scroll windows for chat tabs)
   - settings-data, admin-data         (settings/admin tab content)
-  - room-states                       (chat tab — narrowing pending)
 
   Removed:
   - kb-states (replaced by per-KB signals; wiki tabs self-track)"
@@ -229,8 +228,6 @@
           settings-data (iv/get-new settings-data-iv)
           admin-data-iv (track sig/admin-data)
           admin-data (iv/get-new admin-data-iv)
-          room-states-iv (track db-signal/room-states)
-          room-states (iv/get-new room-states-iv)
           ;; Context-footer state must be tracked HERE (not inside
           ;; render-column): a mid-spin track resume re-executes the
           ;; message-timeline query whose delta interval is empty on an
@@ -241,7 +238,7 @@
           footer-states (iv/get-new footer-states-iv)]
       (await (columns/render-columns-container
               layout-columns active-column-id local-db chat-windows
-              settings-data admin-data room-states footer-states)))))
+              settings-data admin-data nil footer-states)))))
 
 (defn render-status-bar-spin
   "The app's user-visible error/loading surface.

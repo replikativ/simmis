@@ -128,7 +128,7 @@
     (when-let [room-conn (connect-room-database db-scope)]
       (require 'datahike.kabel.handlers)
       ((resolve 'datahike.kabel.handlers/register-store-for-remote-access!)
-       db-scope room-conn server-peer)
+       db-scope room-conn server-peer {:branches :trunk})
       (log/log! {:level :info
                  :id ::room-registered-for-sync
                  :msg "Room registered for konserve-sync"

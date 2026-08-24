@@ -418,7 +418,7 @@
     (when-let [kb-conn (connect-kb-database db-scope)]
       (require 'datahike.kabel.handlers)
       ((resolve 'datahike.kabel.handlers/register-store-for-remote-access!)
-       db-scope kb-conn server-peer)
+       db-scope kb-conn server-peer {:branches :trunk})
       (log/log! {:level :info
                  :id ::kb-registered-for-sync
                  :msg "KB registered for konserve-sync"
@@ -709,4 +709,3 @@
           ;; [[wikilinks]] in the text become stored refs (backlinks a query)
           (link-block-references! kb-conn block-uuid line))))
     page-uuid))
-

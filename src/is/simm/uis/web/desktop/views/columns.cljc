@@ -900,11 +900,15 @@
 (defn render-column
   "Render a single column with tab bar, content, and context footer.
    Returns a spin (CLJS) or vnode (CLJ)."
-  [{:keys [id width tabs active-tab _index _total] :as _col} active-column-id local-db chat-windows settings-data admin-data room-states footer-states]
+  [{:keys [id width tabs active-tab _index _total] :as _col} active-column-id local-db chat-windows settings-data admin-data room-states-arg footer-states]
   #?(:cljs
      ;; CLJS: Wrap in spin since render-tab-content returns vnodes inside spin context
      (spin
-       (let [active-tab-data (first (filter #(= (:id %) active-tab) tabs))
+       (let [;; Own this dependency in the keyed child spin. A plain map passed
+             ;; from the parent can leave a retained child holding its initial
+             ;; nil snapshot after the room handshake completes.
+             room-states (iv/get-new (track db-sig/room-states))
+             active-tab-data (first (filter #(= (:id %) active-tab) tabs))
              is-active? (= id active-column-id)
              index _index
              total-columns _total
@@ -1054,7 +1058,8 @@
 
      :clj
      ;; CLJ: Simple vnodes
-     (let [active-tab-data (first (filter #(= (:id %) active-tab) tabs))
+     (let [room-states room-states-arg
+           active-tab-data (first (filter #(= (:id %) active-tab) tabs))
            is-active? (= id active-column-id)
            index _index
            total-columns _total]
