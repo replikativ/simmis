@@ -16,7 +16,8 @@
                      [clojure.core.async :refer [go <! alts! put! promise-chan timeout] :include-macros true]
                      [org.replikativ.spindel.engine.core :as rtc]
                      [org.replikativ.spindel.signal :refer [->SignalRef]]
-                     [is.simm.uis.web.desktop.runtime :refer [runtime]]))
+                     [is.simm.uis.web.desktop.runtime :refer [runtime]]
+                     [is.simm.uis.web.desktop.chat-remote :as chat-remote]))
   #?(:cljs (:require-macros [org.replikativ.spindel.signal :refer [signal]])))
 
 ;; ============================================================================
@@ -274,6 +275,19 @@
 #?(:cljs (defonce room-connecting (atom #{})))
 
 #?(:cljs
+   (defn- prepare-store
+     "Return a channel yielding `{:ready? true}` after the server has registered
+      `scope`, or `{:error err}`. Runs the remote spin outside a render spin so a render
+      invalidation cannot cancel store preparation mid-flight."
+     [scope]
+     (let [ch (promise-chan)]
+       (binding [rtc/*execution-context* runtime]
+         (let [s (chat-remote/prepare-store! server-peer-id (str scope))]
+           (s (fn [_] (put! ch {:ready? true}))
+              (fn [err] (put! ch {:error err})))))
+       ch)))
+
+#?(:cljs
    (defn connect-room!
      "Lazily connect to a room's Datahike database.
       Idempotent — won't connect if already connected or in progress.
@@ -285,7 +299,10 @@
          (swap! room-connecting conj scope-str)
          (go
            (try
-             (let [scope-id (if (uuid? scope-uuid) scope-uuid (uuid scope-str))
+             (if-let [prepare-error (:error (<! (prepare-store scope-str)))]
+               (js/console.error "[ROOM-CONN] Server preparation failed for room:"
+                                 scope-str prepare-error)
+               (let [scope-id (if (uuid? scope-uuid) scope-uuid (uuid scope-str))
                    config {:store {:backend :tiered
                                    :frontend-config {:backend :memory :id scope-id}
                                    :backend-config {:backend :indexeddb
@@ -298,9 +315,9 @@
                            :schema-flexibility :write
                            :keep-history? true}
                    conn (<! (connect-with-recovery config (str "simmis-room-" scope-str)))]
-               (if (instance? js/Error conn)
-                 (js/console.error "[ROOM-CONN] connect-kabel failed for room:" scope-str (.-message conn))
-                 (do
+                 (if (instance? js/Error conn)
+                   (js/console.error "[ROOM-CONN] connect-kabel failed for room:" scope-str (.-message conn))
+                   (do
                    (js/console.log "[ROOM-CONN] Connected to room:" scope-str "max-tx:" (:max-tx (d/db conn)))
                    ;; Wire into datahike.optimistic. The listener fires on
                    ;; overlay add (opt/transact!), overlay drop (server reply),
@@ -602,7 +619,11 @@
                      (contains? @kb-connecting scope-str))
          (swap! kb-connecting conj scope-str)
          (go
-           (let [scope-id (if (uuid? scope-uuid) scope-uuid (uuid scope-str))
+           (try
+             (if-let [prepare-error (:error (<! (prepare-store scope-str)))]
+               (js/console.error "[KB-CONN] Server preparation failed for KB:"
+                                 scope-str prepare-error)
+               (let [scope-id (if (uuid? scope-uuid) scope-uuid (uuid scope-str))
                  config {:store {:backend :tiered
                                  :frontend-config {:backend :memory :id scope-id}
                                  :backend-config {:backend :indexeddb
@@ -615,6 +636,9 @@
                          :schema-flexibility :write
                          :keep-history? true}
                  conn (<! (connect-with-recovery config (str "simmis-kb-" scope-str)))]
+                 (if (instance? js/Error conn)
+                   (js/console.error "[KB-CONN] connect-kabel failed for KB:" scope-str (.-message conn))
+                   (do
              (js/console.log "[KB-CONN] Connected to KB:" scope-str "max-tx:" (:max-tx (d/db conn)))
              ;; Wire into datahike.optimistic. Listener fires on overlay
              ;; add/drop and @conn advance. We push the effective-db value
@@ -650,8 +674,10 @@
                  (swap! kb-conns assoc scope-str conn)
                  (swap! kb-overlays assoc scope-str overlay)
                  (swap! kb-roster conj scope-str)
-                 (note-kb-head! scope-str @conn)))
-             (swap! kb-connecting disj scope-str)))))))
+                 (note-kb-head! scope-str @conn))))))))
+             (catch :default e
+               (js/console.error "[KB-CONN] Error connecting to KB:" scope-str e)))
+           (swap! kb-connecting disj scope-str))))))
 
 #?(:cljs
    (defn get-kb-db

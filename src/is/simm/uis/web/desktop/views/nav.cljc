@@ -589,11 +589,10 @@
              searching? (seq search-q)
              kb-key     (str "kb-" (:kb/id kb))
              kb-id-str  (str (:kb/id kb))
-             ;; Live KB DB from the per-KB signal; fall back to the
-             ;; one-time load-rooms! snapshot until connect-kb! completes.
-             kb-pages   (if live-db
-                          (query-kb-pages live-db kb-scope)
-                          (:kb/pages kb))
+             ;; Page titles are derived only after this KB has been selected.
+             ;; The roster intentionally carries metadata, not a snapshot of
+             ;; every wiki's contents.
+             kb-pages   (when live-db (query-kb-pages live-db kb-scope))
              ;; :active? IN the item — ifor-each diffs on item equality and
              ;; cannot see a closure variable (sharp edge #2).
              ;; Scope-qualified, because a page is (store, uuid) and the uuid
@@ -605,15 +604,18 @@
                               (filterv #(search-matches? search-q (:title %))
                                        (or kb-pages [])))
              kb-collapsed? (and (not searching?)
-                                (contains? collapsed kb-key))]
+                                (or (nil? live-db)
+                                    (contains? collapsed kb-key)))]
          (el/div {:key kb-key :class "nav-subsection"}
            (el/div {:class (vc/class-names "nav-item nav-item--subsection"
                                            (when kb-collapsed? "collapsed"))
                     :on-click (fn [_]
                                 (binding [rtc/*execution-context* runtime]
+                                  (when-not live-db
+                                    (db-sig/connect-kb! kb-scope @web/client))
                                   (swap! sig/nav-collapsed-projects
                                          (fn [s]
-                                           (if (contains? s kb-key)
+                                           (if kb-collapsed?
                                              (disj s kb-key)
                                              (conj s kb-key))))))}
              (vc/icon (if kb-collapsed? "chevron-right" "chevron-down")

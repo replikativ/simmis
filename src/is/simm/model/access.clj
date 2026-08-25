@@ -389,6 +389,10 @@
      "update-block-content"    {:action W :resource (scope :db-scope)}
      "update-block-order"      {:action W :resource (scope :db-scope)}
      "find-page-by-title"      {:action R :resource (scope :db-scope)}
+     ;; Metadata rosters stay lean; the selected Datahike store is registered
+     ;; just before its client subscribes. The scope grant is the same gate as
+     ;; the subsequent data-plane subscription.
+     "prepare-store!"          {:action R :resource (scope :db-scope-str)}
      ;; page types + properties. `add-property` DECLARES a datahike attribute,
      ;; which is append-only — it was reachable from any browser before these
      ;; moved server-side, with no check at all.

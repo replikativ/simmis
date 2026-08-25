@@ -757,60 +757,6 @@
                    :msg "Datahike store registered for remote access"
                    :data {:scope-id simmis-scope}})
 
-        ;; Register ALL KB databases for sync before peer starts
-        ;; This ensures konserve-sync topics exist when clients connect
-        (when-let [sys-conn (try (require 'is.simm.model.system-db)
-                                 ((resolve 'is.simm.model.system-db/get-conn))
-                                 (catch Exception _ nil))]
-          (let [all-kb-scopes (d-api/q '[:find [?scope ...]
-                                                 :where [?e :kb/db-scope ?scope]]
-                                               @sys-conn)]
-            (doseq [scope all-kb-scopes]
-              (try
-                (require 'is.simm.model.knowledge-bases)
-                ((resolve 'is.simm.model.knowledge-bases/register-kb-for-sync!) scope server)
-                (catch Exception e
-                  (log/log! {:level :warn
-                             :id ::kb-sync-registration-failed
-                             :msg "Failed to register KB for sync"
-                             :data {:db-scope scope :error (str e)}}))))
-            (log/log! {:level :info
-                       :id ::all-kbs-registered-for-sync
-                       :msg (str "Registered " (count all-kb-scopes) " KB databases for sync")})
-            ;; GC ctx-fork branch ephemera (overlay-*/fork-*) leaked by
-            ;; previous processes — after a restart every survivor is an
-            ;; orphan (see is.simm.runtimes.branching/gc-internal-branches!).
-            (let [n (reduce + (map (fn [scope]
-                                     (try
-                                       ((resolve 'is.simm.runtimes.branching/gc-internal-branches!) scope)
-                                       (catch Exception _ 0)))
-                                   all-kb-scopes))]
-              (when (pos? n)
-                (log/log! {:level :info :id ::kb-branch-gc
-                           :msg (str "Deleted " n " leaked ctx-fork branches")})))))
-
-        ;; Register ALL room databases for sync before peer starts
-        ;; Room DBs are only registered on demand (load-rooms!) normally,
-        ;; but we need them available at startup for clients that reconnect
-        (when-let [sys-conn (try (require 'is.simm.model.system-db)
-                                 ((resolve 'is.simm.model.system-db/get-conn))
-                                 (catch Exception _ nil))]
-          (let [all-room-scopes (d-api/q '[:find [?scope ...]
-                                                   :where [?e :room/content-db-scope ?scope]]
-                                                 @sys-conn)]
-            (doseq [scope all-room-scopes]
-              (try
-                (require 'is.simm.model.room-databases)
-                ((resolve 'is.simm.model.room-databases/register-room-for-sync!) scope server)
-                (catch Exception e
-                  (log/log! {:level :warn
-                             :id ::room-sync-registration-failed
-                             :msg "Failed to register room for sync"
-                             :data {:db-scope scope :error (str e)}}))))
-            (log/log! {:level :info
-                       :id ::all-rooms-registered-for-sync
-                       :msg (str "Registered " (count all-room-scopes) " room databases for sync")})))
-
         ;; Install user-rooms invalidation broadcaster (single topic, party-id payload).
         ;; Clients subscribe on login and re-fetch load-rooms! when their party-id
         ;; appears in a published payload.

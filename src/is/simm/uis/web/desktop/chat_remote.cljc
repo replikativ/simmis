@@ -29,14 +29,6 @@
       #?(:clj (let [party-id  (java.util.UUID/fromString pid)
                     party-kbs (kbs/get-party-kbs party-id)
                     party-rooms (rooms/get-party-rooms party-id)
-                    server-peer (when-let [get-server (resolve 'is.simm.runtimes.web/get-server)]
-                                  (get-server))
-                    _ (when server-peer
-                        (doseq [kb party-kbs]
-                          (kbs/register-kb-for-sync! (:kb/db-scope kb) server-peer))
-                        (doseq [room party-rooms]
-                          (when-let [db-scope (:room/content-db-scope room)]
-                            (room-dbs/register-room-for-sync! db-scope server-peer))))
                     ;; Derived contact set: explicit :party/contacts + everyone in shared rooms
                     ;; (excluding self). Agent entries carry their primary room for open-in-tab.
                     explicit-contacts (parties/get-contacts party-id)
@@ -117,23 +109,13 @@
                  :knowledge-bases
                  (->> party-kbs
                       (mapv (fn [kb]
-                              (let [kb-scope (:kb/db-scope kb)
-                                    kb-conn (kbs/connect-kb-database kb-scope)
-                                    pages (when kb-conn
-                                            (->> (d/q '[:find ?uuid ?title
-                                                        :where [?e :S.Page/title ?title]
-                                                               [?e :entity/uuid ?uuid]]
-                                                      @kb-conn)
-                                                 (mapv (fn [[uuid title]]
-                                                         {:id (str uuid) :uuid uuid
-                                                          :type :wiki :title (or title "Untitled")
-                                                          :db-scope (str kb-scope)}))
-                                                 (sort-by :title)
-                                                 vec))]
-                                (-> kb
-                                    (update :kb/created #(when % (str %)))
-                                    (assoc :kb/pages (or pages [])
-                                           :kb/db-scope (str kb-scope)))))))
+                              ;; Page titles live in the KB store, not in the
+                              ;; roster. The client opens that store when this
+                              ;; wiki is expanded or viewed and derives the
+                              ;; folder tree reactively from its local DB.
+                              (-> kb
+                                  (update :kb/created #(when % (str %)))
+                                  (update :kb/db-scope str)))))
                  ;; Drives reachable from the user's rooms (the sidebar
                  ;; Files section). Room-scoped: clicking opens that
                  ;; room's :files tab.
@@ -160,6 +142,49 @@
                                 vec)]
                    (->> (concat attached own) (sort-by :name) vec))})
          :cljs nil))))
+
+;; Register one authorized room or KB store immediately before a client opens
+;; it. Navigation stays metadata-only; the selected store pays its own setup
+;; cost and is guaranteed to have a konserve-sync topic before Datahike
+;; subscribes.
+(defn-spin-remote prepare-store!
+  [server-id db-scope-str]
+  (spin-remote server-id [db-scope-str]
+    #?(:clj
+       (let [scope (java.util.UUID/fromString db-scope-str)
+             conn (system-db/get-conn)
+             server-peer (when-let [get-server (resolve 'is.simm.runtimes.web/get-server)]
+                           (get-server))
+             already-registered? (and server-peer
+                                      (contains? (get-in @server-peer [:pubsub :topics]) scope))
+             room? (and conn
+                        (d/q '[:find ?r .
+                               :in $ ?scope
+                               :where [?r :room/content-db-scope ?scope]]
+                             @conn scope))
+             kb? (and conn
+                      (d/q '[:find ?kb .
+                             :in $ ?scope
+                             :where [?kb :kb/db-scope ?scope]]
+                           @conn scope))]
+         (when-not server-peer
+           (throw (ex-info "Web server peer is not available"
+                           {:db-scope scope})))
+         (cond
+           room? (room-dbs/register-room-for-sync! scope server-peer)
+           kb? (kbs/register-kb-for-sync! scope server-peer)
+           :else (throw (ex-info "Unknown room or KB store"
+                                 {:db-scope scope})))
+         ;; Startup no longer opens every durable store merely to clean stale
+         ;; overlay/fork branches. Schedule that maintenance after first
+         ;; selection; it must not hold up the client's handshake.
+         (when-not already-registered?
+           (future
+             (try
+               ((requiring-resolve 'is.simm.runtimes.branching/gc-internal-branches!) scope)
+               (catch Exception _ nil))))
+         {:db-scope db-scope-str :ready? true})
+       :cljs nil)))
 
 (defn-spin-remote create-room!
   [server-id creator-id-str room-name member-id-strs]

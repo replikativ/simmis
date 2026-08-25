@@ -104,6 +104,13 @@
                      (catch Exception e
                        (str fn-name " threw on empty args: " (.getMessage e)))))))))
 
+(deftest store-preparation-is-read-scoped-to-the-requested-database
+  (let [{:keys [action resource]} (get access/rpc-policy "prepare-store!")
+        scope (random-uuid)]
+    (is (= :read action))
+    (is (= (str scope) (resource {:db-scope-str (str scope)})))
+    (is (nil? (resource {})) "a missing scope must fail closed in can?")))
+
 (deftest the-irreversible-verbs-are-where-we-put-them
   ;; Guards against a future edit quietly downgrading these. Landing a branch on
   ;; trunk and deleting a database are the two operations no amount of room
