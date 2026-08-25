@@ -8,8 +8,8 @@
             [kabel.auth.websocket :as ws-auth]
             ;; konserve-sync for store replication
             [konserve-sync.core :as sync]
-            ;; Datahike's fressian middleware for kabel serialization
-            [datahike.kabel.fressian-handlers :refer [datahike-fressian-middleware]]
+            ;; Datahike's CBOR middleware for kabel serialization
+            [datahike.kabel.cbor-handlers :refer [datahike-cbor-middleware]]
             ;; spindel runtime - context from bootstrap preload
             [is.simm.runtimes.bootstrap :as bootstrap]
             ;; Login page
@@ -172,7 +172,7 @@
                                             (js/console.warn "[Auth] WS auth rejected:" (clj->js err))
                                             (reauth-and-reload!))}
                                          :permissive true}))
-                                datahike-fressian-middleware)]
+                                datahike-cbor-middleware)]
     (reset! client peer)
     (reset! invocation-loop (invoke-on-peer peer))
     peer))

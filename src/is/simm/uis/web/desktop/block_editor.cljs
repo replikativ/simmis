@@ -48,7 +48,6 @@
             [is.simm.uis.web.desktop.markdown :as md]
             [is.simm.uis.web.desktop.sandbox-remote :as sandbox-remote]
             [is.simm.uis.web.desktop.branching.naming :as bn]
-            [datahike.kabel.fressian-handlers :as fh]
             [datahike.writing :as dw]
             [konserve.core :as kc]
             [superficie.api :refer [toSup]])
@@ -432,9 +431,10 @@
    remote invoke for shared DB or fork writes."
   [page-uuid title & [db-scope]]
   (let [branch (active-branch-for db-scope)
-        conn (when (and db-scope (trunk? branch)) (db-signal/get-kb-conn db-scope))]
-    (if conn
-      (let [db (opt/effective-db conn)
+        overlay (when (and db-scope (trunk? branch))
+                  (db-signal/get-kb-overlay db-scope))]
+    (if overlay
+      (let [db (opt/db overlay)
             exists? (seq (dh/q '[:find ?e :in $ ?uuid :where [?e :entity/uuid ?uuid]] db page-uuid))]
         (js/console.log "[Local] Ensuring page exists:" (str page-uuid) "exists?" (boolean exists?))
         (if exists?
@@ -452,7 +452,7 @@
             ;; a block to render and focus. The block references the page
             ;; via the :db/id tempid so the parent link resolves within the
             ;; same tx.
-            (opt/transact! conn
+            (opt/transact! overlay
                            (into [{:db/id "new-page"
                                    :entity/uuid page-uuid
                                    :entity/name (str "Page " (subs (str page-uuid) 0 8))
@@ -486,12 +486,13 @@
   [block-uuid content & [db-scope]]
   (when-not (refuse-past-write! "edit block content")
     (let [branch (active-branch-for db-scope)
-        conn (when (and db-scope (trunk? branch)) (db-signal/get-kb-conn db-scope))]
-    (if conn
-      (let [db (opt/effective-db conn)
-            current (some-> (dh/entity db [:entity/uuid block-uuid])
-                            :block/content)]
-        (if (= current content)
+          overlay (when (and db-scope (trunk? branch))
+                    (db-signal/get-kb-overlay db-scope))]
+      (if overlay
+        (let [db (opt/db overlay)
+              current (some-> (dh/entity db [:entity/uuid block-uuid])
+                              :block/content)]
+          (if (= current content)
           (js/console.log "[Local] Skipping content update (unchanged) for:" (str block-uuid))
           (let [;; Resolve [[Page]] refs against the local KB db, so
                 ;; backlinks light up optimistically — no waiting for
@@ -503,13 +504,13 @@
                 resolved-refs (refs/resolve-references db content)
                 ;; @handle party-mentions — value-level handle strings, so no
                 ;; local resolution needed (the server reconciles + notifies).
-                mentions (refs/extract-user-mentions content)]
-            (js/console.log "[Local] Updating content for:" (str block-uuid)
-                            "refs:" (count resolved-refs) "mentions:" (count mentions))
-            (opt/transact! conn [(cond-> {:entity/uuid block-uuid
-                                          :block/content content}
-                                   (seq resolved-refs)
-                                   (assoc :block/references resolved-refs)
+                  mentions (refs/extract-user-mentions content)]
+              (js/console.log "[Local] Updating content for:" (str block-uuid)
+                              "refs:" (count resolved-refs) "mentions:" (count mentions))
+              (opt/transact! overlay [(cond-> {:entity/uuid block-uuid
+                                               :block/content content}
+                                        (seq resolved-refs)
+                                        (assoc :block/references resolved-refs)
                                    (seq mentions)
                                    (assoc :block/mentions (vec mentions)))]))))
       (do
@@ -523,14 +524,15 @@
   [block-uuid collapsed & [db-scope]]
   (when-not (refuse-past-write! "collapse a block")
     (let [branch (active-branch-for db-scope)
-        conn (when (and db-scope (trunk? branch)) (db-signal/get-kb-conn db-scope))]
-    (if conn
-      (do
-        (js/console.log "[Local] Updating collapsed for:" (str block-uuid) "to:" collapsed)
-        (opt/transact! conn [{:entity/uuid block-uuid :block/collapsed collapsed}]))
-      (do
-        (js/console.log "[Remote] Updating collapsed for:" (str block-uuid) "to:" collapsed "branch:" branch)
-        (rem/invoke! (remote/update-block-collapsed-remote! block-uuid collapsed db-scope branch)
+          overlay (when (and db-scope (trunk? branch))
+                    (db-signal/get-kb-overlay db-scope))]
+      (if overlay
+        (do
+          (js/console.log "[Local] Updating collapsed for:" (str block-uuid) "to:" collapsed)
+          (opt/transact! overlay [{:entity/uuid block-uuid :block/collapsed collapsed}]))
+        (do
+          (js/console.log "[Remote] Updating collapsed for:" (str block-uuid) "to:" collapsed "branch:" branch)
+          (rem/invoke! (remote/update-block-collapsed-remote! block-uuid collapsed db-scope branch)
                      {:message "Could not fold that block."}))))))
 
 (defn delete-block-remote!
@@ -539,14 +541,15 @@
   [block-uuid & [db-scope]]
   (when-not (refuse-past-write! "delete a block")
     (let [branch (active-branch-for db-scope)
-        conn (when (and db-scope (trunk? branch)) (db-signal/get-kb-conn db-scope))]
-    (if conn
-      (do
-        (js/console.log "[Local] Deleting block:" (str block-uuid))
-        (opt/transact! conn [[:db/retractEntity [:entity/uuid block-uuid]]]))
-      (do
-        (js/console.log "[Remote] Deleting block:" (str block-uuid) "branch:" branch)
-        (rem/invoke! (remote/delete-block-remote! block-uuid true db-scope branch)
+          overlay (when (and db-scope (trunk? branch))
+                    (db-signal/get-kb-overlay db-scope))]
+      (if overlay
+        (do
+          (js/console.log "[Local] Deleting block:" (str block-uuid))
+          (opt/transact! overlay [[:db/retractEntity [:entity/uuid block-uuid]]]))
+        (do
+          (js/console.log "[Remote] Deleting block:" (str block-uuid) "branch:" branch)
+          (rem/invoke! (remote/delete-block-remote! block-uuid true db-scope branch)
                      {:message "Could not delete that block."}))))))
 
 (defn indent-block-remote!
@@ -584,11 +587,11 @@
 (defn- create-sibling-after-local!
   "Create a sibling block after block-uuid via opt/transact!.
    Replicates the server-side create-sibling-after logic on the client."
-  [conn block-uuid content]
-  (let [db (opt/effective-db conn)
+  [overlay block-uuid content]
+  (let [db (opt/db overlay)
         ;; Get current block's parent and order — use q since pull with :in has CLJS bugs
         all-blocks (dh/q '[:find [(pull ?b [:entity/uuid :block/order {:block/parent [:entity/uuid]}]) ...]
-                            :where [?b :block/parent _]]
+                           :where [?b :block/parent _]]
                           db)
         block (first (filter #(= (:entity/uuid %) block-uuid) all-blocks))
         parent-uuid (get-in block [:block/parent :entity/uuid])
@@ -612,10 +615,10 @@
             resolved-refs (refs/resolve-references db content)]
         (js/console.log "[Local] Creating sibling after:" (str block-uuid) "order:" new-order
                         "refs:" (count resolved-refs))
-        (opt/transact! conn [(cond-> {:entity/uuid new-uuid
-                                      :entity/created-at (js/Date.)
-                                      :entity/updated-at (js/Date.)
-                                      :instance/of-role [:entity/name "S/Block"]
+        (opt/transact! overlay [(cond-> {:entity/uuid new-uuid
+                                         :entity/created-at (js/Date.)
+                                         :entity/updated-at (js/Date.)
+                                         :instance/of-role [:entity/name "S/Block"]
                                       :block/content content
                                       :block/order new-order
                                       :block/parent [:entity/uuid parent-uuid]}
@@ -628,8 +631,8 @@
   after-local! for the Enter handler. Both mutations go through a
   single `opt/transact!` so the kb-state listener fires ONCE for the
   optimistic apply and ONCE for the server reply (instead of twice each)."
-  [conn block-uuid current-content sibling-content]
-  (let [db (opt/effective-db conn)
+  [overlay block-uuid current-content sibling-content]
+  (let [db (opt/db overlay)
         all-blocks (dh/q '[:find [(pull ?b [:entity/uuid :block/order {:block/parent [:entity/uuid]}]) ...]
                            :where [?b :block/parent _]]
                          db)
@@ -660,7 +663,7 @@
         (reset! focus-on-mount new-uuid)
         (let [current-refs (refs/resolve-references db current-content)
               sibling-refs (refs/resolve-references db sibling-content)]
-          (opt/transact! conn
+          (opt/transact! overlay
                          [(cond-> {:entity/uuid block-uuid
                                    :block/content current-content}
                             (seq current-refs)
@@ -854,16 +857,16 @@
                                  ;; Stash the new block's UUID in `focus-on-mount` so the
                                  ;; foreign-node's :on-mount callback focuses TipTap as
                                  ;; soon as the new DOM element appears.
-                                 (do
-                                   (js/console.log "[KB-ENTER] Saving content and creating sibling")
-                                   (if-let [conn (when (and db-scope
-                                                            (trunk? (active-branch-for db-scope)))
-                                                   (db-signal/get-kb-conn db-scope))]
-                                     (when-let [new-uuid (update-content-and-create-sibling-local!
-                                                           conn block-id current-content "")]
-                                       (reset! focus-on-mount new-uuid))
-                                     (do
-                                       (update-block-content-remote! block-id current-content db-scope)
+                                          (do
+                                            (js/console.log "[KB-ENTER] Saving content and creating sibling")
+                                            (if-let [overlay (when (and db-scope
+                                                                        (trunk? (active-branch-for db-scope)))
+                                                               (db-signal/get-kb-overlay db-scope))]
+                                              (when-let [new-uuid (update-content-and-create-sibling-local!
+                                                                   overlay block-id current-content "")]
+                                                (reset! focus-on-mount new-uuid))
+                                              (do
+                                                (update-block-content-remote! block-id current-content db-scope)
                                        (create-sibling-block-after-remote! block-id "" db-scope)))
                                    true)
                                    ;; Not at end: allow default TipTap behavior (create new paragraph)
@@ -975,7 +978,6 @@
 
 ;; Vár personal AI room UUID — default sandbox for wiki code execution
 (def ^:private var-room-uuid #uuid "00000000-0000-0000-0000-000000000301")
-
 
 (defn make-run-code-extension
   "TipTap extension wrapping CodeBlock with a ▶ Run button.
@@ -1773,45 +1775,55 @@
               (do (restore-title-text! el)
                   (binding [rtc/*execution-context* runtime]
                     (sig/show-error!
-                     (str "A page named \"" new-title "\" already exists in this wiki."))))
+                      (str "A page named \"" new-title "\" already exists in this wiki."))))
 
-              :else
-              (do
-                (when-let [conn (if db-scope
-                                  (db-signal/get-kb-conn db-scope)
-                                  (db-signal/get-conn))]
-                  (try
-                    (opt/transact-local!
-                     conn
-                     [[:db/add [:entity/uuid page-uuid] :S.Page/title new-title]]
-                     (fn [durable-db]
-                       (= new-title (dq/page-title-query durable-db page-uuid))))
-                    (catch :default e
-                      (js/console.warn "[page-header] optimistic title overlay skipped:" e))))
-                (go
-                  (let [res (<! (remote/rename-page-remote!
-                                 page-uuid new-title
+               :else
+               (let [overlay (if db-scope
+                               (db-signal/get-kb-overlay db-scope)
+                               (db-signal/get-overlay))
+                     prediction
+                     (when overlay
+                       (opt/predict!
+                        overlay
+                        [[:db/add [:entity/uuid page-uuid] :S.Page/title new-title]]
+                        (fn [durable-db]
+                          (= new-title (dq/page-title-query durable-db page-uuid)))))]
+                 (go
+                   (let [res (<! (remote/rename-page-remote!
+                                  page-uuid new-title
                                  (cond-> {}
                                    db-scope (assoc :db-scope db-scope)
                                    (and branch-kw (not= :db branch-kw))
-                                   (assoc :branch-kw branch-kw))))]
-                    (cond
-                      (:success res)
-                      (js/console.log "[page-header] renamed;" (:blocks-updated res)
-                                      "referring block(s) updated")
+                                    (assoc :branch-kw branch-kw))))]
+                     (cond
+                       (:success res)
+                       (do
+                         (when prediction
+                           (opt/ack! overlay (:ov-id prediction) res))
+                         (js/console.log "[page-header] renamed;" (:blocks-updated res)
+                                         "referring block(s) updated"))
 
                       ;; Lost a race against another writer. The overlay expires
                       ;; on its own TTL; put the visible text back now.
-                      (:conflict res)
-                      (do (restore-title-text! el)
-                          (binding [rtc/*execution-context* runtime]
-                            (sig/show-error!
-                             (str "A page named \"" new-title "\" already exists in this wiki."))))
+                       (:conflict res)
+                       (do (when prediction
+                             (opt/reject! overlay (:ov-id prediction)
+                                          (ex-info "Page title conflict"
+                                                   {:type :rename/conflict})))
+                           (restore-title-text! el)
+                           (binding [rtc/*execution-context* runtime]
+                             (sig/show-error!
+                              (str "A page named \"" new-title "\" already exists in this wiki."))))
 
-                      :else
-                      (do (restore-title-text! el)
-                          (binding [rtc/*execution-context* runtime]
-                            (sig/show-error! "Rename failed."))))))))))]
+                       :else
+                       (do (when prediction
+                             (opt/reject! overlay (:ov-id prediction)
+                                          (ex-info "Page rename failed"
+                                                   {:type :rename/failed
+                                                    :response res})))
+                           (restore-title-text! el)
+                           (binding [rtc/*execution-context* runtime]
+                             (sig/show-error! "Rename failed."))))))))))]
 
     (el/div {:class "page-header"}
       ;; Title + type tags share one row: the tags sit to the RIGHT of the title
@@ -1961,22 +1973,16 @@
               (when-let [conn (db-signal/get-kb-conn db-scope)]
                 (go
                   (try
-                    ;; `dh/branch-as-db` calls `stored->db` directly on the
-                    ;; raw konserve value, but on CLJS the index slots are
-                    ;; in deferred form (`{:deferred-type :persistent-
-                    ;; sorted-set :address …}`) until the fressian handler
-                    ;; reconstructs them. The kabel connector does this
-                    ;; step only for the initial `:db` branch at startup,
-                    ;; so for any other branch we have to repeat the
-                    ;; sequence here. Mirrors `connect-kabel` lines
-                    ;; ~228 + ~248.
+                    ;; Read the stored branch root and materialize a DB over
+                    ;; the local replica. Datahike's current canonical CBOR
+                    ;; codec reconstructs persistent-sorted-set roots while
+                    ;; decoding, so the old Fressian deferred-index repair is
+                    ;; neither available nor necessary.
                     (let [store (:store conn)
                           raw-ch (kc/get store active-branch nil {:sync? false})
                           raw-db (<? S raw-ch)
-                          processed (when raw-db
-                                      (fh/reconstruct-deferred-indexes raw-db (:storage store)))
-                          new-projected (when processed
-                                          (dw/stored->db processed store))]
+                          new-projected (when raw-db
+                                          (dw/stored->db raw-db store))]
                       (when (and new-projected
                                  (not= (:max-tx new-projected)
                                        (:max-tx projected-db)))

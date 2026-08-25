@@ -59,18 +59,18 @@
         ;; datahike.kabel.* + the secondary-index adapters in the jar. A
         ;; release is pre-compiled → NO compile-java prep (which a git-sha
         ;; needs and which was blocking the uberjar). :local still overlays
-        ;; ../datahike for cross-repo dev. datahike 0.8.1744 (#861 tx-preds
-        ;; governed writer + #888 planner get-else var-default + #895 cljs
-        ;; :db.type/bigdec) + konserve 0.9.363 (fress 0.4.317 BIGDEC handlers,
-        ;; matches datahike 0.8.1744's own konserve pin) + konserve-sync 0.1.35
+        ;; ../datahike for cross-repo dev. datahike 0.8.1806 includes the
+        ;; async-storage groundwork, current query correctness fixes and the
+        ;; remote-writer fencing work. konserve 0.9.378 is Datahike 0.8.1806's
+        ;; own runtime pin. konserve-sync 0.1.35
         ;; + kabel 0.3.100 are the co-designed client-sync correctness set
         ;; (ordered commit batches, branch head last, no head timestamp-dedup,
         ;; db exposure gated on the drained handshake) — bump them TOGETHER.
-        ;; NOTE: booting on 0.8.1744 needs the undeclared-attr strictness pass
-        ;; (the newer datahike raises where 0.8.1729 was lenient — e.g. seed
+        ;; NOTE: booting on current Datahike needs the undeclared-attr
+        ;; strictness pass (it raises where 0.8.1729 was lenient — e.g. seed
         ;; entities carrying attrs not yet in the installed schema).
-        org.replikativ/datahike {:mvn/version "0.8.1744"}
-        org.replikativ/konserve {:mvn/version "0.9.363"}
+        org.replikativ/datahike {:mvn/version "0.8.1806"}
+        org.replikativ/konserve {:mvn/version "0.9.378"}
         org.replikativ/konserve-sync {:mvn/version "0.1.35"}
         ;; 0.3.104 is a lone bump out of the set above ON PURPOSE. It carries
         ;; three things, and only the first is why we took it:
@@ -174,7 +174,9 @@
         ;; COMPILE ("No such var: repo/content-merger"), which is at least
         ;; loud; drop it again once dvergr's own pin catches up.
         org.replikativ/geschichte {:mvn/version "0.1.14"}
-        org.replikativ/scriptum {:mvn/version "0.1.27"}
+        ;; Datahike 0.8.1806's bundled secondary-index adapter uses
+        ;; scriptum.core/warm!, introduced before this release.
+        org.replikativ/scriptum {:mvn/version "0.1.30"}
         org.replikativ/logging {:mvn/version "0.1.3"}
         org.replikativ/briefkasten {:mvn/version "0.1.3"}
 

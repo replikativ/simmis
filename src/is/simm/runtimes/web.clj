@@ -10,7 +10,7 @@
             [konserve-sync.core :as sync]
             ;; Datahike kabel handlers for remote transactions
             [datahike.kabel.handlers :as dh-handlers]
-            [datahike.kabel.fressian-handlers :as dh-fh]
+            [datahike.kabel.cbor-handlers :as dh-cbor]
             [taoensso.telemere :as log]
             ;; Server execution context
             [is.simm.runtimes.context :as ctx]
@@ -191,11 +191,11 @@
 ;; and is available as ctx/server-context. It's automatically registered
 ;; with dist/register-context! as :default.
 
-;; Fressian middleware with Datahike handlers (includes DB and TxReport handlers)
-(defn datahike-fressian-middleware
-  "Fressian serialization middleware configured with Datahike type handlers."
+;; CBOR middleware with Datahike handlers (includes DB and TxReport handlers)
+(defn datahike-cbor-middleware
+  "CBOR serialization middleware configured with Datahike type handlers."
   [peer-config]
-  (dh-fh/datahike-fressian-middleware peer-config))
+  (dh-cbor/datahike-cbor-middleware peer-config))
 
 ;; Authentication middleware - validate auth FROM remote clients using JWT
 ;; Delayed to allow system DB initialization before config access
@@ -600,7 +600,7 @@
                               :authorize-publish-fn data-plane-publish-authorized?})
                             remote-middleware
                             (auth-middleware-fn))
-                      datahike-fressian-middleware)))
+                      datahike-cbor-middleware)))
 
 (defn get-server
   "Get the current server instance."

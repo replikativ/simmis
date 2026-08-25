@@ -46,6 +46,10 @@
            "Atom holding the Datahike connection for local transactions."
            (atom nil)))
 
+#?(:cljs (def local-overlay
+           "Atom holding the explicit optimistic overlay for the shared DB."
+           (atom nil)))
+
 ;; ============================================================================
 ;; Convenience Accessors
 ;; ============================================================================
@@ -73,6 +77,12 @@
      []
      @local-conn))
 
+#?(:cljs
+   (defn get-overlay
+     "Get the shared DB's optimistic overlay."
+     []
+     @local-overlay))
+
 ;; ============================================================================
 ;; Signal Updates
 ;; ============================================================================
@@ -91,8 +101,8 @@
      "Refresh the local-db signal with the current database state.
       Call this after local transactions to ensure UI updates immediately."
      []
-     (when-let [conn @local-conn]
-       (update-signals! (d/db conn)))))
+     (when-let [overlay @local-overlay]
+       (update-signals! (opt/db overlay)))))
 
 ;; ============================================================================
 ;; Connection Initialization
@@ -218,20 +228,33 @@
          ;; of @conn). Pushing that into local-db means UI spins see the
          ;; optimistic state immediately and the durable state once the
          ;; server confirms — same signal, no flicker.
-         (opt/register! conn)
-         (opt/listen! conn ::db-signal
-                      (fn [eff-db]
-                        (when-not (= (:max-tx eff-db)
-                                     (:max-tx (binding [rtc/*execution-context* runtime]
-                                                @local-db)))
-                          (js/console.log "[DB-SIGNAL] effective-db update, max-tx:"
-                                          (:max-tx eff-db)))
-                        (update-signals! eff-db)))
+         (let [overlay (opt/open conn)]
+           (when-let [old-overlay @local-overlay]
+             (opt/close! old-overlay))
+           (reset! local-overlay overlay)
+           (opt/listen! overlay ::db-signal
+                        (fn [{:keys [db-after]}]
+                          (when-not (= (:max-tx db-after)
+                                       (:max-tx (binding [rtc/*execution-context* runtime]
+                                                  @local-db)))
+                            (js/console.log "[DB-SIGNAL] effective-db update, max-tx:"
+                                            (:max-tx db-after)))
+                          (update-signals! db-after)))
+           (opt/listen-status! overlay ::db-status
+                               (fn [{:keys [status error ov-id]}]
+                                 (case status
+                                   :rejected
+                                   (js/console.error "[DB-SIGNAL] optimistic write rejected:"
+                                                     (str ov-id) error)
+                                   :reconciliation-stalled
+                                   (js/console.warn "[DB-SIGNAL] optimistic write is committed but sync is stalled:"
+                                                    (str ov-id))
+                                   nil)))
 
-         ;; Initialize signals with current effective-db (= @conn at boot).
-         (update-signals! (opt/effective-db conn))
-         (js/console.log "[DB-SIGNAL] Initialized with max-tx:"
-                         (:max-tx (opt/effective-db conn)))
+           ;; Initialize signals with current effective-db (= @conn at boot).
+           (update-signals! (opt/db overlay))
+           (js/console.log "[DB-SIGNAL] Initialized with max-tx:"
+                           (:max-tx (opt/db overlay))))
 
          :ready))))
 
@@ -239,11 +262,12 @@
 ;; Per-Room Database Connections
 ;; ============================================================================
 
-;; Signal holding room connection status: {scope-str → {:conn conn :db db}}
+;; Signal holding room connection status:
+;; {scope-str → {:conn conn :overlay overlay :db db :rev revision}}
 ;; Tracked by make-app-spin so the whole render tree re-evaluates when a room connects.
 #?(:cljs (def room-states
            "Signal holding all room connection states.
-            Map of scope-uuid-string → {:conn datahike-conn :db datahike-db-value}"
+            Each value owns an explicit overlay and its current snapshot."
            (signal runtime {})))
 
 ;; Atom for idempotent connection tracking
@@ -283,64 +307,20 @@
                    ;; and @conn advance — pushing the effective-db into the
                    ;; signal each time. Subsumes the prior conn-watch.
                    ;;
-                   ;; opt/effective-db returns a STABLE object (a live view of
-                   ;; conn+overlay) — identical? across calls. Storing it alone
-                   ;; means the signal value never changes by `=`, so spindel's
-                   ;; signal dedup swallows the change and observers never
-                   ;; re-run. Bump a :rev counter on every listener fire so the
-                   ;; signal value genuinely differs and the change propagates.
-                   (opt/register! conn)
-                   ;; opt/listen! callbacks receive a tx-report
-                   ;; ({:db-before :db-after :tx-data :origin ...}),
-                   ;; NOT the effective-db. Use :db-after — it is the
-                   ;; effective-db at the end of the event. Storing
-                   ;; the tx-report itself was a long-standing bug
-                   ;; that only manifested once an opt/transact!
-                   ;; through this conn fired the listener.
-                   (opt/listen! conn ::room-state
-                                (fn [tx-report]
-                                  (binding [rtc/*execution-context* runtime]
-                                    (swap! room-states update scope-str
-                                           (fn [s] (assoc s :db (:db-after tx-report)
-                                                          :rev (inc (:rev s 0))))))))
-                   ;; datahike.optimistic/listen! does not fire for
-                   ;; foreign-peer writes that bypass d/transact!.
-                   ;; opt/listen!'s :conn-advance event is emitted from
-                   ;; the d/listen callback in opt/register!, which fires
-                   ;; from datahike.writer/transact!'s explicit doseq —
-                   ;; only the own-transact path. Kabel store sync writes
-                   ;; arrive via on-db-sync! → (reset! wrapped-atom ...),
-                   ;; which triggers add-watch but bypasses d/listen.
-                   ;;
-                   ;; The library could fire :conn-advance from the
-                   ;; add-watch path too, but it can't honestly populate
-                   ;; :tx-data for foreign writes — the originating
-                   ;; datoms live on the server side and aren't shipped
-                   ;; over kabel pubsub. The remaining honest options are
-                   ;; (a) ship tx-data via konserve-sync as a protocol
-                   ;; addition, or (b) compute the aggregate delta via
-                   ;; BTSet-diff on db-before vs db-after. Both are
-                   ;; larger changes that deserve a dedicated PR.
-                   ;;
-                   ;; In the meantime, attach an add-watch directly to
-                   ;; the conn-atom that bumps :rev whenever max-tx
-                   ;; moves. This signals "the db advanced, please
-                   ;; re-read" without claiming to know what the delta
-                   ;; was — strictly weaker than tx-data, but honest.
-                   ;; The signal value genuinely differs each fire (:rev
-                   ;; counter), so spindel's signal-dedup propagates the
-                   ;; change and observers re-run from :db-after.
-                   (add-watch conn ::sync-watch
-                              (fn [_ _ old-db new-db]
-                                (when (not= (:max-tx old-db) (:max-tx new-db))
-                                  (binding [rtc/*execution-context* runtime]
-                                    (swap! room-states update scope-str
-                                           (fn [s]
-                                             (assoc s :db (opt/effective-db conn)
-                                                      :rev (inc (:rev s 0)))))))))
-                   (binding [rtc/*execution-context* runtime]
-                     (swap! room-states assoc scope-str
-                            {:conn conn :db (opt/effective-db conn) :rev 0})))))
+                   ;; Keep the overlay revision beside the snapshot so even an
+                   ;; effective no-op transition has explicit signal identity.
+                   (let [overlay (opt/open conn)]
+                   ;; Overlay listeners receive ordered snapshot transitions,
+                   ;; not Datahike TxReports. `:db-after` is authoritative.
+                     (opt/listen! overlay ::room-state
+                                  (fn [{:keys [db-after revision]}]
+                                    (binding [rtc/*execution-context* runtime]
+                                      (swap! room-states update scope-str
+                                             (fn [s] (assoc s :db db-after
+                                                            :rev revision))))))
+                     (binding [rtc/*execution-context* runtime]
+                       (swap! room-states assoc scope-str
+                              {:conn conn :overlay overlay :db (opt/db overlay) :rev 0}))))))
              (catch :default e
                (js/console.error "[ROOM-CONN] Error connecting to room:" scope-str e)))
            (swap! room-connecting disj scope-str))))))
@@ -358,12 +338,11 @@
      "Disconnect from a room's database. Cleans up overlay state."
      [scope-uuid]
      (let [scope-str (str scope-uuid)]
-       (when-let [{:keys [conn]} (get (binding [rtc/*execution-context* runtime] @room-states)
-                                      scope-str)]
+       (when-let [{:keys [conn overlay]} (get (binding [rtc/*execution-context* runtime] @room-states)
+                                              scope-str)]
          (js/console.log "[ROOM-CONN] Disconnecting room:" scope-str)
-         (opt/unlisten! conn ::room-state)
-         (remove-watch conn ::sync-watch)
-         (opt/unregister! conn)
+         (opt/close! overlay)
+         (d/release conn)
          (binding [rtc/*execution-context* runtime]
            (swap! room-states dissoc scope-str))))))
 
@@ -373,6 +352,13 @@
      [scope-uuid]
      (get-in (binding [rtc/*execution-context* runtime] @room-states)
              [(str scope-uuid) :conn])))
+
+#?(:cljs
+   (defn get-room-overlay
+     "Get the optimistic overlay for a room scope."
+     [scope-uuid]
+     (get-in (binding [rtc/*execution-context* runtime] @room-states)
+             [(str scope-uuid) :overlay])))
 
 ;; ============================================================================
 ;; Per-KB Database Connections
@@ -400,6 +386,10 @@
            ;; Plain atom (NOT a signal): {scope-str → datahike-conn}.
            ;; The conn registry has no reactive consumers — reads are
            ;; one-shot from event handlers and write paths.
+           (atom {})))
+
+#?(:cljs (defonce kb-overlays
+           ;; Plain atom: {scope-str -> datahike.optimistic/Overlay}.
            (atom {})))
 
 ;; --- Per-KB signal infrastructure -----------------------------------------
@@ -632,61 +622,35 @@
              ;; correctly suppresses no-op fires (the db value compares
              ;; equal when nothing changed), and propagates when the db
              ;; genuinely differs. No `:rev` counter needed.
-             (opt/register! conn)
-             (let [db-sig (ensure-kb-db-signal! scope-str)]
-               ;; opt/listen! callbacks receive a Datahike-shaped
-               ;; tx-report ({:db-before :db-after :tx-data :origin ...}),
-               ;; NOT the effective-db. Use :db-after — it is the
-               ;; effective-db at the end of the event, which is what
-               ;; consumers should re-read from. Storing the tx-report
-               ;; itself was a long-standing bug: it worked at boot
-               ;; (the seed reset! below stored the right value) but
-               ;; the first opt/transact! through this conn (e.g. a
-               ;; [[wiki-link]] click that runs ensure-page-remote)
-               ;; would overwrite the signal with the tx-report map,
-               ;; and downstream queries against :S.Page/title saw an
-               ;; empty plain map.
-               (opt/listen! conn ::kb-state
-                            (fn [tx-report]
-                              (binding [rtc/*execution-context* runtime]
-                                (reset! db-sig (:db-after tx-report))
-                                (note-kb-head! scope-str (:db-after tx-report)))))
-               ;; Same workaround as in connect-room!. opt/listen!'s
-               ;; :conn-advance event only fires for own d/transact!
-               ;; calls — the d/listen path bolted on by
-               ;; datahike.optimistic/register!. Kabel store sync writes
-               ;; come in via on-db-sync! → (reset! wrapped-atom ...),
-               ;; which doesn't go through d/listen, so opt/listen!
-               ;; callbacks never see foreign writes.
-               ;;
-               ;; This isn't trivially fixable upstream because honest
-               ;; :tx-data for foreign writes isn't representable without
-               ;; either shipping tx-data via konserve-sync or computing
-               ;; an aggregate BTSet-diff against db-before. Both are
-               ;; larger changes. Without them, the upstream library
-               ;; correctly refuses to emit a :conn-advance that lies
-               ;; about its delta.
-               ;;
-               ;; Workaround: add-watch directly on the conn-atom and
-               ;; push the new effective-db into the per-KB signal on
-               ;; every max-tx advance. We don't pretend to know what
-               ;; the delta was — spindel observers re-read from
-               ;; :db-after, no incremental claim.
-               (add-watch conn ::sync-watch
-                          (fn [_ _ old-db new-db]
-                            (when (not= (:max-tx old-db) (:max-tx new-db))
-                              (binding [rtc/*execution-context* runtime]
-                                (reset! db-sig (opt/effective-db conn))
-                                ;; The FOREIGN-write path — a server commit
-                                ;; arriving over konserve-sync. This is the one
-                                ;; that makes the rail move on its own.
-                                (note-kb-head! scope-str new-db)))))
+                     (let [overlay (opt/open conn)
+                           db-sig (ensure-kb-db-signal! scope-str)]
+               ;; Overlay listeners receive ordered snapshot transitions.
+               ;; `:db-after` is the effective DB; `:base-max-tx` is the
+               ;; durable synchronization watermark.
+                       (opt/listen! overlay ::kb-state
+                                    (fn [{:keys [db-after base-max-tx]}]
+                                      (binding [rtc/*execution-context* runtime]
+                                        (reset! db-sig db-after)
+                                ;; Track the durable base head, not the
+                                ;; effective DB's synthetic overlay max-tx.
+                                        (swap! kb-heads assoc scope-str base-max-tx))))
+                       (opt/listen-status! overlay ::kb-status
+                                           (fn [{:keys [status error ov-id]}]
+                                             (case status
+                                               :rejected
+                                               (js/console.error "[KB] optimistic write rejected:"
+                                                                 (str ov-id) error)
+                                               :reconciliation-stalled
+                                               (js/console.warn "[KB] committed optimistic write is waiting for sync:"
+                                                                (str ov-id))
+                                               nil)))
                ;; Seed the per-KB signal and register the conn.
                (binding [rtc/*execution-context* runtime]
-                 (reset! db-sig (opt/effective-db conn))
+                 (reset! db-sig (opt/db overlay))
                  (swap! kb-conns assoc scope-str conn)
+                 (swap! kb-overlays assoc scope-str overlay)
                  (swap! kb-roster conj scope-str)
-                 (note-kb-head! scope-str (opt/effective-db conn))))
+                 (note-kb-head! scope-str @conn)))
              (swap! kb-connecting disj scope-str)))))))
 
 #?(:cljs
@@ -705,9 +669,9 @@
      (let [scope-str (str scope-uuid)]
        (when-let [conn (get @kb-conns scope-str)]
          (js/console.log "[KB-CONN] Disconnecting KB:" scope-str)
-         (opt/unlisten! conn ::kb-state)
-         (remove-watch conn ::sync-watch)
-         (opt/unregister! conn)
+         (when-let [overlay (get @kb-overlays scope-str)]
+           (opt/close! overlay))
+         (d/release conn)
          ;; Clear the per-KB signal value so any spin still tracking it
          ;; sees `nil` and can render an unmounted/loading state.
          (when-let [db-sig (kb-db-signal scope-str)]
@@ -715,6 +679,7 @@
              (reset! db-sig nil)))
          (swap! kb-db-signals dissoc scope-str)
          (swap! kb-conns dissoc scope-str)
+         (swap! kb-overlays dissoc scope-str)
          (binding [rtc/*execution-context* runtime]
            (swap! kb-roster disj scope-str)
            ;; Drop the head too, or the rail keeps a disconnected KB's
@@ -726,6 +691,12 @@
      "Get the Datahike connection for a KB scope. Returns nil if not connected."
      [scope-uuid]
      (get @kb-conns (str scope-uuid))))
+
+#?(:cljs
+   (defn get-kb-overlay
+     "Get the optimistic overlay for a KB scope."
+     [scope-uuid]
+     (get @kb-overlays (str scope-uuid))))
 
 ;; ============================================================================
 ;; Dynamic Database Test (for testing KabelWriter create/connect/transact/delete)

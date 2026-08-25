@@ -75,25 +75,34 @@
 
 #?(:cljs
    (defn- watch-delivery!
-     "Report an optimistic chat entry that never reconciled.
+     "Report an unconfirmed chat prediction and a durable write whose store
+      echo stalls. Pre-acceptance expiry retracts the message; after `ack!` the
+      overlay deliberately keeps it visible and reports a reconciliation stall
+      instead of pretending the accepted write failed."
+     [overlay {:keys [ov-id result]}]
+     (opt/listen-status!
+      overlay ov-id
+      (fn [{event-id :ov-id status :status :as event}]
+        (when (= ov-id event-id)
+          (cond
+            (= :reconciliation-stalled status)
+            (rem/report-error!
+             "The message was accepted, but this replica has not received the
+              server update yet. It will remain visible while synchronization
+              catches up."
+             (ex-info "Optimistic message reconciliation stalled" event))
 
-      `opt/transact-local!` renders the message immediately and drops the
-      overlay entry once the durable write echoes back through store sync.
-      When the echo never arrives the entry expires on its TTL and its
-      prediction is retracted — the message simply disappears from the
-      transcript, which is what `transact-local!` documents its
-      TimeoutException for. Nothing was taking that channel.
+            (contains? #{:reconciled :rejected :expired :abandoned} status)
+            (opt/unlisten-status! overlay ov-id)
 
-      Only a timeout is reported. An entry cancelled by `unregister!` means
-      the replica was torn down (room switch, logout), not a lost message."
-     [{:keys [result]}]
+            :else nil))))
      (when result
        (go (let [r (<! result)]
-             (when (= :optimistic/timeout (:type (ex-data r)))
+             (when (= :expired (:status r))
                (rem/report-error!
-                "A message never arrived at the server — it has been removed
-                 from the transcript. Send it again."
-                r)))))))
+                "A message was not confirmed in time and has been removed
+                 from the transcript. Check the room before sending it again."
+                (ex-info "Optimistic message expired" r))))))))
 
 #?(:cljs (defonce ^:private room-details-loading (atom #{})))
 
@@ -1277,43 +1286,52 @@
                                           ;; (see the render-body binding) and
                                           ;; cljs.core/uuid asserts (string? s).
                                           author-uuid (some-> user-id-str uuid)
-                                          _ (when-let [rconn (and author-uuid
-                                                                  (get-in room-states
-                                                                          [(str room-db-scope) :conn]))]
-                                              (try
-                                                (watch-delivery!
-                                                 (opt/transact-local!
-                                                  rconn
-                                                  [{:entity/uuid msg-uuid
-                                                    :entity/created-at (js/Date.)
-                                                    :instance/of-role [:entity/uuid #uuid "00000000-0000-0000-0000-00000000002b"]
+                                          overlay (and author-uuid
+                                                       (get-in room-states
+                                                               [(str room-db-scope) :overlay]))
+                                          prediction
+                                          (when overlay
+                                            (try
+                                              (let [handle
+                                                    (opt/predict!
+                                                     overlay
+                                                     [{:entity/uuid msg-uuid
+                                                       :entity/created-at (js/Date.)
+                                                       :instance/of-role [:entity/uuid #uuid "00000000-0000-0000-0000-00000000002b"]
                                                     :block/content content
                                                     :S.Message/author [:entity/uuid author-uuid]
                                                     :S.Message/room [:entity/uuid room-uuid]
                                                     :S.Message/sent-at (js/Date.)}]
-                                                  (fn [db]
-                                                    (some? (d/q '[:find ?e . :in $ ?u
-                                                                  :where [?e :entity/uuid ?u]]
-                                                                db msg-uuid)))))
-                                                (catch :default e
-                                                  ;; e.g. author entity not yet in a
-                                                  ;; fresh replica — send still goes
-                                                  ;; through, just without the
-                                                  ;; optimistic render.
-                                                  (js/console.warn "[chat] optimistic overlay skipped:" e))))
+                                                     (fn [db]
+                                                       (some? (d/q '[:find ?e . :in $ ?u
+                                                                     :where [?e :entity/uuid ?u]]
+                                                                   db msg-uuid))))]
+                                                (watch-delivery! overlay handle)
+                                                handle)
+                                              (catch :default e
+                                                ;; e.g. author entity not yet in a
+                                                ;; fresh replica — send still goes
+                                                ;; through, just without the
+                                                ;; optimistic render.
+                                                (js/console.warn "[chat] optimistic overlay skipped:" e)
+                                                nil)))
                                           dispatch-spin
                                           (binding [rtc/*execution-context* runtime]
                                             (chat-remote/dispatch-message!
                                               web/server-id room-id user-id-str content
-                                              (str msg-uuid)))]
+                                             (str msg-uuid)))]
                                       (dispatch-spin
-                                        (fn [_result]
-                                          (when is-ai-room?
-                                            (binding [rtc/*execution-context* runtime]
-                                              (reset! sig/agent-responding? false)))
-                                          (go (db-sig/refresh-db!)))
-                                        (fn [err]
-                                          (js/console.error "[chat] Send error:" err)
+                                       (fn [_result]
+                                         (when prediction
+                                           (opt/ack! overlay (:ov-id prediction) _result))
+                                         (when is-ai-room?
+                                           (binding [rtc/*execution-context* runtime]
+                                             (reset! sig/agent-responding? false)))
+                                         (go (db-sig/refresh-db!)))
+                                       (fn [err]
+                                         (js/console.error "[chat] Send error:" err)
+                                         (when prediction
+                                           (opt/reject! overlay (:ov-id prediction) err))
                                           ;; The optimistic entry renders this
                                           ;; message as pending and is dropped
                                           ;; only when the durable write echoes
