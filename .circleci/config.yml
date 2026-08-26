@@ -16,7 +16,7 @@ orbs:
 jobs:
   test:
     docker:
-      - image: cimg/clojure:1.12-node
+      - image: cimg/clojure:1.12.1-openjdk-21.0-node
     resource_class: large
     steps:
       - checkout
@@ -43,7 +43,7 @@ jobs:
 
   uberjar:
     docker:
-      - image: cimg/clojure:1.12-node
+      - image: cimg/clojure:1.12.1-openjdk-21.0-node
     resource_class: large
     steps:
       - checkout
