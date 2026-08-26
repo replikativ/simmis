@@ -9,7 +9,7 @@
  ;; Every dependency, dvergr included, resolves from Maven by default. The
  ;; :stack alias overlays ONLY ../dvergr, for the common case of developing
  ;; the agent substrate and simmis together.
- :deps {org.clojure/clojure {:mvn/version "1.12.1"}
+ :deps {org.clojure/clojure {:mvn/version "1.12.5"}
         org.clojure/clojurescript {:mvn/version "1.11.132"}
 
         ;; Spindel reactive computation system (+ partial-cps used directly).
@@ -61,17 +61,17 @@
         ;; needs and which was blocking the uberjar). :local still overlays
         ;; ../datahike for cross-repo dev. datahike 0.8.1806 includes the
         ;; async-storage groundwork, current query correctness fixes and the
-        ;; remote-writer fencing work. konserve 0.9.378 is Datahike 0.8.1806's
-        ;; own runtime pin. konserve-sync 0.1.35
-        ;; + kabel 0.3.100 are the co-designed client-sync correctness set
+        ;; remote-writer fencing work. konserve 0.9.385 is Datahike 0.8.1806's
+        ;; own runtime pin. konserve-sync 0.1.40
+        ;; + kabel 0.3.108 are the current released client-sync set
         ;; (ordered commit batches, branch head last, no head timestamp-dedup,
         ;; db exposure gated on the drained handshake) — bump them TOGETHER.
         ;; NOTE: booting on current Datahike needs the undeclared-attr
         ;; strictness pass (it raises where 0.8.1729 was lenient — e.g. seed
         ;; entities carrying attrs not yet in the installed schema).
         org.replikativ/datahike {:mvn/version "0.8.1806"}
-        org.replikativ/konserve {:mvn/version "0.9.378"}
-        org.replikativ/konserve-sync {:mvn/version "0.1.35"}
+        org.replikativ/konserve {:mvn/version "0.9.385"}
+        org.replikativ/konserve-sync {:mvn/version "0.1.40"}
         ;; 0.3.104 is a lone bump out of the set above ON PURPOSE. It carries
         ;; three things, and only the first is why we took it:
         ;;
@@ -108,7 +108,7 @@
         ;; registered topic could write its store. That predicate still asked
         ;; `can?` for `:read` whatever the operation was, so it closed the hole
         ;; only to "same check as subscribe" — the residue 0.3.105 finishes.
-        org.replikativ/kabel {:mvn/version "0.3.105"}
+        org.replikativ/kabel {:mvn/version "0.3.108"}
         ;; kontor — double-entry accounting kernel; powers is.simm.model.books
         ;; (per-room governed double-entry) + the metering→ledger bridge. :local
         ;; overlays ../kontor for cross-repo dev.
@@ -135,11 +135,12 @@
         ;; InputStream binary coercion geschichte needs to hash blobs without
         ;; materializing them; it is purely additive — File coercion was
         ;; refactored onto the same code path and every content address is
-        ;; unchanged (same magics, same split-size branch points).
+        ;; unchanged (same magics, same split-size branch points). 0.4.102 is
+        ;; Datahike 0.8.1806's matching release.
         metosin/jsonista {:mvn/version "1.0.0"}
         buddy/buddy-hashers {:mvn/version "2.0.167"}
         org.replikativ/geheimnis {:mvn/version "0.2.36"}
-        org.replikativ/hasch {:mvn/version "0.4.101"}
+        org.replikativ/hasch {:mvn/version "0.4.102"}
         org.replikativ/incognito {:mvn/version "0.3.69"}
         org.replikativ/superv.async {:mvn/version "0.3.50"}
         ;; 0.3.37, not 0.3.36 — it carries yggdrasil#15, which fixes TWO things
@@ -165,8 +166,11 @@
         ;; the planner is synchronous and pure while cljs content IO is
         ;; partial-cps, so a resolver cannot be awaited inside it; cljs keeps
         ;; file-level granularity, coarser but never wrong. All simmis merging is
-        ;; server-side, so this reaches every path that matters.
-        org.replikativ/yggdrasil {:mvn/version "0.3.39"}
+        ;; server-side, so this reaches every path that matters. 0.3.41 reads
+        ;; Datahike graph metadata without opening another writable snapshot;
+        ;; that avoids contending with the live Scriptum secondary-index lock
+        ;; when timelines load.
+        org.replikativ/yggdrasil {:mvn/version "0.3.41"}
         ;; DIRECT, though simmis has no direct geschichte code: it arrives
         ;; transitively via dvergr, which pins 0.1.12, and yggdrasil 0.3.39's
         ;; adapter calls `repo/content-merger` — added in 0.1.14. Nearest-wins

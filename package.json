@@ -25,5 +25,8 @@
     "marked-highlight": "^2.2.3",
     "tippy.js": "^6.3.7"
   },
+  "allowScripts": {
+    "lightningcss-cli@1.32.0": true
+  },
   "license": "MIT"
 }

@@ -1779,7 +1779,13 @@
 
                :else
                (let [overlay (if db-scope
-                               (db-signal/get-kb-overlay db-scope)
+                               ;; The client owns only the trunk overlay. A
+                               ;; fork rename is written remotely and arrives
+                               ;; with that branch's refreshed snapshot; using
+                               ;; the trunk overlay here would momentarily put
+                               ;; fork data in the trunk view.
+                               (when (trunk? branch-kw)
+                                 (db-signal/get-kb-overlay db-scope))
                                (db-signal/get-overlay))
                      prediction
                      (when overlay

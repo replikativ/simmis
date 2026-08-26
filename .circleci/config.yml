@@ -29,10 +29,10 @@ jobs:
           command: clojure -X:test
           no_output_timeout: 15m
       - run:
-          name: Compile CLJS release (build gate)
+          name: Build browser release (CLJS + CSS gate)
           command: |
             npm ci
-            npx shadow-cljs release app
+            npm run release
           no_output_timeout: 20m
       - save_cache:
           key: deps-v1-{{ checksum "deps.edn" }}

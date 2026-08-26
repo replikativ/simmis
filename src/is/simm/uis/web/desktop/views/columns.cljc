@@ -98,11 +98,23 @@
             :else nil))))
      (when result
        (go (let [r (<! result)]
-             (when (= :expired (:status r))
+             ;; A locally invalid prediction can settle before the status
+             ;; listener is installed. Always clean up from the result too;
+             ;; otherwise that missed terminal event leaks the listener.
+             (when (contains? #{:reconciled :rejected :expired :abandoned}
+                              (:status r))
+               (opt/unlisten-status! overlay ov-id))
+             (case (:status r)
+               :expired
                (rem/report-error!
                 "A message was not confirmed in time and has been removed
                  from the transcript. Check the room before sending it again."
-                (ex-info "Optimistic message expired" r))))))))
+                (ex-info "Optimistic message expired" r))
+
+               :rejected
+               (js/console.warn "[chat] optimistic prediction rejected locally" r)
+
+               nil))))))
 
 #?(:cljs (defonce ^:private room-details-loading (atom #{})))
 

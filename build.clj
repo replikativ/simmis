@@ -34,12 +34,12 @@
   (b/delete {:path "target"}))
 
 (defn cljs-release
-  "Build the release CLJS bundle into public/js via shadow-cljs."
+  "Build the release browser bundle and stylesheet."
   [_]
-  (println "Building CLJS release (shadow-cljs release app)...")
-  (let [{:keys [exit]} (b/process {:command-args ["npx" "shadow-cljs" "release" "app"]})]
+  (println "Building browser release (CLJS + CSS)...")
+  (let [{:keys [exit]} (b/process {:command-args ["npm" "run" "release"]})]
     (when-not (zero? exit)
-      (throw (ex-info "shadow-cljs release failed" {:exit exit})))))
+      (throw (ex-info "browser release failed" {:exit exit})))))
 
 (defn uber
   "Build the standalone uberjar. Pass :skip-cljs true to reuse the
