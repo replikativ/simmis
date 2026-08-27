@@ -391,7 +391,25 @@
          (let [room-uuid (java.util.UUID/fromString rid)
                room (rooms/get-room room-uuid)
                humans (rooms/get-room-humans room-uuid)
-               agents (rooms/get-room-agents room-uuid)
+               raw-agents (rooms/get-room-agents room-uuid)
+               assignments (when-let [slug (:room/slug room)]
+                             (into {}
+                                   (map (juxt :assignment/actor-id identity))
+                                   (room-agents/dvergr-room-assignments slug)))
+               agents (mapv (fn [agent]
+                              (let [assignment (get assignments
+                                                    (room-agents/party->actor-kw agent))]
+                                (merge agent
+                                       {:assignment/role
+                                        (or (:assignment/role assignment) :specialist)
+                                        :assignment/response-policy
+                                        (or (:assignment/response-policy assignment)
+                                            (if (:party/auto-respond? agent)
+                                              :always
+                                              :manual))
+                                        :assignment/config
+                                        (or (:assignment/config assignment) {})})))
+                            raw-agents)
                all-humans (parties/list-parties :human)
                room-kbs (or (kbs/get-room-kbs room-uuid) [])
                party-kbs (->> (:room/parties room)
@@ -619,6 +637,10 @@
                                       :provider (:provider tmpl)
                                       :system-prompt (:system-prompt tmpl)})))]
            (rooms/add-party! room-uuid (:party/id agent))
+           (when-let [slug (:room/slug (rooms/get-room room-uuid))]
+             (room-agents/assign-room-agent!
+              slug (room-agents/party->actor-kw agent)
+              {:role :specialist :response-policy :always}))
            {:status :ok :agent-id (str (:party/id agent))})
          :cljs nil))))
 
@@ -639,6 +661,31 @@
            {:status :ok})
          :cljs nil))))
 
+(defn-spin-remote update-agent-assignment!
+  [server-id room-id-str agent-id-str role-kw response-policy-kw]
+  (spin-remote server-id [room-id-str agent-id-str role-kw response-policy-kw]
+    (let [rid (identity room-id-str)
+          aid (identity agent-id-str)
+          role (identity role-kw)
+          response-policy (identity response-policy-kw)]
+      #?(:clj
+         (let [room-uuid (java.util.UUID/fromString rid)
+               agent-uuid (java.util.UUID/fromString aid)
+               room (rooms/get-room room-uuid)]
+           (if-let [slug (:room/slug room)]
+             (if-let [assignment (room-agents/assign-room-agent!
+                                   slug (room-agents/party->actor-kw agent-uuid)
+                                   {:role role :response-policy response-policy})]
+               {:status :ok
+                :assignment (-> assignment
+                                (update :assignment/id str)
+                                (update :assignment/room-id str)
+                                (update :assignment/created-at #(when % (str %)))
+                                (update :assignment/updated-at #(when % (str %))))}
+               {:status :error :error :assignment-api-unavailable})
+             {:status :error :error :room-has-no-dvergr-slug}))
+         :cljs nil))))
+
 ;; Removes an agent party from a room. If the agent has no other rooms,
 ;; also deletes the party entirely.
 (defn-spin-remote remove-agent-from-room!
@@ -648,7 +695,11 @@
           aid (identity agent-id-str)]
       #?(:clj
          (let [room-uuid  (java.util.UUID/fromString rid)
-               agent-uuid (java.util.UUID/fromString aid)]
+               agent-uuid (java.util.UUID/fromString aid)
+               room (rooms/get-room room-uuid)]
+           (when-let [slug (:room/slug room)]
+             (room-agents/unassign-room-agent!
+              slug (room-agents/party->actor-kw agent-uuid)))
            (rooms/remove-party! room-uuid agent-uuid)
            (when (empty? (rooms/get-party-rooms agent-uuid))
              (parties/delete-party! agent-uuid))

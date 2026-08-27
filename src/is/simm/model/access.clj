@@ -418,6 +418,7 @@
      "unshare-kb!"             {:action W :resource (kb :kb-id-str)}
      ;; --- room ops (by :room-id-str) ---
      "add-agent-to-room!"      {:action W :resource (room :room-id-str)}
+     "update-agent-assignment!" {:action W :resource (room :room-id-str)}
      "remove-agent-from-room!" {:action W :resource (room :room-id-str)}
      "add-room-party!"         {:action W :resource (room :room-id-str)}
      "remove-room-party!"      {:action W :resource (room :room-id-str)}

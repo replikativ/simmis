@@ -22,17 +22,18 @@
 (def user-mention-pattern
   "Regex for @handle party-mentions. The leading `(?:^|[^\\w@])` requires a
    non-word char (or start) before the @, so email addresses (`a@b.com`) and
-   `@@` do NOT match. Works on both tiptap HTML (the `@handle` text inside a
-   `.user-reference` span) and plain/markdown text (agent messages). No
-   lookbehind, so it is safe on both the JVM and JS regex engines."
-  #"(?:^|[^\w@])@([A-Za-z][A-Za-z0-9_.-]*)")
+   `@@` do NOT match. Handles accept ASCII letters/digits plus every non-ASCII
+   BMP character, so generated names such as `vár-*` and CJK handles work in
+   both CLJ and CLJS without relying on JavaScript Unicode-property flags.
+   Works on tiptap HTML and plain/markdown text; no lookbehind is used."
+  #"(?:^|[^\w@])@([A-Za-z\u0080-\uFFFF][A-Za-z0-9_.\-\u0080-\uFFFF]*)")
 
 (def user-mention-html-pattern
   "Like `user-mention-pattern` but the leading char is CAPTURED (group 1) and
    the class `[^\\w@>]` also excludes `>` — so an already-wrapped `>@handle`
    inside a `.user-reference` span is not re-wrapped. For string-level HTML
    linkification (`str/replace` with `$1…$2`), not the tokenizer."
-  #"(^|[^\w@>])@([A-Za-z][A-Za-z0-9_.-]*)")
+  #"(^|[^\w@>])@([A-Za-z\u0080-\uFFFF][A-Za-z0-9_.\-\u0080-\uFFFF]*)")
 
 (def ^:private combined-reference-pattern
   "One pattern matching a wiki link `[[Target]]` / `[[Target][Display]]`
@@ -42,7 +43,7 @@
    consumes ONE leading non-word char (the email/`@@` guard) which the tokenizer
    re-emits as text. No lookahead/lookbehind — identical on the JVM and every JS
    engine."
-  #"\[\[([^\]]+)\](?:\[([^\]]+)\])?\]|(?:^|[^\w@])@([A-Za-z][A-Za-z0-9_.-]*)")
+  #"\[\[([^\]]+)\](?:\[([^\]]+)\])?\]|(?:^|[^\w@])@([A-Za-z\u0080-\uFFFF][A-Za-z0-9_.\-\u0080-\uFFFF]*)")
 
 (defn tokenize-references
   "Split `text` into an ordered vector of tokens for rendering links + mentions

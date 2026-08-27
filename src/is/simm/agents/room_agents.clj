@@ -38,6 +38,7 @@
             [is.simm.runtimes.branching :as branching]
             [dvergr.system.db :as sdb]
             [is.simm.model.rooms :as rooms]
+            [is.simm.agents.dispatch :as dispatch]
             [is.simm.agents.vocab :as vocab]
             [is.simm.model.parties :as parties]
             [is.simm.model.model-selection :as model-selection]
@@ -2351,28 +2352,52 @@
 ;; Dispatch
 ;; =============================================================================
 
-(def ^:private mention-pattern #"@([\p{L}\p{N}_-]+)")
+(defn- resolve-assignment-api
+  "Resolve an assignment operation when running against a dvergr version that
+   provides it. This keeps Simmis deployable during the short interval before
+   the assignment schema/API release lands."
+  [operation]
+  (ns-resolve 'dvergr.system.db operation))
 
-(defn- parse-mentions
-  [text]
-  (->> (re-seq mention-pattern (or text ""))
-       (map (comp str/lower-case second))
-       (into #{})))
+(defn dvergr-room-assignments
+  "Return durable assignments for `room-slug`, or an empty collection while
+   running against the pre-assignment dvergr release."
+  [room-slug]
+  (if-let [room-assignments (resolve-assignment-api 'room-assignments)]
+    (room-assignments room-slug)
+    []))
 
-(defn- agents-matching-mentions
-  "Filter `auto-agents` to those whose display-name's first token matches a
-   mention. Falls back to all agents when no mentions matched."
-  [auto-agents mentions]
-  (if (empty? mentions)
-    auto-agents
-    (let [matched (filter (fn [a]
-                            (let [first-token (-> (or (:party/display-name a) "")
-                                                  str/lower-case
-                                                  (str/split #"\s+")
-                                                  first)]
-                              (contains? mentions first-token)))
-                          auto-agents)]
-      (if (seq matched) matched auto-agents))))
+(defn assign-room-agent!
+  "Persist one room assignment when supported by dvergr. Returns nil on the
+   pre-assignment release so callers can retain the legacy party projection."
+  [room-slug actor-id assignment]
+  (when-let [assign-room-actor! (resolve-assignment-api 'assign-room-actor!)]
+    (assign-room-actor! room-slug actor-id assignment)))
+
+(defn unassign-room-agent!
+  "Retract one durable assignment when supported by dvergr."
+  [room-slug actor-id]
+  (when-let [unassign-room-actor! (resolve-assignment-api 'unassign-room-actor!)]
+    (unassign-room-actor! room-slug actor-id)))
+
+(defn- ensure-agent-assignment!
+  "Lazily materialize the assignment for a pre-assignment Simmis room member.
+   Existing dvergr assignments always win. The old `auto-respond?` bit is used
+   only once as a migration default."
+  [room-slug agent]
+  (let [actor-id (party->actor-kw agent)
+        assignment-for (resolve-assignment-api 'assignment-for)]
+    (or (when assignment-for (assignment-for room-slug actor-id))
+        (assign-room-agent!
+         room-slug actor-id
+         {:role :specialist
+          :response-policy (if (:party/auto-respond? agent) :always :manual)})
+        ;; Compatibility projection while deployed with pre-assignment dvergr.
+        {:assignment/actor-id actor-id
+         :assignment/role :specialist
+         :assignment/response-policy (if (:party/auto-respond? agent)
+                                       :always
+                                       :manual)})))
 
 (defn post-user-message!
   "Post a user message into the room's live dvergr discourse Room. Works
@@ -2380,20 +2405,24 @@
 
    1. Persist to the room content DB (interim client render path) — the
       dvergr room store ALSO persists it via the bus.
-   2. With auto-respond agents (mention-filtered): ensure them + the human
-      persistence participant, post one Message per recipient; replies
-      route back via the human participant.
-   3. Without agents (e.g. a :telegram-mirror room): post one broadcast
-      Message to `(d/room-target room)` — nil for a group — so mirrors
-      (the telegram thin-adapter egress) relay it out.
+   2. Resolve @handles to room-local actor ids. Unknown/ambiguous mentions fail
+      closed; assignment response policies select recipients.
+   3. Post one Message per selected recipient. When a room has assigned agents
+      but none should wake, target the reserved `:_room-log` endpoint so the
+      durable/projector listeners see it without broadcasting to every joined
+      participant. Rooms without agents retain their adapter-facing target.
 
    Returns {:status :ok :recipients [...]} immediately; replies are async."
   [room-uuid user-message sender-party-id room-conn & [msg-uuid]]
   (ensure-providers!)
-  (let [all-agents (rooms/get-room-agents room-uuid)
-        auto-agents (filter :party/auto-respond? all-agents)
-        mentions (parse-mentions user-message)
-        recipients (agents-matching-mentions auto-agents mentions)]
+  (let [room-parties (rooms/get-room-parties room-uuid)
+        all-agents (filterv #(= :agent (:party/type %)) room-parties)
+        room-info (rooms/get-room room-uuid)
+        room-slug (:room/slug room-info)
+        assignments (when room-slug
+                      (mapv #(ensure-agent-assignment! room-slug %) all-agents))
+        {:keys [mentions audience recipients]}
+        (dispatch/plan-message-dispatch room-parties assignments user-message)]
     (binding [rtc/*execution-context* ctx/server-context]
       (let [sender-party (or (parties/get-party sender-party-id)
                              {:party/id (or sender-party-id seed/user-uuid-you)
@@ -2418,13 +2447,17 @@
               ;; (client-supplied when present) — the projector's upsert
               ;; dedupes them into a single timeline row.
               send-id (or msg-uuid (random-uuid))
+              metadata {:role :user :mentions mentions :audience audience}
               msgs (binding [rtc/*execution-context* (:ctx room)]
                      (->> (if (seq recipients)
                             (mapv #(d/message from-kw (party->actor-kw %) user-message nil
-                                              {:role :user :mentions mentions})
+                                              metadata)
                                   recipients)
-                            [(d/message from-kw (d/room-target room) user-message nil
-                                        {:role :user :mentions mentions})])
+                            [(d/message from-kw
+                                        (if (seq all-agents)
+                                          :_room-log
+                                          (d/room-target room))
+                                        user-message nil metadata)])
                           (mapv #(assoc % :id send-id))))]
           (binding [rtc/*execution-context* (:ctx room)]
             (doseq [m msgs]

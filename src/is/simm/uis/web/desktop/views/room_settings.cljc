@@ -132,6 +132,62 @@
                                                       (fn [err] (js/console.error "[room-settings] remove agent error:" err))))
                                                  :clj nil))}
                         (vc/icon "x")))
+                    (el/div {:class "settings-env-add"
+                             :style {:margin-top "0.5rem"
+                                     :align-items "end"
+                                     :flex-wrap "wrap"}}
+                      (el/div {:style {:display "flex"
+                                      :flex-direction "column"
+                                      :gap "0.25rem"}}
+                        (el/label {:class "settings-label"
+                                   :for (str "agent-role-" agent-id)}
+                          "Room role")
+                        (el/select {:id (str "agent-role-" agent-id)
+                                    :class "settings-input"
+                                    :value (name (or (:assignment/role agent)
+                                                     :specialist))}
+                          (el/option {:value "lead"} "Lead")
+                          (el/option {:value "specialist"} "Specialist")
+                          (el/option {:value "reviewer"} "Reviewer")
+                          (el/option {:value "observer"} "Observer")))
+                      (el/div {:style {:display "flex"
+                                      :flex-direction "column"
+                                      :gap "0.25rem"
+                                      :min-width "13rem"}}
+                        (el/label {:class "settings-label"
+                                   :for (str "agent-policy-" agent-id)}
+                          "Respond")
+                        (el/select {:id (str "agent-policy-" agent-id)
+                                    :class "settings-input"
+                                    :value (name (or (:assignment/response-policy agent)
+                                                     :always))}
+                          (el/option {:value "always"} "To every message")
+                          (el/option {:value "mention"} "Only when @mentioned")
+                          (el/option {:value "manual"} "Only when started manually")))
+                      (el/button
+                        {:class "settings-btn settings-btn--secondary"
+                         :on-click
+                         (fn [_]
+                           #?(:cljs
+                              (let [role-el (.getElementById
+                                             js/document
+                                             (str "agent-role-" agent-id))
+                                    policy-el (.getElementById
+                                               js/document
+                                               (str "agent-policy-" agent-id))
+                                    s (cr/update-agent-assignment!
+                                       web/server-id
+                                       (str (:room/id room))
+                                       agent-id
+                                       (keyword (.-value role-el))
+                                       (keyword (.-value policy-el)))]
+                                (s (fn [_] (reset! sig/admin-data nil))
+                                   (fn [err]
+                                     (js/console.error
+                                      "[room-settings] update assignment error:"
+                                      err))))
+                              :clj nil))}
+                        "Save participation"))
                     (el/div {:class "settings-agent-prompt"}
                       (el/label {:class "settings-label"} "Personality / System Prompt")
                       (el/textarea
