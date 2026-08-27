@@ -20,6 +20,8 @@
    4. Returns new interval with query-level deltas"
   (:require [org.replikativ.spindel.incremental.interval :as iv]
             [clojure.set :as set]
+            #?(:clj [clojure.edn :as reader]
+               :cljs [cljs.reader :as reader])
             [is.simm.model.morphism :as mor]
             #?(:cljs [is.simm.uis.web.desktop.db-signal :as db-signal])
             #?(:cljs [datahike.api :as d])))
@@ -351,46 +353,217 @@
 ;; Chat Message Queries (using categorical schema)
 ;; =============================================================================
 
+(defn- try-parse-uuid [x]
+  (when x
+    (try
+      #?(:clj (java.util.UUID/fromString (str x))
+         :cljs (uuid (str x)))
+      (catch #?(:clj Throwable :cljs :default) _ nil))))
+
+(defn actor->party-uuid
+  "Resolve Simmis's canonical dvergr actor id to its party UUID. Bare UUID
+   keywords are accepted for old room-store rows; reserved/system actors are
+   deliberately not invented into parties."
+  [actor]
+  (when (and (keyword? actor)
+             (or (= "party" (namespace actor)) (nil? (namespace actor))))
+    (try-parse-uuid (name actor))))
+
+(defn- read-message-metadata [metadata]
+  (cond
+    (map? metadata) metadata
+    (string? metadata) (try
+                         (reader/read-string metadata)
+                         (catch #?(:clj Throwable :cljs :default) _ {}))
+    :else {}))
+
+(defn merge-message-projections
+  "Project one canonical dvergr message into the temporary S.Message-shaped UI
+   contract. `legacy` is optional enrichment written by the old projector;
+   `users` maps party UUIDs to {:name :is-ai}.
+
+   Canonical identity, timestamp, author, reasoning and causality win. Legacy
+   display content wins temporarily because the projector resolves bare wiki
+   links to their cross-store dh:// targets. Once link resolution moves to the
+   canonical render path this exception can disappear with S.Message itself."
+  [canonical legacy users]
+  (let [{:keys [id content sent-at from source-user reasoning metadata
+                to in-reply-to]} canonical
+        metadata (read-message-metadata metadata)
+        author-uuid (or (actor->party-uuid from)
+                        (try-parse-uuid source-user)
+                        (:S.Message/author-uuid legacy))
+        user (get users author-uuid)
+        attachment (:attachment metadata)
+        attachment-blob (or (some-> (:blob-id attachment) str)
+                            (:S.Message/attachment-blob legacy))
+        attachment-mime (or (:mime attachment)
+                            (:S.Message/attachment-mime legacy))]
+    (cond-> (merge legacy
+                   {:entity/uuid id
+                    :block/content (or (:block/content legacy) content)
+                    :S.Message/sent-at sent-at
+                    :S.Message/author-uuid author-uuid
+                    :S.Message/author-name (or (:name user)
+                                               (:S.Message/author-name legacy)
+                                               (:source-username metadata)
+                                               source-user
+                                               (some-> from name))
+                    :S.Message/is-ai (boolean (or (:is-ai user)
+                                                  (:S.Message/is-ai legacy)))
+                    :timeline/type :message
+                    :timeline/ts sent-at})
+      reasoning (assoc :S.Message/reasoning reasoning)
+      attachment-blob (assoc :S.Message/attachment-blob attachment-blob
+                             :S.Message/attachment-mime
+                             (or attachment-mime "application/octet-stream"))
+      to (assoc :message/to to)
+      in-reply-to (assoc :message/in-reply-to in-reply-to))))
+
+#?(:cljs
+   (defn- room-message-users [db]
+     (let [names (into {} (d/q '[:find ?uuid ?name
+                                  :where
+                                  [?u :entity/uuid ?uuid]
+                                  [?u :S.User/display-name ?name]]
+                                db))
+           ai-uuids (into #{} (d/q '[:find [?uuid ...]
+                                      :where
+                                      [?u :S.User/is-ai true]
+                                      [?u :entity/uuid ?uuid]]
+                                    db))]
+       (into {} (map (fn [[uuid name]]
+                       [uuid {:name name :is-ai (contains? ai-uuids uuid)}]))
+             names))))
+
+#?(:cljs
+   (defn- legacy-room-messages [db room-eid users]
+     ;; Optional fields are joined in Clojure because get-else in a CLJS
+     ;; multi-join can corrupt Datahike results.
+     (let [reasonings (into {} (d/q '[:find ?uuid ?reasoning
+                                      :in $ ?room
+                                      :where
+                                      [?m :S.Message/room ?room]
+                                      [?m :S.Message/reasoning ?reasoning]
+                                      [?m :entity/uuid ?uuid]]
+                                    db room-eid))
+           attachments (into {} (d/q '[:find ?uuid ?blob
+                                       :in $ ?room
+                                       :where
+                                       [?m :S.Message/room ?room]
+                                       [?m :S.Message/attachment-blob ?blob]
+                                       [?m :entity/uuid ?uuid]]
+                                     db room-eid))
+           att-mimes (into {} (d/q '[:find ?uuid ?mime
+                                     :in $ ?room
+                                     :where
+                                     [?m :S.Message/room ?room]
+                                     [?m :S.Message/attachment-mime ?mime]
+                                     [?m :entity/uuid ?uuid]]
+                                   db room-eid))]
+       (->> (d/q '[:find ?uuid ?content ?sent-at ?author-uuid ?author-name
+                    :in $ ?room
+                    :where
+                    [?m :S.Message/room ?room]
+                    [?m :entity/uuid ?uuid]
+                    [?m :block/content ?content]
+                    [?m :S.Message/sent-at ?sent-at]
+                    [?m :S.Message/author ?author]
+                    [?author :entity/uuid ?author-uuid]
+                    [?author :S.User/display-name ?author-name]]
+                  db room-eid)
+            (map (fn [[uuid content sent-at author-uuid author-name]]
+                   (cond-> {:entity/uuid uuid
+                            :block/content content
+                            :S.Message/sent-at sent-at
+                            :S.Message/author-uuid author-uuid
+                            :S.Message/author-name author-name
+                            :S.Message/is-ai (boolean (get-in users [author-uuid :is-ai]))
+                            :timeline/type :message
+                            :timeline/ts sent-at}
+                     (reasonings uuid)
+                     (assoc :S.Message/reasoning (reasonings uuid))
+                     (attachments uuid)
+                     (assoc :S.Message/attachment-blob (attachments uuid)
+                            :S.Message/attachment-mime (att-mimes uuid)))))
+            vec))))
+
+#?(:cljs
+   (defn- canonical-room-messages [db]
+     (let [froms (into {} (d/q '[:find ?id ?from
+                                  :where [?m :message/id ?id] [?m :message/from ?from]] db))
+           tos (into {} (d/q '[:find ?id ?to
+                               :where [?m :message/id ?id] [?m :message/to ?to]] db))
+           replies (into {} (d/q '[:find ?id ?parent
+                                   :where
+                                   [?m :message/id ?id]
+                                   [?m :message/in-reply-to ?parent]] db))
+           metadata (into {} (d/q '[:find ?id ?metadata
+                                    :where
+                                    [?m :message/id ?id]
+                                    [?m :message/metadata ?metadata]] db))
+           reasonings (into {} (d/q '[:find ?id ?reasoning
+                                      :where
+                                      [?m :message/id ?id]
+                                      [?m :message/reasoning ?reasoning]] db))
+           source-users (into {} (d/q '[:find ?id ?source
+                                        :where
+                                        [?m :message/id ?id]
+                                        [?m :message/source-user ?source]] db))
+           tool-message-ids (into #{} (d/q '[:find [?id ...]
+                                              :where
+                                              [?m :message/id ?id]
+                                              [?m :message/tool-uses _]] db))]
+       (->> (d/q '[:find ?id ?content ?sent-at ?role
+                    :where
+                    [?m :message/id ?id]
+                    [?m :message/chat _]
+                    [?m :message/content ?content]
+                    [?m :message/created-at ?sent-at]
+                    [?m :message/role ?role]]
+                  db)
+            (remove (comp tool-message-ids first))
+            (map (fn [[id content sent-at role]]
+                   {:id id
+                    :content content
+                    :sent-at sent-at
+                    :role role
+                    :from (froms id)
+                    :to (tos id)
+                    :in-reply-to (replies id)
+                    :metadata (metadata id)
+                    :reasoning (reasonings id)
+                    :source-user (source-users id)}))
+            vec))))
+
+#?(:cljs
+   (defn- query-room-message-projections [db room-eid]
+     (let [users (room-message-users db)
+           legacy (legacy-room-messages db room-eid users)
+           legacy-by-id (into {} (map (juxt :entity/uuid identity)) legacy)
+           canonical (canonical-room-messages db)
+           canonical-ids (into #{} (map :id) canonical)
+           canonical-items (map #(merge-message-projections
+                                  % (legacy-by-id (:id %)) users)
+                                canonical)]
+       (->> (concat canonical-items
+                    ;; Compatibility-only rows such as historical summaries may
+                    ;; not have traversed the dvergr bus. Keep them visible until
+                    ;; the projector is retired with an explicit migration.
+                    (remove #(contains? canonical-ids (:entity/uuid %)) legacy))
+            (sort-by :timeline/ts)
+            vec))))
+
 #?(:cljs
    (defn make-room-messages-query
-     "Create a query for messages in a specific chat room using categorical schema.
-      Returns a query function for use with query-with-deltas.
-
-      Messages are S/Message type entities with:
-      - :entity/uuid - unique identifier
-      - :block/content - message text
-      - :S.Message/author - ref to S/User entity
-      - :S.Message/room - ref to S/ChatRoom entity
-      - :S.Message/sent-at - timestamp
-
-      Messages are sorted by :S.Message/sent-at in ascending order."
+     "Read canonical dvergr messages with temporary S.Message enrichment.
+      Results retain the established UI keys while the compatibility projector
+      is removed incrementally."
      [room-uuid]
      (fn [db]
        (when db
-         ;; NOTE: datahike CLJS bug — get-else in multi-join query corrupts results.
-         ;; Compute is-ai via a separate query and join in Clojure.
          (when-let [room-eid (d/q '[:find ?r . :in $ ?uuid :where [?r :entity/uuid ?uuid]] db room-uuid)]
-           (let [ai-uuids (into #{} (d/q '[:find [?uuid ...] :where [?u :S.User/is-ai true] [?u :entity/uuid ?uuid]] db))]
-             (->> (d/q '[:find ?uuid ?content ?sent-at ?author-uuid ?author-name
-                          :in $ ?room
-                          :where
-                          [?m :S.Message/room ?room]
-                          [?m :entity/uuid ?uuid]
-                          [?m :block/content ?content]
-                          [?m :S.Message/sent-at ?sent-at]
-                          [?m :S.Message/author ?author]
-                          [?author :entity/uuid ?author-uuid]
-                          [?author :S.User/display-name ?author-name]]
-                        db room-eid)
-                  (map (fn [[uuid content sent-at author-uuid author-name]]
-                         {:entity/uuid uuid
-                          :block/content content
-                          :S.Message/sent-at sent-at
-                          :S.Message/author-uuid author-uuid
-                          :S.Message/author-name author-name
-                          :S.Message/is-ai (boolean (ai-uuids author-uuid))}))
-                  (sort-by :S.Message/sent-at)
-                  vec)))))))
+           (query-room-message-projections db room-eid))))))
 
 #?(:cljs
    (defn room-messages-with-deltas
@@ -423,61 +596,11 @@
      [room-uuid]
      (fn [db]
        (when db
-         ;; NOTE: datahike CLJS bug — get-else in multi-join query corrupts results.
-         ;; Resolve room EID first, then query by integer EID.
-         ;; Compute is-ai via a separate query and join in Clojure.
+         ;; Resolve the Simmis room projection first; it scopes compatibility
+         ;; rows while canonical dvergr messages are already isolated by the
+         ;; per-room database itself.
          (when-let [room-eid (d/q '[:find ?r . :in $ ?uuid :where [?r :entity/uuid ?uuid]] db room-uuid)]
-           (let [ai-uuids (into #{} (d/q '[:find [?uuid ...] :where [?u :S.User/is-ai true] [?u :entity/uuid ?uuid]] db))
-                 ;; :S.Message/reasoning is optional; get-else corrupts CLJS
-                 ;; multi-joins (see note above), so join it in Clojure.
-                 reasonings (into {} (d/q '[:find ?uuid ?reasoning
-                                            :in $ ?room
-                                            :where
-                                            [?m :S.Message/room ?room]
-                                            [?m :S.Message/reasoning ?reasoning]
-                                            [?m :entity/uuid ?uuid]]
-                                          db room-eid))
-                 ;; Optional attachment (voice-note audio etc.) — same
-                 ;; Clojure-side join pattern as reasoning.
-                 attachments (into {} (d/q '[:find ?uuid ?blob
-                                             :in $ ?room
-                                             :where
-                                             [?m :S.Message/room ?room]
-                                             [?m :S.Message/attachment-blob ?blob]
-                                             [?m :entity/uuid ?uuid]]
-                                           db room-eid))
-                 att-mimes (into {} (d/q '[:find ?uuid ?mime
-                                           :in $ ?room
-                                           :where
-                                           [?m :S.Message/room ?room]
-                                           [?m :S.Message/attachment-mime ?mime]
-                                           [?m :entity/uuid ?uuid]]
-                                         db room-eid))
-                 messages (->> (d/q '[:find ?uuid ?content ?sent-at ?author-uuid ?author-name
-                                       :in $ ?room
-                                       :where
-                                       [?m :S.Message/room ?room]
-                                       [?m :entity/uuid ?uuid]
-                                       [?m :block/content ?content]
-                                       [?m :S.Message/sent-at ?sent-at]
-                                       [?m :S.Message/author ?author]
-                                       [?author :entity/uuid ?author-uuid]
-                                       [?author :S.User/display-name ?author-name]]
-                                     db room-eid)
-                                (map (fn [[uuid content sent-at author-uuid author-name]]
-                                       (cond-> {:entity/uuid uuid
-                                                :block/content content
-                                                :S.Message/sent-at sent-at
-                                                :S.Message/author-uuid author-uuid
-                                                :S.Message/author-name author-name
-                                                :S.Message/is-ai (boolean (ai-uuids author-uuid))
-                                                :timeline/type :message
-                                                :timeline/ts sent-at}
-                                         (reasonings uuid)
-                                         (assoc :S.Message/reasoning (reasonings uuid))
-                                         (attachments uuid)
-                                         (assoc :S.Message/attachment-blob (attachments uuid)
-                                                :S.Message/attachment-mime (att-mimes uuid))))))
+           (let [messages (query-room-message-projections db room-eid)
                  kb-events (->> (d/q '[:find ?uuid ?type ?title ?block-count ?author-uuid ?author-name ?ts
                                         :in $ ?room
                                         :where
