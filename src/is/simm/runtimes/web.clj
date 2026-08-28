@@ -18,6 +18,7 @@
             [is.simm.model.system-db :as system-db]
             [is.simm.model.access :as access]
             [is.simm.model.message-notify-broadcast :as mnb]
+            [is.simm.model.run-broadcast :as run-broadcast]
             [is.simm.model.mail-accounts :as mail-accounts]
             ;; Auth configuration
             [is.simm.runtimes.auth-config :as auth-cfg]
@@ -518,6 +519,9 @@
   [topic]
   (some-> (mnb/notify-topic? topic) str))
 
+(defn- run-topic-room [topic]
+  (run-broadcast/run-topic-room topic))
+
 (defn data-plane-authorized?
   "Join-time subscribe gate for kabel.pubsub topics (see :authorize-fn).
    `principal` is the message's :kabel/principal (stamped by the auth
@@ -526,6 +530,7 @@
    - base app store (`simmis-scope`): any authenticated party
    - control-topics (global notification channels): any authenticated party
    - per-user notify topics (`:notify/<party>`): ONLY that party (private stream)
+   - per-room Run topics (`:runs/<room>`): ONLY members of that room
    - KB / room store scopes: `access/can?`, which denies anonymous and any
      party without an owner/shared/membership/grant relation.
 
@@ -536,6 +541,7 @@
     (= topic simmis-scope)           (some? (:sub principal))
     (contains? control-topics topic) (some? (:sub principal))
     (notify-topic-party topic)       (= (notify-topic-party topic) (str (:sub principal)))
+    (run-topic-room topic)           (access/can? principal :read {:room (run-topic-room topic)})
     :else                            (access/can? principal :read topic)))
 
 (defn data-plane-publish-authorized?
@@ -779,6 +785,15 @@
                        :msg "Failed to register per-user notify topics"
                        :data {:error (str e)}})))
 
+        ;; Room-private Dvergr Run lifecycle streams. The watcher queues events
+        ;; off Dvergr's lifecycle lock and each topic is membership-gated above.
+        (try
+          (run-broadcast/install! server)
+          (catch Exception e
+            (log/log! {:level :warn :id ::run-broadcast-failed
+                       :msg "Failed to install Run lifecycle broadcaster"
+                       :data {:error (str e)}})))
+
         ;; Register the branching event topic on the server peer. Client
         ;; subscribes to :branching/event on login and updates its sidebar
         ;; tree + page header pill reactively as branches are created /
@@ -902,6 +917,7 @@
   "Stop the web server. Idempotent - does nothing if not started."
   []
   (when (:started? @server-state)
+    (run-broadcast/uninstall!)
     (mail-accounts/close-all!)
     (try
       (require 'is.simm.runtimes.telegram)

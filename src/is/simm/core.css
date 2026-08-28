@@ -1493,6 +1493,106 @@ body {
   font-weight: 600;
 }
 
+.chat-runs {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-height: 34px;
+  padding: 4px var(--spacing-lg);
+  overflow-x: auto;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  background: linear-gradient(90deg,
+              color-mix(in srgb, var(--accent) 7%, transparent),
+              color-mix(in srgb, var(--mono-bg-surface) 92%, transparent));
+  backdrop-filter: blur(12px);
+}
+
+.chat-runs-label,
+.chat-run {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.chat-runs-label {
+  gap: 5px;
+  color: var(--mono-text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.chat-runs-label-icon,
+.message-run-ref-icon {
+  width: 11px;
+  height: 11px;
+}
+
+.chat-run {
+  gap: 6px;
+  padding: 3px 5px 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--mono-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mono-bg-overlay) 82%, transparent);
+  font-size: var(--text-sm);
+}
+
+.chat-run-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+  animation: run-pulse 1.8s ease-out infinite;
+}
+
+.chat-run--cancelling .chat-run-pulse {
+  background: var(--mono-text-tertiary);
+  animation: none;
+}
+
+.chat-run-actor {
+  color: var(--mono-text-primary);
+  font-weight: 600;
+}
+
+.chat-run-status {
+  color: var(--mono-text-tertiary);
+}
+
+.chat-run-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--mono-text-tertiary);
+  cursor: pointer;
+}
+
+.chat-run-cancel:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.chat-run-cancel:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.chat-run-cancel svg {
+  width: 9px;
+  height: 9px;
+}
+
+@keyframes run-pulse {
+  70% { box-shadow: 0 0 0 5px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
 /* TIER 1: Unread count in chat header */
 .chat-unread {
   font-size: var(--text-sm);
@@ -1711,6 +1811,14 @@ body {
 .message-time {
   font-size: var(--text-sm);
   color: var(--mono-text-tertiary);
+}
+
+.message-run-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--mono-text-tertiary);
+  font-size: var(--text-sm);
 }
 
 .message-audience {

@@ -405,12 +405,13 @@
   CSS handles visibility based on .chat-message--own class."
   [{:keys [id author-id author-name content reasoning timestamp is-own? is-ai?
            syntax-pref attachment-blob attachment-mime thread-parent
-           in-reply-to reply-count on-jump-parent on-reply audience
+           in-reply-to reply-count on-jump-parent on-reply audience run-id
            mention-handles on-open-thread]}]
   (el/div {:key id
            :class (vc/class-names "chat-message" "message"
                                   (when is-own? "chat-message--own"))
            :data-author author-id
+           :data-run-id (some-> run-id str)
            :data-message-id id}
     ;; Always render avatar (CSS hides for own messages)
     (el/div {:class (vc/class-names "chat-avatar" "message-avatar"
@@ -447,6 +448,11 @@
         ;; Always render time container
         (el/span {:class "chat-message-time message-time"}
           (or timestamp ""))
+        (when run-id
+          (el/span {:class "message-run-ref"
+                    :title (str "Agent Run " run-id)}
+            (vc/icon "workflow" {:class "message-run-ref-icon"})
+            "run"))
         (when (pos? (or reply-count 0))
           (el/button {:class "chat-thread-count"
                       :title "Open focused thread"
@@ -692,6 +698,36 @@
 ;; =============================================================================
 ;; Chat Panel
 ;; =============================================================================
+
+(defn run-strip
+  "Compact room-level view of live causal execution scopes. A Run may span
+   many tool calls but contributes one row here; detailed activity remains in
+   the timeline and is correlated by Run id."
+  [{:keys [runs on-cancel]}]
+  (when (seq runs)
+    (el/div {:class "chat-runs"}
+      (el/div {:class "chat-runs-label"}
+        (vc/icon "orbit" {:class "chat-runs-label-icon"})
+        (str (count runs) " active " (if (= 1 (count runs)) "run" "runs")))
+      (for [{:keys [id actor-name status]} runs]
+        (el/div {:key id
+                 :class (vc/class-names "chat-run"
+                                        (str "chat-run--" (name status)))
+                 :data-run-id id}
+          (el/span {:class "chat-run-pulse"})
+          (el/span {:class "chat-run-actor"} (or actor-name "Agent"))
+          (el/span {:class "chat-run-status"}
+            (case status
+              :cancelling "stopping"
+              :running "working"
+              (name status)))
+          (el/button {:class "chat-run-cancel"
+                      :disabled (= :cancelling status)
+                      :title "Stop this Run"
+                      :on-click (fn [event]
+                                  (.stopPropagation event)
+                                  (when on-cancel (on-cancel id)))}
+            (vc/icon "square")))))))
 
 (defn chat-header
   "Render the chat panel header with fork indicator.

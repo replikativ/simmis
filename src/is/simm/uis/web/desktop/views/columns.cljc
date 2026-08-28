@@ -44,6 +44,7 @@
             #?(:cljs [clojure.core.async :refer [go <! put! promise-chan] :include-macros true])
             #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
+            #?(:cljs [is.simm.uis.web.desktop.run-sync :as run-sync])
             #?(:cljs [is.simm.uis.web.desktop.settings-remote :as settings-remote])
             #?(:cljs [is.simm.uis.web.desktop.admin-remote :as admin-remote])
             #?(:cljs [is.simm.uis.web.desktop.block-editor :as block-editor])
@@ -941,6 +942,10 @@
              ;; Per-room reply composer target. This belongs to the Spindel
              ;; execution context so UI forks do not share an ambient atom.
              chat-reply-targets (iv/get-new (track sig/chat-reply-targets))
+             ;; Dvergr Run data stays in a Spindel signal. Tracking the bounded
+             ;; room map here re-renders chat controls without entangling the
+             ;; live server ChatContext with UI execution forks.
+             room-runs (iv/get-new (track sig/room-runs))
              ;; Track the commit graph so the History subway (a plain fn in
              ;; the context footer) re-renders when a graph loads. Value
              ;; unused here — the subway bare-derefs it.
@@ -990,7 +995,7 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets)
+                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1188,7 +1193,7 @@
   "Render content for a tab based on its type.
 
    kb-states arg removed — wiki tabs self-track their KB signal."
-  [tab-type data local-db chat-windows settings-data admin-data room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets]]
+  [tab-type data local-db chat-windows settings-data admin-data room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs]]
   (case tab-type
     :home
     ;; Newcomer landing: the obvious first action is talking to your
@@ -1245,7 +1250,7 @@
     (render-tab-content :chat (assoc data :thread-view? true)
                         local-db chat-windows settings-data admin-data room-states
                         syntax-pref gref video-info screen-sharing screens-results
-                        recordings-results web-captures-results chat-reply-targets)
+                        recordings-results web-captures-results chat-reply-targets room-runs)
 
     :chat
     #?(:cljs
@@ -1260,6 +1265,11 @@
              chat-context-key (if thread-view?
                                 [room-uuid thread-root-id]
                                 room-uuid)
+             active-runs (get-in room-runs [(str room-id) :active] [])
+
+             ;; Idempotent transport setup. Subscription bookkeeping is
+             ;; process-local; every value rendered below lives in sig/room-runs.
+             _ (run-sync/ensure-room! room-id)
 
              ;; Trigger room DB connection if we have a db-scope (fire-and-forget)
              _ (when (and room-db-scope
@@ -1626,6 +1636,10 @@
                    thread-root (:block/content thread-root)
                    :else "The root message is not available in this replica yet."))))
 
+           (chat/run-strip
+            {:runs active-runs
+             :on-cancel #(run-sync/cancel! room-id %)})
+
            ;; Messages container — native CSS scroll (overflow-y: auto)
            ;; (Old exploration-diff-summary / fork-controls bars removed
            ;;  alongside the prior fork-tree scaffolding. The chat/*
@@ -1703,6 +1717,7 @@
                        :attachment-blob (:S.Message/attachment-blob item)
                        :attachment-mime (:S.Message/attachment-mime item)
                        :in-reply-to (:message/in-reply-to item)
+                       :run-id (:message/run-id item)
                        :thread-parent (:thread/parent item)
                        :reply-count (:thread/reply-count item)
                        :on-open-thread

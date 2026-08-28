@@ -431,6 +431,8 @@
      "put-drive-file!"         {:action W :resource (room :room-id-str)}
      "dispatch-message!"       {:action W :resource (room :room-id-str)}
      "ensure-room!"            {:action W :resource (room :room-id-str)}
+     "load-room-runs!"         {:action R :resource (room :room-id-str)}
+     "cancel-room-run!"        {:action W :resource (room :room-id-str)}
      "update-room-budget!"     {:action W :resource (room :room-id-str)}
      "load-room-details!"      {:action R :resource (room :room-id-str)}
      ;; meeting token: joining the room's call = reading the room

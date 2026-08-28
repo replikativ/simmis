@@ -111,6 +111,15 @@
     (is (= (str scope) (resource {:db-scope-str (str scope)})))
     (is (nil? (resource {})) "a missing scope must fail closed in can?")))
 
+(deftest run-controls-are-scoped-to-the-containing-room
+  (let [room-id (random-uuid)]
+    (doseq [[fn-name action] [["load-room-runs!" :read]
+                              ["cancel-room-run!" :write]]]
+      (let [policy (get access/rpc-policy fn-name)]
+        (is (= action (:action policy)))
+        (is (= {:room (str room-id)}
+               ((:resource policy) {:room-id-str (str room-id)})))))))
+
 (deftest the-irreversible-verbs-are-where-we-put-them
   ;; Guards against a future edit quietly downgrading these. Landing a branch on
   ;; trunk and deleting a database are the two operations no amount of room

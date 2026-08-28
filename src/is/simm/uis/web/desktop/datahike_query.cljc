@@ -379,7 +379,7 @@
    canonical render path this exception can disappear with S.Message itself."
   [canonical legacy users]
   (let [{:keys [id content sent-at from source-user reasoning metadata
-                to in-reply-to thread-root-id]} canonical
+                to in-reply-to thread-root-id run-id]} canonical
         metadata (or metadata {})
         author-uuid (or (actor->party-uuid from)
                         (try-parse-uuid source-user)
@@ -411,6 +411,7 @@
       to (assoc :message/to to)
       in-reply-to (assoc :message/in-reply-to in-reply-to)
       thread-root-id (assoc :message/thread-root-id thread-root-id)
+      run-id (assoc :message/run-id run-id)
       (seq metadata) (assoc :message/metadata metadata)
       (seq (:audience metadata)) (assoc :message/audience (:audience metadata))
       (seq (:mentions metadata)) (assoc :message/mention-handles (:mentions metadata)))))
@@ -441,6 +442,8 @@
                      (:message/provenance-source m)
                      (assoc :source (:message/provenance-source m)))
         metadata (cond-> {:role (:message/role m)}
+                   (:message/run-id m)
+                   (assoc :run-id (:message/run-id m))
                    (:message/source-user m)
                    (assoc :source-user (:message/source-user m))
                    (:message/source-username m)
@@ -480,6 +483,7 @@
      :to (:message/to m)
      :in-reply-to (:message/in-reply-to m)
      :thread-root-id (:message/thread-root-id m)
+     :run-id (:message/run-id m)
      :metadata metadata
      :reasoning (:message/reasoning m)
      :source-user (:message/source-user m)}))
@@ -581,6 +585,7 @@
                                    :message/created-at :message/role
                                    :message/from :message/to
                                    :message/in-reply-to :message/thread-root-id
+                                   :message/run-id
                                    :message/reasoning
                                    :message/source-user :message/source-username
                                    :message/source-user-id

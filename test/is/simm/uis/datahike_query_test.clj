@@ -80,6 +80,7 @@
 (deftest typed-message-entity-roundtrip
   (let [message-id (random-uuid)
         parent-id (random-uuid)
+        run-id (random-uuid)
         store-ref (random-uuid)
         sent-at (java.util.Date.)
         entity {:message/id message-id
@@ -90,6 +91,7 @@
                 :message/to :party/founder
                 :message/in-reply-to parent-id
                 :message/thread-root-id parent-id
+                :message/run-id run-id
                 :message/reasoning "sampled three scenarios"
                 :message/source-user "agent-7"
                 :message/source-username "Forecaster"
@@ -120,9 +122,11 @@
             :to :party/founder
             :in-reply-to parent-id
             :thread-root-id parent-id
+            :run-id run-id
             :reasoning "sampled three scenarios"
             :source-user "agent-7"
             :metadata {:role :assistant
+                       :run-id run-id
                        :source-user "agent-7"
                        :source-username "Forecaster"
                        :source-user-id "provider-7"

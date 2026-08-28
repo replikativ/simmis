@@ -13,6 +13,8 @@
             #?(:clj [is.simm.agents.templates :as templates])
             #?(:clj [dvergr.chat.context :as chat-ctx])
             #?(:clj [dvergr.chat.accounting :as acct])
+            #?(:clj [dvergr.agent.run :as agent-run])
+            #?(:clj [is.simm.model.run-broadcast :as run-broadcast])
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.model.message-notify-broadcast :as mnb])
             #?(:clj [is.simm.model.user-rooms-broadcast :as urb])
@@ -302,6 +304,38 @@
              (ensure-party-projection! room-conn author-uuid))
            {:status :ok :room-type (:room/type room-info)})
          :cljs nil))))
+
+;; =============================================================================
+;; Agent Runs
+;; =============================================================================
+
+(defn-spin-remote load-room-runs!
+  [server-id room-id-str]
+  (spin-remote server-id [room-id-str]
+    #?(:clj
+       (let [room-id (java.util.UUID/fromString room-id-str)]
+         ;; The topic must exist before the browser subscribes. This is also the
+         ;; lazy registration path for rooms created after server startup.
+         (run-broadcast/ensure-topic-registered! room-id)
+         (run-broadcast/room-snapshot room-id))
+       :cljs nil)))
+
+(defn-spin-remote cancel-room-run!
+  [server-id room-id-str run-id-str]
+  (spin-remote server-id [room-id-str run-id-str]
+    #?(:clj
+       (let [room-id (java.util.UUID/fromString room-id-str)
+             run-id (java.util.UUID/fromString run-id-str)
+             room (room-agents/live-room room-id)
+             owns-run? (some #(= run-id (:run/id %))
+                             (when room (agent-run/active-runs (:id room))))]
+         ;; Authorization establishes room membership; this second check binds
+         ;; the opaque Run UUID to that exact room before targeted cancellation.
+         (if owns-run?
+           {:status (if (agent-run/cancel-run! run-id) :cancelling :not-active)
+            :run-id run-id-str}
+           {:status :not-active :run-id run-id-str}))
+       :cljs nil)))
 
 ;; =============================================================================
 ;; Schedules (agenda view — slice 1 of the calendar)
