@@ -2,6 +2,71 @@
   (:require [clojure.test :refer [deftest is testing]]
             [is.simm.uis.web.desktop.datahike-query :as query]))
 
+(deftest typed-message-entity-roundtrip
+  (let [message-id (random-uuid)
+        parent-id (random-uuid)
+        store-ref (random-uuid)
+        sent-at (java.util.Date.)
+        entity {:message/id message-id
+                :message/content "Forecast ready"
+                :message/created-at sent-at
+                :message/role :assistant
+                :message/from :agent/forecaster
+                :message/to :party/founder
+                :message/in-reply-to parent-id
+                :message/reasoning "sampled three scenarios"
+                :message/source-user "agent-7"
+                :message/source-username "Forecaster"
+                :message/source-user-id "provider-7"
+                :message/audience [:party/founder :agent/reviewer]
+                :message/mention-handles ["founder" "reviewer"]
+                :message/metadata-kind :forecast
+                :message/context-from :room/planning
+                :message/source :agent
+                :message/schedule-id "daily-forecast"
+                :message/attachment-store-ref store-ref
+                :message/attachment-node-id "konserve-node"
+                :message/attachment-mime "application/edn"
+                :message/attachment-name "forecast.edn"
+                :message/attachment-size 2048
+                :message/provenance-mode :simulation
+                :message/provenance-source :raster
+                :message/notification-type :agent/completed
+                :message/notification-agent :agent/forecaster
+                :message/notification-task "forecast"
+                :message/notification-elapsed 1250}
+        result (query/canonical-message-entity->message entity)]
+    (is (= {:id message-id
+            :content "Forecast ready"
+            :sent-at sent-at
+            :role :assistant
+            :from :agent/forecaster
+            :to :party/founder
+            :in-reply-to parent-id
+            :reasoning "sampled three scenarios"
+            :source-user "agent-7"
+            :metadata {:role :assistant
+                       :source-user "agent-7"
+                       :source-username "Forecaster"
+                       :source-user-id "provider-7"
+                       :audience #{:party/founder :agent/reviewer}
+                       :mentions #{"founder" "reviewer"}
+                       :kind :forecast
+                       :from :room/planning
+                       :source :agent
+                       :schedule-id "daily-forecast"
+                       :attachment {:blob-id store-ref
+                                    :node-id "konserve-node"
+                                    :mime "application/edn"
+                                    :name "forecast.edn"
+                                    :size 2048}
+                       :provenance {:mode :simulation :source :raster}
+                       :notification/type :agent/completed
+                       :notification/agent :agent/forecaster
+                       :notification/task "forecast"
+                       :notification/elapsed 1250}}
+           result))))
+
 (deftest canonical-message-projection
   (let [party-id (random-uuid)
         message-id (random-uuid)
@@ -16,8 +81,11 @@
                    :in-reply-to parent-id
                    :source-user (str party-id)
                    :reasoning "checked the evidence"
-                   :metadata (pr-str {:attachment {:blob-id blob-id
-                                                   :mime "audio/ogg"}})}
+                   :metadata {:audience #{:agent/reviewer}
+                              :mentions #{"reviewer"}
+                              :attachment {:blob-id blob-id
+                                           :mime "audio/ogg"}
+                              :provenance {:mode :live :source :screen}}}
         legacy {:entity/uuid message-id
                 :block/content "[[dh://pricing/page]]"
                 :S.Message/author-uuid (random-uuid)
@@ -38,6 +106,10 @@
       (is (= "checked the evidence" (:S.Message/reasoning result)))
       (is (= (str blob-id) (:S.Message/attachment-blob result)))
       (is (= "audio/ogg" (:S.Message/attachment-mime result)))
+      (is (= #{:agent/reviewer} (:message/audience result)))
+      (is (= #{"reviewer"} (:message/mention-handles result)))
+      (is (= {:mode :live :source :screen}
+             (get-in result [:message/metadata :provenance])))
       (is (true? (:S.Message/is-ai result))))))
 
 (deftest historical-source-user-fallback

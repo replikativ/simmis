@@ -20,8 +20,6 @@
    4. Returns new interval with query-level deltas"
   (:require [org.replikativ.spindel.incremental.interval :as iv]
             [clojure.set :as set]
-            #?(:clj [clojure.edn :as reader]
-               :cljs [cljs.reader :as reader])
             [is.simm.model.morphism :as mor]
             #?(:cljs [is.simm.uis.web.desktop.db-signal :as db-signal])
             #?(:cljs [datahike.api :as d])))
@@ -369,14 +367,6 @@
              (or (= "party" (namespace actor)) (nil? (namespace actor))))
     (try-parse-uuid (name actor))))
 
-(defn- read-message-metadata [metadata]
-  (cond
-    (map? metadata) metadata
-    (string? metadata) (try
-                         (reader/read-string metadata)
-                         (catch #?(:clj Throwable :cljs :default) _ {}))
-    :else {}))
-
 (defn merge-message-projections
   "Project one canonical dvergr message into the temporary S.Message-shaped UI
    contract. `legacy` is optional enrichment written by the old projector;
@@ -389,7 +379,7 @@
   [canonical legacy users]
   (let [{:keys [id content sent-at from source-user reasoning metadata
                 to in-reply-to]} canonical
-        metadata (read-message-metadata metadata)
+        metadata (or metadata {})
         author-uuid (or (actor->party-uuid from)
                         (try-parse-uuid source-user)
                         (:S.Message/author-uuid legacy))
@@ -418,7 +408,78 @@
                              :S.Message/attachment-mime
                              (or attachment-mime "application/octet-stream"))
       to (assoc :message/to to)
-      in-reply-to (assoc :message/in-reply-to in-reply-to))))
+      in-reply-to (assoc :message/in-reply-to in-reply-to)
+      (seq metadata) (assoc :message/metadata metadata)
+      (seq (:audience metadata)) (assoc :message/audience (:audience metadata))
+      (seq (:mentions metadata)) (assoc :message/mention-handles (:mentions metadata)))))
+
+(defn canonical-message-entity->message
+  "Rebuild dvergr's runtime message envelope from a typed Datahike pull.
+
+   Keeping this conversion independent of Datahike makes the storage boundary
+   explicit and testable on both the JVM and the browser."
+  [m]
+  (let [attachment (cond-> {}
+                     (or (:message/attachment-store-ref m)
+                         (:message/attachment-blob-id m))
+                     (assoc :blob-id
+                            (or (:message/attachment-store-ref m)
+                                (:message/attachment-blob-id m)))
+                     (:message/attachment-node-id m)
+                     (assoc :node-id (:message/attachment-node-id m))
+                     (:message/attachment-mime m)
+                     (assoc :mime (:message/attachment-mime m))
+                     (:message/attachment-name m)
+                     (assoc :name (:message/attachment-name m))
+                     (:message/attachment-size m)
+                     (assoc :size (:message/attachment-size m)))
+        provenance (cond-> {}
+                     (:message/provenance-mode m)
+                     (assoc :mode (:message/provenance-mode m))
+                     (:message/provenance-source m)
+                     (assoc :source (:message/provenance-source m)))
+        metadata (cond-> {:role (:message/role m)}
+                   (:message/source-user m)
+                   (assoc :source-user (:message/source-user m))
+                   (:message/source-username m)
+                   (assoc :source-username (:message/source-username m))
+                   (:message/source-user-id m)
+                   (assoc :source-user-id (:message/source-user-id m))
+                   (seq (:message/audience m))
+                   (assoc :audience (set (:message/audience m)))
+                   (seq (:message/mention-handles m))
+                   (assoc :mentions (set (:message/mention-handles m)))
+                   (:message/metadata-kind m)
+                   (assoc :kind (:message/metadata-kind m))
+                   (:message/context-from m)
+                   (assoc :from (:message/context-from m))
+                   (:message/source m)
+                   (assoc :source (:message/source m))
+                   (:message/schedule-id m)
+                   (assoc :schedule-id (:message/schedule-id m))
+                   (seq attachment)
+                   (assoc :attachment attachment)
+                   (seq provenance)
+                   (assoc :provenance provenance)
+                   (:message/notification-type m)
+                   (assoc :notification/type (:message/notification-type m))
+                   (:message/notification-agent m)
+                   (assoc :notification/agent (:message/notification-agent m))
+                   (:message/notification-task m)
+                   (assoc :notification/task (:message/notification-task m))
+                   (:message/notification-elapsed m)
+                   (assoc :notification/elapsed
+                          (:message/notification-elapsed m)))]
+    {:id (:message/id m)
+     :content (:message/content m)
+     :sent-at (:message/created-at m)
+     :role (:message/role m)
+     :from (:message/from m)
+     :to (:message/to m)
+     :in-reply-to (:message/in-reply-to m)
+     :metadata metadata
+     :reasoning (:message/reasoning m)
+     :source-user (:message/source-user m)}))
 
 #?(:cljs
    (defn- room-message-users [db]
@@ -490,51 +551,40 @@
 
 #?(:cljs
    (defn- canonical-room-messages [db]
-     (let [froms (into {} (d/q '[:find ?id ?from
-                                  :where [?m :message/id ?id] [?m :message/from ?from]] db))
-           tos (into {} (d/q '[:find ?id ?to
-                               :where [?m :message/id ?id] [?m :message/to ?to]] db))
-           replies (into {} (d/q '[:find ?id ?parent
-                                   :where
-                                   [?m :message/id ?id]
-                                   [?m :message/in-reply-to ?parent]] db))
-           metadata (into {} (d/q '[:find ?id ?metadata
-                                    :where
-                                    [?m :message/id ?id]
-                                    [?m :message/metadata ?metadata]] db))
-           reasonings (into {} (d/q '[:find ?id ?reasoning
-                                      :where
-                                      [?m :message/id ?id]
-                                      [?m :message/reasoning ?reasoning]] db))
-           source-users (into {} (d/q '[:find ?id ?source
-                                        :where
-                                        [?m :message/id ?id]
-                                        [?m :message/source-user ?source]] db))
-           tool-message-ids (into #{} (d/q '[:find [?id ...]
-                                              :where
-                                              [?m :message/id ?id]
-                                              [?m :message/tool-uses _]] db))]
-       (->> (d/q '[:find ?id ?content ?sent-at ?role
-                    :where
-                    [?m :message/id ?id]
-                    [?m :message/chat _]
-                    [?m :message/content ?content]
-                    [?m :message/created-at ?sent-at]
-                    [?m :message/role ?role]]
-                  db)
-            (remove (comp tool-message-ids first))
-            (map (fn [[id content sent-at role]]
-                   {:id id
-                    :content content
-                    :sent-at sent-at
-                    :role role
-                    :from (froms id)
-                    :to (tos id)
-                    :in-reply-to (replies id)
-                    :metadata (metadata id)
-                    :reasoning (reasonings id)
-                    :source-user (source-users id)}))
-            vec))))
+     ;; One bounded pull rather than one query per optional attribute. This is
+     ;; both cheaper today and the shape the async client can fetch lazily later.
+     (->> (d/q '[:find [(pull ?m [:message/id :message/content
+                                   :message/created-at :message/role
+                                   :message/from :message/to
+                                   :message/in-reply-to :message/reasoning
+                                   :message/source-user :message/source-username
+                                   :message/source-user-id
+                                   :message/audience :message/mention-handles
+                                   :message/metadata-kind :message/context-from
+                                   :message/source :message/schedule-id
+                                   :message/attachment-store-ref
+                                   :message/attachment-blob-id
+                                   :message/attachment-node-id
+                                   :message/attachment-mime
+                                   :message/attachment-name
+                                   :message/attachment-size
+                                   :message/provenance-mode
+                                   :message/provenance-source
+                                   :message/notification-type
+                                   :message/notification-agent
+                                   :message/notification-task
+                                   :message/notification-elapsed
+                                   :message/tool-uses]) ...]
+                  :where
+                  [?m :message/id _]
+                  [?m :message/chat _]
+                  [?m :message/content _]
+                  [?m :message/created-at _]
+                  [?m :message/role _]]
+                db)
+          (remove #(seq (:message/tool-uses %)))
+          (map canonical-message-entity->message)
+          vec)))
 
 #?(:cljs
    (defn- query-room-message-projections [db room-eid]

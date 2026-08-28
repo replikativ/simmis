@@ -59,18 +59,24 @@
         ;; datahike.kabel.* + the secondary-index adapters in the jar. A
         ;; release is pre-compiled → NO compile-java prep (which a git-sha
         ;; needs and which was blocking the uberjar). :local still overlays
-        ;; ../datahike for cross-repo dev. datahike 0.8.1806 includes the
-        ;; async-storage groundwork, current query correctness fixes and the
-        ;; remote-writer fencing work. konserve 0.9.385 is Datahike 0.8.1806's
-        ;; own runtime pin. konserve-sync 0.1.40
+        ;; ../datahike for cross-repo dev. datahike 0.8.1820 includes the
+        ;; async-storage groundwork, current query correctness fixes, secondary
+        ;; index/GC follow-ups and remote-writer fencing. konserve 0.9.385 is
+        ;; Datahike 0.8.1820's own runtime pin. konserve-sync 0.1.40
         ;; + kabel 0.3.108 are the current released client-sync set
         ;; (ordered commit batches, branch head last, no head timestamp-dedup,
         ;; db exposure gated on the drained handshake) — bump them TOGETHER.
         ;; NOTE: booting on current Datahike needs the undeclared-attr
         ;; strictness pass (it raises where 0.8.1729 was lenient — e.g. seed
         ;; entities carrying attrs not yet in the installed schema).
-        org.replikativ/datahike {:mvn/version "0.8.1806"}
+        org.replikativ/datahike {:mvn/version "0.8.1820"}
         org.replikativ/konserve {:mvn/version "0.9.385"}
+        ;; 0.1.40 additionally limits client inventory to keys reachable from
+        ;; the configured walker (konserve-sync#14). Clients no longer scan or
+        ;; advertise unrelated historical objects merely because they share
+        ;; the backing store. This is a local inventory-selection fix: it does
+        ;; not change the sync wire, commit ordering or handshake semantics, so
+        ;; it is safe to take independently of the co-designed version set.
         org.replikativ/konserve-sync {:mvn/version "0.1.40"}
         ;; 0.3.104 is a lone bump out of the set above ON PURPOSE. It carries
         ;; three things, and only the first is why we took it:
@@ -142,7 +148,7 @@
         org.replikativ/geheimnis {:mvn/version "0.2.36"}
         org.replikativ/hasch {:mvn/version "0.4.102"}
         org.replikativ/incognito {:mvn/version "0.3.69"}
-        org.replikativ/superv.async {:mvn/version "0.3.50"}
+        org.replikativ/superv.async {:mvn/version "0.3.51"}
         ;; 0.3.37, not 0.3.36 — it carries yggdrasil#15, which fixes TWO things
         ;; simmis depends on and 0.3.36 gets wrong:
         ;;   • `merge!` selected datoms by raw entity id, so accepting a
@@ -166,19 +172,19 @@
         ;; the planner is synchronous and pure while cljs content IO is
         ;; partial-cps, so a resolver cannot be awaited inside it; cljs keeps
         ;; file-level granularity, coarser but never wrong. All simmis merging is
-        ;; server-side, so this reaches every path that matters. 0.3.41 reads
-        ;; Datahike graph metadata without opening another writable snapshot;
-        ;; that avoids contending with the live Scriptum secondary-index lock
-        ;; when timelines load.
+        ;; server-side, so this reaches every path that matters.
+        ;; 0.3.41 makes Datahike graph/history reads snapshot-independent
+        ;; (yggdrasil#19): inspection no longer writes a fresh snapshot or
+        ;; mutates branch heads. It also carries persistent-sorted-set 0.5.140.
         org.replikativ/yggdrasil {:mvn/version "0.3.41"}
         ;; DIRECT, though simmis has no direct geschichte code: it arrives
-        ;; transitively via dvergr, which pins 0.1.12, and yggdrasil 0.3.39's
+        ;; transitively via dvergr, which pins 0.1.12, and yggdrasil 0.3.41's
         ;; adapter calls `repo/content-merger` — added in 0.1.14. Nearest-wins
         ;; means this direct entry decides. Without it the adapter fails to
         ;; COMPILE ("No such var: repo/content-merger"), which is at least
         ;; loud; drop it again once dvergr's own pin catches up.
         org.replikativ/geschichte {:mvn/version "0.1.14"}
-        ;; Datahike 0.8.1806's bundled secondary-index adapter uses
+        ;; Datahike's bundled secondary-index adapter uses
         ;; scriptum.core/warm!, introduced before this release.
         org.replikativ/scriptum {:mvn/version "0.1.30"}
         org.replikativ/logging {:mvn/version "0.1.3"}
@@ -233,7 +239,9 @@
         ;; default; costs nothing when unused.
         nrepl/nrepl {:mvn/version "1.3.1"}
 
-        ;; dvergr - agentic programming framework. 0.1.43 follows the Geschichte
+        ;; dvergr - agentic programming framework. 0.1.46 stores structured
+        ;; message metadata as typed datoms and provides durable, room-local
+        ;; agent assignments. 0.1.43 originally followed the Geschichte
         ;; adapter into Yggdrasil (dvergr#46) and takes geschichte 0.1.12 with it
         ;; — pairing 0.1.10 with yggdrasil 0.3.38 would put TWO GeschichteSystem
         ;; record types on the classpath. It also carries the sandbox hardening:
@@ -249,7 +257,7 @@
         ;; room forever); plus GLM tool-channel recovery, embedder-tunable eval
         ;; timeout, and budget exhaustion that ENDS the turn instead of blocking
         ;; the shared drain thread.
-        org.replikativ/dvergr {:mvn/version "0.1.43"}}
+        org.replikativ/dvergr {:mvn/version "0.1.46"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead

@@ -2352,52 +2352,32 @@
 ;; Dispatch
 ;; =============================================================================
 
-(defn- resolve-assignment-api
-  "Resolve an assignment operation when running against a dvergr version that
-   provides it. This keeps Simmis deployable during the short interval before
-   the assignment schema/API release lands."
-  [operation]
-  (ns-resolve 'dvergr.system.db operation))
-
 (defn dvergr-room-assignments
-  "Return durable assignments for `room-slug`, or an empty collection while
-   running against the pre-assignment dvergr release."
+  "Return the room's durable, room-local actor assignments."
   [room-slug]
-  (if-let [room-assignments (resolve-assignment-api 'room-assignments)]
-    (room-assignments room-slug)
-    []))
+  (sdb/room-assignments room-slug))
 
 (defn assign-room-agent!
-  "Persist one room assignment when supported by dvergr. Returns nil on the
-   pre-assignment release so callers can retain the legacy party projection."
+  "Persist one room-local actor assignment."
   [room-slug actor-id assignment]
-  (when-let [assign-room-actor! (resolve-assignment-api 'assign-room-actor!)]
-    (assign-room-actor! room-slug actor-id assignment)))
+  (sdb/assign-room-actor! room-slug actor-id assignment))
 
 (defn unassign-room-agent!
-  "Retract one durable assignment when supported by dvergr."
+  "Retract one durable room-local actor assignment."
   [room-slug actor-id]
-  (when-let [unassign-room-actor! (resolve-assignment-api 'unassign-room-actor!)]
-    (unassign-room-actor! room-slug actor-id)))
+  (sdb/unassign-room-actor! room-slug actor-id))
 
 (defn- ensure-agent-assignment!
   "Lazily materialize the assignment for a pre-assignment Simmis room member.
    Existing dvergr assignments always win. The old `auto-respond?` bit is used
    only once as a migration default."
   [room-slug agent]
-  (let [actor-id (party->actor-kw agent)
-        assignment-for (resolve-assignment-api 'assignment-for)]
-    (or (when assignment-for (assignment-for room-slug actor-id))
+  (let [actor-id (party->actor-kw agent)]
+    (or (sdb/assignment-for room-slug actor-id)
         (assign-room-agent!
          room-slug actor-id
          {:role :specialist
-          :response-policy (if (:party/auto-respond? agent) :always :manual)})
-        ;; Compatibility projection while deployed with pre-assignment dvergr.
-        {:assignment/actor-id actor-id
-         :assignment/role :specialist
-         :assignment/response-policy (if (:party/auto-respond? agent)
-                                       :always
-                                       :manual)})))
+          :response-policy (if (:party/auto-respond? agent) :always :manual)}))))
 
 (defn post-user-message!
   "Post a user message into the room's live dvergr discourse Room. Works
