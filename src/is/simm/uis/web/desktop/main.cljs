@@ -491,7 +491,7 @@
                                   @sig/layout-columns)))
         source-db-scope (when (= (:type active-tab-data) :wiki)
                           (get-in active-tab-data [:data :db-scope]))
-        source-room-id (when (= (:type active-tab-data) :chat)
+        source-room-id (when (#{:chat :chat-thread} (:type active-tab-data))
                          (get-in active-tab-data [:data :room-id]))
         ;; Check for page reference click - wiki uses .page-reference, chat uses .page-ref
         wiki-ref-el (.closest target ".page-reference")

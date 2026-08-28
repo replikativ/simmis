@@ -395,7 +395,7 @@
    - :thread-parent - Bounded direct-parent preview, or nil when not loaded
    - :in-reply-to - Stable direct-parent UUID
    - :reply-count - Known descendant count when this message is a thread root
-   - :on-jump-parent, :on-reply - Optional interaction callbacks
+   - :on-jump-parent, :on-reply, :on-open-thread - Optional interactions
 
    Supports TIER 3 correlation highlighting via data-* attributes:
    - data-author on message container
@@ -406,7 +406,7 @@
   [{:keys [id author-id author-name content reasoning timestamp is-own? is-ai?
            syntax-pref attachment-blob attachment-mime thread-parent
            in-reply-to reply-count on-jump-parent on-reply audience
-           mention-handles]}]
+           mention-handles on-open-thread]}]
   (el/div {:key id
            :class (vc/class-names "chat-message" "message"
                                   (when is-own? "chat-message--own"))
@@ -448,7 +448,12 @@
         (el/span {:class "chat-message-time message-time"}
           (or timestamp ""))
         (when (pos? (or reply-count 0))
-          (el/span {:class "chat-thread-count"}
+          (el/button {:class "chat-thread-count"
+                      :title "Open focused thread"
+                      :on-click (fn [event]
+                                  (.stopPropagation event)
+                                  (when on-open-thread
+                                    (on-open-thread event)))}
             (str reply-count (if (= reply-count 1) " reply" " replies"))))
         (when on-reply
           (el/button {:class "chat-message-reply"

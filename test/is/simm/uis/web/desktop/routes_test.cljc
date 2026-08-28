@@ -10,6 +10,7 @@
 (def ^:private page  "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 (def ^:private room  "c4be3aa1-2089-41ae-b6a2-102cb046ccf6")
 (def ^:private msg   "5751a827-7a6f-385f-82b1-116889c3ff56")
+(def ^:private thread "ee810e37-a7fe-4ec8-ae4a-50af80263fbc")
 (def ^:private prop  "482998ac-818f-4161-ae29-b786a798e1e6")
 
 (deftest every-addressable-kind-has-a-path
@@ -21,6 +22,9 @@
   (testing "a message is an anchor pair"
     (is (= (str "/room/" room "/m/" msg)
            (routes/ref->route {:kind :message :room room :message msg}))))
+  (testing "a thread is a room plus stable root"
+    (is (= (str "/room/" room "/t/" thread)
+           (routes/ref->route {:kind :thread :room room :thread thread}))))
   (testing "files is a view of a room"
     (is (= (str "/room/" room "/files") (routes/ref->route {:kind :files :room room}))))
   (testing "a proposal is a single id"
@@ -32,6 +36,7 @@
   (is (nil? (routes/ref->route {:kind :page :page page})))          ; no scope
   (is (nil? (routes/ref->route {:kind :page :scope scope})))        ; no page
   (is (nil? (routes/ref->route {:kind :message :room room})))       ; no message
+  (is (nil? (routes/ref->route {:kind :thread :room room})))        ; no root
   (is (nil? (routes/ref->route {:kind :proposal})))                 ; no id
   (is (nil? (routes/ref->route {:kind :settings})))                 ; not addressable
   (is (nil? (routes/ref->route {}))))
@@ -40,6 +45,7 @@
   (doseq [r [{:kind :page :scope scope :page page}
              {:kind :room :room room}
              {:kind :message :room room :message msg}
+             {:kind :thread :room room :thread thread}
              {:kind :files :room room}
              {:kind :proposal :id prop}]]
     (testing (str (:kind r) " survives ref->route->ref")
@@ -87,6 +93,10 @@
            (routes/tab->ref {:type :chat :data {:room-id room}})))
     (is (= {:kind :message :room room :message msg}
            (routes/tab->ref {:type :chat :data {:room-id room :anchor-message msg}}))))
+  (testing "a focused thread retains room and root identity"
+    (is (= {:kind :thread :room room :thread thread}
+           (routes/tab->ref {:type :chat-thread
+                             :data {:room-id room :thread-root-id thread}}))))
   (testing "files"
     (is (= {:kind :files :room room}
            (routes/tab->ref {:type :files :data {:room-id room}}))))
@@ -113,6 +123,7 @@
   (doseq [tab [{:type :wiki :data {:page-uuid page :db-scope scope}}
                {:type :chat :data {:room-id room}}
                {:type :chat :data {:room-id room :anchor-message msg}}
+               {:type :chat-thread :data {:room-id room :thread-root-id thread}}
                {:type :files :data {:room-id room}}
                {:type :proposals :data {:proposal-id prop}}]]
     (let [r (routes/tab->ref tab)]

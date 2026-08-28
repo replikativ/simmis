@@ -1641,8 +1641,50 @@ body {
 }
 
 .chat-thread-count {
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--mono-text-tertiary);
   font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.chat-thread-count:hover {
+  color: var(--mono-text-primary);
+  text-decoration: underline;
+}
+
+.chat-thread-context {
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-bottom: 1px solid var(--mono-border-subtle);
+  background: color-mix(in srgb, var(--mono-bg-secondary) 72%, transparent);
+}
+
+.chat-thread-context-label {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  margin-bottom: var(--spacing-xs);
+  color: var(--mono-text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.chat-thread-context-author {
+  color: var(--mono-text-secondary);
+  font-weight: 600;
+}
+
+.chat-thread-context-content {
+  color: var(--mono-text-primary);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.chat-thread-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  margin-left: auto;
 }
 
 .chat-message-reply {
@@ -2573,6 +2615,14 @@ body {
   display: flex;
   flex-direction: column;
   order: 0; /* Appears at bottom with parent's column-reverse */
+}
+
+/* Focused threads pin their root above the scroller. Let a short descendant
+   list fill the viewport so its first reply starts immediately below that
+   context instead of floating at the composer; column-reverse scroll geometry
+   (and therefore the room's stable prepend paging) remains unchanged. */
+.chat-messages--thread .chat-messages-list {
+  min-height: 100%;
 }
 
 /* Keep scroll indicator at visual top despite parent's column-reverse */

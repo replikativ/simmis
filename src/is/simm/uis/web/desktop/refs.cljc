@@ -44,7 +44,7 @@
 
    Pure apart from the roster lookup, so the mapping can be read in one place
    and tested without a DOM."
-  [{:keys [kind id scope page room message title] :as _ref}]
+  [{:keys [kind id scope page room message thread title] :as _ref}]
   #?(:cljs
      (case kind
        :page (when (and page scope)
@@ -60,6 +60,14 @@
                                     :anchor-message (str message)}
                              sc (assoc :db-scope sc))
                      (or title "Chat")]))
+       :thread (when (and room thread)
+                 (let [sc (or (some-> scope str) (room-scope (str room)))]
+                   [:chat-thread
+                    (cond-> {:room-id (str room)
+                             :room-name title
+                             :thread-root-id (str thread)}
+                      sc (assoc :db-scope sc))
+                    (or title "Thread")]))
        :room (when room
                (let [sc (or (some-> scope str) (room-scope (str room)))]
                  [:chat (cond-> {:room-id (str room) :room-name title}

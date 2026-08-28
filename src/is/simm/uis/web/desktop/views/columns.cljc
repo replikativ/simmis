@@ -622,6 +622,7 @@
     :home "home"
     :wiki "file-text"
     :chat "message-square"
+    :chat-thread "messages-square"
     :video "video"
     :screens "images"
     :feed "activity"
@@ -1237,6 +1238,15 @@
        (el/div {:class "content-wiki"}
          (el/p {} "Wiki content (CLJ mode)")))
 
+    :chat-thread
+    ;; A focused thread is a projection of the same Room, not a second chat
+    ;; implementation. Keep every dispatch, optimistic overlay, and renderer
+    ;; path shared; `:thread-view?` only scopes the query and presentation.
+    (render-tab-content :chat (assoc data :thread-view? true)
+                        local-db chat-windows settings-data admin-data room-states
+                        syntax-pref gref video-info screen-sharing screens-results
+                        recordings-results web-captures-results chat-reply-targets)
+
     :chat
     #?(:cljs
        ;; All chats (including Vár AI) use messages from the room's own Datahike DB
@@ -1244,6 +1254,12 @@
              room-name (or (:room-name data) "Chat")
              room-uuid (uuid room-id)
              room-db-scope (:db-scope data)
+             thread-view? (boolean (:thread-view? data))
+             thread-root-id (when-let [root (:thread-root-id data)]
+                              (if (uuid? root) root (uuid (str root))))
+             chat-context-key (if thread-view?
+                                [room-uuid thread-root-id]
+                                room-uuid)
 
              ;; Trigger room DB connection if we have a db-scope (fire-and-forget)
              _ (when (and room-db-scope
@@ -1266,7 +1282,7 @@
              current-user-uuid (when current-user-info
                                  (uuid (:id current-user-info)))
              current-user-name (or (:name current-user-info) "You")
-             reply-target (get chat-reply-targets room-uuid)
+             reply-target (get chat-reply-targets chat-context-key)
 
              ;; GlobalCut for chat filters the timeline by DOMAIN time
              ;; (:sent-at) in the query, NOT d/as-of on the db — as-of
@@ -1299,17 +1315,19 @@
              ;; (per-room + window-aware cache, O(window) diffs, no islice
              ;; — whose with-cache address is global per call-site and made
              ;; two open chat tabs diff against each other's slice).
-             stored-window (get chat-windows room-uuid)
+             stored-window (get chat-windows chat-context-key)
              ;; Anchored open (backlink jump): honored only while there is
              ;; no user scroll state — the :end sentinel open-tab! seeds
              ;; counts as none; a real {:start N} map suppresses the anchor.
              anchor-uuid (when (or (nil? stored-window) (= :end stored-window))
                            (:anchor-message data))
-             {visible-iv :iv total-count :total anchor-idx :anchor-idx}
+             {visible-iv :iv total-count :total anchor-idx :anchor-idx
+              thread-root :thread-root}
              (dq/room-timeline-window-with-deltas
               db-iv room-uuid
               (cond-> (if (map? stored-window) stored-window {})
-                anchor-uuid (assoc :anchor-uuid (uuid anchor-uuid)))
+                anchor-uuid (assoc :anchor-uuid (uuid anchor-uuid))
+                thread-view? (assoc :thread-root-id thread-root-id))
               sig/CHAT_WINDOW_SIZE as-of-t)
              ;; One-shot scroll+highlight once the anchor is in the DOM.
              ;; DOM-flag guarded (no reactive state); rAF for tree linkage.
@@ -1336,7 +1354,7 @@
 
              ;; Callbacks for chat panel
              on-scroll (fn [delta]
-                         (sig/scroll-chat-window! room-uuid delta total-count))
+                         (sig/scroll-chat-window! chat-context-key delta total-count))
              jump-to-message!
              (fn [message-id]
                #?(:cljs
@@ -1344,12 +1362,13 @@
                                (str "[data-message-id=\"" message-id "\"]"))]
                     (do (.scrollIntoView el #js {:block "center"})
                         (.add (.-classList el) "chat-message--anchored"))
-                    ;; Ask the query window for the ancestor when it is outside
-                    ;; the current DOM. The tab remains a room tab; only its
-                    ;; initial anchor changes.
-                    (sig/open-tab! :chat
+                    ;; Ask the relevant projection window for the ancestor when
+                    ;; it is outside the current DOM.
+                    (sig/open-tab! (if thread-view? :chat-thread :chat)
                                    (assoc data :anchor-message (str message-id))
-                                   {:title room-name}))
+                                   {:title (if thread-view?
+                                             (str "Thread · " room-name)
+                                             room-name)}))
                   :clj nil))
              ;; TipTap on-send callback receives HTML content directly.
              ;; ONE send path for every room kind: the server dispatch
@@ -1369,7 +1388,10 @@
                               (let [content (chat-input/html-to-text html-content)
                                     active-reply-target
                                     (binding [rtc/*execution-context* runtime]
-                                      (get @sig/chat-reply-targets room-uuid))]
+                                      (or (get @sig/chat-reply-targets chat-context-key)
+                                          (when thread-view?
+                                            {:id thread-root-id
+                                             :thread-root-id thread-root-id})))]
                                 (when (and content (seq content))
                                   (when-not (and is-ai-room?
                                                  (binding [rtc/*execution-context* runtime] @sig/agent-responding?))
@@ -1451,8 +1473,8 @@
                                          ;; while this send was in flight.
                                          (binding [rtc/*execution-context* runtime]
                                            (when (= parent-id
-                                                    (:id (get @sig/chat-reply-targets room-uuid)))
-                                             (sig/clear-chat-reply-target! room-uuid)))
+                                                    (:id (get @sig/chat-reply-targets chat-context-key)))
+                                             (sig/clear-chat-reply-target! chat-context-key)))
                                          (go (db-sig/refresh-db!)))
                                        (fn [err]
                                          (js/console.error "[chat] Send error:" err)
@@ -1485,7 +1507,32 @@
          (el/div {:class (str "chat-panel" (when time-travel? " chat-read-only"))}
            ;; Header with settings button
            (el/div {:class "chat-header-wrapper"}
-             (chat/chat-header {:chat-name room-name})
+             (chat/chat-header {:chat-name (if thread-view?
+                                             (str "Thread · " room-name)
+                                             room-name)})
+             (when thread-view?
+               (el/div {:class "chat-thread-header-actions"}
+                 (el/button {:class "chat-settings-btn"
+                             :title "Back to room"
+                             :on-click (fn [_]
+                                         (sig/open-tab! :chat
+                                                        (dissoc data
+                                                                :thread-view?
+                                                                :thread-root-id
+                                                                :anchor-message)
+                                                        {:title room-name}))}
+                   (vc/icon "arrow-left" {:class "chat-settings-icon"}))
+                 (el/button {:class "chat-settings-btn"
+                             :title "Open room beside this thread"
+                             :on-click (fn [_]
+                                         (sig/open-tab! :chat
+                                                        (dissoc data
+                                                                :thread-view?
+                                                                :thread-root-id
+                                                                :anchor-message)
+                                                        {:title room-name
+                                                         :new-column? true}))}
+                   (vc/icon "panel-right-open" {:class "chat-settings-icon"}))))
              (el/button {:class (vc/class-names "chat-settings-btn"
                                                 (when (and screen-sharing
                                                            (contains? screen-sharing room-id))
@@ -1566,12 +1613,27 @@
                                         :clj nil))}
                (vc/icon "settings" {:class "chat-settings-icon"})))
 
+           (when thread-view?
+             (el/div {:class "chat-thread-context"
+                      :data-message-id (str thread-root-id)}
+               (el/div {:class "chat-thread-context-label"}
+                 (vc/icon "messages-square")
+                 (el/span {:class "chat-thread-context-author"}
+                   (or (:S.Message/author-name thread-root) "Thread root")))
+               (el/div {:class "chat-thread-context-content"}
+                 (cond
+                   db-loading? "Loading thread context…"
+                   thread-root (:block/content thread-root)
+                   :else "The root message is not available in this replica yet."))))
+
            ;; Messages container — native CSS scroll (overflow-y: auto)
            ;; (Old exploration-diff-summary / fork-controls bars removed
            ;;  alongside the prior fork-tree scaffolding. The chat/*
            ;;  components survive in chat.cljc as the visual idiom for
            ;;  the upcoming active-overlay UI — see Phase 5+.)
-           (el/div {:class "chat-messages"
+           (el/div {:class (vc/class-names "chat-messages"
+                                             (when thread-view?
+                                               "chat-messages--thread"))
                     ;; Scroll-back paging: near the top → extend the window
                     ;; upward; back at the bottom → restore tail-following.
                     ;; COLUMN-REVERSE geometry: scrollTop runs from
@@ -1591,17 +1653,17 @@
                                at-top? (<= top (+ max-up 60))
                                at-bottom? (> top -40)
                                win (binding [rtc/*execution-context* runtime]
-                                     (get @sig/chat-scroll-windows room-uuid))]
+                                     (get @sig/chat-scroll-windows chat-context-key))]
                            (cond
                              (and at-top?
                                   (or (= win :end) (nil? win)
                                       (pos? (:start win 0))))
                              (binding [rtc/*execution-context* runtime]
-                               (sig/grow-chat-window-up! room-uuid total-count 20))
+                               (sig/grow-chat-window-up! chat-context-key total-count 20))
 
                              (and at-bottom? (map? win))
                              (binding [rtc/*execution-context* runtime]
-                               (sig/follow-chat-end! room-uuid)))))
+                               (sig/follow-chat-end! chat-context-key)))))
                        :clj nil)}
             ;; Messages list with ifor-each for incremental rendering
             ;; Using :entity/uuid as key for categorical schema
@@ -1643,11 +1705,24 @@
                        :in-reply-to (:message/in-reply-to item)
                        :thread-parent (:thread/parent item)
                        :reply-count (:thread/reply-count item)
+                       :on-open-thread
+                       (when (and (pos? (or (:thread/reply-count item) 0))
+                                  (:thread/root-id item))
+                         (fn [event]
+                           (let [new-column? (or (.-metaKey event) (.-ctrlKey event))]
+                             (sig/open-tab!
+                              :chat-thread
+                              (-> data
+                                  (dissoc :thread-view? :anchor-message)
+                                  (assoc :thread-root-id (str (:thread/root-id item))))
+                              {:title (str "Thread · " room-name)
+                               :new-tab? (not new-column?)
+                               :new-column? new-column?}))))
                        :on-jump-parent (when-let [parent-id (:message/in-reply-to item)]
                                          (fn [] (jump-to-message! parent-id)))
                        :on-reply (fn []
                                    (sig/set-chat-reply-target!
-                                    room-uuid
+                                    chat-context-key
                                     {:id (:entity/uuid item)
                                      :thread-root-id (:thread/root-id item)
                                      :author-name (:S.Message/author-name item)
@@ -1667,6 +1742,8 @@
                             "Loading messages…"
                             time-travel?
                             "No messages had been sent by this point in time."
+                            thread-view?
+                            "No replies yet. Continue the thread below."
                             :else
                             "No messages yet. Start the conversation!"))))
 
@@ -1687,19 +1764,24 @@
 
            ;; Active reply target is room-local UI state; the outgoing message
            ;; persists only the canonical parent UUID.
-           (when reply-target
+           (when (or reply-target thread-view?)
              (el/div {:class "chat-reply-composer"}
                (vc/icon "reply" {:class "chat-reply-composer-icon"})
                (el/div {:class "chat-reply-composer-copy"}
                  (el/span {:class "chat-reply-composer-label"}
-                   (str "Replying to " (or (:author-name reply-target) "message")))
+                   (if reply-target
+                     (str "Replying to " (or (:author-name reply-target) "message"))
+                     "Replying in thread"))
                  (el/span {:class "chat-reply-composer-preview"}
-                   (str (:content reply-target))))
-               (el/button {:class "chat-reply-composer-close"
-                           :title "Cancel reply"
-                           :on-click (fn [_]
-                                       (sig/clear-chat-reply-target! room-uuid))}
-                 (vc/icon "x"))))
+                   (if reply-target
+                     (str (:content reply-target))
+                     "Replies stay attached to this topic.")))
+               (when reply-target
+                 (el/button {:class "chat-reply-composer-close"
+                             :title "Reply to thread root instead"
+                             :on-click (fn [_]
+                                         (sig/clear-chat-reply-target! chat-context-key))}
+                   (vc/icon "x")))))
 
            ;; TipTap input with autocomplete for @mentions and [[page refs]]
            (el/div {:class "chat-input-container"}
@@ -1707,7 +1789,8 @@
              ;; button; Enter sends, like a terminal prompt).
              (el/span {:class "chat-prompt-marker"} ">")
              (foreign-node
-               {:key (str "chat-editor-" room-id)
+               {:key (str "chat-editor-" room-id
+                          (when thread-view? (str "-thread-" thread-root-id)))
                 :class "chat-tiptap-container"
                 :on-mount (fn [el]
                             (let [editor (chat-input/create-chat-editor

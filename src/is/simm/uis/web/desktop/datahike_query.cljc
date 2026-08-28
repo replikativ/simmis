@@ -862,6 +862,24 @@
               item))
           items)))
 
+(defn select-message-thread
+  "Project one focused thread from already annotated room timeline rows.
+
+   The root is returned separately so clients can pin it as context while
+   independently windowing the descendants. Tool/activity rows are excluded
+   until Dvergr gives them a durable thread/execution correlation; guessing
+   from chronology would attach critical work to the wrong topic."
+  [items root-id]
+  (let [root (some #(when (and (= :message (:timeline/type %))
+                               (= root-id (:entity/uuid %)))
+                      %)
+                   items)
+        replies (->> items
+                     (filterv #(and (= :message (:timeline/type %))
+                                    (= root-id (:thread/root-id %))
+                                    (not= root-id (:entity/uuid %)))))]
+    {:root root :items replies}))
+
 #?(:cljs
    (defn room-timeline-window-with-deltas
      "Windowed room timeline: the window is applied IN the query layer
@@ -876,7 +894,9 @@
       window-spec: {:start N}            — user-scrolled window start
                    :end / nil            — tail view (last default-size)
                    plus optional :anchor-uuid — center start 10 above it
-                   (only honored when no user scroll state, see caller).
+                   (only honored when no user scroll state, see caller)
+                   plus optional :thread-root-id — return that root separately
+                   and window only its message descendants.
       Returns {:iv Interval :total n :anchor-idx i-or-nil}.
 
       The FULL sorted timeline is cached per db-hash (one recompute per
@@ -900,12 +920,18 @@
            cut-ms (when cut-ts (.getTime cut-ts))
            ;; cut on the RAW calls (per-call timestamps), then group — so the
            ;; time cut can land inside a run and truncate it honestly
-           full (-> (if cut-ms
-                      (filterv #(when-let [ts (:timeline/ts %)]
-                                  (<= (.getTime ts) cut-ms))
-                               full-all)
-                      full-all)
-                    annotate-message-threads
+           annotated (-> (if cut-ms
+                           (filterv #(when-let [ts (:timeline/ts %)]
+                                       (<= (.getTime ts) cut-ms))
+                                    full-all)
+                           full-all)
+                         annotate-message-threads)
+           thread-root-id (:thread-root-id window-spec)
+           thread-projection (when thread-root-id
+                               (select-message-thread annotated thread-root-id))
+           full (-> (if thread-root-id
+                      (:items thread-projection)
+                      annotated)
                     group-tool-runs)
            total (count full)
            anchor-uuid (:anchor-uuid window-spec)
@@ -921,7 +947,7 @@
            windowed (if (seq full) (subvec (vec full) start total) [])
            ;; window participates in the diff cache: key by room only,
            ;; but store the window; a window change forces a re-diff.
-           win-key [:room-timeline-win room-uuid]
+           win-key [:room-timeline-win room-uuid thread-root-id]
            win-entry (get-cache-entry win-key)
            unchanged? (and (= (:db-identity win-entry) db-identity)
                            (= (:window win-entry) start)
@@ -936,7 +962,10 @@
                                              :window start
                                              :cut cut-ms})
                   (iv/->Interval old windowed deltas)))]
-       {:iv iv :total total :anchor-idx anchor-idx})))
+       {:iv iv
+        :total total
+        :anchor-idx anchor-idx
+        :thread-root (:root thread-projection)})))
 
 ;; =============================================================================
 ;; Chat Room Queries

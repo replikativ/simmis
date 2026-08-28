@@ -8,11 +8,12 @@
    someone's inbox its shape is permanent — so they get a namespace that can be
    exercised without a DOM, a browser, or a running app.
 
-   THE FIVE ADDRESSABLE SHAPES, and only these:
+   THE SIX ADDRESSABLE SHAPES, and only these:
 
      /page/<db-scope>/<page-uuid>     wiki page
      /room/<room-id>                  chat
      /room/<room-id>/m/<message-id>   chat anchored on a message
+     /room/<room-id>/t/<root-id>      focused message thread
      /room/<room-id>/files            files
      /proposal/<id>                   proposal
 
@@ -42,11 +43,12 @@
 
 (defn ref->route
   "Path for a ref, or nil when the ref is not addressable."
-  [{:keys [kind id scope page room message]}]
+  [{:keys [kind id scope page room message thread]}]
   (case kind
     :page (when (and page scope) (str "/page/" scope "/" page))
     :room (when room (str "/room/" room))
     :message (when (and room message) (str "/room/" room "/m/" message))
+    :thread (when (and room thread) (str "/room/" room "/t/" thread))
     :files (when room (str "/room/" room "/files"))
     :proposal (when id (str "/proposal/" id))
     nil))
@@ -68,8 +70,10 @@
       "room" (case (count segs)
                2 {:kind :room :room (segs 1)}
                3 (when (= "files" (segs 2)) {:kind :files :room (segs 1)})
-               4 (when (= "m" (segs 2))
-                   {:kind :message :room (segs 1) :message (segs 3)})
+               4 (case (segs 2)
+                   "m" {:kind :message :room (segs 1) :message (segs 3)}
+                   "t" {:kind :thread :room (segs 1) :thread (segs 3)}
+                   nil)
                nil)
       "proposal" (when (= 2 (count segs))
                    {:kind :proposal :id (segs 1)})
@@ -88,7 +92,8 @@
    perspectives are all unaddressable, as is the proposals LIST (as opposed to
    one focused proposal). A nil ref means the URL simply does not change."
   [{:keys [type data]}]
-  (let [{:keys [page-uuid db-scope room-id anchor-message proposal-id]} data]
+  (let [{:keys [page-uuid db-scope room-id anchor-message thread-root-id
+                proposal-id]} data]
     (case type
       :wiki (when (and page-uuid db-scope)
               {:kind :page :scope (str db-scope) :page (str page-uuid)})
@@ -98,6 +103,10 @@
               (if anchor-message
                 {:kind :message :room (str room-id) :message (str anchor-message)}
                 {:kind :room :room (str room-id)}))
+      :chat-thread (when (and room-id thread-root-id)
+                     {:kind :thread
+                      :room (str room-id)
+                      :thread (str thread-root-id)})
       :files (when room-id {:kind :files :room (str room-id)})
       :proposals (when proposal-id {:kind :proposal :id (str proposal-id)})
       nil)))

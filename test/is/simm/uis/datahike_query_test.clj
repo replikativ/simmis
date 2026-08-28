@@ -61,6 +61,22 @@
     (testing "non-message timeline rows pass through unchanged"
       (is (= (last rows) tool)))))
 
+(deftest focused-thread-projection
+  (let [root-id (random-uuid)
+        other-id (random-uuid)
+        child-id (random-uuid)
+        rows (query/annotate-message-threads
+              [{:entity/uuid root-id :timeline/type :message}
+               {:entity/uuid child-id :timeline/type :message
+                :message/in-reply-to root-id
+                :message/thread-root-id root-id}
+               {:entity/uuid other-id :timeline/type :message}
+               {:entity/uuid (random-uuid) :timeline/type :eval-entry}])
+        {:keys [root items]} (query/select-message-thread rows root-id)]
+    (is (= root-id (:entity/uuid root)))
+    (is (= [child-id] (mapv :entity/uuid items)))
+    (is (every? #(= :message (:timeline/type %)) items))))
+
 (deftest typed-message-entity-roundtrip
   (let [message-id (random-uuid)
         parent-id (random-uuid)

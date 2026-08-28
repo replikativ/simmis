@@ -49,9 +49,12 @@
                                                       room (if (= room-id "personal-ai-placeholder")
                                                              personal-room
                                                              (get rooms-by-id room-id))]
-                                                  (if (and (= :chat (:type t)) room)
+                                                  (if (and (#{:chat :chat-thread} (:type t)) room)
                                                     (-> t
-                                                        (assoc :title (:room/name room))
+                                                        (assoc :title
+                                                               (if (= :chat-thread (:type t))
+                                                                 (str "Thread · " (:room/name room))
+                                                                 (:room/name room)))
                                                         (assoc-in [:data :room-id] (str (:room/id room)))
                                                         (assoc-in [:data :room-name] (:room/name room))
                                                         (assoc-in [:data :db-scope]

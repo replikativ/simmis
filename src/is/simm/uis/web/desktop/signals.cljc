@@ -282,24 +282,26 @@
 #?(:cljs (def chat-reply-targets
            "Signal holding the active reply target per room UUID.
 
-            Values are bounded UI projections (`:id`, `:thread-root-id`,
+            Keys are room UUIDs for room composers and `[room-uuid root-uuid]`
+            for focused thread composers, so side-by-side projections remain
+            independent. Values are bounded UI projections (`:id`, `:thread-root-id`,
             `:author-name`, `:content`), not message state. The durable
             relationship is written as the outgoing message's canonical parent
             edge; Dvergr validates/materializes its root at the Room boundary."
            (signal runtime {})))
 
 (defn set-chat-reply-target!
-  [room-uuid target]
+  [context-key target]
   #?(:cljs
      (binding [rtc/*execution-context* runtime]
-       (swap! chat-reply-targets assoc room-uuid target))
+       (swap! chat-reply-targets assoc context-key target))
      :clj nil))
 
 (defn clear-chat-reply-target!
-  [room-uuid]
+  [context-key]
   #?(:cljs
      (binding [rtc/*execution-context* runtime]
-       (swap! chat-reply-targets dissoc room-uuid))
+       (swap! chat-reply-targets dissoc context-key))
      :clj nil))
 
 ;; =============================================================================
@@ -585,7 +587,7 @@
             [{:id       string     ;; Unique column ID
               :width    number     ;; Width as fraction (0-1)
               :tabs     [{:id      string    ;; Unique tab ID
-                          :type    keyword   ;; :home, :wiki, :chat, :video
+                          :type    keyword   ;; :home, :wiki, :chat, :chat-thread, :video
                           :title   string    ;; Display title
                           :data    map}]     ;; Type-specific data (page-uuid, room-id, etc.)
               :active-tab string}] ;; ID of active tab in this column
@@ -749,7 +751,7 @@
   "Open content in a tab.
 
    Args:
-   - tab-type: :home, :wiki, :chat, :video
+   - tab-type: :home, :wiki, :chat, :chat-thread, :video
    - tab-data: {:page-uuid uuid} for wiki, {:room-id string} for chat, etc.
    - opts:
      - :col-id - Target column ID (default: active column)
@@ -761,10 +763,14 @@
      (binding [rtc/*execution-context* runtime]
        ;; For chat tabs, initialize window to :end sentinel
        ;; This tells the render to start at the end of messages
-       (when (= tab-type :chat)
+       (when (#{:chat :chat-thread} tab-type)
          (when-let [room-id (:room-id tab-data)]
-           (let [room-uuid (uuid room-id)]
-             (swap! chat-scroll-windows assoc room-uuid :end))))
+           (let [room-uuid (uuid room-id)
+                 root-id (:thread-root-id tab-data)
+                 context-key (if root-id
+                               [room-uuid (uuid (str root-id))]
+                               room-uuid)]
+             (swap! chat-scroll-windows assoc context-key :end))))
 
        (cond
          ;; Create new column with this tab
