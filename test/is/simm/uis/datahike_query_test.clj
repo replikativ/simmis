@@ -2,6 +2,65 @@
   (:require [clojure.test :refer [deftest is testing]]
             [is.simm.uis.web.desktop.datahike-query :as query]))
 
+(deftest canonical-message-thread-projection
+  (let [root-id (random-uuid)
+        reply-id (random-uuid)
+        nested-id (random-uuid)
+        partial-id (random-uuid)
+        missing-id (random-uuid)
+        external-parent-id (random-uuid)
+        rows [{:entity/uuid root-id
+               :timeline/type :message
+               :S.Message/author-name "Founder"
+               :block/content "Choose the launch market"}
+              {:entity/uuid reply-id
+               :timeline/type :message
+               :message/in-reply-to root-id
+               :S.Message/author-name "Researcher"
+               :block/content "I compared three regions."}
+              {:entity/uuid nested-id
+               :timeline/type :message
+               :message/in-reply-to reply-id
+               :S.Message/author-name "Reviewer"
+               :block/content "The evidence favours Vancouver."}
+              {:entity/uuid partial-id
+               :timeline/type :message
+               :message/in-reply-to external-parent-id
+               :message/thread-root-id root-id
+               :S.Message/author-name "Remote researcher"
+               :block/content "The middle of this thread is not loaded."}
+              {:entity/uuid missing-id
+               :timeline/type :message
+               :message/in-reply-to external-parent-id
+               :S.Message/author-name "Imported agent"
+               :block/content "Parent is outside this bounded result."}
+              {:entity/uuid (random-uuid)
+               :timeline/type :eval-entry}]
+        [root reply nested partial missing tool] (query/annotate-message-threads rows)]
+    (testing "known reply chains resolve to one root without reordering"
+      (is (= (mapv :entity/uuid rows)
+             (mapv :entity/uuid [root reply nested partial missing tool])))
+      (is (= root-id (:thread/root-id root)))
+      (is (= 3 (:thread/reply-count root)))
+      (is (= 1 (:thread/depth reply)))
+      (is (= 2 (:thread/depth nested)))
+      (is (= {:id root-id
+              :author-name "Founder"
+              :content "Choose the launch market"}
+             (:thread/parent reply))))
+    (testing "a persisted root survives an unloaded intermediate parent"
+      (is (= root-id (:thread/root-id partial)))
+      (is (true? (:thread/root-known? partial)))
+      (is (= 1 (:thread/depth partial))))
+    (testing "an unloaded parent remains an explicit incomplete relationship"
+      (is (= external-parent-id (:thread/root-id missing)))
+      (is (false? (:thread/root-known? missing)))
+      (is (= 1 (:thread/depth missing)))
+      (is (contains? missing :thread/parent))
+      (is (nil? (:thread/parent missing))))
+    (testing "non-message timeline rows pass through unchanged"
+      (is (= (last rows) tool)))))
+
 (deftest typed-message-entity-roundtrip
   (let [message-id (random-uuid)
         parent-id (random-uuid)
@@ -14,6 +73,7 @@
                 :message/from :agent/forecaster
                 :message/to :party/founder
                 :message/in-reply-to parent-id
+                :message/thread-root-id parent-id
                 :message/reasoning "sampled three scenarios"
                 :message/source-user "agent-7"
                 :message/source-username "Forecaster"
@@ -43,6 +103,7 @@
             :from :agent/forecaster
             :to :party/founder
             :in-reply-to parent-id
+            :thread-root-id parent-id
             :reasoning "sampled three scenarios"
             :source-user "agent-7"
             :metadata {:role :assistant

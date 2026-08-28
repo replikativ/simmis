@@ -1603,6 +1603,68 @@ body {
   margin-bottom: 2px;
 }
 
+.chat-thread-parent {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  max-width: 100%;
+  margin: 0 0 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mono-text-tertiary);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-thread-parent:hover {
+  color: var(--mono-text-secondary);
+}
+
+.chat-thread-parent-icon,
+.chat-reply-composer-icon {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+
+.chat-thread-parent-author {
+  color: var(--mono-text-secondary);
+  flex: 0 0 auto;
+}
+
+.chat-thread-parent-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-thread-count {
+  color: var(--mono-text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.chat-message-reply {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mono-text-tertiary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: color var(--transition-normal), opacity var(--transition-normal);
+}
+
+.chat-message:hover .chat-message-reply,
+.chat-message-reply:focus-visible {
+  opacity: 1;
+}
+
+.chat-message-reply:hover {
+  color: var(--mono-text-primary);
+}
+
 .chat-message-time,
 .message-time {
   font-size: var(--text-sm);
@@ -2304,6 +2366,56 @@ body {
   display: flex;
   gap: var(--spacing-sm);
   align-items: flex-end;
+}
+
+.chat-reply-composer {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-lg) 0;
+  border-top: 1px solid var(--mono-border-subtle);
+  color: var(--mono-text-tertiary);
+}
+
+.chat-reply-composer + .chat-input-container {
+  border-top: 0;
+}
+
+.chat-reply-composer-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  gap: var(--spacing-sm);
+  font-size: var(--text-sm);
+}
+
+.chat-reply-composer-label {
+  color: var(--mono-text-secondary);
+  flex: 0 0 auto;
+}
+
+.chat-reply-composer-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-reply-composer-close {
+  display: flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mono-text-tertiary);
+  cursor: pointer;
+}
+
+.chat-reply-composer-close svg {
+  width: 14px;
+  height: 14px;
 }
 
 .chat-send-btn {

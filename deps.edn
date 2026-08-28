@@ -239,10 +239,12 @@
         ;; default; costs nothing when unused.
         nrepl/nrepl {:mvn/version "1.3.1"}
 
-        ;; dvergr - agentic programming framework. 0.1.46 stores structured
-        ;; message metadata as typed datoms and provides durable, room-local
-        ;; agent assignments. 0.1.43 originally followed the Geschichte
-        ;; adapter into Yggdrasil (dvergr#46) and takes geschichte 0.1.12 with it
+        ;; dvergr - agentic programming framework. 0.1.49 adds durable Room
+        ;; thread roots, FIFO topic attention and configurable steer/queue/
+        ;; observe policy on top of the typed message metadata and room-local
+        ;; agent assignments introduced in 0.1.46. 0.1.43 originally followed
+        ;; the Geschichte adapter into Yggdrasil (dvergr#46) and takes
+        ;; geschichte 0.1.12 with it
         ;; — pairing 0.1.10 with yggdrasil 0.3.38 would put TWO GeschichteSystem
         ;; record types on the classpath. It also carries the sandbox hardening:
         ;; the sci 0.15.56 interop-escape close (#44), clojure.repl introspecting
@@ -257,7 +259,7 @@
         ;; room forever); plus GLM tool-channel recovery, embedder-tunable eval
         ;; timeout, and budget exhaustion that ENDS the turn instead of blocking
         ;; the shared drain thread.
-        org.replikativ/dvergr {:mvn/version "0.1.46"}}
+        org.replikativ/dvergr {:mvn/version "0.1.49"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead

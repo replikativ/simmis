@@ -392,6 +392,10 @@
    - :timestamp - Message timestamp string (e.g. \"2:34 PM\")
    - :is-own? - Whether this is the current user's message
    - :is-ai? - Whether this is an AI assistant message
+   - :thread-parent - Bounded direct-parent preview, or nil when not loaded
+   - :in-reply-to - Stable direct-parent UUID
+   - :reply-count - Known descendant count when this message is a thread root
+   - :on-jump-parent, :on-reply - Optional interaction callbacks
 
    Supports TIER 3 correlation highlighting via data-* attributes:
    - data-author on message container
@@ -399,7 +403,9 @@
 
    Note: Always renders all elements to avoid spindel delta rendering issues.
    CSS handles visibility based on .chat-message--own class."
-  [{:keys [id author-id author-name content reasoning timestamp is-own? is-ai? syntax-pref attachment-blob attachment-mime]}]
+  [{:keys [id author-id author-name content reasoning timestamp is-own? is-ai?
+           syntax-pref attachment-blob attachment-mime thread-parent
+           in-reply-to reply-count on-jump-parent on-reply]}]
   (el/div {:key id
            :class (vc/class-names "chat-message" "message"
                                   (when is-own? "chat-message--own"))
@@ -416,6 +422,21 @@
              (apply str)
              str/upper-case)))
     (el/div {:class "chat-message-bubble message-body"}
+      ;; A reply remains in chronological room order, but carries enough local
+      ;; context to read the causal conversation without opening another view.
+      ;; Missing parents are explicit: bounded/async clients must not turn an
+      ;; unloaded ancestor into a fake top-level message.
+      (when in-reply-to
+        (el/button {:class "chat-thread-parent"
+                    :title "Go to the message this replies to"
+                    :on-click (fn [event]
+                                (.stopPropagation event)
+                                (when on-jump-parent (on-jump-parent)))}
+          (vc/icon "reply" {:class "chat-thread-parent-icon"})
+          (el/span {:class "chat-thread-parent-author"}
+            (or (:author-name thread-parent) "Earlier message"))
+          (el/span {:class "chat-thread-parent-preview"}
+            (or (:content thread-parent) "Load parent to view context"))))
       ;; Message header with author and time
       (el/div {:class "message-header"}
         ;; Always render author (CSS hides for own messages)
@@ -424,7 +445,17 @@
           author-name)
         ;; Always render time container
         (el/span {:class "chat-message-time message-time"}
-          (or timestamp "")))
+          (or timestamp ""))
+        (when (pos? (or reply-count 0))
+          (el/span {:class "chat-thread-count"}
+            (str reply-count (if (= reply-count 1) " reply" " replies"))))
+        (when on-reply
+          (el/button {:class "chat-message-reply"
+                      :title "Reply in thread"
+                      :on-click (fn [event]
+                                  (.stopPropagation event)
+                                  (on-reply))}
+            "Reply")))
       ;; Collapsed agent reasoning (<think> content), when present.
       ;; Reuses the eval-entry chip idiom so it reads as "process detail" —
       ;; but reasoning is PROSE: it renders as markdown in a reading face,
@@ -663,4 +694,3 @@
 ;; =============================================================================
 ;; Demo/Test Data (matches a-tiered-color.html prototype)
 ;; =============================================================================
-

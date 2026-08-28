@@ -20,6 +20,7 @@
    4. Returns new interval with query-level deltas"
   (:require [org.replikativ.spindel.incremental.interval :as iv]
             [clojure.set :as set]
+            [clojure.string :as str]
             [is.simm.model.morphism :as mor]
             #?(:cljs [is.simm.uis.web.desktop.db-signal :as db-signal])
             #?(:cljs [datahike.api :as d])))
@@ -378,7 +379,7 @@
    canonical render path this exception can disappear with S.Message itself."
   [canonical legacy users]
   (let [{:keys [id content sent-at from source-user reasoning metadata
-                to in-reply-to]} canonical
+                to in-reply-to thread-root-id]} canonical
         metadata (or metadata {})
         author-uuid (or (actor->party-uuid from)
                         (try-parse-uuid source-user)
@@ -409,6 +410,7 @@
                              (or attachment-mime "application/octet-stream"))
       to (assoc :message/to to)
       in-reply-to (assoc :message/in-reply-to in-reply-to)
+      thread-root-id (assoc :message/thread-root-id thread-root-id)
       (seq metadata) (assoc :message/metadata metadata)
       (seq (:audience metadata)) (assoc :message/audience (:audience metadata))
       (seq (:mentions metadata)) (assoc :message/mention-handles (:mentions metadata)))))
@@ -477,6 +479,7 @@
      :from (:message/from m)
      :to (:message/to m)
      :in-reply-to (:message/in-reply-to m)
+     :thread-root-id (:message/thread-root-id m)
      :metadata metadata
      :reasoning (:message/reasoning m)
      :source-user (:message/source-user m)}))
@@ -521,7 +524,24 @@
                                      [?m :S.Message/room ?room]
                                      [?m :S.Message/attachment-mime ?mime]
                                      [?m :entity/uuid ?uuid]]
-                                   db room-eid))]
+                                   db room-eid))
+           ;; Optimistic sends are still S.Message-only until the canonical
+           ;; echo arrives. Preserve their causal edge so a reply does not lose
+           ;; its context during that reconciliation window.
+           replies (into {} (d/q '[:find ?uuid ?parent
+                                    :in $ ?room
+                                    :where
+                                    [?m :S.Message/room ?room]
+                                    [?m :message/in-reply-to ?parent]
+                                    [?m :entity/uuid ?uuid]]
+                                  db room-eid))
+           thread-roots (into {} (d/q '[:find ?uuid ?root
+                                         :in $ ?room
+                                         :where
+                                         [?m :S.Message/room ?room]
+                                         [?m :message/thread-root-id ?root]
+                                         [?m :entity/uuid ?uuid]]
+                                       db room-eid))]
        (->> (d/q '[:find ?uuid ?content ?sent-at ?author-uuid ?author-name
                     :in $ ?room
                     :where
@@ -544,6 +564,10 @@
                             :timeline/ts sent-at}
                      (reasonings uuid)
                      (assoc :S.Message/reasoning (reasonings uuid))
+                     (replies uuid)
+                     (assoc :message/in-reply-to (replies uuid))
+                     (thread-roots uuid)
+                     (assoc :message/thread-root-id (thread-roots uuid))
                      (attachments uuid)
                      (assoc :S.Message/attachment-blob (attachments uuid)
                             :S.Message/attachment-mime (att-mimes uuid)))))
@@ -556,7 +580,8 @@
      (->> (d/q '[:find [(pull ?m [:message/id :message/content
                                    :message/created-at :message/role
                                    :message/from :message/to
-                                   :message/in-reply-to :message/reasoning
+                                   :message/in-reply-to :message/thread-root-id
+                                   :message/reasoning
                                    :message/source-user :message/source-username
                                    :message/source-user-id
                                    :message/audience :message/mention-handles
@@ -748,6 +773,95 @@
                    chunk)))
        vec))
 
+(defn- thread-parent-preview
+  "Small, presentation-ready parent projection. Keeping the preview bounded
+   avoids copying an entire rich message into every descendant's interval row."
+  [message]
+  (when message
+    (let [content (-> (or (:block/content message) "")
+                      str
+                      (str/replace #"\s+" " ")
+                      str/trim)
+          preview (if (> (count content) 96)
+                    (str (subs content 0 95) "…")
+                    content)]
+      {:id (:entity/uuid message)
+       :author-name (:S.Message/author-name message)
+       :content preview})))
+
+(defn annotate-message-threads
+  "Derive thread presentation data from canonical root/parent fields without
+   changing chronological timeline order.
+
+   A persisted `:message/thread-root-id` wins. Parent traversal is the fallback
+   for optimistic/legacy rows and supplies local depth/preview context. If no
+   durable root exists and an ancestor is outside a bounded/async result, its
+   UUID is retained as the provisional root and `:thread/root-known?` is false;
+   absence is therefore never presented as a known top-level message. Cycles
+   are bounded and marked incomplete.
+
+   Added keys on message rows:
+   - `:thread/root-id`, `:thread/depth`, `:thread/root-known?`
+   - `:thread/parent` (bounded direct-parent preview when available)
+   - `:thread/reply-count` (all known descendants, on their known root row)"
+  [items]
+  (let [messages (filterv #(= :message (:timeline/type %)) items)
+        by-id (into {} (map (juxt :entity/uuid identity)) messages)
+        resolve-thread
+        (fn [message]
+          (let [authoritative-root (:message/thread-root-id message)]
+            (loop [current message
+                   depth 0
+                   seen #{(:entity/uuid message)}]
+              (if-let [parent-id (:message/in-reply-to current)]
+                (cond
+                  (contains? seen parent-id)
+                  (let [root-id (or authoritative-root (:entity/uuid message))]
+                    {:root-id root-id
+                     :depth depth
+                     :root-known? (contains? by-id root-id)})
+
+                  (get by-id parent-id)
+                  (recur (get by-id parent-id) (inc depth) (conj seen parent-id))
+
+                  :else
+                  (let [root-id (or authoritative-root parent-id)]
+                    {:root-id root-id
+                     :depth (inc depth)
+                     :root-known? (contains? by-id root-id)}))
+                (let [root-id (or authoritative-root (:entity/uuid current))]
+                  {:root-id root-id
+                   :depth depth
+                   :root-known? (contains? by-id root-id)})))))
+        resolutions (into {}
+                          (map (fn [message]
+                                 [(:entity/uuid message)
+                                  (resolve-thread message)]))
+                          messages)
+        descendant-counts
+        (reduce (fn [counts message]
+                  (let [id (:entity/uuid message)
+                        root-id (:root-id (get resolutions id))]
+                    (if (and root-id (not= id root-id))
+                      (update counts root-id (fnil inc 0))
+                      counts)))
+                {}
+                messages)]
+    (mapv (fn [item]
+            (if (= :message (:timeline/type item))
+              (let [id (:entity/uuid item)
+                    parent-id (:message/in-reply-to item)
+                    {:keys [root-id depth root-known?]} (get resolutions id)]
+                (cond-> (assoc item
+                               :thread/root-id root-id
+                               :thread/depth depth
+                               :thread/root-known? root-known?
+                               :thread/reply-count (get descendant-counts id 0))
+                  parent-id (assoc :thread/parent
+                                   (thread-parent-preview (get by-id parent-id)))))
+              item))
+          items)))
+
 #?(:cljs
    (defn room-timeline-window-with-deltas
      "Windowed room timeline: the window is applied IN the query layer
@@ -786,12 +900,13 @@
            cut-ms (when cut-ts (.getTime cut-ts))
            ;; cut on the RAW calls (per-call timestamps), then group — so the
            ;; time cut can land inside a run and truncate it honestly
-           full (group-tool-runs
-                  (if cut-ms
-                    (filterv #(when-let [ts (:timeline/ts %)]
-                                (<= (.getTime ts) cut-ms))
-                             full-all)
-                    full-all))
+           full (-> (if cut-ms
+                      (filterv #(when-let [ts (:timeline/ts %)]
+                                  (<= (.getTime ts) cut-ms))
+                               full-all)
+                      full-all)
+                    annotate-message-threads
+                    group-tool-runs)
            total (count full)
            anchor-uuid (:anchor-uuid window-spec)
            anchor-idx (when anchor-uuid

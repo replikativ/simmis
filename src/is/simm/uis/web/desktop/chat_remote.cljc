@@ -762,12 +762,13 @@
 ;; =============================================================================
 
 (defn-spin-remote dispatch-message!
-  [server-id room-id-str sender-id-str content msg-uuid-str]
-  (spin-remote server-id [room-id-str sender-id-str content msg-uuid-str]
+  [server-id room-id-str sender-id-str content msg-uuid-str in-reply-to-str]
+  (spin-remote server-id [room-id-str sender-id-str content msg-uuid-str in-reply-to-str]
     (let [rid (identity room-id-str)
           sid (identity sender-id-str)
           msg (identity content)
-          muid (identity msg-uuid-str)]
+          muid (identity msg-uuid-str)
+          parent-id (identity in-reply-to-str)]
       #?(:clj
          (let [;; Authoritative identity: the connection's JWT principal.
                ;; The client-passed sid is only compared for the transitional
@@ -787,7 +788,9 @@
              ;; (and the replies) from the bus; the client renders the send
              ;; optimistically under `muid` and reconciles on the sync echo.
              (room-agents/post-user-message! room-uuid msg sender-id room-conn
-                                             (when muid (java.util.UUID/fromString muid)))))
+                                             (when muid (java.util.UUID/fromString muid))
+                                             (when parent-id
+                                               (java.util.UUID/fromString parent-id)))))
          :cljs nil))))
 
 ;; =============================================================================

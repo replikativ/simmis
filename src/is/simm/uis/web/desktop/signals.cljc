@@ -279,6 +279,29 @@
             Default window shows last 30 messages."
            (signal runtime {})))
 
+#?(:cljs (def chat-reply-targets
+           "Signal holding the active reply target per room UUID.
+
+            Values are bounded UI projections (`:id`, `:thread-root-id`,
+            `:author-name`, `:content`), not message state. The durable
+            relationship is written as the outgoing message's canonical parent
+            edge; Dvergr validates/materializes its root at the Room boundary."
+           (signal runtime {})))
+
+(defn set-chat-reply-target!
+  [room-uuid target]
+  #?(:cljs
+     (binding [rtc/*execution-context* runtime]
+       (swap! chat-reply-targets assoc room-uuid target))
+     :clj nil))
+
+(defn clear-chat-reply-target!
+  [room-uuid]
+  #?(:cljs
+     (binding [rtc/*execution-context* runtime]
+       (swap! chat-reply-targets dissoc room-uuid))
+     :clj nil))
+
 ;; =============================================================================
 ;; KB branching signals
 ;; =============================================================================
@@ -1192,4 +1215,3 @@
      (binding [rtc/*execution-context* runtime]
        (reset! drag-state nil))
      :clj nil))
-

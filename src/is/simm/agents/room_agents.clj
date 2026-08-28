@@ -2393,7 +2393,7 @@
       participant. Rooms without agents retain their adapter-facing target.
 
    Returns {:status :ok :recipients [...]} immediately; replies are async."
-  [room-uuid user-message sender-party-id room-conn & [msg-uuid]]
+  [room-uuid user-message sender-party-id room-conn & [msg-uuid in-reply-to]]
   (ensure-providers!)
   (let [room-parties (rooms/get-room-parties room-uuid)
         all-agents (filterv #(= :agent (:party/type %)) room-parties)
@@ -2430,14 +2430,14 @@
               metadata {:role :user :mentions mentions :audience audience}
               msgs (binding [rtc/*execution-context* (:ctx room)]
                      (->> (if (seq recipients)
-                            (mapv #(d/message from-kw (party->actor-kw %) user-message nil
+                            (mapv #(d/message from-kw (party->actor-kw %) user-message in-reply-to
                                               metadata)
                                   recipients)
                             [(d/message from-kw
                                         (if (seq all-agents)
                                           :_room-log
                                           (d/room-target room))
-                                        user-message nil metadata)])
+                                        user-message in-reply-to metadata)])
                           (mapv #(assoc % :id send-id))))]
           (binding [rtc/*execution-context* (:ctx room)]
             (doseq [m msgs]

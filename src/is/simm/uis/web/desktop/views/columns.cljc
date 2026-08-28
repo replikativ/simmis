@@ -937,6 +937,9 @@
              recordings-results (iv/get-new (track sig/recordings-results))
              ;; The caller's own web captures (owner-scoped) — the :web-captures tab.
              web-captures-results (iv/get-new (track sig/web-captures-results))
+             ;; Per-room reply composer target. This belongs to the Spindel
+             ;; execution context so UI forks do not share an ambient atom.
+             chat-reply-targets (iv/get-new (track sig/chat-reply-targets))
              ;; Track the commit graph so the History subway (a plain fn in
              ;; the context footer) re-renders when a graph loads. Value
              ;; unused here — the subway bare-derefs it.
@@ -986,7 +989,7 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results)
+                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1184,7 +1187,7 @@
   "Render content for a tab based on its type.
 
    kb-states arg removed — wiki tabs self-track their KB signal."
-  [tab-type data local-db chat-windows settings-data admin-data room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results]]
+  [tab-type data local-db chat-windows settings-data admin-data room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets]]
   (case tab-type
     :home
     ;; Newcomer landing: the obvious first action is talking to your
@@ -1263,6 +1266,7 @@
              current-user-uuid (when current-user-info
                                  (uuid (:id current-user-info)))
              current-user-name (or (:name current-user-info) "You")
+             reply-target (get chat-reply-targets room-uuid)
 
              ;; GlobalCut for chat filters the timeline by DOMAIN time
              ;; (:sent-at) in the query, NOT d/as-of on the db — as-of
@@ -1333,6 +1337,20 @@
              ;; Callbacks for chat panel
              on-scroll (fn [delta]
                          (sig/scroll-chat-window! room-uuid delta total-count))
+             jump-to-message!
+             (fn [message-id]
+               #?(:cljs
+                  (if-let [el (js/document.querySelector
+                               (str "[data-message-id=\"" message-id "\"]"))]
+                    (do (.scrollIntoView el #js {:block "center"})
+                        (.add (.-classList el) "chat-message--anchored"))
+                    ;; Ask the query window for the ancestor when it is outside
+                    ;; the current DOM. The tab remains a room tab; only its
+                    ;; initial anchor changes.
+                    (sig/open-tab! :chat
+                                   (assoc data :anchor-message (str message-id))
+                                   {:title room-name}))
+                  :clj nil))
              ;; TipTap on-send callback receives HTML content directly.
              ;; ONE send path for every room kind: the server dispatch
              ;; (dispatch-message!) persists to the content DB, posts into
@@ -1343,7 +1361,15 @@
              ;; discourse room — removed.
              on-send-tiptap (fn [html-content]
                               ;; Convert HTML to plain text for storage
-                              (let [content (chat-input/html-to-text html-content)]
+                              ;; This callback is installed when the foreign
+                              ;; TipTap node MOUNTS and intentionally survives
+                              ;; Spindel re-renders. Resolve the reply target
+                              ;; NOW; closing over the render's `reply-target`
+                              ;; made every later reply send as top-level.
+                              (let [content (chat-input/html-to-text html-content)
+                                    active-reply-target
+                                    (binding [rtc/*execution-context* runtime]
+                                      (get @sig/chat-reply-targets room-uuid))]
                                 (when (and content (seq content))
                                   (when-not (and is-ai-room?
                                                  (binding [rtc/*execution-context* runtime] @sig/agent-responding?))
@@ -1375,19 +1401,26 @@
                                           overlay (and author-uuid
                                                        (get-in room-states
                                                                [(str room-db-scope) :overlay]))
+                                          parent-id (:id active-reply-target)
+                                          thread-root-id (:thread-root-id active-reply-target)
                                           prediction
                                           (when overlay
                                             (try
                                               (let [handle
                                                     (opt/predict!
                                                      overlay
-                                                     [{:entity/uuid msg-uuid
-                                                       :entity/created-at (js/Date.)
-                                                       :instance/of-role [:entity/uuid #uuid "00000000-0000-0000-0000-00000000002b"]
-                                                    :block/content content
-                                                    :S.Message/author [:entity/uuid author-uuid]
-                                                    :S.Message/room [:entity/uuid room-uuid]
-                                                    :S.Message/sent-at (js/Date.)}]
+                                                     [(cond->
+                                                       {:entity/uuid msg-uuid
+                                                        :entity/created-at (js/Date.)
+                                                        :instance/of-role [:entity/uuid #uuid "00000000-0000-0000-0000-00000000002b"]
+                                                        :block/content content
+                                                        :S.Message/author [:entity/uuid author-uuid]
+                                                        :S.Message/room [:entity/uuid room-uuid]
+                                                        :S.Message/sent-at (js/Date.)}
+                                                        parent-id
+                                                        (assoc :message/in-reply-to parent-id)
+                                                        thread-root-id
+                                                        (assoc :message/thread-root-id thread-root-id))]
                                                      (fn [db]
                                                        (some? (d/q '[:find ?e . :in $ ?u
                                                                      :where [?e :entity/uuid ?u]]
@@ -1405,7 +1438,8 @@
                                           (binding [rtc/*execution-context* runtime]
                                             (chat-remote/dispatch-message!
                                               web/server-id room-id user-id-str content
-                                             (str msg-uuid)))]
+                                              (str msg-uuid)
+                                              (some-> parent-id str)))]
                                       (dispatch-spin
                                        (fn [_result]
                                          (when prediction
@@ -1413,6 +1447,12 @@
                                          (when is-ai-room?
                                            (binding [rtc/*execution-context* runtime]
                                              (reset! sig/agent-responding? false)))
+                                         ;; Do not clear a newer target selected
+                                         ;; while this send was in flight.
+                                         (binding [rtc/*execution-context* runtime]
+                                           (when (= parent-id
+                                                    (:id (get @sig/chat-reply-targets room-uuid)))
+                                             (sig/clear-chat-reply-target! room-uuid)))
                                          (go (db-sig/refresh-db!)))
                                        (fn [err]
                                          (js/console.error "[chat] Send error:" err)
@@ -1598,6 +1638,18 @@
                        :is-ai? (:S.Message/is-ai item)
                        :attachment-blob (:S.Message/attachment-blob item)
                        :attachment-mime (:S.Message/attachment-mime item)
+                       :in-reply-to (:message/in-reply-to item)
+                       :thread-parent (:thread/parent item)
+                       :reply-count (:thread/reply-count item)
+                       :on-jump-parent (when-let [parent-id (:message/in-reply-to item)]
+                                         (fn [] (jump-to-message! parent-id)))
+                       :on-reply (fn []
+                                   (sig/set-chat-reply-target!
+                                    room-uuid
+                                    {:id (:entity/uuid item)
+                                     :thread-root-id (:thread/root-id item)
+                                     :author-name (:S.Message/author-name item)
+                                     :content (:block/content item)}))
                        :syntax-pref syntax-pref})))))
 
              ;; Empty state — three distinct states, because they
@@ -1630,6 +1682,22 @@
            (when time-travel?
              (el/div {:class "chat-readonly-note"}
                "🕰 Viewing a past version — read-only"))
+
+           ;; Active reply target is room-local UI state; the outgoing message
+           ;; persists only the canonical parent UUID.
+           (when reply-target
+             (el/div {:class "chat-reply-composer"}
+               (vc/icon "reply" {:class "chat-reply-composer-icon"})
+               (el/div {:class "chat-reply-composer-copy"}
+                 (el/span {:class "chat-reply-composer-label"}
+                   (str "Replying to " (or (:author-name reply-target) "message")))
+                 (el/span {:class "chat-reply-composer-preview"}
+                   (str (:content reply-target))))
+               (el/button {:class "chat-reply-composer-close"
+                           :title "Cancel reply"
+                           :on-click (fn [_]
+                                       (sig/clear-chat-reply-target! room-uuid))}
+                 (vc/icon "x"))))
 
            ;; TipTap input with autocomplete for @mentions and [[page refs]]
            (el/div {:class "chat-input-container"}
