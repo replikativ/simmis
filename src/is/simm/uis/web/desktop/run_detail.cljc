@@ -103,6 +103,66 @@
   [calls]
   (-> calls same-kind-pass mixed-pass vec))
 
+(defn- run-sort-key [run]
+  [(or (:started-at run) (:created-at run) 0) (str (:id run))])
+
+(defn causal-forest
+  "Project a bounded collection of Run summaries into explicit containment.
+
+   Chronology only orders siblings; :parent-id supplies structure. Orphans are
+   retained as roots, and malformed cycles are broken deterministically so no
+   Run disappears from the projection."
+  [runs]
+  (let [ordered (->> runs
+                     (remove (comp nil? :id))
+                     (sort-by run-sort-key #(compare %2 %1))
+                     vec)
+        by-id (into {} (map (juxt (comp str :id) identity)) ordered)
+        ids (set (keys by-id))
+        children-by-parent
+        (->> ordered
+             (keep (fn [run]
+                     (let [id (str (:id run))
+                           parent-id (some-> (:parent-id run) str)]
+                       (when (and parent-id (contains? ids parent-id)
+                                  (not= id parent-id))
+                         [parent-id id]))))
+             (reduce (fn [m [parent-id child-id]]
+                       (update m parent-id (fnil conj []) child-id))
+                     {}))
+        roots (->> ordered
+                   (filter (fn [run]
+                             (let [id (str (:id run))
+                                   parent-id (some-> (:parent-id run) str)]
+                               (or (nil? parent-id)
+                                   (not (contains? ids parent-id))
+                                   (= id parent-id)))))
+                   (mapv (comp str :id)))
+        candidate-ids (concat roots (map (comp str :id) ordered))]
+    (letfn [(walk [id seen path]
+              (if (or (contains? seen id) (contains? path id))
+                [nil seen]
+                (let [run (get by-id id)
+                      [children seen']
+                      (reduce
+                       (fn [[nodes visited] child-id]
+                         (let [[node visited'] (walk child-id visited (conj path id))]
+                           [(cond-> nodes node (conj node)) visited']))
+                       [[] (conj seen id)]
+                       (get children-by-parent id []))]
+                  [{:run run
+                    :children children
+                    :parent-missing? (let [parent-id (some-> (:parent-id run) str)]
+                                       (and parent-id (not (contains? ids parent-id))))}
+                   seen'])))]
+      (first
+       (reduce
+        (fn [[nodes seen] id]
+          (let [[node seen'] (walk id seen #{})]
+            [(cond-> nodes node (conj node)) seen']))
+        [[] #{}]
+        candidate-ids)))))
+
 (do
      (def ^:private run-pull
        '[:run/id :run/kind :run/actor :run/trigger :run/parent :run/status

@@ -37,6 +37,7 @@
             #?(:cljs [is.simm.uis.web.desktop.views.feed :as feed-view])
             #?(:cljs [is.simm.uis.web.desktop.views.history-subway :as subway])
             #?(:cljs [is.simm.uis.web.desktop.views.agent-inspector :as agent-inspector])
+            [is.simm.uis.web.desktop.views.run-history :as run-history]
             [is.simm.uis.web.desktop.views.run-inspector :as run-inspector]
             [is.simm.uis.web.desktop.signals :as sig]
             [clojure.string :as str]
@@ -626,6 +627,7 @@
     :wiki "file-text"
     :chat "message-square"
     :chat-thread "messages-square"
+    :run-history "list-tree"
     :run-inspector "orbit"
     :video "video"
     :screens "images"
@@ -1255,6 +1257,40 @@
                         syntax-pref gref video-info screen-sharing screens-results
                         recordings-results web-captures-results chat-reply-targets room-runs)
 
+    :run-history
+    #?(:cljs
+       (let [room-id (str (:room-id data))
+             room-name (or (:room-name data) "Room")
+             run-state (get room-runs room-id)
+             runs (vec (:recent run-state))
+             _ (run-sync/ensure-room! room-id)
+             open-run!
+             (fn [event run]
+               (let [new-column? (or (.-metaKey event) (.-ctrlKey event))]
+                 (sig/open-tab!
+                  :run-inspector
+                  (assoc data :run-id (:id run) :run run)
+                  {:title (str "Run · "
+                               (or (:actor-name run)
+                                   (let [id (str (:id run))]
+                                     (subs id 0 (min 8 (count id))))))
+                   :new-tab? (not new-column?)
+                   :new-column? new-column?})))]
+         (run-history/view
+          {:room-name room-name
+           :runs runs
+           :on-open-run open-run!
+           :on-refresh #(run-sync/refresh-room! room-id)
+           :on-back-room
+           #(sig/open-tab! :chat
+                           {:room-id room-id
+                            :room-name room-name
+                            :db-scope (:db-scope data)}
+                           {:title room-name})}))
+       :clj
+       (el/div {:class "run-history"}
+         (el/p {} "Run history")))
+
     :run-inspector
     #?(:cljs
        (let [room-id (str (:room-id data))
@@ -1624,6 +1660,22 @@
                                                         {:title room-name
                                                          :new-column? true}))}
                    (vc/icon "panel-right-open" {:class "chat-settings-icon"}))))
+             (el/button {:class (vc/class-names
+                                 "chat-settings-btn" "chat-runs-history-btn"
+                                 (when (seq active-runs)
+                                   "chat-runs-history-btn--active"))
+                         :title (str "Runs (" (count recent-runs) " recent)")
+                         :on-click (fn [_]
+                                     (sig/open-tab!
+                                      :run-history
+                                      {:room-id room-id
+                                       :room-name room-name
+                                       :db-scope room-db-scope}
+                                      {:title (str room-name " Runs")
+                                       :new-tab? true}))}
+               (vc/icon "list-tree" {:class "chat-settings-icon"})
+               (when (seq active-runs)
+                 (el/span {:class "chat-runs-history-dot"})))
              (el/button {:class (vc/class-names "chat-settings-btn"
                                                 (when (and screen-sharing
                                                            (contains? screen-sharing room-id))

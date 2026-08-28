@@ -55,6 +55,31 @@
     (is (= :mixed
            (:variant (first (run-detail/group-tool-activity reads)))))))
 
+(defn- forest-ids [nodes]
+  (mapcat (fn [{:keys [run children]}]
+            (cons (:id run) (forest-ids children)))
+          nodes))
+
+(deftest causal-forest-uses-containment-not-global-chronology
+  (let [runs [{:id "root-a" :started-at 10}
+              {:id "root-b" :started-at 40}
+              {:id "child-a-early" :parent-id "root-a" :started-at 20}
+              {:id "child-a-late" :parent-id "root-a" :started-at 30}]
+        forest (run-detail/causal-forest runs)]
+    (is (= ["root-b" "root-a"] (mapv (comp :id :run) forest)))
+    (is (= ["child-a-late" "child-a-early"]
+           (mapv (comp :id :run) (:children (second forest)))))))
+
+(deftest causal-forest-retains-orphans-and-breaks-cycles
+  (let [runs [{:id "orphan" :parent-id "outside" :started-at 4}
+              {:id "a" :parent-id "b" :started-at 3}
+              {:id "b" :parent-id "a" :started-at 2}
+              {:id "self" :parent-id "self" :started-at 1}]
+        forest (run-detail/causal-forest runs)]
+    (is (= #{"orphan" "a" "b" "self"} (set (forest-ids forest))))
+    (is (:parent-missing? (first forest)))
+    (is (= 4 (count (forest-ids forest))))))
+
 (deftest queries-a-run-as-a-causal-projection
   (let [cfg {:store {:backend :memory :id (random-uuid)}
              :schema-flexibility :write
