@@ -1,5 +1,6 @@
 (ns is.simm.agents.tool-authorization-test
   (:require [clojure.test :refer [deftest is testing]]
+            [dvergr.tools :as dvergr-tools]
             [is.simm.agents.tool-authorization :as auth]
             [is.simm.model.access :as access]))
 
@@ -44,3 +45,25 @@
       (is (= :authorized (:decision (authorize {} {}))))
       (reset! allowed? false)
       (is (= :denied (:decision (authorize {} {})))))))
+
+(deftest released-dvergr-enforces-the-simmis-decision-before-the-effect
+  (let [called (atom 0)
+        party-id (random-uuid)
+        room-id (random-uuid)
+        tools (auth/authorize-room-tools
+               {"write_file" {:name "write_file"
+                              :execute (fn [& _]
+                                         (swap! called inc)
+                                         {:type :success})}}
+               party-id room-id)]
+    (with-redefs [access/can? (constantly false)]
+      (let [result (dvergr-tools/execute "write_file" {} {:tools tools})]
+        (is (zero? @called))
+        (is (= :error (:type result)))
+        (is (= :denied (get-in result [:authorization :decision])))))
+    (with-redefs [access/can? (constantly true)]
+      (let [result (dvergr-tools/execute "write_file" {} {:tools tools})]
+        (is (= 1 @called))
+        (is (= :success (:type result)))
+        (is (= #{:agent-tool-grant :simmis-rebac}
+               (get-in result [:authorization :sources])))))))
