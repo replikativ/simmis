@@ -402,10 +402,11 @@
    - data-user on author name
 
    Note: Always renders all elements to avoid spindel delta rendering issues.
-   CSS handles visibility based on .chat-message--own class."
+  CSS handles visibility based on .chat-message--own class."
   [{:keys [id author-id author-name content reasoning timestamp is-own? is-ai?
            syntax-pref attachment-blob attachment-mime thread-parent
-           in-reply-to reply-count on-jump-parent on-reply]}]
+           in-reply-to reply-count on-jump-parent on-reply audience
+           mention-handles]}]
   (el/div {:key id
            :class (vc/class-names "chat-message" "message"
                                   (when is-own? "chat-message--own"))
@@ -456,6 +457,22 @@
                                   (.stopPropagation event)
                                   (on-reply))}
             "Reply")))
+      ;; The visible @handle is presentation; this chip confirms that dispatch
+      ;; resolved it to canonical actor identities before the message was
+      ;; accepted. Keep the ids in the title for inspection without making the
+      ;; ordinary conversation read like a database trace.
+      (when (seq audience)
+        (let [handles (sort (map str (or mention-handles [])))
+              actor-ids (sort (map str audience))]
+          (el/div {:class "message-audience"
+                   :title (str "Resolved audience: " (str/join ", " actor-ids))}
+            (vc/icon "users" {:class "message-audience-icon"})
+            (el/span {}
+              (str "To "
+                   (if (seq handles)
+                     (str/join ", " (map #(str "@" %) handles))
+                      (str (count actor-ids) " participant"
+                           (when (not= 1 (count actor-ids)) "s"))))))))
       ;; Collapsed agent reasoning (<think> content), when present.
       ;; Reuses the eval-entry chip idiom so it reads as "process detail" —
       ;; but reasoning is PROSE: it renders as markdown in a reading face,

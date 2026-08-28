@@ -1636,6 +1636,8 @@
                                    (when-let [ts (:S.Message/sent-at item)] (js/Date. ts)))
                        :is-own? (= (:S.Message/author-uuid item) current-user-uuid)
                        :is-ai? (:S.Message/is-ai item)
+                       :audience (:message/audience item)
+                       :mention-handles (:message/mention-handles item)
                        :attachment-blob (:S.Message/attachment-blob item)
                        :attachment-mime (:S.Message/attachment-mime item)
                        :in-reply-to (:message/in-reply-to item)
@@ -2234,9 +2236,13 @@
                    :class "context-section-title"} "Participants")
           (let [contact-by-id (into {} (map (juxt :id identity))
                                     (or contacts-list []))
+                assignment-by-actor
+                (into {} (map (juxt :actor-id identity))
+                      (or (:room/assignments sys-room) []))
                 participants (mapv (fn [pid]
-                                     (or (get contact-by-id pid)
-                                         {:id pid :type :human :you? true}))
+                                     (merge (or (get contact-by-id pid)
+                                                {:id pid :type :human :you? true})
+                                            (get assignment-by-actor pid)))
                                    (or (:room/parties sys-room) []))
                 ;; Fallback for rooms whose parties haven't synced yet
                 participants (if (seq participants)
@@ -2245,13 +2251,54 @@
                                      room-agents))]
             (ifor-each :id participants
               (fn [p]
-                (el/div {:key (:id p) :class "context-item"}
+                (el/div {:key (:id p)
+                         :class (vc/class-names
+                                  "context-item"
+                                  (when (= :agent (:type p))
+                                    "context-item--clickable"))
+                         :title (when (= :agent (:type p))
+                                  "Inspect this agent")
+                         :on-click (fn [_]
+                                     #?(:cljs
+                                        (when (= :agent (:type p))
+                                          (sig/open-tab!
+                                           :agent
+                                           {:agent-id (:id p)
+                                            :room-id room-id
+                                            :agent-name (:display-name p)
+                                            :model (:model p)}
+                                           {:title (or (:display-name p) "Agent")
+                                            :new-tab? true}))
+                                        :clj nil))}
                   (if (= :agent (:type p))
                     (el/span {:class "context-item-badge context-item-badge--ai"} "AI")
                     (el/span {:class "online-dot"}))
                   (el/span {} (if (:you? p)
                                 "You"
-                                (or (:display-name p) (:handle p) "Member")))))))
+                                (or (:display-name p) (:handle p) "Member")))
+                  (when (= :agent (:type p))
+                    (el/span {:class "room-team-policy"}
+                      (str (name (or (:role p) :specialist))
+                           " · "
+                           (case (:response-policy p)
+                             :always "always"
+                             :mention "@mention"
+                             :manual "manual"
+                             "legacy"))))))))
+          #?(:cljs
+             (el/button {:key (str key-prefix "-team-settings")
+                         :class "context-team-settings"
+                         :on-click (fn [_]
+                                     (reset! sig/admin-data nil)
+                                     (sig/open-tab!
+                                      :room-settings
+                                      {:room-id room-id}
+                                      {:title (str (or (:room/name sys-room) "Room")
+                                                   " Settings")
+                                       :new-tab? true}))}
+               (vc/icon "sliders")
+               "Manage team")
+             :clj nil)
           ;; Room-level usage stats (reactive from room DB)
           (when (and msg-count (pos? msg-count))
             (el/div {:key (str key-prefix "-usage-stats")

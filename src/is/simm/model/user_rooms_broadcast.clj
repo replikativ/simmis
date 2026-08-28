@@ -22,6 +22,11 @@
 
 (def ^:private listener-key ::user-rooms-broadcaster)
 
+(defonce ^:private peer-ref
+  ;; Dvergr assignment changes do not transact against the Simmis system DB,
+  ;; so callers need a small explicit invalidation path as well.
+  (atom nil))
+
 (defn parties-affected-by-tx
   "Walk tx-data; return a set of party-ids whose `load-rooms!` result may
    have changed. Considers KB ownership/sharing, contacts, and room
@@ -67,6 +72,7 @@
 (defn ensure-topic-registered!
   "Register the user-rooms topic if not already. Idempotent."
   [server-peer]
+  (reset! peer-ref server-peer)
   (when-not (pubsub/topic-registered? server-peer topic)
     (pubsub/register-topic! server-peer topic
                             {:strategy (proto/pub-sub-only-strategy nil)})
@@ -88,6 +94,21 @@
                     (pubsub/publish! server-peer topic {:party-ids pids})))))
     (log/log! {:level :info :id ::listener-installed
                :msg "user-rooms tx listener installed"})))
+
+(defn notify-parties!
+  "Tell connected clients for `party-ids` to reload their room roster.
+
+   This complements the system-DB listener for room-facing state stored in
+   another database, currently Dvergr's room-agent assignments. No-op during
+   boot before the server peer has registered the topic."
+  [party-ids]
+  (when-let [peer @peer-ref]
+    (let [party-ids (set party-ids)]
+      (when (seq party-ids)
+        (pubsub/publish! peer topic {:party-ids party-ids})
+        (log/log! {:level :debug :id ::publishing-explicit
+                   :msg "Publishing explicit user-rooms invalidation"
+                   :data {:party-count (count party-ids)}})))))
 
 (defn uninstall-listener!
   "Remove the listener (server shutdown or restart)."

@@ -15,12 +15,57 @@
             #?(:clj [dvergr.chat.accounting :as acct])
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.model.message-notify-broadcast :as mnb])
+            #?(:clj [is.simm.model.user-rooms-broadcast :as urb])
             #?(:clj [datahike.api :as d])
             [clojure.string :as str]))
 
 ;; =============================================================================
 ;; Rooms + agents + KBs listing (initial load)
 ;; =============================================================================
+
+(defn assignment-summary
+  "The room-roster projection of one durable dvergr assignment.
+
+   Actor ids are globally stable `:party/<uuid>` keywords.  The client already
+   uses UUID strings for party identity, so expose that UUID plus only the two
+   room-local policy fields needed by the everyday room UI.  Non-party actors
+   remain valid dvergr actors, but are not Simmis roster entries and therefore
+   do not get fabricated party identities here."
+  [assignment]
+  (let [actor-id (:assignment/actor-id assignment)]
+    (when (and (keyword? actor-id) (= "party" (namespace actor-id)))
+      {:actor-id (name actor-id)
+       :role (:assignment/role assignment)
+       :response-policy (:assignment/response-policy assignment)})))
+
+(defn agent-assignment-summary
+  "Project an agent's effective room policy without materializing a legacy
+   assignment. A durable assignment wins; `auto-respond?` supplies the same
+   one-time fallback used by dispatch."
+  [agent assignment]
+  {:actor-id (str (:party/id agent))
+   :role (or (:assignment/role assignment) :specialist)
+   :response-policy (or (:assignment/response-policy assignment)
+                        (if (:party/auto-respond? agent) :always :manual))})
+
+#?(:clj
+   (defn- room-assignment-summaries
+     "Roster policies for every agent member, including pre-assignment rooms.
+
+      Dispatch materializes the same fallback on first use.  Loading navigation
+      must remain a read, however, so project the fallback here rather than
+      creating assignments merely because a client opened the application."
+     [room]
+     (let [durable (when-let [slug (:room/slug room)]
+                     (into {} (map (juxt :assignment/actor-id identity))
+                           (room-agents/dvergr-room-assignments slug)))]
+       (->> (:room/parties room)
+            (keep parties/get-party)
+            (filter #(= :agent (:party/type %)))
+            (mapv (fn [agent]
+                    (let [actor-id (room-agents/party->actor-kw agent)
+                          assignment (get durable actor-id)]
+                      (agent-assignment-summary agent assignment))))))))
 
 (defn-spin-remote load-rooms!
   [server-id party-id-str]
@@ -68,6 +113,8 @@
                                   vec)]
                 {:rooms (mapv (fn [r]
                                 (-> r
+                                    (assoc :room/assignments
+                                           (room-assignment-summaries r))
                                     (update :room/created #(when % (str %)))
                                     (update :room/content-db-scope #(when % (str %)))
                                     ;; Stringify the room's attached KB
@@ -676,12 +723,14 @@
              (if-let [assignment (room-agents/assign-room-agent!
                                    slug (room-agents/party->actor-kw agent-uuid)
                                    {:role role :response-policy response-policy})]
-               {:status :ok
-                :assignment (-> assignment
-                                (update :assignment/id str)
-                                (update :assignment/room-id str)
-                                (update :assignment/created-at #(when % (str %)))
-                                (update :assignment/updated-at #(when % (str %))))}
+               (do
+                 (urb/notify-parties! (:room/parties room))
+                 {:status :ok
+                  :assignment (-> assignment
+                                  (update :assignment/id str)
+                                  (update :assignment/room-id str)
+                                  (update :assignment/created-at #(when % (str %)))
+                                  (update :assignment/updated-at #(when % (str %))))})
                {:status :error :error :assignment-api-unavailable})
              {:status :error :error :room-has-no-dvergr-slug}))
          :cljs nil))))

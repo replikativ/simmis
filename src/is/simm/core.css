@@ -1671,6 +1671,20 @@ body {
   color: var(--mono-text-tertiary);
 }
 
+.message-audience {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 3px;
+  color: var(--mono-text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.message-audience-icon {
+  width: 11px;
+  height: 11px;
+}
+
 .chat-message-content,
 .message-text {
   font-size: var(--text-base);
@@ -4573,6 +4587,38 @@ body.tab-dragging .column-drop-zone {
 
 .context-item--clickable:hover svg {
   color: var(--accent);
+}
+
+.room-team-policy {
+  margin-left: auto;
+  color: var(--mono-text-tertiary);
+  font-size: 10px;
+  text-transform: capitalize;
+}
+
+.context-team-settings {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  padding: 4px 7px;
+  border: 1px solid var(--mono-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--mono-text-tertiary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+}
+
+.context-team-settings:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.context-team-settings svg {
+  width: 11px;
+  height: 11px;
 }
 
 /* Online/offline status dots */
