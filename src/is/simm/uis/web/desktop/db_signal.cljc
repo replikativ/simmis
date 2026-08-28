@@ -337,7 +337,7 @@
                                                             :rev revision))))))
                      (binding [rtc/*execution-context* runtime]
                        (swap! room-states assoc scope-str
-                              {:conn conn :overlay overlay :db (opt/db overlay) :rev 0}))))))
+                              {:conn conn :overlay overlay :db (opt/db overlay) :rev 0})))))))
              (catch :default e
                (js/console.error "[ROOM-CONN] Error connecting to room:" scope-str e)))
            (swap! room-connecting disj scope-str))))))
@@ -674,7 +674,7 @@
                  (swap! kb-conns assoc scope-str conn)
                  (swap! kb-overlays assoc scope-str overlay)
                  (swap! kb-roster conj scope-str)
-                 (note-kb-head! scope-str @conn))))))))
+                 (note-kb-head! scope-str @conn)))))))
              (catch :default e
                (js/console.error "[KB-CONN] Error connecting to KB:" scope-str e)))
            (swap! kb-connecting disj scope-str))))))
