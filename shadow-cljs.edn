@@ -10,6 +10,12 @@
           {:target :browser
            :output-dir "public/js"
            :asset-path "/js"
+           ;; This graph is large enough that Shadow's default
+           ;; one-future-per-ready-source compilation can exhaust a development
+           ;; machine (and smaller CI executors) before Closure starts.
+           ;; Sequential analysis is slower cold but bounded; optimization is
+           ;; unaffected.
+           :compiler-options {:parallel-build false}
            :modules {:app {:entries [is.simm.uis.web.desktop.main]
                            :init-fn is.simm.uis.web.desktop.main/init}}
            :devtools {:repl-init-ns is.simm.uis.web.desktop.main
