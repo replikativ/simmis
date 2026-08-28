@@ -407,22 +407,36 @@
 ;; Server Registration (konserve-sync)
 ;; =============================================================================
 
+(defonce ^:private sync-registration-locks (atom {}))
+
+(defn- sync-registration-lock
+  "Return the stable in-process lock for one store scope."
+  [db-scope]
+  (or (get @sync-registration-locks db-scope)
+      (get (swap! sync-registration-locks
+                  #(if (contains? % db-scope)
+                     %
+                     (assoc % db-scope (Object.))))
+           db-scope)))
+
 (defn register-kb-for-sync!
   "Register a KB's Datahike DB with the kabel server for remote access.
-   Idempotent — skips if the topic is already registered on this peer."
+   Concurrent callers for one scope are serialized and recheck the topic, so
+   only one of them opens the store and its full-text secondary index."
   [db-scope server-peer]
-  (if (contains? (get-in @server-peer [:pubsub :topics]) db-scope)
-    (log/log! {:level :debug
-               :id ::kb-already-registered
-               :data {:db-scope db-scope}})
-    (when-let [kb-conn (connect-kb-database db-scope)]
-      (require 'datahike.kabel.handlers)
-      ((resolve 'datahike.kabel.handlers/register-store-for-remote-access!)
-       db-scope kb-conn server-peer {:branches :trunk})
-      (log/log! {:level :info
-                 :id ::kb-registered-for-sync
-                 :msg "KB registered for konserve-sync"
-                 :data {:db-scope db-scope}}))))
+  (locking (sync-registration-lock db-scope)
+    (if (contains? (get-in @server-peer [:pubsub :topics]) db-scope)
+      (log/log! {:level :debug
+                 :id ::kb-already-registered
+                 :data {:db-scope db-scope}})
+      (when-let [kb-conn (connect-kb-database db-scope)]
+        (require 'datahike.kabel.handlers)
+        ((resolve 'datahike.kabel.handlers/register-store-for-remote-access!)
+         db-scope kb-conn server-peer {:branches :trunk})
+        (log/log! {:level :info
+                   :id ::kb-registered-for-sync
+                   :msg "KB registered for konserve-sync"
+                   :data {:db-scope db-scope}})))))
 
 (defn register-party-kbs-for-sync!
   "Register all of a party's KBs for sync. Called on login."
