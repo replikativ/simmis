@@ -301,6 +301,9 @@
    - :S.EvalEntry/code         - code evaluated, or the tool's input
    - :S.EvalEntry/result       - result string (possibly truncated)
    - :S.EvalEntry/success?     - whether the call succeeded
+   - :S.EvalEntry/status       - explicit lifecycle label (optional)
+   - :S.EvalEntry/duration-ms  - exact execution duration (optional)
+   - :S.EvalEntry/approval     - approval provenance label (optional)
    - :S.EvalEntry/agent-name   - display name of the agent
    - :S.EvalEntry/evaluated-at - timestamp"
   [{:keys [entity/uuid
@@ -308,6 +311,9 @@
            S.EvalEntry/code
            S.EvalEntry/result
            S.EvalEntry/success?
+           S.EvalEntry/status
+           S.EvalEntry/duration-ms
+           S.EvalEntry/approval
            S.EvalEntry/agent-name
            S.EvalEntry/evaluated-at
            syntax-pref]}]
@@ -337,6 +343,14 @@
                  {:class "eval-entry-icon"})
         (el/span {:class "eval-entry-tool"} tool)
         (el/span {:class "eval-entry-preview"} preview)
+        (when status
+          (el/span {:class (vc/class-names "eval-entry-status"
+                                           (when-not success? "eval-entry-status--error"))}
+            status))
+        (when (some? duration-ms)
+          (el/span {:class "eval-entry-duration"} (str duration-ms " ms")))
+        (when approval
+          (el/span {:class "eval-entry-approval"} approval))
         (el/span {:class "eval-entry-size"}
           (if (pos? result-size) (humanize-size result-size) ""))
         (el/span {:class "eval-entry-agent"} (or agent-name "Agent"))

@@ -22,6 +22,13 @@
   (is (= :coordinate (run-detail/tool-family "spawn_agent")))
   (is (= :generic (run-detail/tool-family "opaque_tool"))))
 
+(deftest exact-tool-state-has-textual-provenance
+  (is (= "Failed" (run-detail/tool-status-label {:status :error :error? true})))
+  (is (= "Completed" (run-detail/tool-status-label {:status :completed})))
+  (is (= "Auto-approved" (run-detail/approval-label :auto-approved)))
+  (is (= "Approval pending" (run-detail/approval-label :pending-approval)))
+  (is (= "Rejected" (run-detail/approval-label :rejected))))
+
 (deftest groups-routine-tool-bursts-without-losing-leaves
   (let [calls [(call "1" "read_file")
                (call "2" "read_file")

@@ -30,6 +30,30 @@
       (re-find #"(agent|spawn|collabor|message|notify)" n) :coordinate
       :else :generic)))
 
+(defn tool-status-label
+  "Human-readable state for an exact tool call. Kept as text, rather than only
+   colour/iconography, so a collapsed failure remains explicit and accessible."
+  [{:keys [status error?]}]
+  (cond
+    (or error? (= :error status)) "Failed"
+    (= :pending status) "Pending"
+    (= :running status) "Running"
+    (= :skipped status) "Skipped"
+    (= :completed status) "Completed"
+    status (-> status name str/capitalize)
+    :else nil))
+
+(defn approval-label
+  "Human-readable provenance for the decision that allowed or stopped a call."
+  [approval]
+  (case approval
+    :auto-approved "Auto-approved"
+    :pending-approval "Approval pending"
+    :approved "Approved"
+    :rejected "Rejected"
+    :cached "Previously approved"
+    (some-> approval name (str/replace "-" " ") str/capitalize)))
+
 (defn- family-label [family count]
   (let [noun (if (= count 1) "tool call" "tool calls")]
     (case family

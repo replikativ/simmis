@@ -2520,12 +2520,29 @@ body {
 
 /* Output volume, so a closed chip says whether it's worth opening. */
 .eval-entry-size,
+.eval-entry-duration,
+.eval-entry-approval,
 .eval-entry-agent,
 .eval-entry-time {
   font-size: var(--text-xs);
   color: var(--mono-text-tertiary);
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
+}
+
+.eval-entry-status,
+.eval-entry-approval {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mono-text-tertiary) 9%, transparent);
+  color: var(--mono-text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.eval-entry-status--error {
+  background: color-mix(in srgb, var(--accent-error, #e05252) 12%, transparent);
+  color: var(--accent-error, #e05252);
 }
 
 .eval-entry-size {

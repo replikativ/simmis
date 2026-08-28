@@ -45,6 +45,9 @@
    :S.EvalEntry/code (:input call)
    :S.EvalEntry/result (:result call)
    :S.EvalEntry/success? (not (:error? call))
+   :S.EvalEntry/status (run-detail/tool-status-label call)
+   :S.EvalEntry/duration-ms (:duration-ms call)
+   :S.EvalEntry/approval (run-detail/approval-label (:approval call))
    :S.EvalEntry/agent-name actor-name
    :S.EvalEntry/evaluated-at #?(:cljs (some-> (:started-at call) js/Date.)
                                 :clj (:started-at call))
