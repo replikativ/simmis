@@ -239,9 +239,11 @@
         ;; default; costs nothing when unused.
         nrepl/nrepl {:mvn/version "1.3.1"}
 
-        ;; dvergr - agentic programming framework. 0.1.51 adds durable Run
-        ;; lifecycles, targeted cancellation and Run-correlated messages/tool
-        ;; activity. 0.1.49 added durable Room thread roots, FIFO topic attention
+        ;; dvergr - agentic programming framework. 0.1.54 adds fail-closed tool
+        ;; authorizers with durable subject/action/resource receipts and native
+        ;; reactive agent programs. 0.1.51 added durable Run lifecycles,
+        ;; targeted cancellation and Run-correlated messages/tool activity.
+        ;; 0.1.49 added durable Room thread roots, FIFO topic attention
         ;; and configurable steer/queue/observe policy on top of the typed message
         ;; metadata and room-local agent assignments introduced in 0.1.46.
         ;; 0.1.43 originally followed
@@ -261,7 +263,7 @@
         ;; room forever); plus GLM tool-channel recovery, embedder-tunable eval
         ;; timeout, and budget exhaustion that ENDS the turn instead of blocking
         ;; the shared drain thread.
-        org.replikativ/dvergr {:mvn/version "0.1.51"}}
+        org.replikativ/dvergr {:mvn/version "0.1.54"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
