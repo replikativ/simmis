@@ -406,7 +406,7 @@
   [{:keys [id author-id author-name content reasoning timestamp is-own? is-ai?
            syntax-pref attachment-blob attachment-mime thread-parent
            in-reply-to reply-count on-jump-parent on-reply audience run-id
-           mention-handles on-open-thread]}]
+           mention-handles on-open-thread on-open-run]}]
   (el/div {:key id
            :class (vc/class-names "chat-message" "message"
                                   (when is-own? "chat-message--own"))
@@ -449,8 +449,12 @@
         (el/span {:class "chat-message-time message-time"}
           (or timestamp ""))
         (when run-id
-          (el/span {:class "message-run-ref"
-                    :title (str "Agent Run " run-id)}
+          (el/button {:class "message-run-ref"
+                    :title (str "Open Agent Run " run-id)
+                    :on-click (fn [event]
+                                (.stopPropagation event)
+                                (when on-open-run
+                                  (on-open-run event run-id)))}
             (vc/icon "workflow" {:class "message-run-ref-icon"})
             "run"))
         (when (pos? (or reply-count 0))
@@ -703,7 +707,7 @@
   "Compact room-level view of live causal execution scopes. A Run may span
    many tool calls but contributes one row here; detailed activity remains in
    the timeline and is correlated by Run id."
-  [{:keys [runs on-cancel]}]
+  [{:keys [runs on-cancel on-open]}]
   (when (seq runs)
     (el/div {:class "chat-runs"}
       (el/div {:class "chat-runs-label"}
@@ -714,13 +718,17 @@
                  :class (vc/class-names "chat-run"
                                         (str "chat-run--" (name status)))
                  :data-run-id id}
-          (el/span {:class "chat-run-pulse"})
-          (el/span {:class "chat-run-actor"} (or actor-name "Agent"))
-          (el/span {:class "chat-run-status"}
-            (case status
-              :cancelling "stopping"
-              :running "working"
-              (name status)))
+          (el/button {:class "chat-run-open"
+                      :title "Open Run inspector"
+                      :on-click (fn [event]
+                                  (when on-open (on-open event id)))}
+            (el/span {:class "chat-run-pulse"})
+            (el/span {:class "chat-run-actor"} (or actor-name "Agent"))
+            (el/span {:class "chat-run-status"}
+              (case status
+                :cancelling "stopping"
+                :running "working"
+                (name status))))
           (el/button {:class "chat-run-cancel"
                       :disabled (= :cancelling status)
                       :title "Stop this Run"

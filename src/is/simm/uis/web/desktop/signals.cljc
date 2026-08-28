@@ -596,7 +596,7 @@
             [{:id       string     ;; Unique column ID
               :width    number     ;; Width as fraction (0-1)
               :tabs     [{:id      string    ;; Unique tab ID
-                          :type    keyword   ;; :home, :wiki, :chat, :chat-thread, :video
+                          :type    keyword   ;; :home, :wiki, :chat, :chat-thread, :run-inspector, :video
                           :title   string    ;; Display title
                           :data    map}]     ;; Type-specific data (page-uuid, room-id, etc.)
               :active-tab string}] ;; ID of active tab in this column
@@ -760,7 +760,7 @@
   "Open content in a tab.
 
    Args:
-   - tab-type: :home, :wiki, :chat, :chat-thread, :video
+   - tab-type: :home, :wiki, :chat, :chat-thread, :run-inspector, :video
    - tab-data: {:page-uuid uuid} for wiki, {:room-id string} for chat, etc.
    - opts:
      - :col-id - Target column ID (default: active column)

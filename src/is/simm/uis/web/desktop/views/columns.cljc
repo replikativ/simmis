@@ -37,6 +37,7 @@
             #?(:cljs [is.simm.uis.web.desktop.views.feed :as feed-view])
             #?(:cljs [is.simm.uis.web.desktop.views.history-subway :as subway])
             #?(:cljs [is.simm.uis.web.desktop.views.agent-inspector :as agent-inspector])
+            [is.simm.uis.web.desktop.views.run-inspector :as run-inspector]
             [is.simm.uis.web.desktop.signals :as sig]
             [clojure.string :as str]
             #?(:cljs [datahike.api :as d])
@@ -45,6 +46,7 @@
             #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
             #?(:cljs [is.simm.uis.web.desktop.run-sync :as run-sync])
+            #?(:cljs [is.simm.uis.web.desktop.run-detail :as run-detail])
             #?(:cljs [is.simm.uis.web.desktop.settings-remote :as settings-remote])
             #?(:cljs [is.simm.uis.web.desktop.admin-remote :as admin-remote])
             #?(:cljs [is.simm.uis.web.desktop.block-editor :as block-editor])
@@ -624,6 +626,7 @@
     :wiki "file-text"
     :chat "message-square"
     :chat-thread "messages-square"
+    :run-inspector "orbit"
     :video "video"
     :screens "images"
     :feed "activity"
@@ -1252,6 +1255,64 @@
                         syntax-pref gref video-info screen-sharing screens-results
                         recordings-results web-captures-results chat-reply-targets room-runs)
 
+    :run-inspector
+    #?(:cljs
+       (let [room-id (str (:room-id data))
+             room-name (or (:room-name data) "Room")
+             room-db-scope (:db-scope data)
+             run-id (str (:run-id data))
+             _ (run-sync/ensure-room! room-id)
+             _ (when (and room-db-scope
+                          (not (get room-states (str room-db-scope))))
+                 (db-sig/connect-room! room-db-scope @web/client))
+             room-db (when room-db-scope
+                       (get-in room-states [(str room-db-scope) :db]))
+             detail (when room-db
+                      (try
+                        (run-detail/query-run-detail room-db run-id)
+                        (catch :default e
+                          (js/console.error "[run-inspector] query failed" run-id e)
+                          nil)))
+             run-state (get room-runs room-id)
+             active-run (some #(when (= run-id (:id %)) %)
+                              (:active run-state))
+             recent-run (some #(when (= run-id (:id %)) %)
+                              (:recent run-state))
+             open-related!
+             (fn [related]
+               (sig/open-tab!
+                :run-inspector
+                (assoc data :run-id (:id related) :run related)
+                {:title (str "Run · "
+                             (or (:actor-name related)
+                                 (let [id (str (:id related))]
+                                   (subs id 0 (min 8 (count id))))))}))]
+         (run-inspector/view
+          {:detail detail
+           :live-run active-run
+           :fallback-run (or recent-run (:run data))
+           :room-name room-name
+           :syntax-pref syntax-pref
+           :on-cancel #(run-sync/cancel! room-id %)
+           :on-back-room
+           #(sig/open-tab! :chat
+                           {:room-id room-id
+                            :room-name room-name
+                            :db-scope room-db-scope}
+                           {:title room-name})
+           :on-open-message
+           (fn [message-id]
+             (sig/open-tab! :chat
+                            {:room-id room-id
+                             :room-name room-name
+                             :db-scope room-db-scope
+                             :anchor-message (str message-id)}
+                            {:title room-name :new-tab? true}))
+           :on-open-run open-related!}))
+       :clj
+       (el/div {:class "run-inspector"}
+         (el/p {} "Run inspector")))
+
     :chat
     #?(:cljs
        ;; All chats (including Vár AI) use messages from the room's own Datahike DB
@@ -1266,6 +1327,26 @@
                                 [room-uuid thread-root-id]
                                 room-uuid)
              active-runs (get-in room-runs [(str room-id) :active] [])
+             recent-runs (get-in room-runs [(str room-id) :recent] [])
+
+             open-run!
+             (fn [event run-id]
+               (let [run-id (str run-id)
+                     selected (some #(when (= run-id (:id %)) %)
+                                    (concat active-runs recent-runs))
+                     new-column? (or (.-metaKey event) (.-ctrlKey event))]
+                 (sig/open-tab!
+                  :run-inspector
+                  {:room-id room-id
+                   :room-name room-name
+                   :db-scope room-db-scope
+                   :run-id run-id
+                   :run selected}
+                  {:title (str "Run · "
+                               (or (:actor-name selected)
+                                   (subs run-id 0 (min 8 (count run-id)))))
+                   :new-tab? (not new-column?)
+                   :new-column? new-column?})))
 
              ;; Idempotent transport setup. Subscription bookkeeping is
              ;; process-local; every value rendered below lives in sig/room-runs.
@@ -1638,6 +1719,7 @@
 
            (chat/run-strip
             {:runs active-runs
+             :on-open open-run!
              :on-cancel #(run-sync/cancel! room-id %)})
 
            ;; Messages container — native CSS scroll (overflow-y: auto)
@@ -1718,6 +1800,7 @@
                        :attachment-mime (:S.Message/attachment-mime item)
                        :in-reply-to (:message/in-reply-to item)
                        :run-id (:message/run-id item)
+                       :on-open-run open-run!
                        :thread-parent (:thread/parent item)
                        :reply-count (:thread/reply-count item)
                        :on-open-thread
