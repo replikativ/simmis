@@ -39,6 +39,7 @@
             [dvergr.system.db :as sdb]
             [is.simm.model.rooms :as rooms]
             [is.simm.agents.dispatch :as dispatch]
+            [is.simm.agents.tool-authorization :as tool-auth]
             [is.simm.agents.vocab :as vocab]
             [is.simm.model.parties :as parties]
             [is.simm.model.model-selection :as model-selection]
@@ -2269,7 +2270,12 @@
                                             t #(active-overlay room-uuid agent-uuid)
                                             room-uuid agent-uuid))
                                     m))
-                                agent-tools repo-tools)]
+                                agent-tools repo-tools)
+            ;; AgentDef admission and room ReBAC are separate gates. The
+            ;; authorizer runs per call against the current system DB, so
+            ;; removing an agent from the room revokes effects immediately.
+            agent-tools (tool-auth/authorize-room-tools
+                         agent-tools agent-uuid room-uuid)]
                           ;; NOTE: live screen shares are NOT a tool — they are
                           ;; the `screen/*` SCI vocabulary (add-screen-ns!), read
                           ;; in clojure_eval like sheet/* and kb/*.

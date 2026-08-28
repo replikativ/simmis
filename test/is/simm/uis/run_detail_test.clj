@@ -25,9 +25,16 @@
 (deftest exact-tool-state-has-textual-provenance
   (is (= "Failed" (run-detail/tool-status-label {:status :error :error? true})))
   (is (= "Completed" (run-detail/tool-status-label {:status :completed})))
-  (is (= "Auto-approved" (run-detail/approval-label :auto-approved)))
-  (is (= "Approval pending" (run-detail/approval-label :pending-approval)))
-  (is (= "Rejected" (run-detail/approval-label :rejected))))
+  (is (= "Authorized · legacy tool grant"
+         (run-detail/authorization-label {:approval :auto-approved})))
+  (is (= "Decision pending"
+         (run-detail/authorization-label {:approval :pending-approval})))
+  (is (= "Denied · legacy decision"
+         (run-detail/authorization-label {:approval :rejected})))
+  (is (= "Authorized · ReBAC + agent grant"
+         (run-detail/authorization-label
+          {:authorization {:decision :authorized
+                           :sources #{:simmis-rebac :agent-tool-grant}}}))))
 
 (deftest groups-routine-tool-bursts-without-losing-leaves
   (let [calls [(call "1" "read_file")
@@ -114,7 +121,11 @@
                           {:db/ident :S.User/display-name
                            :db/valueType :db.type/string
                            :db/cardinality :db.cardinality/one}])
-        (d/transact conn [{:entity/uuid actor-id
+        (let [authorization-schema?
+              (boolean (d/q '[:find ?e . :where
+                              [?e :db/ident :tool-call/authorization-decision]]
+                            @conn))]
+          (d/transact conn [{:entity/uuid actor-id
                            :S.User/display-name "Vár"}
                           {:message/id trigger-id
                            :message/role :user
@@ -153,29 +164,49 @@
                            :message/content "The failure is isolated."
                            :message/created-at finished
                            :message/run-id run-id}
-                          {:tool-call/id tool-id
+                          (cond-> {:tool-call/id tool-id
                            :tool-call/name "read_file"
                            :tool-call/input "{:path \"ci.edn\"}"
                            :tool-call/result "configuration"
                            :tool-call/duration-ms 17
                            :tool-call/error? false
                            :tool-call/status :completed
-                           :tool-call/approval :auto-approved
                            :tool-call/run-id run-id
-                           :tool-call/started-at started}])
-        (let [{:keys [run trigger parent children messages tool-calls]}
-              (run-detail/query-run-detail @conn run-id)]
-          (is (= (str run-id) (:id run)))
-          (is (= "Vár" (:actor-name run)))
-          (is (= :running (:status run)))
-          (is (= "Investigate the failing build" (:content trigger)))
-          (is (= (str parent-id) (:id parent)))
-          (is (= [(str child-id)] (mapv :id children)))
-          (is (= [(str output-id)] (mapv :id messages)))
-          (is (= [{:name "read_file"
-                   :result "configuration"
-                   :duration-ms 17}]
-                 (mapv #(select-keys % [:name :result :duration-ms]) tool-calls))))
+                           :tool-call/started-at started}
+                            authorization-schema?
+                            (assoc :tool-call/authorization-decision :authorized
+                                   :tool-call/authorization-source
+                                   #{:agent-tool-grant :simmis-rebac}
+                                   :tool-call/authorization-subject-type :party
+                                   :tool-call/authorization-subject-id (str actor-id)
+                                   :tool-call/authorization-action :read
+                                   :tool-call/authorization-resource-type :room
+                                   :tool-call/authorization-resource-id "room")
+                            (not authorization-schema?)
+                            (assoc :tool-call/approval :auto-approved))])
+          (let [{:keys [run trigger parent children messages tool-calls]}
+                (run-detail/query-run-detail @conn run-id)]
+            (is (= (str run-id) (:id run)))
+            (is (= "Vár" (:actor-name run)))
+            (is (= :running (:status run)))
+            (is (= "Investigate the failing build" (:content trigger)))
+            (is (= (str parent-id) (:id parent)))
+            (is (= [(str child-id)] (mapv :id children)))
+            (is (= [(str output-id)] (mapv :id messages)))
+            (is (= [{:name "read_file"
+                     :result "configuration"
+                     :duration-ms 17}]
+                   (mapv #(select-keys % [:name :result :duration-ms]) tool-calls)))
+            (when authorization-schema?
+              (is (= {:decision :authorized
+                      :sources #{:agent-tool-grant :simmis-rebac}
+                      :subject-type :party
+                      :subject-id (str actor-id)
+                      :action :read
+                      :resource-type :room
+                      :resource-id "room"
+                      :grant-id nil}
+                     (:authorization (first tool-calls)))))))
         (finally
           (d/release conn)
           (d/delete-database cfg))))))

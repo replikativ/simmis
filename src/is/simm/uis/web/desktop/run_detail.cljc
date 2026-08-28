@@ -43,16 +43,36 @@
     status (-> status name str/capitalize)
     :else nil))
 
-(defn approval-label
-  "Human-readable provenance for the decision that allowed or stopped a call."
-  [approval]
-  (case approval
-    :auto-approved "Auto-approved"
-    :pending-approval "Approval pending"
-    :approved "Approved"
-    :rejected "Rejected"
-    :cached "Previously approved"
-    (some-> approval name (str/replace "-" " ") str/capitalize)))
+(def ^:private authorization-source-labels
+  {:agent-tool-grant "agent grant"
+   :runtime-registry "runtime"
+   :simmis-rebac "ReBAC"
+   :kontor-resource-grant "Kontor"
+   :authorization-error "policy error"})
+
+(defn authorization-label
+  "Human-readable provenance for the policy decision around an exact call.
+   The old approval value is accepted only so pre-migration development Runs
+   stay intelligible; it is never described as a human approval."
+  [{:keys [authorization approval]}]
+  (if-let [decision (:decision authorization)]
+    (let [base (case decision
+                 :authorized "Authorized"
+                 :denied "Denied"
+                 :requires-decision "Decision required"
+                 (-> decision name (str/replace "-" " ") str/capitalize))
+          sources (->> (:sources authorization)
+                       (map #(get authorization-source-labels % (name %)))
+                       sort
+                       (str/join " + "))]
+      (cond-> base (seq sources) (str " · " sources)))
+    (case approval
+      :auto-approved "Authorized · legacy tool grant"
+      :pending-approval "Decision pending"
+      :approved "Authorized · legacy decision"
+      :rejected "Denied · legacy decision"
+      :cached "Authorized · legacy cached decision"
+      (some-> approval name (str/replace "-" " ") str/capitalize))))
 
 (defn- family-label [family count]
   (let [noun (if (= count 1) "tool call" "tool calls")]
@@ -67,6 +87,8 @@
 (defn- grouping-eligible? [call]
   (and (not (:error? call))
        (not= :error (:status call))
+       (not= :denied (get-in call [:authorization :decision]))
+       (not= :requires-decision (get-in call [:authorization :decision]))
        (not= :pending-approval (:approval call))
        (not= :rejected (:approval call))))
 
@@ -199,11 +221,27 @@
          :message/run-id :message/reasoning :message/source-user
          :message/source-username])
 
-     (def ^:private tool-call-pull
+     (def ^:private tool-call-base-pull
        '[:tool-call/id :tool-call/name :tool-call/input :tool-call/result
          :tool-call/duration-ms :tool-call/error? :tool-call/status
-         :tool-call/approval :tool-call/tool-use-id :tool-call/run-id
+         :tool-call/tool-use-id :tool-call/run-id
          :tool-call/started-at])
+
+     (def ^:private tool-call-authorization-attrs
+       '[:tool-call/approval
+         :tool-call/authorization-decision :tool-call/authorization-source
+         :tool-call/authorization-subject-type :tool-call/authorization-subject-id
+         :tool-call/authorization-action :tool-call/authorization-resource-type
+         :tool-call/authorization-resource-id :tool-call/authorization-grant-id])
+
+     (defn- tool-call-pull [db]
+       ;; Datahike fails (correctly) when a pull names an attribute absent from
+       ;; the schema. Room stores are upgraded independently, so select only the
+       ;; new receipt attributes installed in this particular replica.
+       (into tool-call-base-pull
+             (filter #(d/q '[:find ?e . :in $ ?ident
+                             :where [?e :db/ident ?ident]] db %))
+             tool-call-authorization-attrs))
 
      (defn- actor-party-id [actor]
        (when (and (keyword? actor)
@@ -255,16 +293,26 @@
             :run-id (some-> (:message/run-id m) str)})))
 
      (defn- normalize-tool-call [call]
-       {:id (str (:tool-call/id call))
-        :name (:tool-call/name call)
-        :input (:tool-call/input call)
-        :result (:tool-call/result call)
-        :duration-ms (:tool-call/duration-ms call)
-        :error? (:tool-call/error? call)
-        :status (:tool-call/status call)
-        :approval (:tool-call/approval call)
-        :tool-use-id (:tool-call/tool-use-id call)
-        :started-at (some-> (:tool-call/started-at call) .getTime)})
+       (cond-> {:id (str (:tool-call/id call))
+                :name (:tool-call/name call)
+                :input (:tool-call/input call)
+                :result (:tool-call/result call)
+                :duration-ms (:tool-call/duration-ms call)
+                :error? (:tool-call/error? call)
+                :status (:tool-call/status call)
+                :approval (:tool-call/approval call)
+                :tool-use-id (:tool-call/tool-use-id call)
+                :started-at (some-> (:tool-call/started-at call) .getTime)}
+         (:tool-call/authorization-decision call)
+         (assoc :authorization
+                {:decision (:tool-call/authorization-decision call)
+                 :sources (set (:tool-call/authorization-source call))
+                 :subject-type (:tool-call/authorization-subject-type call)
+                 :subject-id (:tool-call/authorization-subject-id call)
+                 :action (:tool-call/authorization-action call)
+                 :resource-type (:tool-call/authorization-resource-type call)
+                 :resource-id (:tool-call/authorization-resource-id call)
+                 :grant-id (:tool-call/authorization-grant-id call)})))
 
      (defn query-run-detail
        "Bounded indexed lookup for one Run and its causal projection. Returns nil
@@ -304,7 +352,7 @@
                                (sort-by (juxt :sent-at :id))
                                vec)
                 :tool-calls (->> tool-eids
-                                 (map #(normalize-tool-call (d/pull db tool-call-pull %)))
+                                 (map #(normalize-tool-call (d/pull db (tool-call-pull db) %)))
                                  (sort-by (juxt :started-at :id))
                                  vec)
                 :children (->> child-eids
