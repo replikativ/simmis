@@ -400,6 +400,11 @@
     :fs (semantic-fs-diff scope branch :base-commit base-commit)
     :book (semantic-book-diff scope branch :base-commit base-commit)
     :repo (semantic-repo-diff scope branch :base-commit base-commit)
+    :world (let [delta (branching/delta scope :world branch {:patch? false})]
+             (cond-> {:scope scope :system-type :world
+                      :counts (:summary delta)}
+               (:files delta) (assoc :files (vec (:files delta))
+                                     :stat (:stat delta))))
     {:scope scope :system-type system-type
      :counts (:summary (branching/kb-diff scope :db branch))}))
 

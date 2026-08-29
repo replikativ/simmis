@@ -139,6 +139,40 @@ as it wraps `'transact!` — so an unbalanced branch is rejected when it
 merges, not only when it is written. Pinned by
 `test/is/simm/ops/book_fork_test.clj`.
 
+### Retained Run worlds
+
+A Dvergr Run executed in an isolated subworld is an execution capability, not
+itself a Proposal. When a completed Run has substantive forked substrate and is
+explicitly filed, `ops/run_world_proposals.clj` transfers its affine authority
+from Dvergr into a durable Simmis adoption and promotes that adoption into the
+existing ForkSet model:
+
+```text
+Run world --adopt--> world adoption --partition by system--> Proposal forks
+```
+
+The adoption row is durable before authority leaves Dvergr. A multi-system
+world is exhaustively partitioned so each Proposal component governs exactly
+one system and can be accepted or dismissed independently. The stored
+descriptors, Run/room linkage, status and settlement decisions are durable;
+the actual fork handles remain process-local capabilities. Accept and Dismiss
+therefore use the ordinary Proposal authorization and status machinery but
+dispatch `:world` components through Dvergr's governed settlement frontier.
+
+Failures preserve the last valid affine capability. A failed Proposal commit
+retains the adopted world for `retry-promotion!`; failure while constructing
+partitions retains the transferred root and retries partitioning rather than
+filing an ambiguous aggregate component. A failed settlement retains the exact
+component for `retry-settlement!`. Once Dvergr ancestry release succeeds, the
+live handle is dropped immediately even if the final Datahike status projection
+fails, preventing a consumed capability from being offered twice.
+
+After a process restart the Proposal remains available for audit, comments and
+history, but merge/dismiss actions are marked unavailable because descriptors
+do not recreate affine handles. Durable handle rehydration is a future Dvergr /
+Yggdrasil capability-store concern; Simmis deliberately does not reconstruct
+authority from serialized data.
+
 ## 6. Semantic diff
 
 Server ns `ops/semantic_diff.clj` over `DatahikeDiff` (has FULL

@@ -608,7 +608,7 @@
       these buttons and the card's own Accept / Dismiss do exactly the same
       thing, and two identical pairs a few lines apart is a choice the reviewer
       has to stop and work out before deciding anything."
-     [pid {:keys [scope branch busy? may-merge?]}]
+     [pid {:keys [scope branch busy? may-merge? capability-live?]}]
      (el/div {:class "proposal-fork-actions"}
        ;; `may-merge?` is resolved server-side per fork scope (see
        ;; ops.proposals/with-merge-authority). Since B1 `:merge` is its own verb,
@@ -616,13 +616,20 @@
        ;; onto its trunk — offering an Accept that is certain to refuse wastes a
        ;; round trip and reads as a bug.
        (el/button {:class "btn btn-secondary btn-sm"
-                   :disabled (boolean (or busy? (false? may-merge?)))
-                   :title (when (false? may-merge?)
+                   :disabled (boolean (or busy? (false? may-merge?)
+                                          (false? capability-live?)))
+                   :title (cond
+                            (false? capability-live?)
+                            "This process no longer holds the world capability"
+                            (false? may-merge?)
                             "You do not have merge rights on this patch's target")
                    :on-click (fn [_] (accept-fork! pid scope branch))}
-                  (if (false? may-merge?) "Cannot land" "Accept this"))
+                  (cond
+                    (false? capability-live?) "Unavailable"
+                    (false? may-merge?) "Cannot land"
+                    :else "Accept this"))
        (el/button {:class "btn btn-secondary btn-sm"
-                   :disabled (boolean busy?)
+                   :disabled (boolean (or busy? (false? capability-live?)))
                    :on-click (fn [_] (dismiss-fork! pid scope branch))}
                   "Dismiss this"))))
 
@@ -817,11 +824,20 @@
                   (:may-merge? f)))
         forks))
 
+(defn- capability-live-for [forks fk]
+  (some (fn [f] (when (and (= (:scope f) (:scope fk))
+                           (= (:branch f) (:branch fk)))
+                  (:capability-live? f)))
+        forks))
+
 (defn- unlandable-open-forks
   "Open forks this reviewer may not land. The card's own Accept lands ALL open
    forks (`∀ patch ∈ selected`), so any one of these makes it certain to refuse."
   [forks]
   (filterv #(and (nil? (:status %)) (false? (:may-merge? %))) forks))
+
+(defn- unavailable-open-forks [forks]
+  (filterv #(and (nil? (:status %)) (false? (:capability-live? %))) forks))
 
 (defn- proposal-card [{:keys [id title summary diffs diff-error action-error busy?
                               tier intent conflicts comments checks ai-summary expanded
@@ -900,7 +916,9 @@
                      (el/div {:key (str "fs" i)}
                        (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count diffs))
                                              :checks (check-for checks fk)
-                                             :may-merge? (may-merge-for forks fk)) false)))))
+                                             :may-merge? (may-merge-for forks fk)
+                                             :capability-live?
+                                             (capability-live-for forks fk)) false)))))
                (el/button {:class "btn btn-ghost btn-sm proposal-showall"
                            :on-click (fn [_] (toggle :all))}
                           "Show the full diff"))
@@ -915,7 +933,9 @@
                  (el/div {:key (str i)}
                    (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count diffs))
                                              :checks (check-for checks fk)
-                                             :may-merge? (may-merge-for forks fk)) true))))))
+                                             :may-merge? (may-merge-for forks fk)
+                                             :capability-live?
+                                             (capability-live-for forks fk)) true))))))
          (when action-error
            (el/div {:class "proposal-error"} action-error))
          ;; Optional, and nothing consumes it yet. It is here so the corpus of
@@ -950,17 +970,26 @@
                           (->> blocked (map :branch) (interpose ", ") (apply str))
                           ". Decide them individually, or ask someone with merge"
                           " rights on their targets."))))
+         (when (seq (unavailable-open-forks forks))
+           (el/div {:class "proposal-merge-blocked"}
+             "This process no longer holds the adopted world capability. The durable proposal remains auditable, but settlement requires recovery."))
          (el/div {:class "proposal-actions"}
            ;; `force?` is whether THIS press follows a conflict warning. It was
            ;; hardcoded false, so the "Accept again to proceed anyway" the
            ;; warning prints could never be obeyed — every press repeated the
            ;; same request and re-rendered the same message.
            (el/button {:class "btn btn-affirm"
-                       :disabled (boolean (or busy? (seq (unlandable-open-forks forks))))
-                       :title (when (seq (unlandable-open-forks forks))
+                       :disabled (boolean (or busy?
+                                              (seq (unlandable-open-forks forks))
+                                              (seq (unavailable-open-forks forks))))
+                       :title (cond
+                                (seq (unavailable-open-forks forks))
+                                "The adopted world capability is unavailable"
+                                (seq (unlandable-open-forks forks))
                                 "Some patches in this proposal are not yours to land")
                        :on-click (fn [_] (accept! id (boolean accept-warned?)))}
                       (cond busy? "Working…"
+                            (seq (unavailable-open-forks forks)) "Unavailable"
                             (seq (unlandable-open-forks forks)) "Cannot land all"
                             accept-warned? "Accept anyway"
                             :else "Accept"))
@@ -972,7 +1001,7 @@
                        :disabled (boolean busy?)
                        :on-click (fn [_] (comment! id))} "Comment")
            (el/button {:class "btn btn-secondary"
-                       :disabled (boolean busy?)
+                       :disabled (boolean (or busy? (seq (unavailable-open-forks forks))))
                        :on-click (fn [_] (dismiss! id))} "Dismiss"))))
      :clj nil))
 

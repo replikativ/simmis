@@ -329,6 +329,14 @@
     :db/valueType :db.type/uuid
     :db/cardinality :db.cardinality/one
     :db/doc "Originating room (optional)"}
+   {:db/ident :proposal/run
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/doc "Exact Dvergr Run whose retained world this proposal governs"}
+   {:db/ident :proposal/adoption
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc "Durable ownership record for an adopted Dvergr world"}
    {:db/ident :proposal/created-at
     :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one}
@@ -358,6 +366,10 @@
     :db/valueType :db.type/uuid
     :db/cardinality :db.cardinality/one
     :db/doc "System db-scope"}
+   {:db/ident :proposal.fork/authority-scope
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/doc "Resource whose :merge grant governs this component; absent means scope"}
    {:db/ident :proposal.fork/branch
     :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one
@@ -370,6 +382,58 @@
     :db/valueType :db.type/keyword
     :db/cardinality :db.cardinality/one
     :db/doc ":kb :fs :book :repo :room"}
+   {:db/ident :proposal.fork/world-system-id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "Exact Spindel system id governed by this adopted-world component"}
+   {:db/ident :proposal.fork/settlement-id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity
+    :db/doc "Affine settlement capability identity; the live handle is never persisted"}
+   {:db/ident :proposal.fork/settlement-state
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc ":open :settling :committed :commit-failed :abort-failed"}
+   {:db/ident :proposal.fork/settlement-operation
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal.fork/descriptor
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "Portable EDN descriptor; never contains a process-local ForkHandle"}
+
+   ;; Adoption is the durable owner established before Dvergr transfers its
+   ;; affine capability. A Proposal is created only after exact partition
+   ;; descriptors have committed, so ordinary proposal readers never observe a
+   ;; half-constructed ForkSet.
+   {:db/ident :world-adoption/id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :world-adoption/run
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :world-adoption/room
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :world-adoption/proposal
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :world-adoption/status
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc ":prepared :partitioning :open :releasing :released :failed :recovery-required"}
+   {:db/ident :world-adoption/descriptor
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :world-adoption/error
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :world-adoption/updated-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
    ;; --- review conversation -------------------------------------------------
    {:db/ident :proposal/comments
     :db/valueType :db.type/ref

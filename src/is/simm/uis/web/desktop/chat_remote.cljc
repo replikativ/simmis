@@ -15,6 +15,7 @@
             #?(:clj [dvergr.chat.accounting :as acct])
             #?(:clj [dvergr.agent.run :as agent-run])
             #?(:clj [is.simm.model.run-broadcast :as run-broadcast])
+            #?(:clj [is.simm.ops.run-world-proposals :as world-proposals])
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.model.message-notify-broadcast :as mnb])
             #?(:clj [is.simm.model.user-rooms-broadcast :as urb])
@@ -335,6 +336,17 @@
            {:status (if (agent-run/cancel-run! run-id) :cancelling :not-active)
             :run-id run-id-str}
            {:status :not-active :run-id run-id-str}))
+       :cljs nil)))
+
+(defn-spin-remote promote-room-run-world!
+  [server-id room-id-str run-id-str title]
+  (spin-remote server-id [room-id-str run-id-str title]
+    #?(:clj
+       (world-proposals/promote!
+        (java.util.UUID/fromString room-id-str)
+        (java.util.UUID/fromString run-id-str)
+        {:title (str title)
+         :author (access/authenticated-party-id)})
        :cljs nil)))
 
 ;; =============================================================================
