@@ -349,6 +349,10 @@
     :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one
     :db/doc "Last publication error. Retracted after a successful idempotent retry."}
+   {:db/ident :proposal/filing-hash
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "Canonical hash making file-proposal! atomic create-once by Proposal UUID"}
    {:db/ident :proposal/adoption
     :db/valueType :db.type/ref
     :db/cardinality :db.cardinality/one

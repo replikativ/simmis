@@ -26,6 +26,40 @@
    (.getBytes (str "simmis:proposal-message:" proposal-id)
               java.nio.charset.StandardCharsets/UTF_8)))
 
+(defn- sha-256 [value]
+  (let [digest (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                        (.getBytes (pr-str value)
+                                   java.nio.charset.StandardCharsets/UTF_8))]
+    (apply str (map #(format "%02x" (bit-and 0xff %)) digest))))
+
+(defn- fork-filing-value
+  [{:keys [scope authority-scope branch base-commit system-type
+           world-system-id settlement-id settlement-state descriptor]
+    fork-author :author}]
+  ;; A positional value gives pr-str a stable order independent of map
+  ;; implementation. Descriptor is already persisted through pr-str below.
+  [scope authority-scope (name branch) (some-> base-commit str) system-type
+   (some-> world-system-id str) settlement-id settlement-state
+   (some-> descriptor pr-str) fork-author])
+
+(defn- filing-hash
+  [{:keys [title summary author room run adoption forks intent]}]
+  (sha-256 [title summary author room run adoption
+            (or intent fs/default-intent)
+            (mapv fork-filing-value forks)]))
+
+(defn- file-proposal-if-absent
+  "Datahike transaction function: an id is one immutable ForkSet filing."
+  [db entity]
+  (if-let [existing (d/entity db [:proposal/id (:proposal/id entity)])]
+    (if (= (:proposal/filing-hash entity)
+           (:proposal/filing-hash existing))
+      []
+      (throw (ex-info "Proposal id is already filed with different content"
+                      {:type :proposal/filing-conflict
+                       :proposal (:proposal/id entity)})))
+    [entity]))
+
 (defn file-proposal!
   "Record an open proposal. `forks` = [{:scope uuid :branch str
    :base-commit str :system-type kw :author uuid} …]. Returns the proposal id.
@@ -45,12 +79,16 @@
         ;; transaction as the proposal. Publication may crash and retry, but it
         ;; must never mint a second card. Roomless legacy/import rows remain
         ;; intentionally unpublishable.
-        message-id (when room (proposal-message-id id))]
-    (d/transact (conn)
-      [(cond-> {:proposal/id id
+        message-id (when room (proposal-message-id id))
+        filing-hash (filing-hash {:title title :summary summary :author author
+                                  :room room :run run :adoption adoption
+                                  :forks forks :intent intent})
+        entity
+        (cond-> {:proposal/id id
                 :proposal/title title
                 :proposal/status :open
                 :proposal/created-at (java.util.Date.)
+                :proposal/filing-hash filing-hash
                 :proposal/forks (mapv (fn [{:keys [scope authority-scope branch
                                                    base-commit system-type
                                                    world-system-id settlement-id
@@ -80,7 +118,11 @@
          ;; only when non-default: absent already MEANS :change, and writing
          ;; the default would make old and new rows differ for no reason
          (and intent (not= fs/default-intent intent))
-         (assoc :proposal/intent intent))])
+         (assoc :proposal/intent intent))]
+    ;; The existence decision belongs to Datahike's serialized transaction
+    ;; snapshot. Concurrent/ambiguous retries cannot append anonymous component
+    ;; refs or reset lifecycle fields; a conflicting reuse of the UUID fails.
+    (d/transact (conn) [[:db.fn/call file-proposal-if-absent entity]])
     (log/log! {:level :info :id ::filed :data {:proposal id :title title
                                                :forks (count forks)}})
     ;; Resolve lazily to keep the proposal store independent of live discourse

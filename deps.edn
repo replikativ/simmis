@@ -272,7 +272,7 @@
         ;; each Proposal one canonical chat identity. Replace with the release
         ;; after squash.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr.git"
-                               :git/sha "fac4638546da213885d3858ba52f409e584f6515"}}
+                               :git/sha "1fdad9af5778b3cff86afd9eabab435d502776d4"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
