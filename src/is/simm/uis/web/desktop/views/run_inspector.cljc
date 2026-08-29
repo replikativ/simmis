@@ -127,7 +127,7 @@
                (el/dd {} (str value))))
            facts))))))
 
-(defn- settlement-view [run]
+(defn- settlement-view [run on-promote]
   (when-let [settlement-status (:settlement-status run)]
     (let [review? (= :review settlement-status)
           world-live? (:world-live? run)]
@@ -154,16 +154,21 @@
                 "Capability retained"
                 "Capability unavailable"))))
         (when review?
-          (el/p {:class "run-world-guidance"}
-            (if world-live?
-              "This isolated world is available for durable proposal promotion."
-              "The durable Run remains auditable, but this process no longer holds its settlement capability.")))))))
+          (el/div {}
+            (el/p {:class "run-world-guidance"}
+              (if world-live?
+                "This isolated world is available for durable proposal promotion."
+                "The durable Run remains auditable, but this process no longer holds its settlement capability."))
+            (when (and world-live? on-promote)
+              (el/button {:class "btn btn-affirm btn-sm"
+                          :on-click (fn [_] (on-promote run))}
+                "File as proposal"))))))))
 
 (defn view
   "Render one Run. `live-run` wins for transient :cancelling status; durable
    detail supplies history, effects, outputs, and structural relations."
   [{:keys [detail live-run fallback-run room-name syntax-pref on-back-room
-           on-open-message on-open-run on-cancel]}]
+           on-open-message on-open-run on-cancel on-promote]}]
   (let [durable-run (:run detail)
         run (when (or fallback-run durable-run live-run)
               (merge fallback-run durable-run live-run))
@@ -226,7 +231,7 @@
                   (map #(related-run-button % :child on-open-run)
                        (:children detail)))))
 
-            (settlement-view run)
+            (settlement-view run on-promote)
 
             (el/section {:class "run-section"}
               (el/div {:class "run-section-heading"}

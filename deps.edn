@@ -51,7 +51,10 @@
         ;; Verified here in Chrome against 0.1.40's tree: Memory toggles
         ;; (settled and fast), cross-scope page switches, page->room switches —
         ;; stable at 9 containers, zero duplicate parents, zero warnings.
-        org.replikativ/spindel {:mvn/version "0.1.40"}
+        ;; Stacked on spindel#43: affine partitioned world authority. Replace
+        ;; this reviewed SHA with the coordinated Clojars release after squash.
+        org.replikativ/spindel {:git/url "https://github.com/replikativ/spindel.git"
+                                :git/sha "8c038f1a80de094cbd0c066add685bfd2017993f"}
         is.simm/partial-cps {:mvn/version "0.1.60"}
 
         ;; replikativ substrate
@@ -263,9 +266,11 @@
         ;; room forever); plus GLM tool-channel recovery, embedder-tunable eval
         ;; timeout, and budget exhaustion that ENDS the turn instead of blocking
         ;; the shared drain thread.
-        ;; 0.1.56 adds native reactive agent programs and per-Run isolated worlds
-        ;; with explicit automatic/review/discard settlement.
-        org.replikativ/dvergr {:mvn/version "0.1.56"}}
+        ;; Stacked on dvergr#69 (and its #68 base): retained Run worlds can be
+        ;; durably adopted, exhaustively partitioned and settled through affine
+        ;; governance capabilities. Replace with the release after squash.
+        org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr.git"
+                               :git/sha "1912b1061957df9b68e14d6c775ca61f0905180f"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead

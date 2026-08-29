@@ -118,3 +118,15 @@
              (refresh-room! room-id)))
          (fn [error]
            (js/console.warn "[run-sync] cancellation failed" run-id error))))))
+
+(defn promote!
+  "Promote one retained Run world and pass its durable Proposal result onward."
+  [room-id run-id title on-complete]
+  (binding [rtc/*execution-context* runtime]
+    (let [s (remote/promote-room-run-world! web/server-id (str room-id)
+                                            (str run-id) (str title))]
+      (s (fn [result]
+           (refresh-room! room-id)
+           (when on-complete (on-complete result)))
+         (fn [error]
+           (js/console.warn "[run-sync] promotion failed" run-id error))))))

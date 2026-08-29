@@ -51,6 +51,7 @@
                        (props/with-merge-authority
                          party
                          (props/visible-proposals party :status (when st (keyword st)))))
+                     props/with-capability-availability
                      ;; stringify uuids for the wire; keep forks compact
                      (mapv (fn [p]
                              {:id (str (:proposal/id p))
@@ -82,6 +83,8 @@
                                               ;; may THIS reviewer land THIS
                                               ;; patch — see with-merge-authority
                                               :may-merge? (:proposal.fork/may-merge? f)
+                                              :capability-live?
+                                              (:proposal.fork/capability-live? f)
                                               ;; nil ⇒ open; the client shows a
                                               ;; resolved fork struck through
                                               ;; rather than dropping it

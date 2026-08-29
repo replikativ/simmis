@@ -881,25 +881,39 @@
 (declare repo-conflict-details)
 
 (defn- repo? [system-type] (= :repo system-type))
+(defn- world? [system-type] (= :world system-type))
+
+(defn- world-call [sym & args]
+  (apply (requiring-resolve
+          (symbol "is.simm.ops.run-world-proposals" (name sym)))
+         args))
 
 (defn trunk-of
   "The branch a fork of this system-type lands on."
   [scope system-type]
-  (if (repo? system-type) (repo-trunk scope) :db))
+  (cond
+    (world? system-type) :world/trunk
+    (repo? system-type) (repo-trunk scope)
+    :else :db))
 
 (defn head-id
   "Head commit of `branch`, as a string, or nil when it does not resolve."
   [scope system-type branch]
-  (if (repo? system-type)
-    (repo-head-id scope branch)
-    (branch-head-id scope branch)))
+  (cond
+    (world? system-type) (world-call 'head-id scope branch)
+    (repo? system-type) (repo-head-id scope branch)
+    :else (branch-head-id scope branch)))
 
 (defn fork-branch!
   "Create a fork branch off trunk. `{:branch :parent :existed?}`."
   [scope system-type slug]
-  (if (repo? system-type)
-    (branch-repo! scope slug)
-    (branch-kb! scope slug)))
+  (cond
+    (world? system-type)
+    (throw (ex-info "Adopted worlds are created by Run promotion, not branch minting"
+                    {:scope scope :system-type system-type}))
+
+    (repo? system-type) (branch-repo! scope slug)
+    :else (branch-kb! scope slug)))
 
 (defn delta
   "A branch's change set against its trunk, in whatever shape its adapter
@@ -911,9 +925,10 @@
   ([scope system-type branch] (delta scope system-type branch nil))
   ([scope system-type branch opts]
    (let [trunk (trunk-of scope system-type)]
-     (if (repo? system-type)
-       (repo-diff scope trunk branch opts)
-       (kb-diff scope trunk branch)))))
+     (cond
+       (world? system-type) (world-call 'delta scope)
+       (repo? system-type) (repo-diff scope trunk branch opts)
+       :else (kb-diff scope trunk branch)))))
 
 (defn conflicts-with-trunk
   "Conflict descriptors between `branch` and its trunk, asked in the SAME
@@ -926,13 +941,18 @@
    fork's silence means \"not computed\", not \"clean\"."
   [scope system-type branch]
   (let [trunk (trunk-of scope system-type)]
-    (or (if (repo? system-type)
+    (or (cond
+          (world? system-type)
+          (world-call 'conflicts scope)
+
+          (repo? system-type)
           ;; Real conflicts only, and that is now geschichte's own answer: a file
           ;; both sides touched in different places merges while planning, so it
           ;; never reaches here. Reporting one would have a reviewer arbitrate a
           ;; merge that is about to happen anyway.
           (repo-conflict-details scope branch)
-          (kb-conflicts scope trunk branch))
+
+          :else (kb-conflicts scope trunk branch))
         [])))
 
 (defn land!
@@ -940,16 +960,18 @@
    merge cannot be made — a repo refuses an unresolved conflict."
   [scope system-type branch]
   (let [trunk (trunk-of scope system-type)]
-    (if (repo? system-type)
-      (merge-repo! scope branch trunk)
-      (merge-kb! scope branch trunk))))
+    (cond
+      (world? system-type) (world-call 'settle-scope! scope :merge)
+      (repo? system-type) (merge-repo! scope branch trunk)
+      :else (merge-kb! scope branch trunk))))
 
 (defn drop-branch!
   "Delete a fork branch."
   [scope system-type branch]
-  (if (repo? system-type)
-    (discard-repo-branch! scope branch)
-    (discard-kb-branch! scope branch)))
+  (cond
+    (world? system-type) (world-call 'settle-scope! scope :discard)
+    (repo? system-type) (discard-repo-branch! scope branch)
+    :else (discard-kb-branch! scope branch)))
 
 (def ^:private max-conflict-side
   "Per-side character ceiling on a conflicting file's text. A reviewer looking
