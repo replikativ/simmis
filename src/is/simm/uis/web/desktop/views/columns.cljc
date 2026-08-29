@@ -1000,7 +1000,7 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs)
+                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs id)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1198,7 +1198,7 @@
   "Render content for a tab based on its type.
 
    kb-states arg removed — wiki tabs self-track their KB signal."
-  [tab-type data local-db chat-windows settings-data admin-data room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs]]
+  [tab-type data local-db chat-windows settings-data admin-data room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs col-id]]
   (case tab-type
     :home
     ;; Newcomer landing: the obvious first action is talking to your
@@ -1255,7 +1255,7 @@
     (render-tab-content :chat (assoc data :thread-view? true)
                         local-db chat-windows settings-data admin-data room-states
                         syntax-pref gref video-info screen-sharing screens-results
-                        recordings-results web-captures-results chat-reply-targets room-runs)
+                        recordings-results web-captures-results chat-reply-targets room-runs col-id)
 
     :run-history
     #?(:cljs
@@ -1864,6 +1864,19 @@
                        :run-id (:message/run-id item)
                        :object (get-in item [:message/metadata :object])
                        :on-open-run open-run!
+                       :on-open-proposal
+                       (fn [event proposal-id title]
+                         (let [new-column? (or (.-metaKey event) (.-ctrlKey event))]
+                           ;; A normal click bubbles to the enclosing column and
+                           ;; activates it. A modifier-click creates and activates
+                           ;; a new column, so keep the old column's click handler
+                           ;; from stealing focus back afterwards.
+                           (when new-column? (.stopPropagation event))
+                           (sig/open-tab! :proposals
+                                          {:proposal-id proposal-id}
+                                          {:col-id col-id
+                                           :title (str "Proposal · " title)
+                                           :new-column? new-column?})))
                        :thread-parent (:thread/parent item)
                        :reply-count (:thread/reply-count item)
                        :on-open-thread

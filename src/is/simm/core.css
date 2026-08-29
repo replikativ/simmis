@@ -2361,7 +2361,9 @@ body {
 /* A Proposal lives in the room transcript, while its full semantic diff and
    settlement controls remain in the governed inspector. */
 .chat-proposal-card {
-  min-width: min(30rem, 72vw);
+  width: min(30rem, 100%);
+  max-width: 100%;
+  min-width: 0;
   padding: var(--spacing-md);
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--mono-border));
   border-radius: var(--radius-md);

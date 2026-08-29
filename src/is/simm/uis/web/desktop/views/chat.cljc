@@ -420,7 +420,7 @@
   [{:keys [id author-id author-name content reasoning timestamp is-own? is-ai?
            syntax-pref attachment-blob attachment-mime thread-parent
            in-reply-to reply-count on-jump-parent on-reply audience run-id
-           mention-handles on-open-thread on-open-run object]}]
+           mention-handles on-open-thread on-open-run on-open-proposal object]}]
   (el/div {:key id
            :class (vc/class-names "chat-message" "message"
                                   (when is-own? "chat-message--own"))
@@ -562,10 +562,8 @@
               (el/button {:class "button button--primary chat-proposal-review"
                           :on-click
                           (fn [event]
-                            (.stopPropagation event)
-                            (sig/open-tab! :proposals
-                                           {:proposal-id proposal-id}
-                                           {:title (str "Proposal · " title)}))}
+                            (when on-open-proposal
+                              (on-open-proposal event proposal-id title)))}
                 "Review changes"))))
         ;; Generic message content - markdown for AI, rich text for user
         #?(:cljs
