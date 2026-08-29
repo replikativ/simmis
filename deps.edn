@@ -266,13 +266,11 @@
         ;; room forever); plus GLM tool-channel recovery, embedder-tunable eval
         ;; timeout, and budget exhaustion that ENDS the turn instead of blocking
         ;; the shared drain thread.
-        ;; Stacked on dvergr#70 (including #69/#68): retained Run worlds can be
+        ;; 0.1.61 (dvergr#70, including #69/#68): retained Run worlds can be
         ;; durably adopted, exhaustively partitioned and settled through affine
         ;; governance capabilities, while typed message object references give
-        ;; each Proposal one canonical chat identity. Replace with the release
-        ;; after squash.
-        org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr.git"
-                               :git/sha "d17207bf9bddda372b8db05c7fbbad6a8f561890"}}
+        ;; each Proposal one canonical chat identity.
+        org.replikativ/dvergr {:mvn/version "0.1.61"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
