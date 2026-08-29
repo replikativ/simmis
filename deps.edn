@@ -263,7 +263,9 @@
         ;; room forever); plus GLM tool-channel recovery, embedder-tunable eval
         ;; timeout, and budget exhaustion that ENDS the turn instead of blocking
         ;; the shared drain thread.
-        org.replikativ/dvergr {:mvn/version "0.1.54"}}
+        ;; 0.1.56 adds native reactive agent programs and per-Run isolated worlds
+        ;; with explicit automatic/review/discard settlement.
+        org.replikativ/dvergr {:mvn/version "0.1.56"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
