@@ -14,9 +14,6 @@
             #?(:clj [dvergr.chat.context :as chat-ctx])
             #?(:clj [dvergr.chat.accounting :as acct])
             #?(:clj [dvergr.agent.run :as agent-run])
-            #?(:clj [dvergr.room.registry :as room-registry])
-            #?(:clj [dvergr.rooms.forks :as room-forks])
-            #?(:clj [org.replikativ.spindel.engine.core :as ec])
             #?(:clj [is.simm.model.run-broadcast :as run-broadcast])
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.model.message-notify-broadcast :as mnb])
@@ -338,61 +335,6 @@
            {:status (if (agent-run/cancel-run! run-id) :cancelling :not-active)
             :run-id run-id-str}
            {:status :not-active :run-id run-id-str}))
-       :cljs nil)))
-
-#?(:clj
-   (defn- settle-run-world!
-     [room-id-str run-id-str decision]
-     (let [room-id (java.util.UUID/fromString room-id-str)
-           run-id (java.util.UUID/fromString run-id-str)
-           room (room-agents/live-room room-id)
-           durable (when room (agent-run/run room run-id))
-           world-id (:run/world durable)]
-       (cond
-         (nil? room)
-         {:status :room-not-live}
-
-         (nil? durable)
-         {:status :run-not-found}
-
-         (not= :review (:run/settlement-status durable))
-         {:status :not-reviewable
-          :settlement-status (:run/settlement-status durable)}
-
-         (nil? world-id)
-         {:status :world-not-found}
-
-         :else
-         (binding [ec/*execution-context* (:ctx room)]
-           (if-let [fork (room-registry/lookup world-id)]
-             (if (and (= (:id room) (:parent-id fork))
-                      (= run-id (some-> fork :meta deref :run-id)))
-               (let [result (case decision
-                              :merge (room-forks/merge! fork)
-                              :discard (room-forks/discard! fork))]
-                 (if (:ok? result)
-                   (let [updated (agent-run/run room run-id)]
-                     ;; Dvergr's normal watcher covers execution completion;
-                     ;; settlement is a later decision, so explicitly project
-                     ;; the updated durable Run to every room client.
-                     (when updated
-                       (run-broadcast/publish-run! room-id :run/settled updated))
-                     {:status (if (= :merge decision) :merged :discarded)
-                      :run-id run-id-str})
-                   {:status :error :error (:error result)}))
-               {:status :world-owner-mismatch})
-             {:status :world-not-live}))))))
-
-(defn-spin-remote merge-room-run-world!
-  [server-id room-id-str run-id-str]
-  (spin-remote server-id [room-id-str run-id-str]
-    #?(:clj (settle-run-world! room-id-str run-id-str :merge)
-       :cljs nil)))
-
-(defn-spin-remote discard-room-run-world!
-  [server-id room-id-str run-id-str]
-  (spin-remote server-id [room-id-str run-id-str]
-    #?(:clj (settle-run-world! room-id-str run-id-str :discard)
        :cljs nil)))
 
 ;; =============================================================================

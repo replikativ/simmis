@@ -127,9 +127,10 @@
                (el/dd {} (str value))))
            facts))))))
 
-(defn- settlement-view [run on-merge-world on-discard-world]
+(defn- settlement-view [run]
   (when-let [settlement-status (:settlement-status run)]
-    (let [review? (= :review settlement-status)]
+    (let [review? (= :review settlement-status)
+          world-live? (:world-live? run)]
       (el/section {:class (str "run-section run-world run-world--"
                               (name settlement-status))}
         (el/div {:class "run-section-heading"}
@@ -145,28 +146,24 @@
           (when-let [isolation (:isolation run)]
             (el/span {} (str "Isolation · " (name isolation))))
           (when-let [world-id (:world-id run)]
-            (el/span {:class "run-world-id"} world-id)))
+            (el/span {:class "run-world-id"} world-id))
+          (when review?
+            (el/span {:class (str "run-world-availability run-world-availability--"
+                                  (if world-live? "live" "unavailable"))}
+              (if world-live?
+                "Capability retained"
+                "Capability unavailable"))))
         (when review?
-          (el/div {:class "run-world-actions"}
-            (el/button {:class "run-world-discard"
-                        :on-click (fn [_]
-                                    (when on-discard-world
-                                      (on-discard-world (:id run))))}
-              (vc/icon "trash-2")
-              "Discard")
-            (el/button {:class "run-world-merge"
-                        :on-click (fn [_]
-                                    (when on-merge-world
-                                      (on-merge-world (:id run))))}
-              (vc/icon "git-merge")
-              "Merge work")))))))
+          (el/p {:class "run-world-guidance"}
+            (if world-live?
+              "This isolated world is available for durable proposal promotion."
+              "The durable Run remains auditable, but this process no longer holds its settlement capability.")))))))
 
 (defn view
   "Render one Run. `live-run` wins for transient :cancelling status; durable
    detail supplies history, effects, outputs, and structural relations."
   [{:keys [detail live-run fallback-run room-name syntax-pref on-back-room
-           on-open-message on-open-run on-cancel on-merge-world
-           on-discard-world]}]
+           on-open-message on-open-run on-cancel]}]
   (let [durable-run (:run detail)
         run (when (or fallback-run durable-run live-run)
               (merge fallback-run durable-run live-run))
@@ -229,7 +226,7 @@
                   (map #(related-run-button % :child on-open-run)
                        (:children detail)))))
 
-            (settlement-view run on-merge-world on-discard-world)
+            (settlement-view run)
 
             (el/section {:class "run-section"}
               (el/div {:class "run-section-heading"}

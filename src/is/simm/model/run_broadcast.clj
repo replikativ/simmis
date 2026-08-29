@@ -6,11 +6,13 @@
    clients never need a slug registry and never receive another room's Runs."
   (:require [datahike.api :as d]
             [dvergr.agent.run :as run]
+            [dvergr.room.registry :as room-registry]
             [is.simm.agents.room-agents :as room-agents]
             [is.simm.model.parties :as parties]
             [is.simm.model.system-db :as system-db]
             [kabel.pubsub :as pubsub]
             [kabel.pubsub.protocol :as proto]
+            [org.replikativ.spindel.engine.core :as ec]
             [taoensso.telemere :as log]))
 
 (def ^:private watcher-key ::publisher)
@@ -54,6 +56,17 @@
               :party/display-name)
       (some-> actor name)))
 
+(defn- run-world-live?
+  "Does this exact Run still own a process-local retained Room capability?"
+  [room-id r]
+  (when-let [world-id (:run/world r)]
+    (boolean
+     (when-let [room (room-agents/live-room room-id)]
+       (binding [ec/*execution-context* (:ctx room)]
+         (when-let [world (room-registry/lookup world-id)]
+           (and (= (:id room) (:parent-id world))
+                (= (:run/id r) (some-> world :meta deref :run-id)))))))))
+
 (defn run-summary
   "Serializable, UI-sized projection. Live ChatContexts and cancellation
    handles never cross this boundary."
@@ -73,6 +86,7 @@
            :created-at (some-> ^java.util.Date (:run/created-at r) .getTime)
            :started-at (some-> ^java.util.Date (:run/started-at r) .getTime)
            :updated-at (some-> ^java.util.Date (:run/updated-at r) .getTime)}
+    (:run/world r) (assoc :world-live? (run-world-live? room-id r))
     (:run/parent r) (assoc :parent-id (str (:run/parent r)))
     (:run/ended-at r) (assoc :ended-at (.getTime ^java.util.Date (:run/ended-at r)))
     (:run/reason r) (assoc :reason (:run/reason r))

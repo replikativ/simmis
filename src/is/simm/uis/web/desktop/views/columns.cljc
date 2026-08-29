@@ -1330,8 +1330,6 @@
            :room-name room-name
            :syntax-pref syntax-pref
            :on-cancel #(run-sync/cancel! room-id %)
-           :on-merge-world #(run-sync/settle-world! room-id % :merge)
-           :on-discard-world #(run-sync/settle-world! room-id % :discard)
            :on-back-room
            #(sig/open-tab! :chat
                            {:room-id room-id
