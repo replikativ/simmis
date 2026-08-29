@@ -719,6 +719,17 @@
                    :msg "dvergr room hydration failed"
                    :data {:error (str e)}})))
 
+    ;; Complete any cross-store Proposal publication interrupted by the prior
+    ;; process. This runs only after the live room registry exists; every retry
+    ;; reuses the message UUID reserved with the Proposal, so a crash after the
+    ;; durable room post cannot duplicate the canonical chat card.
+    (try
+      ((requiring-resolve 'is.simm.ops.proposal-publication/retry-pending!))
+      (catch Exception e
+        (log/log! {:level :warn :id ::proposal-publication-retry-failed
+                   :msg "Pending proposal chat projections remain retryable"
+                   :data {:error (str e)}})))
+
     ;; Reap orphaned repo workspace branches. AFTER hydration (it resolves each
     ;; repo on its room's ctx) and BEFORE anything can open an overlay — it
     ;; keeps nothing, which is correct exactly here: an overlay is an in-memory

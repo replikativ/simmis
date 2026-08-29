@@ -95,6 +95,22 @@ branch; later: workspace joint commit), `dismiss-proposal!`.
 Broadcast: `:proposal/filed|:proposal/resolved` on the existing
 `:branching/event` topic.
 
+### Canonical chat projection
+
+A room-scoped Proposal reserves `:proposal/message-id` in the same system-DB
+transaction that creates the ForkSet. The id is deterministic from the Proposal
+UUID, so retrying an ambiguous proposal commit cannot mint another card.
+`ops/proposal-publication.clj` then posts one top-level Dvergr message carrying
+`{:object {:kind :proposal :id proposal-id}}`. Dvergr persists that immutable
+envelope before making it visible. Only then does Simmis advance
+`:proposal/message-status` from `:pending` to `:published`.
+
+The two durable writes deliberately are not presented as an atomic cross-store
+transaction. A crash after the room post leaves `:pending`; retry posts the same
+message UUID, so Dvergr's atomic first-write-wins contract turns it into a no-op
+and Simmis can finish the projection. The Proposal/ForkSet remains the governance
+object, while its chat message is the conversational home and thread root.
+
 Sandbox: per-(room,agent) overlay atom (NOT ctx-forking — matches the
 conn-fn indirection agents already use). `proposal/start!` (lazy branch
 mint on first write; overlay consulted by kb/* conn-fn AND the /drive

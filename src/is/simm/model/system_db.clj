@@ -333,6 +333,22 @@
     :db/valueType :db.type/uuid
     :db/cardinality :db.cardinality/one
     :db/doc "Exact Dvergr Run whose retained world this proposal governs"}
+   {:db/ident :proposal/message-id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity
+    :db/doc "Reserved identity of the canonical proposal card in its room log"}
+   {:db/ident :proposal/message-status
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc ":pending until the reserved message is durably posted; then :published"}
+   {:db/ident :proposal/message-published-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal/message-error
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "Last publication error. Retracted after a successful idempotent retry."}
    {:db/ident :proposal/adoption
     :db/valueType :db.type/ref
     :db/cardinality :db.cardinality/one

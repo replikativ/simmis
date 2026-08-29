@@ -19,6 +19,13 @@
 
 (defn- conn [] (sdb/get-conn))
 
+(defn- proposal-message-id
+  "Stable room-log identity for a Proposal, including ambiguous commit retry."
+  [proposal-id]
+  (java.util.UUID/nameUUIDFromBytes
+   (.getBytes (str "simmis:proposal-message:" proposal-id)
+              java.nio.charset.StandardCharsets/UTF_8)))
+
 (defn file-proposal!
   "Record an open proposal. `forks` = [{:scope uuid :branch str
    :base-commit str :system-type kw :author uuid} …]. Returns the proposal id.
@@ -33,7 +40,12 @@
   [{:keys [id title summary author room run adoption forks intent]}]
   {:pre [(string? title) (seq forks)
          (or (nil? intent) (contains? fs/intents intent))]}
-  (let [id (or id (random-uuid))]
+  (let [id (or id (random-uuid))
+        ;; A proposal's canonical chat identity is reserved in the SAME
+        ;; transaction as the proposal. Publication may crash and retry, but it
+        ;; must never mint a second card. Roomless legacy/import rows remain
+        ;; intentionally unpublishable.
+        message-id (when room (proposal-message-id id))]
     (d/transact (conn)
       [(cond-> {:proposal/id id
                 :proposal/title title
@@ -61,6 +73,8 @@
          summary (assoc :proposal/summary summary)
          author  (assoc :proposal/author author)
          room    (assoc :proposal/room room)
+         room    (assoc :proposal/message-id message-id
+                        :proposal/message-status :pending)
          run     (assoc :proposal/run run)
          adoption (assoc :proposal/adoption [:world-adoption/id adoption])
          ;; only when non-default: absent already MEANS :change, and writing
@@ -69,7 +83,32 @@
          (assoc :proposal/intent intent))])
     (log/log! {:level :info :id ::filed :data {:proposal id :title title
                                                :forks (count forks)}})
+    ;; Resolve lazily to keep the proposal store independent of live discourse
+    ;; plumbing. publish! records failure and leaves :pending; proposal filing
+    ;; itself remains durable and retryable even when the room is unavailable.
+    (when room
+      ((requiring-resolve 'is.simm.ops.proposal-publication/publish!) id))
     id))
+
+(defn mark-message-published!
+  "Mark the reserved canonical message durable. Idempotent."
+  [proposal-id]
+  (d/transact (conn)
+              [[:db/add [:proposal/id proposal-id]
+                :proposal/message-status :published]
+               [:db/add [:proposal/id proposal-id]
+                :proposal/message-published-at (java.util.Date.)]
+               [:db/retract [:proposal/id proposal-id]
+                :proposal/message-error]]))
+
+(defn mark-message-publication-failed!
+  "Keep publication retryable while recording its latest diagnostic."
+  [proposal-id error]
+  (d/transact (conn)
+              [[:db/add [:proposal/id proposal-id]
+                :proposal/message-status :pending]
+               [:db/add [:proposal/id proposal-id]
+                :proposal/message-error (str error)]]))
 
 (defn get-proposal [id]
   (when-let [e (d/q '[:find ?e . :in $ ?id :where [?e :proposal/id ?id]]
