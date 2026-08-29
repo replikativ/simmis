@@ -66,7 +66,7 @@
         ;; async-storage groundwork, current query correctness fixes, secondary
         ;; index/GC follow-ups and remote-writer fencing. konserve 0.9.385 is
         ;; Datahike 0.8.1820's own runtime pin. konserve-sync 0.1.40
-        ;; + kabel 0.3.108 are the current released client-sync set
+        ;; + kabel 0.3.109 are the current released client-sync set
         ;; (ordered commit batches, branch head last, no head timestamp-dedup,
         ;; db exposure gated on the drained handshake) — bump them TOGETHER.
         ;; NOTE: booting on current Datahike needs the undeclared-attr
@@ -117,7 +117,7 @@
         ;; registered topic could write its store. That predicate still asked
         ;; `can?` for `:read` whatever the operation was, so it closed the hole
         ;; only to "same check as subscribe" — the residue 0.3.105 finishes.
-        org.replikativ/kabel {:mvn/version "0.3.108"}
+        org.replikativ/kabel {:mvn/version "0.3.109"}
         ;; kontor — double-entry accounting kernel; powers is.simm.model.books
         ;; (per-room governed double-entry) + the metering→ledger bridge. :local
         ;; overlays ../kontor for cross-repo dev.
@@ -229,7 +229,7 @@
         ;; distributed-scope still declares the pre-rename io.replikativ group
         ;; for hasch/kabel; exclude so only the org.replikativ artifacts (same
         ;; namespaces) are on the classpath.
-        is.simm/distributed-scope {:mvn/version "0.1.9"
+        is.simm/distributed-scope {:mvn/version "0.1.10"
                                    :exclusions [io.replikativ/hasch
                                                 io.replikativ/kabel]}
 

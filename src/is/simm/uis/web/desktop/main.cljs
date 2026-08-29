@@ -32,7 +32,7 @@
             [org.replikativ.spindel.effects.await :refer [await] :include-macros true]
             ;; Kabel connection - use shared client from web.cljs
             [superv.async :refer [S restarting-supervisor] :refer-macros [go-try go-super <?]]
-            [clojure.core.async :refer [go <! promise-chan put! alts!]]
+            [clojure.core.async :refer [go <! promise-chan put! alts! timeout]]
             [is.simm.distributed-scope :refer [connect-distributed-scope]]
             [is.simm.runtimes.web :as web]
             [datahike.api :as dh]
@@ -132,18 +132,20 @@
 ;; Register runtime for spin-remote distributed functions
 (dist/register-context! :default runtime)
 
-;; Track if this is the first connection (for init flow)
-(defonce first-connect-ch (promise-chan))
+(defonce ^:private active-connection-session (atom nil))
 
-;; Track retry count for user feedback
-(defonce retry-count (atom 0))
+(defn- stop-connection-session!
+  []
+  (when-let [session @active-connection-session]
+    (web/stop-session! session))
+  (reset! active-connection-session nil))
 
 (defn connect-with-retry!
   "Connect to server with automatic reconnection on failure.
    Uses restarting-supervisor to retry on connection errors.
    Shows connection status in the status bar.
    Returns immediately; signals first-connect-ch when initially connected."
-  [kabel-client]
+  [kabel-client first-connect-ch retry-count session-supervisor]
   (restarting-supervisor
     (fn [S]
       (go-super S
@@ -178,7 +180,7 @@
 
     :delay 5000           ;; 5 second delay between retries
     :retries nil          ;; Infinite retries
-    :supervisor S
+    :supervisor session-supervisor
     :log-fn (fn [level msg]
               (sig/set-connection-status! :disconnected)
               (swap! retry-count inc)
@@ -565,57 +567,82 @@
 (defn start-main!
   "Start the main application after authentication is complete.
    Called by web.cljs after successful login/auto-login."
-  []
-  (let [kabel-client @web/client]
+  [session]
+  (let [kabel-client (:client session)]
     (when-not kabel-client
       (js/console.error "[Main] No kabel client available! Auth may not have completed."))
     (when kabel-client
-    (js/console.log "[Main] ===== Initializing Simmis Wiki =====")
+      (stop-connection-session!)
+      (let [first-connect-ch (promise-chan)
+            retry-count (atom 0)
+            session-supervisor (:supervisor session)
+            connection-run (connect-with-retry! kabel-client first-connect-ch retry-count
+                                                session-supervisor)]
+        (reset! active-connection-session (assoc session :connection-run connection-run))
+        (js/console.log "[Main] ===== Initializing Simmis Wiki =====")
+        (dist/set-system-peer! kabel-client)
+        (js/console.log "[Main] Step 1: Starting connection with auto-retry...")
 
-    ;; Set kabel peer for spin-remote distributed functions
-    (dist/set-system-peer! kabel-client)
+        (go-try session-supervisor
+          (js/console.log "[Main] Step 1b: Waiting for authentication...")
+          (let [deadline (timeout 15000)
+                [auth-result auth-port] (alts! [(:auth-result session) deadline] :priority true)]
+            (cond
+              (= auth-port deadline)
+              (do
+                (js/console.error "[Main] Authentication timed out")
+                (sig/show-error! "Authentication timed out" "Please reload or sign in again." :network))
 
-    ;; Start connection with auto-retry (runs in background)
-    (js/console.log "[Main] Step 1: Starting connection with auto-retry...")
-    (connect-with-retry! kabel-client)
+              (not (web/current-session? session))
+              (js/console.warn "[Main] Ignoring replaced authentication session")
 
-    (go-try S
-      ;; Wait for first successful connection
-      (<? S first-connect-ch)
-      (js/console.log "[Main] Step 1: Connected!")
+              (not= :authenticated (:status auth-result))
+              (do
+                (js/console.error "[Main] Authentication failed:" (clj->js (:error auth-result)))
+                (sig/show-error! "Authentication failed" "Refreshing your session…" :network))
 
-      ;; Step 2: Initialize reactive database
-      (js/console.log "[Main] Step 2: Initializing reactive database...")
-      (let [start (js/Date.now)]
-        (<? S (db-signal/init-reactive-db! kabel-client))
-        (js/console.log "[Main] Step 2: Database ready! Total time:" (- (js/Date.now) start) "ms"))
+              :else
+              (do
+                (js/console.log "[Main] Step 1b: Authenticated!")
+                ;; Distributed-scope readiness depends on registration traffic
+                ;; that Kabel intentionally holds behind authentication. Reuse
+                ;; the bootstrap deadline so connection setup cannot hang after
+                ;; auth either.
+                (let [[_ connect-port] (alts! [first-connect-ch deadline] :priority true)]
+                  (cond
+                    (= connect-port deadline)
+                    (do
+                      (js/console.error "[Main] Connection bootstrap timed out")
+                      (sig/show-error! "Connection timed out" "Please reload and try again." :network))
 
-      ;; Step 3: Initialize router
-      (js/console.log "[Main] Step 3: Initializing router...")
-      (router/init! runtime)
-      (js/console.log "[Main] Step 3: Router ready!")
+                    (not (web/current-session? session))
+                    (js/console.warn "[Main] Ignoring replaced connection session")
 
-      ;; Step 4: Mount the app
-      (js/console.log "[Main] Step 4: Mounting app...")
-      (let [container (js/document.getElementById "app")
-            discharge (browser/make-dom-discharge js/document)]
-        (when container
-          ;; Add click handler
-          (.addEventListener container "click" (rtc/make-handler runtime handle-app-click))
+                    :else
+                    (do
+                      (js/console.log "[Main] Step 1: Connected!")
+                      (js/console.log "[Main] Step 2: Initializing reactive database...")
+                      (let [start (js/Date.now)]
+                        (<? session-supervisor (db-signal/init-reactive-db! kabel-client))
+                        (js/console.log "[Main] Step 2: Database ready! Total time:"
+                                        (- (js/Date.now) start) "ms"))
 
-          ;; Set up Lucide icon observer for dynamically added elements
-          (init-lucide-observer! container)
+                      (js/console.log "[Main] Step 3: Initializing router...")
+                      (router/init! runtime)
+                      (js/console.log "[Main] Step 3: Router ready!")
 
-          ;; Render the app
-          (binding [rtc/*execution-context* runtime]
-            (let [app-spin (make-app-spin)
-                  handle (render/render-spin! container app-spin discharge)]
-              ;; Retain a strong reference to the root spin in the handle so
-              ;; the JS GC doesn't collect it (which would trigger spindel's
-              ;; FinalizationRegistry cleanup and tear down the live render tree).
-              (reset! render-handle (assoc handle :app-spin app-spin))))))
+                      (js/console.log "[Main] Step 4: Mounting app...")
+                      (let [container (js/document.getElementById "app")
+                            discharge (browser/make-dom-discharge js/document)]
+                        (when container
+                          (.addEventListener container "click" (rtc/make-handler runtime handle-app-click))
+                          (init-lucide-observer! container)
+                          (binding [rtc/*execution-context* runtime]
+                            (let [app-spin (make-app-spin)
+                                  handle (render/render-spin! container app-spin discharge)]
+                              (reset! render-handle (assoc handle :app-spin app-spin))))))
 
-      (js/console.log "[Main] ===== Initialization complete =====")))))
+                      (js/console.log "[Main] ===== Initialization complete ====="))))))))))))
 
 (defn ^:export init
   "Initialize the Simmis wiki application.

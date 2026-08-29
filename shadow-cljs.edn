@@ -18,6 +18,9 @@
            :compiler-options {:parallel-build false}
            :modules {:app {:entries [is.simm.uis.web.desktop.main]
                            :init-fn is.simm.uis.web.desktop.main/init}}
+           :dev {:compiler-options
+                 {:closure-defines
+                  {is.simm.runtimes.web/development-websocket-port "47295"}}}
            :devtools {:repl-init-ns is.simm.uis.web.desktop.main
                       :before-load is.simm.uis.web.desktop.main/stop!
                       :after-load is.simm.uis.web.desktop.main/reload!}}
@@ -28,4 +31,7 @@
            :asset-path "/js"
            :modules {:block-editor {:entries [is.simm.uis.web.desktop.block-editor]
                                     :init-fn is.simm.uis.web.desktop.block-editor/init}}
+           :dev {:compiler-options
+                 {:closure-defines
+                  {is.simm.runtimes.web/development-websocket-port "47295"}}}
            :devtools {:repl-init-ns is.simm.uis.web.desktop.block-editor}}}}

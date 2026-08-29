@@ -1,7 +1,7 @@
 (ns is.simm.runtimes.web
   (:require ;; kabel
-            [superv.async :refer [S] :refer-macros [go-try <?]]
-            [clojure.core.async :refer [<!] :refer-macros [go]]
+            [superv.async :refer [S simple-supervisor] :refer-macros [go-try <?]]
+            [clojure.core.async :refer [<! promise-chan put! close!] :refer-macros [go]]
             [kabel.peer :as peer]
             [is.simm.distributed-scope :refer [remote-middleware invoke-on-peer connect-distributed-scope]]
             ;; Authentication middleware
@@ -18,11 +18,14 @@
             [is.simm.uis.web.desktop.signals :as sig]
             [org.replikativ.spindel.engine.core :as rtc]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
+            [is.simm.runtimes.web-url :as web-url]
             [clojure.string]
             [taoensso.telemere :as tel]
             [taoensso.timbre :as timbre]
             [taoensso.trove :as trove]
             [taoensso.trove.console :as trove-console]))
+
+(goog-define ^string development-websocket-port "")
 
 (def url
   "Server WebSocket URL, derived from the page origin.
@@ -35,12 +38,11 @@
    - http page (local dev, SSH tunnel, tailnet): the page comes from
      shadow's 8080 while the kabel server listens on 47295 — keep the
      fixed-port convention, only the host follows the page."
-  (let [loc    (.-location js/window)
-        https? (= "https:" (.-protocol loc))]
-    (if https?
-      (str "wss://" (.-host loc)) ;; .-host includes :port when non-default
-      (let [host (let [h (.-hostname loc)] (if (seq h) h "localhost"))]
-        (str "ws://" host ":47295")))))
+  (let [loc (.-location js/window)]
+    (web-url/websocket-url {:protocol (.-protocol loc)
+                            :hostname (.-hostname loc)
+                            :host (.-host loc)}
+                           development-websocket-port)))
 
 ;; Auth goes to the PAGE'S OWN ORIGIN, which is what `login/get-auth-base-url`
 ;; already falls back to — so there is nothing to set here.
@@ -58,16 +60,35 @@
 ;; so `/auth/*` on :8080 reaches the same handler. Same origin everywhere means
 ;; no credentialed CORS, no origin allowlist, and dev behaving like production.
 
-(defonce client-id
-  ;; Per-session random peer id. Must be unique per connected browser —
-  ;; two clients sharing a peer id cross-wire kabel subscription routing
-  ;; and RPC replies (the old hardcoded uuid did exactly that).
-  (random-uuid))
-
 (def server-id #uuid "05a06e85-e7ca-4213-9fe5-04ae511e50a0")
 
 ;; Authenticated principal - set from login response
 (defonce authenticated-principal (atom nil))
+
+;; A client session owns its auth result. Callbacks capture this channel and id
+;; lexically, so a late result from a replaced socket cannot release the new
+;; session's bootstrap.
+(defonce ^:private current-session* (atom nil))
+
+(defn current-session [] @current-session*)
+
+(defn current-session?
+  [session]
+  (= (:id session) (:id @current-session*)))
+
+(defn stop-session!
+  "Abort all supervised work owned by a client session and remove its peer
+   registry entry. Client peers connect directly rather than through
+   `peer/start`, so `peer/stop` is not their lifecycle boundary."
+  [{:keys [client supervisor] :as session}]
+  (when (and session (current-session? session))
+    (reset! current-session* nil))
+  (when supervisor
+    (doseq [abort-ch (:aborts supervisor)]
+      (put! abort-ch :abort)
+      (close! abort-ch)))
+  (when client
+    (peer/unregister-peer! (:id @client))))
 
 ;; Use the shared execution context from bootstrap (preloaded before this ns)
 ;; This ensures signals can be created at namespace load time
@@ -143,39 +164,47 @@
   "Create the kabel client peer with the given JWT token.
    Must be called after successful login."
   [token]
-  (let [peer (peer/client-peer S client-id
-                                (comp remote-middleware
-                                      (sync/client-middleware)
-                                      (ws-auth/auth-middleware
-                                        {:authenticate
-                                         {:token token
-                                          ;; auth accepted — clear the one-shot refresh guard, and
-                                          ;; RECORD the principal. `:permissive true` below means a
-                                          ;; REJECTED token does not raise `:on-error`; the socket
-                                          ;; just continues anonymous. So "did this callback run?"
-                                          ;; is the only client-side evidence that the token was
-                                          ;; actually honoured, and `authenticated-principal` being
-                                          ;; nil while a token was presented is the signature of a
-                                          ;; silently-anonymous session.
-                                          :on-auth
-                                          (fn [principal]
-                                            (.removeItem js/sessionStorage "simmis-reauth-tried")
-                                            (reset! authenticated-principal principal))
-                                          ;; A reconnect after the short-lived access token expired
-                                          ;; re-sends the stale token and the server rejects it; with
-                                          ;; :permissive the socket would otherwise continue anonymous
-                                          ;; (reads work, principal-requiring remotes fail). Instead
-                                          ;; refresh ONCE (guard lives in sessionStorage so it survives
-                                          ;; the reload and can't loop) and reboot with the fresh token.
-                                          :on-error
-                                          (fn [err]
-                                            (js/console.warn "[Auth] WS auth rejected:" (clj->js err))
-                                            (reauth-and-reload!))}
-                                         :permissive true}))
-                                datahike-cbor-middleware)]
+  (when-let [old-session @current-session*]
+    ;; Invalidate the generation before stopping it. An already queued callback
+    ;; from the old socket can no longer complete the replacement session.
+    (reset! current-session* nil)
+    (stop-session! old-session))
+  (let [session-id (random-uuid)
+        session-supervisor (simple-supervisor)
+        auth-result (promise-chan)
+        session-ref (atom nil)
+        current? #(current-session? @session-ref)
+        peer (peer/client-peer session-supervisor (random-uuid)
+                               (comp remote-middleware
+                                     (sync/client-middleware)
+                                     (ws-auth/auth-middleware
+                                       {:authenticate
+                                        {:token token
+                                         :on-auth
+                                         (fn [principal]
+                                           (when (current?)
+                                             (.removeItem js/sessionStorage "simmis-reauth-tried")
+                                             (reset! authenticated-principal principal)
+                                             (put! auth-result {:status :authenticated
+                                                                :principal principal})))
+                                         :on-error
+                                         (fn [err]
+                                           (when (current?)
+                                             ;; Publish terminal failure before refresh/reload.
+                                             (put! auth-result {:status :failed :error err})
+                                             (js/console.warn "[Auth] WS auth rejected:" (clj->js err))
+                                             (reauth-and-reload!)))}
+                                        :permissive true}))
+                               datahike-cbor-middleware)
+        session {:id session-id
+                 :client peer
+                 :supervisor session-supervisor
+                 :auth-result auth-result}]
+    (reset! session-ref session)
+    (reset! current-session* session)
     (reset! client peer)
-    (reset! invocation-loop (invoke-on-peer peer))
-    peer))
+    (reset! invocation-loop (invoke-on-peer peer {:supervisor session-supervisor}))
+    session))
 
 ;; =============================================================================
 ;; Initialization
@@ -201,12 +230,13 @@
   "Start the main application after successful auth.
    Called by main.cljs init function."
   [token user]
-  (reset! authenticated-principal user)
+  (reset! authenticated-principal nil)
   ;; Set current-user signal for UI
   (binding [rtc/*execution-context* runtime]
     (reset! sig/current-user user))
-  (create-client! token)
-  (show-app!))
+  (let [session (create-client! token)]
+    (show-app!)
+    session))
 
 (defn ^:export init []
   ;; Telemere level: :info by default so DevTools isn't flooded by
@@ -231,11 +261,11 @@
   (-> (login/check-existing-auth)
       (.then (fn [{:keys [token user]}]
                (js/console.log "[Auth] Found existing token, starting app...")
-               (start-app! token user)
+               (let [session (start-app! token user)]
                ;; Require main.cljs to continue initialization
                ;; This is done lazily to avoid circular deps
-               (when-let [main-init (aget js/window "__simmis_main_init")]
-                 (main-init))))
+                 (when-let [main-init (aget js/window "__simmis_main_init")]
+                   (main-init session)))))
       (.catch (fn [_]
                (js/console.log "[Auth] No valid auth, showing login page...")
                (show-login!)
@@ -244,7 +274,7 @@
                  (fn [result]
                    (let [{:keys [access_token user]} (js->clj result :keywordize-keys true)]
                      (js/console.log "[Auth] Login successful, starting app...")
-                     (start-app! access_token user)
-                     ;; Trigger main init
-                     (when-let [main-init (aget js/window "__simmis_main_init")]
-                       (main-init)))))))))
+                     (let [session (start-app! access_token user)]
+                       ;; Trigger main init
+                       (when-let [main-init (aget js/window "__simmis_main_init")]
+                         (main-init session))))))))))
