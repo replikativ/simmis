@@ -1330,6 +1330,16 @@
            :room-name room-name
            :syntax-pref syntax-pref
            :on-cancel #(run-sync/cancel! room-id %)
+           :on-promote
+           (fn [run]
+             (run-sync/promote!
+              room-id (:id run)
+              (str "Run by " (or (:actor-name run) (:actor run) "agent"))
+              (fn [result]
+                (when (= :open (:status result))
+                  (sig/open-tab! :proposals
+                                 {:proposal-id (str (:proposal-id result))}
+                                 {:title "Proposal"})))))
            :on-back-room
            #(sig/open-tab! :chat
                            {:room-id room-id

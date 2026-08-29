@@ -114,7 +114,8 @@
 (deftest run-controls-are-scoped-to-the-containing-room
   (let [room-id (random-uuid)]
     (doseq [[fn-name action] [["load-room-runs!" :read]
-                              ["cancel-room-run!" :write]]]
+                              ["cancel-room-run!" :write]
+                              ["promote-room-run-world!" :write]]]
       (let [policy (get access/rpc-policy fn-name)]
         (is (= action (:action policy)))
         (is (= {:room (str room-id)}

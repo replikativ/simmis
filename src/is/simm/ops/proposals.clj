@@ -30,26 +30,39 @@
    see `is.simm.model.forkset`. It decides which view the row appears in, so a
    caller filing a budget rather than a patch must say so; nothing about the
    fork itself distinguishes them."
-  [{:keys [title summary author room forks intent]}]
+  [{:keys [id title summary author room run adoption forks intent]}]
   {:pre [(string? title) (seq forks)
          (or (nil? intent) (contains? fs/intents intent))]}
-  (let [id (random-uuid)]
+  (let [id (or id (random-uuid))]
     (d/transact (conn)
       [(cond-> {:proposal/id id
                 :proposal/title title
                 :proposal/status :open
                 :proposal/created-at (java.util.Date.)
-                :proposal/forks (mapv (fn [{:keys [scope branch base-commit system-type]
+                :proposal/forks (mapv (fn [{:keys [scope authority-scope branch
+                                                   base-commit system-type
+                                                   world-system-id settlement-id
+                                                   settlement-state descriptor]
                                             fork-author :author}]
                                         (cond-> {:proposal.fork/scope scope
                                                  :proposal.fork/branch (name branch)}
                                           base-commit (assoc :proposal.fork/base-commit (str base-commit))
+                                          authority-scope (assoc :proposal.fork/authority-scope
+                                                                 authority-scope)
                                           system-type (assoc :proposal.fork/system-type system-type)
+                                          world-system-id (assoc :proposal.fork/world-system-id
+                                                                 (str world-system-id))
+                                          settlement-id (assoc :proposal.fork/settlement-id settlement-id)
+                                          settlement-state (assoc :proposal.fork/settlement-state
+                                                                  settlement-state)
+                                          descriptor (assoc :proposal.fork/descriptor (pr-str descriptor))
                                           fork-author (assoc :proposal.fork/author fork-author)))
                                       forks)}
          summary (assoc :proposal/summary summary)
          author  (assoc :proposal/author author)
          room    (assoc :proposal/room room)
+         run     (assoc :proposal/run run)
+         adoption (assoc :proposal/adoption [:world-adoption/id adoption])
          ;; only when non-default: absent already MEANS :change, and writing
          ;; the default would make old and new rows differ for no reason
          (and intent (not= fs/default-intent intent))
@@ -155,10 +168,27 @@
                                    (boolean
                                     (and party
                                          (access/can? db party :merge
-                                                      (:proposal.fork/scope f))))))
+                                                      (or (:proposal.fork/authority-scope f)
+                                                          (:proposal.fork/scope f)))))))
                           forks))
              p))
          proposals)))
+
+(defn with-capability-availability
+  "Annotate adopted-world components with process-local capability availability.
+   Ordinary branch-backed forks are durable/reopenable and remain unannotated."
+  [proposals]
+  (let [live? (requiring-resolve 'is.simm.ops.run-world-proposals/live-scope?)]
+    (mapv (fn [p]
+            (update p :proposal/forks
+                    (fn [forks]
+                      (mapv (fn [f]
+                              (if (= :world (:proposal.fork/system-type f))
+                                (assoc f :proposal.fork/capability-live?
+                                       (live? (:proposal.fork/scope f)))
+                                f))
+                            forks))))
+          proposals)))
 
 (defn- fork-branch-kw [fork] (keyword (:proposal.fork/branch fork)))
 
@@ -335,15 +365,20 @@
   [proposal-id fork]
   (let [scope (:proposal.fork/scope fork)
         b (fork-branch-kw fork)]
-    (try (branching/drop-branch! scope (fork-type fork) b)
-         (catch Exception e
-           (log/log! {:level :warn :id ::fork-discard-failed
-                      :msg "Fork branch not discarded — it is now orphaned"
-                      :data {:proposal proposal-id
-                             :scope (str scope)
-                             :branch b
-                             :system-type (:proposal.fork/system-type fork)
-                             :error (.getMessage e)}})))))
+    ;; Adopted worlds are affine capabilities with their own durable settlement
+    ;; frontier. Swallowing that failure and marking the row dismissed would be
+    ;; a false audit record, so this backend must fail the decision visibly.
+    (if (= :world (fork-type fork))
+      (branching/drop-branch! scope (fork-type fork) b)
+      (try (branching/drop-branch! scope (fork-type fork) b)
+           (catch Exception e
+             (log/log! {:level :warn :id ::fork-discard-failed
+                        :msg "Fork branch not discarded — it is now orphaned"
+                        :data {:proposal proposal-id
+                               :scope (str scope)
+                               :branch b
+                               :system-type (:proposal.fork/system-type fork)
+                               :error (.getMessage e)}}))))))
 
 (defn- fork-conflicts
   "`fork-conflict-seq` tagged with which fork each conflict came from — a
@@ -411,7 +446,8 @@
   (when by
    (let [db (some-> (sdb/get-conn) deref)
         refused (vec (for [f forks
-                           :let [scope (:proposal.fork/scope f)]
+                           :let [scope (or (:proposal.fork/authority-scope f)
+                                           (:proposal.fork/scope f))]
                            :when (not (access/can? db by :merge scope))]
                        (str scope)))]
     (when (seq refused)
@@ -434,7 +470,18 @@
                                     :proposal/status status
                                     :proposal/resolved-at (java.util.Date.)}
                                    (resolution-facts note by))])
+        ;; Ordinary ForkSets have no live adoption and this is a no-op. An
+        ;; adopted Run world releases its structural Dvergr ancestry only after
+        ;; every per-component terminal record is durable.
+        ((requiring-resolve
+          'is.simm.ops.run-world-proposals/release-proposal!) id)
         status))))
+
+(defn reconcile-status!
+  "Close a Proposal whose component statuses are already durably terminal.
+   Used by recovery backends after replaying an ambiguous terminal commit."
+  [id]
+  (settle-proposal! id nil nil))
 
 (defn- open-proposal!
   "The proposal `id` names, refusing anything already resolved."

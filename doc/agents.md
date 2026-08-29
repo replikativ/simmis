@@ -50,6 +50,14 @@ A governed write from an agent does not go to trunk. It goes to a **fork** — a
 collects forks across KBs, the book and the room's code repository. Someone
 with `:merge` authority accepts it, and only then does it land.
 
+Dvergr Runs use the same rule at a wider boundary. A Run may execute in an
+isolated subworld containing several forked systems. The Run records the
+execution; it does not automatically become a Proposal. When the agent or user
+explicitly files substantive retained work, Simmis adopts the world, partitions
+its systems into independently governed Proposal components, and links the
+Proposal back to the exact Run. This keeps execution isolation, review and
+governance distinct while preserving their causal relationship.
+
 This is the control that lets you be generous about what agents may write. The
 axis is not read versus write; it is where the write lands. See
 [proposals-and-time-travel.md](proposals-and-time-travel.md) for the mechanism
