@@ -158,6 +158,46 @@
           (is (not (:needs-partition?
                     (get (live-registry) adoption-id)))))))))
 
+(deftest failed-pre-transfer-adoption-reuses-its-durable-run-identity
+  (let [sys-conn (fresh-system-db)
+        fixture (fixture-world)]
+    (with-promotion-mocks
+      sys-conn fixture
+      (fn []
+        (let [adopt! room-forks/adopt!
+              attempts (atom 0)]
+          (with-redefs [room-forks/adopt!
+                        (fn [world owner {:keys [prepare! abort!] :as lifecycle}]
+                          (if (= 1 (swap! attempts inc))
+                            (let [descriptor
+                                  {:fork/id (random-uuid)
+                                   :fork/owner owner :fork/status :open
+                                   :fork/systems {:messages {} :knowledge {}}}]
+                              (prepare! descriptor)
+                              (abort! :receipt)
+                              {:ok? false :error
+                               (ex-info "transfer refused" {})})
+                            (adopt! world owner lifecycle)))]
+            (is (thrown-with-msg?
+                 clojure.lang.ExceptionInfo #"adoption failed"
+                 (world-proposals/promote!
+                  (:room-id fixture) (:run-id fixture)
+                  {:title "First transfer attempt"})))
+            (let [failed-id
+                  (:world-adoption/id
+                   (d/q '[:find (pull ?adoption [*]) .
+                          :in $ ?run
+                          :where [?adoption :world-adoption/run ?run]]
+                        @sys-conn (:run-id fixture)))
+                  retried (world-proposals/promote!
+                           (:room-id fixture) (:run-id fixture)
+                           {:title "Retry transfer"})]
+              (is (= :open (:status retried)))
+              (is (= failed-id (:adoption-id retried)))
+              (is (= 1 (d/q '[:find (count ?adoption) .
+                              :where [?adoption :world-adoption/id]]
+                            @sys-conn))))))))))
+
 (deftest released-affine-capability-is-dropped-even-if-status-projection-fails
   (let [sys-conn (fresh-system-db)
         fixture (fixture-world)
@@ -239,7 +279,8 @@
 (deftest accepted-components-release-the-world-only-after-the-last-decision
   (let [sys-conn (fresh-system-db)
         fixture (fixture-world)
-        released (atom 0)]
+        released (atom 0)
+        operations (atom [])]
     (with-promotion-mocks
       sys-conn fixture
       (fn []
@@ -249,6 +290,9 @@
               forks (:proposal/forks (proposals/get-proposal proposal-id))]
           (with-redefs [room-forks/settle-adoption!
                         (fn [node operation {:keys [prepare! commit!]}]
+                          (when (:fork/settlement node)
+                            (throw (ex-info "capability already settled" {})))
+                          (swap! operations conj operation)
                           (let [receipt (prepare! {:fork/operation operation})
                                 terminal {:fork/operation operation
                                           :fork/descriptor (:fork/descriptor node)}]
@@ -266,5 +310,34 @@
                                       (:proposal.fork/scope b)
                                       (:proposal.fork/branch b))
               (is (= 1 @released))
+              (is (= [:merge :merge] @operations))
               (is (= :accepted (:proposal/status
                                 (proposals/get-proposal proposal-id)))))))))))
+
+(deftest whole-proposal-dismissal-releases-adopted-world-ancestry
+  (let [sys-conn (fresh-system-db)
+        fixture (fixture-world)
+        released (atom 0)]
+    (with-promotion-mocks
+      sys-conn fixture
+      (fn []
+        (let [{:keys [proposal-id adoption-id]}
+              (world-proposals/promote! (:room-id fixture) (:run-id fixture)
+                                        {:title "Refuse the whole world"})]
+          (with-redefs [room-forks/settle-adoption!
+                        (fn [node operation {:keys [prepare! commit!]}]
+                          (let [receipt (prepare! {:fork/operation operation})
+                                terminal {:fork/operation operation
+                                          :fork/descriptor (:fork/descriptor node)}]
+                            (commit! receipt terminal)
+                            (assoc node :fork/settlement {:status :committed})))
+                        room-forks/release-adoption!
+                        (fn [_] (swap! released inc))]
+            (is (= {:status :dismissed}
+                   (proposals/dismiss-proposal! proposal-id))))
+          (is (= 1 @released))
+          (is (false? (world-proposals/live-proposal? proposal-id)))
+          (is (= :released
+                 (:world-adoption/status
+                  (d/pull @sys-conn '[*]
+                          [:world-adoption/id adoption-id])))))))))

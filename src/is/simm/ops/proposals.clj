@@ -401,7 +401,11 @@
     ;; nothing has to be resolved here first. simmis used to do that pass
     ;; itself, before the content merge went upstream (geschichte 0.1.14).
     (branching/land! scope t b)
-    (branching/drop-branch! scope t b)))
+    ;; Ordinary backends merge and then delete a reusable branch name. A world
+    ;; component is an affine settlement capability: :merge itself consumes it,
+    ;; so a subsequent :discard would be a second terminal operation.
+    (when-not (= :world t)
+      (branching/drop-branch! scope t b))))
 
 (defn- authorize-forks!
   "Landing puts a fork onto TRUNK, so each fork's scope must permit `:merge` —
@@ -695,6 +699,11 @@
                                        :proposal/status :dismissed
                                        :proposal/resolved-at (java.util.Date.)}
                                       (resolution-facts note by))))
+      ;; Whole-Proposal dismissal bypasses settle-proposal!, unlike every
+      ;; per-fork decision path. Release adopted-world ancestry only after the
+      ;; component and Proposal terminal records above are durable.
+      ((requiring-resolve
+        'is.simm.ops.run-world-proposals/release-proposal!) id)
       (log/log! {:level :info :id ::dismissed
                  :data {:proposal id :forks (count forks)
                         :noted? (not (str/blank? note))}})
