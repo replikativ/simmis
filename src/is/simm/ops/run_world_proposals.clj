@@ -55,6 +55,21 @@
                         :error (ex-message error)
                         :persistence-error (ex-message persistence-error)}}))))
 
+(defn- adoption-id-for-promotion!
+  [run-id]
+  (if-let [existing
+           (d/q '[:find (pull ?adoption [*]) .
+                  :in $ ?run
+                  :where [?adoption :world-adoption/run ?run]]
+                @(conn) run-id)]
+    (if (= :failed (:world-adoption/status existing))
+      (:world-adoption/id existing)
+      (throw (ex-info "Run world already has an adoption"
+                      {:run run-id
+                       :adoption (:world-adoption/id existing)
+                       :status (:world-adoption/status existing)})))
+    (random-uuid)))
+
 (defn- exact-retained-world!
   [room-id run-id]
   (let [room (or (room-agents/live-room room-id)
@@ -210,7 +225,10 @@
   [room-id run-id {:keys [title summary author intent]}]
   {:pre [(string? title)]}
   (let [{:keys [world]} (exact-retained-world! room-id run-id)
-        adoption-id (random-uuid)
+        ;; :world-adoption/run is unique. A pre-transfer abort is safe to retry
+        ;; using that same durable identity; every later state means ownership
+        ;; was or may have been transferred and must use the recovery API.
+        adoption-id (adoption-id-for-promotion! run-id)
         proposal-id (random-uuid)
         owner [:world-adoption/id adoption-id]
         params {:adoption-id adoption-id :proposal-id proposal-id
