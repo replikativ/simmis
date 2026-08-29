@@ -36,6 +36,16 @@
           {:authorization {:decision :authorized
                            :sources #{:simmis-rebac :agent-tool-grant}}}))))
 
+(deftest settlement-state-is-explicit-without-noising-success
+  (is (= "Ready for review"
+         (run-detail/settlement-label {:settlement-status :review})))
+  (is (= "Partial work ready for review"
+         (run-detail/settlement-label
+          {:settlement-status :review
+           :settlement-reason :execution-waiting})))
+  (is (= "Work merged"
+         (run-detail/settlement-label {:settlement-status :merged}))))
+
 (deftest groups-routine-tool-bursts-without-losing-leaves
   (let [calls [(call "1" "read_file")
                (call "2" "read_file")
@@ -124,6 +134,10 @@
         (let [authorization-schema?
               (boolean (d/q '[:find ?e . :where
                               [?e :db/ident :tool-call/authorization-decision]]
+                            @conn))
+              world-schema?
+              (boolean (d/q '[:find ?e . :where
+                              [?e :db/ident :run/settlement-status]]
                             @conn))]
           (d/transact conn [{:entity/uuid actor-id
                            :S.User/display-name "Vár"}
@@ -141,15 +155,21 @@
                            :run/started-at started
                            :run/updated-at finished
                            :run/ended-at finished}
-                          {:run/id run-id
-                           :run/kind :agent-turn
-                           :run/actor actor
-                           :run/trigger trigger-id
-                           :run/parent parent-id
-                           :run/status :running
-                           :run/created-at started
-                           :run/started-at started
-                           :run/updated-at finished}
+                          (cond-> {:run/id run-id
+                                   :run/kind :agent-turn
+                                   :run/actor actor
+                                   :run/trigger trigger-id
+                                   :run/parent parent-id
+                                   :run/status :running
+                                   :run/created-at started
+                                   :run/started-at started
+                                   :run/updated-at finished}
+                            world-schema?
+                            (assoc :run/world :room_fork_fork-review
+                                   :run/isolation :ctx
+                                   :run/settlement-policy :review
+                                   :run/settlement-status :review
+                                   :run/settlement-reason :policy))
                           {:run/id child-id
                            :run/kind :delegation
                            :run/actor actor
@@ -189,6 +209,10 @@
             (is (= (str run-id) (:id run)))
             (is (= "Vár" (:actor-name run)))
             (is (= :running (:status run)))
+            (when world-schema?
+              (is (= "room_fork_fork-review" (:world-id run)))
+              (is (= :review (:settlement-policy run)))
+              (is (= :review (:settlement-status run))))
             (is (= "Investigate the failing build" (:content trigger)))
             (is (= (str parent-id) (:id parent)))
             (is (= [(str child-id)] (mapv :id children)))

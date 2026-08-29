@@ -127,11 +127,46 @@
                (el/dd {} (str value))))
            facts))))))
 
+(defn- settlement-view [run on-merge-world on-discard-world]
+  (when-let [settlement-status (:settlement-status run)]
+    (let [review? (= :review settlement-status)]
+      (el/section {:class (str "run-section run-world run-world--"
+                              (name settlement-status))}
+        (el/div {:class "run-section-heading"}
+          (el/div {}
+            (el/h3 {} "Work world")
+            (el/p {} (run-detail/settlement-label run)))
+          (el/span {:class (str "run-world-status run-world-status--"
+                               (name settlement-status))}
+            (-> settlement-status name str/capitalize)))
+        (el/div {:class "run-world-facts"}
+          (when-let [policy (:settlement-policy run)]
+            (el/span {} (str "Policy · " (name policy))))
+          (when-let [isolation (:isolation run)]
+            (el/span {} (str "Isolation · " (name isolation))))
+          (when-let [world-id (:world-id run)]
+            (el/span {:class "run-world-id"} world-id)))
+        (when review?
+          (el/div {:class "run-world-actions"}
+            (el/button {:class "run-world-discard"
+                        :on-click (fn [_]
+                                    (when on-discard-world
+                                      (on-discard-world (:id run))))}
+              (vc/icon "trash-2")
+              "Discard")
+            (el/button {:class "run-world-merge"
+                        :on-click (fn [_]
+                                    (when on-merge-world
+                                      (on-merge-world (:id run))))}
+              (vc/icon "git-merge")
+              "Merge work")))))))
+
 (defn view
   "Render one Run. `live-run` wins for transient :cancelling status; durable
    detail supplies history, effects, outputs, and structural relations."
   [{:keys [detail live-run fallback-run room-name syntax-pref on-back-room
-           on-open-message on-open-run on-cancel]}]
+           on-open-message on-open-run on-cancel on-merge-world
+           on-discard-world]}]
   (let [durable-run (:run detail)
         run (when (or fallback-run durable-run live-run)
               (merge fallback-run durable-run live-run))
@@ -193,6 +228,8 @@
                     (related-run-button known-parent :parent on-open-run))
                   (map #(related-run-button % :child on-open-run)
                        (:children detail)))))
+
+            (settlement-view run on-merge-world on-discard-world)
 
             (el/section {:class "run-section"}
               (el/div {:class "run-section-heading"}

@@ -1706,6 +1706,8 @@ body {
 
 .run-history-summary-active { color: var(--accent); }
 .run-history-summary-failed { color: var(--danger); }
+.run-history-summary-review,
+.run-history-review { color: var(--warning); }
 .run-history-list { display: flex; flex-direction: column; gap: var(--spacing-sm); }
 .run-history-node { min-width: 0; }
 
@@ -1890,6 +1892,63 @@ body {
   flex-direction: column;
   gap: var(--spacing-lg);
 }
+
+.run-world {
+  padding: var(--spacing-md);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--mono-border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--mono-bg-surface) 86%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+.run-world--review {
+  border-color: color-mix(in srgb, var(--warning) 42%, var(--mono-border));
+  background: color-mix(in srgb, var(--warning) 5%, var(--mono-bg-surface));
+}
+
+.run-world-status {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--mono-text-secondary);
+  background: color-mix(in srgb, var(--mono-text-tertiary) 10%, transparent);
+  font-size: var(--text-xs);
+}
+
+.run-world-status--review { color: var(--warning); }
+.run-world-status--merged { color: var(--success); }
+
+.run-world-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px var(--spacing-md);
+  color: var(--mono-text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.run-world-id { font-family: var(--font-mono); }
+
+.run-world-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-md);
+}
+
+.run-world-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--mono-border);
+  border-radius: var(--radius-sm);
+  background: var(--mono-bg-overlay);
+  color: var(--mono-text-secondary);
+  cursor: pointer;
+}
+
+.run-world-actions button svg { width: 13px; height: 13px; }
+.run-world-discard:hover { color: var(--danger); border-color: var(--danger); }
+.run-world-merge:hover { color: var(--success); border-color: var(--success); }
 
 .run-section {
   min-width: 0;

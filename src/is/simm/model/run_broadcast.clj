@@ -65,6 +65,11 @@
            :actor-name (actor-name (:run/actor r))
            :trigger-id (str (:run/trigger r))
            :status (:run/status r)
+           :world-id (some-> (:run/world r) name)
+           :isolation (:run/isolation r)
+           :settlement-policy (:run/settlement-policy r)
+           :settlement-status (:run/settlement-status r)
+           :settlement-reason (:run/settlement-reason r)
            :created-at (some-> ^java.util.Date (:run/created-at r) .getTime)
            :started-at (some-> ^java.util.Date (:run/started-at r) .getTime)
            :updated-at (some-> ^java.util.Date (:run/updated-at r) .getTime)}
@@ -83,17 +88,30 @@
       :recent (mapv #(run-summary room-id %) (run/runs room {:limit limit}))}
      {:room-id (str room-id) :active [] :recent []})))
 
+(defn publish-run!
+  "Publish one authoritative durable Run projection to every subscribed room
+   client. Lifecycle changes normally arrive through the Dvergr watcher; later
+   human settlement decisions use this explicit bridge because they happen
+   after the execution lifecycle has finished."
+  [room-id type r]
+  (try
+    (when-let [topic (ensure-topic-registered! room-id)]
+      (pubsub/publish! @peer-ref topic
+                       {:type type
+                        :room-id (str room-id)
+                        :run (run-summary room-id r)}))
+    (catch Throwable t
+      (log/log! {:level :warn :id ::publish-failed
+                 :data {:event-type type :error (ex-message t)}}
+                "Failed to publish Run event"))))
+
 (defn- publish-event! [{:keys [type run] :as event}]
   (try
     ;; The installation snapshot usually precedes client subscriptions. Initial
     ;; state is therefore served by room-snapshot; ordered deltas begin here.
     (when (and run (not= type :runs/snapshot))
       (when-let [room-id (runtime-room->room-id (:run/room run))]
-        (when-let [topic (ensure-topic-registered! room-id)]
-          (pubsub/publish! @peer-ref topic
-                           {:type type
-                            :room-id (str room-id)
-                            :run (run-summary room-id run)}))))
+        (publish-run! room-id type run)))
     (catch Throwable t
       (log/log! {:level :warn :id ::publish-failed
                  :data {:event-type type :error (ex-message t)}}

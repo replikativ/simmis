@@ -39,6 +39,12 @@
                      (fn [runs] (vec (remove #(= (:id %) (:id run)) runs))))
           (update-in [room-id :recent] (fnil upsert-run []) run))
 
+      :run/settled
+      (-> state
+          (update-in [room-id :active]
+                     (fn [runs] (vec (remove #(= (:id %) (:id run)) runs))))
+          (update-in [room-id :recent] (fnil upsert-run []) run))
+
       state)))
 
 (defn- apply-event! [room-id event]
@@ -112,3 +118,19 @@
              (refresh-room! room-id)))
          (fn [error]
            (js/console.warn "[run-sync] cancellation failed" run-id error))))))
+
+(defn settle-world!
+  "Apply a later review decision, then refresh the durable Run projection."
+  [room-id run-id decision]
+  (binding [rtc/*execution-context* runtime]
+    (let [remote-fn (case decision
+                      :merge remote/merge-room-run-world!
+                      :discard remote/discard-room-run-world!)
+          s (remote-fn web/server-id (str room-id) (str run-id))]
+      (s (fn [result]
+           (if (contains? #{:merged :discarded} (:status result))
+             (refresh-room! room-id)
+             (js/console.warn "[run-sync] world settlement refused" run-id
+                              (pr-str result))))
+         (fn [error]
+           (js/console.warn "[run-sync] world settlement failed" run-id error))))))

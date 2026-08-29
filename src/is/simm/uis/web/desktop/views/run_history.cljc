@@ -60,6 +60,9 @@
             (status-label status)
             (when-let [duration (duration-label run)]
               (el/span {} (str " · " duration)))
+            (when (= :review (:settlement-status run))
+              (el/span {:class "run-history-review"}
+                (str " · " (run-detail/settlement-label run))))
             (when parent-missing?
               (el/span {:class "run-history-orphan"} " · parent outside window"))))
         (el/span {:class "run-history-card-tail"}
@@ -77,7 +80,8 @@
   (let [forest (run-detail/causal-forest runs)
         active-count (count (filter #(contains? #{:running :cancelling}
                                                   (:status %)) runs))
-        failed-count (count (filter #(= :failed (:status %)) runs))]
+        failed-count (count (filter #(= :failed (:status %)) runs))
+        review-count (count (filter #(= :review (:settlement-status %)) runs))]
     (el/div {:class "run-history"}
       (el/header {:class "run-history-header"}
         (el/button {:class "run-history-back"
@@ -102,7 +106,10 @@
               (str active-count " active")))
           (when (pos? failed-count)
             (el/span {:class "run-history-summary-failed"}
-              (str failed-count " failed"))))
+              (str failed-count " failed")))
+          (when (pos? review-count)
+            (el/span {:class "run-history-summary-review"}
+              (str review-count " awaiting review"))))
         (if (seq forest)
           (el/div {:class "run-history-list"}
             (map #(run-node % 0 on-open-run) forest))

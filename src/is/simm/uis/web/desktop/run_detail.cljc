@@ -43,6 +43,21 @@
     status (-> status name str/capitalize)
     :else nil))
 
+(defn settlement-label
+  "Compact label for the work-plane axis. Automatic successful settlement is
+   intentionally quiet in history; retained/rejected work stays explicit."
+  [{:keys [settlement-status settlement-reason]}]
+  (case settlement-status
+    :open "Isolated work in progress"
+    :review (case settlement-reason
+              :execution-waiting "Partial work ready for review"
+              :automatic-merge-failed "Merge needs review"
+              :settlement-failed "Settlement needs attention"
+              "Ready for review")
+    :discarded "Work discarded"
+    :merged "Work merged"
+    nil))
+
 (def ^:private authorization-source-labels
   {:agent-tool-grant "agent grant"
    :runtime-registry "runtime"
@@ -210,10 +225,23 @@
         candidate-ids)))))
 
 (do
-     (def ^:private run-pull
+     (def ^:private run-pull-base
        '[:run/id :run/kind :run/actor :run/trigger :run/parent :run/status
          :run/created-at :run/started-at :run/updated-at :run/ended-at
          :run/reason :run/error])
+
+     (def ^:private run-world-attrs
+       '[:run/world :run/isolation :run/settlement-policy
+         :run/settlement-status :run/settlement-reason])
+
+     (defn- schema-attrs [db base optional]
+       (into base
+             (filter #(d/q '[:find ?e . :in $ ?ident
+                             :where [?e :db/ident ?ident]] db %))
+             optional))
+
+     (defn- run-pull [db]
+       (schema-attrs db run-pull-base run-world-attrs))
 
      (def ^:private message-pull
        '[:message/id :message/content :message/created-at :message/role
@@ -238,10 +266,7 @@
        ;; Datahike fails (correctly) when a pull names an attribute absent from
        ;; the schema. Room stores are upgraded independently, so select only the
        ;; new receipt attributes installed in this particular replica.
-       (into tool-call-base-pull
-             (filter #(d/q '[:find ?e . :in $ ?ident
-                             :where [?e :db/ident ?ident]] db %))
-             tool-call-authorization-attrs))
+       (schema-attrs db tool-call-base-pull tool-call-authorization-attrs))
 
      (defn- actor-party-id [actor]
        (when (and (keyword? actor)
@@ -266,6 +291,11 @@
                                     (some-> actor name))
                     :trigger-id (str (:run/trigger run))
                     :status (:run/status run)
+                    :world-id (some-> (:run/world run) name)
+                    :isolation (:run/isolation run)
+                    :settlement-policy (:run/settlement-policy run)
+                    :settlement-status (:run/settlement-status run)
+                    :settlement-reason (:run/settlement-reason run)
                     :created-at (some-> (:run/created-at run) .getTime)
                     :started-at (some-> (:run/started-at run) .getTime)
                     :updated-at (some-> (:run/updated-at run) .getTime)}
@@ -323,7 +353,8 @@
                run-eid (d/q '[:find ?r . :in $ ?id :where [?r :run/id ?id]]
                             db run-id)]
            (when run-eid
-             (let [run-entity (d/pull db run-pull run-eid)
+             (let [run-pattern (run-pull db)
+                   run-entity (d/pull db run-pattern run-eid)
                    trigger-id (:run/trigger run-entity)
                    parent-id (:run/parent run-entity)
                    parent-eid (when parent-id
@@ -345,7 +376,7 @@
                {:run (normalize-run run-entity names)
                 :trigger (some->> trigger-eid (d/pull db message-pull)
                                   (#(normalize-message % names)))
-                :parent (some->> parent-eid (d/pull db run-pull)
+                :parent (some->> parent-eid (d/pull db run-pattern)
                                  (#(normalize-run % names)))
                 :messages (->> message-eids
                                (map #(normalize-message (d/pull db message-pull %) names))
@@ -356,6 +387,6 @@
                                  (sort-by (juxt :started-at :id))
                                  vec)
                 :children (->> child-eids
-                               (map #(normalize-run (d/pull db run-pull %) names))
+                               (map #(normalize-run (d/pull db run-pattern %) names))
                                (sort-by (juxt :started-at :id))
                                vec)}))))))
