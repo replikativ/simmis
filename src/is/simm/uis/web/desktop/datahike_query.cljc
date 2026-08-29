@@ -441,6 +441,10 @@
                      (assoc :mode (:message/provenance-mode m))
                      (:message/provenance-source m)
                      (assoc :source (:message/provenance-source m)))
+        object (when (and (:message/object-kind m)
+                          (:message/object-id m))
+                 {:kind (:message/object-kind m)
+                  :id (:message/object-id m)})
         metadata (cond-> {:role (:message/role m)}
                    (:message/run-id m)
                    (assoc :run-id (:message/run-id m))
@@ -466,6 +470,8 @@
                    (assoc :attachment attachment)
                    (seq provenance)
                    (assoc :provenance provenance)
+                   object
+                   (assoc :object object)
                    (:message/notification-type m)
                    (assoc :notification/type (:message/notification-type m))
                    (:message/notification-agent m)
@@ -600,6 +606,7 @@
                                    :message/attachment-size
                                    :message/provenance-mode
                                    :message/provenance-source
+                                   :message/object-kind :message/object-id
                                    :message/notification-type
                                    :message/notification-agent
                                    :message/notification-task

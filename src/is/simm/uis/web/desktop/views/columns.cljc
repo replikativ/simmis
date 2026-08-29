@@ -1862,6 +1862,7 @@
                        :attachment-mime (:S.Message/attachment-mime item)
                        :in-reply-to (:message/in-reply-to item)
                        :run-id (:message/run-id item)
+                       :object (get-in item [:message/metadata :object])
                        :on-open-run open-run!
                        :thread-parent (:thread/parent item)
                        :reply-count (:thread/reply-count item)

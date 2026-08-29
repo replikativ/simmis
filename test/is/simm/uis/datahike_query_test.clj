@@ -81,6 +81,7 @@
   (let [message-id (random-uuid)
         parent-id (random-uuid)
         run-id (random-uuid)
+        object-id (random-uuid)
         store-ref (random-uuid)
         sent-at (java.util.Date.)
         entity {:message/id message-id
@@ -109,6 +110,8 @@
                 :message/attachment-size 2048
                 :message/provenance-mode :simulation
                 :message/provenance-source :raster
+                :message/object-kind :proposal
+                :message/object-id object-id
                 :message/notification-type :agent/completed
                 :message/notification-agent :agent/forecaster
                 :message/notification-task "forecast"
@@ -142,6 +145,7 @@
                                     :name "forecast.edn"
                                     :size 2048}
                        :provenance {:mode :simulation :source :raster}
+                       :object {:kind :proposal :id object-id}
                        :notification/type :agent/completed
                        :notification/agent :agent/forecaster
                        :notification/task "forecast"

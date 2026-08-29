@@ -420,7 +420,7 @@
   [{:keys [id author-id author-name content reasoning timestamp is-own? is-ai?
            syntax-pref attachment-blob attachment-mime thread-parent
            in-reply-to reply-count on-jump-parent on-reply audience run-id
-           mention-handles on-open-thread on-open-run]}]
+           mention-handles on-open-thread on-open-run object]}]
   (el/div {:key id
            :class (vc/class-names "chat-message" "message"
                                   (when is-own? "chat-message--own"))
@@ -540,9 +540,36 @@
                         :preload "metadata"
                         :src (str "/blobs/" attachment-blob)})))
          :clj nil)
-      ;; Message content - markdown for AI, rich text for user
-      #?(:cljs
-         (if is-ai?
+      ;; One typed application object may replace the generic prose body with
+      ;; a domain-aware projection. The Proposal remains owned by Simmis; this
+      ;; message is only its durable conversational home and thread root.
+      (if (= :proposal (:kind object))
+        (let [proposal-id (str (:id object))
+              [headline & detail-lines] (str/split-lines (str content))
+              title (str/replace (or headline "Proposal")
+                                 #"^Proposal ready:\s*" "")
+              summary (str/trim (str/join "\n" detail-lines))]
+          (el/div {:class "chat-proposal-card"
+                   :data-object-kind "proposal"
+                   :data-object-id proposal-id}
+            (el/div {:class "chat-proposal-card-kicker"}
+              (vc/icon "git-pull-request" {:class "chat-proposal-card-icon"})
+              "Proposal")
+            (el/div {:class "chat-proposal-card-title"} title)
+            (when (seq summary)
+              (el/div {:class "chat-proposal-card-summary"} summary))
+            (el/div {:class "chat-proposal-card-actions"}
+              (el/button {:class "button button--primary chat-proposal-review"
+                          :on-click
+                          (fn [event]
+                            (.stopPropagation event)
+                            (sig/open-tab! :proposals
+                                           {:proposal-id proposal-id}
+                                           {:title (str "Proposal · " title)}))}
+                "Review changes"))))
+        ;; Generic message content - markdown for AI, rich text for user
+        #?(:cljs
+           (if is-ai?
            (foreign-node
              {:key (str "md-" id "-" (name (or syntax-pref :clojure)))
               :class "chat-message-content message-text"
@@ -595,11 +622,11 @@
               :on-unmount (fn [container]
                             (when container
                               (set! (.-innerHTML container) "")))})
+             (el/div {:class "chat-message-content message-text"}
+               (render-rich-content content)))
+           :clj
            (el/div {:class "chat-message-content message-text"}
-             (render-rich-content content)))
-         :clj
-         (el/div {:class "chat-message-content message-text"}
-           (render-rich-content content))))))
+             (render-rich-content content)))))))
 
 ;; =============================================================================
 ;; Tool runs: the agent's work between two things it SAID
