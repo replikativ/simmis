@@ -379,7 +379,7 @@
    canonical render path this exception can disappear with S.Message itself."
   [canonical legacy users]
   (let [{:keys [id content sent-at from source-user reasoning metadata
-                to in-reply-to thread-root-id run-id]} canonical
+                to in-reply-to thread-root-id run-id activities]} canonical
         metadata (or metadata {})
         author-uuid (or (actor->party-uuid from)
                         (try-parse-uuid source-user)
@@ -412,6 +412,7 @@
       in-reply-to (assoc :message/in-reply-to in-reply-to)
       thread-root-id (assoc :message/thread-root-id thread-root-id)
       run-id (assoc :message/run-id run-id)
+      (seq activities) (assoc :message/activities activities)
       (seq metadata) (assoc :message/metadata metadata)
       (seq (:audience metadata)) (assoc :message/audience (:audience metadata))
       (seq (:mentions metadata)) (assoc :message/mention-handles (:mentions metadata)))))
@@ -480,7 +481,9 @@
                    (assoc :notification/task (:message/notification-task m))
                    (:message/notification-elapsed m)
                    (assoc :notification/elapsed
-                          (:message/notification-elapsed m)))]
+                          (:message/notification-elapsed m))
+                   (seq (:message/activities m))
+                   (assoc :activities (:message/activities m)))]
     {:id (:message/id m)
      :content (:message/content m)
      :sent-at (:message/created-at m)
@@ -490,6 +493,7 @@
      :in-reply-to (:message/in-reply-to m)
      :thread-root-id (:message/thread-root-id m)
      :run-id (:message/run-id m)
+     :activities (vec (:message/activities m))
      :metadata metadata
      :reasoning (:message/reasoning m)
      :source-user (:message/source-user m)}))
@@ -583,45 +587,70 @@
                             :S.Message/attachment-mime (att-mimes uuid)))))
             vec))))
 
+(def ^:private canonical-message-pull
+  '[:message/id :message/content
+    :message/created-at :message/role
+    :message/from :message/to
+    :message/in-reply-to :message/thread-root-id
+    :message/run-id
+    :message/reasoning
+    :message/source-user :message/source-username
+    :message/source-user-id
+    :message/audience :message/mention-handles
+    :message/metadata-kind :message/context-from
+    :message/source :message/schedule-id
+    :message/attachment-store-ref
+    :message/attachment-blob-id
+    :message/attachment-node-id
+    :message/attachment-mime
+    :message/attachment-name
+    :message/attachment-size
+    :message/provenance-mode
+    :message/provenance-source
+    :message/object-kind :message/object-id
+    :message/notification-type
+    :message/notification-agent
+    :message/notification-task
+    :message/notification-elapsed
+    :message/tool-uses])
+
+(def ^:private activity-pull
+  {:message/activities
+   [:activity/id :activity/run-id :activity/kind :activity/verb
+    :activity/status :activity/tool-name :activity/tool-use-id
+    :activity/outcome :activity/critical? :activity/at]})
+
+(defn canonical-message-pull-pattern
+  "Canonical message pull, extended only when the Room schema knows activity."
+  [activity-schema?]
+  (cond-> canonical-message-pull
+    activity-schema? (conj activity-pull)))
+
+#?(:cljs
+   (defn- schema-has? [db ident]
+     (boolean
+      (d/q '[:find ?e . :in $ ?ident :where [?e :db/ident ?ident]] db ident))))
+
 #?(:cljs
    (defn- canonical-room-messages [db]
      ;; One bounded pull rather than one query per optional attribute. This is
      ;; both cheaper today and the shape the async client can fetch lazily later.
-     (->> (d/q '[:find [(pull ?m [:message/id :message/content
-                                   :message/created-at :message/role
-                                   :message/from :message/to
-                                   :message/in-reply-to :message/thread-root-id
-                                   :message/run-id
-                                   :message/reasoning
-                                   :message/source-user :message/source-username
-                                   :message/source-user-id
-                                   :message/audience :message/mention-handles
-                                   :message/metadata-kind :message/context-from
-                                   :message/source :message/schedule-id
-                                   :message/attachment-store-ref
-                                   :message/attachment-blob-id
-                                   :message/attachment-node-id
-                                   :message/attachment-mime
-                                   :message/attachment-name
-                                   :message/attachment-size
-                                   :message/provenance-mode
-                                   :message/provenance-source
-                                   :message/object-kind :message/object-id
-                                   :message/notification-type
-                                   :message/notification-agent
-                                   :message/notification-task
-                                   :message/notification-elapsed
-                                   :message/tool-uses]) ...]
-                  :where
-                  [?m :message/id _]
-                  [?m :message/chat _]
-                  [?m :message/content _]
-                  [?m :message/created-at _]
-                  [?m :message/role _]]
-                db)
-          (remove #(seq (:message/tool-uses %)))
-          (map canonical-message-entity->message)
-          vec)))
+     (let [pull-pattern (canonical-message-pull-pattern
+                         (schema-has? db :message/activities))
+           message-eids (d/q '[:find [?m ...]
+                               :where
+                               [?m :message/id _]
+                               [?m :message/chat _]
+                               [?m :message/content _]
+                               [?m :message/created-at _]
+                               [?m :message/role _]]
+                             db)]
+       (->> (d/pull-many db pull-pattern message-eids)
+            ;; Rich exact tool-call entities already own tool history in Simmis.
+            ;; Keep these activity messages out of chat rather than showing both.
+            (remove #(seq (:message/tool-uses %)))
+            (map canonical-message-entity->message)
+            vec))))
 
 #?(:cljs
    (defn- query-room-message-projections [db room-eid]

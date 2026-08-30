@@ -82,6 +82,7 @@
         parent-id (random-uuid)
         run-id (random-uuid)
         object-id (random-uuid)
+        activity-id (random-uuid)
         store-ref (random-uuid)
         sent-at (java.util.Date.)
         entity {:message/id message-id
@@ -93,6 +94,12 @@
                 :message/in-reply-to parent-id
                 :message/thread-root-id parent-id
                 :message/run-id run-id
+                :message/activities [{:activity/id activity-id
+                                      :activity/run-id run-id
+                                      :activity/kind :budget
+                                      :activity/verb :exhaust
+                                      :activity/status :blocked
+                                      :activity/critical? true}]
                 :message/reasoning "sampled three scenarios"
                 :message/source-user "agent-7"
                 :message/source-username "Forecaster"
@@ -126,10 +133,22 @@
             :in-reply-to parent-id
             :thread-root-id parent-id
             :run-id run-id
+            :activities [{:activity/id activity-id
+                          :activity/run-id run-id
+                          :activity/kind :budget
+                          :activity/verb :exhaust
+                          :activity/status :blocked
+                          :activity/critical? true}]
             :reasoning "sampled three scenarios"
             :source-user "agent-7"
             :metadata {:role :assistant
                        :run-id run-id
+                       :activities [{:activity/id activity-id
+                                     :activity/run-id run-id
+                                     :activity/kind :budget
+                                     :activity/verb :exhaust
+                                     :activity/status :blocked
+                                     :activity/critical? true}]
                        :source-user "agent-7"
                        :source-username "Forecaster"
                        :source-user-id "provider-7"
@@ -166,6 +185,10 @@
                    :in-reply-to parent-id
                    :source-user (str party-id)
                    :reasoning "checked the evidence"
+                   :activities [{:activity/id (random-uuid)
+                                 :activity/kind :run
+                                 :activity/verb :fail
+                                 :activity/status :failed}]
                    :metadata {:audience #{:agent/reviewer}
                               :mentions #{"reviewer"}
                               :attachment {:blob-id blob-id
@@ -193,9 +216,17 @@
       (is (= "audio/ogg" (:S.Message/attachment-mime result)))
       (is (= #{:agent/reviewer} (:message/audience result)))
       (is (= #{"reviewer"} (:message/mention-handles result)))
+      (is (= :fail (-> result :message/activities first :activity/verb)))
       (is (= {:mode :live :source :screen}
              (get-in result [:message/metadata :provenance])))
       (is (true? (:S.Message/is-ai result))))))
+
+(deftest canonical-message-pull-is-schema-compatible
+  (testing "old room replicas are not asked for an unknown activity attribute"
+    (is (not-any? map? (query/canonical-message-pull-pattern false))))
+  (testing "upgraded room replicas pull typed activity components"
+    (is (= :message/activities
+           (-> (query/canonical-message-pull-pattern true) last keys first)))))
 
 (deftest historical-source-user-fallback
   (let [party-id (random-uuid)

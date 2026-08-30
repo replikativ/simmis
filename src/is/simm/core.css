@@ -2351,6 +2351,27 @@ body {
   height: 11px;
 }
 
+.message-activities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 5px;
+}
+
+.message-activity {
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent-warning) 32%, var(--mono-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-warning) 7%, var(--mono-bg-surface));
+  color: color-mix(in srgb, var(--accent-warning) 78%, var(--mono-text-primary));
+  font-size: var(--text-xs);
+}
+
+.message-activity--critical {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--mono-border));
+  color: color-mix(in srgb, var(--danger) 78%, var(--mono-text-primary));
+}
+
 .chat-message-content,
 .message-text {
   font-size: var(--text-base);

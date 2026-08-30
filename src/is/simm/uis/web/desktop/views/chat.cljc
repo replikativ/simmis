@@ -26,6 +26,7 @@
   (:require [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.foreign]
             [is.simm.uis.web.desktop.views.core :as vc]
+            [is.simm.uis.web.desktop.activity :as activity]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.model.references :as refs]
             [clojure.string :as str]
@@ -420,7 +421,7 @@
   [{:keys [id author-id author-name content reasoning timestamp is-own? is-ai?
            syntax-pref attachment-blob attachment-mime thread-parent
            in-reply-to reply-count on-jump-parent on-reply audience run-id
-           mention-handles on-open-thread on-open-run on-open-proposal object]}]
+           activities mention-handles on-open-thread on-open-run on-open-proposal object]}]
   (el/div {:key id
            :class (vc/class-names "chat-message" "message"
                                   (when is-own? "chat-message--own"))
@@ -540,6 +541,16 @@
                         :preload "metadata"
                         :src (str "/blobs/" attachment-blob)})))
          :clj nil)
+      (when (seq activities)
+        (el/div {:class "message-activities"}
+          (map (fn [fact]
+                 (el/span {:key (str (:activity/id fact))
+                           :class (vc/class-names
+                                   "message-activity"
+                                   (when (:activity/critical? fact)
+                                     "message-activity--critical"))}
+                   (activity/label fact)))
+               activities)))
       ;; One typed application object may replace the generic prose body with
       ;; a domain-aware projection. The Proposal remains owned by Simmis; this
       ;; message is only its durable conversational home and thread root.

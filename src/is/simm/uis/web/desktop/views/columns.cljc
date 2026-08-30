@@ -1859,6 +1859,7 @@
                        :attachment-mime (:S.Message/attachment-mime item)
                        :in-reply-to (:message/in-reply-to item)
                        :run-id (:message/run-id item)
+                       :activities (:message/activities item)
                        :object (get-in item [:message/metadata :object])
                        :on-open-run open-run!
                        :on-open-proposal
