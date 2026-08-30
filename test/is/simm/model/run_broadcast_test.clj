@@ -9,6 +9,7 @@
   (let [room-id (random-uuid)
         runtime-room-id :room
         run-id (random-uuid)
+        cause-ids (hash-set (random-uuid) (random-uuid))
         world-id :room_fork_review
         runtime-ctx (ctx/create-execution-context)
         run {:run/id run-id
@@ -16,6 +17,7 @@
              :run/kind :agent-turn
              :run/trigger (random-uuid)
              :run/status :completed
+             :run/caused-by cause-ids
              :run/world world-id
              :run/settlement-status :review}
         world {:id world-id
@@ -26,6 +28,8 @@
                                            {:id runtime-room-id :ctx runtime-ctx}))
                   room-registry/lookup (fn [id] (when (= world-id id) world))]
       (is (true? (:world-live? (run-broadcast/run-summary room-id run))))
+      (is (= (->> cause-ids (map str) sort vec)
+             (:cause-ids (run-broadcast/run-summary room-id run))))
       (is (false? (:world-live?
                    (run-broadcast/run-summary room-id
                                               (assoc run :run/id (random-uuid)))))))

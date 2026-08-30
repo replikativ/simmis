@@ -104,6 +104,23 @@
     (is (:parent-missing? (first forest)))
     (is (= 4 (count (forest-ids forest))))))
 
+(deftest execution-relations-progress-from-live-ids-to-durable-summaries
+  (let [live-run {:parent-id "parent"
+                  :cause-ids ["input-a" "input-b"]}
+        placeholders (run-detail/execution-relations {} live-run)
+        detail {:parent {:id "parent" :actor-name "Coordinator"}
+                :children [{:id "child" :actor-name "Analyst"}]
+                :inputs [{:id "input-a" :actor-name "Reviewer"}]}
+        enriched (run-detail/execution-relations detail live-run)]
+    (is (= {:id "parent"} (:parent placeholders)))
+    (is (= [{:id "input-a"} {:id "input-b"}] (:inputs placeholders)))
+    (is (= (:parent detail) (:parent enriched)))
+    (is (= (:children detail) (:children enriched)))
+    (is (= [{:id "input-a" :actor-name "Reviewer"}
+            {:id "input-b"}]
+           (:inputs enriched))
+        "durable summaries replace matching placeholders without hiding lagging inputs")))
+
 (deftest queries-a-run-as-a-causal-projection
   (let [cfg {:store {:backend :memory :id (random-uuid)}
              :schema-flexibility :write
@@ -122,6 +139,12 @@
     (let [conn (d/connect cfg)]
       (try
         (d/transact conn chat-schema/full-schema)
+        (when-not (d/q '[:find ?e . :where [?e :db/ident :run/caused-by]]
+                       @conn)
+          (d/transact conn [{:db/ident :run/caused-by
+                             :db/valueType :db.type/uuid
+                             :db/cardinality :db.cardinality/many
+                             :db/index true}]))
         ;; Room stores carry this small Simmis user projection in addition to
         ;; Dvergr's portable chat schema.
         (d/transact conn [{:db/ident :entity/uuid
@@ -138,6 +161,10 @@
               world-schema?
               (boolean (d/q '[:find ?e . :where
                               [?e :db/ident :run/settlement-status]]
+                            @conn))
+              causality-schema?
+              (boolean (d/q '[:find ?e . :where
+                              [?e :db/ident :run/caused-by]]
                             @conn))]
           (d/transact conn [{:entity/uuid actor-id
                            :S.User/display-name "Vár"}
@@ -169,15 +196,19 @@
                                    :run/isolation :ctx
                                    :run/settlement-policy :review
                                    :run/settlement-status :review
-                                   :run/settlement-reason :policy))
+                                   :run/settlement-reason :policy)
+                            causality-schema?
+                            (assoc :run/caused-by #{child-id}))
                           {:run/id child-id
                            :run/kind :delegation
                            :run/actor actor
                            :run/trigger output-id
                            :run/parent run-id
-                           :run/status :queued
+                           :run/status :completed
                            :run/created-at finished
-                           :run/updated-at finished}
+                           :run/started-at finished
+                           :run/updated-at finished
+                           :run/ended-at finished}
                           {:message/id output-id
                            :message/role :assistant
                            :message/from actor
@@ -204,7 +235,7 @@
                                    :tool-call/authorization-resource-id "room")
                             (not authorization-schema?)
                             (assoc :tool-call/approval :auto-approved))])
-          (let [{:keys [run trigger parent children messages tool-calls]}
+          (let [{:keys [run trigger parent children inputs messages tool-calls]}
                 (run-detail/query-run-detail @conn run-id)]
             (is (= (str run-id) (:id run)))
             (is (= "Vár" (:actor-name run)))
@@ -216,6 +247,8 @@
             (is (= "Investigate the failing build" (:content trigger)))
             (is (= (str parent-id) (:id parent)))
             (is (= [(str child-id)] (mapv :id children)))
+            (is (= [(str child-id)] (:cause-ids run)))
+            (is (= [(str child-id)] (mapv :id inputs)))
             (is (= [(str output-id)] (mapv :id messages)))
             (is (= [{:name "read_file"
                      :result "configuration"

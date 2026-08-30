@@ -1878,6 +1878,17 @@ body {
 .run-status--failed { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
 .run-status--completed { color: var(--success); }
 
+.run-relation-group + .run-relation-group { margin-top: var(--spacing-sm); }
+
+.run-relation-label {
+  margin: 0 0 5px;
+  color: var(--mono-text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
 .run-inspector-body {
   flex: 1;
   min-height: 0;

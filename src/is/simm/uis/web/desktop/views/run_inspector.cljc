@@ -100,16 +100,31 @@
     (el/button {:key (:id run)
                 :class "run-related-link"
                 :on-click (fn [_] (when on-open-run (on-open-run run)))}
-      (vc/icon (if (= relation :parent) "corner-left-up" "git-branch")
+      (vc/icon (case relation
+                 :parent "corner-left-up"
+                 :input "git-merge"
+                 "git-branch")
                {:class "run-related-icon"})
       (el/span {:class "run-related-main"}
-        (el/span {:class "run-related-relation"} (name relation))
+        (el/span {:class "run-related-relation"}
+          (case relation
+            :parent "spawned by"
+            :child "spawned work"
+            :input "observed result"
+            (name relation)))
         (el/span {:class "run-related-actor"}
           (or (:actor-name run) (some-> (:actor run) name) "Run")))
       (el/span {:class "run-related-id"} (short-id (:id run)))
       (when status
         (el/span {:class (str "run-status run-status--" (name status))}
           (status-label status))))))
+
+(defn- relation-group [label runs relation on-open-run]
+  (when (seq runs)
+    (el/div {:class "run-relation-group"}
+      (el/h4 {:class "run-relation-label"} label)
+      (el/div {:class "run-related-list"}
+        (map #(related-run-button % relation on-open-run) runs)))))
 
 (defn- provenance-view [run]
   (let [facts (remove (comp nil? second)
@@ -175,8 +190,7 @@
         tool-calls (:tool-calls detail)
         activity (run-detail/group-tool-activity tool-calls)
         outputs (remove #(= (:id %) (:id (:trigger detail))) (:messages detail))
-        parent-id (:parent-id run)
-        known-parent (or (:parent detail) (when parent-id {:id parent-id}))
+        {:keys [parent children inputs]} (run-detail/execution-relations detail run)
         status (or (:status run) :loading)
         active? (contains? #{:running :cancelling} status)]
     (el/div {:class "run-inspector" :data-run-id (:id run)}
@@ -220,16 +234,18 @@
               (el/section {:class "run-section"}
                 (message-card trigger "Triggered by" on-open-message)))
 
-            (when (or parent-id (seq (:children detail)))
+            (when (or parent (seq children) (seq inputs))
               (el/section {:class "run-section"}
                 (el/div {:class "run-section-heading"}
-                  (el/h3 {} "Causal structure")
-                  (el/p {} "Explicit containment, separate from message chronology."))
-                (el/div {:class "run-related-list"}
-                  (when known-parent
-                    (related-run-button known-parent :parent on-open-run))
-                  (map #(related-run-button % :child on-open-run)
-                       (:children detail)))))
+                  (el/h3 {} "Execution graph")
+                  (el/p {} "Containment and observed results; message causality is shown above."))
+                (relation-group "Structural parent"
+                                (when parent [parent])
+                                :parent on-open-run)
+                (relation-group "Structural children" children
+                                :child on-open-run)
+                (relation-group "Causal inputs" inputs
+                                :input on-open-run)))
 
             (settlement-view run on-promote)
 
