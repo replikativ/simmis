@@ -150,13 +150,16 @@
      [focus-id]
      (rem/spin!
       #(pr/proposal-status! web/server-id focus-id)
-      (fn [ok _err]
+      (fn [ok err]
         (binding [rtc/*execution-context* runtime]
-          (swap! focus-outcome assoc focus-id
-                 (case (:status ok)
-                   :accepted :accepted
-                   :dismissed :dismissed
-                   :unavailable))
+          (if (or err (= :open (:status ok)))
+            (do (swap! focus-outcome dissoc focus-id)
+                (swap! focus-answered disj focus-id))
+            (swap! focus-outcome assoc focus-id
+                   (case (:status ok)
+                     :accepted :accepted
+                     :dismissed :dismissed
+                     :unavailable)))
           ;; nudge the signal so the view re-renders with the answer
           (swap! sig/proposals-data update :outcome-tick (fnil inc 0)))))))
 
@@ -175,6 +178,39 @@
        (ask-focus-outcome! focus-id))))
 
 #?(:cljs
+   (defn proposal-state
+     "Resolve one canonical Proposal from the shared review projection.
+
+      Chat, Tasks, and the full inspector all refer to the same proposal id.
+      Missing open rows are verified through the existing visibility-safe
+      status endpoint; the result never distinguishes an unknown proposal from
+      one the current party may not see. Calling this function may schedule that
+      idempotent verification and returns `:checking` meanwhile."
+     [proposals-data proposal-id]
+     (let [proposal-id (str proposal-id)
+           proposal (some #(when (= proposal-id (str (:id %))) %)
+                          (:proposals proposals-data))]
+       (cond
+         (:error proposals-data)
+         {:status :error :proposal {:error (:error proposals-data)}}
+
+         proposal
+         (do
+           ;; If this id was absent earlier and has since been reopened, the
+           ;; open row is authoritative and any cached terminal answer is stale.
+           (swap! focus-pending disj proposal-id)
+           (swap! focus-answered disj proposal-id)
+           (swap! focus-outcome dissoc proposal-id)
+           {:status :open :proposal proposal})
+
+         :else
+         (do
+           (recheck-focus! proposal-id)
+           (if (contains? @focus-outcome proposal-id)
+             {:status (get @focus-outcome proposal-id)}
+             {:status :checking}))))))
+
+#?(:cljs
    (defn- note-for
      "The reviewer's typed reason, read straight off the DOM at click time.
       Deliberately NOT signal-backed: keystroke-per-render on a textarea buys
@@ -186,11 +222,18 @@
              .-value)))
 
 #?(:cljs
-   (defn- accept! [pid force?]
-     (update-proposal! pid #(-> % (assoc :busy? true) (dissoc :action-error)))
-     (rem/spin!
-      #(pr/accept-proposal! web/server-id pid force? (note-for pid))
-      (fn [ok err]
+   (defn accept!
+     "Run the canonical whole-Proposal accept action.
+
+      The optional explicit note lets compact projections such as the chat card
+      reuse this controller without manufacturing the full inspector's DOM."
+     ([pid force?]
+      (accept! pid force? (note-for pid)))
+     ([pid force? note]
+      (update-proposal! pid #(-> % (assoc :busy? true) (dissoc :action-error)))
+      (rem/spin!
+       #(pr/accept-proposal! web/server-id pid force? note)
+       (fn [ok err]
         (cond
           ;; a refused or broken accept must SAY so on the card — this one
           ;; failed authorization for weeks while the button looked inert
@@ -261,7 +304,7 @@
                                              ". It stays open and can be retried"
                                              " once the conflict is resolved on"
                                              " its branch."))))
-          :else (load-proposals!))))))
+          :else (load-proposals!)))))))
 
 #?(:cljs
    (defn- comment-text
@@ -297,8 +340,11 @@
                 (load-proposals!)))))))))
 
 #?(:cljs
-   (defn- request-changes! [pid]
-     (let [body (comment-text pid)]
+   (defn request-changes!
+     "Run the canonical request-changes action with an optional explicit body."
+     ([pid]
+      (request-changes! pid (comment-text pid)))
+     ([pid body]
        (if (or (nil? body) (= "" (.trim body)))
          (update-proposal! pid
                            #(assoc % :action-error
@@ -332,18 +378,22 @@
                 :else (load-proposals!)))))))))
 
 #?(:cljs
-   (defn- dismiss! [pid]
-     (update-proposal! pid #(-> % (assoc :busy? true) (dissoc :action-error)))
-     (rem/spin!
-      #(pr/dismiss-proposal! web/server-id pid (note-for pid))
-      (fn [_ err]
+   (defn dismiss!
+     "Run the canonical whole-Proposal dismissal action."
+     ([pid]
+      (dismiss! pid (note-for pid)))
+     ([pid note]
+      (update-proposal! pid #(-> % (assoc :busy? true) (dissoc :action-error)))
+      (rem/spin!
+       #(pr/dismiss-proposal! web/server-id pid note)
+       (fn [_ err]
         (if err
           ;; don't reload on failure — that would drop the card and make a
           ;; refused dismiss look like it worked
           (do (js/console.error "[proposals] dismiss error:" err)
               (update-proposal! pid #(-> % (dissoc :busy?)
                                          (assoc :action-error (rem/error-text err)))))
-          (load-proposals!))))))
+          (load-proposals!)))))))
 
 #?(:cljs
    (defn- fork-action!

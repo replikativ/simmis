@@ -27,6 +27,7 @@
             [org.replikativ.spindel.dom.foreign]
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.activity :as activity]
+            [is.simm.uis.web.desktop.proposal-card :as proposal-card]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.model.references :as refs]
             [clojure.string :as str]
@@ -459,7 +460,9 @@
   [{:keys [id author-id author-name content reasoning timestamp is-own? is-ai?
            syntax-pref attachment-blob attachment-mime thread-parent
            in-reply-to reply-count on-jump-parent on-reply audience run-id
-           activities mention-handles on-open-thread on-open-run on-open-proposal object]}]
+           activities mention-handles on-open-thread on-open-run on-open-proposal
+           on-accept-proposal on-request-proposal-changes on-dismiss-proposal
+           proposal-state object]}]
   (el/div {:key id
            :class (vc/class-names "chat-message" "message"
                                   (when is-own? "chat-message--own"))
@@ -588,23 +591,49 @@
               [headline & detail-lines] (str/split-lines (str content))
               title (str/replace (or headline "Proposal")
                                  #"^Proposal ready:\s*" "")
-              summary (str/trim (str/join "\n" detail-lines))]
+              summary (str/trim (str/join "\n" detail-lines))
+              action (proposal-card/action-model proposal-state)]
           (el/div {:class "chat-proposal-card"
                    :data-object-kind "proposal"
                    :data-object-id proposal-id}
             (el/div {:class "chat-proposal-card-kicker"}
               (vc/icon "git-pull-request" {:class "chat-proposal-card-icon"})
-              "Proposal")
+              (str "Proposal · " (:status-label action)))
             (el/div {:class "chat-proposal-card-title"} title)
             (when (seq summary)
               (el/div {:class "chat-proposal-card-summary"} summary))
+            (when-let [error (:action-error action)]
+              (el/div {:class "chat-proposal-card-error"} error))
             (el/div {:class "chat-proposal-card-actions"}
               (el/button {:class "button button--primary chat-proposal-review"
                           :on-click
                           (fn [event]
                             (when on-open-proposal
                               (on-open-proposal event proposal-id title)))}
-                "Review changes"))))
+                "Review changes")
+              (when (= :open (:status action))
+                [(el/button {:class "button chat-proposal-accept"
+                             :disabled (:accept-disabled? action)
+                             :on-click (fn [event]
+                                         (.stopPropagation event)
+                                         (when on-accept-proposal
+                                           (on-accept-proposal
+                                            proposal-id (:accept-force? action))))}
+                   (:accept-label action))
+                 (el/button {:class "button chat-proposal-request"
+                             :disabled (:request-disabled? action)
+                             :on-click (fn [event]
+                                         (.stopPropagation event)
+                                         (when on-request-proposal-changes
+                                           (on-request-proposal-changes proposal-id)))}
+                   "Request changes")
+                 (el/button {:class "button chat-proposal-dismiss"
+                             :disabled (:dismiss-disabled? action)
+                             :on-click (fn [event]
+                                         (.stopPropagation event)
+                                         (when on-dismiss-proposal
+                                           (on-dismiss-proposal proposal-id)))}
+                   "Dismiss")]))))
         ;; Generic message content - markdown for AI, rich text for user
         #?(:cljs
            (if is-ai?

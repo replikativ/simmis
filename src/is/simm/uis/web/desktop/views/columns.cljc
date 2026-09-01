@@ -42,6 +42,7 @@
             #?(:cljs [is.simm.uis.web.desktop.views.agent-inspector :as agent-inspector])
             [is.simm.uis.web.desktop.views.run-history :as run-history]
             [is.simm.uis.web.desktop.views.run-inspector :as run-inspector]
+            [is.simm.uis.web.desktop.proposal-card :as proposal-card]
             [is.simm.uis.web.desktop.signals :as sig]
             [clojure.string :as str]
             #?(:cljs [datahike.api :as d])
@@ -939,6 +940,9 @@
              ;; room map here re-renders chat controls without entangling the
              ;; live server ChatContext with UI execution forks.
              room-runs (iv/get-new (track sig/room-runs))
+             ;; Canonical Proposal review projection. Inline chat cards consume
+             ;; the same rows/controllers as Tasks and the full inspector.
+             proposal-data (iv/get-new (track sig/proposals-data))
              ;; Track the commit graph so the History subway (a plain fn in
              ;; the context footer) re-renders when a graph loads. Value
              ;; unused here — the subway bare-derefs it.
@@ -988,7 +992,7 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs id)
+                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs proposal-data id)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1187,7 +1191,7 @@
   "Render content for a tab based on its type.
 
    kb-states arg removed — wiki tabs self-track their KB signal."
-  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs col-id]]
+  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs proposal-data col-id]]
   (case tab-type
     :home
     ;; Newcomer landing: the obvious first action is talking to your
@@ -1245,7 +1249,8 @@
     (render-tab-content :chat (assoc data :thread-view? true)
                         local-db chat-windows settings-data admin-data room-details room-states
                         syntax-pref gref video-info screen-sharing screens-results
-                        recordings-results web-captures-results chat-reply-targets room-runs col-id)
+                        recordings-results web-captures-results chat-reply-targets room-runs
+                        proposal-data col-id)
 
     :run-history
     #?(:cljs
@@ -1472,6 +1477,21 @@
                 anchor-uuid (assoc :anchor-uuid (uuid anchor-uuid))
                 thread-view? (assoc :thread-root-id thread-root-id))
               sig/CHAT_WINDOW_SIZE as-of-t)
+             ;; `ifor-each` memoizes on ITEM equality and cannot observe values
+             ;; captured by its render closure. Embed the canonical Proposal
+             ;; projection into proposal-message rows so action/status updates
+             ;; invalidate exactly those keyed cards while other messages stay
+             ;; incrementally cached.
+             visible-items
+             (mapv
+              (fn [item]
+                (if-let [object (get-in item [:message/metadata :object])]
+                  (if (= :proposal (:kind object))
+                    (proposal-card/attach-state
+                     item (proposals-view/proposal-state proposal-data (:id object)))
+                    item)
+                  item))
+              (iv/get-new visible-iv))
              ;; One-shot scroll+highlight once the anchor is in the DOM.
              ;; DOM-flag guarded (no reactive state); rAF for tree linkage.
              _ #?(:cljs
@@ -1823,7 +1843,7 @@
             ;; Messages list with ifor-each for incremental rendering
             ;; Using :entity/uuid as key for categorical schema
             (el/div {:class "chat-messages-list"}
-              (ifor-each :entity/uuid visible-iv
+              (ifor-each :entity/uuid visible-items
                 (fn [item]
                   (case (:timeline/type item)
                     :kb-event
@@ -1869,6 +1889,7 @@
                        :run-id (:message/run-id item)
                        :activities (:message/activities item)
                        :object (get-in item [:message/metadata :object])
+                       :proposal-state (get item proposal-card/proposal-state-key)
                        :on-open-run open-run!
                        :on-open-proposal
                        (fn [event proposal-id title]
@@ -1883,6 +1904,18 @@
                                           {:col-id col-id
                                            :title (str "Proposal · " title)
                                            :new-column? new-column?})))
+                       :on-accept-proposal
+                       (fn [proposal-id force?]
+                         (proposals-view/accept! proposal-id force? nil))
+                       :on-request-proposal-changes
+                       (fn [proposal-id]
+                         (when-let [note (js/prompt "What should change?")]
+                           (when-not (str/blank? note)
+                             (proposals-view/request-changes! proposal-id note))))
+                       :on-dismiss-proposal
+                       (fn [proposal-id]
+                         (when (js/confirm "Dismiss this proposal?")
+                           (proposals-view/dismiss! proposal-id nil)))
                        :thread-parent (:thread/parent item)
                        :reply-count (:thread/reply-count item)
                        :on-open-thread
