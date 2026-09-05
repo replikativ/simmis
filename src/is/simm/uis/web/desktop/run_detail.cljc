@@ -224,14 +224,30 @@
         [[] #{}]
         candidate-ids)))))
 
+(defn execution-relations
+  "Presentation-sized structural and causal relations for one Run.
+
+   Durable detail supplies enriched summaries. During replication lag, live
+   parent/cause IDs remain navigable as placeholders instead of disappearing."
+  [detail run]
+  (let [parent-id (:parent-id run)
+        durable-inputs (vec (:inputs detail))
+        input-by-id (into {} (map (juxt :id identity)) durable-inputs)
+        input-ids (distinct (concat (:cause-ids run)
+                                    (map :id durable-inputs)))]
+    {:parent (or (:parent detail) (when parent-id {:id parent-id}))
+     :children (vec (:children detail))
+     :inputs (mapv #(get input-by-id % {:id %}) input-ids)}))
+
 (do
      (def ^:private run-pull-base
        '[:run/id :run/kind :run/actor :run/trigger :run/parent :run/status
          :run/created-at :run/started-at :run/updated-at :run/ended-at
          :run/reason :run/error])
 
-     (def ^:private run-world-attrs
-       '[:run/world :run/isolation :run/settlement-policy
+     (def ^:private run-optional-attrs
+       '[:run/caused-by
+         :run/world :run/isolation :run/settlement-policy
          :run/settlement-status :run/settlement-reason])
 
      (defn- schema-attrs [db base optional]
@@ -241,7 +257,7 @@
              optional))
 
      (defn- run-pull [db]
-       (schema-attrs db run-pull-base run-world-attrs))
+       (schema-attrs db run-pull-base run-optional-attrs))
 
      (def ^:private message-pull
        '[:message/id :message/content :message/created-at :message/role
@@ -300,6 +316,8 @@
                     :started-at (some-> (:run/started-at run) .getTime)
                     :updated-at (some-> (:run/updated-at run) .getTime)}
              (:run/parent run) (assoc :parent-id (str (:run/parent run)))
+             (seq (:run/caused-by run))
+             (assoc :cause-ids (->> (:run/caused-by run) (map str) sort vec))
              (:run/ended-at run) (assoc :ended-at (.getTime (:run/ended-at run)))
              (:run/reason run) (assoc :reason (:run/reason run))
              (:run/error run) (assoc :error (:run/error run))))))
@@ -372,7 +390,12 @@
                                   db run-id)
                    child-eids (d/q '[:find [?r ...] :in $ ?id
                                      :where [?r :run/parent ?id]]
-                                   db run-id)]
+                                   db run-id)
+                   cause-eids (when-let [cause-ids (seq (:run/caused-by run-entity))]
+                                (d/q '[:find [?r ...]
+                                       :in $ [?id ...]
+                                       :where [?r :run/id ?id]]
+                                     db (vec cause-ids)))]
                {:run (normalize-run run-entity names)
                 :trigger (some->> trigger-eid (d/pull db message-pull)
                                   (#(normalize-message % names)))
@@ -389,4 +412,8 @@
                 :children (->> child-eids
                                (map #(normalize-run (d/pull db run-pattern %) names))
                                (sort-by (juxt :started-at :id))
-                               vec)}))))))
+                               vec)
+                :inputs (->> cause-eids
+                             (map #(normalize-run (d/pull db run-pattern %) names))
+                             (sort-by (juxt :started-at :id))
+                             vec)}))))))

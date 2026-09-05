@@ -88,6 +88,8 @@
            :updated-at (some-> ^java.util.Date (:run/updated-at r) .getTime)}
     (:run/world r) (assoc :world-live? (run-world-live? room-id r))
     (:run/parent r) (assoc :parent-id (str (:run/parent r)))
+    (seq (:run/caused-by r))
+    (assoc :cause-ids (->> (:run/caused-by r) (map str) sort vec))
     (:run/ended-at r) (assoc :ended-at (.getTime ^java.util.Date (:run/ended-at r)))
     (:run/reason r) (assoc :reason (:run/reason r))
     (:run/error r) (assoc :error (str (:run/error r)))))
