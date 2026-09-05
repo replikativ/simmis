@@ -2,16 +2,24 @@
   (:require [clojure.edn :as edn]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [datahike.api :as d]
+            [dvergr.discourse :as discourse]
+            [dvergr.agent.room-context :as room-ctx]
             [dvergr.chat.schema :as chat-schema]
+            [dvergr.room.registry :as rreg]
+            [dvergr.room.store :as rstore]
             [is.simm.agents.room-agents :as room-agents]
             [is.simm.agents.templates :as templates]
             [is.simm.model.model-catalog :as catalog]
             [is.simm.model.model-selection :as selection]
             [is.simm.model.parties :as parties]
+            [is.simm.model.rooms :as rooms]
             [is.simm.model.system-db :as system-db]
             [is.simm.uis.web.desktop.chat-remote :as chat-remote]))
 
 (def ^:dynamic *conn* nil)
+
+(def ^:private joined-var
+  (ns-resolve 'is.simm.agents.room-agents 'joined))
 
 (use-fixtures
  :once
@@ -90,20 +98,206 @@
       (is (= "gpt-5.5" (:model existing-before)))
       (is (= :openai (:provider existing-before))))))
 
-(deftest owner-preference-change-retires-only-inheriting-participants
+(deftest owner-preference-change-activates-only-inheriting-participants
   (let [owner-id (seed-owner! "gpt-*-luna")
         inherited (parties/create-agent! owner-id {:display-name "Inherited"})
         explicit (parties/create-agent!
                   owner-id {:display-name "Explicit" :model "gpt-5.5"})
-        reset-ids (atom [])]
-    (with-redefs [room-agents/reset-agent-contexts!
-                  (fn [agent-id] (swap! reset-ids conj agent-id))]
+        activations (atom [])]
+    (with-redefs [room-agents/activate-agent-model!
+                  (fn [agent-id expected]
+                    (swap! activations conj [agent-id expected]))]
       (parties/update-preferred-model! owner-id "gpt-*-sol"))
     (is (= "gpt-*-sol" (:party/preferred-model (parties/get-party owner-id))))
-    (is (= [(:party/id inherited)] @reset-ids)
-        "the inherited runtime is retired; an explicit override stays live")))
+    (is (= [[(:party/id inherited) "gpt-*-sol"]] @activations)
+        "the inherited runtime is activated; an explicit override stays untouched")))
 
-(deftest owner-preference-reset-failure-does-not-skip-later-agents
+(deftest live-model-activation-preserves-the-participant-and-revalidates-state
+  (let [owner-choice "gpt-*-luna"
+        owner-id (seed-owner! owner-choice)
+        agent (parties/create-agent! owner-id {:display-name "Inherited"})
+        agent-id (:party/id agent)
+        room-id (random-uuid)
+        joined-atom (var-get joined-var)
+        joined-before @joined-atom
+        posts (atom [])]
+    (try
+      (reset! joined-atom #{[room-id agent-id]})
+      (with-redefs [rooms/get-room (fn [id]
+                                    (when (= room-id id)
+                                      {:room/slug "activation-room"}))
+                    rreg/lookup (constantly ::live-room)
+                    discourse/post! (fn [room message]
+                                      (swap! posts conj [room message]))
+                    discourse/leave (fn [& _]
+                                       (throw (ex-info "must not leave" {})))
+                    room-ctx/drop-ctx! (fn [& _]
+                                         (throw (ex-info "must not drop ctx" {})))
+                    selection/describe-resolution (constantly {:configured? false})
+                    room-agents/describe-model-resolution
+                    (constantly {:available? true
+                                 :provider :openai
+                                 :model "gpt-5.6-luna"})]
+        (is (= {:status :activated
+                :provider :openai
+                :model "gpt-5.6-luna"
+                :rooms [room-id]}
+               (room-agents/activate-agent-model! agent-id owner-choice)))
+        (is (= [[::live-room
+                 {:to (room-agents/party->actor-kw agent-id)
+                  :type :directive/switch-model
+                  :payload {:provider :openai :model "gpt-5.6-luna"}}]]
+               @posts))
+        (is (= #{[room-id agent-id]} @joined-atom)
+            "activation keeps participation and inbox ownership live")
+
+        (reset! posts [])
+        (is (= :superseded
+               (:status (room-agents/activate-agent-model!
+                         agent-id "gpt-stale-write"))))
+        (is (empty? @posts)
+            "a delayed preference writer cannot post its captured choice")
+
+        (with-redefs [room-agents/describe-model-resolution
+                      (constantly {:available? false
+                                   :provider :openai
+                                   :candidate "gpt-unavailable"
+                                   :availability :temporarily-unreachable
+                                   :availability-reason nil})]
+          (let [error (try
+                        (room-agents/activate-agent-model! agent-id owner-choice)
+                        nil
+                        (catch clojure.lang.ExceptionInfo e e))]
+            (is (= :model-unavailable (:type (ex-data error))))
+            (is (empty? @posts))
+            (is (= #{[room-id agent-id]} @joined-atom)
+                "unavailability leaves the previous live participant intact"))))
+      (finally
+        (reset! joined-atom joined-before)))))
+
+(deftest live-model-activation-continues-after-a-room-post-fails
+  (let [owner-choice "gpt-*-luna"
+        owner-id (seed-owner! owner-choice)
+        agent-id (:party/id
+                  (parties/create-agent! owner-id {:display-name "Inherited"}))
+        failed-room-id (random-uuid)
+        successful-room-id (random-uuid)
+        joined-atom (var-get joined-var)
+        joined-before @joined-atom
+        attempts (atom [])
+        failed-room-key (rstore/slug->room-id "failed-activation-room")
+        successful-room-key (rstore/slug->room-id "successful-activation-room")]
+    (try
+      (reset! joined-atom #{[failed-room-id agent-id]
+                            [successful-room-id agent-id]})
+      (with-redefs [selection/describe-resolution (constantly {:configured? false})
+                    room-agents/describe-model-resolution
+                    (constantly {:available? true
+                                 :provider :openai
+                                 :model "gpt-5.6-luna"})
+                    rooms/get-room
+                    (fn [room-id]
+                      {:room/slug (if (= room-id failed-room-id)
+                                    "failed-activation-room"
+                                    "successful-activation-room")})
+                    rreg/lookup
+                    (fn [room-key]
+                      (cond
+                        (= failed-room-key room-key) ::failed-room
+                        (= successful-room-key room-key) ::successful-room))
+                    discourse/post!
+                    (fn [room _message]
+                      (swap! attempts conj room)
+                      (when (= ::failed-room room)
+                        (throw (ex-info "synthetic room post failure"
+                                        {:type :post-failed}))))]
+        (let [error (try
+                      (room-agents/activate-agent-model! agent-id owner-choice)
+                      nil
+                      (catch clojure.lang.ExceptionInfo e e))
+              data (ex-data error)]
+          (is (= :model-activation-partial (:type data)))
+          (is (= #{::failed-room ::successful-room} (set @attempts))
+              "every live room is attempted despite one post failure")
+          (is (= [successful-room-id] (:rooms data)))
+          (is (= [{:room-id failed-room-id
+                   :error-class "clojure.lang.ExceptionInfo"
+                   :type :post-failed}]
+                 (:room-failures data)))
+          (is (= #{[failed-room-id agent-id]
+                   [successful-room-id agent-id]}
+                 @joined-atom))))
+      (finally
+        (reset! joined-atom joined-before)))))
+
+(deftest owner-preference-commit-is-serialized-with-live-activation
+  (let [initial-choice "gpt-initial"
+        first-choice "gpt-first"
+        second-choice "gpt-second-unavailable"
+        owner-id (seed-owner! initial-choice)
+        agent-id (:party/id
+                  (parties/create-agent! owner-id {:display-name "Inherited"}))
+        room-id (random-uuid)
+        joined-atom (var-get joined-var)
+        joined-before @joined-atom
+        first-resolved (promise)
+        release-first (promise)
+        second-started (promise)
+        posted-models (atom [])]
+    (try
+      (reset! joined-atom #{[room-id agent-id]})
+      (with-redefs [selection/describe-resolution (constantly {:configured? false})
+                    rooms/get-room (constantly {:room/slug "serialized-owner-room"})
+                    rreg/lookup (constantly ::serialized-owner-room)
+                    discourse/post!
+                    (fn [_room message]
+                      (swap! posted-models conj (get-in message [:payload :model])))
+                    room-agents/describe-model-resolution
+                    (fn [_agent]
+                      (case (:party/preferred-model (parties/get-party owner-id))
+                        "gpt-first"
+                        (do
+                          (deliver first-resolved true)
+                          @release-first
+                          {:available? true
+                           :provider :openai
+                           :model "gpt-first-runtime"})
+
+                        "gpt-second-unavailable"
+                        {:available? false
+                         :provider :openai
+                         :candidate "gpt-second-runtime"
+                         :availability :temporarily-unreachable}))]
+        (let [first-write
+              (future
+                (parties/update-preferred-model! owner-id first-choice)
+                :first-activated)]
+          (is (= true (deref first-resolved 1000 ::timeout)))
+          (let [second-write
+                (future
+                  (deliver second-started true)
+                  (try
+                    (parties/update-preferred-model! owner-id second-choice)
+                    nil
+                    (catch clojure.lang.ExceptionInfo e e)))]
+            (is (= true (deref second-started 1000 ::timeout)))
+            (is (= first-choice
+                   (:party/preferred-model (parties/get-party owner-id)))
+                "the newer commit waits for the older activation boundary")
+            (deliver release-first true)
+            (is (= :first-activated (deref first-write 1000 ::timeout)))
+            (let [second-error (deref second-write 1000 ::timeout)]
+              (is (= :preferred-model-activation-partial
+                     (:type (ex-data second-error))))
+              (is (= second-choice
+                     (:party/preferred-model (parties/get-party owner-id))))
+              (is (= ["gpt-first-runtime"] @posted-models)
+                  "the unavailable newer choice retains the model active before its commit")))))
+      (finally
+        (deliver release-first true)
+        (reset! joined-atom joined-before)))))
+
+(deftest owner-preference-activation-failure-does-not-skip-later-agents
   (let [owner-id (seed-owner! "gpt-*-luna")
         first-agent (parties/create-agent! owner-id {:display-name "First"})
         second-agent (parties/create-agent! owner-id {:display-name "Second"})
@@ -112,11 +306,16 @@
         fail-id (first (sort-by str [(:party/id first-agent)
                                     (:party/id second-agent)]))
         calls (atom [])
-        error (with-redefs [room-agents/reset-agent-contexts!
-                            (fn [agent-id]
+        error (with-redefs [room-agents/activate-agent-model!
+                            (fn [agent-id _expected]
                               (swap! calls conj agent-id)
                               (when (= fail-id agent-id)
-                                (throw (ex-info "synthetic reset failure" {}))))]
+                                (throw (ex-info "synthetic activation failure"
+                                                {:type :model-unavailable
+                                                 :model "gpt-unavailable"
+                                                 :provider :openai
+                                                 :availability
+                                                 :temporarily-unreachable}))))]
                 (try
                   (parties/update-preferred-model! owner-id "gpt-*-sol")
                   nil
@@ -128,7 +327,13 @@
     (is (not (some #{(:party/id explicit)} @calls)))
     (is (= :preferred-model-activation-partial (:type (ex-data error))))
     (is (true? (:preference-committed? (ex-data error))))
-    (is (= [fail-id] (mapv :agent-id (:failures (ex-data error)))))))
+    (is (= [fail-id] (mapv :agent-id (:failures (ex-data error)))))
+    (is (= {:type :model-unavailable
+            :model "gpt-unavailable"
+            :provider :openai
+            :availability :temporarily-unreachable}
+           (select-keys (first (:failures (ex-data error)))
+                        [:type :model :provider :availability])))))
 
 (deftest override-cleared-during-owner-save-is-included-in-activation
   (let [owner-id (seed-owner! "gpt-*-luna")
@@ -139,7 +344,7 @@
         original-update parties/update-party!
         owner-write-entered (promise)
         allow-owner-write (promise)
-        resets (atom [])]
+        activations (atom [])]
     (with-redefs [parties/update-party!
                   (fn [party-id updates]
                     (if (= owner-id party-id)
@@ -148,8 +353,9 @@
                         @allow-owner-write
                         (original-update party-id updates))
                       (original-update party-id updates)))
-                  room-agents/reset-agent-contexts!
-                  (fn [id] (swap! resets conj id))]
+                  room-agents/activate-agent-model!
+                  (fn [id expected]
+                    (swap! activations conj [id expected]))]
       (let [preference-save
             (future
               (parties/update-preferred-model! owner-id "gpt-*-sol")
@@ -165,8 +371,8 @@
                    :party/provider nil})
         (deliver allow-owner-write true)
         (is (= :saved (deref preference-save 1000 ::timeout)))
-        (is (= 2 (count (filter #{agent-id} @resets)))
-            "override clearing resets once; post-commit classification resets again")
+        (is (= [[agent-id "gpt-*-sol"]] @activations)
+            "post-commit classification activates the newly inheriting agent")
         (is (= "gpt-*-sol"
                (:party/preferred-model (parties/get-party owner-id))))))))
 

@@ -120,9 +120,11 @@ inspector keeps the preferred row selected, labels it “preferred,” names the
 resolved version separately, and explains whether a newer family version is in
 use or no valid forward candidate exists.
 
-The concrete id is resolved when the participant is joined or rejoined. For
-every provider, a model list from that provider's own endpoint answers which
-ids the credential can currently reach (`is.simm.model.model-selection`). It does not supply pricing,
+The concrete id is resolved when the participant is joined, rejoined, or when a
+committed owner preference is activated on an already-live inheriting
+participant. For every provider, a model list from that provider's own endpoint
+answers which ids the credential can currently reach
+(`is.simm.model.model-selection`). It does not supply pricing,
 context limits or capability metadata. Each returned id retains its provider,
 base URL, credential source, reachability, and the CONTRACT its evidence came
 from; identical URLs therefore remain two records.
@@ -211,14 +213,25 @@ Four model facts have distinct lifecycles:
    and adapter result. It governs new saves and whether a new join may capture
    the desired model.
 4. **Active runtime state** is the concrete provider/model spec captured by a
-   participant when it joined. The current UI does not introspect that spec.
+   participant when it joined and subsequently changed by targeted model
+   directives. The current UI does not introspect that spec.
 
 Participant construction calls the desired resolver once, validates the result,
-puts the concrete provider/model into dvergr's participant spec, and reuses that
-captured spec for subsequent turns. Owner-preference changes and catalog
-refreshes can therefore change the displayed desired resolution and availability
-without changing an already joined participant. The two may legitimately differ
-until that participant leaves and rejoins.
+and puts the concrete provider/model into dvergr's participant spec. Saving an
+owner preference re-reads every live inheriting agent under its existing
+lifecycle lock and posts dvergr's targeted `:directive/switch-model`; the
+participant, working context, subscriptions and inbox remain intact. A switch
+during generation settles the current provider call and restarts that generation
+with the new spec. A delayed activation carries the committed preference only as
+an expectation and is skipped if a newer owner write or an explicit agent
+override has won, so stale writers cannot switch the model back.
+
+Availability is checked before any directive is posted. If the committed target
+has become unavailable between save validation and activation, the save remains
+committed, the old live participant keeps its previous model, and the caller gets
+a partial activation failure. Agents that are not live simply resolve the new
+preference when they next join. Catalog refreshes remain observational and can
+change displayed desired availability without changing a live participant.
 
 Join is where availability is enforced, and it fails closed: an unavailable
 resolution throws `:model-unavailable` rather than running the agent on some
@@ -245,8 +258,9 @@ fresh participant rather than a duplicate responder.
 Explicit agent edits are a separate path. Updating an agent's own model, prompt,
 or other mutable configuration makes its live participants leave and clears
 their cached contexts. The next dispatch rejoins the agent and resolves a fresh
-spec. This reset does not imply per-turn resolution, and owner-preference or
-catalog changes do not currently trigger it.
+spec. This generic reset does not imply per-turn resolution. Owner-preference
+activation uses the non-destructive targeted path above; catalog changes do not
+trigger either path.
 
 One native-provider quirk is load-bearing here: on OpenAI's configured
 `/v1/chat/completions` path, the GPT-5.6 entries require `reasoning_effort`
