@@ -15,6 +15,7 @@
    Idempotent — safe on every boot / KB connect (projection skips existing types
    and morphisms; kontor schema install and `govern!` are idempotent)."
   (:require [datahike.api :as d]
+            [dvergr.agent.attempt.governance :as attempt-governance]
             [is.simm.model.katzen-projection :as kp]
             [kontor.core :as kcore]
             [kontor.governance :as gov]
@@ -83,13 +84,15 @@
                     :cardinality (if (= card :db.cardinality/many) :many :one)}))}))
 
 (defn accounting-installed?
-  "Has kontor's kernel schema already been installed on this database?
+  "Has Kontor's full accounting kernel been installed on this database?
 
-   `:kontor.posting/amount` is the sentinel: it is core kernel schema, so it
-   exists iff `install-schema!` has run, and it is not something a consumer
-   would transact on its own."
+   `:kontor.fx-rate/rate` is outside `kontor.schema/resource`, the deliberately
+   small posting spine Dvergr installs for conserved Run authority. The former
+   `:kontor.posting/amount` sentinel belongs to both schemas, so a fresh Room's
+   resource kernel was mistaken for a complete book: category-S projections,
+   the starter chart, and the default commodity were silently skipped."
   [conn]
-  (some? (d/q '[:find ?e . :where [?e :db/ident :kontor.posting/amount]] @conn)))
+  (some? (d/q '[:find ?e . :where [?e :db/ident :kontor.fx-rate/rate]] @conn)))
 
 (def starter-book
   "The minimum that makes a book USABLE rather than merely installed.
@@ -180,6 +183,12 @@
    this runs. Cheap — a registration, not a transaction."
   [conn]
   (gov/govern! conn)
+  ;; Datahike currently has one mandatory predicate slot per store. Kontor's
+  ;; idempotent registration therefore replaces Dvergr's composed Attempt
+  ;; predicate when Simmis extends an already-provisioned Room. Recompose it
+  ;; last: certified Attempt immutability and accounting/resource invariants
+  ;; must both survive regardless of subsystem installation order.
+  (attempt-governance/govern! conn)
   conn)
 
 (defn ensure-book-usable!
@@ -191,10 +200,11 @@
    queries, and the alternative is that a book created before the starter grew
    silently rejects postings forever.
 
-   ACCOUNTS, guarded on emptiness rather than on each path, so a tenant who
-   deleted or renamed the starter chart does not get it resurrected. That is
-   the state three rooms were in: journals, a commodity, and no account for a
-   verb to name.
+   ACCOUNTS, guarded on absence of a NON-RESOURCE chart rather than on each
+   path, so a tenant who deleted or renamed the starter chart does not get it
+   resurrected. Dvergr's resource kernel creates source, sink, and wallet rows
+   with ordinary `:kontor.account/path` values; counting those as a tenant chart
+   skipped every starter account and left all posting verbs unusable.
 
    JOURNALS, guarded per TYPE, because that is how `kontor.book` resolves them:
    `receive!`/`pay!` want a `:cash` journal and fail with `Nothing found for
@@ -207,7 +217,10 @@
    the ambiguity the block below exists to clear."
   [conn]
   (when (accounting-installed? conn)
-    (when (nil? (d/q '[:find ?a . :where [?a :kontor.account/path _]] @conn))
+    (when (nil? (d/q '[:find ?a . :where
+                        [?a :kontor.account/path _]
+                        (not [?a :kontor.resource-account/id _])]
+                      @conn))
       (let [accounts (filterv :kontor.account/path starter-book)]
         (d/transact conn accounts)
         (log/log! {:level :info :id ::starter-accounts-seeded

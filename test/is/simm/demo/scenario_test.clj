@@ -11,12 +11,14 @@
             [clojure.test :refer [deftest is testing]]
             [datahike.api :as d]
             [is.simm.demo.scenario :as scenario]
+            [is.simm.model.room-databases :as room-dbs]
             [is.simm.model.store :as store]
             [is.simm.runtimes.context :as ctx]))
 
 (def ^:private add-page! #'scenario/add-page!)
 (def ^:private link-page! #'scenario/link-page!)
 (def ^:private chronological #'scenario/chronological)
+(def ^:private load-book! #'scenario/load-book!)
 
 (defn- fresh-kb
   "A KB store with the real schema and seed in it. `store/install!`, not
@@ -58,6 +60,30 @@
   (remove #(contains? baseline (:tx %)) (content-txs db)))
 
 (defn- ->inst [s] (java.util.Date/from (java.time.Instant/parse s)))
+
+(deftest a-broken-book-entry-fails-the-scenario
+  (testing "the manifest cannot report entries that Kontor rejected"
+    (ctx/with-server-context
+      (let [conn (fresh-kb)
+            scope (random-uuid)
+            spec {:room "Operations"
+                  :commodity {:symbol "USD" :name "US Dollar" :precision 2}
+                  :entries [{:at "2026-03-02T09:00:00Z"
+                             :narration "Invalid opening entry"
+                             :debit "Assets:Missing"
+                             :credit "Equity:Opening"
+                             :amount 10
+                             :journal-type :general}]}]
+        (with-redefs [room-dbs/connect-room-database (constantly conn)]
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo #"Scenario book entry failed"
+               (load-book! [{:room/name "Operations"
+                             :room/content-db-scope scope}]
+                           spec))))
+        (is (zero? (or (d/q '[:find (count ?posting) .
+                              :where [?posting :kontor.posting/amount _]]
+                            @conn)
+                       0)))))))
 
 (deftest seeded-pages-land-at-their-narrative-instant
   (testing "every content transaction carries the scenario's instant, not the seed run's"
