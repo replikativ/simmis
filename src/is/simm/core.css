@@ -2464,8 +2464,17 @@ body {
   white-space: pre-wrap;
 }
 
+.chat-proposal-card-error {
+  margin-top: var(--spacing-sm);
+  color: var(--danger);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
 .chat-proposal-card-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
   margin-top: var(--spacing-md);
 }
 

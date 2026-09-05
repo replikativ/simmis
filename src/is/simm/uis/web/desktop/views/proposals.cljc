@@ -7,6 +7,7 @@
   (:require [clojure.string :as str]
             [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.views.core :as vc]
+            [is.simm.uis.web.desktop.proposal-card :as card-model]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.model.forkset :as fs]
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
@@ -36,6 +37,13 @@
        (swap! sig/proposals-data update :proposals
               (fn [ps] (mapv #(if (= (:id %) pid) (f %) %) ps))))))
 
+#?(:cljs
+   (defn- current-diff-request? [pid request-id]
+     (boolean
+      (some #(and (= (:id %) pid)
+                  (= (:diff-request-id %) request-id))
+            (:proposals @sig/proposals-data)))))
+
 #?(:cljs (declare load-checks-into-signal!))
 
 #?(:cljs
@@ -43,24 +51,24 @@
      ;; A failure has to land on the card. Silently ignoring it left `:diffs`
      ;; nil forever, so a DENIED diff rendered as a permanent "Loading changes…"
      ;; — indistinguishable from a slow one, and invisible in the console.
-     (rem/spin!
-      #(pr/proposal-diff! web/server-id pid)
-      (fn [ok err]
-        (update-proposal! pid
-                          (if err
-                            #(assoc % :diff-error (rem/error-text err))
-                            #(-> %
-                                 (assoc :diffs (vec (:forks ok))
-                                        :tier (:tier ok)
-                                        :ai-summary (:summary ok)
-                                        :conflicts (vec (:conflicts ok)))
-                                 (dissoc :diff-error))))
-        ;; only once the diff says there IS a code fork — a check request for a
-        ;; wiki-only proposal would open a repository workspace to discover
-        ;; there is nothing to run
-        (when (and (nil? err)
-                   (some #(= :repo (:system-type %)) (:forks ok)))
-          (load-checks-into-signal! pid))))))
+     (let [request-id (random-uuid)]
+       ;; The token lives in the reactive row it protects. A newer list
+       ;; replaces the row and installs its own token before starting its RPC,
+       ;; so callbacks from the old list become harmless without a second
+       ;; lifecycle registry.
+       (update-proposal! pid #(card-model/begin-diff-request % request-id))
+       (rem/spin!
+        #(pr/proposal-diff! web/server-id pid)
+        (fn [ok err]
+          (update-proposal!
+           pid #(card-model/apply-diff-result
+                 % request-id ok (some-> err rem/error-text)))
+          ;; only the latest diff may start checks. The row token is inspected
+          ;; here and again when checks return, fencing both sides of the RPC.
+          (when (and (nil? err)
+                     (current-diff-request? pid request-id)
+                     (some #(= :repo (:system-type %)) (:forks ok)))
+            (load-checks-into-signal! pid request-id)))))))
 
 #?(:cljs
    (defn- load-checks-into-signal!
@@ -70,12 +78,17 @@
       whole card behind it. A failure to fetch is left silent here — unlike the
       diff, an absent check is a legible state (the card simply shows no test
       result), so surfacing an error for it would put a red line on a card whose
-      change is fine."
-     [pid]
+     change is fine."
+     [pid diff-version]
      (rem/spin!
       #(pr/proposal-checks! web/server-id pid)
       (fn [ok _err]
-        (when ok (update-proposal! pid #(assoc % :checks (vec ok))))))))
+        (when ok
+          (update-proposal! pid
+                            (fn [proposal]
+                              (if (= diff-version (:diff-request-id proposal))
+                                (assoc proposal :checks (vec ok))
+                                proposal))))))))
 
 ;; --- focus verification ------------------------------------------------------
 ;;
@@ -136,8 +149,8 @@
              (done))))))))
 
 ;; Why an id is absent, once the list has spoken: :accepted | :dismissed |
-;; :unavailable. Absence has TWO causes and the view used to assert the wrong
-;; one — see `ops.proposals/visible-status`.
+;; :unavailable | :open (the list lagged) | :error. Absence has multiple causes
+;; and the view must not guess between them — see `ops.proposals/visible-status`.
 #?(:cljs (defonce ^:private focus-outcome (atom {})))
 
 #?(:cljs
@@ -150,13 +163,21 @@
      [focus-id]
      (rem/spin!
       #(pr/proposal-status! web/server-id focus-id)
-      (fn [ok _err]
+      (fn [ok err]
         (binding [rtc/*execution-context* runtime]
+          ;; Complete this one verification monotonically. Clearing the gates
+          ;; on failure made render immediately issue another status RPC when
+          ;; the list won the race, or remain stuck when status won it.
+          (swap! focus-pending disj focus-id)
+          (swap! focus-answered conj focus-id)
           (swap! focus-outcome assoc focus-id
-                 (case (:status ok)
-                   :accepted :accepted
-                   :dismissed :dismissed
-                   :unavailable))
+                 (card-model/verification-outcome
+                  (:status ok) (some-> err rem/error-text)))
+          ;; A visibility-safe :open answer can race an older list snapshot.
+          ;; Ask the aggregate gate for one newer list, but retain :answered so
+          ;; its absence cannot create a render-driven request loop.
+          (when (and (nil? err) (= :open (:status ok)))
+            (load-proposals!))
           ;; nudge the signal so the view re-renders with the answer
           (swap! sig/proposals-data update :outcome-tick (fnil inc 0)))))))
 
@@ -175,6 +196,49 @@
        (ask-focus-outcome! focus-id))))
 
 #?(:cljs
+   (defn retry-proposal-state!
+     "Explicitly retry loading/verifying one compact or focused Proposal card."
+     [proposal-id]
+     (let [proposal-id (str proposal-id)]
+       (swap! focus-pending disj proposal-id)
+       (swap! focus-answered disj proposal-id)
+       (swap! focus-outcome dissoc proposal-id)
+       (load-proposals!)
+       (swap! sig/proposals-data update :outcome-tick (fnil inc 0)))))
+
+#?(:cljs
+   (defn proposal-state
+     "Resolve one canonical Proposal from the shared review projection.
+
+      Chat, Tasks, and the full inspector all refer to the same proposal id.
+      Missing open rows are verified through the existing visibility-safe
+      status endpoint; the result never distinguishes an unknown proposal from
+      one the current party may not see. Calling this function may schedule that
+      idempotent verification and returns `:checking` meanwhile."
+     [proposals-data proposal-id]
+     (let [proposal-id (str proposal-id)
+           proposal (some #(when (= proposal-id (str (:id %))) %)
+                          (:proposals proposals-data))]
+       (cond
+         (:error proposals-data)
+         {:status :error :proposal {:error (:error proposals-data)}}
+
+         proposal
+         (do
+           ;; If this id was absent earlier and has since been reopened, the
+           ;; open row is authoritative and any cached terminal answer is stale.
+           (swap! focus-pending disj proposal-id)
+           (swap! focus-answered disj proposal-id)
+           (swap! focus-outcome dissoc proposal-id)
+           {:status :open :proposal proposal})
+
+         :else
+         (do
+           (recheck-focus! proposal-id)
+           (card-model/outcome->state
+            (get @focus-outcome proposal-id)))))))
+
+#?(:cljs
    (defn- note-for
      "The reviewer's typed reason, read straight off the DOM at click time.
       Deliberately NOT signal-backed: keystroke-per-render on a textarea buys
@@ -186,11 +250,18 @@
              .-value)))
 
 #?(:cljs
-   (defn- accept! [pid force?]
-     (update-proposal! pid #(-> % (assoc :busy? true) (dissoc :action-error)))
-     (rem/spin!
-      #(pr/accept-proposal! web/server-id pid force? (note-for pid))
-      (fn [ok err]
+   (defn accept!
+     "Run the canonical whole-Proposal accept action.
+
+      The optional explicit note lets compact projections such as the chat card
+      reuse this controller without manufacturing the full inspector's DOM."
+     ([pid force?]
+      (accept! pid force? (note-for pid)))
+     ([pid force? note]
+      (update-proposal! pid #(-> % (assoc :busy? true) (dissoc :action-error)))
+      (rem/spin!
+       #(pr/accept-proposal! web/server-id pid force? note)
+       (fn [ok err]
         (cond
           ;; a refused or broken accept must SAY so on the card — this one
           ;; failed authorization for weeks while the button looked inert
@@ -261,7 +332,7 @@
                                              ". It stays open and can be retried"
                                              " once the conflict is resolved on"
                                              " its branch."))))
-          :else (load-proposals!))))))
+          :else (load-proposals!)))))))
 
 #?(:cljs
    (defn- comment-text
@@ -297,8 +368,11 @@
                 (load-proposals!)))))))))
 
 #?(:cljs
-   (defn- request-changes! [pid]
-     (let [body (comment-text pid)]
+   (defn request-changes!
+     "Run the canonical request-changes action with an optional explicit body."
+     ([pid]
+      (request-changes! pid (comment-text pid)))
+     ([pid body]
        (if (or (nil? body) (= "" (.trim body)))
          (update-proposal! pid
                            #(assoc % :action-error
@@ -332,18 +406,22 @@
                 :else (load-proposals!)))))))))
 
 #?(:cljs
-   (defn- dismiss! [pid]
-     (update-proposal! pid #(-> % (assoc :busy? true) (dissoc :action-error)))
-     (rem/spin!
-      #(pr/dismiss-proposal! web/server-id pid (note-for pid))
-      (fn [_ err]
+   (defn dismiss!
+     "Run the canonical whole-Proposal dismissal action."
+     ([pid]
+      (dismiss! pid (note-for pid)))
+     ([pid note]
+      (update-proposal! pid #(-> % (assoc :busy? true) (dissoc :action-error)))
+      (rem/spin!
+       #(pr/dismiss-proposal! web/server-id pid note)
+       (fn [_ err]
         (if err
           ;; don't reload on failure — that would drop the card and make a
           ;; refused dismiss look like it worked
           (do (js/console.error "[proposals] dismiss error:" err)
               (update-proposal! pid #(-> % (dissoc :busy?)
                                          (assoc :action-error (rem/error-text err)))))
-          (load-proposals!))))))
+          (load-proposals!)))))))
 
 #?(:cljs
    (defn- fork-action!
@@ -883,8 +961,13 @@
            (el/div {:class "proposal-summary"} summary))
          (el/div {:class "proposal-diffs"}
            (cond
-             diff-error (el/div {:class "proposal-error"}
-                          (str "Couldn't load changes — " diff-error))
+             diff-error (el/div {}
+                          (el/div {:class "proposal-error"}
+                            (str "Couldn't load changes — " diff-error))
+                          (el/button {:class "btn btn-secondary btn-sm"
+                                      :on-click (fn [_]
+                                                  (retry-proposal-state! id))}
+                            "Retry"))
              (nil? diffs) (el/div {:class "proposal-loading"} "Loading changes…")
 
              ;; Summary-first: sections collapse the diff into intents, each
@@ -980,6 +1063,8 @@
            ;; same request and re-rendered the same message.
            (el/button {:class "btn btn-affirm"
                        :disabled (boolean (or busy?
+                                              diff-error
+                                              (nil? diffs)
                                               (seq (unlandable-open-forks forks))
                                               (seq (unavailable-open-forks forks))))
                        :title (cond
@@ -989,6 +1074,8 @@
                                 "Some patches in this proposal are not yours to land")
                        :on-click (fn [_] (accept! id (boolean accept-warned?)))}
                       (cond busy? "Working…"
+                            diff-error "Review unavailable"
+                            (nil? diffs) "Checking…"
                             (seq (unavailable-open-forks forks)) "Unavailable"
                             (seq (unlandable-open-forks forks)) "Cannot land all"
                             accept-warned? "Accept anyway"
@@ -1067,14 +1154,22 @@
               ;; else's proposal exists. `proposal-status!` answers which, and
               ;; refuses to distinguish "no such proposal" from "not yours".
               focus-resolved?
-              (el/div {:class "proposals-empty"}
-                (case (get @focus-outcome focus-id)
-                  :accepted "That proposal is no longer open — it was accepted."
-                  :dismissed "That proposal is no longer open — it was dismissed."
-                  :unavailable (str "That proposal isn't available. It may have been "
-                                    "removed, or you may not have access to it.")
-                  ;; the status answer has not landed yet — say nothing about why
-                  "That proposal is no longer open."))
+              (let [{:keys [status error]} (get @focus-outcome focus-id)]
+                (el/div {:class "proposals-empty"}
+                  (el/p {}
+                    (case status
+                      :accepted "That proposal is no longer open — it was accepted."
+                      :dismissed "That proposal is no longer open — it was dismissed."
+                      :unavailable (str "That proposal isn't available. It may have been "
+                                        "removed, or you may not have access to it.")
+                      :open "That proposal is open, but has not reached this list yet."
+                      :error (str "Couldn't verify this proposal — " error)
+                      "Checking proposal status…"))
+                  (when (#{:open :error} status)
+                    (el/button {:class "btn btn-secondary btn-sm"
+                                :on-click (fn [_]
+                                            (retry-proposal-state! focus-id))}
+                      "Retry"))))
               (and focus-id (nil? focused))
               (el/div {:class "proposals-empty"} "Loading…")
               (empty? proposals)
