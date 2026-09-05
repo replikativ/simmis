@@ -135,8 +135,19 @@
 (defn- agent-lifecycle-lock [agent-party-id]
   (lifecycle-lock [::agent agent-party-id]))
 
+(defn owner-model-activation-lock
+  "Stable lock for one owner's preference commit-and-activation boundary.
+
+   `parties/update-preferred-model!` takes this before committing the preference
+   and retains it through every derived agent activation. The lock comes from
+   the existing lifecycle registry so this adds no second coordination system."
+  [owner-party-id]
+  (lifecycle-lock [::owner-model-activation owner-party-id]))
+
 (defn- participant-lock [room-uuid agent-party-id]
   (lifecycle-lock [::participant room-uuid agent-party-id]))
+
+(declare describe-model-resolution)
 
 (defn- leave-participant!
   "Make a participant LEAVE the live dvergr room (unsubscribes its bus
@@ -169,11 +180,11 @@
   "Drop participation for an explicitly edited agent everywhere.
 
    `parties/update-agent!` calls this for model, prompt, and other direct agent
-   edits; `parties/update-preferred-model!` calls it for each inheriting agent.
-   Each live participant leaves and its cached context is cleared; the next
-   dispatch joins it again and resolves a fresh participant spec. Provider-
-  catalog refreshes are observational and do not alter a participant already
-  joined."
+   edits. Each live participant leaves and its cached context is cleared; the
+   next dispatch joins it again and resolves a fresh participant spec. Owner
+   preference changes use `activate-agent-model!` instead, preserving the live
+   participant and its inbox. Provider-catalog refreshes are observational and
+   do not alter a participant already joined."
   [agent-party-id]
   (locking (agent-lifecycle-lock agent-party-id)
     (let [room-uuids (->> @joined
@@ -188,6 +199,108 @@
             (when-let [slug (:room/slug (rooms/get-room rid))]
               (room-ctx/drop-ctx! (rstore/slug->room-id slug)
                                   (party->actor-kw agent-party-id)))))))))
+
+(defn activate-agent-model!
+  "Switch an inheriting agent's live participants to its committed preference.
+
+   `expected-preference` is the value whose write requested this activation.
+   The party and owner are re-read under the existing per-agent lifecycle lock;
+   a later preference or a newly explicit override makes this call a no-op.
+   Activations for one agent are therefore posted in lock order, and a delayed
+   writer can never put its captured model behind a newer activation.
+
+   Only already joined rooms are touched. An unavailable desired resolution is
+   rejected before any directive is posted, leaving every live participant,
+   working context and inbox intact."
+  [agent-party-id expected-preference]
+  (locking (agent-lifecycle-lock agent-party-id)
+    (let [live-room-uuids (->> @joined
+                               (keep (fn [[room-uuid party-id]]
+                                       (when (= agent-party-id party-id)
+                                         room-uuid)))
+                               distinct
+                               vec)]
+      (if (empty? live-room-uuids)
+        {:status :not-live :rooms []}
+        (let [agent-party (parties/get-party agent-party-id)
+              configured (model-selection/describe-resolution
+                          {:model-family (:party/model-family agent-party)
+                           :model-version (:party/model-version agent-party)
+                           :model (:party/model agent-party)})
+              override? (:configured? configured)
+              committed-preference (some-> agent-party
+                                           :party/owner
+                                           :party/id
+                                           parties/get-party
+                                           :party/preferred-model)]
+          (cond
+            (nil? agent-party)
+            {:status :agent-missing :rooms []}
+
+            override?
+            {:status :explicit-override :rooms []}
+
+            (not= expected-preference committed-preference)
+            {:status :superseded :rooms []}
+
+            :else
+            (let [{:keys [model provider] :as resolution}
+                  (describe-model-resolution agent-party)]
+              (when-not (:available? resolution)
+                (throw (ex-info "Committed model preference is unavailable"
+                                {:type :model-unavailable
+                                 :agent-id agent-party-id
+                                 :model (:candidate resolution)
+                                 :provider provider
+                                 :availability (:availability resolution)
+                                 :availability-reason
+                                 (:availability-reason resolution)})))
+              (let [actor-kw (party->actor-kw agent-party-id)
+                    {:keys [activated failures]}
+                    (reduce
+                     (fn [result room-uuid]
+                       (try
+                         (let [posted?
+                               (locking (participant-lock room-uuid agent-party-id)
+                                 ;; A room/agent reset may have removed the slot
+                                 ;; after the live-room snapshot. Recheck at the
+                                 ;; same participant boundary used by reset/join.
+                                 (when (contains? @joined [room-uuid agent-party-id])
+                                   (let [slug (:room/slug (rooms/get-room room-uuid))
+                                         room (some-> slug
+                                                      rstore/slug->room-id
+                                                      rreg/lookup)]
+                                     (when-not room
+                                       (throw (ex-info "Tracked live room is unavailable"
+                                                       {:type :live-room-missing
+                                                        :room-id room-uuid})))
+                                     (d/post! room
+                                              {:to actor-kw
+                                               :type :directive/switch-model
+                                               :payload {:provider provider
+                                                         :model model}})
+                                     true)))]
+                           (cond-> result
+                             posted? (update :activated conj room-uuid)))
+                         (catch Exception e
+                           (update result :failures conj
+                                   (merge {:room-id room-uuid
+                                          :error-class (.getName (class e))}
+                                          (dissoc (ex-data e) :room-id))))))
+                     {:activated [] :failures []}
+                     live-room-uuids)]
+                (when (seq failures)
+                  (throw (ex-info "Model activation failed in some live rooms"
+                                  {:type :model-activation-partial
+                                   :agent-id agent-party-id
+                                   :provider provider
+                                   :model model
+                                   :rooms activated
+                                   :room-failures failures})))
+                {:status :activated
+                 :provider provider
+                 :model model
+                 :rooms activated}))))))))
 
 ;; =============================================================================
 ;; Live discourse Room resolution

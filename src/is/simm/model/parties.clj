@@ -230,63 +230,83 @@
                    :data {:party-id party-id :fields (keys allowed)}})))))
 
 (defn update-preferred-model!
-  "Persist an owner's preference and retire live agents that inherit it.
+  "Persist an owner's preference and activate it on live inheriting agents.
 
-   Explicit agent overrides are unaffected. An inheriting participant captures
-   a concrete provider/model when it joins, so leaving its live contexts here
-   is the activation boundary: the next ordinary dispatch rejoins it from the
-   newly committed preference instead of silently running the old model until
-  a process restart."
+   Explicit agent overrides are unaffected. A live inheriting participant is
+   switched through dvergr's targeted model directive, preserving its working
+   context and inbox. An unavailable resolution leaves that participant on its
+   previous model and is reported as a partial post-commit activation failure."
   [party-id model-id]
-  ;; Commit first. Besides preserving the failed-write rule, the post-commit
-  ;; snapshot closes the override-clear race: an agent that became inheriting
-  ;; while this preference was being saved must be part of activation.
-  (update-party! party-id {:party/preferred-model model-id})
-  (let [inheriting-agent-ids
-        (when-let [conn (system-db/get-conn)]
-          (let [db @conn]
-            (->> (d/q '[:find [?agent ...]
-                        :in $ ?owner-id
-                        :where
-                        [?owner :party/id ?owner-id]
-                        [?agent :party/owner ?owner]
-                        [?agent :actor/kind :agent]]
-                      db party-id)
-                 (map #(pull-party db %))
-                 ;; `describe-resolution` is pure and defines the same
-                 ;; configured/inherited boundary as the join path.
-                 (remove (fn [agent]
-                           (:configured?
-                            (model-selection/describe-resolution
-                             {:model-family (:party/model-family agent)
-                              :model-version (:party/model-version agent)
-                              :model (:party/model agent)}))))
-                 (map :party/id)
-                 (sort-by str)
-                 vec)))]
-    (require 'is.simm.agents.room-agents)
-    (when-let [reset-fn (resolve 'is.simm.agents.room-agents/reset-agent-contexts!)]
-      (let [failures
+  (require 'is.simm.agents.room-agents)
+  (let [owner-lock-fn
+        (requiring-resolve
+         'is.simm.agents.room-agents/owner-model-activation-lock)
+        activate-fn
+        (requiring-resolve
+         'is.simm.agents.room-agents/activate-agent-model!)]
+    ;; Owner -> agent -> participant is the activation lock order. Serializing
+    ;; the commit too is load-bearing: a newer unavailable preference must leave
+    ;; the model active immediately before ITS commit, not allow an older writer
+    ;; to post after it and manufacture a stale runtime state.
+    (locking (owner-lock-fn party-id)
+      ;; Commit first inside the owner boundary. Besides preserving the failed-
+      ;; write rule, the post-commit snapshot closes the override-clear race: an
+      ;; agent that became inheriting while this preference was being saved must
+      ;; be part of activation.
+      (update-party! party-id {:party/preferred-model model-id})
+      (let [inheriting-agent-ids
+            (when-let [conn (system-db/get-conn)]
+              (let [db @conn]
+                (->> (d/q '[:find [?agent ...]
+                            :in $ ?owner-id
+                            :where
+                            [?owner :party/id ?owner-id]
+                            [?agent :party/owner ?owner]
+                            [?agent :actor/kind :agent]]
+                          db party-id)
+                     (map #(pull-party db %))
+                     ;; `describe-resolution` is pure and defines the same
+                     ;; configured/inherited boundary as the join path.
+                     (remove (fn [agent]
+                               (:configured?
+                                (model-selection/describe-resolution
+                                 {:model-family (:party/model-family agent)
+                                  :model-version (:party/model-version agent)
+                                  :model (:party/model agent)}))))
+                     (map :party/id)
+                     (sort-by str)
+                     vec)))
+            failures
             (into []
                   (keep (fn [agent-id]
                           (try
-                            (reset-fn agent-id)
+                            ;; Pass the committed write as an expectation, not a
+                            ;; captured execution spec. The activation boundary
+                            ;; re-reads both agent and owner under its lifecycle
+                            ;; lock and skips this call if a newer write won.
+                            (activate-fn agent-id model-id)
                             nil
                             (catch Exception e
                               ;; Continue through every inheriting agent: one
-                              ;; broken live participant must not preserve the
-                              ;; old preference for all later agents.
+                              ;; unavailable/broken participant must not prevent
+                              ;; activation of all later agents.
                               (log/log! {:level :error
                                          :id ::preferred-model-activation-failed
-                                         :msg "An inheriting agent could not be reset after an owner preference change"
+                                         :msg "An inheriting agent could not activate an owner preference change"
                                          :error e
                                          :data {:owner-id party-id
                                                 :agent-id agent-id}})
-                              {:agent-id agent-id
-                               :error-class (.getName (class e))}))))
+                              (merge
+                               {:agent-id agent-id
+                                :error-class (.getName (class e))}
+                               (select-keys (ex-data e)
+                                            [:type :model :provider
+                                             :availability
+                                             :availability-reason
+                                             :rooms :room-failures]))))))
                   inheriting-agent-ids)]
         (when (seq failures)
-          (throw (ex-info "Model preference was saved, but some live agents could not be reset"
+          (throw (ex-info "Model preference was saved, but some live agents could not activate it"
                           {:type :preferred-model-activation-partial
                            :preference-committed? true
                            :owner-id party-id
