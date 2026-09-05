@@ -183,14 +183,14 @@
             (el/div {:class "agent-inspector-section"}
               (el/h3 {:class "agent-inspector-section-title"} "Model")
               (el/div {:class "settings-model-list"}
-                ;; :value is the key; the AGENT and `:selected?` ride in the
-                ;; item. Identity has one source here — the row — because a
-                ;; row that is unselected for two agents is otherwise the same
-                ;; item, and ifor-each hands the reused node's stale handler
-                ;; the wrong agent. See settings.cljc for why the tick must
-                ;; not be part of the key.
+                ;; :value is the key; the ROOM, AGENT and `:selected?` ride in
+                ;; the item. Identity has one source here — the row — because a
+                ;; row that is unselected for two inspector targets is otherwise
+                ;; the same item, and ifor-each hands the reused node's stale
+                ;; handler the wrong target. See settings.cljc for why the tick
+                ;; must not be part of the key.
                 (let [rows (model-picker/agent-model-rows
-                            agent-id agent-name chosen
+                            room-id agent-id agent-name chosen
                             (:model-choices admin-data))]
                   (ifor-each :value rows
                     (fn [row]
@@ -211,7 +211,9 @@
                            ;; "Loading…" on its way to a refill that a re-run
                            ;; then cancelled. `:force?` is what makes the
                            ;; reload observe the write just made.
-                           (s (fn [_] (room-details/load! room-id {:force? true}))
+                           (s (fn [_]
+                                (room-details/load!
+                                 (:room-id selected-row) {:force? true}))
                               (fn [err]
                                 (js/console.error
                                  "[agent-inspector] model error:" err)))))))))))

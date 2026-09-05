@@ -61,8 +61,10 @@
 
 (deftest rows-of-two-agents-are-never-equal-items
   (testing "the invariant ifor-each needs: same model value, different item"
-    (let [lun (picker/agent-model-rows "lun-id" "Lun" (resolution "gpt-*-sol") choices)
-          vaar (picker/agent-model-rows "var-id" "Vár" (resolution "gpt-*-terra") choices)
+    (let [lun (picker/agent-model-rows "room-a" "lun-id" "Lun"
+                                       (resolution "gpt-*-sol") choices)
+          vaar (picker/agent-model-rows "room-a" "var-id" "Vár"
+                                        (resolution "gpt-*-terra") choices)
           by-value (fn [rows] (into {} (map (juxt :value identity)) rows))]
       (is (= (mapv :value lun) (mapv :value vaar))
           "both agents list the same models in the same order")
@@ -71,22 +73,39 @@
             (str "rows for " value " must differ between agents")))))
 
   (testing "rows differ even when the two agents share a resolution"
-    (let [lun (picker/agent-model-rows "lun-id" "Lun" (resolution "gpt-*-sol") choices)
-          vaar (picker/agent-model-rows "var-id" "Vár" (resolution "gpt-*-sol") choices)]
+    (let [lun (picker/agent-model-rows "room-a" "lun-id" "Lun"
+                                       (resolution "gpt-*-sol") choices)
+          vaar (picker/agent-model-rows "room-a" "var-id" "Vár"
+                                        (resolution "gpt-*-sol") choices)]
       (is (every? true? (map not= lun vaar))))))
 
-(deftest selection-handler-writes-to-the-row-s-own-agent
-  (testing "a stale node's handler still names the agent its row carries"
+(deftest rows-of-one-agent-in-two-rooms-are-never-equal-items
+  (let [first-room (picker/agent-model-rows
+                    "room-a" "lun-id" "Lun" (resolution "gpt-*-sol") choices)
+        second-room (picker/agent-model-rows
+                     "room-b" "lun-id" "Lun" (resolution "gpt-*-sol") choices)]
+    (is (= (mapv :value first-room) (mapv :value second-room)))
+    (is (every? true? (map not= first-room second-room))
+        "memoized nodes must not retain another room's completion callback")))
+
+(deftest selection-handler-uses-the-row-s-own-target
+  (testing "a stale node's handler still names the room and agent in its row"
     (let [writes (atom [])
-          on-select (fn [row] (swap! writes conj [(:agent-id row) (:value row)]))
-          lun-mini (->> (picker/agent-model-rows "lun-id" "Lun" (resolution "gpt-*-sol") choices)
+          on-select (fn [row]
+                      (swap! writes conj [(:room-id row) (:agent-id row)
+                                          (:value row)]))
+          lun-mini (->> (picker/agent-model-rows
+                         "room-a" "lun-id" "Lun"
+                         (resolution "gpt-*-sol") choices)
                         (filter #(= "gpt-5.4-mini" (:value %)))
                         first)]
       ((:on-click (picker/option-attrs lun-mini on-select)) {})
-      (is (= [["lun-id" "gpt-5.4-mini"]] @writes)))))
+      (is (= [["room-a" "lun-id" "gpt-5.4-mini"]] @writes)
+          "write and completion refresh targets both come from the row"))))
 
 (deftest inheritance-row-leads-and-tracks-the-override
-  (let [rows (picker/agent-model-rows "lun-id" "Lun" (resolution "gpt-*-sol") choices)
+  (let [rows (picker/agent-model-rows "room-a" "lun-id" "Lun"
+                                      (resolution "gpt-*-sol") choices)
         [inherit & catalog] rows]
     (is (= :inheritance (:kind inherit)))
     (is (false? (:selected? inherit)) "an overriding agent does not inherit")
@@ -95,7 +114,7 @@
     (is (every? #(= "Lun" (:agent-name %)) rows)))
 
   (testing "with no override the inheritance row is the ticked one"
-    (let [rows (picker/agent-model-rows "lun-id" "Lun"
+    (let [rows (picker/agent-model-rows "room-a" "lun-id" "Lun"
                                         (assoc (resolution "gpt-*-sol") :configured? false)
                                         choices)]
       (is (true? (:selected? (first rows))))
@@ -103,7 +122,7 @@
 
 (deftest explicit-version-resolution-ticks-that-version
   (let [rows (picker/agent-model-rows
-              "lun-id" "Lun"
+              "room-a" "lun-id" "Lun"
               (assoc (resolution "gpt-*-sol")
                      :auto? false
                      :preferred-model "gpt-5.4-mini")
