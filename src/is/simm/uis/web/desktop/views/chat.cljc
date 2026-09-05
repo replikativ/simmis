@@ -462,7 +462,7 @@
            in-reply-to reply-count on-jump-parent on-reply audience run-id
            activities mention-handles on-open-thread on-open-run on-open-proposal
            on-accept-proposal on-request-proposal-changes on-dismiss-proposal
-           proposal-state object]}]
+           on-retry-proposal proposal-state object]}]
   (el/div {:key id
            :class (vc/class-names "chat-message" "message"
                                   (when is-own? "chat-message--own"))
@@ -611,6 +611,13 @@
                             (when on-open-proposal
                               (on-open-proposal event proposal-id title)))}
                 "Review changes")
+              (when (:retry? action)
+                (el/button {:class "button chat-proposal-retry"
+                            :on-click (fn [event]
+                                        (.stopPropagation event)
+                                        (when on-retry-proposal
+                                          (on-retry-proposal proposal-id)))}
+                  "Retry"))
               (when (= :open (:status action))
                 [(el/button {:class "button chat-proposal-accept"
                              :disabled (:accept-disabled? action)

@@ -1916,6 +1916,7 @@
                        (fn [proposal-id]
                          (when (js/confirm "Dismiss this proposal?")
                            (proposals-view/dismiss! proposal-id nil)))
+                       :on-retry-proposal proposals-view/retry-proposal-state!
                        :thread-parent (:thread/parent item)
                        :reply-count (:thread/reply-count item)
                        :on-open-thread
