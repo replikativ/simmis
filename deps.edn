@@ -51,10 +51,11 @@
         ;; Verified here in Chrome against 0.1.40's tree: Memory toggles
         ;; (settled and fast), cross-scope page switches, page->room switches —
         ;; stable at 9 containers, zero duplicate parents, zero warnings.
-        ;; Stacked on spindel#43: affine partitioned world authority. Replace
-        ;; this reviewed SHA with the coordinated Clojars release after squash.
-        org.replikativ/spindel {:git/url "https://github.com/replikativ/spindel.git"
-                                :git/sha "8c038f1a80de094cbd0c066add685bfd2017993f"}
+        ;; 0.1.44 releases the affine partitioned-world work from spindel#43
+        ;; and the component API required by dvergr 0.1.66. Keeping the older
+        ;; reviewed git SHA makes dvergr fail while loading because
+        ;; org.replikativ.spindel.engine.component is absent there.
+        org.replikativ/spindel {:mvn/version "0.1.44"}
         is.simm/partial-cps {:mvn/version "0.1.60"}
 
         ;; replikativ substrate
@@ -62,18 +63,18 @@
         ;; datahike.kabel.* + the secondary-index adapters in the jar. A
         ;; release is pre-compiled → NO compile-java prep (which a git-sha
         ;; needs and which was blocking the uberjar). :local still overlays
-        ;; ../datahike for cross-repo dev. datahike 0.8.1820 includes the
+        ;; ../datahike for cross-repo dev. datahike 0.8.1865 includes the
         ;; async-storage groundwork, current query correctness fixes, secondary
-        ;; index/GC follow-ups and remote-writer fencing. konserve 0.9.385 is
-        ;; Datahike 0.8.1820's own runtime pin. konserve-sync 0.1.40
+        ;; index/GC follow-ups and remote-writer fencing. konserve 0.9.391 is
+        ;; the matching direct store version required by dvergr. konserve-sync 0.1.40
         ;; + kabel 0.3.109 are the current released client-sync set
         ;; (ordered commit batches, branch head last, no head timestamp-dedup,
         ;; db exposure gated on the drained handshake) — bump them TOGETHER.
         ;; NOTE: booting on current Datahike needs the undeclared-attr
         ;; strictness pass (it raises where 0.8.1729 was lenient — e.g. seed
         ;; entities carrying attrs not yet in the installed schema).
-        org.replikativ/datahike {:mvn/version "0.8.1820"}
-        org.replikativ/konserve {:mvn/version "0.9.385"}
+        org.replikativ/datahike {:mvn/version "0.8.1865"}
+        org.replikativ/konserve {:mvn/version "0.9.391"}
         ;; 0.1.40 additionally limits client inventory to keys reachable from
         ;; the configured walker (konserve-sync#14). Clients no longer scan or
         ;; advertise unrelated historical objects merely because they share
@@ -122,20 +123,11 @@
         ;; (per-room governed double-entry) + the metering→ledger bridge. :local
         ;; overlays ../kontor for cross-repo dev.
         ;;
-        ;; 0.1.9, not 0.1.3. Six releases of read-side correctness sit between
-        ;; them — "bitemporal defaults, the ledger axis, and open items that lost
-        ;; half a receivable" (#4), the US statements + an option-forwarding bug
-        ;; (#3), composite tax identity (#5) — and on 0.1.3 a trial balance over
-        ;; a book with real postings came back EMPTY.
-        ;;
-        ;; NOTE for callers: no released kontor has `assert-refs-resolve!`
-        ;; (ADR-124) yet, so an account ref that does not resolve is posted as a
-        ;; NEW empty entity rather than refused — money lands on a phantom
-        ;; account and the verb returns happily. String account paths are also a
-        ;; post-0.1.9 convenience (`->account-ref` does not exist here). Pass
-        ;; explicit lookup refs — `[:kontor.account/path "Assets:Bank"]` — which
-        ;; work on every version, and re-read the balance after posting.
-        org.replikativ/kontor {:mvn/version "0.1.9"}
+        ;; 0.1.37 retains the accounting fixes Simmis depends on and adds the
+        ;; conserved resource vectors, receipts and Datahike invariants loaded
+        ;; by dvergr 0.1.66. Older Kontor releases have no kontor.resource
+        ;; namespace, so they cannot coexist with that dvergr release.
+        org.replikativ/kontor {:mvn/version "0.1.37"}
         ;; auth folded into kabel as kabel.auth.* (opt-in there); provide its
         ;; code deps here since we use it. geheimnis is kabel.auth's portable
         ;; crypto (JWT HS256, token hashing); it needs hasch >= 0.4.100 (raw
@@ -144,12 +136,13 @@
         ;; InputStream binary coercion geschichte needs to hash blobs without
         ;; materializing them; it is purely additive — File coercion was
         ;; refactored onto the same code path and every content address is
-        ;; unchanged (same magics, same split-size branch points). 0.4.102 is
-        ;; Datahike 0.8.1806's matching release.
+        ;; unchanged (same magics, same split-size branch points). 0.4.104 is
+        ;; the array-hashing implementation used by dvergr 0.1.66 and the
+        ;; coordinated Datahike release.
         metosin/jsonista {:mvn/version "1.0.0"}
         buddy/buddy-hashers {:mvn/version "2.0.167"}
         org.replikativ/geheimnis {:mvn/version "0.2.36"}
-        org.replikativ/hasch {:mvn/version "0.4.102"}
+        org.replikativ/hasch {:mvn/version "0.4.104"}
         org.replikativ/incognito {:mvn/version "0.3.69"}
         org.replikativ/superv.async {:mvn/version "0.3.51"}
         ;; 0.3.37, not 0.3.36 — it carries yggdrasil#15, which fixes TWO things
@@ -180,16 +173,13 @@
         ;; (yggdrasil#19): inspection no longer writes a fresh snapshot or
         ;; mutates branch heads. It also carries persistent-sorted-set 0.5.140.
         org.replikativ/yggdrasil {:mvn/version "0.3.41"}
-        ;; DIRECT, though simmis has no direct geschichte code: it arrives
-        ;; transitively via dvergr, which pins 0.1.12, and yggdrasil 0.3.41's
-        ;; adapter calls `repo/content-merger` — added in 0.1.14. Nearest-wins
-        ;; means this direct entry decides. Without it the adapter fails to
-        ;; COMPILE ("No such var: repo/content-merger"), which is at least
-        ;; loud; drop it again once dvergr's own pin catches up.
-        org.replikativ/geschichte {:mvn/version "0.1.14"}
+        ;; Keep the direct Geschichte dependency aligned with dvergr: nearest
+        ;; wins, and Simmis also relies on Yggdrasil's Geschichte adapter and
+        ;; its content-level merge API.
+        org.replikativ/geschichte {:mvn/version "0.1.15"}
         ;; Datahike's bundled secondary-index adapter uses
         ;; scriptum.core/warm!, introduced before this release.
-        org.replikativ/scriptum {:mvn/version "0.1.30"}
+        org.replikativ/scriptum {:mvn/version "0.1.32"}
         org.replikativ/logging {:mvn/version "0.1.3"}
         org.replikativ/briefkasten {:mvn/version "0.1.3"}
 
@@ -233,7 +223,10 @@
                                    :exclusions [io.replikativ/hasch
                                                 io.replikativ/kabel]}
 
-        org.babashka/sci {:mvn/version "0.13.52"}
+        ;; Coordinated SCI fork used by Spindel 0.1.44 and dvergr 0.1.66.
+        ;; The former org.babashka/sci 0.13.52 coordinate put both SCI jars on
+        ;; the classpath and shadowed capture-continuation-context at load time.
+        org.replikativ/sci {:mvn/version "0.15.59-replikativ.1"}
         metosin/reitit {:mvn/version "0.7.0"}
 
         ;; nREPL in the BASE deps so the uberjar can serve the opt-in
@@ -270,7 +263,12 @@
         ;; durably adopted, exhaustively partitioned and settled through affine
         ;; governance capabilities, while typed message object references give
         ;; each Proposal one canonical chat identity.
-        org.replikativ/dvergr {:mvn/version "0.1.61"}}
+        ;; 0.1.66 includes the model-registry and native OpenAI work from
+        ;; dvergr#48, structured attention/admission and conserved run-resource
+        ;; delegation (#71-#73), plus fresh runtime components for hired runs
+        ;; (#87). Simmis's provider-aware picker depends on #48 being present in
+        ;; the released artifact; no local dvergr overlay is required anymore.
+        org.replikativ/dvergr {:mvn/version "0.1.66"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
@@ -299,7 +297,7 @@
                                 is.simm/distributed-scope {:local/root "../distributed-scope"
                                                            :exclusions [io.replikativ/hasch
                                                                         io.replikativ/kabel]}
-                                 org.babashka/sci {:local/root "../sci"}
+                                 org.replikativ/sci {:local/root "../sci"}
                                  ;; ../konserve pins fress 0.4.312, but local
                                  ;; datahike (8f6d1e43, cljs :db.type/bigdec)
                                  ;; requires fress.impl.bigdec — 0.4.317 only.

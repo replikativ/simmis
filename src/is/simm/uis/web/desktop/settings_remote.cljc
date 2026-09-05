@@ -4,7 +4,8 @@
             [org.replikativ.spindel.distributed.core :as dist]
             #?(:clj [is.simm.model.parties :as parties])
             #?(:clj [is.simm.model.knowledge-bases :as kbs])
-            #?(:clj [is.simm.model.mail-accounts :as mail])))
+            #?(:clj [is.simm.model.mail-accounts :as mail])
+            #?(:clj [is.simm.model.model-catalog :as model-catalog])))
 
 #?(:clj
    (defn load-settings-server [party-id-str]
@@ -16,6 +17,10 @@
         :budget (parties/get-budget party-id)
         :ui-prefs (parties/get-ui-prefs party-id)
         :mail-accounts (mail/list-accounts party-id)
+        ;; Built server-side from the same authoritative availability result
+        ;; resolution uses. Curated rows stay visible; unavailable ones carry
+        ;; their disabled state and explanation.
+        :model-choices (model-catalog/choices)
         :knowledge-bases (->> (kbs/get-party-kbs party-id)
                               (mapv (fn [kb]
                                       (-> kb
@@ -24,6 +29,10 @@
 #?(:clj
    (defn save-model-server [party-id-str model-id]
      (let [party-id (java.util.UUID/fromString party-id-str)]
+       ;; Browser disabled state is presentation, not authority. Recompute on
+       ;; the server immediately before writing so a forged/stale RPC fails
+       ;; closed too.
+       (model-catalog/require-available-choice! model-id)
        (parties/update-preferred-model! party-id model-id)
        {:success true})))
 

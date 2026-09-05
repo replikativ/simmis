@@ -125,6 +125,8 @@ src/is/simm/
 └── uis/web/desktop/         the spindel UI
     ├── signals.cljc         all UI signals and mutators
     ├── db_signal.cljc       client replicas, tiered stores, konserve-sync
+    ├── tab_heal.cljc        open tabs reconciled against the room roster
+    ├── backlink_target.cljc what a backlink row opens, or why it opens nothing
     ├── *_remote.cljc        RPC endpoints
     └── views/               columns, chat, nav, proposals, files, …
 ```

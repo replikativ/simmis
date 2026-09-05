@@ -232,14 +232,10 @@
                       (filter #(= (:party/template %) (:id tmpl))))
           has-var? (seq agents)]
       (when-not has-var?
-        (let [agent (parties/create-agent! owner-party-id
-                                            {:template (:id tmpl)
-                                             :display-name (:name tmpl)
-                                             :handle (str "vár-" (subs (str owner-party-id) 0 8))
-                                             :avatar "🤖"
-                                             :model (:model tmpl)
-                                             :provider (:provider tmpl)
-                                             :system-prompt (:system-prompt tmpl)
-                                             :auto-respond? true})]
+        (let [agent (parties/create-agent!
+                     owner-party-id
+                     (assoc (templates/agent-options (:name tmpl) tmpl)
+                            :handle (str "vár-" (subs (str owner-party-id) 0 8))
+                            :avatar "🤖"))]
           (add-party! (:room/id room) (:party/id agent))))
       room)))

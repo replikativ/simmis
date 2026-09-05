@@ -23,6 +23,7 @@
    Spend is NOT recorded here: dvergr's turn path writes the `:ledger/*` row
    and the `:chat/budget-used` rollup into the room's own store."
   (:require [dvergr.model.providers :as providers]
+            [dvergr.model.registry :as registry]
             [dvergr.chat.context :as chat-ctx]
             [dvergr.tools :as tools]
             [dvergr.discourse :as d]
@@ -42,7 +43,9 @@
             [is.simm.agents.tool-authorization :as tool-auth]
             [is.simm.agents.vocab :as vocab]
             [is.simm.model.parties :as parties]
+            [is.simm.model.system-db :as system-db]
             [is.simm.model.model-selection :as model-selection]
+            [is.simm.model.model-catalog :as model-catalog]
             [is.simm.model.seed :as seed]
             [is.simm.model.knowledge-bases :as kbs]
             [is.simm.model.room-databases :as room-dbs]
@@ -113,6 +116,28 @@
 ;; #{[room-uuid party-id]} — participants already joined to the live room.
 (defonce ^:private joined (atom #{}))
 
+;; Stable, process-local monitors for room, agent and participant lifecycles.
+;; The enclosing room/agent locks exist before a first participant slot does,
+;; so a collective reset cannot snapshot the cache while a new slot is being
+;; admitted. The participant lock then coordinates overlapping room and agent
+;; resets for the same slot.
+(defonce ^:private lifecycle-locks (atom {}))
+
+(defn- lifecycle-lock [k]
+  (or (get @lifecycle-locks k)
+      (get (swap! lifecycle-locks
+                  #(if (contains? % k) % (assoc % k (Object.))))
+           k)))
+
+(defn- room-lifecycle-lock [room-uuid]
+  (lifecycle-lock [::room room-uuid]))
+
+(defn- agent-lifecycle-lock [agent-party-id]
+  (lifecycle-lock [::agent agent-party-id]))
+
+(defn- participant-lock [room-uuid agent-party-id]
+  (lifecycle-lock [::participant room-uuid agent-party-id]))
+
 (defn- leave-participant!
   "Make a participant LEAVE the live dvergr room (unsubscribes its bus
    pumps). Forgetting a participant without leaving orphans its inbox
@@ -128,27 +153,41 @@
 (defn reset-room-context!
   "Drop participation for a room: LEAVE the live discourse room first
    (unsubscribe pumps), then clear caches; next dispatch re-joins and
-   dvergr re-seeds the working ctxs from the room store."
+  dvergr re-seeds the working ctxs from the room store."
   [room-uuid]
-  (let [ks (filter (fn [[rid _]] (= rid room-uuid)) @joined)]
-    (doseq [[_ pid] ks]
-      (leave-participant! room-uuid (party->actor-kw pid))))
-  (swap! joined (fn [s] (into #{} (remove (fn [[rid _]] (= rid room-uuid)) s))))
-  (when-let [slug (:room/slug (rooms/get-room room-uuid))]
-    (room-ctx/drop-room! (rstore/slug->room-id slug))))
+  (locking (room-lifecycle-lock room-uuid)
+    (let [ks (filter (fn [[rid _]] (= rid room-uuid)) @joined)]
+      (doseq [[_ pid] ks]
+        (let [k [room-uuid pid]]
+          (locking (participant-lock room-uuid pid)
+            (leave-participant! room-uuid (party->actor-kw pid))
+            (swap! joined disj k)))))
+    (when-let [slug (:room/slug (rooms/get-room room-uuid))]
+      (room-ctx/drop-room! (rstore/slug->room-id slug)))))
 
 (defn reset-agent-contexts!
-  "Drop participation for an agent everywhere (e.g. on prompt edit):
-   leave each live room, then clear caches."
+  "Drop participation for an explicitly edited agent everywhere.
+
+   `parties/update-agent!` calls this for model, prompt, and other direct agent
+   edits; `parties/update-preferred-model!` calls it for each inheriting agent.
+   Each live participant leaves and its cached context is cleared; the next
+   dispatch joins it again and resolves a fresh participant spec. Provider-
+  catalog refreshes are observational and do not alter a participant already
+  joined."
   [agent-party-id]
-  (let [room-uuids (map first (filter (fn [[_ aid]] (= aid agent-party-id)) @joined))]
-    (doseq [rid room-uuids]
-      (leave-participant! rid (party->actor-kw agent-party-id)))
-    (swap! joined (fn [s] (into #{} (remove (fn [[_ aid]] (= aid agent-party-id)) s))))
-    (doseq [rid room-uuids]
-      (when-let [slug (:room/slug (rooms/get-room rid))]
-        (room-ctx/drop-ctx! (rstore/slug->room-id slug)
-                            (party->actor-kw agent-party-id))))))
+  (locking (agent-lifecycle-lock agent-party-id)
+    (let [room-uuids (->> @joined
+                          (filter (fn [[_ aid]] (= aid agent-party-id)))
+                          (map first)
+                          distinct)]
+      (doseq [rid room-uuids]
+        (let [k [rid agent-party-id]]
+          (locking (participant-lock rid agent-party-id)
+            (leave-participant! rid (party->actor-kw agent-party-id))
+            (swap! joined disj k)
+            (when-let [slug (:room/slug (rooms/get-room rid))]
+              (room-ctx/drop-ctx! (rstore/slug->room-id slug)
+                                  (party->actor-kw agent-party-id)))))))))
 
 ;; =============================================================================
 ;; Live discourse Room resolution
@@ -2038,13 +2077,164 @@
   (when (empty? (providers/list-providers))
     (providers/init-defaults!)))
 
-(defn- resolve-provider [model provider-hint]
-  (or provider-hint
+(defn resolve-provider
+  "Which provider serves `model`.
+
+   The REGISTRY answers first, ahead of the caller's hint. An id the registry
+   knows carries its own provider, and the hint is usually not a choice anybody
+   made: every agent created through the UI used to be stamped
+   `:party/provider :fireworks` at creation, so preferring gpt-5.5 sent the
+   request to Fireworks, which 404s it. A hint still wins for an id the registry
+   has never heard of, which is how a custom OpenAI-compatible endpoint gets
+   addressed.
+
+   Prefixes are the last resort, and cannot keep up with naming on their own:
+   OpenAI's o3 and o4-mini start with neither `gpt-` nor `claude-`."
+  [model provider-hint]
+  (or (some-> model registry/get-model :provider)
+      provider-hint
       (cond
         (str/starts-with? (or model "") "accounts/fireworks/") :fireworks
         (str/starts-with? (or model "") "gpt-") :openai
-        (str/starts-with? (or model "") "claude-") :anthropic
-        :else :fireworks)))
+        (str/starts-with? (or model "") "claude-") :anthropic)))
+
+(defn inheritance-choice
+  "The stored choice an agent inherits.
+
+   Owner preference wins; an owner with no preference reaches the explicit
+   product fallback. This value is also what the clear-override write validates,
+   so display, persistence, and turn resolution share one chain."
+  [agent-party]
+  (let [owner-id (:party/id (:party/owner agent-party))
+        preference (some-> (parties/get-party owner-id) :party/preferred-model)]
+    (if (seq preference)
+      {:value preference :source :owner-preference}
+      {:value parties/default-model :source :product-default})))
+
+(defn- decorate-resolution
+  "Decorate one desired model resolution for person-facing surfaces."
+  [selection provider-hint]
+  (let [model (:model selection)
+        candidate (:candidate selection)
+        preferred-model (:preferred-model selection)
+        preference-model (or preferred-model candidate model)
+        display-model (or model candidate)
+        provider (or (:provider selection)
+                     (resolve-provider display-model provider-hint))
+        availability (:availability selection)
+        preferred-availability (:preferred-availability selection)
+        preferred-copy (when preferred-availability
+                         (model-catalog/availability-copy
+                          provider preferred-availability))
+        resolution-status (model-catalog/preferred-status-copy selection)
+        resolution-status-explanation
+        (when resolution-status
+          (str (:availability-explanation preferred-copy)
+               (when (:fallback? selection)
+                 (str " The preferred version remains configured and will be "
+                      "used again automatically when it becomes usable."))))]
+    (as-> (merge
+           (select-keys selection
+                        [:selection-kind :model :candidate :preferred?
+                         :preferred-model :preferred-family :preferred-version
+                         :fallback? :fallback-model :fallback-version
+                         :fallback-reason])
+           {:family (:family selection)
+           :version (:version selection)
+           :auto? (:auto? selection)
+           :available? (:available? selection)
+           :availability (:state availability)
+           :availability-reason (:reason availability)
+           :preferred-availability (:state preferred-availability)
+           :preferred-availability-reason (:reason preferred-availability)
+           :provider provider
+           :provider-label (model-catalog/provider-label provider)
+           :model-short (model-catalog/short-id display-model)
+           :resolved-label (when model (model-catalog/model-label model))
+           :resolution-status resolution-status
+           :resolution-status-explanation resolution-status-explanation
+           :no-reasoning?
+           (model-catalog/reasoning-disabled-for-tools? provider display-model)
+           :label (or (model-catalog/model-label preference-model)
+                      preference-model)}) info
+      ;; The label the PICKER uses for this same choice. The configuration panel
+      ;; prints it verbatim, so the two cannot drift into separate vocabularies
+      ;; ("family latest" against "(Latest)") the way they did.
+      (let [info (merge info
+                        (model-catalog/reasoning-copy (:no-reasoning? info))
+                        (model-catalog/availability-copy provider availability))]
+        (assoc info
+               :choice-label (or (model-catalog/choice-label info)
+                                 (:label info))
+               ;; What room settings prints about the next join. Server-side,
+               ;; like every other sentence here, and it does not promise a
+               ;; resolution the join boundary will refuse.
+               :next-join-copy (model-catalog/next-join-copy info))))))
+
+(defn describe-model-resolution
+  "Desired model resolution from an agent override plus owner preference.
+
+   `:configured?`/`:override?` mean model keys are stored on the agent.
+   `:inherited?` means the agent stores none, whether the chain ends at its
+   owner's preference or the product fallback. `:inheritance-choice` is the
+   first-class picker row that clears an override; it carries the same
+   availability result enforced by the server and turn path.
+
+   This is evaluated independently by configuration reads and participant
+   joins. It does not inspect active runtime state: a participant that already
+   joined may still hold an older concrete spec."
+  [agent-party]
+  (ensure-providers!)
+  (let [configured (model-selection/describe-resolution
+                    {:model-family (:party/model-family agent-party)
+                     :model-version (:party/model-version agent-party)
+                     :model (:party/model agent-party)})
+        override? (:configured? configured)
+        {:keys [value source]} (inheritance-choice agent-party)
+        inherited-selection (if (model-selection/family? value)
+                              (model-selection/describe-resolution
+                               {:model-family value
+                                :model-version :auto})
+                              (model-selection/describe-resolution
+                               {:model value}))
+        inherited-info (decorate-resolution inherited-selection nil)
+        chosen-info (if override?
+                      (decorate-resolution configured (:party/provider agent-party))
+                      inherited-info)
+        inheritance-label
+        (if (= source :owner-preference)
+          (str "Use owner preference — " (:choice-label inherited-info))
+          (str "Use owner preference — not set; product default "
+               (:choice-label inherited-info)))
+        inheritance-row
+        (merge
+         (select-keys inherited-info
+                      [:provider :provider-label :available? :availability
+                       :availability-reason :availability-label
+                       :availability-explanation :no-reasoning?
+                       :reasoning-copy :reasoning-explanation])
+         {:kind :inheritance
+          :value model-catalog/inherit-choice-value
+          :label inheritance-label
+          :resolves (or (:model inherited-info) (:candidate inherited-info))
+          :inheritance-source source})]
+    (assoc chosen-info
+           :configured? (boolean override?)
+           :override? (boolean override?)
+           :inherited? (not override?)
+           :selection-source (if override? :agent-override source)
+           :selection-label (case (if override? :agent-override source)
+                              :agent-override "Explicit override"
+                              :owner-preference "Inherited from owner preference"
+                              :product-default "Inherited from product default")
+           :resolution-label "Resolves to"
+           :runtime-state :not-inspected
+           :runtime-label "Not inspected"
+           :runtime-explanation
+           (str "The model above is the desired configuration resolution. "
+                "An already joined participant may still use the concrete "
+                "model it captured when it joined.")
+           :inheritance-choice inheritance-row)))
 
 ;; A `:run-turn-fn` wrapper used to mirror each turn's usage onto the owner's
 ;; billing ledger in the system DB. It never recorded anything: it read
@@ -2123,39 +2313,127 @@
                       title "\") and paste the returned [[dh://…]] link.")))
              unresolved)})))
 
-(defn ensure-agent-joined!
-  "Join `agent-party` into the live room as a dvergr llm-agent (once per
-   [room party]). dvergr's turn factory builds the full sandbox; here we
-   pre-create the working ctx so we can add the simmis wiki/kb vocabulary
-   and the KB context block to it."
-  [room room-uuid agent-party room-conn]
-  (let [k [room-uuid (:party/id agent-party)]]
-    (when-not (contains? @joined k)
-      (let [agent-uuid (:party/id agent-party)
+;; =============================================================================
+;; Join failures: two kinds, told apart
+;; =============================================================================
+
+(defn- join-failure-type
+  "Classify a participant join failure. Two kinds, never one.
+
+   `:model-unavailable` is EXPECTED and deterministic: the join gate refuses to
+   run an agent on a model this deployment cannot use, and refuses BEFORE it
+   creates anything. The reason is already product copy, the person who sees it
+   can act on it, and a retry changes nothing until a setting changes.
+
+   Everything else is `:join-error`: a bug, a storage failure, a provider client
+   throwing mid-initialization. It is unexpected, it may be transient, it can
+   leave half-built state behind, and its message is written for a developer —
+   provider URLs with a key in the query string, connection strings, class names.
+
+   Labelling the second kind `unavailable` was wrong twice over: it told an
+   operator to change a model setting that was never the problem, and it put
+   developer text on a product surface."
+  [e]
+  (if (= :model-unavailable (:type (ex-data e)))
+    :model-unavailable
+    :join-error))
+
+(defn- incident-ref
+  "A short reference shared by the room note and the server log line for one
+   failure. Someone who can only see the room can name the exact failure to
+   someone who can only see the log."
+  []
+  (subs (str (random-uuid)) 0 8))
+
+(defn- log-join-failure!
+  "Telemere record of an isolated join failure — the OPERATOR channel, and the
+   only one that carries the exception. Expected unavailability is a `:warn`
+   with the availability state; an unexpected fault is an `:error` with the
+   throwable itself, so the stack lands in the log that the room note
+   deliberately omits."
+  [room-uuid agent-party e incident]
+  (let [{:keys [model provider availability availability-reason rolled-back]} (ex-data e)
+        failure-type (join-failure-type e)
+        expected? (= :model-unavailable failure-type)]
+    (log/log! {:level (if expected? :warn :error)
+               :id ::agent-join-failed
+               :msg (if expected?
+                      "Agent not joined: its model cannot run here"
+                      "Agent not joined: initialization failed unexpectedly")
+               ;; The throwable itself only on the unexpected branch — an
+               ;; unavailable model has no stack worth printing, and printing
+               ;; one would bury the branch that does.
+               :error (when-not expected? e)
+               :data {:room room-uuid
+                      :agent (:party/display-name agent-party)
+                      :agent-id (:party/id agent-party)
+                      :model model
+                      :provider provider
+                      :failure-type failure-type
+                      :incident incident
+                      :availability availability
+                      :availability-reason availability-reason
+                      :rolled-back rolled-back
+                      :error-class (.getName (class e))
+                      :error-message (.getMessage e)}})))
+
+(defn- rollback-partial-join!
+  "Undo whatever this join attempt managed to create before it threw.
+
+   Initialization is not one step. `room-ctx/ensure-ctx!` registers a working
+   chat-ctx AND subscribes a fold on the room bus; the simmis SCI vocabulary is
+   installed into that ctx; only then does `d/join` register the participant and
+   its inbox pumps. A failure in the middle leaves either a ctx folding the room
+   into a conversation nobody reads, or a participant nobody tracks — and
+   joining over the latter is exactly how dvergr grows a SECOND responder
+   answering every message twice (see the note on `d/leave`).
+
+   Only state THIS attempt created is removed: a ctx that already existed
+   belongs to a live participant and is left alone. Each step is separately
+   guarded, because a rollback that dies half-way must still report what it
+   did. Returns the set of things torn down."
+  [room room-uuid agent-party had-ctx?]
+  (let [actor-kw (party->actor-kw agent-party)
+        room-id (:id room)
+        undone (volatile! #{})
+        step-failed! (fn [step e]
+                       (log/log! {:level :error :id ::join-rollback-failed
+                                  :msg "Partial join state could not be cleaned up"
+                                  :data {:room room-uuid
+                                         :agent-id (:party/id agent-party)
+                                         :step step
+                                         :error-message (.getMessage e)}}))]
+    ;; The bookkeeping first: `joined` must never claim a participant that is
+    ;; being torn down, or the next dispatch skips the join and addresses
+    ;; nobody.
+    (swap! joined disj [room-uuid (:party/id agent-party)])
+    (when (some-> (:participants room) deref (contains? actor-kw))
+      (try
+        (binding [rtc/*execution-context* (:ctx room)]
+          (d/leave room actor-kw))
+        (vswap! undone conj :participant)
+        (catch Exception e (step-failed! :participant e))))
+    (when (and (not had-ctx?) (room-ctx/lookup room-id actor-kw))
+      (try
+        ;; Drops the fold subscription with the ctx, and the SCI namespaces
+        ;; with it — they live in that ctx and nowhere else.
+        (room-ctx/drop-ctx! room-id actor-kw)
+        (vswap! undone conj :context)
+        (catch Exception e (step-failed! :context e))))
+    @undone))
+
+(defn- join-participant!
+  "Build this agent's working ctx, install the simmis vocabulary and tools into
+   it, and join it to the live room as a dvergr llm-agent. Every side effect of
+   a join lives here, so `ensure-agent-joined!` has exactly one region to roll
+   back. `chosen` is the already-resolved, already-checked model."
+  [room room-uuid agent-party room-conn chosen]
+  (let [k [room-uuid (:party/id agent-party)]
+        {:keys [model provider]} chosen
+        agent-uuid (:party/id agent-party)
             actor-kw (party->actor-kw agent-party)
             kb-conns (get-room-kb-conns room-uuid)
             budget-dollars (rooms/get-room-budget-dollars room-uuid)
-            owner-id (:party/id (:party/owner agent-party))
-            fallback-model (when owner-id
-                             (:party/preferred-model (parties/get-party owner-id)))
-            ;; Resolved HERE, per participant creation — never frozen into the
-            ;; agent's stored config. An agent records the family it belongs to
-            ;; and whether its version is pinned or :auto; the concrete id is
-            ;; computed against the provider's live catalog. This is why Vár ran
-            ;; glm-5p1 for eleven days after we "switched" to 5p2: the id had
-            ;; been baked in at creation, and no code change could reach it.
-            model (or (model-selection/resolve-config
-                        {:model-family (:party/model-family agent-party)
-                         :model-version (:party/model-version agent-party)
-                         :model (:party/model agent-party)})
-                      fallback-model
-                      parties/default-model)
-            provider (resolve-provider model (:party/provider agent-party))
-            _ (log/log! {:level :info :id ::model-resolved
-                         :data {:agent (:party/display-name agent-party)
-                                :family (:party/model-family agent-party)
-                                :version (or (:party/model-version agent-party) :pinned-id)
-                                :model model}})
             ;; Base prompt via dvergr's ONE assembler (discourse-preamble +
             ;; [SKIP] convention + skills + tool-use-guideline + the sandbox
             ;; self-knowledge pointer + the workspace AGENTS.md/intake-catalog
@@ -2300,7 +2578,139 @@
                    :msg "LLM participant joined (dvergr harness)"
                    :data {:room-uuid room-uuid
                           :agent-party-id agent-uuid
-                          :agent-name (:party/display-name agent-party)}})))))
+                      :agent-name (:party/display-name agent-party)}})))
+
+(defn ensure-agent-joined!
+  "Join `agent-party` into the live room as a dvergr llm-agent (once per
+   [room party]). dvergr's turn factory builds the full sandbox; here we
+   pre-create the working ctx so we can add the simmis wiki/kb vocabulary
+   and the KB context block to it.
+
+   Fails closed, in two distinguishable ways:
+
+   - an unavailable model throws `:model-unavailable` BEFORE anything is
+     created, so there is nothing to undo and nothing to retry;
+   - anything else throws `:join-error`, and the partial initialization is
+     rolled back first. That rollback is what makes a retry safe: the next
+     call starts from no ctx and no participant, so it cannot leave a second
+     responder answering every message twice."
+  [room room-uuid agent-party room-conn]
+  (let [agent-party-id (:party/id agent-party)
+        k [room-uuid agent-party-id]]
+    ;; Do not let two dispatch paths both pass the cache check and construct
+    ;; independent subscriptions for one address. Room and agent lifecycle
+    ;; locks also put first admission on the same boundary as collective reset.
+    (locking (room-lifecycle-lock room-uuid)
+      (locking (agent-lifecycle-lock agent-party-id)
+        (locking (participant-lock room-uuid agent-party-id)
+          (when-not (contains? @joined k)
+            (let [;; Recipient discovery and participant admission are two
+                  ;; separate DB reads. An edit can commit between them, so the
+                  ;; lifecycle boundary must refresh rather than capture a
+                  ;; pre-edit party map after the reset has already completed.
+                  agent-party (if (system-db/get-conn)
+                                (or (parties/get-party agent-party-id)
+                                    (throw (ex-info "Agent no longer exists"
+                                                    {:type :agent-not-found
+                                                     :agent-id agent-party-id})))
+                                agent-party)
+                  agent-uuid agent-party-id
+            actor-kw (party->actor-kw agent-party)
+            ;; Resolved HERE, once for this participant join. An explicit
+            ;; override may record a family and version; an inheriting agent
+            ;; records no model selection. The resulting concrete provider and
+            ;; model are captured in the llm-agent spec below and reused for
+            ;; subsequent turns until this participant leaves and rejoins.
+            ;;
+            ;; Configuration screens call the same resolver independently, so
+            ;; they show current desired resolution rather than introspecting
+            ;; this captured runtime spec. They can therefore differ after an
+            ;; owner-preference or catalog change until the participant later
+            ;; leaves and rejoins.
+            {:keys [model provider] :as chosen}
+            (describe-model-resolution agent-party)]
+        ;; The availability gate, and the whole reason it stands before every
+        ;; side effect: this failure is expected, so it must cost nothing.
+        (when-not (:available? chosen)
+          ;; The human-facing copy travels WITH the failure: the caller
+          ;; that isolates this agent has to name the reason in the room,
+          ;; and model-catalog owns those words for every other surface.
+          (throw (ex-info "Agent model is unavailable"
+                          {:type :model-unavailable
+                           :agent-id agent-uuid
+                           :model (:candidate chosen)
+                           :provider provider
+                           :availability (:availability chosen)
+                           :availability-reason (:availability-reason chosen)
+                           :availability-label (:availability-label chosen)
+                           :availability-explanation (:availability-explanation chosen)})))
+        (log/log! {:level :info :id ::model-resolved
+                   :data {:agent (:party/display-name agent-party)
+                          :family (:family chosen)
+                          :version (or (:preferred-version chosen)
+                                       (:version chosen)
+                                       (when (:auto? chosen) :auto)
+                                       :exact-model)
+                          :preferred-model (:preferred-model chosen)
+                          :fallback? (:fallback? chosen)
+                          :fallback-reason (:fallback-reason chosen)
+                          :inherited? (:inherited? chosen)
+                          :provider provider
+                          :model model}})
+        ;; A participant left behind by an attempt whose rollback could not
+        ;; finish would become a second responder if we joined over it —
+        ;; dvergr's `join` replaces the routing entry but not the live spin or
+        ;; its subscriptions. Reclaim the slot before building anything.
+        (when (some-> (:participants room) deref (contains? actor-kw))
+          (binding [rtc/*execution-context* (:ctx room)]
+            (d/leave room actor-kw)))
+        (let [had-ctx? (some? (room-ctx/lookup (:id room) actor-kw))]
+          (try
+            (join-participant! room room-uuid agent-party room-conn chosen)
+            (catch Exception e
+              ;; Exception, not Throwable: an OutOfMemoryError or a
+              ;; StackOverflowError is not a participant that failed to join,
+              ;; and turning one into a room note would hide the fact that
+              ;; this JVM is dying.
+              (let [undone (rollback-partial-join! room room-uuid agent-party had-ctx?)]
+                (throw (ex-info "Agent could not be joined"
+                                {:type :join-error
+                                 :agent-id agent-uuid
+                                 :model model
+                                 :provider provider
+                                 :rolled-back undone}
+                                e)))))))))))))
+
+(defn join-agents!
+  "Join `agents` into `room` ONE AT A TIME, each isolated from the others.
+
+   Every join site in simmis goes through here — the human send, the telegram
+   hydration, the boot-time preparation of scheduled rooms — because they share
+   one requirement: a participant that cannot be joined drops out of THIS
+   dispatch and takes nothing else with it. An un-guarded loop over recipients
+   let one misconfigured agent abort the caller, which lost the human's message
+   and silenced the healthy agents.
+
+   Returns {:joined [party…] :failures [{:agent :error :type :incident}…]},
+   `:type` being `join-failure-type`. Each failure is logged here, once."
+  [room room-uuid agents room-conn]
+  (reduce (fn [acc agent]
+            (try
+              ;; This is persistence setup for THIS participant, not a
+              ;; prerequisite for the room-wide send. A storage failure here
+              ;; is just as isolatable as a later ctx or d/join failure.
+              (ensure-room-party-entity! room-conn agent)
+              (ensure-agent-joined! room room-uuid agent room-conn)
+              (update acc :joined conj agent)
+              (catch Exception e
+                (let [incident (incident-ref)]
+                  (log-join-failure! room-uuid agent e incident)
+                  (update acc :failures conj {:agent agent
+                                              :error e
+                                              :type (join-failure-type e)
+                                              :incident incident})))))
+          {:joined [] :failures []}
+          agents))
 
 (defn prepare-scheduled-agents!
   "Join the auto-respond agents of every live room that has an active
@@ -2329,14 +2739,24 @@
                                 ((requiring-resolve
                                   'is.simm.model.room-databases/connect-room-database) scope))]
                 (when room-conn
-                  (doseq [agent (filter :party/auto-respond? (rooms/get-room-agents room-uuid))]
-                    (ensure-room-party-entity! room-conn agent)
-                    (ensure-agent-joined! room room-uuid agent room-conn))
+                  ;; Isolated per agent, exactly as the send path is: at boot
+                  ;; one agent with an unavailable model used to abandon the
+                  ;; preparation of every agent after it in the same room.
+                  (let [{:keys [joined failures]}
+                        (join-agents! room room-uuid
+                                      (filter :party/auto-respond?
+                                              (rooms/get-room-agents room-uuid))
+                                      room-conn)]
                   (log/log! {:level :info :id ::scheduled-agents-prepared
-                             :data {:room (:slug room)}}))))))
-        (catch Throwable t
+                               :data {:room (:slug room)
+                                      :prepared (count joined)
+                                      :not-joined (count failures)}})))))))
+        ;; Exception, not Throwable: a room whose preparation fails is
+        ;; best-effort, but a dying JVM is not a room problem and must not be
+        ;; logged as one.
+        (catch Exception e
           (log/log! {:level :warn :id ::prepare-scheduled-agents-failed
-                     :data {:room (:slug room) :error (.getMessage t)}}))))))
+                     :data {:room (:slug room) :error-message (.getMessage e)}}))))))
 
 ;; =============================================================================
 ;; External inspection surface (chat_remote / sandbox_remote)
@@ -2385,6 +2805,78 @@
          {:role :specialist
           :response-policy (if (:party/auto-respond? agent) :always :manual)}))))
 
+(defn- join-failure-note
+  "Room-visible copy for an agent that could not join. The person who would
+   otherwise just see silence needs the agent and the reason in one line.
+
+   The two failure kinds get two notes, and only one of them may quote
+   anything. For `:model-unavailable` the wording comes from
+   `model-catalog/availability-copy` via the failure itself, so this note and
+   the settings screens say the same thing about the same state, and it is
+   actionable: the model it names is the model to change.
+
+   For `:join-error` NOTHING from the exception reaches the room. A room is a
+   product surface shared with everyone in it, agents included — they read it
+   back on their next turn. An unexpected fault's message is written for a
+   developer and routinely carries a provider URL with a key in its query
+   string, a store path, a class name, a frame. So the room gets the fact, the
+   consequence and a reference; the message, the class and the stack go to the
+   server log under that same reference."
+  [{:keys [agent type error incident]} others-answering?]
+  (let [{:keys [model availability-label availability-explanation]} (ex-data error)
+        who (or (:party/display-name agent) "An agent")
+        ;; Only say it in a room where it is true. In a one-agent room
+        ;; "the other agents are unaffected" is noise at best.
+        others (if others-answering?
+                 " The other agents in this room are unaffected."
+                 "")]
+    (if (= :model-unavailable type)
+      (str "⚠️ " who " cannot answer here. Model status for "
+           (if model (str "`" model "`") "its configured model") ": "
+           (or availability-label "Unavailable") "."
+           (when availability-explanation (str " " availability-explanation))
+           " Pick an available model for " who " in its settings." others)
+      (str "⚠️ " who " could not join this conversation, so it did not"
+           " receive this message. This is a server-side fault, not something to"
+           " fix from the room. An operator can find it in the server log under"
+           " reference `" incident "`." others))))
+
+(defn- post-join-failure-note!
+  "Post the join failure into the room itself, authored by the agent that
+   cannot run, addressed back to the sender so no participant is woken by it.
+   dvergr's `add-system-note!` is the seam for notes an AGENT reads on its next
+   turn — it writes into a chat-ctx, which an agent that failed to join does
+   not have. A note for the HUMAN goes on the room bus, where the room
+   projector persists it into the timeline like any other message.
+
+   It is a `d/reply` to `human-msg`, not a fresh root message. The note stands
+   in for the answer that agent would have given, so it belongs where the
+   question was asked: `d/reply` copies the parent's thread root, which is what
+   the thread-aware projection reads. Posted with no parent it would land at
+   the room root, and a person who asked inside a thread would watch that
+   thread stay silent while the explanation appeared somewhere else."
+  [room room-uuid {:keys [agent type] :as failure} sender-kw human-msg others-answering?]
+  (try
+    (binding [rtc/*execution-context* (:ctx room)]
+      (let [content (join-failure-note failure others-answering?)
+            ;; `:kind`, not `:system-note`. dvergr#51 closed the durable
+            ;; metadata vocabulary: a key the room store does not model is
+            ;; REJECTED, and this function swallows that in its catch — so the
+            ;; note never reached a datahike-backed room and the room stayed
+            ;; silent about why an agent did not answer, with only the operator
+            ;; warning to show for it. `:kind` is modelled and round-trips as
+            ;; `:message/metadata-kind`; nothing ever read `:system-note`.
+            metadata {:role :system :kind type}
+            from-actor (party->actor-kw agent)]
+        (d/post! room (if human-msg
+                        (d/reply from-actor sender-kw content human-msg metadata)
+                        (d/message from-actor sender-kw content nil metadata)))))
+    (catch Exception e2
+      (log/log! {:level :warn :id ::join-failure-note-failed
+                 :data {:room room-uuid
+                        :agent (:party/id agent)
+                        :error-message (.getMessage e2)}}))))
+
 (defn post-user-message!
   "Post a user message into the room's live dvergr discourse Room. Works
    for ALL room kinds — the send path is one:
@@ -2393,12 +2885,22 @@
       dvergr room store ALSO persists it via the bus.
    2. Resolve @handles to room-local actor ids. Unknown/ambiguous mentions fail
       closed; assignment response policies select recipients.
-   3. Post one Message per selected recipient. When a room has assigned agents
-      but none should wake, target the reserved `:_room-log` endpoint so the
-      durable/projector listeners see it without broadcasting to every joined
-      participant. Rooms without agents retain their adapter-facing target.
+   3. Join the selected recipients via `join-agents!` and post one Message per
+      JOINED recipient; replies route back via the projector. Joins are isolated
+      per agent — an agent that cannot be joined drops out of this send (logged,
+      named in the room by a system note) and never blocks the message or the
+      other agents.
+   4. When a room has assigned agents but none should wake — or none of them
+      could join — target the reserved `:_room-log` endpoint so the durable and
+      projector listeners see the message without broadcasting it to every
+      joined participant. Rooms without agents keep their adapter-facing target,
+      so mirrors (the telegram thin-adapter egress) still relay it out.
 
-   Returns {:status :ok :recipients [...]} immediately; replies are async."
+   Returns {:status :ok :recipients [...] :unavailable [...]
+   :join-errors [...]} immediately; replies are async. `:unavailable` names
+   only the agents whose MODEL cannot run here — an expected, settings-shaped
+   state; `:join-errors` names the ones whose join failed unexpectedly. The
+   send itself never fails because a participant could not be joined."
   [room-uuid user-message sender-party-id room-conn & [msg-uuid in-reply-to]]
   (ensure-providers!)
   (let [room-parties (rooms/get-room-parties room-uuid)
@@ -2425,28 +2927,45 @@
         ;; replies) idempotently by message id. The client renders the
         ;; send optimistically and reconciles on the sync echo.
         (ensure-room-projector! room room-uuid room-conn)
-        (doseq [agent recipients]
-          (ensure-room-party-entity! room-conn agent)
-          (ensure-agent-joined! room room-uuid agent room-conn))
-        (let [from-kw (party->actor-kw user-uuid)
+        ;; Per-agent isolation: a participant that cannot be joined drops OUT
+        ;; of this send instead of aborting it. One misconfigured agent used
+        ;; to lose the human's message and silence the healthy agents, with
+        ;; nothing in the log to explain it.
+        (let [{:keys [joined failures]} (join-agents! room room-uuid recipients room-conn)
+              from-kw (party->actor-kw user-uuid)
+              ;; Targets: the agents that actually joined. When mention
+              ;; filtering woke nobody — or every selected recipient failed to
+              ;; join — the room still has assigned agents, so the message goes
+              ;; to the reserved `:_room-log` endpoint: durable and projector
+              ;; listeners see it, no participant is woken by it. With no agents
+              ;; at all the broadcast target keeps mirrors (telegram) relaying.
+              targets (cond
+                        (seq joined) (mapv party->actor-kw joined)
+                        (seq all-agents) [:_room-log]
+                        :else [(d/room-target room)])
               ;; All copies of a multi-recipient send share ONE id
               ;; (client-supplied when present) — the projector's upsert
               ;; dedupes them into a single timeline row.
               send-id (or msg-uuid (random-uuid))
               metadata {:role :user :mentions mentions :audience audience}
               msgs (binding [rtc/*execution-context* (:ctx room)]
-                     (->> (if (seq recipients)
-                            (mapv #(d/message from-kw (party->actor-kw %) user-message in-reply-to
-                                              metadata)
-                                  recipients)
-                            [(d/message from-kw
-                                        (if (seq all-agents)
-                                          :_room-log
-                                          (d/room-target room))
-                                        user-message in-reply-to metadata)])
+                     (->> targets
+                          (mapv #(d/message from-kw % user-message in-reply-to metadata))
                           (mapv #(assoc % :id send-id))))]
           (binding [rtc/*execution-context* (:ctx room)]
             (doseq [m msgs]
-              (d/post! room m))))
-        {:status :ok
-         :recipients (mapv :party/id recipients)}))))
+              (d/post! room m)))
+          ;; After the send, so the room reads in causal order: the human's
+          ;; message, then why an agent stayed silent.
+          (doseq [failure failures]
+            (post-join-failure-note! room room-uuid failure from-kw (first msgs)
+                                     (boolean (seq joined))))
+          ;; Reported apart, because they are apart: `:unavailable` is a
+          ;; settings state a person can act on, `:join-errors` is a fault an
+          ;; operator has to look at. Collapsing both into "unavailable" sent
+          ;; everyone to the model picker.
+          (let [by-type (group-by :type failures)]
+            {:status :ok
+             :recipients (mapv :party/id joined)
+             :unavailable (mapv (comp :party/id :agent) (:model-unavailable by-type))
+             :join-errors (mapv (comp :party/id :agent) (:join-error by-type))}))))))

@@ -165,9 +165,9 @@
    - :unread - Optional unread count
    - :active? - Whether this item is active
    - :room-id - Room ID (for :agent items)
-   - :model - LLM model name (for :agent items)"
-  [{:keys [id uuid type title project icon obj-icon unread active? db-scope room-id model
-           kind-label]}]
+   - :model-resolution - desired model-resolution map (for :agent items)"
+  [{:keys [id uuid type title project icon obj-icon unread active? db-scope room-id model-resolution
+            kind-label]}]
   (el/div {:key (or id (str uuid))
            :class (vc/class-names "nav-item"
                                   (when active? "active"))
@@ -184,7 +184,8 @@
                                            :chat  {:room-id id :room-name title :db-scope db-scope}
                                            :video {:room-id id}
                                            :agent {:agent-id id :room-id room-id
-                                                   :agent-name title :model model}
+                                                   :agent-name title
+                                                   :model-resolution model-resolution}
                                            nil)]
                             ;; Nav clicks always open new tabs (not replace current)
                             (sig/open-tab! type tab-data
@@ -229,7 +230,8 @@
 
 (defn contact-item
   "Render a single contact row. Agents open the agent inspector; humans open a contact profile."
-  [{:keys [id type display-name handle room-id room-name model] :as _contact}]
+  [{:keys [id type display-name handle room-id room-name model-resolution]
+    :as _contact}]
   (el/div {:key id
            :class "nav-item nav-item--agent"
            :on-click (fn [e]
@@ -238,7 +240,8 @@
                             (if (and (= :agent type) room-id)
                               (sig/open-tab! :agent
                                              {:agent-id id :room-id room-id
-                                              :agent-name display-name :model model}
+                                              :agent-name display-name
+                                              :model-resolution model-resolution}
                                              {:title display-name
                                               :new-column? cmd-key?
                                               :new-tab? (not cmd-key?)})

@@ -2,9 +2,11 @@
   "Agent Inspector — Phase 1: config, KB connections, chat link."
   (:require [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.views.core :as vc]
+            [is.simm.uis.web.desktop.views.model-picker :as model-picker]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.runtimes.web :as web]
             [is.simm.uis.web.desktop.chat-remote :as chat-remote]
+            [is.simm.uis.web.desktop.room-details :as room-details]
             [org.replikativ.spindel.engine.core :as rtc]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [datahike.api :as d]
@@ -19,28 +21,27 @@
    - :agent-id   string UUID
    - :room-id    string UUID of the room this agent belongs to
    - :agent-name string
-   - :model      string LLM model identifier
+   - :model-resolution desired configuration resolution from the server
 
-   admin-data: result of load-room-details!
+   room-details: keyed result state from load-room-details!
    room-states: current room-states signal value (map of scope-str → {:db db})"
-  [data admin-data room-states]
-  (let [{:keys [agent-id room-id agent-name model]} data
+  [data room-details room-states]
+  (let [{:keys [agent-id room-id agent-name model-resolution]} data
+        admin-data (room-details/data-for room-details room-id)
+        room-error (room-details/error-for room-details room-id)
+        model (or (:model model-resolution) (:candidate model-resolution))
         label (cond
                 (str/includes? (or model "") "claude") "Claude"
                 (str/includes? (or model "") "gpt")    "GPT"
                 (str/includes? (or model "") "glm")    "GLM"
                 :else (or model "?"))]
     ;; Trigger load if not yet available
-    ;; Guard on THIS room's details. `sig/admin-data` is shared by six panels;
-    ;; a plain nil-guard leaves the inspector rendering another room's data.
-    (when (or (nil? admin-data)
-              (not= (some-> admin-data :room :room/id str) (str room-id)))
-      (when room-id
-        (let [s (chat-remote/load-room-details! web/server-id room-id)]
-          (s (fn [result]
-               (binding [rtc/*execution-context* runtime]
-                 (reset! sig/admin-data result)))
-             (fn [err] (js/console.error "[agent-inspector] load error:" err))))))
+    ;; Details are keyed by room, so another inspector cannot replace this one.
+    ;; The load goes through `room-details/load!`, which runs it as a ROOT
+    ;; spin. Called straight from this render body it was a created-child of
+    ;; the render spin instead, and the next re-run cancelled it mid-flight.
+    (when (and (nil? admin-data) (nil? room-error))
+      (room-details/load! room-id))
 
     (let [;; db-scope from admin-data (populated by load-room-details!)
           room-db-scope (when admin-data (str (get-in admin-data [:room :room/content-db-scope])))
@@ -83,30 +84,137 @@
 
       ;; Body
       (if (nil? admin-data)
-        (el/div {:class "agent-inspector-loading"} "Loading…")
+        (el/div {:class "agent-inspector-loading"}
+          (if room-error
+            (str "Could not load inspector: " room-error)
+            "Loading…"))
 
         (let [agent-config (->> (:agents admin-data)
                                 (filter #(= (str (:party/id %)) agent-id))
                                 first)
+              ;; Freshest first: the room details reload after every save, while
+              ;; the tab's own copy is whatever the nav had when it was opened.
+              chosen (or (:model-resolution agent-config) model-resolution)
               room-kbs (:knowledge-bases admin-data)]
 
           (el/div {:class "agent-inspector-body"}
 
-            ;; Configuration section
+            ;; Configuration section. Everything here comes from the server's
+            ;; desired model resolution. Participant join uses the same
+            ;; resolver, but a live participant captures that result; this
+            ;; display does not introspect the captured runtime spec.
+            (let [{:keys [model candidate preferred? resolved-label choice-label
+                          provider-label no-reasoning? reasoning-copy
+                          reasoning-explanation selection-label available?
+                          availability-label availability-explanation
+                          resolution-label resolution-status
+                          resolution-status-explanation runtime-label
+                          runtime-explanation]} chosen
+                  display-model (or model candidate)]
+              (el/div {:class "agent-inspector-section"}
+                (el/h3 {:class "agent-inspector-section-title"} "Configuration")
+                (el/div {:class "agent-inspector-config"}
+                  ;; The PICKER's own label, printed verbatim. Composing a
+                  ;; second name here is what produced "family latest" beside a
+                  ;; list that says "(Latest)".
+                  (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"} "Selection")
+                    (el/span {:class "agent-inspector-value"}
+                      selection-label))
+                  (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"} "Model")
+                    (el/span {:class "agent-inspector-value"}
+                      (str (or choice-label display-model "—")
+                           (when preferred? " · preferred"))))
+                  ;; Use the same friendly explicit-version label as the picker;
+                  ;; the provider id stays one hover away for diagnosis.
+                  (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"}
+                      (or resolution-label "Resolves to"))
+                    (el/span {:class (vc/class-names "agent-inspector-value"
+                                                     (when model "has-tooltip"))
+                              :data-tooltip (or model "")}
+                      (or resolved-label "—")))
+                  (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"} "Active runtime")
+                    (el/span {:class "agent-inspector-value has-tooltip"
+                              :data-tooltip (or runtime-explanation "")}
+                      (or runtime-label "Not inspected")))
+                  (when resolution-status
+                    (el/div {:class "agent-inspector-row"}
+                      (el/span {:class "agent-inspector-label"} "Status")
+                      (el/span {:class (vc/class-names
+                                        "agent-inspector-value"
+                                        "has-tooltip"
+                                        (when-not available?
+                                          "agent-inspector-value--unavailable"))
+                                :data-tooltip (or resolution-status-explanation "")}
+                        resolution-status)))
+                  (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"} "Provider")
+                    (el/span {:class "agent-inspector-value"}
+                      (or provider-label "unknown")))
+                  (when (and (not available?) (not resolution-status))
+                    (el/div {:class "agent-inspector-row"}
+                      (el/span {:class "agent-inspector-label"} "Availability")
+                      (el/span {:class "agent-inspector-value agent-inspector-value--unavailable"
+                                :data-tooltip availability-explanation}
+                        availability-label)))
+                  ;; Reasoning gets its own row rather than a suffix on the
+                  ;; provider, where it read as a claim about OpenAI. Same words
+                  ;; as the picker's tag, from the same server field, and the
+                  ;; tooltip names the tools it is talking about.
+                  (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"} "Reasoning")
+                    ;; A LITERAL attribute map. el/span reads the first form as
+                    ;; attributes only when it is written as a map; a cond->
+                    ;; that builds one at runtime renders as text.
+                    (el/span {:class (vc/class-names "agent-inspector-value"
+                                                     (when no-reasoning? "has-tooltip"))
+                              :data-tooltip (or reasoning-explanation "")}
+                      (or reasoning-copy "on")))
+                  (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"} "Auto-respond")
+                    (el/span {:class "agent-inspector-value"}
+                      (if (:party/auto-respond? agent-config) "Yes" "No"))))))
+
+            ;; Model picker. Same list Settings shows, same meaning: a Latest
+            ;; row stores the family so releases arrive on their own.
             (el/div {:class "agent-inspector-section"}
-              (el/h3 {:class "agent-inspector-section-title"} "Configuration")
-              (el/div {:class "agent-inspector-config"}
-                (el/div {:class "agent-inspector-row"}
-                  (el/span {:class "agent-inspector-label"} "Model")
-                  (el/span {:class "agent-inspector-value"} (or model "—")))
-                (el/div {:class "agent-inspector-row"}
-                  (el/span {:class "agent-inspector-label"} "Provider")
-                  (el/span {:class "agent-inspector-value"}
-                    (name (or (:party/provider agent-config) :unknown))))
-                (el/div {:class "agent-inspector-row"}
-                  (el/span {:class "agent-inspector-label"} "Auto-respond")
-                  (el/span {:class "agent-inspector-value"}
-                    (if (:party/auto-respond? agent-config) "Yes" "No")))))
+              (el/h3 {:class "agent-inspector-section-title"} "Model")
+              (el/div {:class "settings-model-list"}
+                ;; :value is the key; the AGENT and `:selected?` ride in the
+                ;; item. Identity has one source here — the row — because a
+                ;; row that is unselected for two agents is otherwise the same
+                ;; item, and ifor-each hands the reused node's stale handler
+                ;; the wrong agent. See settings.cljc for why the tick must
+                ;; not be part of the key.
+                (let [rows (model-picker/agent-model-rows
+                            agent-id agent-name chosen
+                            (:model-choices admin-data))]
+                  (ifor-each :value rows
+                    (fn [row]
+                      (model-picker/render-option
+                       row
+                       ;; The TARGET comes out of the row, never out of this
+                       ;; closure: a memoized node keeps the handler it was
+                       ;; built with, and that handler used to name whichever
+                       ;; agent was on screen when the node was created.
+                       (fn [{:keys [value] :as selected-row}]
+                         (let [s (chat-remote/update-agent-config!
+                                  web/server-id
+                                  (:agent-id selected-row)
+                                  (:agent-name selected-row)
+                                  value nil)]
+                           ;; Reload rather than blank the signal: six panels
+                           ;; read it, and a nil here made this panel flash
+                           ;; "Loading…" on its way to a refill that a re-run
+                           ;; then cancelled. `:force?` is what makes the
+                           ;; reload observe the write just made.
+                           (s (fn [_] (room-details/load! room-id {:force? true}))
+                              (fn [err]
+                                (js/console.error
+                                 "[agent-inspector] model error:" err)))))))))))
 
             ;; System prompt section — always editable
             (let [prompt (or (:party/system-prompt agent-config) "")
@@ -115,12 +223,23 @@
               (el/h3 {:class "agent-inspector-section-title"} "System Prompt")
               (el/textarea
                 {:id ta-id
+                 ;; The key carries the agent, so switching contacts builds a
+                 ;; DIFFERENT node rather than reusing this one.
+                 :key ta-id
                  :class "settings-textarea"
                  :rows 10
                  :placeholder "Describe the agent's personality and role..."
-                 ;; ref sets value imperatively on mount (only if empty, preserving user edits)
+                 ;; The old guard filled the textarea only when it was EMPTY,
+                 ;; which is true once and never again. The node survives a
+                 ;; switch from one agent to the next, so Lun's inspector showed
+                 ;; Vár's prompt under Lun's id, and Save would have written it
+                 ;; onto Lun. Refill when the agent behind the node changes, and
+                 ;; only then, so an edit in progress survives a re-render.
+                 ;; getAttribute/setAttribute, not .dataset: the compiler
+                 ;; cannot infer a type for the dataset property and warns.
                  :ref (fn [node]
-                        (when (and node (empty? (.-value node)))
+                        (when (and node (not= (.getAttribute node "data-agent-id") agent-id))
+                          (.setAttribute node "data-agent-id" agent-id)
                           (set! (.-value node) prompt)))})
               (el/button
                 {:class "settings-btn settings-btn--primary"
@@ -128,10 +247,12 @@
                  :on-click (fn [_]
                              (let [ta (.getElementById js/document (str "agent-inspector-prompt-" agent-id))
                                    sp (.-value ta)
+                                   ;; "" for the model choice: this button saves
+                                   ;; the prompt, and must not restore a model choice.
                                    s  (chat-remote/update-agent-config!
-                                        web/server-id agent-id agent-name model sp)]
+                                        web/server-id agent-id agent-name "" sp)]
                                (s (fn [_]
-                                    (reset! sig/admin-data nil))
+                                    (room-details/load! room-id {:force? true}))
                                   (fn [err] (js/console.error "[agent-inspector] update error:" err)))))}
                 "Save")))
 

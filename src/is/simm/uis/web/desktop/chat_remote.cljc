@@ -11,6 +11,8 @@
             #?(:clj [is.simm.model.system-db :as system-db])
             #?(:clj [is.simm.agents.room-agents :as room-agents])
             #?(:clj [is.simm.agents.templates :as templates])
+            #?(:clj [is.simm.model.model-selection :as model-selection])
+            #?(:clj [is.simm.model.model-catalog :as model-catalog])
             #?(:clj [dvergr.chat.context :as chat-ctx])
             #?(:clj [dvergr.chat.accounting :as acct])
             #?(:clj [dvergr.agent.run :as agent-run])
@@ -108,8 +110,8 @@
                                                 room-info (assoc :room-id (str (:room-id room-info))
                                                                  :room-name (:room-name room-info))
                                                 (= :agent (:party/type p))
-                                                (assoc :model (:party/model p)
-                                                       :provider (:party/provider p)
+                                                (assoc :model-resolution
+                                                       (room-agents/describe-model-resolution p)
                                                        :auto-respond? (boolean (:party/auto-respond? p))))))))
                                   (sort-by (juxt #(case (:type %) :human 0 :agent 1 2)
                                                  :display-name))
@@ -515,7 +517,15 @@
                         (assoc :room/budget-dollars (rooms/get-room-budget-dollars room-uuid))
                         (dissoc :room/parties)))
             :humans humans
-            :agents agents
+            ;; Every agent carries current desired configuration resolution.
+            ;; A join invokes the same resolver and captures its result, but
+            ;; this display payload does not inspect an already joined
+            ;; participant and must not be read as active-runtime state.
+            :agents (mapv (fn [a]
+                            (assoc a :model-resolution
+                                   (room-agents/describe-model-resolution a)))
+                          agents)
+            :model-choices (model-catalog/choices)
             :all-humans all-humans
             :knowledge-bases (mapv (fn [kb]
                                      (-> kb
@@ -723,12 +733,7 @@
                tmpl       (when (seq tid) (templates/get-template tid))
                display    (if (seq aname) aname (or (:name tmpl) "Agent"))
                agent (parties/create-agent! owner-uuid
-                       (cond-> {:display-name display
-                                :auto-respond? true}
-                         tmpl (merge {:template (:id tmpl)
-                                      :model (:model tmpl)
-                                      :provider (:provider tmpl)
-                                      :system-prompt (:system-prompt tmpl)})))]
+                                            (templates/agent-options display tmpl))]
            (rooms/add-party! room-uuid (:party/id agent))
            (when-let [slug (:room/slug (rooms/get-room room-uuid))]
              (room-agents/assign-room-agent!
@@ -737,21 +742,64 @@
            {:status :ok :agent-id (str (:party/id agent))})
          :cljs nil))))
 
+#?(:clj
+   (defn update-agent-config-server
+     "Validate and update one agent. Kept outside the RPC macro so the server
+      rejection path is directly testable."
+     [agent-id-str agent-name model-choice system-prompt]
+     (let [agent-uuid (java.util.UUID/fromString agent-id-str)
+           agent (parties/get-party agent-uuid)
+           ;; ONE string, two meanings. A `*` marks a family, so the agent
+           ;; follows it and picks up new releases; anything else is an exact
+           ;; preferred version/model. Whichever arrives, the OTHER form is
+           ;; cleared.
+           model-patch
+           (cond
+             (= model-catalog/inherit-choice-value model-choice)
+             (let [{:keys [value]} (room-agents/inheritance-choice agent)]
+               ;; Clearing is a selection too. Validate the owner's preference
+               ;; (or product fallback when the owner has none) before removing
+               ;; the explicit keys, so stale/forged clients fail closed. An
+               ;; already-stored preferred version may resolve through its
+               ;; newer same-family/provider fallback; validating only its now-
+               ;; withdrawn picker row would incorrectly reject inheritance.
+               (model-catalog/require-usable-preference! value)
+               {:party/model nil
+                :party/model-family nil
+                :party/model-version nil
+                :party/provider nil})
+
+             (seq model-choice)
+             (do
+               ;; A forged/stale client must pass the exact same availability
+               ;; decision as the picker and turn path.
+               (model-catalog/require-available-choice! model-choice)
+               (if (model-selection/family? model-choice)
+                 {:party/model-family model-choice
+                  :party/model-version :auto
+                  :party/model nil}
+                 {:party/model model-choice
+                  :party/model-family nil
+                  :party/model-version nil}))
+
+             :else nil)]
+       (parties/update-agent! agent-uuid
+         (cond-> {}
+           (seq agent-name) (assoc :party/display-name agent-name)
+           (some? system-prompt) (assoc :party/system-prompt system-prompt)
+           model-patch (merge model-patch)))
+       {:status :ok
+        :model-resolution
+        (room-agents/describe-model-resolution (parties/get-party agent-uuid))})))
+
 (defn-spin-remote update-agent-config!
-  [server-id agent-id-str agent-name model system-prompt]
-  (spin-remote server-id [agent-id-str agent-name model system-prompt]
+  [server-id agent-id-str agent-name model-choice system-prompt]
+  (spin-remote server-id [agent-id-str agent-name model-choice system-prompt]
     (let [aid (identity agent-id-str)
           an  (identity agent-name)
-          m   (identity model)
+          m   (identity model-choice)
           sp  (identity system-prompt)]
-      #?(:clj
-         (let [agent-uuid (java.util.UUID/fromString aid)]
-           (parties/update-agent! agent-uuid
-             (cond-> {}
-               (seq an) (assoc :party/display-name an)
-               (seq m)  (assoc :party/model m)
-               (some? sp) (assoc :party/system-prompt sp)))
-           {:status :ok})
+      #?(:clj (update-agent-config-server aid an m sp)
          :cljs nil))))
 
 (defn-spin-remote update-agent-assignment!

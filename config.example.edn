@@ -60,11 +60,35 @@
 ;;                       account is what every :authenticated RPC checks for.
 ;;                       simmis warns on every boot while it is on.
 ;;
-;;   FIREWORKS_API_KEY   LLM providers. Agents fall back to
-;;   OPENAI_API_KEY      accounts/fireworks/models/glm-5p2, so FIREWORKS_API_KEY
-;;   ANTHROPIC_API_KEY   is the least-effort option. Point OPENAI_BASE_URL +
-;;   GROQ_API_KEY        OPENAI_API_KEY at any OpenAI-compatible endpoint
-;;                       (including a local one) to use that instead.
+;;   FIREWORKS_API_KEY   LLM providers. A provider is registered at boot only
+;;   OPENAI_API_KEY      if its key is present. The explicit default (only when
+;;   ANTHROPIC_API_KEY   nobody chose a model) is the Fireworks GLM family, so
+;;                       FIREWORKS_API_KEY is the least-effort option. A missing,
+;;                       withdrawn, unsupported, or unreachable choice is never
+;;                       replaced with that default. Set several; each agent
+;;                       picks its own model, and the provider follows from it.
+;;                       Keys are provider-scoped: OpenAI never supplies a
+;;                       Fireworks credential, or vice versa. Restart after
+;;                       adding or changing a provider credential. A key the
+;;                       provider REJECTS reads as "Credential rejected" on the
+;;                       affected rows: that is a key to replace, not an outage
+;;                       to wait out.
+;;
+;;                       A key is permission to ASK, not the answer. Every one
+;;                       of these providers is asked which models the ACCOUNT
+;;                       may run, each over its own documented API — Anthropic
+;;                       over its native paginated Models API, not an
+;;                       OpenAI-compatible one. So a valid key whose account has
+;;                       no access to a given model reads "Unavailable to
+;;                       account" rather than offering a choice that would fail
+;;                       at the first turn.
+;;
+;;   OPENAI_BASE_URL     Where OPENAI_API_KEY points. UNSET means OpenAI itself
+;;                       (https://api.openai.com/v1) — the gpt-5.6 / gpt-5.5
+;;                       models. Set it to reach any other OpenAI-compatible
+;;                       endpoint, including a local one, with that same key.
+;;                       It never changes Fireworks' base. A supplied base is
+;;                       treated as compatible, not as native OpenAI behavior.
 ;;
 ;;   SIMMIS_JITSI_URL    Jitsi deployment backing the :video tab.
 ;;                       Default http://localhost:9100.

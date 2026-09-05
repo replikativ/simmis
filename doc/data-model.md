@@ -77,6 +77,12 @@ Within a KB, `[[Title]]` links a page. Across databases the explicit form is
 `[[dh://…][Display]]`. Links are stored as datoms, so backlinks and
 neighbourhood queries are ordinary queries rather than a maintained index.
 
+The same rule governs what a backlink row can be clicked into. A row opens a
+tab from a uuid — a page's `:entity/uuid`, a room's `:room/id` — never from a
+display name. Room names are not unique, so a row that carries only a name
+names no room; `uis/web/desktop/backlink_target.cljc` reports such a row as
+unavailable rather than guessing one.
+
 ## Ordering
 
 Blocks are ordered by `:block/order`, a fractional index — a string chosen to

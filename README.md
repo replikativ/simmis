@@ -109,11 +109,35 @@ external identity providers, and every environment variable simmis reads.
 ### LLM providers
 
 Agents need a model. Provider keys come from the environment —
-`FIREWORKS_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`.
-The fallback model is `accounts/fireworks/models/glm-5p2`, so `FIREWORKS_API_KEY`
-is the path of least resistance; set `OPENAI_BASE_URL` + `OPENAI_API_KEY` to
-point at any OpenAI-compatible endpoint (including a local one) instead. Each
-agent's model can also be set per room in its settings.
+`FIREWORKS_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`; a provider is
+registered only when its key is present. The explicit default, used only when
+nobody selected a model, is `accounts/fireworks/models/glm-5p2`, so
+`FIREWORKS_API_KEY` is the path of least resistance. An unavailable selection
+never falls through to that default or another family/provider. Latest stores a
+family and follows its newest usable version. An explicit version is preserved
+as the preferred version; if withdrawn, it may use only a newer usable version
+in the same family and provider, and automatically returns to the preferred
+version if it reappears. `OPENAI_API_KEY`
+on its own reaches OpenAI (the GPT-5.6 and GPT-5.5
+models); add `OPENAI_BASE_URL` to point that key at any other OpenAI-compatible
+endpoint, including a local one. Fireworks always uses its own base and
+`FIREWORKS_API_KEY`; credentials are never shared between providers. Each
+agent's model can also be set per room in its settings. The picker keeps every
+curated family visible and marks rows as available, credential-required, not
+supported, unavailable to the account, or temporarily unreachable; only
+available rows can be newly saved, and only an available resolved target can
+run. New agents inherit their owner's validated preference (then the product
+default) without storing a model; the per-agent picker identifies inherited
+state, and clearing an explicit override returns to that inheritance chain.
+
+Resolution and activation are separate. A participant resolves the current
+configuration when it joins or rejoins, captures the resulting provider/model
+spec, and reuses that spec for subsequent turns. Owner-preference and catalog
+changes update configured preference, desired resolution, and availability;
+they do not rewrite an already joined participant. An explicit agent edit
+resets that agent's joined participants, so the next dispatch rejoins and
+resolves again. The configuration UI says “Resolves to” or “when next joined”
+and reports active runtime state as uninspected.
 
 ### Production build
 

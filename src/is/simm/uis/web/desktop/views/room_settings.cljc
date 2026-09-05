@@ -3,8 +3,10 @@
   (:require [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.signals :as sig]
+            #?(:cljs [is.simm.uis.web.desktop.room-details :as room-details])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as cr])
             #?(:cljs [is.simm.uis.web.desktop.message-notify-sync :as mns])
+            #?(:cljs [is.simm.uis.web.desktop.user-rooms-sync :as urs])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
@@ -13,6 +15,7 @@
   "Render room settings. data is {:room ... :humans [...] :agents [...] :all-humans [...] ...}."
   [data]
   (let [room (:room data)
+        room-id (str (:room/id room))
         humans (:humans data)
         agents (:agents data)
         all-humans (:all-humans data)
@@ -67,7 +70,7 @@
                                                              web/server-id
                                                              (str (:room/id room))
                                                              (str pid))]
-                                                     (s (fn [_] (reset! sig/admin-data nil))
+                                                     (s (fn [_] (room-details/load! room-id {:force? true}))
                                                         (fn [err] (js/console.error "[room-settings] remove error:" err))))
                                                    :clj nil))}
                           (vc/icon "x")))))))
@@ -98,7 +101,7 @@
                                                        pid)]
                                                (s (fn [_]
                                                     (set! (.-value sel) "")
-                                                    (reset! sig/admin-data nil))
+                                                    (room-details/load! room-id {:force? true}))
                                                   (fn [err] (js/console.error "[room-settings] add error:" err))))))
                                          :clj nil))}
                 "Add"))))
@@ -118,8 +121,21 @@
                     (el/div {:class "settings-env-row"}
                       (el/span {:class "settings-env-key"}
                         (or (:party/display-name agent) "Agent"))
-                      (el/span {:class "settings-env-value settings-agent-model"}
-                        (or (:party/model agent) "default"))
+                      ;; Desired configuration only. The participant resolves
+                      ;; again when it joins; active runtime state is not
+                      ;; introspected here and may still hold an earlier spec.
+                      (el/span {:class "settings-env-value settings-agent-model"
+                                :data-tooltip
+                                (or (:runtime-explanation
+                                     (:model-resolution agent)) "")}
+                        (el/span {:class "settings-agent-model-choice"}
+                          (or (:choice-label (:model-resolution agent)) "default"))
+                        ;; Printed verbatim from the server. Composing it here
+                        ;; promised a resolution even when the model was
+                        ;; unavailable and the join would refuse it.
+                        (el/span {:class "settings-agent-model-resolution"}
+                          (or (:next-join-copy (:model-resolution agent))
+                              "Not resolved")))
                       (el/button {:class "settings-env-delete"
                                   :title "Remove participant"
                                   :on-click (fn [_]
@@ -128,7 +144,7 @@
                                                            web/server-id
                                                            (str (:room/id room))
                                                            agent-id)]
-                                                   (s (fn [_] (reset! sig/admin-data nil))
+                                                   (s (fn [_] (room-details/load! room-id {:force? true}))
                                                       (fn [err] (js/console.error "[room-settings] remove agent error:" err))))
                                                  :clj nil))}
                         (vc/icon "x")))
@@ -203,12 +219,13 @@
                                    #?(:cljs
                                       (let [ta (.getElementById js/document (str "agent-prompt-" agent-id))
                                             sp (.-value ta)
+                                            ;; "" leaves the model alone.
                                             s  (cr/update-agent-config!
                                                  web/server-id agent-id
                                                  (:party/display-name agent)
-                                                 (:party/model agent)
+                                                 ""
                                                  sp)]
-                                        (s (fn [_] (reset! sig/admin-data nil))
+                                        (s (fn [_] (room-details/load! room-id {:force? true}))
                                            (fn [err] (js/console.error "[room-settings] update agent error:" err))))
                                       :clj nil))}
                       "Save")))))
@@ -236,7 +253,14 @@
                                                       (:id current-user)
                                                       tmpl-label
                                                       tmpl-id)]
-                                              (s (fn [_] (reset! sig/admin-data nil))
+                                              (s (fn [_]
+                                                   (room-details/load! room-id {:force? true})
+                                                   ;; Contacts render from
+                                                   ;; sig/user-rooms, which
+                                                   ;; nothing here refreshed —
+                                                   ;; a new agent showed up only
+                                                   ;; after a page reload.
+                                                   (urs/refresh-user-rooms! (:id current-user)))
                                                  (fn [err] (js/console.error "[room-settings] add agent error:" err)))))
                                           :clj nil))}
                     (vc/icon tmpl-icon)
@@ -262,7 +286,8 @@
                                                          "")]
                                                  (s (fn [_]
                                                       (set! (.-value input) "")
-                                                      (reset! sig/admin-data nil))
+                                                      (room-details/load! room-id {:force? true})
+                                                      (urs/refresh-user-rooms! (:id current-user)))
                                                     (fn [err] (js/console.error "[room-settings] add agent error:" err)))))))
                                          :clj nil))}
                 "Add Custom"))))
@@ -293,7 +318,7 @@
                                                      web/server-id
                                                      (str (:room/id room))
                                                      v)]
-                                             (s (fn [_] (reset! sig/admin-data nil))
+                                             (s (fn [_] (room-details/load! room-id {:force? true}))
                                                 (fn [err] (js/console.error "[room-settings] budget error:" err))))))
                                        :clj nil))}
               "Save")))
@@ -320,7 +345,7 @@
                                                            web/server-id
                                                            (str (:room/id room))
                                                            (str (:kb/id kb)))]
-                                                   (s (fn [_] (reset! sig/admin-data nil))
+                                                   (s (fn [_] (room-details/load! room-id {:force? true}))
                                                       (fn [err] (js/console.error "[room-settings] detach KB error:" err))))
                                                  :clj nil))}
                         (vc/icon "x")))))
@@ -353,7 +378,7 @@
                                                            kb-id)]
                                                    (s (fn [_]
                                                         (set! (.-value sel) "")
-                                                        (reset! sig/admin-data nil))
+                                                        (room-details/load! room-id {:force? true}))
                                                       (fn [err] (js/console.error "[room-settings] attach KB error:" err))))))
                                              :clj nil))}
                     "Attach"))))))
@@ -380,7 +405,7 @@
                                                            web/server-id
                                                            (str (:room/id room))
                                                            (str (:drive/id drv)))]
-                                                   (s (fn [_] (reset! sig/admin-data nil))
+                                                   (s (fn [_] (room-details/load! room-id {:force? true}))
                                                       (fn [err] (js/console.error "[room-settings] detach drive error:" err))))
                                                  :clj nil))}
                         (vc/icon "x")))))
@@ -413,7 +438,7 @@
                                                            drive-id)]
                                                    (s (fn [_]
                                                         (set! (.-value sel) "")
-                                                        (reset! sig/admin-data nil))
+                                                        (room-details/load! room-id {:force? true}))
                                                       (fn [err] (js/console.error "[room-settings] attach drive error:" err))))))
                                              :clj nil))}
                     "Attach"))))))))))

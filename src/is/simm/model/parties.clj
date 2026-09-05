@@ -55,6 +55,21 @@
     (try (edn/read-string s)
          (catch Exception _ nil))))
 
+(defn- apply-config-patch
+  "Merge a legacy :party/* config patch into actor config.
+
+   nil means remove the key, not store a nil placeholder. Model switches have
+   always sent nil for the mutually exclusive form; making that a real removal
+   is also what lets clearing an override return an agent to genuinely empty
+   inherited model state."
+  [config patch]
+  (reduce-kv (fn [m k v]
+               (if (nil? v)
+                 (dissoc m k)
+                 (assoc m k v)))
+             (or config {})
+             patch))
+
 (def ^:private actor-core-keys
   [:actor/id :actor/kind :actor/name :actor/created-at
    :actor/system-prompt :actor/status :actor/config])
@@ -95,8 +110,8 @@
         (:actor/created-at ent)    (assoc :party/created (:actor/created-at ent))
         (:actor/system-prompt ent) (assoc :party/system-prompt (:actor/system-prompt ent))
         (contains? config :model)         (assoc :party/model (:model config))
-        ;; Family + version, resolved to a concrete id per TURN (see
-        ;; is.simm.model.model-selection). A fully pinned :model is the legacy
+        ;; Family + version, resolved to a concrete id when a participant joins
+        ;; (see is.simm.model.model-selection). An explicit :model is the legacy
         ;; form — kept working, but it is the thing that froze Vár on glm-5p1.
         (contains? config :model-family)  (assoc :party/model-family (:model-family config))
         (contains? config :model-version) (assoc :party/model-version (:model-version config))
@@ -206,7 +221,8 @@
                  (contains? allowed :party/preferred-model)
                  (assoc :party/preferred-model (:party/preferred-model allowed))
                  (seq config-patch)
-                 (assoc :actor/config (pr-str (merge existing-config config-patch))))]
+                 (assoc :actor/config
+                        (pr-str (apply-config-patch existing-config config-patch))))]
         (d/transact conn [tx])
         (log/log! {:level :info
                    :id ::party-updated
@@ -214,8 +230,67 @@
                    :data {:party-id party-id :fields (keys allowed)}})))))
 
 (defn update-preferred-model!
+  "Persist an owner's preference and retire live agents that inherit it.
+
+   Explicit agent overrides are unaffected. An inheriting participant captures
+   a concrete provider/model when it joins, so leaving its live contexts here
+   is the activation boundary: the next ordinary dispatch rejoins it from the
+   newly committed preference instead of silently running the old model until
+  a process restart."
   [party-id model-id]
-  (update-party! party-id {:party/preferred-model model-id}))
+  ;; Commit first. Besides preserving the failed-write rule, the post-commit
+  ;; snapshot closes the override-clear race: an agent that became inheriting
+  ;; while this preference was being saved must be part of activation.
+  (update-party! party-id {:party/preferred-model model-id})
+  (let [inheriting-agent-ids
+        (when-let [conn (system-db/get-conn)]
+          (let [db @conn]
+            (->> (d/q '[:find [?agent ...]
+                        :in $ ?owner-id
+                        :where
+                        [?owner :party/id ?owner-id]
+                        [?agent :party/owner ?owner]
+                        [?agent :actor/kind :agent]]
+                      db party-id)
+                 (map #(pull-party db %))
+                 ;; `describe-resolution` is pure and defines the same
+                 ;; configured/inherited boundary as the join path.
+                 (remove (fn [agent]
+                           (:configured?
+                            (model-selection/describe-resolution
+                             {:model-family (:party/model-family agent)
+                              :model-version (:party/model-version agent)
+                              :model (:party/model agent)}))))
+                 (map :party/id)
+                 (sort-by str)
+                 vec)))]
+    (require 'is.simm.agents.room-agents)
+    (when-let [reset-fn (resolve 'is.simm.agents.room-agents/reset-agent-contexts!)]
+      (let [failures
+            (into []
+                  (keep (fn [agent-id]
+                          (try
+                            (reset-fn agent-id)
+                            nil
+                            (catch Exception e
+                              ;; Continue through every inheriting agent: one
+                              ;; broken live participant must not preserve the
+                              ;; old preference for all later agents.
+                              (log/log! {:level :error
+                                         :id ::preferred-model-activation-failed
+                                         :msg "An inheriting agent could not be reset after an owner preference change"
+                                         :error e
+                                         :data {:owner-id party-id
+                                                :agent-id agent-id}})
+                              {:agent-id agent-id
+                               :error-class (.getName (class e))}))))
+                  inheriting-agent-ids)]
+        (when (seq failures)
+          (throw (ex-info "Model preference was saved, but some live agents could not be reset"
+                          {:type :preferred-model-activation-partial
+                           :preference-committed? true
+                           :owner-id party-id
+                           :failures failures})))))))
 
 ;; =============================================================================
 ;; Agents (create, update, delete — agents are parties)
@@ -223,13 +298,13 @@
 
 (def default-model
   "Concrete fallback id. Re-exported from `model-selection`, which owns it.
-   Prefer `default-family` + :auto — a pinned id is exactly what froze Vár on
+   Prefer `default-family` + :auto — a creation-time default is exactly what froze Vár on
    glm-5p1 for eleven days after the code default said 5p2."
   model-selection/default-model)
 
 (def default-family
-  "Family a new agent follows, at whatever version the provider currently
-   serves. This — not `default-model` — is what a new agent gets."
+  "Family form of the product fallback. Kept for callers that deliberately
+   request an explicit family override; new agents store no model choice."
   model-selection/default-family)
 
 (defn create-agent!
@@ -245,15 +320,7 @@
    (:party/id alias, :party/owner, handle, avatar) onto the same entity."
   [owner-id {:keys [display-name handle system-prompt model model-family model-version
                     provider template auto-respond? avatar]
-             :or {auto-respond? true
-                  provider :fireworks
-                  ;; A new agent follows a FAMILY at its newest version — it does
-                  ;; NOT freeze a concrete id. Freezing is what left Vár on
-                  ;; glm-5p1 for eleven days after we "switched" to 5p2: config
-                  ;; captured at creation cannot be corrected by changing code.
-                  ;; Pass :model to pin an exact id deliberately.
-                  model-family default-family
-                  model-version :auto}}]
+             :or {auto-respond? true}}]
   (when-let [conn (system-db/get-conn)]
     (let [party-id (random-uuid)
           actor-id (party-id->actor-id party-id)
@@ -265,12 +332,22 @@
       (actors/spawn-agent! conn
                            (cond-> {:id actor-id
                                     :name display-name
-                                    :config (cond-> {:provider provider
-                                                     :auto-respond? auto-respond?}
-                                              ;; explicit pin beats the family
+                                    ;; NO :provider unless one was asked for.
+                                    ;; It used to default to :fireworks, and
+                                    ;; that stamp then beat the registry at turn
+                                    ;; time, so an agent preferring gpt-5.5 was
+                                    ;; still posted to Fireworks. The provider
+                                    ;; follows the model now.
+                                    :config (cond-> {:auto-respond? auto-respond?}
+                                              provider      (assoc :provider provider)
+                                              ;; A model key exists only when a
+                                              ;; person explicitly asked for an
+                                              ;; override. Otherwise resolution
+                                              ;; follows owner preference.
                                               model         (assoc :model model)
-                                              (not model)   (assoc :model-family model-family
-                                                                   :model-version model-version)
+                                              (and (not model) model-family)
+                                              (assoc :model-family model-family
+                                                     :model-version (or model-version :auto))
                                               template      (assoc :template template))}
                              system-prompt (assoc :system-prompt system-prompt)))
       ;; 2. simmis extension attrs on the same entity
@@ -294,10 +371,17 @@
       (get-party party-id))))
 
 (defn update-agent!
-  "Update mutable fields of an agent party. Invalidates cached runtime context."
+  "Update mutable fields of an agent party and reset its joined participants.
+
+   This explicit agent-edit path is separate from ordinary turns. The next
+   dispatch rejoins the participant and re-resolves its model configuration.
+   Owner preference changes reset inheriting agents through their own write
+   path; provider-catalog refreshes remain observational and do not mutate a
+   live participant."
   [agent-id updates]
   (update-party! agent-id updates)
-  ;; Reset cached context so new system prompt/model takes effect.
+  ;; Leave current participants and clear their cached contexts. The next join
+  ;; captures the edited prompt/model resolution; there is no per-turn switch.
   (require 'is.simm.agents.room-agents)
   (when-let [reset-fn (resolve 'is.simm.agents.room-agents/reset-agent-contexts!)]
     (reset-fn agent-id)))

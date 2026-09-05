@@ -16,6 +16,9 @@
             [org.replikativ.spindel.effects.track :refer [track]]
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.routes :as routes]
+            [is.simm.uis.web.desktop.backlink-target :as bt]
+            [is.simm.uis.web.desktop.tab-heal :as tab-heal]
+            [is.simm.uis.web.desktop.room-actions :as room-actions]
             [is.simm.uis.web.desktop.views.chat :as chat]
             [is.simm.uis.web.desktop.views.settings :as settings-view]
             [is.simm.uis.web.desktop.views.profile :as profile-view]
@@ -48,6 +51,7 @@
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
             #?(:cljs [is.simm.uis.web.desktop.run-sync :as run-sync])
             #?(:cljs [is.simm.uis.web.desktop.run-detail :as run-detail])
+            #?(:cljs [is.simm.uis.web.desktop.room-details :as room-details])
             #?(:cljs [is.simm.uis.web.desktop.settings-remote :as settings-remote])
             #?(:cljs [is.simm.uis.web.desktop.admin-remote :as admin-remote])
             #?(:cljs [is.simm.uis.web.desktop.block-editor :as block-editor])
@@ -120,35 +124,15 @@
 
                nil))))))
 
-#?(:cljs (defonce ^:private room-details-loading (atom #{})))
-
 #?(:cljs
    (defn load-room-details-into-signal!
-     "Fire-and-forget load of a room's settings details into sig/admin-data.
+     "Fire-and-forget load of keyed room settings details.
 
-      Runs the remote `load-room-details!` spin INSIDE a go block — not
-      invoked directly from a render body. A spin invoked from inside a
-      render body becomes a created-child of the render spin, so the next
-      `invalidate-created-spins!` (which fires on every parent re-run)
-      cancels it mid-flight and the result never lands. The go block runs
-      outside any spin scope (`*spin-id*` unbound), so the spin is a root
-      spin and survives parent re-renders. Idempotent per room-id —
-      mirrors db-signal/connect-room! / connect-kb!."
+      One loader now serves every panel that reads that signal — see
+      `is.simm.uis.web.desktop.room-details`, which owns both the root-spin
+      go block and the in-flight bookkeeping."
      [room-id]
-     (when (and room-id (not (contains? @room-details-loading room-id)))
-       (swap! room-details-loading conj room-id)
-       (go
-         (let [ch (promise-chan)]
-           (binding [rtc/*execution-context* runtime]
-             (let [s (chat-remote/load-room-details! web/server-id room-id)]
-               (s (fn [result] (put! ch {:ok result}))
-                  (fn [err] (put! ch {:err err})))))
-           (let [{:keys [ok err]} (<! ch)]
-             (swap! room-details-loading disj room-id)
-             (binding [rtc/*execution-context* runtime]
-               (if err
-                 (js/console.error "[room-settings] load error:" err)
-                 (reset! sig/admin-data ok)))))))))
+     (room-details/load! room-id)))
 
 #?(:cljs (defonce ^:private settings-data-loading (atom false)))
 
@@ -907,7 +891,7 @@
 (defn render-column
   "Render a single column with tab bar, content, and context footer.
    Returns a spin (CLJS) or vnode (CLJ)."
-  [{:keys [id width tabs active-tab _index _total] :as _col} active-column-id local-db chat-windows settings-data admin-data room-states-arg footer-states]
+  [{:keys [id width tabs active-tab _index _total] :as _col} active-column-id local-db chat-windows settings-data admin-data room-details room-states-arg footer-states]
   #?(:cljs
      ;; CLJS: Wrap in spin since render-tab-content returns vnodes inside spin context
      (spin
@@ -915,7 +899,11 @@
              ;; from the parent can leave a retained child holding its initial
              ;; nil snapshot after the room handshake completes.
              room-states (iv/get-new (track db-sig/room-states))
-             active-tab-data (first (filter #(= (:id %) active-tab) tabs))
+             ;; The owning column and tab travel WITH the tab data: a room
+             ;; header action rendered in an inactive column must act on that
+             ;; column's exact tab, not on whichever one happens to be focused.
+             active-tab-data (some-> (first (filter #(= (:id %) active-tab) tabs))
+                                     (as-> tab (assoc tab :data (room-actions/tab-render-data id tab))))
              is-active? (= id active-column-id)
              index _index
              total-columns _total
@@ -1000,7 +988,7 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs id)
+                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs id)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1073,7 +1061,8 @@
      :clj
      ;; CLJ: Simple vnodes
      (let [room-states room-states-arg
-           active-tab-data (first (filter #(= (:id %) active-tab) tabs))
+           active-tab-data (some-> (first (filter #(= (:id %) active-tab) tabs))
+                                   (as-> tab (assoc tab :data (room-actions/tab-render-data id tab))))
            is-active? (= id active-column-id)
            index _index
            total-columns _total]
@@ -1085,7 +1074,7 @@
          (render-tab-bar id tabs active-tab nil)
          (el/div {:class "column-content"}
            (if active-tab-data
-             (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows nil nil nil)
+             (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows nil nil nil nil nil)
              (el/div {:class "empty-state"}
                (vc/icon "layout-grid")
                (el/h3 {} "No content")
@@ -1152,7 +1141,7 @@
 
    kb-states arg removed — wiki tabs self-track per-KB signals inside
    render-page-editor / render-context-content."
-  [columns active-column-id local-db chat-windows settings-data admin-data room-states footer-states]
+  [columns active-column-id local-db chat-windows settings-data admin-data room-details room-states footer-states]
   #?(:cljs
      ;; CLJS: Wrap in spin to support await on ifor-each-spin
      (spin
@@ -1170,7 +1159,7 @@
            ;; Columns - ifor-each auto-detects and awaits spins from render-fn
            (await (ifor-each :id indexed-columns
                     (fn [col]
-                      (render-column col active-column-id local-db chat-windows settings-data admin-data room-states footer-states))))
+                      (render-column col active-column-id local-db chat-windows settings-data admin-data room-details room-states footer-states))))
 
            ;; Right drop zone
            (render-drop-zone :right))))
@@ -1198,7 +1187,7 @@
   "Render content for a tab based on its type.
 
    kb-states arg removed — wiki tabs self-track their KB signal."
-  [tab-type data local-db chat-windows settings-data admin-data room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs col-id]]
+  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs col-id]]
   (case tab-type
     :home
     ;; Newcomer landing: the obvious first action is talking to your
@@ -1217,11 +1206,12 @@
                                            first)
                                        (first (:rooms ur)))]
                          (when room
-                           (sig/open-tab! :chat
+                         (sig/open-tab! :chat
                                           {:room-id (str (:room/id room))
                                            :room-name (:room/name room)
                                            :db-scope (:room/content-db-scope room)}
-                                          {:title (:room/name room)}))))}
+                                          {:title (:room/name room)
+                                           :col-id (:col-id data)}))))}
            "Start chatting with your agents →")
          :clj nil)
       (el/p {:class "home-hint"}
@@ -1253,7 +1243,7 @@
     ;; implementation. Keep every dispatch, optimistic overlay, and renderer
     ;; path shared; `:thread-view?` only scopes the query and presentation.
     (render-tab-content :chat (assoc data :thread-view? true)
-                        local-db chat-windows settings-data admin-data room-states
+                        local-db chat-windows settings-data admin-data room-details room-states
                         syntax-pref gref video-info screen-sharing screens-results
                         recordings-results web-captures-results chat-reply-targets room-runs col-id)
 
@@ -1362,7 +1352,9 @@
     :chat
     #?(:cljs
        ;; All chats (including Vár AI) use messages from the room's own Datahike DB
-       (let [room-id (or (:room-id data) "11111111-1111-1111-1111-111111111111")
+       (let [col-id (:col-id data)
+             tab-id (:tab-id data)
+             room-id (or (:room-id data) "11111111-1111-1111-1111-111111111111")
              room-name (or (:room-name data) "Chat")
              room-uuid (uuid room-id)
              room-db-scope (:db-scope data)
@@ -1406,9 +1398,19 @@
              ;; Get the room's DB from room-states (nil while connecting)
              room-db (when room-db-scope (get-in room-states [(str room-db-scope) :db]))
 
+             ;; The roster's verdict on this tab (written by `tab-heal`, from
+             ;; whichever of the two moments came second — the tab opening or
+             ;; the roster landing): this tab names no room this party can
+             ;; open. It is a CONCLUSION, so the render can act on it rather
+             ;; than waiting.
+             room-missing? (:room-missing? data)
+
              ;; Ensure room chatroom + user entities exist in room DB (side effect)
-             ;; Guard against placeholder room-id before real room is loaded
+             ;; Guard against placeholder room-id before real room is loaded,
+             ;; and against a tab that names no room — that one would create a
+             ;; room for a uuid nobody asked for.
              _ (when (and (string? room-id)
+                          (not room-missing?)
                           (not= room-id "personal-ai-placeholder"))
                  (when-let [user @sig/current-user]
                    (let [s (chat-remote/ensure-room!
@@ -1445,7 +1447,11 @@
              ;; the absence of messages. The replica connect is seconds of work
              ;; on a cold boot (konserve-sync materialising the room store), and
              ;; for all of it the room asserted it was empty.
-             db-loading? (nil? effective-db)
+             ;; ...and "loading" must be a claim we can keep. A tab whose
+             ;; room the roster does not name has no replica coming: nothing
+             ;; is connecting, so nothing will arrive, and the spinner would
+             ;; run until the tab is closed. That is the third state below.
+             db-loading? (and (nil? effective-db) (not room-missing?))
              ;; Wrap db in interval for query-with-deltas
              db-iv (iv/->Interval nil effective-db nil)
              ;; Windowed timeline: the window is applied IN the query layer
@@ -1709,22 +1715,18 @@
                          :title "Screens (recorded shares)"
                          :on-click (fn [_]
                                      #?(:cljs
-                                        (sig/open-tab!
-                                          :screens
-                                          {:room-id room-id :room-name room-name}
-                                          {:title (str room-name " Screens")
-                                           :new-tab? true})
+                                        (let [[tab-type tab-data opts]
+                                              (room-actions/room-header-tab col-id :screens room-id room-name)]
+                                          (sig/open-tab! tab-type tab-data opts))
                                         :clj nil))}
                (vc/icon "images" {:class "chat-settings-icon"}))
              (el/button {:class "chat-settings-btn"
                          :title "Video call"
                          :on-click (fn [_]
                                      #?(:cljs
-                                        (sig/open-tab!
-                                          :video
-                                          {:room-id room-id :room-name room-name}
-                                          {:title (str room-name " Call")
-                                           :new-tab? true})
+                                        (let [[tab-type tab-data opts]
+                                              (room-actions/room-header-tab col-id :video room-id room-name)]
+                                          (sig/open-tab! tab-type tab-data opts))
                                         :clj nil))}
                (vc/icon "video" {:class "chat-settings-icon"}))
              ;; Open the room's static site (dvergr.web.apps → /apps/<slug>/).
@@ -1744,25 +1746,20 @@
                          :title "Files"
                          :on-click (fn [_]
                                      #?(:cljs
-                                        (sig/open-tab!
-                                          :files
-                                          {:room-id room-id}
-                                          {:title (str room-name " Files")
-                                           :new-tab? true})
+                                        (let [[tab-type tab-data opts]
+                                              (room-actions/room-header-tab col-id :files room-id room-name)]
+                                          (sig/open-tab! tab-type tab-data opts))
                                         :clj nil))}
                (vc/icon "folder" {:class "chat-settings-icon"}))
              (el/button {:class "chat-settings-btn"
                          :title "Room settings"
                          :on-click (fn [_]
                                      #?(:cljs
-                                        (do
-                                          ;; Clear admin-data so room settings loads fresh
-                                          (reset! sig/admin-data nil)
-                                          (sig/open-tab!
-                                            :room-settings
-                                            {:room-id room-id}
-                                            {:title (str room-name " Settings")
-                                             :new-tab? true}))
+                                        (sig/open-tab! :room-settings
+                                                       {:room-id room-id}
+                                                       {:title (str room-name " Settings")
+                                                        :new-tab? true
+                                                        :col-id col-id})
                                         :clj nil))}
                (vc/icon "settings" {:class "chat-settings-icon"})))
 
@@ -1903,15 +1900,28 @@
                                      :content (:block/content item)}))
                        :syntax-pref syntax-pref})))))
 
-             ;; Empty state — three distinct states, because they
-             ;; are three distinct facts: the replica has not arrived (nothing
-             ;; is known yet), the past cut holds nothing, or the room is
-             ;; genuinely empty. Only the last one is an invitation to type.
+             ;; Empty state — four distinct states, because they
+             ;; are four distinct facts: this tab names no room we can open,
+             ;; the replica has not arrived (nothing is known yet), the past
+             ;; cut holds nothing, or the room is genuinely empty. Only the
+             ;; last one is an invitation to type.
              (when (empty? (iv/get-new visible-iv))
-               (el/div {:class (str "chat-empty" (when db-loading? " chat-empty--loading"))}
-                 (vc/icon (if db-loading? :loader :message-circle)
-                          {:class "chat-empty-icon"})
+               (el/div {:class (str "chat-empty"
+                                    (when db-loading? " chat-empty--loading")
+                                    (when room-missing? " chat-empty--unresolved"))}
+                 ;; NO icon in the unresolved state, rather than a different
+                 ;; one. Lucide's observer REPLACES the `<i data-lucide>` node
+                 ;; spindel rendered with its own `<svg>`, so a later attribute
+                 ;; update lands on a node that is no longer in the tree and the
+                 ;; previous glyph survives — here that glyph is the spinner,
+                 ;; i.e. exactly the claim this state exists to stop making.
+                 ;; Removing the node is a removal, which does take.
+                 (when-not room-missing?
+                   (vc/icon (if db-loading? :loader :message-circle)
+                            {:class "chat-empty-icon"}))
                  (el/p {} (cond
+                            room-missing?
+                            "This tab does not name a room you can open. It may have been deleted, or shared with a different account."
                             db-loading?
                             "Loading messages…"
                             time-travel?
@@ -1919,7 +1929,18 @@
                             thread-view?
                             "No replies yet. Continue the thread below."
                             :else
-                            "No messages yet. Start the conversation!"))))
+                            "No messages yet. Start the conversation!"))
+                 ;; A dead end deserves a way out. The render path carries the
+                 ;; owning column and tab IDs, so this cannot close a different
+                 ;; stale or healthy tab for the same room.
+                 (when room-missing?
+                   (el/button {:class "chat-empty-action"
+                               :on-click
+                               #?(:cljs
+                                  (fn [_]
+                                    (sig/close-tab! col-id tab-id))
+                                  :clj nil)}
+                     "Close this tab"))))
 
              ;; AI thinking indicator
              (when (and is-ai-room?
@@ -2213,24 +2234,19 @@
          ;; created-child and get cancelled by the next re-render. The
          ;; helper is idempotent, so calling it on every render while
          ;; admin-data is nil is safe.
-         ;; Guard on THIS ROOM's data, not merely on nil. `sig/admin-data` is
-         ;; shared by six unrelated panels (admin, new-room, new-contact,
-         ;; room-settings, kb-settings, agent inspector), each writing its own
-         ;; shape. A nil-guard therefore misfires two ways: open KB Settings
-         ;; after Room Settings and the load never runs (non-nil, wrong shape,
-         ;; stuck on "Loading…"); open room B after room A and B's tab renders
-         ;; A's settings, with A's Save and Delete wired up.
          (let [want (:room-id data)
-               have (some-> admin-data :room :room/id str)]
-           (when (or (nil? admin-data) (not= have (str want)))
-             (when want (load-room-details-into-signal! want))))
+               room-data (room-details/data-for room-details want)
+               room-error (room-details/error-for room-details want)]
+           (when (and want (nil? room-data) (nil? room-error))
+             (load-room-details-into-signal! want)))
          ;; Render
-         (if (and admin-data (map? admin-data)
-                  (= (some-> admin-data :room :room/id str) (str (:room-id data))))
-           (room-settings-view/render-room-settings admin-data)
+         (if-let [room-data (room-details/data-for room-details (:room-id data))]
+           (room-settings-view/render-room-settings room-data)
            (el/div {:class "settings-page"}
              (el/div {:class "settings-loading"}
-               (el/p {} "Loading room settings...")))))
+               (el/p {} (if-let [error (room-details/error-for room-details (:room-id data))]
+                         (str "Could not load room settings: " error)
+                         "Loading room settings..."))))))
        :clj
        (el/div {:class "content-room-settings"}
          (el/p {} "Room Settings (CLJ mode)")))
@@ -2323,7 +2339,7 @@
 
     :agent
     #?(:cljs
-       (agent-inspector/render-agent-inspector data admin-data room-states)
+       (agent-inspector/render-agent-inspector data room-details room-states)
        :clj
        (el/div {:class "content-agent"}
          (el/p {} "Agent inspector (CLJ mode)")))
@@ -2333,70 +2349,56 @@
       (el/p {} (str "Unknown tab type: " tab-type)))))
 
 (defn render-backlink-item
-  "Render a single backlink item.
-   Handles both page backlinks and chat room backlinks."
-  [backlink]
-  (let [bl-type (:type backlink)
-        title (:title backlink)]
-    (case bl-type
-      ;; Chat message backlink — jump to the exact position in the room
-      ;; (:anchor-message; db-scope resolved from the user-rooms roster).
-      :chat-message
-      (el/div {:key (str "chatmsg-" (:message-uuid backlink))
-               :class "context-item context-item--clickable"
-               :on-click (fn [e]
-                           #?(:cljs
-                              (let [new-column? (or (.-metaKey e) (.-ctrlKey e))
-                                    room-uuid (:room-uuid backlink)]
-                                (binding [rtc/*execution-context* runtime]
-                                  (let [scope (or (:db-scope backlink)
-                                                  (let [ur @sig/user-rooms
-                                                        rooms (or (:rooms ur) (when (vector? ur) ur))]
-                                                    (:room/content-db-scope
-                                                     (first (filter #(= room-uuid (str (:room/id %))) rooms)))))]
-                                    (sig/open-tab! :chat
-                                                   (cond-> {:room-id room-uuid
-                                                            :room-name title
-                                                            :anchor-message (:message-uuid backlink)}
-                                                     scope (assoc :db-scope scope))
-                                                   {:title title
-                                                    :new-column? new-column?}))))
-                              :clj nil))}
-        (vc/icon "message-circle")
-        (el/span {} title)
-        (when-let [ts (:sent-at backlink)]
-          (el/span {:class "context-item-meta"}
-            #?(:cljs (.toLocaleDateString (js/Date. ts)) :clj ""))))
+  "Render a single backlink row.
 
-      ;; Chat room backlink - link to chat room (legacy shape)
-      :chat-room
-      (el/div {:key (str "chat-" title)
+   The decision — which tab this opens, or why it opens nothing — lives in
+   `backlink-target`, so it can be tested without a DOM. This renders it.
+
+   A row that carries no identity is NOT a control. It renders greyed out,
+   with no `:on-click` and no pointer cursor, and says why on hover. The
+   alternative it replaces was a clickable row that guessed a room from its
+   display name: before SIM-R08 that tab loaded forever, after SIM-R08 it
+   reports a missing room. Neither is a link — one is a control that fails
+   every time it is used, which is worse than a visibly dead one."
+  [backlink]
+  (let [{:keys [action reason tab-type title]}
+        (bt/target backlink (:db-scope backlink))
+        chat? (contains? #{:chat-message :chat-room} (:type backlink))]
+    (if (= :unavailable action)
+      (el/div {:key (bt/render-key backlink)
+               :class "context-item context-item--unavailable"
+               :title (bt/explanation reason)}
+        (vc/icon "alert-circle")
+        (el/span {} title)
+        (el/span {:class "context-item-meta"} "unavailable"))
+      (el/div {:key (bt/render-key backlink)
                :class "context-item context-item--clickable"
                :on-click (fn [e]
                            #?(:cljs
                               (let [new-column? (or (.-metaKey e) (.-ctrlKey e))]
-                                (sig/open-tab! :chat {:room-name title}
-                                               {:title title
-                                                :new-column? new-column?}))
+                                (binding [rtc/*execution-context* runtime]
+                                  ;; Scope is resolved HERE, not at render
+                                  ;; time: the roster is a closure variable
+                                  ;; and `ifor-each` diffs on the item, so a
+                                  ;; scope baked into the row at render time
+                                  ;; would be whatever the roster said when
+                                  ;; the row was first drawn.
+                                  (let [scope (or (:db-scope backlink)
+                                                  (when chat?
+                                                    (bt/room-scope
+                                                      (tab-heal/roster-rooms @sig/user-rooms)
+                                                      (:room-uuid backlink))))]
+                                    (sig/open-tab! tab-type
+                                                   (:tab-data (bt/target backlink scope))
+                                                   {:title title
+                                                    :new-column? new-column?
+                                                    :col-id (:col-id backlink)}))))
                               :clj nil))}
-        (vc/icon "message-circle")
-        (el/span {} title))
-
-      ;; Page backlink (default) - link to wiki page
-      (let [uuid (:entity/uuid backlink)
-            page-title (or (:S.Page/title backlink) title "Untitled")]
-        (el/div {:key (str uuid)
-                 :class "context-item context-item--clickable"
-                 :on-click (fn [e]
-                             #?(:cljs
-                                (let [new-column? (or (.-metaKey e) (.-ctrlKey e))]
-                                  (sig/open-tab! :wiki (cond-> {:page-uuid uuid}
-                                                         (:db-scope backlink) (assoc :db-scope (:db-scope backlink)))
-                                                 {:title page-title
-                                                  :new-column? new-column?}))
-                                :clj nil))}
-          (vc/icon "corner-down-left")
-          (el/span {} page-title))))))
+        (vc/icon (if chat? "message-circle" "corner-down-left"))
+        (el/span {} title)
+        (when-let [ts (:sent-at backlink)]
+          (el/span {:class "context-item-meta"}
+            #?(:cljs (.toLocaleDateString (js/Date. ts)) :clj "")))))))
 
 (defn render-context-content
   "Render context content for a tab based on its type.
@@ -2431,10 +2433,9 @@
                    :class "context-section-title"}
             (str "Backlinks (" (count backlinks) ")"))
           (if (seq backlinks)
-            (ifor-each #(or (some-> (:entity/uuid %) str)
-                            (str "chat-" (:title %)))
+            (ifor-each bt/render-key
               backlinks
-              (fn [bl] (render-backlink-item bl)))
+              (fn [bl] (render-backlink-item (assoc bl :col-id (:col-id data)))))
             (el/div {:key (str key-prefix "-no-backlinks")
                      :class "context-item context-item--empty"}
               (vc/icon "link-2")

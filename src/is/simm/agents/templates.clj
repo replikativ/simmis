@@ -6,18 +6,13 @@
    - :name        string   — display name
    - :description string   — one-liner shown in the picker
    - :icon        string   — lucide icon name
-   - :model       string   — default LLM model
-   - :provider    keyword  — :fireworks | :openai | :anthropic
-   - :system-prompt string — full system prompt"
-  (:require [is.simm.model.parties :as parties]))
+   - :system-prompt string — full system prompt")
 
 (def secretary-template
   {:id :secretary
    :name "Vár"
    :description "Friendly secretary — organizes knowledge, answers questions, keeps pages coherent"
    :icon "bot"
-   :model parties/default-model
-   :provider :fireworks
    :system-prompt
    "You are Vár, a friendly and capable secretary assistant for Simmis.
 
@@ -190,8 +185,6 @@ already runs against its own page's KB.)
    :name "Researcher"
    :description "Deep research and knowledge synthesis — searches, reads, summarizes"
    :icon "search"
-   :model parties/default-model
-   :provider :fireworks
    :system-prompt
    "You are a research assistant. Your role is to find, read, and synthesize information.
 
@@ -210,8 +203,6 @@ Be thorough but concise. Cite your sources."})
    :name "Analyst"
    :description "Data analysis and visualization — queries data, builds charts"
    :icon "bar-chart-2"
-   :model parties/default-model
-   :provider :fireworks
    :system-prompt
    "You are a data analyst. Your role is to query data, compute statistics, and
 create visualizations.
@@ -244,8 +235,6 @@ or two sentences, then offer to save it to the wiki."})
    :name "Coder"
    :description "Software development assistant \u2014 writes, explains, and debugs code"
    :icon "code-2"
-   :model parties/default-model
-   :provider :fireworks
    :system-prompt
    "You are a software development assistant. You write, explain, and debug code.
 
@@ -270,6 +259,18 @@ When writing code:
 
 (defn get-template [id]
   (get templates-by-id (keyword id)))
+
+(defn agent-options
+  "Creation options contributed by a persona template.
+
+   Deliberately copy persona fields instead of merging the template map: a
+   template may carry model metadata for some other use, but selecting a
+   persona is never an implicit model override."
+  [display template]
+  (cond-> {:display-name display
+           :auto-respond? true}
+    template (assoc :template (:id template)
+                    :system-prompt (:system-prompt template))))
 
 (defn template-summary
   "Returns lightweight map safe to send to client (no system-prompt)."

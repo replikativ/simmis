@@ -9,6 +9,7 @@
    5. Usage & Budget (remaining, breakdown)"
   (:require [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.views.core :as vc]
+            [is.simm.uis.web.desktop.views.model-picker :as model-picker]
             [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [is.simm.uis.web.desktop.settings-remote :as sr])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
@@ -34,22 +35,6 @@
                (when-let [syn (get-in result [:ui-prefs :ui-pref/syntax])]
                  (reset! sig/syntax-pref syn)))
             (fn [err] (js/console.error "[settings] reload error:" err)))))))
-
-;; =============================================================================
-;; Available Models
-;; =============================================================================
-
-(def available-models
-  [{:id "accounts/fireworks/models/glm-5p2"     :name "GLM 5.2 (Fireworks)"     :provider "fireworks"}
-   {:id "accounts/fireworks/models/glm-5p1"     :name "GLM 5.1 (Fireworks)"     :provider "fireworks"}
-   {:id "accounts/fireworks/models/kimi-k2p6"   :name "Kimi K2.6 (Fireworks)"   :provider "fireworks"}
-   {:id "accounts/fireworks/models/kimi-k2p5"   :name "Kimi K2.5 (Fireworks)"   :provider "fireworks"}
-   {:id "accounts/fireworks/models/minimax-m2p7" :name "MiniMax M2.7 (Fireworks)" :provider "fireworks"}
-   {:id "accounts/fireworks/models/minimax-m2p5" :name "MiniMax M2.5 (Fireworks)" :provider "fireworks"}
-   {:id "accounts/fireworks/models/qwen3p6-plus" :name "Qwen3.6 Plus (Fireworks)" :provider "fireworks"}
-   {:id "accounts/fireworks/models/deepseek-v4-pro" :name "DeepSeek V4 Pro (Fireworks)" :provider "fireworks"}
-   {:id "gpt-4o" :name "GPT-4o (OpenAI)" :provider "openai"}
-   {:id "claude-sonnet-4-20250514" :name "Claude Sonnet 4 (Anthropic)" :provider "anthropic"}])
 
 #?(:cljs
    (defn- mail-form-config []
@@ -230,27 +215,30 @@
         (el/div {:class "settings-section"}
           (el/h3 {:class "settings-section-title"} "Model Preference")
           (el/p {:class "settings-section-desc"}
-            "Choose the default LLM model for your AI assistant.")
+            "The preference your inheriting agents use. Latest tracks new releases; an explicit choice is the preferred version and may resolve only to a newer version in the same family and provider if withdrawn. Saving retires currently joined inheriting agents so their next message uses the new preference; agents with explicit overrides are unchanged.")
           (el/div {:class "settings-model-list"}
-            (ifor-each :id available-models
-              (fn [{:keys [id name provider]}]
-                (let [selected? (= id (:party/preferred-model profile))]
-                  (el/div {:key id
-                           :class (vc/class-names "settings-model-option"
-                                                  (when selected? "selected"))
-                           :on-click (fn [_]
-                                       #?(:cljs
-                                          (when-let [user @sig/current-user]
-                                            (let [s (sr/save-preferred-model!
-                                                      web/server-id (:id user) id)]
-                                              (s (fn [_]
-                                                   (reload-settings!))
-                                                 (fn [err] (js/console.error "[settings] save error:" err)))))
-                                          :clj nil))}
-                    (el/div {:class "settings-model-name"} name)
-                    (el/div {:class "settings-model-provider"} provider)
-                    (when selected?
-                      (vc/icon "check" {:class "settings-model-check"}))))))))
+            ;; `selected?` lives IN the item; the key stays the model value.
+            ;; ifor-each memoizes on item equality and cannot see a closure
+            ;; variable, so computing it inside the render function would leave
+            ;; the old row ticked. Putting it in the KEY is worse: the key is
+            ;; identity, so a row that gained a tick read as a NEW row and the
+            ;; list rendered both copies side by side.
+            (ifor-each :value
+              (mapv (fn [c]
+                      (assoc c :selected? (= (:value c) (:party/preferred-model profile))))
+                    (:model-choices data))
+              (fn [row]
+                (model-picker/render-option
+                 row
+                 (fn [{:keys [value]}]
+                   #?(:cljs
+                      (when-let [user @sig/current-user]
+                        (let [s (sr/save-preferred-model!
+                                 web/server-id (:id user) value)]
+                          (s (fn [_] (reload-settings!))
+                             (fn [err]
+                               (js/console.error "[settings] save error:" err)))))
+                      :clj nil)))))))
 
         ;; --- Code View Section ---
         (let [current-syntax (or (get-in data [:ui-prefs :ui-pref/syntax]) :clojure)]
