@@ -38,17 +38,18 @@
 (defn agent-model-rows
   "Picker rows for ONE agent, built from that agent's model resolution.
 
-   The agent rides IN every row. `ifor-each` memoizes on item equality and
-   cannot see a closure variable, so rows that carried only the model value
+   The room and agent ride IN every row. `ifor-each` memoizes on item equality
+   and cannot see a closure variable, so rows that carried only the model value
    were equal across two agents: the node — and the click handler closed over
    the previously viewed agent — got reused, and the write landed on the wrong
-   agent. Keeping `:agent-id` in the item makes two agents' rows genuinely
-   different items, and the handler reads the target back out of the row it is
-   given instead of closing over it.
+   agent. Keeping `:room-id` and `:agent-id` in the item makes rows from two
+   inspector targets genuinely different items, and the handler reads both the
+   write target and the completion-refresh target back out of the row it is
+   given instead of closing over them.
 
    The first row is the inheritance choice; the rest are the catalog choices.
    `:selected?` stays in the item too, for the same reason (see settings.cljc)."
-  [agent-id agent-name resolution choices]
+  [room-id agent-id agent-name resolution choices]
   (let [override? (:configured? resolution)
         auto-family? (and (:family resolution) (:auto? resolution))
         chosen-value (or (:preferred-model resolution)
@@ -56,6 +57,7 @@
                          (:model resolution))
         stamp (fn [row selected?]
                 (assoc row
+                       :room-id room-id
                        :agent-id agent-id
                        :agent-name agent-name
                        :selected? selected?))]

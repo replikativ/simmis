@@ -46,6 +46,130 @@
   (select-keys record [:provider :base-url :credential-source :reachability
                        :reachable? :model-id :endpoint-kind :native-openai?]))
 
+(def ^:private configured-endpoints-var
+  (ns-resolve 'is.simm.model.model-selection 'configured-endpoints))
+
+(def ^:private fetch-endpoint-var
+  (ns-resolve 'is.simm.model.model-selection 'fetch-endpoint!))
+
+(def ^:private catalog-cache-var
+  (ns-resolve 'is.simm.model.model-selection 'catalog-cache))
+
+(def ^:private await-refresh-var
+  (ns-resolve 'is.simm.model.model-selection 'await-refresh))
+
+(def ^:private concurrency-endpoint
+  {:provider :openai
+   :base-url "https://catalog-concurrency.test/v1"
+   :credential-source "OPENAI_API_KEY"
+   :endpoint-kind :openai-compatible
+   :native-openai? false
+   :catalog-contract :openai-compatible-models-list
+   :credential "fixture-only"})
+
+(defn- cached-model-ids []
+  (->> @(var-get catalog-cache-var)
+       :endpoints
+       vals
+       (mapcat :models)
+       (mapv :model-id)))
+
+(deftest concurrent-refreshes-of-one-configuration-are-single-flight
+  (let [calls (atom 0)
+        first-started (promise)
+        second-joined (promise)
+        original-await (var-get await-refresh-var)
+        release-first (promise)]
+    (with-redefs-fn
+      {configured-endpoints-var (constantly [concurrency-endpoint])
+       await-refresh-var (fn [ticket]
+                           (deliver second-joined true)
+                           (original-await ticket))
+       fetch-endpoint-var
+       (fn [_]
+         (case (swap! calls inc)
+           1 (do
+               (deliver first-started true)
+               @release-first
+               {:outcome :unreachable})
+           {:outcome :reachable :model-ids ["gpt-should-not-be-fetched"]}))}
+      (fn []
+        (let [first-refresh (future (selection/catalog true))]
+          (is (= true (deref first-started 1000 ::timeout)))
+          (let [second-refresh (future (selection/catalog true))]
+            (is (= true (deref second-joined 1000 ::timeout)))
+            (deliver release-first true)
+            (is (= [] (deref first-refresh 1000 ::timeout)))
+            (is (= [] (deref second-refresh 1000 ::timeout)))
+            (is (= 1 @calls))))))))
+
+(deftest reset-fences-an-older-failure-from-a-newer-success
+  (let [calls (atom 0)
+        old-started (promise)
+        release-old (promise)]
+    (with-redefs-fn
+      {configured-endpoints-var (constantly [concurrency-endpoint])
+       fetch-endpoint-var
+       (fn [_]
+         (if (= 1 (swap! calls inc))
+           (do
+             (deliver old-started true)
+             @release-old
+             {:outcome :unreachable})
+           {:outcome :reachable :model-ids ["gpt-new-success"]}))}
+      (fn []
+        (let [old-refresh (future (selection/catalog true))]
+          (is (= true (deref old-started 1000 ::timeout)))
+          (selection/reset-catalog!)
+          (is (= ["gpt-new-success"]
+                 (mapv :model-id (selection/catalog true))))
+          (deliver release-old true)
+          (is (= [] (deref old-refresh 1000 ::timeout)))
+          (is (= ["gpt-new-success"] (cached-model-ids))
+              "the pre-reset completion cannot replace post-reset evidence")
+          (is (= ["gpt-new-success"]
+                 (mapv :model-id (selection/catalog)))))))))
+
+(deftest reset-fences-a-configuration-read-that-has-not-claimed-the-cache
+  (let [configuration-reads (atom 0)
+        fetched-bases (atom [])
+        old-configuration-read (promise)
+        release-old-configuration (promise)
+        old-endpoint (assoc concurrency-endpoint
+                            :base-url "https://old-catalog.test/v1")
+        new-endpoint (assoc concurrency-endpoint
+                            :base-url "https://new-catalog.test/v1")]
+    (with-redefs-fn
+      {configured-endpoints-var
+       (fn []
+         (if (= 1 (swap! configuration-reads inc))
+           (do
+             (deliver old-configuration-read true)
+             @release-old-configuration
+             [old-endpoint])
+           [new-endpoint]))
+       fetch-endpoint-var
+       (fn [endpoint]
+         (swap! fetched-bases conj (:base-url endpoint))
+         {:outcome :reachable
+          :model-ids [(if (= endpoint old-endpoint)
+                        "gpt-old-configuration"
+                        "gpt-new-configuration")]})}
+      (fn []
+        ;; This caller captured the old generation but has not yet obtained a
+        ;; refresh ticket: endpoint discovery itself is still blocked.
+        (let [old-call (future (selection/catalog))]
+          (is (= true (deref old-configuration-read 1000 ::timeout)))
+          (selection/reset-catalog!)
+          (is (= ["gpt-new-configuration"]
+                 (mapv :model-id (selection/catalog true))))
+          (deliver release-old-configuration true)
+          (is (= ["gpt-new-configuration"]
+                 (mapv :model-id (deref old-call 1000 ::timeout))))
+          (is (= ["https://new-catalog.test/v1"] @fetched-bases)
+              "the pre-reset endpoint configuration never reaches the fetch boundary")
+          (is (= ["gpt-new-configuration"] (cached-model-ids))))))))
+
 (deftest version-family-and-ordering
   (is (= "5.6" (selection/version-of "gpt-5.6-luna")))
   (is (= "gpt-*-luna" (selection/family-of "gpt-5.6-luna")))

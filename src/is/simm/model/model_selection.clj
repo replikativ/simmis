@@ -171,7 +171,10 @@
 (def ^:private catalog-ttl-ms (* 10 60 1000))
 
 (defonce ^:private catalog-cache
-  (atom {:at 0 :configuration [] :endpoints {}}))
+  ;; `:refresh` is a process-local single-flight ticket. It is deliberately kept
+  ;; beside the cache it protects: replacing/resetting this map fences an older
+  ;; in-flight request without holding a monitor across provider I/O.
+  (atom {:generation 0 :at 0 :configuration [] :endpoints {} :refresh nil}))
 
 (def ^:private openai-base "https://api.openai.com/v1")
 (def ^:private fireworks-base "https://api.fireworks.ai/inference/v1")
@@ -708,10 +711,98 @@
        vec))
 
 (defn reset-catalog!
-  "Forget cached provider results. Intended for explicit configuration changes
-   and deterministic tests; normal callers use the TTL or `(catalog true)`."
+  "Forget cached provider results and fence refreshes that began before reset.
+   Intended for explicit configuration changes and deterministic tests; normal
+   callers use the TTL or `(catalog true)`."
   []
-  (reset! catalog-cache {:at 0 :configuration [] :endpoints {}}))
+  (swap! catalog-cache
+         (fn [current]
+           {:generation (inc (long (or (:generation current) 0)))
+            :at 0
+            :configuration []
+            :endpoints {}
+            :refresh nil})))
+
+(defn- await-refresh
+  "Wait for one synchronous catalog refresh shared by concurrent callers."
+  [{:keys [completion]}]
+  (let [{:keys [records error]} @completion]
+    (if error
+      (throw error)
+      records)))
+
+(def ^:private retry-catalog-refresh ::retry-catalog-refresh)
+
+(defn- catalog-at-generation
+  "Read or refresh one endpoint configuration while `generation` remains live.
+
+   Returns `retry-catalog-refresh` if reset happened after the caller captured
+   its generation, including while endpoint configuration itself was read."
+  [force? generation endpoints configuration]
+  (loop []
+    (let [{raw-generation :generation
+           :keys [at refresh]
+           :as cached} @catalog-cache
+          current-generation (long (or raw-generation 0))
+          fresh? (and (= configuration (:configuration cached))
+                      (< (- (System/currentTimeMillis) at) catalog-ttl-ms))]
+      (cond
+        (not= generation current-generation)
+        retry-catalog-refresh
+
+        (and fresh? (not force?))
+        (catalog-records cached)
+
+        ;; A forced caller joins a refresh already under way instead of
+        ;; starting a second request that can complete out of order. An
+        ;; ordinary caller joins too once the cached result has expired.
+        (= configuration (:configuration refresh))
+        (await-refresh refresh)
+
+        :else
+        (let [token (Object.)
+              completion (promise)
+              ticket {:configuration configuration
+                      :generation generation
+                      :token token
+                      :completion completion}
+              claimed (assoc cached :refresh ticket)]
+          (if-not (compare-and-set! catalog-cache cached claimed)
+            (recur)
+            (try
+              (let [previous (:endpoints cached)
+                    endpoint-states
+                    (into {}
+                          (map (fn [endpoint]
+                                 (let [k (endpoint-key endpoint)]
+                                   [k (refresh-endpoint endpoint (get previous k))])))
+                          endpoints)
+                    refreshed {:generation generation
+                               :at (System/currentTimeMillis)
+                               :configuration configuration
+                               :endpoints endpoint-states
+                               :refresh nil}
+                    records (catalog-records refreshed)]
+                ;; Reset or a differently configured refresh may have replaced
+                ;; this ticket while provider I/O was in flight. Publish only
+                ;; while this exact claim still owns the same generation.
+                (swap! catalog-cache
+                       (fn [current]
+                         (if (and (= generation (long (or (:generation current) 0)))
+                                  (identical? token (get-in current [:refresh :token])))
+                           refreshed
+                           current)))
+                (deliver completion {:records records})
+                records)
+              (catch Throwable t
+                (swap! catalog-cache
+                       (fn [current]
+                         (if (and (= generation (long (or (:generation current) 0)))
+                                  (identical? token (get-in current [:refresh :token])))
+                           (assoc current :refresh nil)
+                           current)))
+                (deliver completion {:error t})
+                (throw t)))))))))
 
 (defn catalog
   "Provider-aware model records from each endpoint's own model-list contract.
@@ -722,25 +813,17 @@
    fallback: configuration and registry knowledge do not prove reachability."
   ([] (catalog false))
   ([force?]
-   (let [endpoints (configured-endpoints)
-         configuration (mapv endpoint-key endpoints)
-         {:keys [at] :as cached} @catalog-cache
-         fresh? (and (= configuration (:configuration cached))
-                     (< (- (System/currentTimeMillis) at) catalog-ttl-ms))]
-     (if (and fresh? (not force?))
-       (catalog-records cached)
-       (let [previous (:endpoints cached)
-             endpoint-states
-             (into {}
-                   (map (fn [endpoint]
-                          (let [k (endpoint-key endpoint)]
-                            [k (refresh-endpoint endpoint (get previous k))])))
-                   endpoints)
-             refreshed {:at (System/currentTimeMillis)
-                        :configuration configuration
-                        :endpoints endpoint-states}]
-         (reset! catalog-cache refreshed)
-         (catalog-records refreshed))))))
+   (loop []
+     ;; Capture the reset generation BEFORE reading environment-derived endpoint
+     ;; configuration. A reset that overlaps this read invalidates both the
+     ;; resulting configuration and any attempt to claim the cache with it.
+     (let [generation (long (or (:generation @catalog-cache) 0))
+           endpoints (configured-endpoints)
+           configuration (mapv endpoint-key endpoints)
+           result (catalog-at-generation force? generation endpoints configuration)]
+       (if (= retry-catalog-refresh result)
+         (recur)
+         result)))))
 
 (defn available-catalog
   "Catalog records whose provider answered the current fetch successfully."
