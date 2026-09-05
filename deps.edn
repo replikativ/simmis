@@ -51,11 +51,10 @@
         ;; Verified here in Chrome against 0.1.40's tree: Memory toggles
         ;; (settled and fast), cross-scope page switches, page->room switches —
         ;; stable at 9 containers, zero duplicate parents, zero warnings.
-        ;; 0.1.44 releases the affine partitioned-world work from spindel#43
-        ;; and the component API required by dvergr 0.1.66. Keeping the older
-        ;; reviewed git SHA makes dvergr fail while loading because
-        ;; org.replikativ.spindel.engine.component is absent there.
-        org.replikativ/spindel {:mvn/version "0.1.44"}
+        ;; 0.1.47 is Dvergr 0.1.80's coordinated runtime: structured work,
+        ;; terminal callbacks, and WorldScope lifecycle ownership. This direct
+        ;; dependency must not override Dvergr with an older runtime.
+        org.replikativ/spindel {:mvn/version "0.1.47"}
         is.simm/partial-cps {:mvn/version "0.1.60"}
 
         ;; replikativ substrate
@@ -172,7 +171,7 @@
         ;; 0.3.41 makes Datahike graph/history reads snapshot-independent
         ;; (yggdrasil#19): inspection no longer writes a fresh snapshot or
         ;; mutates branch heads. It also carries persistent-sorted-set 0.5.140.
-        org.replikativ/yggdrasil {:mvn/version "0.3.41"}
+        org.replikativ/yggdrasil {:mvn/version "0.3.42"}
         ;; Keep the direct Geschichte dependency aligned with dvergr: nearest
         ;; wins, and Simmis also relies on Yggdrasil's Geschichte adapter and
         ;; its content-level merge API.
@@ -268,7 +267,10 @@
         ;; delegation (#71-#73), plus fresh runtime components for hired runs
         ;; (#87). Simmis's provider-aware picker depends on #48 being present in
         ;; the released artifact; no local dvergr overlay is required anymore.
-        org.replikativ/dvergr {:mvn/version "0.1.66"}}
+        ;; 0.1.80 makes live model directives reach actual calls, delegated
+        ;; tools and new forks. Owner-preference activation relies on it to
+        ;; preserve participant inboxes instead of resetting live contexts.
+        org.replikativ/dvergr {:mvn/version "0.1.80"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
