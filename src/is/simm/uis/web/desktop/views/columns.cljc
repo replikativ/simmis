@@ -1842,6 +1842,14 @@
                     (chat/eval-run-view (assoc item :syntax-pref syntax-pref))
                     :eval-entry
                     (chat/eval-entry-view (assoc item :syntax-pref syntax-pref))
+                    :activity
+                    (chat/semantic-activity-view
+                     {:id (str (:entity/uuid item))
+                      :timestamp (chat/msg-timestamp
+                                  (when-let [ts (:timeline/ts item)] (js/Date. ts)))
+                      :run-id (:message/run-id item)
+                      :activities (:message/activities item)
+                      :on-open-run open-run!})
                     ;; default: :message
                     (chat/message-view
                       {:id (str (:entity/uuid item))

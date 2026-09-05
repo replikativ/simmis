@@ -77,6 +77,89 @@
     (is (= [child-id] (mapv :entity/uuid items)))
     (is (every? #(= :message (:timeline/type %)) items))))
 
+(deftest semantic-tool-activity-is-correlation-only
+  (let [message-id #uuid "10000000-0000-0000-0000-000000000001"
+        root-id #uuid "10000000-0000-0000-0000-000000000002"
+        run-id #uuid "10000000-0000-0000-0000-000000000003"
+        activity-id #uuid "10000000-0000-0000-0000-000000000004"
+        sent-at (java.util.Date. 1000)
+        result (query/canonical-message-entity->timeline-item
+                {:message/id message-id
+                 :message/content "synthetic tool summary"
+                 :message/reasoning "private raw reasoning"
+                 :message/created-at sent-at
+                 :message/in-reply-to root-id
+                 :message/thread-root-id root-id
+                 :message/run-id run-id
+                 :message/tool-uses [{:tool-use/id "call-1"
+                                      :tool-use/name "clojure_eval"
+                                      :tool-use/input {:code "(+ 1 2)"}}]
+                 :message/activities [{:activity/id activity-id
+                                       :activity/run-id run-id
+                                       :activity/kind :tool
+                                       :activity/verb :invoke
+                                       :activity/tool-name "clojure_eval"}]})]
+    (is (= {:entity/uuid message-id
+            :timeline/type :activity
+            :timeline/ts sent-at
+            :message/in-reply-to root-id
+            :message/thread-root-id root-id
+            :message/run-id run-id
+            :message/activities [{:activity/id activity-id
+                                  :activity/run-id run-id
+                                  :activity/kind :tool
+                                  :activity/verb :invoke
+                                  :activity/tool-name "clojure_eval"}]}
+           result))
+    (is (not (contains? result :message/tool-uses)))
+    (is (not (contains? result :block/content)))
+    (is (not (contains? result :S.Message/reasoning)))))
+
+(deftest tool-activity-has-one-surface-per-timeline-scope
+  (let [root-id #uuid "20000000-0000-0000-0000-000000000001"
+        child-id #uuid "20000000-0000-0000-0000-000000000002"
+        activity-id #uuid "20000000-0000-0000-0000-000000000003"
+        eval-id #uuid "20000000-0000-0000-0000-000000000004"
+        other-root-id #uuid "20000000-0000-0000-0000-000000000005"
+        other-activity-id #uuid "20000000-0000-0000-0000-000000000006"
+        annotated (query/annotate-message-threads
+                   [{:entity/uuid root-id :timeline/type :message}
+                    {:entity/uuid child-id
+                     :timeline/type :message
+                     :message/in-reply-to root-id
+                     :message/thread-root-id root-id}
+                    {:entity/uuid activity-id
+                     :timeline/type :activity
+                     :message/thread-root-id root-id
+                     :message/activities [{:activity/id activity-id
+                                           :activity/kind :tool
+                                           :activity/tool-name "clojure_eval"}]}
+                    {:entity/uuid eval-id
+                     :timeline/type :eval-entry
+                     :S.EvalEntry/tool "clojure_eval"
+                     :S.EvalEntry/code "(+ 1 2)"
+                     :S.EvalEntry/result "3"}
+                    {:entity/uuid other-root-id :timeline/type :message}
+                    {:entity/uuid other-activity-id
+                     :timeline/type :activity
+                     :message/thread-root-id other-root-id
+                     :message/activities [{:activity/id other-activity-id
+                                           :activity/kind :tool
+                                           :activity/tool-name "shell"}]}])
+        full-room (query/timeline-items-for-scope annotated nil)
+        thread (query/timeline-items-for-scope annotated root-id)]
+    (testing "the full room keeps the one rich exact evaluation surface"
+      (is (= 1 (count (filter #(= :eval-entry (:timeline/type %)) full-room))))
+      (is (= [eval-id]
+             (mapv :entity/uuid
+                   (filter #(= :eval-entry (:timeline/type %)) full-room))))
+      (is (not-any? #(= :activity (:timeline/type %)) full-room)))
+    (testing "the dedicated thread uses only its canonical correlated activity"
+      (is (= [child-id activity-id] (mapv :entity/uuid thread)))
+      (is (= [:message :activity] (mapv :timeline/type thread)))
+      (is (not-any? :S.EvalEntry/code thread))
+      (is (not-any? :S.EvalEntry/result thread)))))
+
 (deftest typed-message-entity-roundtrip
   (let [message-id (random-uuid)
         parent-id (random-uuid)

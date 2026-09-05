@@ -498,6 +498,31 @@
      :reasoning (:message/reasoning m)
      :source-user (:message/source-user m)}))
 
+(defn- canonical-tool-activity->timeline-item
+  "Project a canonical tool-bearing message as correlation-only activity.
+
+   S.EvalEntry remains the rich, exact tool record in the room timeline. This
+   row deliberately retains only semantic activity and durable causal fields,
+   so a dedicated thread can show what happened without duplicating raw tool
+   inputs/results or the synthetic tool-summary prose."
+  [m]
+  (let [{:keys [id sent-at in-reply-to thread-root-id run-id activities]}
+        (canonical-message-entity->message m)]
+    (cond-> {:entity/uuid id
+             :timeline/type :activity
+             :timeline/ts sent-at
+             :message/activities activities}
+      in-reply-to (assoc :message/in-reply-to in-reply-to)
+      thread-root-id (assoc :message/thread-root-id thread-root-id)
+      run-id (assoc :message/run-id run-id))))
+
+(defn canonical-message-entity->timeline-item
+  "Classify one canonical message for the Simmis timeline."
+  [m]
+  (if (seq (:message/tool-uses m))
+    (canonical-tool-activity->timeline-item m)
+    (canonical-message-entity->message m)))
+
 #?(:cljs
    (defn- room-message-users [db]
      (let [names (into {} (d/q '[:find ?uuid ?name
@@ -646,10 +671,7 @@
                                [?m :message/role _]]
                              db)]
        (->> (d/pull-many db pull-pattern message-eids)
-            ;; Rich exact tool-call entities already own tool history in Simmis.
-            ;; Keep these activity messages out of chat rather than showing both.
-            (remove #(seq (:message/tool-uses %)))
-            (map canonical-message-entity->message)
+            (map canonical-message-entity->timeline-item)
             vec))))
 
 #?(:cljs
@@ -658,9 +680,12 @@
            legacy (legacy-room-messages db room-eid users)
            legacy-by-id (into {} (map (juxt :entity/uuid identity)) legacy)
            canonical (canonical-room-messages db)
-           canonical-ids (into #{} (map :id) canonical)
-           canonical-items (map #(merge-message-projections
-                                  % (legacy-by-id (:id %)) users)
+           canonical-ids (into #{} (map #(or (:id %) (:entity/uuid %))) canonical)
+           canonical-items (map (fn [item]
+                                  (if (= :activity (:timeline/type item))
+                                    item
+                                    (merge-message-projections
+                                     item (legacy-by-id (:id item)) users)))
                                 canonical)]
        (->> (concat canonical-items
                     ;; Compatibility-only rows such as historical summaries may
@@ -907,19 +932,34 @@
   "Project one focused thread from already annotated room timeline rows.
 
    The root is returned separately so clients can pin it as context while
-   independently windowing the descendants. Tool/activity rows are excluded
-   until Dvergr gives them a durable thread/execution correlation; guessing
-   from chronology would attach critical work to the wrong topic."
+   independently windowing the descendants. Correlation-only activity rows
+   participate only through Dvergr's persisted thread root; exact S.EvalEntry
+   rows remain room-level because they do not yet carry that causal identity."
   [items root-id]
   (let [root (some #(when (and (= :message (:timeline/type %))
                                (= root-id (:entity/uuid %)))
                       %)
                    items)
         replies (->> items
-                     (filterv #(and (= :message (:timeline/type %))
-                                    (= root-id (:thread/root-id %))
-                                    (not= root-id (:entity/uuid %)))))]
+                     (filterv
+                      #(case (:timeline/type %)
+                         :message (and (= root-id (:thread/root-id %))
+                                       (not= root-id (:entity/uuid %)))
+                         :activity (= root-id (:message/thread-root-id %))
+                         false)))]
     {:root root :items replies}))
+
+(defn timeline-items-for-scope
+  "Select visible rows for the full room or one dedicated thread.
+
+   Full-room chat suppresses correlation-only activity because its rich
+   S.EvalEntry rows already show the same tool work. A dedicated thread uses
+   the canonical activity row instead, since it is the row with the durable
+   Run/thread identity."
+  [annotated-items thread-root-id]
+  (if thread-root-id
+    (:items (select-message-thread annotated-items thread-root-id))
+    (filterv #(not= :activity (:timeline/type %)) annotated-items)))
 
 #?(:cljs
    (defn room-timeline-window-with-deltas
@@ -970,9 +1010,7 @@
            thread-root-id (:thread-root-id window-spec)
            thread-projection (when thread-root-id
                                (select-message-thread annotated thread-root-id))
-           full (-> (if thread-root-id
-                      (:items thread-projection)
-                      annotated)
+           full (-> (timeline-items-for-scope annotated thread-root-id)
                     group-tool-runs)
            total (count full)
            anchor-uuid (:anchor-uuid window-spec)

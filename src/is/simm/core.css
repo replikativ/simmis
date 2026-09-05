@@ -2372,6 +2372,36 @@ body {
   color: color-mix(in srgb, var(--danger) 78%, var(--mono-text-primary));
 }
 
+.semantic-activity {
+  align-self: flex-start;
+  max-width: 80%;
+  margin: 2px 0 6px 44px;
+  padding: 6px 9px;
+  border-left: 2px solid color-mix(in srgb, var(--accent-warning) 45%, var(--mono-border));
+  color: var(--mono-text-secondary);
+}
+
+.semantic-activity-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: var(--text-xs);
+}
+
+.semantic-activity-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.semantic-activity-label {
+  font-weight: 600;
+}
+
+.semantic-activity-time {
+  color: var(--mono-text-tertiary);
+}
+
 .chat-message-content,
 .message-text {
   font-size: var(--text-base);
