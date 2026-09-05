@@ -379,7 +379,7 @@
    canonical render path this exception can disappear with S.Message itself."
   [canonical legacy users]
   (let [{:keys [id content sent-at from source-user reasoning metadata
-                to in-reply-to thread-root-id run-id]} canonical
+                to in-reply-to thread-root-id run-id activities]} canonical
         metadata (or metadata {})
         author-uuid (or (actor->party-uuid from)
                         (try-parse-uuid source-user)
@@ -412,6 +412,7 @@
       in-reply-to (assoc :message/in-reply-to in-reply-to)
       thread-root-id (assoc :message/thread-root-id thread-root-id)
       run-id (assoc :message/run-id run-id)
+      (seq activities) (assoc :message/activities activities)
       (seq metadata) (assoc :message/metadata metadata)
       (seq (:audience metadata)) (assoc :message/audience (:audience metadata))
       (seq (:mentions metadata)) (assoc :message/mention-handles (:mentions metadata)))))
@@ -480,7 +481,9 @@
                    (assoc :notification/task (:message/notification-task m))
                    (:message/notification-elapsed m)
                    (assoc :notification/elapsed
-                          (:message/notification-elapsed m)))]
+                          (:message/notification-elapsed m))
+                   (seq (:message/activities m))
+                   (assoc :activities (:message/activities m)))]
     {:id (:message/id m)
      :content (:message/content m)
      :sent-at (:message/created-at m)
@@ -490,9 +493,35 @@
      :in-reply-to (:message/in-reply-to m)
      :thread-root-id (:message/thread-root-id m)
      :run-id (:message/run-id m)
+     :activities (vec (:message/activities m))
      :metadata metadata
      :reasoning (:message/reasoning m)
      :source-user (:message/source-user m)}))
+
+(defn- canonical-tool-activity->timeline-item
+  "Project a canonical tool-bearing message as correlation-only activity.
+
+   S.EvalEntry remains the rich, exact tool record in the room timeline. This
+   row deliberately retains only semantic activity and durable causal fields,
+   so a dedicated thread can show what happened without duplicating raw tool
+   inputs/results or the synthetic tool-summary prose."
+  [m]
+  (let [{:keys [id sent-at in-reply-to thread-root-id run-id activities]}
+        (canonical-message-entity->message m)]
+    (cond-> {:entity/uuid id
+             :timeline/type :activity
+             :timeline/ts sent-at
+             :message/activities activities}
+      in-reply-to (assoc :message/in-reply-to in-reply-to)
+      thread-root-id (assoc :message/thread-root-id thread-root-id)
+      run-id (assoc :message/run-id run-id))))
+
+(defn canonical-message-entity->timeline-item
+  "Classify one canonical message for the Simmis timeline."
+  [m]
+  (if (seq (:message/tool-uses m))
+    (canonical-tool-activity->timeline-item m)
+    (canonical-message-entity->message m)))
 
 #?(:cljs
    (defn- room-message-users [db]
@@ -583,45 +612,67 @@
                             :S.Message/attachment-mime (att-mimes uuid)))))
             vec))))
 
+(def ^:private canonical-message-pull
+  '[:message/id :message/content
+    :message/created-at :message/role
+    :message/from :message/to
+    :message/in-reply-to :message/thread-root-id
+    :message/run-id
+    :message/reasoning
+    :message/source-user :message/source-username
+    :message/source-user-id
+    :message/audience :message/mention-handles
+    :message/metadata-kind :message/context-from
+    :message/source :message/schedule-id
+    :message/attachment-store-ref
+    :message/attachment-blob-id
+    :message/attachment-node-id
+    :message/attachment-mime
+    :message/attachment-name
+    :message/attachment-size
+    :message/provenance-mode
+    :message/provenance-source
+    :message/object-kind :message/object-id
+    :message/notification-type
+    :message/notification-agent
+    :message/notification-task
+    :message/notification-elapsed
+    :message/tool-uses])
+
+(def ^:private activity-pull
+  {:message/activities
+   [:activity/id :activity/run-id :activity/kind :activity/verb
+    :activity/status :activity/tool-name :activity/tool-use-id
+    :activity/outcome :activity/critical? :activity/at]})
+
+(defn canonical-message-pull-pattern
+  "Canonical message pull, extended only when the Room schema knows activity."
+  [activity-schema?]
+  (cond-> canonical-message-pull
+    activity-schema? (conj activity-pull)))
+
+#?(:cljs
+   (defn- schema-has? [db ident]
+     (boolean
+      (d/q '[:find ?e . :in $ ?ident :where [?e :db/ident ?ident]] db ident))))
+
 #?(:cljs
    (defn- canonical-room-messages [db]
      ;; One bounded pull rather than one query per optional attribute. This is
      ;; both cheaper today and the shape the async client can fetch lazily later.
-     (->> (d/q '[:find [(pull ?m [:message/id :message/content
-                                   :message/created-at :message/role
-                                   :message/from :message/to
-                                   :message/in-reply-to :message/thread-root-id
-                                   :message/run-id
-                                   :message/reasoning
-                                   :message/source-user :message/source-username
-                                   :message/source-user-id
-                                   :message/audience :message/mention-handles
-                                   :message/metadata-kind :message/context-from
-                                   :message/source :message/schedule-id
-                                   :message/attachment-store-ref
-                                   :message/attachment-blob-id
-                                   :message/attachment-node-id
-                                   :message/attachment-mime
-                                   :message/attachment-name
-                                   :message/attachment-size
-                                   :message/provenance-mode
-                                   :message/provenance-source
-                                   :message/object-kind :message/object-id
-                                   :message/notification-type
-                                   :message/notification-agent
-                                   :message/notification-task
-                                   :message/notification-elapsed
-                                   :message/tool-uses]) ...]
-                  :where
-                  [?m :message/id _]
-                  [?m :message/chat _]
-                  [?m :message/content _]
-                  [?m :message/created-at _]
-                  [?m :message/role _]]
-                db)
-          (remove #(seq (:message/tool-uses %)))
-          (map canonical-message-entity->message)
-          vec)))
+     (let [pull-pattern (canonical-message-pull-pattern
+                         (schema-has? db :message/activities))
+           message-eids (d/q '[:find [?m ...]
+                               :where
+                               [?m :message/id _]
+                               [?m :message/chat _]
+                               [?m :message/content _]
+                               [?m :message/created-at _]
+                               [?m :message/role _]]
+                             db)]
+       (->> (d/pull-many db pull-pattern message-eids)
+            (map canonical-message-entity->timeline-item)
+            vec))))
 
 #?(:cljs
    (defn- query-room-message-projections [db room-eid]
@@ -629,9 +680,12 @@
            legacy (legacy-room-messages db room-eid users)
            legacy-by-id (into {} (map (juxt :entity/uuid identity)) legacy)
            canonical (canonical-room-messages db)
-           canonical-ids (into #{} (map :id) canonical)
-           canonical-items (map #(merge-message-projections
-                                  % (legacy-by-id (:id %)) users)
+           canonical-ids (into #{} (map #(or (:id %) (:entity/uuid %))) canonical)
+           canonical-items (map (fn [item]
+                                  (if (= :activity (:timeline/type item))
+                                    item
+                                    (merge-message-projections
+                                     item (legacy-by-id (:id item)) users)))
                                 canonical)]
        (->> (concat canonical-items
                     ;; Compatibility-only rows such as historical summaries may
@@ -878,19 +932,34 @@
   "Project one focused thread from already annotated room timeline rows.
 
    The root is returned separately so clients can pin it as context while
-   independently windowing the descendants. Tool/activity rows are excluded
-   until Dvergr gives them a durable thread/execution correlation; guessing
-   from chronology would attach critical work to the wrong topic."
+   independently windowing the descendants. Correlation-only activity rows
+   participate only through Dvergr's persisted thread root; exact S.EvalEntry
+   rows remain room-level because they do not yet carry that causal identity."
   [items root-id]
   (let [root (some #(when (and (= :message (:timeline/type %))
                                (= root-id (:entity/uuid %)))
                       %)
                    items)
         replies (->> items
-                     (filterv #(and (= :message (:timeline/type %))
-                                    (= root-id (:thread/root-id %))
-                                    (not= root-id (:entity/uuid %)))))]
+                     (filterv
+                      #(case (:timeline/type %)
+                         :message (and (= root-id (:thread/root-id %))
+                                       (not= root-id (:entity/uuid %)))
+                         :activity (= root-id (:message/thread-root-id %))
+                         false)))]
     {:root root :items replies}))
+
+(defn timeline-items-for-scope
+  "Select visible rows for the full room or one dedicated thread.
+
+   Full-room chat suppresses correlation-only activity because its rich
+   S.EvalEntry rows already show the same tool work. A dedicated thread uses
+   the canonical activity row instead, since it is the row with the durable
+   Run/thread identity."
+  [annotated-items thread-root-id]
+  (if thread-root-id
+    (:items (select-message-thread annotated-items thread-root-id))
+    (filterv #(not= :activity (:timeline/type %)) annotated-items)))
 
 #?(:cljs
    (defn room-timeline-window-with-deltas
@@ -941,9 +1010,7 @@
            thread-root-id (:thread-root-id window-spec)
            thread-projection (when thread-root-id
                                (select-message-thread annotated thread-root-id))
-           full (-> (if thread-root-id
-                      (:items thread-projection)
-                      annotated)
+           full (-> (timeline-items-for-scope annotated thread-root-id)
                     group-tool-runs)
            total (count full)
            anchor-uuid (:anchor-uuid window-spec)

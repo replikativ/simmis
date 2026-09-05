@@ -77,11 +77,95 @@
     (is (= [child-id] (mapv :entity/uuid items)))
     (is (every? #(= :message (:timeline/type %)) items))))
 
+(deftest semantic-tool-activity-is-correlation-only
+  (let [message-id #uuid "10000000-0000-0000-0000-000000000001"
+        root-id #uuid "10000000-0000-0000-0000-000000000002"
+        run-id #uuid "10000000-0000-0000-0000-000000000003"
+        activity-id #uuid "10000000-0000-0000-0000-000000000004"
+        sent-at (java.util.Date. 1000)
+        result (query/canonical-message-entity->timeline-item
+                {:message/id message-id
+                 :message/content "synthetic tool summary"
+                 :message/reasoning "private raw reasoning"
+                 :message/created-at sent-at
+                 :message/in-reply-to root-id
+                 :message/thread-root-id root-id
+                 :message/run-id run-id
+                 :message/tool-uses [{:tool-use/id "call-1"
+                                      :tool-use/name "clojure_eval"
+                                      :tool-use/input {:code "(+ 1 2)"}}]
+                 :message/activities [{:activity/id activity-id
+                                       :activity/run-id run-id
+                                       :activity/kind :tool
+                                       :activity/verb :invoke
+                                       :activity/tool-name "clojure_eval"}]})]
+    (is (= {:entity/uuid message-id
+            :timeline/type :activity
+            :timeline/ts sent-at
+            :message/in-reply-to root-id
+            :message/thread-root-id root-id
+            :message/run-id run-id
+            :message/activities [{:activity/id activity-id
+                                  :activity/run-id run-id
+                                  :activity/kind :tool
+                                  :activity/verb :invoke
+                                  :activity/tool-name "clojure_eval"}]}
+           result))
+    (is (not (contains? result :message/tool-uses)))
+    (is (not (contains? result :block/content)))
+    (is (not (contains? result :S.Message/reasoning)))))
+
+(deftest tool-activity-has-one-surface-per-timeline-scope
+  (let [root-id #uuid "20000000-0000-0000-0000-000000000001"
+        child-id #uuid "20000000-0000-0000-0000-000000000002"
+        activity-id #uuid "20000000-0000-0000-0000-000000000003"
+        eval-id #uuid "20000000-0000-0000-0000-000000000004"
+        other-root-id #uuid "20000000-0000-0000-0000-000000000005"
+        other-activity-id #uuid "20000000-0000-0000-0000-000000000006"
+        annotated (query/annotate-message-threads
+                   [{:entity/uuid root-id :timeline/type :message}
+                    {:entity/uuid child-id
+                     :timeline/type :message
+                     :message/in-reply-to root-id
+                     :message/thread-root-id root-id}
+                    {:entity/uuid activity-id
+                     :timeline/type :activity
+                     :message/thread-root-id root-id
+                     :message/activities [{:activity/id activity-id
+                                           :activity/kind :tool
+                                           :activity/tool-name "clojure_eval"}]}
+                    {:entity/uuid eval-id
+                     :timeline/type :eval-entry
+                     :S.EvalEntry/tool "clojure_eval"
+                     :S.EvalEntry/code "(+ 1 2)"
+                     :S.EvalEntry/result "3"}
+                    {:entity/uuid other-root-id :timeline/type :message}
+                    {:entity/uuid other-activity-id
+                     :timeline/type :activity
+                     :message/thread-root-id other-root-id
+                     :message/activities [{:activity/id other-activity-id
+                                           :activity/kind :tool
+                                           :activity/tool-name "shell"}]}])
+        full-room (query/timeline-items-for-scope annotated nil)
+        thread (query/timeline-items-for-scope annotated root-id)]
+    (testing "the full room keeps the one rich exact evaluation surface"
+      (is (= 1 (count (filter #(= :eval-entry (:timeline/type %)) full-room))))
+      (is (= [eval-id]
+             (mapv :entity/uuid
+                   (filter #(= :eval-entry (:timeline/type %)) full-room))))
+      (is (not-any? #(= :activity (:timeline/type %)) full-room)))
+    (testing "the dedicated thread uses only its canonical correlated activity"
+      (is (= [child-id activity-id] (mapv :entity/uuid thread)))
+      (is (= [:message :activity] (mapv :timeline/type thread)))
+      (is (not-any? :S.EvalEntry/code thread))
+      (is (not-any? :S.EvalEntry/result thread)))))
+
 (deftest typed-message-entity-roundtrip
   (let [message-id (random-uuid)
         parent-id (random-uuid)
         run-id (random-uuid)
         object-id (random-uuid)
+        activity-id (random-uuid)
         store-ref (random-uuid)
         sent-at (java.util.Date.)
         entity {:message/id message-id
@@ -93,6 +177,12 @@
                 :message/in-reply-to parent-id
                 :message/thread-root-id parent-id
                 :message/run-id run-id
+                :message/activities [{:activity/id activity-id
+                                      :activity/run-id run-id
+                                      :activity/kind :budget
+                                      :activity/verb :exhaust
+                                      :activity/status :blocked
+                                      :activity/critical? true}]
                 :message/reasoning "sampled three scenarios"
                 :message/source-user "agent-7"
                 :message/source-username "Forecaster"
@@ -126,10 +216,22 @@
             :in-reply-to parent-id
             :thread-root-id parent-id
             :run-id run-id
+            :activities [{:activity/id activity-id
+                          :activity/run-id run-id
+                          :activity/kind :budget
+                          :activity/verb :exhaust
+                          :activity/status :blocked
+                          :activity/critical? true}]
             :reasoning "sampled three scenarios"
             :source-user "agent-7"
             :metadata {:role :assistant
                        :run-id run-id
+                       :activities [{:activity/id activity-id
+                                     :activity/run-id run-id
+                                     :activity/kind :budget
+                                     :activity/verb :exhaust
+                                     :activity/status :blocked
+                                     :activity/critical? true}]
                        :source-user "agent-7"
                        :source-username "Forecaster"
                        :source-user-id "provider-7"
@@ -166,6 +268,10 @@
                    :in-reply-to parent-id
                    :source-user (str party-id)
                    :reasoning "checked the evidence"
+                   :activities [{:activity/id (random-uuid)
+                                 :activity/kind :run
+                                 :activity/verb :fail
+                                 :activity/status :failed}]
                    :metadata {:audience #{:agent/reviewer}
                               :mentions #{"reviewer"}
                               :attachment {:blob-id blob-id
@@ -193,9 +299,17 @@
       (is (= "audio/ogg" (:S.Message/attachment-mime result)))
       (is (= #{:agent/reviewer} (:message/audience result)))
       (is (= #{"reviewer"} (:message/mention-handles result)))
+      (is (= :fail (-> result :message/activities first :activity/verb)))
       (is (= {:mode :live :source :screen}
              (get-in result [:message/metadata :provenance])))
       (is (true? (:S.Message/is-ai result))))))
+
+(deftest canonical-message-pull-is-schema-compatible
+  (testing "old room replicas are not asked for an unknown activity attribute"
+    (is (not-any? map? (query/canonical-message-pull-pattern false))))
+  (testing "upgraded room replicas pull typed activity components"
+    (is (= :message/activities
+           (-> (query/canonical-message-pull-pattern true) last keys first)))))
 
 (deftest historical-source-user-fallback
   (let [party-id (random-uuid)
