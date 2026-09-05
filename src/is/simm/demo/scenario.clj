@@ -482,7 +482,14 @@
           (catch Exception e
             (log/log! {:level :warn :id ::book-entry-failed
                        :data {:room room :narration narration
-                              :error (.getMessage e)}}))))
+                              :error (.getMessage e)}})
+            ;; A scenario is also a production-path smoke test. Continuing
+            ;; used to return `:book/entries (count entries)` after every post
+            ;; had failed, giving the UI and benchmarks a plausible but empty
+            ;; ledger. Preserve the local diagnostic and fail the load.
+            (throw (ex-info "Scenario book entry failed"
+                            {:room room :narration narration}
+                            e)))))
       (log/log! {:level :info :id ::book-seeded
                  :data {:room room :entries (count entries) :commodity symbol}})
       {:book/room room :book/entries (count entries)})
