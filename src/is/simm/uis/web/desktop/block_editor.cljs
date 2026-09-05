@@ -1646,8 +1646,6 @@
                         (try
                           (<! (remote/add-type-remote! page-uuid (:entity/uuid type-entity)
                                                    db-scope))
-                          (binding [rtc/*execution-context* runtime]
-                            (sig/close-type-selector!))
                           (catch :default e
                             (js/console.error "[page-header] Failed to add type:" e)
                             (binding [rtc/*execution-context* runtime]
