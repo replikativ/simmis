@@ -9,7 +9,7 @@
 (def ^:private openai-key "catalog-openai-key")
 (def ^:private fireworks-key "catalog-fireworks-key")
 (def ^:private anthropic-key "catalog-anthropic-key")
-(def ^:private fireworks-model "accounts/fireworks/models/glm-5p2")
+(def ^:private fireworks-model "accounts/fireworks/models/glm-5p3")
 (def ^:private anthropic-model "claude-sonnet-4-6")
 (def ^:private anthropic-other "claude-opus-4-7")
 
@@ -134,7 +134,7 @@
 (deftest an-unresolved-selection-has-no-label
   (is (nil? (catalog/model-label nil))
       "a nil id must not match the first curated family entry")
-  (is (= "GLM 5.2" (catalog/model-label fireworks-model)))
+  (is (= "GLM 5.3" (catalog/model-label fireworks-model)))
   (is (= "Qwen3.6 Plus"
          (catalog/model-label "accounts/fireworks/models/qwen3p6-plus"))))
 

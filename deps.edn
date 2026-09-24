@@ -54,8 +54,13 @@
         ;; 0.1.47 is Dvergr 0.1.80's coordinated runtime: structured work,
         ;; terminal callbacks, and WorldScope lifecycle ownership. This direct
         ;; dependency must not override Dvergr with an older runtime.
-        org.replikativ/spindel {:mvn/version "0.1.47"}
-        is.simm/partial-cps {:mvn/version "0.1.60"}
+        org.replikativ/spindel {:mvn/version "0.1.53"}
+        ;; spindel 0.1.53 brings anglican 1.1.0 (its inference methods), which
+        ;; brings timbre 4.10.0, whose ClojureScript no longer compiles
+        ;; ("Can't redefine a constant"). A current timbre serves anglican's
+        ;; JVM logging and keeps the browser build compiling.
+        com.taoensso/timbre {:mvn/version "6.8.0"}
+        is.simm/partial-cps {:mvn/version "0.1.63"}
 
         ;; replikativ substrate
         ;; datahike RELEASE (was a :git/sha following main). Ships
@@ -72,8 +77,8 @@
         ;; NOTE: booting on current Datahike needs the undeclared-attr
         ;; strictness pass (it raises where 0.8.1729 was lenient — e.g. seed
         ;; entities carrying attrs not yet in the installed schema).
-        org.replikativ/datahike {:mvn/version "0.8.1865"}
-        org.replikativ/konserve {:mvn/version "0.9.391"}
+        org.replikativ/datahike {:mvn/version "0.8.1899"}
+        org.replikativ/konserve {:mvn/version "0.9.394"}
         ;; 0.1.40 additionally limits client inventory to keys reachable from
         ;; the configured walker (konserve-sync#14). Clients no longer scan or
         ;; advertise unrelated historical objects merely because they share
@@ -117,7 +122,7 @@
         ;; registered topic could write its store. That predicate still asked
         ;; `can?` for `:read` whatever the operation was, so it closed the hole
         ;; only to "same check as subscribe" — the residue 0.3.105 finishes.
-        org.replikativ/kabel {:mvn/version "0.3.109"}
+        org.replikativ/kabel {:mvn/version "0.3.137"}
         ;; kontor — double-entry accounting kernel; powers is.simm.model.books
         ;; (per-room governed double-entry) + the metering→ledger bridge. :local
         ;; overlays ../kontor for cross-repo dev.
@@ -171,11 +176,11 @@
         ;; 0.3.41 makes Datahike graph/history reads snapshot-independent
         ;; (yggdrasil#19): inspection no longer writes a fresh snapshot or
         ;; mutates branch heads. It also carries persistent-sorted-set 0.5.140.
-        org.replikativ/yggdrasil {:mvn/version "0.3.42"}
+        org.replikativ/yggdrasil {:mvn/version "0.3.46"}
         ;; Keep the direct Geschichte dependency aligned with dvergr: nearest
         ;; wins, and Simmis also relies on Yggdrasil's Geschichte adapter and
         ;; its content-level merge API.
-        org.replikativ/geschichte {:mvn/version "0.1.15"}
+        org.replikativ/geschichte {:mvn/version "0.1.17"}
         ;; Datahike's bundled secondary-index adapter uses
         ;; scriptum.core/warm!, introduced before this release.
         org.replikativ/scriptum {:mvn/version "0.1.32"}
@@ -270,7 +275,7 @@
         ;; 0.1.80 makes live model directives reach actual calls, delegated
         ;; tools and new forks. Owner-preference activation relies on it to
         ;; preserve participant inboxes instead of resetting live contexts.
-        org.replikativ/dvergr {:mvn/version "0.1.80"}}
+        org.replikativ/dvergr {:mvn/version "0.1.118"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
