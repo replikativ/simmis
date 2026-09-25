@@ -296,3 +296,26 @@
                 nil)]
       (is (false? (:S.EvalEntry/success? chip)))
       (is (= "boom" (:S.EvalEntry/result chip))))))
+
+(deftest a-jobs-attempts-stay-out-of-the-room-timeline
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write :keep-history? false}
+        now (java.util.Date. 1000)
+        [job attempt turn] [(random-uuid) (random-uuid) (random-uuid)]
+        run (fn [id kind & [parent]]
+              (cond-> {:run/id id :run/kind kind :run/actor :worker :run/trigger (random-uuid)
+                       :run/status :completed :run/created-at now :run/started-at now
+                       :run/updated-at now}
+                parent (assoc :run/parent parent)))
+        call (fn [run-id nm]
+               {:tool-call/id (random-uuid) :tool-call/name nm :tool-call/run-id run-id
+                :tool-call/status :completed :tool-call/error? false
+                :tool-call/started-at now})]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (try
+        (d/transact conn chat-schema/full-schema)
+        (d/transact conn [(run job :workflow) (run attempt :agent-task job) (run turn :agent-turn)
+                          (call attempt "read_file") (call turn "grep")])
+        (is (= ["grep"] (map :name (run-detail/query-room-tool-calls @conn))))
+        (finally (d/release conn))))))

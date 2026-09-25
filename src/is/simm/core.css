@@ -8804,3 +8804,20 @@ body.tab-dragging .column-drop-zone {
 .tl-key-line--blocked { background: var(--danger, #f87171); }
 .tl-key-cap { color: var(--accent); }
 .tl-key-cap--blocked { color: var(--danger, #f87171); }
+
+/* Attempts board: leaderboards over a room's certified Attempts */
+.attempt-board-sections { width: min(980px, 100%); margin-inline: auto; display: flex; flex-direction: column; gap: var(--spacing-lg); }
+.attempt-board-section h3 { margin: 0 0 var(--spacing-sm); font-size: var(--text-md); color: var(--mono-text-secondary); }
+.attempt-board-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+.attempt-board-table th { text-align: left; font-weight: 600; color: var(--mono-text-tertiary); padding: 4px 8px; border-bottom: 1px solid var(--mono-border); white-space: nowrap; }
+.attempt-board-table td { padding: 5px 8px; border-bottom: 1px solid color-mix(in srgb, var(--mono-border) 50%, transparent); }
+.attempt-board-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.attempt-board-name { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.attempt-board-failed { color: var(--danger); }
+.attempt-board-job { display: flex; flex-direction: column; gap: var(--spacing-xs); margin-bottom: var(--spacing-md); }
+.attempt-board-experiment { margin-bottom: var(--spacing-md); }
+.attempt-board-experiment-title { display: flex; gap: var(--spacing-sm); align-items: baseline; margin-bottom: 4px; font-size: var(--text-sm); color: var(--mono-text-tertiary); }
+.attempt-board-scored { color: var(--success); }
+@media (max-width: 640px) {
+  .attempt-board-table th:nth-child(n+7), .attempt-board-table td:nth-child(n+7) { display: none; }
+}
