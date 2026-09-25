@@ -275,7 +275,7 @@
         ;; 0.1.80 makes live model directives reach actual calls, delegated
         ;; tools and new forks. Owner-preference activation relies on it to
         ;; preserve participant inboxes instead of resetting live contexts.
-        org.replikativ/dvergr {:mvn/version "0.1.118"}}
+        org.replikativ/dvergr {:mvn/version "0.1.120"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead

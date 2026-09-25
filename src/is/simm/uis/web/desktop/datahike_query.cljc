@@ -24,6 +24,7 @@
             [is.simm.model.morphism :as mor]
             #?(:cljs [is.simm.uis.web.desktop.db-signal :as db-signal])
             #?(:cljs [is.simm.uis.web.desktop.run-detail :as run-detail])
+            [is.simm.uis.web.desktop.attempt-board :as attempt-board]
             #?(:cljs [datahike.api :as d])))
 
 ;; =============================================================================
@@ -663,14 +664,41 @@
      ;; both cheaper today and the shape the async client can fetch lazily later.
      (let [pull-pattern (canonical-message-pull-pattern
                          (schema-has? db :message/activities))
-           message-eids (d/q '[:find [?m ...]
-                               :where
-                               [?m :message/id _]
-                               [?m :message/chat _]
-                               [?m :message/content _]
-                               [?m :message/created-at _]
-                               [?m :message/role _]]
-                             db)]
+           room-message '[[?m :message/id _]
+                          [?m :message/chat ?c]
+                          [?m :message/content _]
+                          [?m :message/created-at _]
+                          [?m :message/role _]]
+           ;; A Run's model trace (its prompt, tool results, replies) is kept
+           ;; in the room's store under the Run's own chat, `:run/chat-id`:
+           ;; evidence for the Run inspector, not the room's conversation. So
+           ;; is a job's work: its Attempts' tasks and replies are on the
+           ;; Attempts board and in the inspector, not in the chat.
+           message-eids (if (schema-has? db :run/chat-id)
+                          (d/q {:find '[[?m ...]]
+                                :in '[$ ?job-kinds]
+                                :where (conj room-message
+                                             '(not-join [?c]
+                                                        [?c :chat/id ?cid]
+                                                        [_ :run/chat-id ?cid])
+                                             ;; the task an Attempt was given
+                                             '(not-join [?m ?job-kinds]
+                                                        [?m :message/id ?mid]
+                                                        [?r :run/trigger ?mid]
+                                                        [?r :run/parent ?pid]
+                                                        [?p :run/id ?pid]
+                                                        [?p :run/kind ?kind]
+                                                        [(contains? ?job-kinds ?kind)])
+                                             ;; what an Attempt said and did
+                                             '(not-join [?m ?job-kinds]
+                                                        [?m :message/run-id ?rid]
+                                                        [?r :run/id ?rid]
+                                                        [?r :run/parent ?pid]
+                                                        [?p :run/id ?pid]
+                                                        [?p :run/kind ?kind]
+                                                        [(contains? ?job-kinds ?kind)]))}
+                               db attempt-board/job-kinds)
+                          (d/q {:find '[[?m ...]] :where room-message} db))]
        (->> (d/pull-many db pull-pattern message-eids)
             (map canonical-message-entity->timeline-item)
             vec))))

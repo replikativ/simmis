@@ -6,7 +6,8 @@
   calls at read time, then performs deterministic display-only compression."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
-            [datahike.api :as d]))
+            [datahike.api :as d]
+            [is.simm.uis.web.desktop.attempt-board :as board]))
 
 (defn- uuid-value [x]
   (cond
@@ -409,7 +410,8 @@
 
      (defn query-room-tool-calls
        "Every tool call a room replica's Runs made, in flight or done, with
-        the name of the agent whose Run made it."
+        the name of the agent whose Run made it. A job's Attempts are left
+        out: they are the job's work, shown on the Attempts board."
        [db]
        (let [names (party-names db)]
          (mapv (fn [[t actor]]
@@ -417,12 +419,17 @@
                         :actor-name (or (get names (actor-party-id actor))
                                         (some-> actor name))))
                (d/q '[:find (pull ?t pattern) ?actor
-                      :in $ pattern
+                      :in $ pattern ?job-kinds
                       :where
                       [?t :tool-call/run-id ?rid]
                       [?r :run/id ?rid]
-                      [?r :run/actor ?actor]]
-                    db (tool-call-pull db)))))
+                      [?r :run/actor ?actor]
+                      (not-join [?r ?job-kinds]
+                                [?r :run/parent ?pid]
+                                [?p :run/id ?pid]
+                                [?p :run/kind ?kind]
+                                [(contains? ?job-kinds ?kind)])]
+                    db (tool-call-pull db) board/job-kinds))))
 
      (defn query-room-runs
        "A room replica's Runs as the run views show them: `{:active [...]

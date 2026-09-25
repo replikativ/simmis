@@ -41,6 +41,8 @@
             #?(:cljs [is.simm.uis.web.desktop.views.history-subway :as subway])
             #?(:cljs [is.simm.uis.web.desktop.views.agent-inspector :as agent-inspector])
             [is.simm.uis.web.desktop.views.run-history :as run-history]
+            [is.simm.uis.web.desktop.attempt-board :as attempt-board]
+            [is.simm.uis.web.desktop.views.attempt-board :as attempt-board-view]
             [is.simm.uis.web.desktop.views.run-inspector :as run-inspector]
             [is.simm.uis.web.desktop.proposal-card :as proposal-card]
             [is.simm.uis.web.desktop.signals :as sig]
@@ -613,6 +615,7 @@
     :chat "message-square"
     :chat-thread "messages-square"
     :run-history "list-tree"
+    :attempt-board "trophy"
     :run-inspector "orbit"
     :video "video"
     :screens "images"
@@ -1289,6 +1292,44 @@
        (el/div {:class "run-history"}
          (el/p {} "Run history")))
 
+    :attempt-board
+    #?(:cljs
+       (let [room-id (str (:room-id data))
+             room-name (or (:room-name data) "Room")
+             room-db-scope (:db-scope data)
+             _ (when (and room-db-scope
+                          (not (get room-states (str room-db-scope))))
+                 (db-sig/connect-room! room-db-scope @web/client))
+             room-db (when room-db-scope
+                       (get-in room-states [(str room-db-scope) :db]))
+             empty-board {:total (attempt-board/summary []) :models [] :jobs [] :experiments []}
+             board (if room-db
+                     (try (attempt-board/board room-db)
+                          (catch :default e
+                            (js/console.error "[attempt-board] query failed" e)
+                            empty-board))
+                     empty-board)]
+         (attempt-board-view/view
+          {:room-name room-name
+           :board board
+           :on-open-run
+           (fn [event run]
+             (let [new-column? (or (.-metaKey event) (.-ctrlKey event))]
+               (sig/open-tab! :run-inspector
+                              (assoc data :run-id (:id run) :run run)
+                              {:title (str "Run · " (:actor-name run))
+                               :new-tab? (not new-column?)
+                               :new-column? new-column?})))
+           :on-back-room
+           #(sig/open-tab! :chat
+                           {:room-id room-id
+                            :room-name room-name
+                            :db-scope (:db-scope data)}
+                           {:title room-name})}))
+       :clj
+       (el/div {:class "run-history"}
+         (el/p {} "Attempts")))
+
     :run-inspector
     #?(:cljs
        (let [room-id (str (:room-id data))
@@ -1719,6 +1760,17 @@
                (vc/icon "list-tree" {:class "chat-settings-icon"})
                (when (seq active-runs)
                  (el/span {:class "chat-runs-history-dot"})))
+             (el/button {:class "chat-settings-btn"
+                         :title "Attempts: jobs, experiments, models"
+                         :on-click (fn [_]
+                                     (sig/open-tab!
+                                      :attempt-board
+                                      {:room-id room-id
+                                       :room-name room-name
+                                       :db-scope room-db-scope}
+                                      {:title (str room-name " Attempts")
+                                       :new-tab? true}))}
+               (vc/icon "trophy" {:class "chat-settings-icon"}))
              (el/button {:class (vc/class-names "chat-settings-btn"
                                                 (when (and screen-sharing
                                                            (contains? screen-sharing room-id))
