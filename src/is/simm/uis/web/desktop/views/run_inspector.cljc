@@ -40,18 +40,7 @@
      :clj (str millis)))
 
 (defn- tool-call->eval-entry [call actor-name syntax-pref]
-  {:entity/uuid (:id call)
-   :S.EvalEntry/tool (:name call)
-   :S.EvalEntry/code (:input call)
-   :S.EvalEntry/result (:result call)
-   :S.EvalEntry/success? (not (:error? call))
-   :S.EvalEntry/status (run-detail/tool-status-label call)
-   :S.EvalEntry/duration-ms (:duration-ms call)
-   :S.EvalEntry/approval (run-detail/authorization-label call)
-   :S.EvalEntry/agent-name actor-name
-   :S.EvalEntry/evaluated-at #?(:cljs (some-> (:started-at call) js/Date.)
-                                :clj (:started-at call))
-   :syntax-pref syntax-pref})
+  (assoc (run-detail/tool-call-chip call actor-name) :syntax-pref syntax-pref))
 
 (defn- activity-segment [segment actor-name syntax-pref]
   (if (= :call (:kind segment))

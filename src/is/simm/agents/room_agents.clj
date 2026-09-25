@@ -65,7 +65,6 @@
             [muschel.fs :as mfs]
             [clojure.set :as set]
             [clojure.string :as str]
-            [clojure.pprint :as pp]
             [taoensso.telemere :as log]))
 
 ;; Default PERSONA — who the agent is when its party names nobody in particular.
@@ -1966,48 +1965,6 @@
          "one contribution at a time.")))
 
 ;; =============================================================================
-;; Eval-entry persistence (agent inspector feed)
-;; =============================================================================
-
-(def ^:private max-result-chars 2000)
-
-(defn- display-input
-  "Tool input as a reader would want to see it. dvergr namespaces the keys of
-   structured tool input (:tool-input.shell/command) — an internal detail that
-   only clutters the chip."
-  [input]
-  (if (map? input)
-    (update-keys input (fn [k] (if (keyword? k) (keyword (name k)) k)))
-    input))
-
-(defn- persist-eval-entry!
-  "Project one tool call into the room timeline as an S.EvalEntry chip.
-   `tool` names the tool (clojure_eval, shell, …) so the UI can badge it;
-   `code` is the evaluated code, or the tool's input for other tools."
-  [room-conn room-uuid agent-uuid tool code result]
-  (let [now (java.util.Date.)
-        success? (= (:type result) :success)
-        result-str (let [s (or (:content result) (str result))]
-                     (if (> (count s) max-result-chars)
-                       (str (subs s 0 max-result-chars) "\n… (truncated)")
-                       s))]
-    (try
-      (d-api/transact room-conn
-        [{:entity/uuid (random-uuid)
-          :entity/created-at now
-          :S.EvalEntry/room [:entity/uuid room-uuid]
-          :S.EvalEntry/agent [:entity/uuid agent-uuid]
-          :S.EvalEntry/tool (or tool "clojure_eval")
-          :S.EvalEntry/code code
-          :S.EvalEntry/result result-str
-          :S.EvalEntry/success? success?
-          :S.EvalEntry/evaluated-at now}])
-      (catch Exception e
-        (log/log! {:level :warn :id ::eval-entry-persist-failed
-                   :msg "Failed to persist eval entry"
-                   :data {:error (.getMessage e)}})))))
-
-;; =============================================================================
 ;; Room timeline projector — the ONE content-DB writer per room
 ;; =============================================================================
 
@@ -2023,8 +1980,7 @@
    multiple writers needed per-path dedup/filter hacks and still
    drifted. Projection rules:
    - tool-call events (:tool-uses present) are SKIPPED — the timeline
-     represents tool activity as S.EvalEntry chips written with results
-     by the wrapped tools;
+     renders tool activity from dvergr's own tool-call rows;
    - everything else persists idempotently under the message id
      (multi-recipient sends share one id, so the upsert dedupes);
    - author entities are ensured so the timeline's author join holds.
@@ -2046,24 +2002,6 @@
                               (seq (get-in msg [:metadata :tool-uses])))
                 reasoning (or (:reasoning msg)
                               (get-in msg [:metadata :reasoning]))]
-            (when (seq tool-uses)
-              ;; Uniform tool visibility: project NON-eval tool calls as
-              ;; the same collapsed S.EvalEntry chips the wrapped
-              ;; clojure_eval writes (which carries its own chips WITH
-              ;; results — skip it here to avoid doubles).
-              (when-let [author-uuid (let [from (:from msg)]
-                                       (cond (uuid? from) from
-                                             (keyword? from) (actor-kw->party-uuid from)))]
-                (doseq [tu tool-uses
-                        :let [tname (or (:tool-use/name tu) (:name tu))
-                              input (or (:tool-use/input tu) (:input tu))]
-                        :when (and tname (not= tname "clojure_eval"))]
-                  (persist-eval-entry! room-conn room-uuid author-uuid
-                                       tname
-                                       (if (seq input)
-                                         (with-out-str (pp/pprint (display-input input)))
-                                         "")
-                                       {:type :success :content ""}))))
             (when (and (string? content) (seq content)
                        (empty? tool-uses))
               (when-let [author-uuid (let [from (:from msg)]
@@ -2114,15 +2052,6 @@
                        :data {:room room-uuid :error (.getMessage e)}})))))
     (log/log! {:level :info :id ::room-projector-armed
                :data {:room room-uuid}})))
-
-(defn- wrap-eval-tool
-  [eval-tool room-conn room-uuid agent-uuid]
-  (assoc eval-tool
-    :execute (fn [params tctx]
-               (let [result ((:execute eval-tool) params tctx)]
-                 (persist-eval-entry! room-conn room-uuid agent-uuid
-                                      "clojure_eval" (:code params) result)
-                 result))))
 
 (defn- wrap-knowledge-add-tool
   "Retarget knowledge_add at the room's ATTACHED product KBs (grants):
@@ -2633,10 +2562,6 @@
                                      "read_file" "write_file" "edit_file" "clojure_edit"
                                      "clj_kondo" "shell" "grep" "glob" "run_tests"])
             agent-tools (cond-> base-tools
-                          (get base-tools "clojure_eval")
-                          (assoc "clojure_eval"
-                                 (wrap-eval-tool (get base-tools "clojure_eval")
-                                                 room-conn room-uuid agent-uuid))
                           (get base-tools "knowledge_add")
                           (assoc "knowledge_add"
                                  (wrap-knowledge-add-tool

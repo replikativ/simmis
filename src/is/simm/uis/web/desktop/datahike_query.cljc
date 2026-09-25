@@ -23,6 +23,7 @@
             [clojure.string :as str]
             [is.simm.model.morphism :as mor]
             #?(:cljs [is.simm.uis.web.desktop.db-signal :as db-signal])
+            #?(:cljs [is.simm.uis.web.desktop.run-detail :as run-detail])
             #?(:cljs [datahike.api :as d])))
 
 ;; =============================================================================
@@ -765,40 +766,22 @@
                                         :S.KBEvent/timestamp ts
                                         :timeline/type :kb-event
                                         :timeline/ts ts})))
+                 ;; Tool activity is dvergr's own tool-call rows: recorded
+                 ;; when a call starts and completed when it ends, so a chip
+                 ;; appears while the call runs.
                  eval-entries (try
-                                (->> (d/q '[:find ?uuid ?tool ?code ?result ?success ?agent-uuid ?agent-name ?ts
-                                             :in $ ?room
-                                             :where
-                                             [?e :S.EvalEntry/room ?room]
-                                             [?e :entity/uuid ?uuid]
-                                             [?e :S.EvalEntry/code ?code]
-                                             [?e :S.EvalEntry/result ?result]
-                                             [?e :S.EvalEntry/success? ?success]
-                                             [?e :S.EvalEntry/evaluated-at ?ts]
-                                             [?e :S.EvalEntry/agent ?agent]
-                                             [?agent :entity/uuid ?agent-uuid]
-                                             [?agent :S.User/display-name ?agent-name]
-                                             ;; entries written before the tool field existed
-                                             ;; were all clojure_eval
-                                             [(get-else $ ?e :S.EvalEntry/tool "clojure_eval") ?tool]]
-                                           db room-eid)
-                                     (map (fn [[uuid tool code result success agent-uuid agent-name ts]]
-                                            {:entity/uuid uuid
-                                             :S.EvalEntry/tool tool
-                                             :S.EvalEntry/code code
-                                             :S.EvalEntry/result result
-                                             :S.EvalEntry/success? success
-                                             :S.EvalEntry/agent-uuid agent-uuid
-                                             :S.EvalEntry/agent-name agent-name
-                                             :S.EvalEntry/evaluated-at ts
-                                             :timeline/type :eval-entry
-                                             :timeline/ts ts})))
-                                ;; Eval chips vanishing from the timeline is a
-                                ;; silent, plausible-looking outcome — a room
-                                ;; simply looks like it ran no code. Log it.
+                                (->> (run-detail/query-room-tool-calls db)
+                                     (keep (fn [c]
+                                             (when-let [ms (:started-at c)]
+                                               (assoc (run-detail/tool-call-chip c (:actor-name c))
+                                                      :timeline/type :eval-entry
+                                                      :timeline/ts (js/Date. ms))))))
+                                ;; Chips vanishing from the timeline is a silent,
+                                ;; plausible-looking outcome -- a room simply
+                                ;; looks like it ran no tools. Log it.
                                 (catch :default e
                                   (js/console.error
-                                   "[timeline] eval-entry query failed — chips omitted:" e)
+                                   "[timeline] tool-call query failed — chips omitted:" e)
                                   []))]
              (->> (concat messages kb-events eval-entries)
                   (sort-by :timeline/ts)

@@ -276,13 +276,11 @@
             Used to show 'Thinking...' indicator in the chat."
            (signal runtime false)))
 
-#?(:cljs (def room-runs
-           "Reactive Run projection keyed by Simmis room UUID string.
-
-            Shape: {room-id {:active [run ...] :recent [run ...]}}. Dvergr is
-            the durable/live authority; this is only the UI projection and is
-            deliberately owned by the Spindel execution context so UI forks do
-            not share an ambient mutable Run registry."
+#?(:cljs (def run-world-live
+           "Run id -> whether this server still holds the Run world's settlement
+            capability. Not a durable fact (a restart drops it while the Run
+            stays under review), so it is asked of the server per reviewed Run;
+            every other Run fact is read from the room replica."
            (signal runtime {})))
 
 #?(:cljs (def chat-scroll-windows

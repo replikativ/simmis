@@ -267,3 +267,32 @@
         (finally
           (d/release conn)
           (d/delete-database cfg))))))
+
+(deftest a-tool-call-row-renders-as-a-chip
+  (testing "clojure_eval shows its code, and the result its content"
+    (let [chip (run-detail/tool-call-chip
+                {:id "c1" :name "clojure_eval" :input (pr-str {:code "(+ 1 2)"})
+                 :result (pr-str {:type :success :content "3"}) :status :completed
+                 :duration-ms 4 :started-at 1000}
+                "Vár")]
+      (is (= "(+ 1 2)" (:S.EvalEntry/code chip)))
+      (is (= "3" (:S.EvalEntry/result chip)))
+      (is (true? (:S.EvalEntry/success? chip)))
+      (is (= "Vár" (:S.EvalEntry/agent-name chip)))))
+  (testing "other tools show their input without dvergr's key namespaces"
+    (is (= (pr-str {:command "ls"})
+           (:S.EvalEntry/code (run-detail/tool-call-chip
+                               {:id "c2" :name "shell" :input (pr-str {:tool-input.shell/command "ls"})
+                                :status :completed}
+                               nil)))))
+  (testing "a call still running is in flight, not a success with an empty result"
+    (let [chip (run-detail/tool-call-chip {:id "c3" :name "read_file" :input "{}" :status :running} nil)]
+      (is (= "" (:S.EvalEntry/result chip)))
+      (is (= (run-detail/tool-status-label {:status :running}) (:S.EvalEntry/status chip)))))
+  (testing "an error shows its message and is not a success"
+    (let [chip (run-detail/tool-call-chip
+                {:id "c4" :name "shell" :input "{}" :status :error :error? true
+                 :result (pr-str {:type :error :error "boom"})}
+                nil)]
+      (is (false? (:S.EvalEntry/success? chip)))
+      (is (= "boom" (:S.EvalEntry/result chip))))))

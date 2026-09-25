@@ -4,7 +4,8 @@
    The room database remains authoritative. This namespace does not mirror Run
    state: it joins durable Run identity, correlated messages, and typed tool
   calls at read time, then performs deterministic display-only compression."
-  (:require [clojure.string :as str]
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [datahike.api :as d]))
 
 (defn- uuid-value [x]
@@ -239,6 +240,49 @@
      :children (vec (:children detail))
      :inputs (mapv #(get input-by-id % {:id %}) input-ids)}))
 
+
+(def ^:private max-chip-chars 2000)
+
+(defn- read-edn [s]
+  (when (string? s)
+    (try (edn/read-string s) (catch #?(:clj Throwable :cljs :default) _ nil))))
+
+(defn- chip-text [s]
+  (let [s (str s)]
+    (if (> (count s) max-chip-chars)
+      (str (subs s 0 max-chip-chars) "\n… (truncated)")
+      s)))
+
+(defn tool-call-chip
+  "A normalized tool call as the timeline and the Run inspector render it (an
+   eval chip): `clojure_eval` shows its code, other tools their input; the
+   result shows its content or error; a call still running is in flight."
+  [call actor-name]
+  (let [input (:input call)
+        in (read-edn input)
+        out (read-edn (:result call))
+        running? (= :running (:status call))]
+    {:entity/uuid (:id call)
+     :S.EvalEntry/tool (:name call)
+     :S.EvalEntry/code (chip-text (cond
+                                    (and (= "clojure_eval" (:name call)) (map? in) (:code in))
+                                    (:code in)
+                                    ;; dvergr namespaces structured input keys
+                                    ;; (:tool-input.shell/command): noise here.
+                                    (map? in)
+                                    (pr-str (update-keys in #(if (keyword? %) (keyword (name %)) %)))
+                                    :else input))
+     :S.EvalEntry/result (chip-text (cond running? ""
+                                          (map? out) (or (:content out) (:error out) (:result call))
+                                          :else (:result call)))
+     :S.EvalEntry/success? (and (not (:error? call)) (not= :error (:status call)))
+     :S.EvalEntry/status (tool-status-label call)
+     :S.EvalEntry/duration-ms (:duration-ms call)
+     :S.EvalEntry/approval (authorization-label call)
+     :S.EvalEntry/agent-name actor-name
+     :S.EvalEntry/evaluated-at #?(:cljs (some-> (:started-at call) js/Date.)
+                                  :clj (:started-at call))}))
+
 (do
      (def ^:private run-pull-base
        '[:run/id :run/kind :run/actor :run/trigger :run/parent :run/status
@@ -272,7 +316,8 @@
          :tool-call/started-at])
 
      (def ^:private tool-call-authorization-attrs
-       '[:tool-call/approval
+       '[:tool-call/ended-at
+         :tool-call/approval
          :tool-call/authorization-decision :tool-call/authorization-source
          :tool-call/authorization-subject-type :tool-call/authorization-subject-id
          :tool-call/authorization-action :tool-call/authorization-resource-type
@@ -361,6 +406,39 @@
                  :resource-type (:tool-call/authorization-resource-type call)
                  :resource-id (:tool-call/authorization-resource-id call)
                  :grant-id (:tool-call/authorization-grant-id call)})))
+
+     (defn query-room-tool-calls
+       "Every tool call a room replica's Runs made, in flight or done, with
+        the name of the agent whose Run made it."
+       [db]
+       (let [names (party-names db)]
+         (mapv (fn [[t actor]]
+                 (assoc (normalize-tool-call t)
+                        :actor-name (or (get names (actor-party-id actor))
+                                        (some-> actor name))))
+               (d/q '[:find (pull ?t pattern) ?actor
+                      :in $ pattern
+                      :where
+                      [?t :tool-call/run-id ?rid]
+                      [?r :run/id ?rid]
+                      [?r :run/actor ?actor]]
+                    db (tool-call-pull db)))))
+
+     (defn query-room-runs
+       "A room replica's Runs as the run views show them: `{:active [...]
+        :recent [...]}`, newest first, `:recent` bounded by `limit`. Active
+        means running; everything here is read from the replica, which the
+        server keeps current, so a view tracking the room's db is live."
+       [db limit]
+       (let [names (party-names db)
+             runs (->> (d/q '[:find [(pull ?r pattern) ...]
+                              :in $ pattern
+                              :where [?r :run/id _]]
+                            db (run-pull db))
+                       (map #(normalize-run % names))
+                       (sort-by (juxt #(or (:started-at %) 0) :id) #(compare %2 %1)))]
+         {:active (filterv #(= :running (:status %)) runs)
+          :recent (vec (take limit runs))}))
 
      (defn query-run-detail
        "Bounded indexed lookup for one Run and its causal projection. Returns nil
