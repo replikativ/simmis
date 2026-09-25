@@ -36,6 +36,8 @@
             [clojure.string :as str]
             [yggdrasil.protocols :as yp]
             [datahike.versioning :as dv]
+            [datahike.connections :as dconns]
+            [datahike.store :as dstore]
             [dvergr.substrate.datahike :as sdh]
             [dvergr.system.db :as sdb]
             [dvergr.system.rooms :as rooms]
@@ -240,16 +242,28 @@
   (when-let [sys (get-kb-system db-scope)]
     (into #{} (remove internal-branch?) (yp/branches sys))))
 
+(defn- connected?
+  "Whether `branch` of `sys`'s store has a live connection in this process: a
+   context forked in this process (a Run's world, say) is using it."
+  [sys branch]
+  (let [store-id (dstore/store-identity (get-in @(:conn sys) [:config :store]))]
+    (some? (dconns/lookup-connection [store-id branch]))))
+
 (defn gc-internal-branches!
   "Delete leaked ctx-fork branches (overlay-*/fork-*) from a KB. They are
-   per-process ephemera; after a JVM restart every survivor is an orphan.
-   Never touches the current branch. Returns the number deleted."
+   per-process ephemera: one left by a previous process is an orphan. One that
+   has a connection in THIS process is not: this runs lazily, on a store's first
+   selection after boot, when a context forked since (an agent's Run world, an
+   open review) may already be working on its branch. Deleting it would release
+   that world's connection under it. Never touches the current branch. Returns
+   the number deleted."
   [db-scope]
   (if-let [sys (get-kb-system db-scope)]
     (let [current (yp/current-branch sys)
           victims (->> (yp/branches sys)
                        (filter internal-branch?)
-                       (remove #{current}))]
+                       (remove #{current})
+                       (remove #(connected? sys %)))]
       (doseq [b victims]
         (try
           (yp/delete-branch! sys b)
