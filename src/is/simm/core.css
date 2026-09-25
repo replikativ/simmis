@@ -1658,8 +1658,7 @@ body {
   backdrop-filter: blur(16px);
 }
 
-.run-history-back,
-.run-history-refresh {
+.run-history-back {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1673,10 +1672,8 @@ body {
   cursor: pointer;
 }
 
-.run-history-back:hover,
-.run-history-refresh:hover { color: var(--accent); }
-.run-history-back svg,
-.run-history-refresh svg { width: 13px; height: 13px; }
+.run-history-back:hover { color: var(--accent); }
+.run-history-back svg { width: 13px; height: 13px; }
 
 .run-history-heading h2 { margin: 2px 0; font-family: var(--font-display); font-size: var(--text-lg); }
 .run-history-heading p { margin: 0; color: var(--mono-text-tertiary); font-size: var(--text-sm); }

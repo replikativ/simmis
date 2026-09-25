@@ -16,7 +16,8 @@
             #?(:clj [dvergr.chat.context :as chat-ctx])
             #?(:clj [dvergr.chat.accounting :as acct])
             #?(:clj [dvergr.agent.run :as agent-run])
-            #?(:clj [is.simm.model.run-broadcast :as run-broadcast])
+            #?(:clj [dvergr.room.registry :as room-registry])
+            #?(:clj [org.replikativ.spindel.engine.core :as rtc])
             #?(:clj [is.simm.ops.run-world-proposals :as world-proposals])
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.model.message-notify-broadcast :as mnb])
@@ -312,15 +313,29 @@
 ;; Agent Runs
 ;; =============================================================================
 
-(defn-spin-remote load-room-runs!
-  [server-id room-id-str]
-  (spin-remote server-id [room-id-str]
+#?(:clj
+   (defn- run-world-live?
+     "Does this server process still hold the exact settlement capability of
+      Run `r`'s world? Not a durable fact: a restart drops it while the Run stays
+      under review, so it is asked of the server, not read from the replica."
+     [room-id r]
+     (boolean
+      (when-let [world-id (:run/world r)]
+        (when-let [room (room-agents/live-room room-id)]
+          (binding [rtc/*execution-context* (:ctx room)]
+            (when-let [world (room-registry/lookup world-id)]
+              (and (= (:id room) (:parent-id world))
+                   (= (:run/id r) (some-> world :meta deref :run-id))))))))))
+
+(defn-spin-remote run-world-live!
+  [server-id room-id-str run-id-str]
+  (spin-remote server-id [room-id-str run-id-str]
     #?(:clj
-       (let [room-id (java.util.UUID/fromString room-id-str)]
-         ;; The topic must exist before the browser subscribes. This is also the
-         ;; lazy registration path for rooms created after server startup.
-         (run-broadcast/ensure-topic-registered! room-id)
-         (run-broadcast/room-snapshot room-id))
+       (let [room-id (java.util.UUID/fromString room-id-str)
+             run-id (java.util.UUID/fromString run-id-str)
+             room (room-agents/live-room room-id)
+             r (when room (agent-run/run room run-id))]
+         {:run-id run-id-str :live? (if r (run-world-live? room-id r) false)})
        :cljs nil)))
 
 (defn-spin-remote cancel-room-run!

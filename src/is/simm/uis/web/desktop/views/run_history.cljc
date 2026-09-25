@@ -76,7 +76,7 @@
           (map #(run-node % (inc depth) on-open-run) children))))))
 
 (defn view
-  [{:keys [room-name runs on-open-run on-back-room on-refresh]}]
+  [{:keys [room-name runs on-open-run on-back-room]}]
   (let [forest (run-detail/causal-forest runs)
         active-count (count (filter #(contains? #{:running :cancelling}
                                                   (:status %)) runs))
@@ -93,11 +93,7 @@
             (vc/icon "orbit")
             (or room-name "Room"))
           (el/h2 {} "Runs")
-          (el/p {} "Recent execution scopes, grouped by explicit containment."))
-        (el/button {:class "run-history-refresh"
-                    :title "Refresh Runs"
-                    :on-click (fn [_] (when on-refresh (on-refresh)))}
-          (vc/icon "refresh-cw")))
+          (el/p {} "Recent execution scopes, grouped by explicit containment.")))
       (el/main {:class "run-history-body"}
         (el/div {:class "run-history-summary"}
           (el/span {} (str (count runs) " recent"))

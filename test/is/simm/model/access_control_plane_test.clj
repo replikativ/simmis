@@ -113,7 +113,7 @@
 
 (deftest run-controls-are-scoped-to-the-containing-room
   (let [room-id (random-uuid)]
-    (doseq [[fn-name action] [["load-room-runs!" :read]
+    (doseq [[fn-name action] [["run-world-live!" :read]
                               ["cancel-room-run!" :write]
                               ["promote-room-run-world!" :write]]]
       (let [policy (get access/rpc-policy fn-name)]

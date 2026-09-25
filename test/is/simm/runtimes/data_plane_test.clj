@@ -104,21 +104,12 @@
       (is (false? (:allowed? (authorized? {:sub almost} t true)))
           "a truncated id is a different party"))))
 
-(deftest a-run-topic-delegates-to-exact-room-membership
+(deftest a-run-topic-is-no-longer-a-private-stream
+  ;; Runs replicate with the room's store, under its membership gate; there is
+  ;; no separate `:runs/<room>` lifecycle stream, so such a topic gets no grant
+  ;; of its own.
   (let [topic (keyword "runs" (str alice))]
-    (testing "room membership grants the private lifecycle stream"
-      (let [seen (atom nil)]
-        (with-redefs [access/can? (fn [subject action resource]
-                                    (reset! seen [subject action resource])
-                                    true)]
-          (is (true? (web/data-plane-authorized? (principal bob) topic)))
-          (is (= [(principal bob) :read {:room alice}] @seen)))))
-    (testing "knowing a room UUID is not enough"
-      (is (false? (:allowed? (authorized? (principal bob) topic false)))))
-    (testing "a malformed runs topic gets no special treatment"
-      (let [r (authorized? (principal bob) :runs/not-a-uuid false)]
-        (is (false? (:allowed? r)))
-        (is (true? (:reached-can? r)))))))
+    (is (false? (:allowed? (authorized? (principal bob) topic false))))))
 
 ;; =============================================================================
 ;; Store scopes — the delegating branch

@@ -50,7 +50,7 @@
             #?(:cljs [clojure.core.async :refer [go <! put! promise-chan] :include-macros true])
             #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
-            #?(:cljs [is.simm.uis.web.desktop.run-sync :as run-sync])
+            #?(:cljs [is.simm.uis.web.desktop.run-actions :as run-actions])
             #?(:cljs [is.simm.uis.web.desktop.run-detail :as run-detail])
             #?(:cljs [is.simm.uis.web.desktop.room-details :as room-details])
             #?(:cljs [is.simm.uis.web.desktop.settings-remote :as settings-remote])
@@ -936,10 +936,10 @@
              ;; Per-room reply composer target. This belongs to the Spindel
              ;; execution context so UI forks do not share an ambient atom.
              chat-reply-targets (iv/get-new (track sig/chat-reply-targets))
-             ;; Dvergr Run data stays in a Spindel signal. Tracking the bounded
-             ;; room map here re-renders chat controls without entangling the
-             ;; live server ChatContext with UI execution forks.
-             room-runs (iv/get-new (track sig/room-runs))
+             ;; Runs are read from each room's replica (tracked via room-states);
+             ;; only whether the server still holds a reviewed world's
+             ;; capability is asked of it, and kept here.
+             world-live (iv/get-new (track sig/run-world-live))
              ;; Canonical Proposal review projection. Inline chat cards consume
              ;; the same rows/controllers as Tasks and the full inspector.
              proposal-data (iv/get-new (track sig/proposals-data))
@@ -992,7 +992,7 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs proposal-data id)
+                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets world-live proposal-data id)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1191,7 +1191,7 @@
   "Render content for a tab based on its type.
 
    kb-states arg removed — wiki tabs self-track their KB signal."
-  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs proposal-data col-id]]
+  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets world-live proposal-data col-id]]
   (case tab-type
     :home
     ;; Newcomer landing: the obvious first action is talking to your
@@ -1249,16 +1249,20 @@
     (render-tab-content :chat (assoc data :thread-view? true)
                         local-db chat-windows settings-data admin-data room-details room-states
                         syntax-pref gref video-info screen-sharing screens-results
-                        recordings-results web-captures-results chat-reply-targets room-runs
+                        recordings-results web-captures-results chat-reply-targets world-live
                         proposal-data col-id)
 
     :run-history
     #?(:cljs
        (let [room-id (str (:room-id data))
              room-name (or (:room-name data) "Room")
-             run-state (get room-runs room-id)
-             runs (vec (:recent run-state))
-             _ (run-sync/ensure-room! room-id)
+             room-db-scope (:db-scope data)
+             _ (when (and room-db-scope
+                          (not (get room-states (str room-db-scope))))
+                 (db-sig/connect-room! room-db-scope @web/client))
+             room-db (when room-db-scope
+                       (get-in room-states [(str room-db-scope) :db]))
+             runs (if room-db (:recent (run-detail/query-room-runs room-db 24)) [])
              open-run!
              (fn [event run]
                (let [new-column? (or (.-metaKey event) (.-ctrlKey event))]
@@ -1275,7 +1279,6 @@
           {:room-name room-name
            :runs runs
            :on-open-run open-run!
-           :on-refresh #(run-sync/refresh-room! room-id)
            :on-back-room
            #(sig/open-tab! :chat
                            {:room-id room-id
@@ -1292,7 +1295,6 @@
              room-name (or (:room-name data) "Room")
              room-db-scope (:db-scope data)
              run-id (str (:run-id data))
-             _ (run-sync/ensure-room! room-id)
              _ (when (and room-db-scope
                           (not (get room-states (str room-db-scope))))
                  (db-sig/connect-room! room-db-scope @web/client))
@@ -1304,11 +1306,19 @@
                         (catch :default e
                           (js/console.error "[run-inspector] query failed" run-id e)
                           nil)))
-             run-state (get room-runs room-id)
-             active-run (some #(when (= run-id (:id %)) %)
-                              (:active run-state))
-             recent-run (some #(when (= run-id (:id %)) %)
-                              (:recent run-state))
+             run-state (when room-db (run-detail/query-room-runs room-db 24))
+             with-world (fn [run]
+                          (when run
+                            (cond-> run
+                              (contains? world-live (:id run))
+                              (assoc :world-live? (get world-live (:id run))))))
+             _ (when (= :review (get-in detail [:run :settlement-status]))
+                 (run-actions/ensure-world-live! room-id run-id))
+             detail (cond-> detail (:run detail) (update :run with-world))
+             active-run (with-world (some #(when (= run-id (:id %)) %)
+                                          (:active run-state)))
+             recent-run (with-world (some #(when (= run-id (:id %)) %)
+                                          (:recent run-state)))
              open-related!
              (fn [related]
                (sig/open-tab!
@@ -1324,10 +1334,10 @@
            :fallback-run (or recent-run (:run data))
            :room-name room-name
            :syntax-pref syntax-pref
-           :on-cancel #(run-sync/cancel! room-id %)
+           :on-cancel #(run-actions/cancel! room-id %)
            :on-promote
            (fn [run]
-             (run-sync/promote!
+             (run-actions/promote!
               room-id (:id run)
               (str "Run by " (or (:actor-name run) (:actor run) "agent"))
               (fn [result]
@@ -1369,8 +1379,17 @@
              chat-context-key (if thread-view?
                                 [room-uuid thread-root-id]
                                 room-uuid)
-             active-runs (get-in room-runs [(str room-id) :active] [])
-             recent-runs (get-in room-runs [(str room-id) :recent] [])
+             ;; Trigger room DB connection if we have a db-scope (fire-and-forget)
+             _ (when (and room-db-scope
+                          (not (get room-states (str room-db-scope))))
+                 (db-sig/connect-room! room-db-scope @is.simm.runtimes.web/client))
+
+             ;; Get the room's DB from room-states (nil while connecting)
+             room-db (when room-db-scope (get-in room-states [(str room-db-scope) :db]))
+
+             ;; The room's Runs, from its replica: live as it is.
+             {active-runs :active recent-runs :recent}
+             (if room-db (run-detail/query-room-runs room-db 24) {:active [] :recent []})
 
              open-run!
              (fn [event run-id]
@@ -1390,18 +1409,6 @@
                                    (subs run-id 0 (min 8 (count run-id)))))
                    :new-tab? (not new-column?)
                    :new-column? new-column?})))
-
-             ;; Idempotent transport setup. Subscription bookkeeping is
-             ;; process-local; every value rendered below lives in sig/room-runs.
-             _ (run-sync/ensure-room! room-id)
-
-             ;; Trigger room DB connection if we have a db-scope (fire-and-forget)
-             _ (when (and room-db-scope
-                          (not (get room-states (str room-db-scope))))
-                 (db-sig/connect-room! room-db-scope @is.simm.runtimes.web/client))
-
-             ;; Get the room's DB from room-states (nil while connecting)
-             room-db (when room-db-scope (get-in room-states [(str room-db-scope) :db]))
 
              ;; The roster's verdict on this tab (written by `tab-heal`, from
              ;; whichever of the two moments came second — the tab opening or
@@ -1799,7 +1806,7 @@
            (chat/run-strip
             {:runs active-runs
              :on-open open-run!
-             :on-cancel #(run-sync/cancel! room-id %)})
+             :on-cancel #(run-actions/cancel! room-id %)})
 
            ;; Messages container — native CSS scroll (overflow-y: auto)
            ;; (Old exploration-diff-summary / fork-controls bars removed
