@@ -93,3 +93,45 @@
   (is (= "$0" (board/dollars 0)))
   (is (= "$0.0012" (board/dollars 1234)))
   (is (= "$1.50" (board/dollars 1500000))))
+
+(defn- conn-with-worlds []
+  (let [c (conn)]
+    (d/transact c [{:db/ident :attempt/environment-content-id :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}
+                   {:db/ident :attempt/checks :db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/isComponent true}
+                   {:db/ident :attempt.check/key :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+                   {:db/ident :attempt.check/passed? :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one}])
+    c))
+
+(deftest an-experiment-shows-ranges-its-candidates-against-the-best-and-what-fails
+  (let [c (conn-with-worlds)
+        exp (random-uuid)
+        worlds (vec (repeatedly 4 random-uuid))
+        cell! (fn [candidate world reward spend checks]
+                (let [r (random-uuid)]
+                  (run! c r :agent-task :completed)
+                  (attempt! c r {:attempt/model (name candidate) :attempt/reward reward
+                                 :attempt/microdollars spend
+                                 :attempt/experiment-content-id exp :attempt/experiment-candidate candidate
+                                 :attempt/environment-content-id world
+                                 :attempt/checks (for [[k v] checks] {:attempt.check/key k :attempt.check/passed? v})})))]
+    (doseq [w worlds] (cell! :big w 1.0 100000 {:fact/a true :current/b true}))
+    (doseq [[i w] (map-indexed vector worlds)]
+      (cell! :small w (if (= i 3) 0.5 1.0) 10000 {:fact/a true :current/b (not= i 3)}))
+    (let [[e] (:experiments (board/board @c))
+          [big small] (:candidates e)]
+      (testing "every row has its 95% ranges"
+        (is (= :big (:candidate big)))
+        (is (= 1.0 (second (:pass-rate-interval big))))
+        (is (< 0.0 (first (:pass-rate-interval small)) 0.75 (second (:pass-rate-interval small)) 1.0))
+        (is (vector? (:reward-interval small))))
+      (testing "the other candidate against the best, paired by world"
+        (let [{:keys [baseline rows]} (:comparison e)
+              [row] rows]
+          (is (= :big baseline))
+          (is (= :small (:candidate row)))
+          (is (< 0.0 (:p-higher row) (:p-no-worse row) 1.0))
+          (is (= 4 (:paired-worlds row)))
+          (is (= -0.125 (:reward-difference row)))
+          (is (= (- 100000 (quot 40000 3)) (:microdollars-per-pass-saved row)) "a pass costs a seventh")))
+      (testing "only the checks something fails"
+        (is (= [{:check :current/b :rates {:big 1.0 :small 0.75}}] (:checks e)))))))
