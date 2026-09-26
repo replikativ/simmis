@@ -8812,12 +8812,17 @@ body.tab-dragging .column-drop-zone {
 .attempt-board-table th { text-align: left; font-weight: 600; color: var(--mono-text-tertiary); padding: 4px 8px; border-bottom: 1px solid var(--mono-border); white-space: nowrap; }
 .attempt-board-table td { padding: 5px 8px; border-bottom: 1px solid color-mix(in srgb, var(--mono-border) 50%, transparent); }
 .attempt-board-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.attempt-board-name { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.attempt-board-name { font-family: var(--font-mono); overflow-wrap: anywhere; min-width: 14ch; }
+.attempt-board-section, .attempt-board-experiment { overflow-x: auto; }
 .attempt-board-failed { color: var(--danger); }
 .attempt-board-job { display: flex; flex-direction: column; gap: var(--spacing-xs); margin-bottom: var(--spacing-md); }
 .attempt-board-experiment { margin-bottom: var(--spacing-md); }
 .attempt-board-experiment-title { display: flex; gap: var(--spacing-sm); align-items: baseline; margin-bottom: 4px; font-size: var(--text-sm); color: var(--mono-text-tertiary); }
 .attempt-board-scored { color: var(--success); }
+.attempt-board-range { color: var(--mono-text-tertiary); }
+.attempt-board-comparison, .attempt-board-checks { margin-top: var(--spacing-sm); overflow-x: auto; }
+.attempt-board-checks p { margin: 4px 8px 0; font-size: var(--text-sm); }
+.attempt-board-comparison h4, .attempt-board-checks h4 { margin: 0 0 4px; font-size: var(--text-sm); font-weight: 600; color: var(--mono-text-secondary); }
 @media (max-width: 640px) {
   .attempt-board-table th:nth-child(n+7), .attempt-board-table td:nth-child(n+7) { display: none; }
 }
