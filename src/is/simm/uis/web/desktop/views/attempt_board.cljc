@@ -58,8 +58,9 @@
         (el/th {:class "num" :title "95% range of the pass rate"} "95% range")
         (el/th {:class "num"} "Failed")
         (el/th {:class "num"} "Mean reward")
-        (el/th {:class "num"} "Spend")
-        (el/th {:class "num"} "Per pass")
+        (el/th {:class "num" :title "What was paid"} "Spend")
+        (el/th {:class "num" :title "What the tokens are worth at list price (a subscription run's too)"} "At list price")
+        (el/th {:class "num" :title "Cost per passed attempt, at list price"} "Per pass")
         (el/th {:class "num"} "Median time")))
     (el/tbody {}
       (map (fn [row]
@@ -77,7 +78,8 @@
                    (el/span {:class "attempt-board-range"}
                      (str " (" (range-label (:reward-interval row) reward-label) ")"))))
                (el/td {:class "num"} (board/dollars (:microdollars row)))
-               (el/td {:class "num"} (board/dollars (:microdollars-per-pass row)))
+               (el/td {:class "num"} (board/dollars (:notional-microdollars row)))
+               (el/td {:class "num"} (board/dollars (:notional-microdollars-per-pass row)))
                (el/td {:class "num"} (elapsed-label (:median-elapsed-ms row)))))
            rows))))
 
@@ -96,7 +98,7 @@
           (el/th {:class "num" :title "Mean reward difference on the worlds both ran, with its 95% range"} "Reward Δ")
           (el/th {:class "num"} "Worlds")
           (el/th {:class "num"} "Saved per pass")
-          (el/th {:class "num" :title "Its cost per pass as a share of the best's"} "Cost vs best")))
+          (el/th {:class "num" :title "Its cost per attempt at list price, as a share of the best's"} "Cost vs best")))
       (el/tbody {}
         (map (fn [r]
                (el/tr {:key (str (:candidate r))}
@@ -111,7 +113,7 @@
                          (str " (" (signed lo) " to " (signed hi) ")")))))
                  (el/td {:class "num"} (str (:paired-worlds r)))
                  (el/td {:class "num"} (board/dollars (:microdollars-per-pass-saved r)))
-                 (el/td {:class "num"} (percent (:cost-per-pass-ratio r)))))
+                 (el/td {:class "num"} (percent (or (:notional-cost-ratio r) (:cost-per-pass-ratio r))))))
              rows)))))
 
 (def ^:private checks-shown
@@ -185,7 +187,9 @@
           (el/span {} (str (:passed total) " passed"))
           (when (pos? (:failed total))
             (el/span {:class "run-history-summary-failed"} (str (:failed total) " failed")))
-          (el/span {} (str "spend " (board/dollars (:microdollars total))))
+          (el/span {} (str "spend " (board/dollars (:microdollars total))
+                           (when (not= (:notional-microdollars total) (:microdollars total))
+                             (str " · " (board/dollars (:notional-microdollars total)) " at list price"))))
           (when (pos? running)
             (el/span {:class "run-history-summary-active"} (str running " running"))))
         (if (and (zero? (:attempts total)) (empty? jobs))

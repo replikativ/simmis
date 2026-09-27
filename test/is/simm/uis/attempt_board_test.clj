@@ -16,7 +16,8 @@
         (for [[k t] {:attempt/model :string :attempt/provider :keyword :attempt/status :keyword
                      :attempt/reward :double :attempt/elapsed-ms :long :attempt/started-at :instant
                      :attempt/environment-id :keyword :attempt/microdollars :long
-                     :attempt/experiment-content-id :uuid :attempt/experiment-candidate :keyword}]
+                     :attempt/experiment-content-id :uuid :attempt/experiment-candidate :keyword
+                     :attempt/notional-microdollars :long}]
           {:db/ident k :db/valueType (keyword "db.type" (name t)) :db/cardinality :db.cardinality/one})))
 
 (defn- conn []
@@ -135,3 +136,18 @@
           (is (= (- 100000 (quot 40000 3)) (:microdollars-per-pass-saved row)) "a pass costs a seventh")))
       (testing "only the checks something fails"
         (is (= [{:check :current/b :rates {:big 1.0 :small 0.75}}] (:checks e)))))))
+
+
+(deftest a-subscription-run-shows-what-it-is-worth-at-list-price
+  (let [c (conn) job (random-uuid) [a b] [(random-uuid) (random-uuid)]]
+    (run! c job :workflow :completed)
+    (run! c a :agent-task :completed job)
+    (attempt! c a {:attempt/model "sub" :attempt/reward 1.0 :attempt/microdollars 0 :attempt/notional-microdollars 80000})
+    (run! c b :agent-task :completed job)
+    (attempt! c b {:attempt/model "paid" :attempt/reward 1.0 :attempt/microdollars 20000})
+    (let [{:keys [total models]} (board/board @c)
+          by (into {} (map (juxt :model identity)) models)]
+      (is (= 20000 (:microdollars total)) "what was paid")
+      (is (= 100000 (:notional-microdollars total)) "and at list price: the subscription's worth plus what the paid run cost")
+      (is (= 80000 (get-in by ["sub" :notional-microdollars-per-pass])))
+      (is (= 20000 (get-in by ["paid" :notional-microdollars-per-pass])) "a paid run's worth is its cost"))))
