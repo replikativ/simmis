@@ -277,8 +277,8 @@
         ;; preserve participant inboxes instead of resetting live contexts.
         ;; 0.1.140: the Scorecard statistics are cljc (the Attempts board's
         ;; ranges and comparison run them in the browser).
-        ;; 0.1.152: :attempt/notional-microdollars (the board's At list price); Claude Code candidates work embedded (server/discover, CLI outside any project).
-        org.replikativ/dvergr {:mvn/version "0.1.152"}}
+        ;; 0.1.154: rooms from an older dvergr gain new attributes; :attempt/notional-microdollars (the board's At list price); Claude Code candidates work embedded (server/discover, CLI outside any project).
+        org.replikativ/dvergr {:mvn/version "0.1.154"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
