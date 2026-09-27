@@ -20,7 +20,7 @@
 
 (def ^:private attempt-optional
   ;; Typed by dvergr since #143; older replicas lack them.
-  '[:attempt/microdollars :attempt/experiment-content-id
+  '[:attempt/microdollars :attempt/notional-microdollars :attempt/experiment-content-id
     :attempt/experiment-candidate :attempt/environment-content-id
     {:attempt/checks [:attempt.check/key :attempt.check/passed?]}])
 
@@ -51,6 +51,9 @@
              :started-at (some-> (:attempt/started-at a) .getTime)
              :environment (:attempt/environment-id a)}
       (contains? a :attempt/microdollars) (assoc :microdollars (:attempt/microdollars a))
+      ;; what a subscription run's tokens are worth at list price (dvergr 0.1.150+)
+      (contains? a :attempt/notional-microdollars)
+      (assoc :notional-microdollars (:attempt/notional-microdollars a))
       (:attempt/experiment-content-id a)
       (assoc :experiment (str (:attempt/experiment-content-id a)))
       (:attempt/experiment-candidate a)
@@ -91,6 +94,8 @@
   [xs]
   (let [rewards (keep :reward xs)
         spends (keep :microdollars xs)
+        ;; at list price: a subscription run's worth, else what it cost
+        worth (keep #(or (:notional-microdollars %) (:microdollars %)) xs)
         passed (count (filter passed? xs))]
     {:attempts (count xs)
      :passed passed
@@ -102,6 +107,10 @@
      :microdollars (when (seq spends) (reduce + spends))
      :microdollars-per-pass (when (and (seq spends) (pos? passed))
                               (quot (reduce + spends) passed))
+     :notional-microdollars (when (seq worth) (reduce + worth))
+     :notional-microdollars-per-attempt (when (seq worth) (quot (reduce + worth) (count worth)))
+     :notional-microdollars-per-pass (when (and (seq worth) (pos? passed))
+                                       (quot (reduce + worth) passed))
      :median-elapsed-ms (median (keep :elapsed-ms xs))}))
 
 (defn- ranked
@@ -153,7 +162,11 @@
                      :paired-worlds (:n diff 0)
                      :microdollars-per-pass-saved (when (and cost base-cost) (- base-cost cost))
                      :cost-per-pass-ratio (when (and cost base-cost (pos? base-cost))
-                                            (/ (double cost) base-cost))}))})))
+                                            (/ (double cost) base-cost))
+                     ;; at list price and per attempt: defined when nothing passed
+                     :notional-cost-ratio (let [c (:notional-microdollars-per-attempt r)
+                                                bc (:notional-microdollars-per-attempt base)]
+                                            (when (and c bc (pos? bc)) (/ (double c) bc)))}))})))
 
 (defn check-rates
   "The checks some group of `xs` (by `k`) does not always pass, each with the
