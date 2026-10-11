@@ -12,7 +12,8 @@
          {:db/ident :run/started-at :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}
          {:db/ident :attempt/id :db/valueType :db.type/uuid :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
          {:db/ident :attempt/run :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
-         {:db/ident :scorecard/experiment-content-id :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}]
+         {:db/ident :scorecard/experiment-content-id :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}
+         {:db/ident :scorecard/id :db/valueType :db.type/uuid :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}]
         (for [[k t] {:attempt/model :string :attempt/provider :keyword :attempt/status :keyword
                      :attempt/reward :double :attempt/elapsed-ms :long :attempt/started-at :instant
                      :attempt/environment-id :keyword :attempt/microdollars :long
@@ -151,3 +152,19 @@
       (is (= 100000 (:notional-microdollars total)) "and at list price: the subscription's worth plus what the paid run cost")
       (is (= 80000 (get-in by ["sub" :notional-microdollars-per-pass])))
       (is (= 20000 (get-in by ["paid" :notional-microdollars-per-pass])) "a paid run's worth is its cost"))))
+
+(deftest the-experiment-fingerprint-moves-when-an-experiment-completes
+  ;; The Leaderboard reloads on it: the Scorecard lands after the last
+  ;; Attempt, and a Run ends without a new Attempt.
+  (let [c (conn)
+        r (random-uuid)
+        at #(board/experiment-fingerprint @c)]
+    (run! c r :experiment :running)
+    (attempt! c r {:attempt/model "m" :attempt/reward 1.0})
+    (let [during (at)]
+      (d/transact c [{:run/id r :run/status :completed}])
+      (let [ended (at)]
+        (is (not= during ended) "the Run ended")
+        (d/transact c [{:scorecard/id (random-uuid) :scorecard/experiment-content-id (random-uuid)}])
+        (is (not= ended (at)) "the Scorecard landed")
+        (is (= [1 1 0] (at)))))))

@@ -196,8 +196,8 @@
            "Signal for the Leaderboard tabs: room-id string ->
             {:data {:experiments [...] :running n} :attempts n} | {:error str},
             loaded by `views.leaderboard/load-leaderboard!`. `:attempts` is the
-            replica's Attempt count the data was loaded at: a newer count loads
-            it again."
+            replica's experiment fingerprint the data was loaded at
+            (`attempt-board/experiment-fingerprint`): a newer one loads it again."
            (signal runtime {})))
 
 #?(:cljs (def accounting-data

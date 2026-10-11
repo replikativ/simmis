@@ -42,7 +42,8 @@
 #?(:cljs
    (defn load-leaderboard!
      "Fetch `room-id`'s leaderboard into `sig/leaderboards`, recording the
-      replica's Attempt count `attempts` it was asked at. Coalesced per room
+      replica's experiment fingerprint `attempts` it was asked at
+      (`attempt-board/experiment-fingerprint`). Coalesced per room
       by the aggregate gate."
      [room-id attempts]
      (swap! requested assoc room-id attempts)
@@ -249,8 +250,9 @@
 
 (defn leaderboard-tab
   "The Leaderboard tab of a room: loads its leaderboard on first sight and
-   again whenever the replica's Attempt count `attempts` moves past the one
-   it was loaded at, so a running experiment's board follows its cells."
+   again whenever the replica's experiment fingerprint `attempts` (Attempts,
+   Scorecards, running Runs) moves past the one it was loaded at, so a
+   running experiment's board follows its cells and its completion."
   [{:keys [room-id attempts] :as props}]
   #?(:cljs
      (spin

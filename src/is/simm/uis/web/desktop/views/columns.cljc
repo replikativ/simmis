@@ -1348,7 +1348,7 @@
           {:room-id room-id
            :room-name room-name
            :attempts (when room-db
-                       (try (attempt-board/attempt-count room-db)
+                       (try (attempt-board/experiment-fingerprint room-db)
                             (catch :default _ nil)))
            :on-back-room
            #(sig/open-tab! :chat
