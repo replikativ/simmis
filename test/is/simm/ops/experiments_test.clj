@@ -1,0 +1,106 @@
+(ns is.simm.ops.experiments-test
+  "The leaderboard of a room that keeps a real certified experiment, read
+   through dvergr's ops: two candidates on the same cases, one always right,
+   one always wrong."
+  (:require [clojure.test :refer [deftest is testing]]
+            [datahike.api :as dh]
+            [dvergr.agent.environment :as environment-def]
+            [dvergr.agent.evaluation :as evaluation]
+            [dvergr.agent.experiment :as experiment]
+            [dvergr.agent.roster :as roster]
+            [dvergr.discourse :as d]
+            [dvergr.room.registry :as rreg]
+            [dvergr.room.store.memory :as memory]
+            [is.simm.ops.experiments :as experiments]
+            [org.replikativ.spindel.engine.core :as ec]))
+
+(def ^:private exact-evaluator
+  (evaluation/make-evaluator
+   {:id :simmis-test/exact :version 1 :basis "simmis-experiments-test:v1"
+    :observe (fn [{:keys [default]}] default)
+    :verify (fn [definition evidence]
+              (let [ok? (= (:environment/task definition) (:result evidence))]
+                {:checks {:exact? ok?} :reward (if ok? 1.0 0.0)}))}))
+
+(defn- environment [i]
+  (environment-def/make-environment
+   {:id (keyword "simmis-test" (str "t" i)) :task {:value i}
+    :verifier {:id :simmis-test/exact :version 1 :basis "simmis-experiments-test:v1"}
+    :limits {:timeout-ms 2000 :cancel-timeout-ms 1000}
+    :world {:isolation :ctx :settlement :discard}}))
+
+(def ^:private cases 8)
+
+(defn- with-experiment-room
+  "`(f room)` with a room that keeps a completed experiment of two
+   candidates, `right` (echoes the task: passes) and `wrong` (fails), on
+   `cases` cases."
+  [f]
+  (let [team (-> (roster/make-roster {:id :simmis-test/team})
+                 (roster/make-agent {:id :right :program {:kind :echo}})
+                 (roster/make-agent {:id :wrong :program {:kind :scripted :result :nope}}))
+        definition (experiment/make-experiment
+                    {:id :simmis-test/exp
+                     :dataset (experiment/make-dataset
+                               {:id :simmis-test/tasks
+                                :environments (mapv environment (range cases))})
+                     :candidates [(roster/agent team :right) (roster/agent team :wrong)]
+                     :repetitions 1})
+        room (d/make-room {:id :simmis-experiments-test :store (memory/make)})]
+    (try
+      (binding [ec/*execution-context* (:ctx room)]
+        (rreg/register! room)
+        (let [{:keys [scorecard]} @(experiment/run room team definition
+                                                   {(:ref exact-evaluator) exact-evaluator}
+                                                   {:parallelism 2})]
+          (is (some? scorecard))
+          (f room)))
+      (finally
+        (try (rreg/unregister! (:id room)) (catch Throwable _ nil))
+        (d/close-room! room)))))
+
+(deftest a-completed-experiment-is-its-scorecard-and-its-paired-comparison
+  (with-experiment-room
+    (fn [room]
+      (let [{:keys [experiments running]} (experiments/leaderboard room)
+            [e :as es] experiments]
+        (is (= 1 (count es)))
+        (is (= 0 running))
+        (testing "the Scorecard's leaderboard, in dvergr's order"
+          (is (true? (:complete? e)))
+          (is (= "simmis-test/exp" (:experiment-id e)))
+          (is (= (* 2 cases) (:cells e)))
+          (is (= ["right" "wrong"] (mapv :candidate (:candidates e))))
+          (let [[r w] (:candidates e)]
+            (is (= [cases cases 1.0] ((juxt :attempts :passed :pass-rate) r)))
+            (is (= [cases 0 0.0] ((juxt :attempts :passed :pass-rate) w)))
+            (let [[lo hi] (:pass-rate-interval r)]
+              (is (< 0.5 lo 1.0)) (is (= 1.0 hi)))
+            (testing "with the frontier's time per candidate"
+              (is (number? (:median-seconds r))))))
+        (testing "the paired comparison: right only on every case, decided"
+          (let [{:keys [policy comparisons]} (:paired e)
+                [c] comparisons]
+            (is (= "all-pairs" policy))
+            (is (= 1 (count comparisons)))
+            (is (= ["right" "wrong" cases 0 cases 0 0]
+                   ((juxt :a :b :cases :both-passed :a-only :b-only :both-failed) c)))
+            (is (< (:p c) 0.01) "8 against 0: p = 2/256")
+            (is (= "a-better" (:verdict c)))))))))
+
+(deftest a-store-keeps-experiments-when-it-holds-an-experiment-attempt
+  (let [cfg {:store {:backend :memory :id (random-uuid)} :keep-history? false :schema-flexibility :write}
+        _ (dh/create-database cfg)
+        c (dh/connect cfg)]
+    (try
+      (is (false? (experiments/store-keeps-experiments? @c)) "no such attribute yet")
+      (dh/transact c [{:db/ident :attempt/id :db/valueType :db.type/uuid
+                       :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
+                      {:db/ident :attempt/experiment-content-id :db/valueType :db.type/uuid
+                       :db/cardinality :db.cardinality/one}])
+      (dh/transact c [{:attempt/id (random-uuid)}])
+      (is (false? (experiments/store-keeps-experiments? @c)) "an Attempt of no experiment")
+      (dh/transact c [{:attempt/id (random-uuid) :attempt/experiment-content-id (random-uuid)}])
+      (is (true? (experiments/store-keeps-experiments? @c)))
+      (is (false? (experiments/store-keeps-experiments? nil)))
+      (finally (dh/release c)))))

@@ -23,6 +23,7 @@
             #?(:cljs [is.simm.uis.web.desktop.user-rooms-sync :as urs])
             #?(:cljs [is.simm.uis.web.desktop.message-notify-sync :as mns])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
+            #?(:cljs [is.simm.uis.web.desktop.experiments-remote :as experiments-remote])
             #?(:cljs [cljs.core.async :refer [go]])
             #?(:cljs [is.simm.runtimes.web :as web])
             #?(:cljs [is.simm.uis.web.desktop.branching-sync :as br-sync])
@@ -167,7 +168,7 @@
    - :room-id - Room ID (for :agent items)
    - :model-resolution - desired model-resolution map (for :agent items)"
   [{:keys [id uuid type title project icon obj-icon unread active? db-scope room-id model-resolution
-            kind-label]}]
+            kind-label experiment?]}]
   (el/div {:key (or id (str uuid))
            :class (vc/class-names "nav-item"
                                   (when active? "active"))
@@ -187,11 +188,18 @@
                                                    :agent-name title
                                                    :model-resolution model-resolution}
                                            nil)]
-                            ;; Nav clicks always open new tabs (not replace current)
-                            (sig/open-tab! type tab-data
-                                           {:title title
-                                            :new-column? cmd-key?
-                                            :new-tab? (not cmd-key?)})
+                            ;; Nav clicks always open new tabs (not replace current).
+                            ;; An experiment room opens on its leaderboard; its
+                            ;; chat is one click back from there.
+                            (if (and experiment? (= type :chat))
+                              (sig/open-tab! :leaderboard tab-data
+                                             {:title (str title " Leaderboard")
+                                              :new-column? cmd-key?
+                                              :new-tab? (not cmd-key?)})
+                              (sig/open-tab! type tab-data
+                                             {:title title
+                                              :new-column? cmd-key?
+                                              :new-tab? (not cmd-key?)}))
                             ;; Opening a chat clears its unread badge (and
                             ;; advances the durable server read cursor).
                             (when (= type :chat) (mns/mark-read! id)))
@@ -815,6 +823,19 @@
 
 
 #?(:cljs
+   (defn- join-experiment-room!
+     "Join the experiment room `room-id`, then reload the room list, where it
+      now appears as one of the user's rooms."
+     [room-id]
+     (binding [rtc/*execution-context* runtime]
+       (let [s (experiments-remote/join-experiment-room! web/server-id room-id)]
+         (s (fn [_]
+              (binding [rtc/*execution-context* runtime]
+                (when-let [me @sig/current-user]
+                  (urs/refresh-user-rooms! (:id me)))))
+            (fn [err] (js/console.error "[nav] join experiment room failed:" err)))))))
+
+#?(:cljs
    (defn render-chats-section-spin
      "Chats section spin. Tracks the room roster, collapse state and search
       query — each room item fully encodes what nav-item needs, so the
@@ -849,7 +870,10 @@
                                           :type :chat
                                           :title (or (:room/name r) "Chat")
                                           :db-scope (:room/content-db-scope r)
-                                          :active? (contains? active [:chat rid])
+                                          :experiment? (boolean (:room/experiment? r))
+                                          :obj-icon (when (:room/experiment? r) "medal")
+                                          :active? (or (contains? active [:chat rid])
+                                                       (contains? active [:leaderboard rid]))
                                           ;; IN the item, not read from a closure —
                                           ;; ifor-each diffs on item equality.
                                           ;; The noun explains why a non-Team row
@@ -861,13 +885,15 @@
                                           ;; rather than by room type, so a
                                           ;; telegram room someone calls "Telegram
                                           ;; bridge" drops its chip too.
-                                          :kind-label (let [noun (when-not (vc/team-like? (:room/type r))
+                                          :kind-label (if (:room/experiment? r)
+                                                        "Experiment"
+                                                        (let [noun (when-not (vc/team-like? (:room/type r))
                                                                    (vc/room-noun (:room/type r)))]
                                                         (when (and noun
                                                                    (not (str/includes?
                                                                          (str/lower-case (or (:room/name r) ""))
                                                                          (str/lower-case noun))))
-                                                          noun))
+                                                          noun)))
                                           :unread (when (pos? u) u)})))
                                (filterv #(search-matches? search-q (:title %)))))]
          (el/div {:class "nav-section"}
@@ -891,6 +917,28 @@
                  (ifor-each :id all-rooms
                    (fn [room] (nav-item room)))
                  (el/div {:class "nav-empty"} "No teams yet"))
+               ;; Always rendered, hidden when empty: an element that comes and
+               ;; goes between sibling ifor-each lists left the old rows on
+               ;; screen and dropped "Add team" once the list emptied (a join).
+               (let [unjoined (vec (when (map? user-rooms) (:experiment-rooms user-rooms)))]
+                 (el/div {:key "experiment-rooms"
+                          :class (vc/class-names "nav-experiment-rooms"
+                                                 (when (empty? unjoined) "nav-experiment-rooms--empty"))}
+                   (el/div {:class "nav-subheader"
+                            :title "Experiment rooms dvergr made (room-run, run!, catalog_benchmark) that nobody has joined. Joining makes you a member."}
+                     "Experiments to join")
+                   ;; the list in a container of its own: as a sibling after
+                   ;; the heading its rows were placed before the heading
+                   (el/div {:class "nav-experiment-rooms-items"}
+                     (ifor-each :id unjoined
+                       (fn [{:keys [id name slug]}]
+                         (el/div {:key (str "join-" id)
+                                  :class "nav-item nav-item--action"
+                                  :title (str "Join " slug)
+                                  :on-click (fn [_] (join-experiment-room! id))}
+                           (vc/icon "medal")
+                           (el/span {} (or name slug))
+                           (el/span {:class "nav-kind"} "Join")))))))
                (el/div {:key "new-room"
                         :class "nav-item nav-item--action"
                         :on-click (fn [_]

@@ -27,6 +27,14 @@
 (defn- installed? [db ident]
   (some? (d/q '[:find ?e . :in $ ?ident :where [?e :db/ident ?ident]] db ident)))
 
+(defn attempt-count
+  "How many certified Attempts the replica `db` holds: what a view derived
+   from them elsewhere (the Leaderboard, read through the server) reloads on."
+  [db]
+  (if (installed? db :attempt/id)
+    (count (d/datoms db :aevt :attempt/id))
+    0))
+
 (defn passed?
   "An Attempt passed when its verifier gave it full reward."
   [{:keys [reward]}]

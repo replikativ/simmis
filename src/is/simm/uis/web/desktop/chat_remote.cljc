@@ -19,6 +19,7 @@
             #?(:clj [dvergr.room.registry :as room-registry])
             #?(:clj [org.replikativ.spindel.engine.core :as rtc])
             #?(:clj [is.simm.ops.run-world-proposals :as world-proposals])
+            #?(:clj [is.simm.ops.experiments :as experiments])
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.model.message-notify-broadcast :as mnb])
             #?(:clj [is.simm.model.user-rooms-broadcast :as urb])
@@ -134,8 +135,19 @@
                                     ;; context footer lists them per room;
                                     ;; `contacts` doubles as the name directory.
                                     (update :room/parties
-                                            (fn [ps] (mapv str ps)))))
+                                            (fn [ps] (mapv str ps)))
+                                    ;; a room dvergr keeps experiments in:
+                                    ;; marked in the room list, opened on its
+                                    ;; leaderboard
+                                    (assoc :room/experiment?
+                                           (experiments/keeps-experiments? (:room/id r)))))
                               party-rooms)
+                 ;; Experiment rooms nobody has joined (dvergr made them, so
+                 ;; they have no members): an admin can join one.
+                 :experiment-rooms
+                 (when (access/can? party-id :read :admin)
+                   (mapv (fn [r] {:id (str (:room/id r)) :slug (:room/slug r) :name (:room/name r)})
+                         (experiments/unjoined-experiment-rooms)))
                  :contacts contacts
                  ;; Everyone in the tenant, name/handle/avatar only — the
                  ;; @-mention DIRECTORY.

@@ -43,6 +43,7 @@
             [is.simm.uis.web.desktop.views.run-history :as run-history]
             [is.simm.uis.web.desktop.attempt-board :as attempt-board]
             [is.simm.uis.web.desktop.views.attempt-board :as attempt-board-view]
+            [is.simm.uis.web.desktop.views.leaderboard :as leaderboard-view]
             [is.simm.uis.web.desktop.views.run-inspector :as run-inspector]
             [is.simm.uis.web.desktop.proposal-card :as proposal-card]
             [is.simm.uis.web.desktop.signals :as sig]
@@ -616,6 +617,7 @@
     :chat-thread "messages-square"
     :run-history "list-tree"
     :attempt-board "trophy"
+    :leaderboard "medal"
     :run-inspector "orbit"
     :video "video"
     :screens "images"
@@ -1330,6 +1332,34 @@
        (el/div {:class "run-history"}
          (el/p {} "Attempts")))
 
+    :leaderboard
+    #?(:cljs
+       (let [room-id (str (:room-id data))
+             room-name (or (:room-name data) "Room")
+             room-db-scope (:db-scope data)
+             ;; the replica only says WHEN to reload: the board itself is
+             ;; dvergr's, read through the server
+             _ (when (and room-db-scope
+                          (not (get room-states (str room-db-scope))))
+                 (db-sig/connect-room! room-db-scope @web/client))
+             room-db (when room-db-scope
+                       (get-in room-states [(str room-db-scope) :db]))]
+         (leaderboard-view/leaderboard-tab
+          {:room-id room-id
+           :room-name room-name
+           :attempts (when room-db
+                       (try (attempt-board/attempt-count room-db)
+                            (catch :default _ nil)))
+           :on-back-room
+           #(sig/open-tab! :chat
+                           {:room-id room-id
+                            :room-name room-name
+                            :db-scope (:db-scope data)}
+                           {:title room-name})}))
+       :clj
+       (el/div {:class "run-history"}
+         (el/p {} "Leaderboard")))
+
     :run-inspector
     #?(:cljs
        (let [room-id (str (:room-id data))
@@ -1771,6 +1801,17 @@
                                       {:title (str room-name " Attempts")
                                        :new-tab? true}))}
                (vc/icon "trophy" {:class "chat-settings-icon"}))
+             (el/button {:class "chat-settings-btn"
+                         :title "Leaderboard: each experiment's candidates, compared on the same cases"
+                         :on-click (fn [_]
+                                     (sig/open-tab!
+                                      :leaderboard
+                                      {:room-id room-id
+                                       :room-name room-name
+                                       :db-scope room-db-scope}
+                                      {:title (str room-name " Leaderboard")
+                                       :new-tab? true}))}
+               (vc/icon "medal" {:class "chat-settings-icon"}))
              (el/button {:class (vc/class-names "chat-settings-btn"
                                                 (when (and screen-sharing
                                                            (contains? screen-sharing room-id))

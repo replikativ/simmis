@@ -55,6 +55,7 @@
             ;; require does not reach the JVM.
             [is.simm.uis.web.desktop.tasks-remote]
             [is.simm.uis.web.desktop.accounting-remote]
+            [is.simm.uis.web.desktop.experiments-remote]
             [is.simm.uis.web.desktop.feed-remote]
             [org.replikativ.spindel.distributed.core :as dist])
   (:import [java.io File]
