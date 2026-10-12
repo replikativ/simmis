@@ -8826,3 +8826,15 @@ body.tab-dragging .column-drop-zone {
 @media (max-width: 640px) {
   .attempt-board-table th:nth-child(n+7), .attempt-board-table td:nth-child(n+7) { display: none; }
 }
+
+/* Leaderboard: an experiment's candidates and their paired comparisons */
+.leaderboard-experiment-name { font-family: var(--font-mono); color: var(--mono-text-secondary); overflow-wrap: anywhere; }
+.leaderboard-paired { margin-top: var(--spacing-sm); }
+.leaderboard-paired h4 { margin: var(--spacing-sm) 0 4px; }
+.leaderboard-paired > p { margin: 4px 0; }
+.leaderboard-verdict { white-space: normal; }
+.leaderboard-verdict--better { color: var(--success); font-weight: 600; }
+.leaderboard-verdict--undecidable { color: var(--mono-text-tertiary); }
+.nav-subheader { padding: 6px 12px 2px; font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.04em; color: var(--mono-text-tertiary); }
+.nav-experiment-rooms--empty { display: none; }
+.leaderboard .attempt-board-comparison > p { font-size: var(--text-sm); }

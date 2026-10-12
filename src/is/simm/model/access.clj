@@ -528,7 +528,12 @@
      "load-unread-counts!"     {:action R :resource (always :authenticated)}
      "mark-read!"              {:action W :resource (always :authenticated)}
      "load-notify-prefs!"      {:action R :resource (always :authenticated)}
-     "set-notify-pref!"        {:action W :resource (always :authenticated)}}))
+     "set-notify-pref!"        {:action W :resource (always :authenticated)}
+     ;; --- experiments-remote ---
+     ;; A leaderboard is the room's: a member reads it. An experiment room
+     ;; dvergr made has no members, so joining one is for admins.
+     "load-leaderboard!"       {:action R :resource (room :room-id-str)}
+     "join-experiment-room!"   {:action A :resource (always :admin)}}))
 
 (defn authorize-remote
   "The `:authorize-fn` for distributed-scope's invoke-on-peer. Consulted for

@@ -31,6 +31,7 @@
     is.simm.uis.web.desktop.block-remote
     is.simm.uis.web.desktop.branching-remote
     is.simm.uis.web.desktop.chat-remote
+    is.simm.uis.web.desktop.experiments-remote
     is.simm.uis.web.desktop.feed-remote
     is.simm.uis.web.desktop.mail-remote
     is.simm.uis.web.desktop.proposals-remote

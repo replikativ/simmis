@@ -192,6 +192,14 @@
             and room activity — unified server-side by is.simm.ops.feed."
            (signal runtime nil)))
 
+#?(:cljs (def leaderboards
+           "Signal for the Leaderboard tabs: room-id string ->
+            {:data {:experiments [...] :running n} :attempts n} | {:error str},
+            loaded by `views.leaderboard/load-leaderboard!`. `:attempts` is the
+            replica's experiment fingerprint the data was loaded at
+            (`attempt-board/experiment-fingerprint`): a newer one loads it again."
+           (signal runtime {})))
+
 #?(:cljs (def accounting-data
            "Signal for the Accounting perspective:
             {:books [{:room :room-name :accounts [...] :error?}] :loaded-at ms}

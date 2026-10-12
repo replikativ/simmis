@@ -27,6 +27,19 @@
 (defn- installed? [db ident]
   (some? (d/q '[:find ?e . :in $ ?ident :where [?e :db/ident ?ident]] db ident)))
 
+(defn experiment-fingerprint
+  "What a view derived from the replica `db`'s experiments elsewhere (the
+   Leaderboard, read through the server) reloads on: how many certified
+   Attempts and Scorecards it holds and how many Runs are running. A
+   Scorecard lands after the last Attempt, and a Run ends without a new one,
+   so the Attempt count alone would keep a finished board \"in progress\"."
+  [db]
+  [(if (installed? db :attempt/id) (count (d/datoms db :aevt :attempt/id)) 0)
+   (if (installed? db :scorecard/id) (count (d/datoms db :aevt :scorecard/id)) 0)
+   (if (installed? db :run/status)
+     (or (d/q '[:find (count ?r) . :where [?r :run/status :running]] db) 0)
+     0)])
+
 (defn passed?
   "An Attempt passed when its verifier gave it full reward."
   [{:keys [reward]}]

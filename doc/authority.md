@@ -62,6 +62,13 @@ passing someone else's id is refused. When reviewing a new RPC, the question is
 not "does the handler check?" but "does its policy row name the right
 argument?"
 
+A room dvergr makes for an experiment (`room-run`, `runner/run!` in a home,
+`catalog_benchmark`) has no members, so membership admits nobody to it. An admin
+sees such rooms in the room list and joins one (`join-experiment-room!`,
+policed `:admin`; `is.simm.ops.experiments/join!` refuses a room that keeps no
+experiment): from then on it is an ordinary room, and its leaderboard
+(`load-leaderboard!`, `{:room id}`) is read by its members.
+
 An RPC with no row is **refused**, so forgetting one produces a dead feature
 rather than an open one. `rpc-coverage-test` joins the live registry against
 the table so the omission is visible.

@@ -230,18 +230,18 @@
   (fake/with-server
    (fn [fixture]
      (fake/respond! fixture "/openai/models" openai-key
-                    ["gpt-5.6-luna" "gpt-9.9-luna"])
+                    ["gpt-6-luna" "gpt-9.9-luna"])
      (with-config fixture {"OPENAI_API_KEY" openai-key}
        (fn []
          (let [before @registry/registry
                rows (catalog/choices)
                latest (row rows "gpt-*-luna")
-               supported (row rows "gpt-5.6-luna")
+               supported (row rows "gpt-6-luna")
                unregistered (row rows "gpt-9.9-luna")
                withdrawn (row rows "gpt-*")]
            (testing "served + registered + implemented is the only usable state"
              (is (= :available (:availability latest)))
-             (is (= "gpt-5.6-luna" (:resolves latest)))
+             (is (= "gpt-6-luna" (:resolves latest)))
              (is (:available? supported)))
            (testing "served + unregistered is explicit and never registered"
              (is (= :not-implemented (:availability unregistered)))
@@ -266,7 +266,7 @@
 (deftest transient-failure-retains-last-known-rows-but-disables-them
   (fake/with-server
    (fn [fixture]
-     (fake/respond! fixture "/openai/models" openai-key ["gpt-5.6-luna"])
+     (fake/respond! fixture "/openai/models" openai-key ["gpt-6-luna"])
      (with-config fixture {"OPENAI_API_KEY" openai-key}
        (fn []
          (let [before (catalog/choices)]
@@ -280,7 +280,7 @@
              (is (:disabled? luna))
              (is (str/includes? (:availability-explanation luna)
                                 "Last-known status is retained"))
-             (is (= "gpt-5.6-luna" (:resolves luna))))))))))
+             (is (= "gpt-6-luna" (:resolves luna))))))))))
 
 (deftest an-outage-does-not-relabel-a-family-as-unsupported
   (fake/with-server
