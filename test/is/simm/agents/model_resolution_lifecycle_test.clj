@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [dvergr.agent.prompt :as agent-prompt]
             [dvergr.agent.room-context :as room-ctx]
+            [dvergr.chat.context :as chat-ctx]
             [dvergr.discourse :as discourse]
             [dvergr.discourse.llm :as llm]
             [dvergr.room.registry :as room-registry]
@@ -24,6 +25,10 @@
                        :available? true})
         resolution-calls (atom [])
         participant-options (atom [])
+        installed (atom [])
+        vocab-installers '[add-wiki-ns! add-kb-write-ns! add-proposal-ns!
+                           add-book-ns! add-sheet-ns! add-office-ns!
+                           add-screen-ns! add-workflow-ns! add-web-ns!]
         redefs {(room-agents-var 'get-room-kb-conns) (constantly [])
                 (room-agents-var 'persona+tools) (constantly "test prompt")
                 #'room-agents/describe-model-resolution
@@ -33,7 +38,12 @@
                 #'rooms/get-room-budget-dollars (constantly 1.0)
                 #'rooms/get-room (constantly {:room/slug "model-resolution-test"})
                 #'agent-prompt/assemble-system-prompt (fn [prompt _] prompt)
-                #'room-ctx/ensure-ctx! (fn [& _] {:sci-ctx nil})
+                #'room-ctx/ensure-ctx! (fn [& _] {:sci-component ::sandbox-ref})
+                ;; The ctx carries a stable REFERENCE; the interpreter is
+                ;; resolved in a world. Reading the interpreter off the ctx
+                ;; directly installs nothing.
+                #'chat-ctx/sci-context-in (fn [cctx _] (some-> (:sci-component cctx)
+                                                               (vector :sandbox)))
                 #'room-ctx/drop-ctx! (fn [& _] nil)
                 #'drives/get-room-drives (constantly [])
                 #'tools/registry (atom {})
@@ -49,7 +59,11 @@
                 (fn [r participant-id]
                   (swap! (:participants r) dissoc participant-id)
                   nil)
-                #'room-registry/lookup (constantly room)}]
+                #'room-registry/lookup (constantly room)}
+        redefs (into redefs
+                     (for [sym vocab-installers]
+                       [(room-agents-var sym)
+                        (fn [sci-ctx & _] (swap! installed conj [sym sci-ctx]) nil)]))]
     (with-redefs-fn
       redefs
       (fn []
@@ -62,6 +76,10 @@
                                [actor-id :spec :system-prompt])))
           (is (= 1 (count @participant-options)))
           (is (= 1 (count @resolution-calls))))
+
+        (testing "the simmis vocabulary lands in the interpreter resolved for the room"
+          (is (= (set vocab-installers) (set (map first @installed))))
+          (is (every? #(= [::sandbox-ref :sandbox] (second %)) @installed)))
 
         (reset! desired {:model "gpt-5.6-luna"
                          :provider :openai

@@ -2532,7 +2532,12 @@
             cctx (room-ctx/ensure-ctx! room actor-kw
                                        {:system-prompt system-prompt
                                         :budget-dollars budget-dollars})
-            _ (when-let [sci-ctx (:sci-ctx cctx)]
+            ;; The ctx holds only a stable reference to its interpreter; the
+            ;; interpreter itself is resolved in a world, so a forked room
+            ;; selects a fork-local heap. Reading a `:sci-ctx` key off the
+            ;; ctx (the pre-0.1.255 shape) returns nil and silently skips
+            ;; every namespace below.
+            _ (when-let [sci-ctx (chat-ctx/sci-context-in cctx (:ctx room))]
                 ;; resolved per write, not captured: `join-campaign!` changes
                 ;; which overlay is active in the middle of a turn
                 (let [overlay-fn #(active-overlay room-uuid agent-uuid)]
@@ -2806,10 +2811,12 @@
    local `contexts` cache walked by chat_remote/sandbox_remote."
   [room-uuid]
   (when-let [slug (:room/slug (rooms/get-room room-uuid))]
-    (let [room-id (rstore/slug->room-id slug)]
+    (let [room-id (rstore/slug->room-id slug)
+          room    (rreg/lookup room-id)]
       (some (fn [[_ aid] ]
               (when-let [cctx (room-ctx/lookup room-id (party->actor-kw aid))]
-                {:chat-ctx cctx :sci-ctx (:sci-ctx cctx)}))
+                {:chat-ctx cctx
+                 :sci-ctx  (when room (chat-ctx/sci-context-in cctx (:ctx room)))}))
             (filter (fn [[rid _]] (= rid room-uuid)) @joined)))))
 
 ;; =============================================================================
