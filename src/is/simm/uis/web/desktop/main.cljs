@@ -44,8 +44,8 @@
 ;; Configuration
 ;; =============================================================================
 
-(def ^:const SERVER-URL web/url)
-(def ^:const SERVER-ID web/server-id)
+(def SERVER-URL web/url)
+(def SERVER-ID web/server-id)
 
 ;; =============================================================================
 ;; Lucide Icon Initialization
