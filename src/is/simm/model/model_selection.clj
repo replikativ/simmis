@@ -39,6 +39,7 @@
    dark cannot erase another provider's answer or turn stale ids into claims
    that they are currently reachable."
   (:require [clojure.string :as str]
+            [dvergr.model.api.codex-auth :as codex-auth]
             [dvergr.model.registry :as registry]
             [taoensso.telemere :as log]))
 
@@ -67,7 +68,16 @@
    so it is read like every other catalog provider.
 
    Keeping the exact environment variable beside the adapter contract is what
-   lets every unavailable surface give the same actionable explanation."
+   lets every unavailable surface give the same actionable explanation.
+
+   The Codex subscription has no environment variable: its credential is the
+   ChatGPT login `codex login` writes to ~/.codex/auth.json, which dvergr's
+   provider reads and refreshes itself. `:credential-check :codex-login` asks
+   dvergr the same question it asks before registering that provider (through
+   `*codex-login?*`), and `:credential-instructions` says what to do instead of
+   naming a variable. It has no account model list to consult — dvergr
+   registers exactly the ids the subscription serves — so its catalog is not
+   required."
   {:openai {:credential-source "OPENAI_API_KEY"
             :catalog-required? true
             :implemented-api-types #{:openai-chat}}
@@ -76,7 +86,14 @@
                :implemented-api-types #{:openai-chat}}
    :anthropic {:credential-source "ANTHROPIC_API_KEY"
                :catalog-required? true
-               :implemented-api-types #{:anthropic-messages}}})
+               :implemented-api-types #{:anthropic-messages}}
+   :codex-subscription {:credential-source "a ChatGPT login (codex login)"
+                        :credential-check :codex-login
+                        :credential-instructions
+                        (str "Run `codex login` as the user running simmis, "
+                             "then restart simmis.")
+                        :catalog-required? false
+                        :implemented-api-types #{:openai-responses}}})
 
 (defn availability-state
   "Pure, authoritative state matrix for one provider/model candidate.
@@ -196,6 +213,12 @@
   "Environment lookup seam. Tests bind this to a map so catalog verification
    never depends on, or discloses, developer credentials."
   #(System/getenv %))
+
+(def ^:dynamic *codex-login?*
+  "Codex login seam, the counterpart of `*env-lookup*` for a credential that
+   lives in a file rather than the environment. Tests bind it so a developer's
+   own ~/.codex/auth.json never decides an assertion."
+  #(codex-auth/available? {}))
 
 (def ^:dynamic *provider-base-urls*
   "Default provider bases. Tests bind these to local HTTP fixtures; production
@@ -561,8 +584,10 @@
 (defn credential-present?
   "Whether this process started with the provider's credential available."
   [provider]
-  (when-let [credential-source (:credential-source (provider-contract provider))]
-    (boolean (seq (*env-lookup* credential-source)))))
+  (let [{:keys [credential-source credential-check]} (provider-contract provider)]
+    (cond
+      (= :codex-login credential-check) (boolean (*codex-login?*))
+      credential-source (boolean (seq (*env-lookup* credential-source))))))
 
 (defn- endpoint-key [endpoint]
   [(:provider endpoint) (:base-url endpoint) (:credential-source endpoint)])

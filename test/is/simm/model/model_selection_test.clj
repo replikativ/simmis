@@ -23,7 +23,8 @@
         :max-output 8192
         :pricing {:input 1 :output 1}
         :quirks {}})
-      (try (f)
+      (try (binding [selection/*codex-login?* (constantly false)]
+             (f))
            (finally
              (reset! registry/registry before)
              (selection/reset-catalog!))))))
