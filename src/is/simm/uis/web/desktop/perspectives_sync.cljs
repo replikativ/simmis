@@ -31,6 +31,7 @@
             [is.simm.uis.web.desktop.views.feed :as feed]
             [is.simm.uis.web.desktop.views.tasks :as tasks]
             [is.simm.uis.web.desktop.views.accounting :as accounting]
+            [is.simm.uis.web.desktop.views.book :as book]
             [is.simm.uis.web.desktop.views.history-subway :as subway]
             [is.simm.uis.web.desktop.views.proposals :as proposals]))
 
@@ -45,7 +46,8 @@
     (when db-scope (subway/invalidate! db-scope))
     (case type
       :book/tx-occurred
-      (accounting/load-position!)
+      (do (accounting/load-position!)
+          (book/reload-all!))
 
       ;; A ForkSet moving changes what Tasks lists AND produces a Feed row
       ;; (`ops.feed` emits :proposal-filed / :proposal-resolved), so Feed belongs

@@ -36,6 +36,7 @@
             #?(:cljs [is.simm.uis.web.desktop.views.tasks :as tasks-view])
             #?(:cljs [is.simm.uis.web.desktop.views.timelines :as timelines-view])
             #?(:cljs [is.simm.uis.web.desktop.views.accounting :as accounting-view])
+            #?(:cljs [is.simm.uis.web.desktop.views.book :as book-view])
             #?(:cljs [is.simm.uis.web.desktop.views.add-source :as add-source-view])
             #?(:cljs [is.simm.uis.web.desktop.views.feed :as feed-view])
             #?(:cljs [is.simm.uis.web.desktop.views.history-subway :as subway])
@@ -629,6 +630,7 @@
     :tasks "circle-check"
     :timelines "git-branch"
     :accounting "wallet"
+    :book "wallet"
     :add-memory "plus-circle"
     :add-team "plus-circle"
     :profile "at-sign"
@@ -2293,6 +2295,13 @@
     #?(:cljs (accounting-view/accounting-view)
        :clj (el/div {:class "content-accounting"}
               (el/h2 {} "Accounting")))
+
+    :book
+    #?(:cljs (book-view/book-tab {:room-id (str (:room-id data))
+                                  :room-name (:room-name data)
+                                  :db-scope (:db-scope data)})
+       :clj (el/div {:class "content-accounting"}
+              (el/h2 {} "Book")))
 
     :add-memory
     #?(:cljs (add-source-view/add-source-view :memory)

@@ -100,8 +100,9 @@
          (filter #(access/can? party :read {:room (:room/id %)}))
          (mapv (fn [{:room/keys [id name]}]
                  (let [base {:room id :room-name name
-                             ;; the book belongs to a team — open it
-                             :ref {:kind :room :room (str id) :title name}}]
+                             ;; the heading opens this team's book: its
+                             ;; statements, journal and ledgers
+                             :ref {:kind :book :room (str id) :title name}}]
                    (try
                      (if-let [conn (book-conn id)]
                        (cond-> (assoc base :accounts (account-rows conn))
