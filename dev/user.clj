@@ -135,7 +135,7 @@
 ;; =============================================================================
 
 (defn ensure-css!
-  "Build `public/main.css` if it is missing.
+  "Build `public/main.css` if it is missing or older than `core.css`.
 
    It is a GITIGNORED build artifact (Lightning CSS bundles `core.css` into
    it), so a fresh clone does not have one — and nothing in the dev startup
@@ -143,13 +143,21 @@
    unstyled fragments: it works perfectly and looks broken, which is the worst
    possible first impression and exactly what a new contributor met.
 
-   Only builds when ABSENT. The css watcher (`npm run styles-dev`) owns it
-   afterwards, and rebuilding here on every restart would fight it."
+   Also builds when STALE. Building only when absent left a checkout that
+   never ran the css watcher (`npm run styles-dev`) serving a stylesheet six
+   weeks behind `core.css`: every rule added since was missing, and nothing
+   said so — an empty nav section meant to be `display: none` rendered as a
+   bare heading. A stale check does not fight the watcher: while it runs, the
+   output is never older than its source."
   []
-  (let [f (java.io.File. "public/main.css")]
-    (when-not (and (.exists f) (pos? (.length f)))
+  (let [f (java.io.File. "public/main.css")
+        src (java.io.File. "src/is/simm/core.css")
+        missing? (not (and (.exists f) (pos? (.length f))))]
+    (when (or missing? (< (.lastModified f) (.lastModified src)))
       (log/log! {:level :info :id ::css-building
-                 :msg "public/main.css missing — building it once"})
+                 :msg (if missing?
+                        "public/main.css missing — building it"
+                        "public/main.css older than core.css — rebuilding it")})
       (try
         (let [{:keys [exit err]} (clojure.java.shell/sh "npm" "run" "build:css")]
           (if (zero? exit)
