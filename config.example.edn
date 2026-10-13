@@ -37,7 +37,22 @@
  ;; fetched on demand; `:public-key` pins a static one instead.
  #_:oidc-issuers #_[{:iss "https://your-tenant.authkit.app"
                      :jwks-url "https://your-tenant.authkit.app/oauth2/jwks"
-                     :alg :RS256}]}
+                     :alg :RS256}]
+
+ ;; ---------------------------------------------------------------------------
+ ;; Keys agents may USE (optional). An agent's sandbox never sees the host
+ ;; environment: `env/get` resolves only what is granted here, so a key that is
+ ;; set in the environment but not listed reads as unset — web search answers
+ ;; "BRAVE_API_KEY … not set" although the server has it. A listed secret
+ ;; reaches the agent as an opaque placeholder; the http egress swaps in the
+ ;; real value only for `:allowed-domains`, in the listed locations.
+ ;; `:env` names the variable the value comes from; `:config-path` points at a
+ ;; value elsewhere in this file instead. Restart, or rejoin the agent, after
+ ;; changing this.
+ #_:secrets #_[{:name "BRAVE_API_KEY" :env "BRAVE_API_KEY"
+                :allowed-domains ["https://api.search.brave.com"]
+                :allowed-locations [:header :query]
+                :header-names ["X-Subscription-Token"]}]}
 
 ;; -----------------------------------------------------------------------------
 ;; Environment variables (NOT this file)
