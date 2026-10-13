@@ -164,7 +164,7 @@
 (defonce render-handle (atom nil))
 
 ;; Default page UUID for testing
-(def ^:const DEFAULT_PAGE_UUID "30b7101d-db61-4266-a616-cb7bd6546784")
+(def DEFAULT_PAGE_UUID "30b7101d-db61-4266-a616-cb7bd6546784")
 
 ;; Page UUID currently being edited
 (defonce current-page-uuid (atom nil))
