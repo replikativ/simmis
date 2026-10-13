@@ -32,7 +32,14 @@
    {:family "gpt-*-mini" :label "GPT mini" :provider "openai"}
 
    {:model "claude-sonnet-4-6" :label "Claude Sonnet 4.6" :provider "anthropic"}
-   {:model "claude-opus-4-7" :label "Claude Opus 4.7" :provider "anthropic"}])
+   {:model "claude-opus-4-7" :label "Claude Opus 4.7" :provider "anthropic"}
+
+   ;; Billed to a ChatGPT subscription rather than per token. Exact ids: dvergr
+   ;; names them by tier, not by a version slot `family-of` could blank.
+   {:model "codex-subscription-luna-6" :label "Codex Luna 6" :provider "codex-subscription"}
+   {:model "codex-subscription-luna" :label "Codex Luna 5.6" :provider "codex-subscription"}
+   {:model "codex-subscription-terra" :label "Codex Terra 5.6" :provider "codex-subscription"}
+   {:model "codex-subscription-sol-6.1" :label "Codex Sol 6.1" :provider "codex-subscription"}])
 
 (def inherit-choice-value
   "Sentinel sent by the first-class agent picker row that clears an override."
@@ -52,7 +59,8 @@
   {:openai "OpenAI"
    :fireworks "Fireworks"
    :anthropic "Anthropic"
-   :claude-code "Claude Code"})
+   :claude-code "Claude Code"
+   :codex-subscription "Codex subscription"})
 
 (defn short-id
   "A model id as a person reads it.
@@ -223,7 +231,8 @@
     :needs-credential
     {:availability-label "Credential required"
      :availability-explanation
-     (str "Set " credential-source " in the server environment, then restart simmis.")}
+     (or (:credential-instructions (ms/provider-contract provider))
+         (str "Set " credential-source " in the server environment, then restart simmis."))}
 
     :not-implemented
     ;; NOT "not yet". This state is reached from both directions: a version the

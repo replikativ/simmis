@@ -24,7 +24,10 @@
      ;; that a /models RESPONSE registers nothing.
      (registry/load-models-resource!)
      (try
-       (f)
+       ;; Like `*env-lookup*`: the developer's own Codex login must not decide
+       ;; an assertion. Tests that want one bind it back to true.
+       (binding [selection/*codex-login?* (constantly false)]
+         (f))
        (finally
          (reset! registry/registry before)
          (selection/reset-catalog!))))))
@@ -162,6 +165,31 @@
                            provider-rows))))
            (is (empty? @(:requests fixture))
                "rendering missing-credential rows makes no provider calls")))))))
+
+(deftest codex-rows-follow-the-login-not-the-environment
+  (fake/with-server
+   (fn [fixture]
+     (with-config fixture {}
+       (fn []
+         (let [codex-values (into #{}
+                                  (keep #(when (= "codex-subscription" (:provider %))
+                                           (:model %)))
+                                  catalog/curated)]
+           (is (seq codex-values))
+           (testing "without a login every Codex row says how to log in"
+             (let [rows (filter #(codex-values (:value %)) (catalog/choices))]
+               (is (= codex-values (into #{} (map :value) rows)))
+               (is (every? #(= :needs-credential (:availability %)) rows))
+               (is (every? #(str/includes? (:availability-explanation %)
+                                           "codex login")
+                           rows))))
+           (testing "a login makes them available with no key and no catalog call"
+             (binding [selection/*codex-login?* (constantly true)]
+               (let [rows (filter #(codex-values (:value %)) (catalog/choices))]
+                 (is (every? :available? rows))
+                 (is (every? #(= "Codex subscription" (:provider-label %)) rows)))))
+           (is (empty? @(:requests fixture))
+               "Codex availability never asks a provider endpoint")))))))
 
 (deftest fireworks-rows-do-not-wait-for-the-first-agent-turn
   ;; Fireworks model metadata lives in dvergr's resources/models.edn, which

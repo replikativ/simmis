@@ -92,6 +92,14 @@ credentials are never borrowed, even when two provider records have the same
 URL. Supplying `OPENAI_BASE_URL` also marks that record OpenAI-compatible rather
 than native OpenAI, so provider-specific request behavior remains explicit.
 
+The Codex subscription is the one provider without a key. Its credential is the
+ChatGPT login `codex login` writes to `~/.codex/auth.json` (or `$CODEX_HOME`),
+which dvergr's `:codex-subscription` provider reads and refreshes itself; simmis
+reports its rows available exactly when dvergr would register that provider.
+There is no account model list to ask: the picker offers dvergr's registered
+`codex-subscription-*` ids as fixed rows, and a turn on one is billed to the
+subscription rather than per token.
+
 New agents store no model selection. Persona/template selection supplies the
 role and system prompt, not a hidden model. An agent follows its owner's model
 preference from Settings, then the product fallback when the owner has no
