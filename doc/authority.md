@@ -76,9 +76,8 @@ policed `:admin`; `is.simm.ops.experiments/join!` refuses a room that keeps no
 experiment): from then on it is an ordinary room, and its leaderboard
 (`load-leaderboard!`, `{:room id}`) is read by its members. The dvergr ops
 behind it run for the reading party as a dvergr principal
-(`experiments/party-principal`), not for the process; simmis configures no
-dvergr authorizer, so dvergr's default admits it and the policy row above is
-the check that decides.
+(`is.simm.ops.dvergr/party-principal`), not for the process, and dvergr asks
+simmis's authorizer about each of them (below, "dvergr ops").
 
 An RPC with no row is **refused**, so forgetting one produces a dead feature
 rather than an open one. `rpc-coverage-test` joins the live registry against
@@ -154,6 +153,8 @@ Concretely, with the action each RPC is policed as:
 | dismiss one fork of a proposal (`dismiss-fork!`) | `:write` on the proposal's room AND control of that fork, as above | policy row (`{:proposal-fork …}`) |
 | dismiss a whole proposal (`dismiss-proposal!`) | `:write` on the room AND (its filer, or control of every open fork) | policy row (`{:proposal-forks …}`) |
 
+| stop a Run (`cancel-room-run!`) | its starter, the room's owner, or `:admin` — each from inside the room | policy row (`:write`) + `access/require-run-cancellable!` |
+
 Membership is owner-level because it hands out authority: a new member reaches
 every KB, drive and repo the room is granted. A member who is not the owner can
 still bring in and take out their OWN agents, and attach KBs and drives they own.
@@ -197,6 +198,67 @@ VIEWER may attach, and leaves out who else a room KB is shared with. It returns
 `:can-grant?`, so the settings page shows membership and budget controls only to
 the owner; a member sees the budget and the members but not the controls.
 
+## Runs
+
+Seeing a Run is reading its room (`run-world-live!`, and the Runs the room's
+replica holds). Stopping one is narrower (plan decision §2.9.2): its
+**starter**, the room's **owner**, or `:admin` — each only from inside the room,
+since the `cancel-room-run!` gate is `:write` on the room
+(`access/may-cancel-run?`).
+
+A dvergr Run records the agent that runs (`:run/actor`) and its trigger
+message (`:run/trigger`), not who caused it, so the starter is derived
+(`is.simm.agents.runs/run-starter`):
+
+| Run | Starter |
+|---|---|
+| triggered by a message | the message's logical initiator (`:metadata :from`, delegated work), else its author — a human's message names the human, an agent's names that agent party |
+| scheduled | none: the trigger is the scheduler's message, and dvergr's schedule row records no owner |
+| a job (`:run/kind` in `dvergr.jobs/kinds`) | the job's actor, which dvergr records as its starter (none for `:dvergr`, the process) |
+| anything else | none |
+
+A Run with no starter is the owner's (or an admin's) to stop. The handler
+finds the Run among the room's LIVE Runs before it decides, and cancels through
+dvergr's `cancel-room-run!`, which binds the Run to the room again: a Run id
+names nothing in another room.
+
+The client reads Runs from the room replica, which says nothing about the
+viewer, so whether the viewer may stop a Run is asked of the server per live
+Run (`can-cancel-room-run!`, the same rule). The run strip and the Run inspector
+show the stop control only when it answers true.
+
+## dvergr ops
+
+dvergr asks its `:authorize` seam (`dvergr.principal`) before every op it runs
+for a principal other than the process itself. simmis invokes dvergr ops in one
+way, `is.simm.ops.dvergr/invoke`, which passes the principal of the acting
+party (`party-principal`, `:principal/id "party/<uuid>"`) and installs
+`access/dvergr-authorize` on that call's daemon map. The authorizer maps
+dvergr's resource descriptor, as dvergr resolved it, onto a `can?` question:
+
+| dvergr resource | simmis question |
+|---|---|
+| `[:room x]` | the same action on `{:room id}` (dvergr's room id is the slug, `/` as `_fork_`, or a uuid); on a room `:merge` and `:admin` are the owner's |
+| `[:job x]` | `:read` on the job's room; anything else (cancel) is `access/may-cancel-run?` with the job's owner as starter |
+| `[:global]` | a read: `:authenticated`; a write: `:admin` |
+| `[:agent x]` | `:admin` |
+| anything else, or a handle that resolved to nothing | denied |
+
+A principal that names no party is denied, and so is a throw anywhere (dvergr
+denies on a throw too). Denials raise dvergr's 403 op error and log
+`::dvergr-op-denied`. The leaderboard reads (`scorecard_list`,
+`scorecard_detail`, `experiment_progress`, `experiment_report`) therefore
+refuse a party that may not read the room themselves, not only behind the
+`load-leaderboard!` row.
+
+The seam is installed per call, not process-wide (`principal/configure!`). The
+process-wide seam also answers every registry-tool call of every agent
+(`dvergr.tools/execute` asks it with the agent's principal), and dvergr classes
+`clojure_eval` as `:admin` on the room, which in simmis is the owner's act,
+while simmis gives a room's agents its sandbox (below). Agents' tool calls are
+governed by their per-agent tool maps and the sandbox checks until they move
+behind `can?`.
+
 ## The sandbox and eval
 
 Code that runs in a room's sandbox holds whatever the sandbox was handed, so
@@ -239,6 +301,22 @@ for, so creating one is not a neutral act.
 `SIMMIS_DEV_AUTH=true` and also warns on every boot. Never expose a server to a
 network while it is set.
 
+## Token audiences
+
+An access token names the surface it is for, and each surface accepts only its
+own `aud`. The web app (websocket handshake and every HTTP route) is
+`auth-config/web-audience`, `"simmis-api"`: what `/auth/login`, `/auth/refresh`
+and `/auth/dev` have always minted, so no session was logged out when the check
+arrived. It is kabel's `:required-claims {:aud …}` on the one `:jwt` config the
+websocket plane and `http-auth` both build their validator from. A token for
+another audience (MCP's `<origin>/mcp`), with an audience list, or with none,
+is refused.
+
+kabel's issuer registry takes one `:required-claims` for every issuer, so an
+external IdP (`:oidc-issuers`) must be configured to mint the same audience; a
+per-issuer audience would need kabel to accept `:required-claims` per issuer
+entry.
+
 ## Blob reads
 
 `GET /blobs/<sha256>` accepts the Authorization header or an HttpOnly,
@@ -254,8 +332,9 @@ token instead: signed with a key derived from the JWT secret
 (HMAC-SHA256(secret, `"simmis/blob-read/v1"`)), issuer `simmis/blob-read`,
 audience `blobs`, one hour. Only routes declaring `:auth :blob-read` accept
 it (`http-auth/blob-reader-party-id`); the access-token validator — every
-other route, every RPC, the websocket handshake — refuses it, by key and by
-issuer, and the blob route in turn refuses an access token in the cookie.
+other route, every RPC, the websocket handshake — refuses it, by key, by issuer
+and by audience, and the blob route in turn refuses an access token in the
+cookie.
 `/auth/login` and `/auth/refresh` set it, and the client renews it through
 `POST /auth/blob-cookie` (header-authenticated) before it expires, and again on
 waking up (visibility, focus, back online) since timers stall while a machine

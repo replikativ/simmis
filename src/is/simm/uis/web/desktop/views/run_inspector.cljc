@@ -201,7 +201,8 @@
             (when-let [duration (duration-label run)]
               (el/span {} duration))
             (el/span {:class "run-inspector-id"} (short-id (:id run)))))
-        (when active?
+        ;; only for whoever may stop it (`:can-cancel?`, the server's answer)
+        (when (and active? (:can-cancel? run))
           (el/button {:class "run-inspector-stop"
                       :disabled (= :cancelling (:status run))
                       :on-click (fn [_]

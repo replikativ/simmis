@@ -143,6 +143,9 @@
    ;; the gate admits members; WHICH member may cancel WHICH run is the
    ;; handler's (§2.9.2) — see runs-and-jobs-test
    "cancel-room-run!"        [(c :room MEMBERS)]
+   ;; asking whether one may stop a Run is reading the room; the answer is
+   ;; per Run and per caller — see runs-and-jobs-test
+   "can-cancel-room-run!"    [(c :room MEMBERS)]
    "promote-room-run-world!" [(c :room MEMBERS)]
    ;; Spend is egress (doc/authority.md, problem 4): authorized in advance by
    ;; whoever pays, not raised by anyone who can speak in the room.

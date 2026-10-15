@@ -10,6 +10,7 @@
             #?(:clj [is.simm.model.drives :as drives])
             #?(:clj [is.simm.model.system-db :as system-db])
             #?(:clj [is.simm.agents.room-agents :as room-agents])
+            #?(:clj [is.simm.agents.runs :as runs])
             #?(:clj [is.simm.agents.templates :as templates])
             #?(:clj [is.simm.model.model-selection :as model-selection])
             #?(:clj [is.simm.model.model-catalog :as model-catalog])
@@ -357,17 +358,41 @@
   [server-id room-id-str run-id-str]
   (spin-remote server-id [room-id-str run-id-str]
     #?(:clj
+       ;; The gate admits the room's members (:write). Who may stop THIS Run is
+       ;; narrower: whoever started it, the room owner, or :admin
+       ;; (`access/may-cancel-run?`, the starter from `runs/run-starter`).
+       ;; The Run must be live in this very room — an opaque Run id names
+       ;; nothing elsewhere — and dvergr's `cancel-room-run!` binds it to the
+       ;; room once more.
        (let [room-id (java.util.UUID/fromString room-id-str)
              run-id (java.util.UUID/fromString run-id-str)
-             room (room-agents/live-room room-id)
-             owns-run? (some #(= run-id (:run/id %))
-                             (when room (agent-run/active-runs (:id room))))]
-         ;; Authorization establishes room membership; this second check binds
-         ;; the opaque Run UUID to that exact room before targeted cancellation.
-         (if owns-run?
-           {:status (if (agent-run/cancel-run! run-id) :cancelling :not-active)
-            :run-id run-id-str}
+             room (room-agents/live-room room-id)]
+         (if-let [run (runs/live-run room run-id)]
+           (do (access/require-run-cancellable! room-id run-id (runs/run-starter room run))
+               {:status (if (agent-run/cancel-room-run! (:id room) run-id) :cancelling :not-active)
+                :run-id run-id-str})
            {:status :not-active :run-id run-id-str}))
+       :cljs nil)))
+
+;; Whether the CALLER may stop the live Run: the UI shows the stop control only
+;; then. Runs reach the client through the room replica, which says nothing
+;; about the viewer, so this is asked of the server per Run (like
+;; `run-world-live!`). A Run that is not live answers false.
+(defn-spin-remote can-cancel-room-run!
+  [server-id room-id-str run-id-str]
+  (spin-remote server-id [room-id-str run-id-str]
+    #?(:clj
+       (let [party-id (access/authenticated-party-id)
+             room-id (java.util.UUID/fromString room-id-str)
+             run-id (java.util.UUID/fromString run-id-str)
+             room (room-agents/live-room room-id)
+             run (runs/live-run room run-id)]
+         {:run-id run-id-str
+          :can-cancel? (boolean
+                        (and run
+                             (access/may-cancel-run? (some-> (system-db/get-conn) deref)
+                                                     party-id room-id
+                                                     (runs/run-starter room run))))})
        :cljs nil)))
 
 (defn-spin-remote promote-room-run-world!

@@ -9,6 +9,7 @@
             [dvergr.agent.experiment :as experiment]
             [dvergr.agent.roster :as roster]
             [dvergr.discourse :as d]
+            [dvergr.principal :as principal]
             [dvergr.room.registry :as rreg]
             [dvergr.room.store.memory :as memory]
             [is.simm.ops.experiments :as experiments]
@@ -63,7 +64,7 @@
   (with-experiment-room
     (fn [room]
       (let [{:keys [experiments running]} (experiments/leaderboard
-                                                  room (experiments/party-principal (random-uuid)))
+                                                  room principal/local-principal)
             [e :as es] experiments]
         (is (= 1 (count es)))
         (is (= 0 running))

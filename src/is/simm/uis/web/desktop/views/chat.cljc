@@ -821,14 +821,15 @@
 (defn run-strip
   "Compact room-level view of live causal execution scopes. A Run may span
    many tool calls but contributes one row here; detailed activity remains in
-   the timeline and is correlated by Run id."
+   the timeline and is correlated by Run id. A run's stop button shows only
+   when it carries `:can-cancel?` (the server's answer for this viewer)."
   [{:keys [runs on-cancel on-open]}]
   (when (seq runs)
     (el/div {:class "chat-runs"}
       (el/div {:class "chat-runs-label"}
         (vc/icon "orbit" {:class "chat-runs-label-icon"})
         (str (count runs) " active " (if (= 1 (count runs)) "run" "runs")))
-      (for [{:keys [id actor-name status]} runs]
+      (for [{:keys [id actor-name status can-cancel?]} runs]
         (el/div {:key id
                  :class (vc/class-names "chat-run"
                                         (str "chat-run--" (name status)))
@@ -844,13 +845,15 @@
                 :cancelling "stopping"
                 :running "working"
                 (name status))))
-          (el/button {:class "chat-run-cancel"
-                      :disabled (= :cancelling status)
-                      :title "Stop this Run"
-                      :on-click (fn [event]
-                                  (.stopPropagation event)
-                                  (when on-cancel (on-cancel id)))}
-            (vc/icon "square")))))))
+          ;; only for whoever may stop it: its starter, the room owner, :admin
+          (when can-cancel?
+            (el/button {:class "chat-run-cancel"
+                        :disabled (= :cancelling status)
+                        :title "Stop this Run"
+                        :on-click (fn [event]
+                                    (.stopPropagation event)
+                                    (when on-cancel (on-cancel id)))}
+              (vc/icon "square"))))))))
 
 (defn chat-header
   "Render the chat panel header with fork indicator.
