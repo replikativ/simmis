@@ -29,8 +29,8 @@ fork.
 
 `principal` is always derived from a validated JWT, never from an id the client
 passed. `resource` is one of a small set of shapes — a store scope, `{:kb id}`,
-`{:room id}`, `{:proposal id}`, `{:self party}`, `{:settings party}`, `:admin`,
-or `:authenticated`.
+`{:drive id}`, `{:branch {:scope s :branch b}}`, `{:room id}`, `{:proposal id}`,
+`{:self party}`, `{:settings party}`, `:admin`, or `:authenticated`.
 
 `can?` answers as plain Datalog over relations that already exist — party
 –`:room/parties`→ room –`:grant/*`→ system. Authorization is a query, not a
@@ -61,6 +61,13 @@ and `can?` requires the resolved `:self` to equal the authenticated party, so
 passing someone else's id is refused. When reviewing a new RPC, the question is
 not "does the handler check?" but "does its policy row name the right
 argument?"
+
+A row binds ONE argument. When a handler acts on a second id the client supplies
+— the party to add, the agent to remove, the KB to attach — it checks that id
+with the shared helpers in `access.clj` (`require!`, `require-enlistable!`,
+`require-agent-manageable!`) before changing anything. They refuse with
+`{:type :not-authorized}`, the same shape the gate uses. So the review question
+has a second half: does the handler act on any id its row does not name?
 
 A room dvergr makes for an experiment (`room-run`, `runner/run!` in a home,
 `catalog_benchmark`) has no members, so membership admits nobody to it. An admin
@@ -118,6 +125,67 @@ Two deliberate choices:
 - **Self-approval dissolves by granting less, not by adding negation.** Agents
   default to propose-only; granting merge on one resource is a deliberate,
   revocable unlock.
+
+## Who may change authority
+
+`access.clj`'s principle: **membership grants read and write of the
+conversation; authority-granting and irreversible actions stop at the owner.**
+Concretely, with the action each RPC is policed as:
+
+| Act | Who | Where it is checked |
+|---|---|---|
+| add or remove a room member (`add-room-party!`, `remove-room-party!`) | the room's owner (`:grant`) | policy row |
+| …and WHICH party may be added (also `create-room!`'s initial members) | any human; an agent only by its owner, or `:admin` | `access/require-enlistable!` |
+| set the room's budget (`update-room-budget!`) | the room's owner (`:grant`) | policy row |
+| add your own agent (`add-agent-to-room!`) | a member; the agent is owned by the caller, never by an id the client names | handler (principal) |
+| remove an agent (`remove-agent-from-room!`), or change its role and response policy (`update-agent-assignment!`) | an agent that is in this room, by the room's owner, the agent's owner or `:admin`; on removal the party is deleted only when its owner (or `:admin`) removed it from its last room | `access/require-agent-manageable!` |
+| attach a KB / drive to a room | `:write` on the room AND `:grant` on the KB / drive | policy row + `access/require!` |
+| detach a KB / drive from a room | the room's owner, or `:grant` on the KB / drive (its owner withdraws it, member of the room or not; `:admin`) | policy row (`{:attachment …}`) |
+| share, unshare or delete a KB | `:grant` on the KB | policy row |
+| write to or discard an open proposal fork | `:write` on the store AND (the fork's author, or `:merge` on its authority scope) | policy row (`{:branch …}`) |
+| dismiss one fork of a proposal (`dismiss-fork!`) | `:write` on the proposal's room AND control of that fork, as above | policy row (`{:proposal-fork …}`) |
+| dismiss a whole proposal (`dismiss-proposal!`) | `:write` on the room AND (its filer, or control of every open fork) | policy row (`{:proposal-forks …}`) |
+
+Membership is owner-level because it hands out authority: a new member reaches
+every KB, drive and repo the room is granted. A member who is not the owner can
+still bring in and take out their OWN agents, and attach KBs and drives they own.
+
+**`:grant` on a KB or drive** is its owner, or the global `:admin` role
+(`access/authority-override?`). The override covers `:grant`/`:admin` only — it
+lets an admin manage who reaches a KB, not read it without leaving a record.
+
+**A direct share (`:kb/shared-with`) means `:read-write`**
+(`access/shared-with-permission`): read and write, not merge, not grant. Shares
+are bare party uuids on the KB with no permission of their own; `can?` used to
+read them as owner, which made `share-kb!` an escalation (a room grantee shared
+the KB with themselves and could then merge, re-share and delete). Existing
+shares keep the read and write they were documented to give; what they lose is
+landing to trunk and managing the KB, which stay with its owner.
+
+**A room's drive answers to the room's owner.** `drives/ensure-room-drive!`
+provisions it on first need, owned by the room's owner; it used to be owned by
+whoever first opened the Files tab, which made that member owner of the room's
+files. Drives provisioned that way are recognised without a migration
+(`access/room-provisioned-drive-owner`: named "<room> Drive" or "Room Drive",
+first granted to that room) and answer to that room's owner, so the member who
+triggered them holds only what the room grants. A migration rewriting
+`:drive/owner` on those rows would make the record agree with the answer; it is
+not needed for the authorization.
+
+**An open proposal fork** — a branch named by an open fork of an `:open`
+proposal (doc/proposals-and-time-travel.md §5) — belongs to its author
+(`:proposal.fork/author`, else the filer) and to whoever may decide it (`:merge`
+on the fork's authority scope, the check `ops.proposals` makes before landing
+it). Other writers of the store may read it but not write to it or discard it.
+Trunk and branches that are no open fork answer exactly as the store does. Once
+a fork is accepted or dismissed it is an ordinary branch name again. (The fork's
+status is filtered in Clojure rather than with `missing?` in the query —
+[replikativ/datahike#1116](https://github.com/replikativ/datahike/issues/1116).)
+
+`load-room-details!` offers in its attach pickers only the KBs and drives the
+VIEWER may attach, and leaves out who else a room KB is shared with. It returns
+`:can-grant?`, so the settings page shows membership and budget controls only to
+the owner; a member sees the budget and the members but not the controls.
 
 ## Identity
 

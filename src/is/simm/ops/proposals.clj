@@ -806,10 +806,11 @@
   "Refuse ONE fork: discard its branch, mark the fork dismissed, keep the note.
    The rest of the ForkSet stays open and lands normally.
 
-   Gated exactly like `dismiss-proposal!` — the RPC's room check and nothing
-   more. Discarding is not landing, so the fork-scope :write requirement that
-   `accept-*` carries does not apply here: refusing a contribution to your own
-   room's proposal must not require write access to a KB you were never granted.
+   Gated by the RPC policy (`{:proposal-fork …}` in access/rpc-policy): the
+   proposal's room, and control of THIS fork — its author withdrawing it, or a
+   decider (`:merge` on its authority scope) refusing it. Discarding deletes the
+   branch, so a room member who merely sees the proposal may not do it to
+   someone else's contribution.
 
    Returns {:status :dismissed :proposal <status-or-nil>}, the second being what
    the proposal became if this was the last open fork."

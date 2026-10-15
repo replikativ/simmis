@@ -13,12 +13,13 @@
    later swap to eacl's traversal engine happens behind this signature.
 
    The action vocabulary and the fork model it encodes are written up in
-   `doc/permissions-and-forks.md`; `permission-satisfies?` below is its
+   `doc/authority.md`; `permission-satisfies?` below is its
    normative statement.
 
-   Covered by `access_test`, `access_control_plane_test` and
-   `runtimes/data_plane_test`. Known gap: no INTEGRATION test runs the
-   predicate and the two enforcement planes together against real grants."
+   Covered by `access_test`, `access_control_plane_test`,
+   `runtimes/data_plane_test`, and the authority suite under
+   `test/is/simm/authority/`, which runs the predicate and both enforcement
+   planes together against real grants (doc/authority.md)."
   (:require [is.simm.distributed-scope :as ds]
             [is.simm.model.system-db :as system-db]
             [datahike.api :as d]
@@ -135,7 +136,7 @@
 (defn- permission-satisfies?
   "Does a grant `permission` permit `action`?
 
-   The action vocabulary, fixed here (see `doc/permissions-and-forks.md`):
+   The action vocabulary, fixed here (see `doc/authority.md`):
 
      :read   — see it
      :write  — change it, which in the fork model means WRITE A FORK
@@ -160,9 +161,36 @@
     (:grant :admin) (= :owner permission)
     false))
 
+(def shared-with-permission
+  "The grant permission a direct share (`:kb/shared-with`) confers: write, not
+   merge, not grant.
+
+   A share is a bare uuid on the KB — it records no permission of its own — and
+   until P1 `can?` read it as OWNER, so a sharee could merge, re-share and
+   delete. That was never what sharing was documented to give (\"full (read +
+   write)\" in this namespace, \"Shared with you\" in the UI), and it made
+   `share-kb!` an escalation: a `:read-write` room grantee shared the KB with
+   themselves and came out owner-equivalent. A share now means exactly
+   `:read-write`, the permission a room attach confers by default, so the two
+   ways of reaching a KB answer the same question the same way. Landing to
+   trunk and handing out authority stay with the owner."
+  :read-write)
+
+(defn- authority-override?
+  "The global `:admin` role may MANAGE authority over a KB or drive — share,
+   attach, revoke, delete — without owning it (`:grant`/`:admin` actions only).
+   It does not read through this: an admin who wants a KB's content gets it by
+   granting it, which is recorded. Admin can already rewrite any agent's
+   prompt and join any experiment room, so this widens nothing in kind."
+  [db party-uuid action]
+  (and (contains? #{:grant :admin} action) (admin? db party-uuid)))
+
 (defn- party-can-access-kb?
-  "True if `party-uuid` may `action` (:read | :write) the KB entity `kb-eid`:
-   - direct: KB owner or in :kb/shared-with — full (read + write), OR
+  "True if `party-uuid` may `action` the KB entity `kb-eid`:
+   - the KB owner: everything;
+   - the global `:admin` role: `:grant`/`:admin` only (`authority-override?`);
+   - a party in `:kb/shared-with`: what `shared-with-permission` (`:read-write`)
+     permits — read and write, not merge, not grant;
    - transitive: a member of a room whose grant on the KB's system PERMITS the
      action. The grant's :grant/permission refines this: :read grants read only,
      :read-write grants both; a grant with no explicit permission defaults to
@@ -172,7 +200,9 @@
         (d/pull db [:kb/owner :kb/shared-with :kb/system-id] kb-eid)]
     (boolean
      (or (= owner party-uuid)
-         (contains? (set shared-with) party-uuid)
+         (authority-override? db party-uuid action)
+         (and (contains? (set shared-with) party-uuid)
+              (permission-satisfies? shared-with-permission action))
          (and system-id
               ;; party → room membership → grant(s) → this KB's system;
               ;; any grant whose permission satisfies `action` authorizes.
@@ -196,6 +226,8 @@
    depends on writes being generous. `:merge`, `:grant` and `:admin` are the
    irreversible half and stop at the OWNER: landing to trunk and handing out
    authority are not consequences of having been added to a chat.
+   Changing the membership itself is `:grant` (rpc-policy), because a member
+   reaches every KB, drive and repo the room is granted.
 
    This function took no action argument until now, which is why 21 `:action W`
    RPC policies resolved to \"is a member\" — and why kabel's new publish gate
@@ -260,6 +292,189 @@
                   (party-can-access-room? db party-uuid room-eid :read)))
              grants)))))
 
+(defn- drive-eid-by-id [db drive-id]
+  (when-let [id (as-uuid drive-id)]
+    (d/q '[:find ?e . :in $ ?id :where [?e :drive/id ?id]] db id)))
+
+(defn- room-provisioned-drive-owner
+  "The owner of the room a drive was auto-provisioned FOR, or nil when the drive
+   is not one.
+
+   `drives/ensure-room-drive!` creates a room's primary drive on first need,
+   named \"<room name> Drive\" (\"Room Drive\" when no name was passed) and
+   attached to that room in the same call — so its FIRST grant is to that room.
+   Until P1 it made whoever first opened the Files tab the drive's owner, which
+   gave a plain member owner authority over the room's files: attach them to a
+   room of their own, detach them, and keep that authority after leaving. The
+   provisioning now records the room's owner; this reads the same fingerprint
+   for drives provisioned before, so an existing wrongly-owned drive answers as
+   its room's owner's without a data migration (doc/authority.md)."
+  [db drive-eid]
+  (let [{:drive/keys [name system-id]} (d/pull db [:drive/name :drive/system-id] drive-eid)
+        first-grant (when system-id
+                      (->> (d/q '[:find ?t ?r :in $ ?sid
+                                  :where [?s :system/id ?sid] [?g :grant/system ?s]
+                                  [?g :grant/room ?r] [?g :grant/created ?t]]
+                                db system-id)
+                           (sort-by first)
+                           first))]
+    (when-let [[_ room-eid] first-grant]
+      (let [{:room/keys [owner] room-name :room/name}
+            (d/pull db [:room/name {:room/owner [:party/id]}] room-eid)]
+        (when (contains? #{(str room-name " Drive") "Room Drive"} name)
+          (:party/id owner))))))
+
+(defn- drive-owner
+  "Whose authority a drive answers to: the owner of the room it was provisioned
+   for (`room-provisioned-drive-owner`), else its `:drive/owner`."
+  [db drive-eid]
+  (or (room-provisioned-drive-owner db drive-eid)
+      (:drive/owner (d/pull db [:drive/owner] drive-eid))))
+
+(defn- party-can-access-drive?
+  "A drive is a KB without the sharing list: its owner (`drive-owner`) may do
+   anything, the `:admin` role may manage authority over it
+   (`authority-override?`), and everyone else reaches it only through a room
+   grant on its registry system (`party-can-access-system?` — the same rule as a
+   room's repo)."
+  [db party-uuid drive-eid action]
+  (let [{:drive/keys [system-id]} (d/pull db [:drive/system-id] drive-eid)]
+    (boolean
+     (or (= (drive-owner db drive-eid) party-uuid)
+         (authority-override? db party-uuid action)
+         (and system-id (party-can-access-system? db party-uuid system-id action))))))
+
+(defn- open-fork-rows
+  "[fork proposal] pairs (pulled) for the OPEN forks matching `where-args`.
+   A fork is open while its own status is unset and its proposal is `:open`;
+   once decided its branch is merged or deleted and it is an ordinary branch
+   name again."
+  [db rows]
+  ;; The fork's own status is filtered HERE, not with `missing?` in the query:
+  ;; on datahike 0.8.1903 `missing?` reported `:proposal.fork/status` missing on
+  ;; a fork that had it (position-dependent, not a cache), so a decided fork
+  ;; would have stayed locked — replikativ/datahike#1116.
+  (keep (fn [[f p]]
+          (let [fork (d/pull db [:proposal.fork/author :proposal.fork/authority-scope
+                                 :proposal.fork/scope :proposal.fork/status] f)]
+            (when (nil? (:proposal.fork/status fork))
+              [fork (d/pull db [:proposal/author] p)])))
+        rows))
+
+(defn- open-fork
+  "The open proposal fork that branch `branch` of store `scope` holds, or nil."
+  [db scope branch]
+  (when (and (some? scope) (some? branch))
+    (first (open-fork-rows
+            db (d/q '[:find ?f ?p
+                      :in $ ?s ?b
+                      :where
+                      [?f :proposal.fork/scope ?s] [?f :proposal.fork/branch ?b]
+                      [?p :proposal/forks ?f] [?p :proposal/status :open]]
+                    db scope (name branch))))))
+
+(defn- trunk-branch? [branch]
+  (or (nil? branch) (= "db" (name branch))))
+
+(declare can?)
+
+(defn- fork-controller?
+  "Does an open proposal fork belong to `party-uuid`? Its author
+   (`:proposal.fork/author`, else the filer `:proposal/author` for rows filed
+   before per-fork authors existed), or whoever may decide it: `:merge` on the
+   fork's authority scope — the scope `ops.proposals` checks before it lands
+   the fork."
+  [db party-uuid [fork proposal]]
+  (boolean
+   (or (= party-uuid (or (:proposal.fork/author fork) (:proposal/author proposal)))
+       (can? db party-uuid :merge
+             (or (:proposal.fork/authority-scope fork) (:proposal.fork/scope fork))))))
+
+(defn- party-can-access-branch?
+  "May `party-uuid` `action` branch `branch` of the store `scope`?
+
+   Trunk (nil / `:db`) and any branch that is not an open proposal fork answer
+   exactly as the store does. An OPEN PROPOSAL FORK belongs to its author and to
+   whoever may decide it (doc/proposals-and-time-travel.md §5,
+   `fork-controller?`): writing to it, or discarding it, needs `action` on the
+   store AND control of the fork. Without this, any writer of the KB could edit
+   or delete another party's proposal while it was under review, and the
+   reviewer would accept something its author never wrote. Reading a fork is
+   reading the store."
+  [db party-uuid scope branch action]
+  (let [scope (scope-uuid scope)]
+    (boolean
+     (and (can? db party-uuid action scope)
+          (or (= :read action)
+              (trunk-branch? branch)
+              (let [row (open-fork db scope branch)]
+                (or (nil? row) (fork-controller? db party-uuid row))))))))
+
+(defn- proposal-open-forks [db proposal-id]
+  (when-let [id (as-uuid proposal-id)]
+    (open-fork-rows db (d/q '[:find ?f ?p :in $ ?pid
+                              :where [?p :proposal/id ?pid] [?p :proposal/status :open]
+                              [?p :proposal/forks ?f]]
+                            db id))))
+
+(defn- party-can-decide-fork?
+  "`{:proposal-fork {:proposal p :scope s :branch b}}`: the proposal's room
+   decides who may see and act on it (`action` on the room, as `{:proposal p}`),
+   and for anything but `:read` the named fork must be an open fork of THAT
+   proposal controlled by `party-uuid` (`fork-controller?`). Dismissing a fork
+   deletes its branch — a contribution under review is its author's to withdraw
+   and its deciders' to refuse, not any room member's."
+  [db party-uuid {:keys [proposal scope branch]} action]
+  (boolean
+   (when-let [room-eid (proposal-room-eid db proposal)]
+     (and (party-can-access-room? db party-uuid room-eid action)
+          (or (= :read action)
+              (let [scope (scope-uuid scope)]
+                (when-let [row (and scope branch
+                                    (some (fn [[fork :as row]]
+                                            (when (= scope (:proposal.fork/scope fork)) row))
+                                          (open-fork-rows
+                                           db (d/q '[:find ?f ?p :in $ ?pid ?s ?b
+                                                     :where [?p :proposal/id ?pid]
+                                                     [?p :proposal/status :open]
+                                                     [?p :proposal/forks ?f]
+                                                     [?f :proposal.fork/scope ?s]
+                                                     [?f :proposal.fork/branch ?b]]
+                                                   db (as-uuid proposal) scope (name branch)))))]
+                  (fork-controller? db party-uuid row))))))))
+
+(defn- party-can-decide-proposal?
+  "`{:proposal-forks p}`, every open fork of a proposal at once (dismissing the
+   whole ForkSet): the room as for `{:proposal p}`, and beyond `:read` either
+   the proposal's author (the filer withdraws their own proposal) or control of
+   EVERY open fork — a reviewer who may refuse each contribution may refuse
+   them together, and nobody else may."
+  [db party-uuid proposal-id action]
+  (boolean
+   (when-let [room-eid (proposal-room-eid db proposal-id)]
+     (and (party-can-access-room? db party-uuid room-eid action)
+          (or (= :read action)
+              (= party-uuid (d/q '[:find ?a . :in $ ?pid
+                                   :where [?p :proposal/id ?pid] [?p :proposal/author ?a]]
+                                 db (as-uuid proposal-id)))
+              (every? #(fork-controller? db party-uuid %)
+                      (proposal-open-forks db proposal-id)))))))
+
+(defn- party-can-revoke-attachment?
+  "`{:attachment {:room r :kb k}}` / `{:attachment {:room r :drive d}}` — may
+   `party-uuid` take KB/drive k/d out of room r? The room's owner may (`:grant`
+   on the room: deciding what the room holds), and so may whoever holds `:grant`
+   on the resource itself — its owner, or `:admin` — who may always withdraw
+   their own resource from a room, member of it or not. Any other action is
+   refused: attaching is checked as room `:write` + resource `:grant` instead."
+  [db party-uuid {:keys [room kb drive]} action]
+  (boolean
+   (and (= :grant action)
+        (or (when-let [e (room-eid-by-id db room)] (party-can-access-room? db party-uuid e :grant))
+            (cond kb    (when-let [e (kb-eid-by-id db kb)] (party-can-access-kb? db party-uuid e :grant))
+                  drive (when-let [e (drive-eid-by-id db drive)] (party-can-access-drive? db party-uuid e :grant))
+                  :else false)))))
+
 (defn- party-can-access-mail?
   "Mail is private to its owner unless explicitly attached to one of the
    party's rooms. Room grants are read-only by default."
@@ -286,12 +501,21 @@
   "May `subject` perform `action` on `resource`?
 
    subject  — principal map {:sub uuid-str} | party uuid | uuid string | nil (anon)
-   action   — :read | :write | :admin. Isolation is enforced (owner/shared/
+   action   — :read | :write | :merge | :grant | :admin (see
+              `permission-satisfies?`). Isolation is enforced (owner/shared/
               member/grant); within a tenant, :write on a KB reached only via a
               room grant additionally requires that grant to be :read-write.
    resource — one of:
      • a store scope (uuid|string)  — data plane + block-remote :db-scope
      • {:kb <kb-id>}                — a KB by :kb/id (control plane)
+     • {:drive <drive-id>}          — a drive by :drive/id
+     • {:branch {:scope s :branch b}} — one branch of a store: the store's
+                                      answer, narrowed on an open proposal
+                                      fork to its author and its deciders
+     • {:proposal-fork {:proposal p :scope s :branch b}} — one open fork of a
+                                      proposal: the room, then fork control
+     • {:proposal-forks <proposal-id>} — every open fork of a proposal
+     • {:attachment {:room r :kb|:drive id}} — revoking an attachment (:grant)
      • {:room <room-id>}            — a room by :room/id (control plane)
      • {:settings <party>} | {:self <party>} — that party's own settings
      • :admin                       — requires the :admin role
@@ -308,7 +532,7 @@
    the same decision later be taken against a db that is NOT the local mutable
    system DB: an `as-of` db (what was authorized at the time a write was made), a
    replicated projection of grant entries, or a peer's copy. Prefer the 4-arity
-   at new call sites; see `doc/permissions-and-forks.md`."
+   at new call sites; see `doc/authority.md`."
   ([subject action resource]
    (can? (some-> (system-db/get-conn) deref) subject action resource))
   ([db subject action resource]
@@ -329,8 +553,19 @@
           (when-let [e (room-eid-by-id db (:room resource))] (party-can-access-room? db party e action))
           (contains? resource :mail)
           (when-let [e (mail-eid-by-id db (:mail resource))] (party-can-access-mail? db party e action))
+          (contains? resource :proposal-fork)
+          (party-can-decide-fork? db party (:proposal-fork resource) action)
+          (contains? resource :proposal-forks)
+          (party-can-decide-proposal? db party (:proposal-forks resource) action)
+          (contains? resource :attachment)
+          (party-can-revoke-attachment? db party (:attachment resource) action)
           (contains? resource :proposal)
           (when-let [e (proposal-room-eid db (:proposal resource))] (party-can-access-room? db party e action))
+          (contains? resource :drive)
+          (when-let [e (drive-eid-by-id db (:drive resource))] (party-can-access-drive? db party e action))
+          (contains? resource :branch)
+          (let [{:keys [scope branch]} (:branch resource)]
+            (party-can-access-branch? db party scope branch action))
           (contains? resource :settings) (= party (as-uuid (:settings resource)))
           (contains? resource :self) (= party (as-uuid (:self resource)))
           :else false)
@@ -368,34 +603,48 @@
 (def rpc-policy
   "normalized-name -> {:action kw :resource (fn [arg-map] resource)}.
    `resource` returns a value `can?` understands: a scope, {:kb id}, {:room id},
-   {:proposal id}, {:self party}, {:settings party}, :admin, or :authenticated."
+   {:branch {:scope s :branch b}}, {:proposal id}, {:self party},
+   {:settings party}, :admin, or :authenticated.
+
+   A row binds ONE argument. A handler that acts on a SECOND client-supplied id
+   (the party to add, the agent to remove, the KB to attach) checks it with the
+   helpers at the end of this namespace — see doc/authority.md, \"Who may change
+   authority\"."
   (let [scope    (fn [k] (fn [a] (get a k)))
         room     (fn [k] (fn [a] {:room (get a k)}))
         kb       (fn [k] (fn [a] {:kb (get a k)}))
         self     (fn [k] (fn [a] {:self (get a k)}))
         settings (fn [k] (fn [a] {:settings (get a k)}))
         proposal (fn [k] (fn [a] {:proposal (get a k)}))
+        ;; revoking a room's attachment of the KB/drive named by `k`
+        attachment (fn [k] (fn [a] {:attachment
+                                    (cond-> {:room (:room-id-str a)}
+                                      (= k :kb-id-str) (assoc :kb (get a k))
+                                      (= k :drive-id-str) (assoc :drive (get a k)))}))
         mail     (fn [k] (fn [a] {:mail (get a k)}))
         always   (fn [r] (fn [_] r))
-        R :read W :write M :merge A :admin]
+        ;; a write that names a branch of a store: on an open proposal fork it
+        ;; is the fork author's or a decider's (see `party-can-access-branch?`)
+        branch   (fn [s b] (fn [a] {:branch {:scope (get a s) :branch (get a b)}}))
+        R :read W :write M :merge G :grant A :admin]
     {;; --- datahike.kabel writer ---
      "dispatch"                {:action W :resource (scope :store-id)}
      "create-database"         {:action W :resource (always :authenticated)}
      "delete-database"         {:action A :resource (always :admin)}
      ;; --- block-remote (page/block edits, all carry :db-scope) ---
-     "create-block"            {:action W :resource (scope :db-scope)}
-     "create-sibling-after"    {:action W :resource (scope :db-scope)}
-     "delete-block"            {:action W :resource (scope :db-scope)}
-     "ensure-page"             {:action W :resource (scope :db-scope)}
-     "indent-block"            {:action W :resource (scope :db-scope)}
-     "outdent-block"           {:action W :resource (scope :db-scope)}
-     "move-block-up"           {:action W :resource (scope :db-scope)}
-     "move-block-down"         {:action W :resource (scope :db-scope)}
-     "rename-page"             {:action W :resource (scope :db-scope)}
-     "toggle-block-collapsed"  {:action W :resource (scope :db-scope)}
-     "update-block-collapsed"  {:action W :resource (scope :db-scope)}
-     "update-block-content"    {:action W :resource (scope :db-scope)}
-     "update-block-order"      {:action W :resource (scope :db-scope)}
+     "create-block"            {:action W :resource (branch :db-scope :branch-kw)}
+     "create-sibling-after"    {:action W :resource (branch :db-scope :branch-kw)}
+     "delete-block"            {:action W :resource (branch :db-scope :branch-kw)}
+     "ensure-page"             {:action W :resource (branch :db-scope :branch-kw)}
+     "indent-block"            {:action W :resource (branch :db-scope :branch-kw)}
+     "outdent-block"           {:action W :resource (branch :db-scope :branch-kw)}
+     "move-block-up"           {:action W :resource (branch :db-scope :branch-kw)}
+     "move-block-down"         {:action W :resource (branch :db-scope :branch-kw)}
+     "rename-page"             {:action W :resource (branch :db-scope :branch-kw)}
+     "toggle-block-collapsed"  {:action W :resource (branch :db-scope :branch-kw)}
+     "update-block-collapsed"  {:action W :resource (branch :db-scope :branch-kw)}
+     "update-block-content"    {:action W :resource (branch :db-scope :branch-kw)}
+     "update-block-order"      {:action W :resource (branch :db-scope :branch-kw)}
      "find-page-by-title"      {:action R :resource (scope :db-scope)}
      ;; Metadata rosters stay lean; the selected Datahike store is registered
      ;; just before its client subscribes. The scope grant is the same gate as
@@ -404,14 +653,16 @@
      ;; page types + properties. `add-property` DECLARES a datahike attribute,
      ;; which is append-only — it was reachable from any browser before these
      ;; moved server-side, with no check at all.
-     "add-type"                {:action W :resource (scope :db-scope)}
-     "remove-type"             {:action W :resource (scope :db-scope)}
-     "add-property"            {:action W :resource (scope :db-scope)}
-     "remove-property"         {:action W :resource (scope :db-scope)}
-     "save-property"           {:action W :resource (scope :db-scope)}
+     "add-type"                {:action W :resource (branch :db-scope :branch-kw)}
+     "remove-type"             {:action W :resource (branch :db-scope :branch-kw)}
+     "add-property"            {:action W :resource (branch :db-scope :branch-kw)}
+     "remove-property"         {:action W :resource (branch :db-scope :branch-kw)}
+     "save-property"           {:action W :resource (branch :db-scope :branch-kw)}
      ;; --- branching (KB by :db-scope-str) ---
      "branch-kb!"              {:action W :resource (scope :db-scope-str)}
-     "discard-kb-branch!"      {:action W :resource (scope :db-scope-str)}
+     ;; deleting a branch: someone else's open proposal fork is not yours to
+     ;; delete while it is under review
+     "discard-kb-branch!"      {:action W :resource (branch :db-scope-str :branch-kw)}
      ;; landing a branch onto trunk — the one branching op that is not a write
      ;; to a fork but a decision about what trunk becomes
      "merge-kb!"               {:action M :resource (scope :db-scope-str)}
@@ -420,20 +671,34 @@
      "list-kb-branches!"       {:action R :resource (scope :db-scope-str)}
      ;; --- KB by id ---
      "create-kb!"              {:action W :resource (self :party-id-str)}
-     "delete-kb!"              {:action W :resource (kb :kb-id-str)}
+     ;; Deleting a KB and changing who reaches it directly are :grant — the
+     ;; KB's owner (or the :admin role, `authority-override?`). Policed :write
+     ;; they let any room grantee delete the KB, revoke other sharees, or share
+     ;; it with themselves.
+     "delete-kb!"              {:action G :resource (kb :kb-id-str)}
      "load-kb-details!"        {:action R :resource (kb :kb-id-str)}
-     "share-kb!"               {:action W :resource (kb :kb-id-str)}
-     "unshare-kb!"             {:action W :resource (kb :kb-id-str)}
+     "share-kb!"               {:action G :resource (kb :kb-id-str)}
+     "unshare-kb!"             {:action G :resource (kb :kb-id-str)}
      ;; --- room ops (by :room-id-str) ---
+     ;; A member may bring their OWN agent in, reconfigure and take it out
+     ;; again; which agent a call may name is the handler's
+     ;; (`access/require-agent-manageable!`).
      "add-agent-to-room!"      {:action W :resource (room :room-id-str)}
      "update-agent-assignment!" {:action W :resource (room :room-id-str)}
      "remove-agent-from-room!" {:action W :resource (room :room-id-str)}
-     "add-room-party!"         {:action W :resource (room :room-id-str)}
-     "remove-room-party!"      {:action W :resource (room :room-id-str)}
+     ;; Membership IS authority: a new member reaches every KB, drive and repo
+     ;; the room is granted. Changing it is :grant, which stops at the owner.
+     ;; The handler also checks WHO is added (`access/require-enlistable!`).
+     "add-room-party!"         {:action G :resource (room :room-id-str)}
+     "remove-room-party!"      {:action G :resource (room :room-id-str)}
+     ;; Attaching grants the room's members the KB/drive: :write on the room
+     ;; here, and :grant on the KB/drive itself in the handler.
      "attach-drive-to-room!"   {:action W :resource (room :room-id-str)}
-     "detach-drive-from-room!" {:action W :resource (room :room-id-str)}
+     ;; Detaching is the room owner's (what the room holds) or the resource
+     ;; owner's (withdrawing their own), member of the room or not.
+     "detach-drive-from-room!" {:action G :resource (attachment :drive-id-str)}
      "attach-kb-to-room!"      {:action W :resource (room :room-id-str)}
-     "detach-kb-from-room!"    {:action W :resource (room :room-id-str)}
+     "detach-kb-from-room!"    {:action G :resource (attachment :kb-id-str)}
      "delete-drive-node!"      {:action W :resource (room :room-id-str)}
      "mkdir-drive-path!"       {:action W :resource (room :room-id-str)}
      "put-drive-file!"         {:action W :resource (room :room-id-str)}
@@ -442,7 +707,9 @@
      "run-world-live!"         {:action R :resource (room :room-id-str)}
      "cancel-room-run!"        {:action W :resource (room :room-id-str)}
      "promote-room-run-world!" {:action W :resource (room :room-id-str)}
-     "update-room-budget!"     {:action W :resource (room :room-id-str)}
+     ;; spend is egress, authorized in advance by the owner, not by anyone who
+     ;; can speak in the room
+     "update-room-budget!"     {:action G :resource (room :room-id-str)}
      "load-room-details!"      {:action R :resource (room :room-id-str)}
      ;; meeting token: joining the room's call = reading the room
      "mint-video-token!"       {:action R :resource (room :room-id-str)}
@@ -465,6 +732,7 @@
      "screen-grant-heartbeat!" {:action W :resource (room :room-id-str)}
      "load-room-drive!"        {:action R :resource (room :room-id-str)}
      ;; --- room create + rooms list (self) ---
+     ;; the initial members pass the same check as `add-room-party!`'s party
      "create-room!"            {:action W :resource (self :creator-id-str)}
      "load-rooms!"             {:action R :resource (self :party-id-str)}
      ;; --- drives (create) ---
@@ -482,11 +750,17 @@
      "get-room-state!"         {:action R :resource (room :room-uuid-str)}
      ;; --- proposals (room-scoped via :proposal/room) ---
      "accept-proposal!"        {:action W :resource (proposal :proposal-id-str)}
-     "dismiss-proposal!"       {:action W :resource (proposal :proposal-id-str)}
-     ;; per-fork decisions carry the same room gate; ops.proposals additionally
-     ;; requires :write on the fork's own scope before it lands one
+     ;; Dismissing discards fork branches: the room gate, and control of the
+     ;; forks (their authors, or :merge on their scope) — or, for the whole
+     ;; proposal, being its filer. See `party-can-decide-fork?`.
+     "dismiss-proposal!"       {:action W :resource (fn [a] {:proposal-forks (:proposal-id-str a)})}
+     ;; accepting carries the room gate; ops.proposals additionally requires
+     ;; :merge on each fork's own scope before it lands one
      "accept-fork!"            {:action W :resource (proposal :proposal-id-str)}
-     "dismiss-fork!"           {:action W :resource (proposal :proposal-id-str)}
+     "dismiss-fork!"           {:action W :resource (fn [a] {:proposal-fork
+                                                              {:proposal (:proposal-id-str a)
+                                                               :scope (:scope-str a)
+                                                               :branch (:branch a)}})}
      ;; Commenting is a WRITE on the proposal's room, not a read: it puts words
      ;; on a shared record under the author's name, and `request-changes!` also
      ;; puts a contributor back to work. Room membership is the gate, the same
@@ -616,3 +890,100 @@
                :data {:handler handler-id
                       :client-sender (str client-sender-id)
                       :principal-party (str auth-pid)}})))
+
+;; =============================================================================
+;; Argument checks — the second id a handler acts on
+;; =============================================================================
+;;
+;; A policy row binds ONE argument (the room, the KB). Several handlers act on a
+;; SECOND id the client supplies — the party to add, the agent to remove, the KB
+;; to attach — and the authority suite found every one of them unchecked. These
+;; are the checks, written once; a handler calls them before it changes
+;; anything. Each throws `{:type :not-authorized}` (the shape the gate's refusal
+;; has), so a client cannot tell a handler refusal from a gate refusal and need
+;; not.
+
+(defn- refuse! [msg data]
+  (log/log! {:level :warn :id ::handler-refused :msg msg :data data})
+  (throw (ex-info (str "not authorized: " msg) (assoc data :type :not-authorized))))
+
+(defn- current-db [] (some-> (system-db/get-conn) deref))
+
+(defn require!
+  "Throw `:not-authorized` unless the connection's principal may `action`
+   `resource` (`can?`). For the second id a handler acts on, e.g. the KB in
+   `attach-kb-to-room!`."
+  [action resource]
+  (let [p (ds/require-principal)]
+    (when-not (can? (current-db) p action resource)
+      (refuse! "argument check" {:action action :resource resource :sub (:sub p)}))))
+
+(defn- party-facts [db party-uuid]
+  (when-let [e (and (some? party-uuid)
+                    (d/q '[:find ?e . :in $ ?p :where [?e :party/id ?p]] db party-uuid))]
+    (let [{:keys [party/type actor/kind party/owner]}
+          (d/pull db [:party/type :actor/kind {:party/owner [:party/id]}] e)]
+      {:kind (or kind type) :owner (:party/id owner)})))
+
+(defn enlistable?
+  "May `subject` make `party-uuid` a member of a room `subject` controls?
+
+   A human, yes: rooms invite people (the new-room picker and room settings
+   offer every human). An AGENT only when `subject` owns it, or is `:admin`: an
+   agent answers on its owner's model and budget, so putting someone else's
+   agent in your room spends their money and points their agent at your
+   conversation. An unknown party, no."
+  [db subject party-uuid]
+  (let [me (subject->party-uuid subject)
+        {:keys [kind owner] :as facts} (party-facts db party-uuid)]
+    (boolean
+     (and me facts
+          (case kind
+            :agent (or (= me owner) (admin? db me))
+            true)))))
+
+(defn require-enlistable!
+  "Throw `:not-authorized` unless the principal may add every party in
+   `party-uuids` to a room (`enlistable?`). Used by `add-room-party!` and by
+   `create-room!` for its initial members."
+  [party-uuids]
+  (let [p (ds/require-principal)
+        db (current-db)]
+    (doseq [pid party-uuids]
+      (when-not (enlistable? db p pid)
+        (refuse! "party may not be added to a room by this principal"
+                 {:party (str pid) :sub (:sub p)})))))
+
+(defn agent-manageable?
+  "May `subject` manage `agent-uuid` in room `room-id` — remove it
+   (`remove-agent-from-room!`) or change its role and response policy
+   (`update-agent-assignment!`)? Only an AGENT that IS in that room, and only by
+   the room's owner (`:grant` on the room), the agent's owner, or `:admin`. A
+   human is never removed this way — that is `remove-room-party!`, and the
+   removal handler also deletes the party."
+  [db subject room-id agent-uuid]
+  (let [me (subject->party-uuid subject)
+        {:keys [kind owner]} (party-facts db agent-uuid)
+        in-room? (some? (d/q '[:find ?r . :in $ ?rid ?a
+                               :where [?r :room/id ?rid] [?r :room/parties ?pe]
+                               [?pe :party/id ?a]]
+                             db (as-uuid room-id) agent-uuid))]
+    (boolean
+     (and me (= :agent kind) in-room?
+          (or (= me owner)
+              (admin? db me)
+              (can? db me :grant {:room room-id}))))))
+
+(defn require-agent-manageable!
+  "Throw `:not-authorized` unless `agent-manageable?`. Returns whether the
+   principal may also DELETE the agent party once it is in no room: only its
+   owner or `:admin` — a room owner removes another party's agent from their
+   room, not from the world."
+  [room-id agent-uuid]
+  (let [p (ds/require-principal)
+        db (current-db)
+        me (subject->party-uuid p)]
+    (when-not (agent-manageable? db p room-id agent-uuid)
+      (refuse! "not an agent of this room the principal may manage"
+               {:room (str room-id) :agent (str agent-uuid) :sub (:sub p)}))
+    (or (= me (:owner (party-facts db agent-uuid))) (admin? db me))))

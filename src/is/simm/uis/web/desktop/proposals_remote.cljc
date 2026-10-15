@@ -244,12 +244,12 @@
                                        :by (access/authenticated-party-id))
          :cljs nil))))
 
-;; Per-fork decisions. Both are policed exactly like their whole-proposal
-;; counterparts (`{:proposal id}` → the room, in access/rpc-policy): the room
-;; decides who may SEE a ForkSet, and for the accept path `ops.proposals`
-;; additionally requires :write on THAT fork's scope, because landing one fork
-;; writes to one trunk. Refusing a fork writes to no trunk, so it carries the
-;; room check alone — the same shape as `dismiss-proposal!`.
+;; Per-fork decisions. The room decides who may SEE a ForkSet (`{:proposal id}`
+;; in access/rpc-policy). Accepting additionally needs :merge on THAT fork's
+;; scope (`ops.proposals`), because landing one fork writes to one trunk.
+;; Dismissing deletes the fork's branch, so it needs control of the fork: its
+;; author or a decider (`{:proposal-fork …}`; `dismiss-proposal!` the same for
+;; every open fork, or being the proposal's filer).
 
 (defn-spin-remote accept-fork!
   [server-id proposal-id-str scope-str branch force? note]
