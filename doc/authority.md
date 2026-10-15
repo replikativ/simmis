@@ -144,7 +144,12 @@ it (`http-auth/blob-reader-party-id`); the access-token validator — every
 other route, every RPC, the websocket handshake — refuses it, by key and by
 issuer, and the blob route in turn refuses an access token in the cookie.
 `/auth/login` and `/auth/refresh` set it, and the client renews it through
-`POST /auth/blob-cookie` (header-authenticated) before it expires.
+`POST /auth/blob-cookie` (header-authenticated) before it expires, and again on
+waking up (visibility, focus, back online) since timers stall while a machine
+sleeps; `/auth/logout` expires it. The blob-read cookie itself still reaches
+other ports of the same host, so what such a server can obtain is a one-hour
+read capability for any blob by hash — not more, but not nothing, because blob
+reads are not room-scoped (below).
 
 It authenticates but does not **authorize**: any signed-in user can fetch any
 blob by hash. Blobs are content-addressed and deliberately shared, so the same

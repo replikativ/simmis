@@ -140,7 +140,7 @@
                   {:iss "simmis" :aud "simmis-api" :sub (str party)
                    :iat (now) :exp (+ (now) 3600)}))
 
-(defn- blob-token [party] (:token (auth-cfg/mint-blob-token party)))
+(defn- blob-token [party] (:token (#'auth-cfg/mint-blob-token party)))
 
 (defn- with-real-validator
   "The access-token validator built from the same `:jwt` map the websocket
@@ -311,3 +311,33 @@
     (is (= 200 (:status resp)))
     (is (= (str a-party) (:sub (auth-cfg/blob-read-claims v))))
     (is (nil? (api-party :get (bearer v))))))
+
+(defn- renewal
+  "POST /auth/blob-cookie through the route data web.clj mounts, under the
+   real gate and the real validators."
+  [headers]
+  (let [handler (ring/ring-handler
+                  (ring/router [["/auth" {:auth :public} (hauth/blob-cookie-route)]]
+                               {:validate hauth/validate-auth-declared!
+                                :data {:middleware [hauth/auth-middleware]}}))]
+    (with-real-validator
+      #(handler {:request-method :post :uri "/auth/blob-cookie" :headers headers}))))
+
+(deftest the-renewal-route-takes-the-header-and-nothing-else
+  (testing "an access token in the header renews the cookie"
+    (let [resp (renewal (bearer (access-token a-party)))
+          v (cookie-value (get-in resp [:headers "Set-Cookie"]))]
+      (is (= 200 (:status resp)))
+      (is (= (str a-party) (:sub (auth-cfg/blob-read-claims v))))))
+  (testing "the cookie alone cannot extend itself"
+    (let [resp (renewal (cookie (blob-token a-party)))]
+      (is (= 401 (:status resp)))
+      (is (nil? (get-in resp [:headers "Set-Cookie"])))))
+  (testing "a blob token presented as a bearer mints nothing"
+    (is (= 401 (:status (renewal (bearer (blob-token a-party)))))))
+  (testing "a principal whose sub is not a party uuid gets a 401, not a token for \"\""
+    ;; The gate already refuses this (`party-id` parses the sub); the handler
+    ;; refuses it again in case a gate in front of it ever does not.
+    (let [h (get-in (hauth/blob-cookie-route) [1 :post :handler])]
+      (with-redefs [hauth/validator (delay (fn [_] {:sub "user_2abc"}))]
+        (is (= 401 (:status (h {:request-method :post :headers {}}))))))))

@@ -364,7 +364,7 @@
   "Seconds a blob-read token (and the cookie holding it) lives. An hour: long
    enough that the client renews it in the background rather than per request,
    short enough that a leaked cookie expires on its own. The client renews it
-   through `POST /auth/blob-cookie`; see `login/keep-blob-cookie-fresh!`."
+   through `POST /auth/blob-cookie`; see `login/start-blob-cookie-renewal!`."
   3600)
 
 (def ^:private blob-read-key
@@ -387,7 +387,7 @@
                  (.getBytes ^String jwt-secret "UTF-8") "HmacSHA256"))
     (.doFinal mac (.getBytes "simmis/blob-read/v1" "UTF-8"))))
 
-(defn mint-blob-token
+(defn- mint-blob-token
   "A blob-read token for `party-id`: {:token :expires-in}."
   [party-id]
   (let [now (quot (System/currentTimeMillis) 1000)]

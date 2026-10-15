@@ -307,11 +307,7 @@
                       ;; Renews the blob-read cookie for a tab that outlives
                       ;; it. Header bearer only — POST never accepts the
                       ;; cookie, so a cookie cannot extend itself.
-                      (conj ["/blob-cookie"
-                             {:post {:auth :authenticated
-                                     :handler (fn [req]
-                                                (auth-cfg/blob-cookie-response
-                                                  req (hauth/party-id req)))}}]))
+                      (conj (hauth/blob-cookie-route)))
                   ;; Content-addressed blobs (voice-note audio, media
                   ;; stills). Content-addressing makes ids unguessable
                   ;; (SHA-256); real per-blob authz arrives with eacl.

@@ -164,6 +164,24 @@
                :data {:uri (:uri req) :method (:request-method req)}})
     (deny 401 "authentication required")))
 
+(defn blob-cookie-route
+  "`/auth/blob-cookie` — renews the blob-read cookie for a tab that outlives
+   it. Mounted by `web/make-handler` under `/auth`, and built here so the tests
+   exercise the very route data the server serves.
+
+   `:authenticated`, i.e. the Authorization header and nothing else: a POST
+   never accepts the cookie (and `party-id` never reads it), so a cookie cannot
+   extend itself and a blob token cannot mint another. The nil check is not
+   redundant with the gate — a principal whose `sub` is not a party uuid (an
+   external issuer's) must get a 401, not a capability for party \"\"."
+  []
+  ["/blob-cookie"
+   {:post {:auth :authenticated
+           :handler (fn [req]
+                      (if-let [pid (party-id req)]
+                        (auth-cfg/blob-cookie-response req pid)
+                        (deny 401 "authentication required")))}}])
+
 (defn require-room-member
   "nil when the authenticated party is a member of `room-id-str`, else 401/403/404.
 
