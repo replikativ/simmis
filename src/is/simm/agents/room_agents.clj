@@ -925,9 +925,12 @@
         read-conn-of  (fn [db] (read-conn-for (target db)))
         ;; the conditional writers' shape: check on read, transact on write
         conn-of  write-conn-of
+        ;; nil title guard: datahike reads a nil `:in` binding as unbound and
+        ;; would answer an arbitrary page
         title->uuid (fn [conn title]
-                      (d-api/q '[:find ?u . :in $ ?t :where
-                                 [?e :S.Page/title ?t] [?e :entity/uuid ?u]] @conn title))
+                      (when (some? title)
+                        (d-api/q '[:find ?u . :in $ ?t :where
+                                   [?e :S.Page/title ?t] [?e :entity/uuid ?u]] @conn title)))
         uuid->title (fn [conn uuid]
                       (d-api/q '[:find ?t . :in $ ?u :where
                                  [?e :entity/uuid ?u] [?e :S.Page/title ?t]] @conn uuid))
@@ -1148,7 +1151,8 @@
                                           (map first) sort vec)}))))
        'read-page (fn [title]
                     (some (fn [{:keys [name conn]}]
-                            (let [eid (d-api/q '[:find ?e . :in $ ?t :where [?e :S.Page/title ?t]] @conn title)]
+                            (let [eid (when (some? title)
+                                        (d-api/q '[:find ?e . :in $ ?t :where [?e :S.Page/title ?t]] @conn title))]
                               (when eid
                                 (let [blocks (d-api/q '[:find ?c ?o :keys content order :in $ ?p
                                                         :where [?b :block/parent ?p] [?b :block/content ?c] [?b :block/order ?o]]

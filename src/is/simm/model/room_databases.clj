@@ -35,7 +35,7 @@
   "The room whose store is `db-scope`. The mapping lives in the system DB
    because a store id is a hash of the store's path and so cannot be inverted."
   [db-scope]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? db-scope) (system-db/get-conn))]
     (d/q '[:find ?rid .
            :in $ ?scope
            :where [?r :room/content-db-scope ?scope] [?r :room/id ?rid]]
@@ -107,7 +107,7 @@
 (defn get-room-db-scope
   "Look up the db-scope UUID for a room from the system DB."
   [room-uuid]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? room-uuid) (system-db/get-conn))]
     (d/q '[:find ?scope .
            :in $ ?rid
            :where [?r :room/id ?rid] [?r :room/content-db-scope ?scope]]

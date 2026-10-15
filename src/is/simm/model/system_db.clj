@@ -773,6 +773,22 @@
   []
   @conn)
 
+(defn require-id!
+  "Return `id`, or throw when it is nil.
+
+   datahike treats a nil `:in` scalar as UNBOUND: `[:find ?e . :in $ ?pid
+   :where [?e :party/id ?pid]]` with `?pid` nil matches ANY party rather than
+   none. A lookup keyed on a nil id therefore silently picks some arbitrary
+   entity — `update-preferred-model!` with a nil owner wrote the preference onto
+   Vár. Every write keyed by an id goes through this, so a nil (always a caller
+   bug) fails loudly instead of landing on a stranger's row. Read lookups guard
+   with `when` and answer nil/empty instead."
+  [kind id]
+  (when (nil? id)
+    (throw (ex-info (str "Missing " (name kind))
+                    {:type :missing-id :id-kind kind})))
+  id)
+
 (defn init!
   "Initialize the system database. Idempotent - safe to call multiple times.
 

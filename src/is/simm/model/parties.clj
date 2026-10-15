@@ -123,8 +123,13 @@
 ;; Party lookups
 ;; =============================================================================
 
-(defn- eid-by-party-id [db party-id]
-  (d/q '[:find ?e . :in $ ?pid :where [?e :party/id ?pid]] db party-id))
+(defn- eid-by-party-id
+  "The party's entity id, or nil. A nil `party-id` answers nil: datahike reads
+   a nil `:in` binding as unbound, so the bare query matched ANY party (see
+   `system-db/require-id!`)."
+  [db party-id]
+  (when (some? party-id)
+    (d/q '[:find ?e . :in $ ?pid :where [?e :party/id ?pid]] db party-id)))
 
 (defn- pull-party [db eid]
   (ent->party (d/pull db (party-pull db) eid)))
@@ -138,14 +143,14 @@
 
 (defn get-party-by-handle
   [handle]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? handle) (system-db/get-conn))]
     (when-let [eid (d/q '[:find ?e . :in $ ?h :where [?e :party/handle ?h]]
                         @conn handle)]
       (pull-party @conn eid))))
 
 (defn get-party-by-email
   [email]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? email) (system-db/get-conn))]
     (when-let [eid (d/q '[:find ?e . :in $ ?em :where [?e :party/email ?em]]
                         @conn email)]
       (pull-party @conn eid))))
@@ -185,6 +190,7 @@
    template are merged into the :actor/config EDN map. handle/avatar/
    preferred-model stay as simmis extension attrs."
   [party-id updates]
+  (system-db/require-id! :party-id party-id)
   (when-let [conn (system-db/get-conn)]
     (when-let [eid (eid-by-party-id @conn party-id)]
       (let [allowed (select-keys updates [:party/display-name :party/handle
@@ -237,6 +243,7 @@
    context and inbox. An unavailable resolution leaves that participant on its
    previous model and is reported as a partial post-commit activation failure."
   [party-id model-id]
+  (system-db/require-id! :party-id party-id)
   (require 'is.simm.agents.room-agents)
   (let [owner-lock-fn
         (requiring-resolve
@@ -409,6 +416,7 @@
 (defn delete-party!
   "Remove a party entirely. Only call for agents or test parties."
   [party-id]
+  (system-db/require-id! :party-id party-id)
   (when-let [conn (system-db/get-conn)]
     (when-let [eid (eid-by-party-id @conn party-id)]
       (d/transact conn [[:db/retractEntity eid]]))))
@@ -420,7 +428,7 @@
 (defn get-contacts
   "Return parties in the :party/contacts set of party-id."
   [party-id]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? party-id) (system-db/get-conn))]
     (->> (d/q '[:find [(pull ?c pattern) ...]
                 :in $ ?pid pattern
                 :where
@@ -434,6 +442,8 @@
 (defn add-contact!
   "Add contact-party-id to party-id's contacts (directed edge)."
   [party-id contact-party-id]
+  (system-db/require-id! :party-id party-id)
+  (system-db/require-id! :contact-party-id contact-party-id)
   (when-let [conn (system-db/get-conn)]
     (let [db @conn
           eid (eid-by-party-id db party-id)
@@ -445,6 +455,8 @@
 
 (defn remove-contact!
   [party-id contact-party-id]
+  (system-db/require-id! :party-id party-id)
+  (system-db/require-id! :contact-party-id contact-party-id)
   (when-let [conn (system-db/get-conn)]
     (let [db @conn
           eid (eid-by-party-id db party-id)
@@ -473,7 +485,7 @@
 (defn get-env-vars
   "Return [{:id :key :value}] for the party."
   [party-id]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? party-id) (system-db/get-conn))]
     (->> (d/q '[:find ?id ?key ?value
                 :keys id key value
                 :in $ ?pid
@@ -498,6 +510,7 @@
                     {:type :validation-error
                      :key key
                      :allowed-prefixes allowed-env-prefixes})))
+  (system-db/require-id! :party-id party-id)
   (when-let [conn (system-db/get-conn)]
     (let [existing-eid (d/q '[:find ?e . :in $ ?pid ?key
                               :where
@@ -515,6 +528,7 @@
 
 (defn delete-env-var!
   [party-id key]
+  (system-db/require-id! :party-id party-id)
   (when-let [conn (system-db/get-conn)]
     (when-let [eid (d/q '[:find ?e . :in $ ?pid ?key
                           :where
@@ -547,14 +561,16 @@
 (defn get-ui-prefs
   [party-id]
   (when-let [conn (system-db/get-conn)]
-    (if-let [eid (d/q '[:find ?e . :in $ ?pid :where [?e :ui-pref/party-id ?pid]]
-                      @conn party-id)]
+    (if-let [eid (when (some? party-id)
+                   (d/q '[:find ?e . :in $ ?pid :where [?e :ui-pref/party-id ?pid]]
+                        @conn party-id))]
       (-> (d/pull @conn '[:ui-pref/syntax] eid)
           (dissoc :db/id))
       {})))
 
 (defn set-ui-pref!
   [party-id attr value]
+  (system-db/require-id! :party-id party-id)
   (when-let [conn (system-db/get-conn)]
     (d/transact conn [{:ui-pref/party-id party-id attr value}])
     (log/log! {:level :info :id ::ui-pref-set

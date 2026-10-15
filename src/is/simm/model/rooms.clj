@@ -118,7 +118,7 @@
 
 (defn get-room
   [room-id]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? room-id) (system-db/get-conn))]
     (when (d/q '[:find ?e . :in $ ?rid :where [?e :room/id ?rid]]
                @conn room-id)
       (-> (d/pull @conn room-pull [:room/id room-id])
@@ -129,7 +129,7 @@
 (defn get-party-rooms
   "All rooms containing the given party (human or agent)."
   [party-id]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? party-id) (system-db/get-conn))]
     (->> (d/q {:find [[(list 'pull '?e room-pull) '...]]
                :in '[$ ?pid]
                :where '[[?p :party/id ?pid]
@@ -149,6 +149,8 @@
 
 (defn add-party!
   [room-id party-id]
+  (system-db/require-id! :room-id room-id)
+  (system-db/require-id! :party-id party-id)
   (when-let [conn (system-db/get-conn)]
     (when-let [eid (d/q '[:find ?e . :in $ ?rid :where [?e :room/id ?rid]]
                         @conn room-id)]
@@ -158,6 +160,8 @@
 
 (defn remove-party!
   [room-id party-id]
+  (system-db/require-id! :room-id room-id)
+  (system-db/require-id! :party-id party-id)
   (when-let [conn (system-db/get-conn)]
     (when-let [eid (d/q '[:find ?e . :in $ ?rid :where [?e :room/id ?rid]]
                         @conn room-id)]
@@ -184,13 +188,15 @@
   "Budget in dollars. Returns default 10.0 if unset."
   [room-id]
   (when-let [conn (system-db/get-conn)]
-    (or (d/q '[:find ?b . :in $ ?rid
-               :where [?r :room/id ?rid] [?r :room/budget-dollars ?b]]
-             @conn room-id)
+    (or (when (some? room-id)
+          (d/q '[:find ?b . :in $ ?rid
+                 :where [?r :room/id ?rid] [?r :room/budget-dollars ?b]]
+               @conn room-id))
         10.0)))
 
 (defn set-room-budget!
   [room-id budget-dollars]
+  (system-db/require-id! :room-id room-id)
   (when-let [conn (system-db/get-conn)]
     (when-let [eid (d/q '[:find ?e . :in $ ?rid :where [?e :room/id ?rid]]
                         @conn room-id)]
@@ -204,6 +210,7 @@
   "Ensure the party has a :personal-ai room with a Vár agent.
    Returns the room."
   [owner-party-id owner-display-name]
+  (system-db/require-id! :owner-party-id owner-party-id)
   (when-let [conn (system-db/get-conn)]
     (let [existing-id (d/q '[:find ?rid .
                              :in $ ?pid

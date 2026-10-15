@@ -22,7 +22,7 @@
 (defn- book-conn
   "The governed content-db conn for a room, or nil when it has none."
   [room-id]
-  (when-let [sys (sdb/get-conn)]
+  (when-let [sys (and (some? room-id) (sdb/get-conn))]
     (when-let [scope (d/q '[:find ?s . :in $ ?rid
                             :where [?r :room/id ?rid] [?r :room/content-db-scope ?s]]
                           @sys room-id)]

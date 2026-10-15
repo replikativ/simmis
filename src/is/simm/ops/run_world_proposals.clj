@@ -57,6 +57,7 @@
 
 (defn- adoption-id-for-promotion!
   [run-id]
+  (system-db/require-id! :run-id run-id)
   (if-let [existing
            (d/q '[:find (pull ?adoption [*]) .
                   :in $ ?run
@@ -306,6 +307,7 @@
     [adoption-id live component]))
 
 (defn- fork-for-scope! [scope]
+  (system-db/require-id! :scope scope)
   (let [eid (d/q '[:find ?f . :in $ ?scope
                    :where [?f :proposal.fork/scope ?scope]]
                  @(conn) scope)]

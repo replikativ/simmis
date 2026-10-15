@@ -33,7 +33,7 @@
         (update :mail-account/last-sync #(when % (str %))))))
 
 (defn- require-account [account-id]
-  (or (when-let [conn (system-db/get-conn)]
+  (or (when-let [conn (and (some? account-id) (system-db/get-conn))]
         (d/q '[:find (pull ?a [*]) . :in $ ?id
                :where [?a :mail-account/id ?id]] @conn account-id))
       (throw (ex-info "Unknown mail account" {:mail-account/id account-id}))))

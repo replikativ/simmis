@@ -416,14 +416,17 @@
   [{:keys [title db-scope branch-kw]}]
   (go-try S
     (try
-      (let [conn (resolve-conn db-scope branch-kw)
-            db @conn]
-        (d/q '[:find ?uuid .
-               :in $ ?title
-               :where
-               [?e :S.Page/title ?title]
-               [?e :entity/uuid ?uuid]]
-             db title))
+      ;; a nil title is UNBOUND to datahike and would match an arbitrary page;
+      ;; a blank one names no page either
+      (when-not (str/blank? title)
+        (let [conn (resolve-conn db-scope branch-kw)
+              db @conn]
+          (d/q '[:find ?uuid .
+                 :in $ ?title
+                 :where
+                 [?e :S.Page/title ?title]
+                 [?e :entity/uuid ?uuid]]
+               db title)))
       (catch clojure.lang.ExceptionInfo e
         (when-not (= "KB not resolvable" (.getMessage e))
           (throw e))
