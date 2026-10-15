@@ -483,20 +483,44 @@
           (is (false? (access/can? (world/principal w :member) :grant {:drive (:drive/id drive)})))
           (testing "and the member still uses it through the room"
             (is (true? (access/can? (world/principal w :member) :write {:drive (:drive/id drive)}))))))
-      (testing "a drive provisioned the OLD way (owned by the member) answers to the room's owner"
-        (let [legacy (random-uuid) sys (random-uuid)]
-          (d/transact conn [{:db/id "s" :system/id sys :system/type :fs :system/name "Scratch Drive"}
+      (testing "a drive provisioned the OLD way (owned by the member) is re-owned at boot"
+        (let [legacy (random-uuid) sys (random-uuid)
+              mine (random-uuid) mine-sys (random-uuid)
+              system-owner (fn [sid] (d/q '[:find ?p . :in $ ?sid :where [?s :system/id ?sid]
+                                            [?s :system/owner ?o] [?o :party/id ?p]]
+                                          @conn sid))]
+          (d/transact conn [{:db/id "s" :system/id sys :system/type :fs :system/name "Scratch Drive"
+                             :system/owner [:party/id (:member w)]}
                             {:drive/id legacy :drive/name "Scratch Drive" :drive/owner (:member w)
-                             :drive/system-id sys :drive/created (java.util.Date.)}])
+                             :drive/system-id sys :drive/created (java.util.Date.)}
+                            ;; the member's own drive, attached to the same room:
+                            ;; not the provisioning fingerprint, so it stays theirs
+                            {:db/id "m" :system/id mine-sys :system/type :fs :system/name "My Drive"}
+                            {:drive/id mine :drive/name "My Drive" :drive/owner (:member w)
+                             :drive/system-id mine-sys :drive/created (java.util.Date.)}])
           (drives/attach-drive-to-room! (:room-nogrant w) legacy)
-          (is (false? (access/can? (world/principal w :member) :grant {:drive legacy})))
-          (is (true? (access/can? (world/principal w :owner) :grant {:drive legacy})))
-          (is (true? (access/can? (world/principal w :member) :write {:drive legacy}))
-              "the member keeps what the room grants")
+          (drives/attach-drive-to-room! (:room-nogrant w) mine)
+          (testing "before the migration the record says the member owns it"
+            (is (true? (access/can? (world/principal w :member) :grant {:drive legacy}))))
+          (let [fixes (drives/migrate-room-provisioned-drive-owners! conn)]
+            (is (= [[legacy (:member w) (:owner w) (:room-nogrant w)]]
+                   (mapv (juxt :drive-id :from :to :room) fixes))))
+          (testing "after it, the record and the registry say the room's owner"
+            (is (= (:owner w) (:drive/owner (drives/get-drive legacy))))
+            (is (= (:owner w) (system-owner sys))))
+          (testing "and authority follows the record: what the name heuristic used to answer"
+            (is (false? (access/can? (world/principal w :member) :grant {:drive legacy})))
+            (is (true? (access/can? (world/principal w :owner) :grant {:drive legacy})))
+            (is (true? (access/can? (world/principal w :member) :write {:drive legacy}))
+                "the member keeps what the room grants"))
           (testing "so the member cannot carry the room's files into a room of their own"
             (is (refused-by-handler?
                  (world/inbound! (world/principal w :member) "attach-drive-to-room!"
                                  {:room-id-str (str (:room w)) :drive-id-str (str legacy)}))))
           (testing "a drive the member created themselves stays theirs"
-            (is (true? (access/can? (world/principal w :non-member) :grant
-                                    {:drive (:drive-stranger w)})))))))))
+            (is (= (:member w) (:drive/owner (drives/get-drive mine))))
+            (is (true? (access/can? (world/principal w :member) :grant {:drive mine}))))
+          (testing "a second run changes nothing"
+            (let [before @conn]
+              (is (= [] (drives/migrate-room-provisioned-drive-owners! conn)))
+              (is (= (:max-tx before) (:max-tx @conn)) "not even an empty transaction"))))))))

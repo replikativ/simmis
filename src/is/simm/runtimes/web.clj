@@ -768,6 +768,12 @@
     ;; Seed alpha parties before starting
     (auth-cfg/seed-alpha-parties!)
 
+    ;; One-off data fix, idempotent: room drives provisioned before P1 recorded
+    ;; whoever first opened the Files tab as their owner. Authorization reads
+    ;; `:drive/owner`, so this runs before the server accepts a connection, and
+    ;; a failure stops the boot rather than serving the stale owners.
+    ((requiring-resolve 'is.simm.model.drives/migrate-room-provisioned-drive-owners!))
+
     (let [server (create-server!)]
       (swap! server-state assoc :server server)
 

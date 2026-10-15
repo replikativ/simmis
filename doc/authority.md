@@ -82,7 +82,15 @@ the check that decides.
 
 An RPC with no row is **refused**, so forgetting one produces a dead feature
 rather than an open one. `rpc-coverage-test` joins the live registry against
-the table so the omission is visible.
+the table in both directions: a registered fn without a row fails it, and so
+does a row without a registered fn.
+
+datahike.kabel's raw store handlers (`dispatch`, `create-database`,
+`delete-database`) are not in that registry. They register in
+`kabel.remote/functions`, which the server does not serve, and they have no
+row, so the gate would refuse them if they became reachable. `dispatch` checks
+nothing itself: served behind any row admitting room members, it would let a
+member transact raw datoms, forged messages included, into the room's store.
 
 ### Data plane — replication
 
@@ -165,12 +173,14 @@ landing to trunk and managing the KB, which stay with its owner.
 **A room's drive answers to the room's owner.** `drives/ensure-room-drive!`
 provisions it on first need, owned by the room's owner; it used to be owned by
 whoever first opened the Files tab, which made that member owner of the room's
-files. Drives provisioned that way are recognised without a migration
-(`access/room-provisioned-drive-owner`: named "<room> Drive" or "Room Drive",
-first granted to that room) and answer to that room's owner, so the member who
-triggered them holds only what the room grants. A migration rewriting
-`:drive/owner` on those rows would make the record agree with the answer; it is
-not needed for the authorization.
+files. `drives/migrate-room-provisioned-drive-owners!` runs at every server
+boot, before the server accepts connections, and rewrites `:drive/owner` and
+the registry's `:system/owner` of exactly those drives (named "<room> Drive" or
+"Room Drive", first granted to that room, owned by someone other than the
+room's owner) to the room's owner, logging `::drive-owner-migrated` for each.
+It is idempotent: once the rows agree it transacts nothing. Authorization reads
+`:drive/owner` alone, so the member who triggered the provisioning holds only
+what the room grants.
 
 **An open proposal fork** — a branch named by an open fork of an `:open`
 proposal (doc/proposals-and-time-travel.md §5) — belongs to its author
@@ -186,6 +196,37 @@ status is filtered in Clojure rather than with `missing?` in the query —
 VIEWER may attach, and leaves out who else a room KB is shared with. It returns
 `:can-grant?`, so the settings page shows membership and budget controls only to
 the owner; a member sees the budget and the members but not the controls.
+
+## The sandbox and eval
+
+Code that runs in a room's sandbox holds whatever the sandbox was handed, so
+what it is handed is the authorization.
+
+**KB handles.** `kb/*`, `kb/conn`, `kb/db`, `knowledge_add` and
+`wiki/summarize!` reach a KB only through `access/sandbox-kb-allows?`: the
+acting party (for an agent, the agent) may `:read`/`:write` the room, the room
+holds a grant on the KB permitting the action, and `can?` lets the party do it
+to the KB. `room-agents/get-room-kb-conns` lists only KBs that pass for
+`:read`, and every use checks again (`access/require-sandbox-kb!`), so a `:read`
+grant never yields a write handle and detaching a KB or removing the agent
+revokes its handles in a running sandbox. A room with no KB grant reaches no
+KB. It used to fall back to the room creator's first KB, so a member's code in
+such a room wrote the owner's private KB on trunk. In the rooms they own,
+owners' agents keep the raw `kb/conn` on the KBs the room may write (plan
+§2.9.3); wrapping it (`:tx/author` on every transaction) comes later.
+
+dvergr's own sandbox surface (`dvergr.room/kb`, `dvergr.room/db`, the guarded
+`datahike.api/connect`) resolves databases from the room's grants in the
+dvergr registry and never reaches a KB the room is not granted. It does not
+consult `can?`: `dvergr.room/db` and `connect` return a conn by name for any
+database attached to the room, whatever the grant's permission.
+
+**Evaluating code in a room** (`eval-in-room!`, the sandbox panel's quick eval
+and the wiki's ▶ Run) is the room's full capability, so its policy row is
+`:merge` on the room, the owner. The author recorded with the evaluation is the
+connection's principal, not an id from the client. `can-eval-in-room!` and
+`get-room-state!`'s `:can-eval?` answer the same question for the UI, which
+shows the eval controls only to the owner.
 
 ## Identity
 

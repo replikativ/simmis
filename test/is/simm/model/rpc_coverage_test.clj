@@ -62,13 +62,10 @@
   (load-all!)
   (let [live (into #{} (map access/normalize-remote-name) (keys @ds/remote-fn-registry))
         orphans (->> (keys access/rpc-policy) (remove live) sort vec)]
-    (testing "a row for a fn that no longer exists is dead weight, not a risk"
-      ;; Reported, not failed. `datahike.kabel`'s handlers register in
-      ;; `kabel.remote/functions`, not in this registry, so their rows
-      ;; (dispatch, create-database, delete-database) never have a
-      ;; counterpart here; the server does not serve that registry either
-      ;; (see authority/raw-paths-test).
-      (when (seq orphans)
-        (println "    note:" (count orphans)
-                 "rpc-policy rows with no registered fn:" (pr-str orphans)))
-      (is true))))
+    (testing "every row names a registered fn"
+      ;; A row with no fn behind it decides nothing today and admits whatever
+      ;; later registers under its name. datahike.kabel's handlers register in
+      ;; `kabel.remote/functions`, not here, and the server does not serve that
+      ;; registry, so they have no row (authority/raw-paths-test).
+      (is (= [] orphans)
+          (str "rpc-policy rows with no registered fn: " (pr-str orphans))))))

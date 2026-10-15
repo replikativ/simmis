@@ -979,6 +979,27 @@
 ;; Vár personal AI room UUID — default sandbox for wiki code execution
 (def ^:private var-room-uuid #uuid "00000000-0000-0000-0000-000000000301")
 
+(defonce ^:private may-eval-cache (atom {}))
+
+(defn- may-eval-in-room
+  "A js/Promise of whether the signed-in party may evaluate code in `room`
+   (`can-eval-in-room!`: the room's owner). Asked once per (party, room) and
+   page load. Running code is the room's full capability, so the ▶ Run button
+   is shown only when this answers true, rather than offered to every reader
+   of the page and refused when clicked."
+  [room]
+  (let [k [(some-> @sig/current-user :id) room]]
+    (or (get @may-eval-cache k)
+        (let [p (js/Promise.
+                 (fn [resolve _]
+                   ((sandbox-remote/can-eval-in-room-remote! room)
+                    (fn [ok] (resolve (true? ok)))
+                    (fn [err]
+                      (js/console.error "[run-code] eval permission check failed" err)
+                      (resolve false)))))]
+          (swap! may-eval-cache assoc k p)
+          p))))
+
 (defn make-run-code-extension
   "TipTap extension wrapping CodeBlock with a ▶ Run button.
    The syntax view (Clojure vs Superficie) is controlled globally via
@@ -996,7 +1017,9 @@
                                          run-btn   (doto (js/document.createElement "button")
                                                      (-> .-className (set! "code-block-run-btn"))
                                                      (-> .-title (set! "Run in sandbox (Ctrl+Enter)"))
-                                                     (-> .-textContent (set! "▶ Run")))
+                                                     (-> .-textContent (set! "▶ Run"))
+                                                     ;; shown once the room's owner is confirmed
+                                                     (-> .-style .-display (set! "none")))
                                          result-el (doto (js/document.createElement "div")
                                                      (-> .-className (set! "code-block-result"))
                                                      (-> .-style .-display (set! "none")))]
@@ -1004,14 +1027,17 @@
                                      (.appendChild wrapper run-btn)
                                      (.appendChild wrapper pre)
                                      (.appendChild wrapper result-el)
+                                     (.then (may-eval-in-room target-room)
+                                            (fn [ok?]
+                                              (when ok?
+                                                (set! (.. run-btn -style -display) ""))))
                                      (set! (.-onclick run-btn)
                                            (fn []
                                              (let [code (.-textContent code-el)]
                                                (when (seq code)
                                                  (set! (.-textContent run-btn) "Running…")
-                                                 (let [user-id (when-let [u @sig/current-user] (:id u))
-                                                       spin (sandbox-remote/eval-in-room-remote!
-                                                              target-room code user-id)]
+                                                 (let [spin (sandbox-remote/eval-in-room-remote!
+                                                              target-room code)]
                                                    (spin
                                                      (fn [result]
                                                        (let [code-result (js/document.createElement "code")

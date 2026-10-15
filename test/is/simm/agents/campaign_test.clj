@@ -19,6 +19,7 @@
             [sci.core :as sci]
             [dvergr.tools.llm-call :as llm-call]
             [is.simm.agents.room-agents :as ra]
+            [is.simm.authority.world :as world]
             [is.simm.model.store :as store]
             [is.simm.model.system-db :as sdb]
             [is.simm.ops.proposals :as props]
@@ -44,14 +45,32 @@
       [scope conn])))
 
 (defn- fresh-system-db
-  "An in-memory stand-in for the shared system DB, carrying only simmis's
-   extension schema. `sdb/init!` would connect to the project's real
-   `.dvergr/system-db`."
+  "An in-memory stand-in for the shared system DB with dvergr's and simmis's
+   schema (the authority suite's). `sdb/init!` would connect to the project's
+   real `.dvergr/system-db`."
   []
-  (let [cfg {:store {:backend :memory :id (random-uuid)}
-             :schema-flexibility :write :keep-history? false}]
-    (d/create-database cfg)
-    (doto (d/connect cfg) (d/transact sdb/schema))))
+  (world/fresh-system-conn))
+
+(defn- team!
+  "Record what the sandbox's KB check (`access/sandbox-kb-allows?`) reads: a
+   room with two agents in it, and a :read-write grant on the KB at `scope`.
+   Returns `{:room :agents [ada bob] :kb-conns}`, the kb-conns as the agent
+   boot path builds them."
+  [sys-conn scope]
+  (let [room (random-uuid) kb-id (random-uuid) sys (random-uuid)
+        agents [(random-uuid) (random-uuid)]]
+    (d/transact sys-conn (mapv (fn [a] {:party/id a :party/type :agent}) agents))
+    (d/transact sys-conn
+                [{:db/id "s" :system/id sys :system/type :kb :system/name "Handbook"}
+                 {:kb/id kb-id :kb/name "Handbook" :kb/db-scope scope :kb/system-id sys
+                  :kb/owner (first agents) :kb/created (java.util.Date.)}
+                 {:db/id "r" :room/id room :room/name "Team" :room/type :group
+                  :room/parties (mapv (fn [a] [:party/id a]) agents)}
+                 {:grant/id (random-uuid) :grant/room "r" :grant/system "s"
+                  :grant/permission :read-write :grant/created (java.util.Date.)}])
+    {:room room :agents agents
+     :kb-conns [{:name "Handbook" :conn (branching/get-kb-conn scope) :db-scope scope
+                 :kb-id kb-id :room-id room :writable? true}]}))
 
 (defn- agent-sandbox
   "One agent's SCI context, wired exactly as `join-agent!` wires it: `kb/*` over
@@ -86,11 +105,7 @@
     (let [sys-conn (fresh-system-db)]
       (with-redefs [sdb/get-conn (fn [] sys-conn)]
         (let [[scope] (fresh-kb)
-              kb-conns [{:name "Handbook" :conn (branching/get-kb-conn scope)
-                         :db-scope scope}]
-              room (random-uuid)
-              ada (random-uuid)
-              bob (random-uuid)
+              {:keys [room kb-conns] [ada bob] :agents} (team! sys-conn scope)
               ada-ctx (agent-sandbox kb-conns room ada)
               bob-ctx (agent-sandbox kb-conns room bob)]
 
@@ -177,11 +192,9 @@
       (let [sys-conn (fresh-system-db)]
         (with-redefs [sdb/get-conn (fn [] sys-conn)]
           (let [[scope] (fresh-kb)
-                kb-conns [{:name "Handbook" :conn (branching/get-kb-conn scope)
-                           :db-scope scope}]
-                room (random-uuid)
-                ada-ctx (agent-sandbox kb-conns room (random-uuid))
-                bob-ctx (agent-sandbox kb-conns room (random-uuid))]
+                {:keys [room kb-conns] [ada bob] :agents} (team! sys-conn scope)
+                ada-ctx (agent-sandbox kb-conns room ada)
+                bob-ctx (agent-sandbox kb-conns room bob)]
             (sci/eval-string* ada-ctx "(proposal/start! \"Ada's cleanup\")")
             (sci/eval-string* bob-ctx "(proposal/start! \"Bob's cleanup\")")
             (sci/eval-string* ada-ctx "(kb/ensure-page! \"Handbook\" \"A\")")
@@ -197,11 +210,9 @@
       (let [sys-conn (fresh-system-db)]
         (with-redefs [sdb/get-conn (fn [] sys-conn)]
           (let [[scope] (fresh-kb)
-                kb-conns [{:name "Handbook" :conn (branching/get-kb-conn scope)
-                           :db-scope scope}]
-                room (random-uuid)
-                ada-ctx (agent-sandbox kb-conns room (random-uuid))
-                bob-ctx (agent-sandbox kb-conns room (random-uuid))]
+                {:keys [room kb-conns] [ada bob] :agents} (team! sys-conn scope)
+                ada-ctx (agent-sandbox kb-conns room ada)
+                bob-ctx (agent-sandbox kb-conns room bob)]
             (sci/eval-string* ada-ctx "(proposal/open-campaign! \"Q3 close\")")
             (sci/eval-string* bob-ctx "(proposal/join-campaign!)")
             (sci/eval-string* ada-ctx "(kb/ensure-page! \"Handbook\" \"Ada's section\")")

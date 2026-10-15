@@ -130,6 +130,10 @@
   (testing "branching and discarding stay ordinary writes"
     (is (= :write (:action (get access/rpc-policy "branch-kb!"))))
     (is (= :write (:action (get access/rpc-policy "discard-kb-branch!")))))
-  (testing "database deletion and agent reconfiguration are admin-only"
-    (is (= :admin (:action (get access/rpc-policy "delete-database"))))
-    (is (= :admin (:action (get access/rpc-policy "update-agent-config!"))))))
+  (testing "agent reconfiguration is admin-only"
+    (is (= :admin (:action (get access/rpc-policy "update-agent-config!")))))
+  (testing "evaluating code in a room is the room's full capability: :merge (the owner)"
+    (is (= :merge (:action (get access/rpc-policy "eval-in-room!")))))
+  (testing "datahike.kabel's raw store handlers have no row, so the gate refuses them"
+    (is (every? #(nil? (get access/rpc-policy %))
+                ["dispatch" "create-database" "delete-database"]))))

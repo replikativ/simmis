@@ -296,51 +296,16 @@
   (when-let [id (as-uuid drive-id)]
     (d/q '[:find ?e . :in $ ?id :where [?e :drive/id ?id]] db id)))
 
-(defn- room-provisioned-drive-owner
-  "The owner of the room a drive was auto-provisioned FOR, or nil when the drive
-   is not one.
-
-   `drives/ensure-room-drive!` creates a room's primary drive on first need,
-   named \"<room name> Drive\" (\"Room Drive\" when no name was passed) and
-   attached to that room in the same call — so its FIRST grant is to that room.
-   Until P1 it made whoever first opened the Files tab the drive's owner, which
-   gave a plain member owner authority over the room's files: attach them to a
-   room of their own, detach them, and keep that authority after leaving. The
-   provisioning now records the room's owner; this reads the same fingerprint
-   for drives provisioned before, so an existing wrongly-owned drive answers as
-   its room's owner's without a data migration (doc/authority.md)."
-  [db drive-eid]
-  (let [{:drive/keys [name system-id]} (d/pull db [:drive/name :drive/system-id] drive-eid)
-        first-grant (when system-id
-                      (->> (d/q '[:find ?t ?r :in $ ?sid
-                                  :where [?s :system/id ?sid] [?g :grant/system ?s]
-                                  [?g :grant/room ?r] [?g :grant/created ?t]]
-                                db system-id)
-                           (sort-by first)
-                           first))]
-    (when-let [[_ room-eid] first-grant]
-      (let [{:room/keys [owner] room-name :room/name}
-            (d/pull db [:room/name {:room/owner [:party/id]}] room-eid)]
-        (when (contains? #{(str room-name " Drive") "Room Drive"} name)
-          (:party/id owner))))))
-
-(defn- drive-owner
-  "Whose authority a drive answers to: the owner of the room it was provisioned
-   for (`room-provisioned-drive-owner`), else its `:drive/owner`."
-  [db drive-eid]
-  (or (room-provisioned-drive-owner db drive-eid)
-      (:drive/owner (d/pull db [:drive/owner] drive-eid))))
-
 (defn- party-can-access-drive?
-  "A drive is a KB without the sharing list: its owner (`drive-owner`) may do
+  "A drive is a KB without the sharing list: its owner (`:drive/owner`) may do
    anything, the `:admin` role may manage authority over it
    (`authority-override?`), and everyone else reaches it only through a room
    grant on its registry system (`party-can-access-system?` — the same rule as a
    room's repo)."
   [db party-uuid drive-eid action]
-  (let [{:drive/keys [system-id]} (d/pull db [:drive/system-id] drive-eid)]
+  (let [{:drive/keys [owner system-id]} (d/pull db [:drive/owner :drive/system-id] drive-eid)]
     (boolean
-     (or (= (drive-owner db drive-eid) party-uuid)
+     (or (= owner party-uuid)
          (authority-override? db party-uuid action)
          (and system-id (party-can-access-system? db party-uuid system-id action))))))
 
@@ -587,14 +552,22 @@
 ;; =============================================================================
 ;;
 ;; distributed-scope's invoke-on-peer calls `authorize-remote` before running
-;; ANY handler (block-remote, the spindel defn-spin-remote endpoints, and the
-;; datahike.kabel dispatch/create/delete handlers all register in the one
-;; registry). Deny-by-default: a fn with no policy entry is refused.
+;; ANY handler in its registry: block-remote's and the spindel
+;; defn-spin-remote endpoints. Deny-by-default: a fn with no policy entry is
+;; refused.
+;;
+;; datahike.kabel's handlers (`dispatch`, `create-database`,
+;; `delete-database`) are NOT in that registry. They register in
+;; `kabel.remote/functions`, which the server never serves (it composes
+;; distributed-scope's middleware, not `kabel.remote/serve`), so they are
+;; unreachable and have no row: if they ever became reachable through this
+;; gate they would be refused. A raw transact into a room's message store
+;; must stay refused (it would forge messages); see raw-paths-test.
 
 (defn normalize-remote-name
   "The semantic name a policy is keyed by. spindel's defn-spin-remote registers
-   under a mangled `<ns>/spin-remote-<name>-<idx>`; block-remote and
-   datahike.kabel register under `<prefix>/<name>`. Reduce both to `<name>`
+   under a mangled `<ns>/spin-remote-<name>-<idx>`; block-remote registers
+   under `<prefix>/<name>`. Reduce both to `<name>`
    (keeping the trailing ! that spin names carry)."
   [fn-name]
   (let [n (name (symbol fn-name))]
@@ -627,11 +600,7 @@
         ;; is the fork author's or a decider's (see `party-can-access-branch?`)
         branch   (fn [s b] (fn [a] {:branch {:scope (get a s) :branch (get a b)}}))
         R :read W :write M :merge G :grant A :admin]
-    {;; --- datahike.kabel writer ---
-     "dispatch"                {:action W :resource (scope :store-id)}
-     "create-database"         {:action W :resource (always :authenticated)}
-     "delete-database"         {:action A :resource (always :admin)}
-     ;; --- block-remote (page/block edits, all carry :db-scope) ---
+    {;; --- block-remote (page/block edits, all carry :db-scope) ---
      "create-block"            {:action W :resource (branch :db-scope :branch-kw)}
      "create-sibling-after"    {:action W :resource (branch :db-scope :branch-kw)}
      "delete-block"            {:action W :resource (branch :db-scope :branch-kw)}
@@ -746,7 +715,14 @@
      ;; --- agents (powerful: rewrites prompts/models) ---
      "update-agent-config!"    {:action A :resource (always :admin)}
      ;; --- sandbox (room-scoped) ---
-     "eval-in-room!"           {:action W :resource (room :room-uuid-str)}
+     ;; Evaluating code in a room's sandbox is the room's FULL capability —
+     ;; every KB, repo and tool its agents hold — so it is the owner's
+     ;; (:merge), not every member's. The handler records the principal as the
+     ;; author, never a client-supplied id.
+     "eval-in-room!"           {:action M :resource (room :room-uuid-str)}
+     ;; whether to SHOW eval controls; the handler answers `can?` for the
+     ;; caller, so a non-member gets false rather than a refusal
+     "can-eval-in-room!"       {:action R :resource (always :authenticated)}
      "get-room-state!"         {:action R :resource (room :room-uuid-str)}
      ;; --- proposals (room-scoped via :proposal/room) ---
      "accept-proposal!"        {:action W :resource (proposal :proposal-id-str)}
@@ -804,12 +780,9 @@
      "load-mail-folders!"      {:action R :resource (mail :account-id-str)}
      "load-mail-page!"         {:action R :resource (mail :account-id-str)}
      "load-mail-message!"      {:action R :resource (mail :account-id-str)}
-     "save-schedule!"          {:action W :resource (always :authenticated)}
      ;; --- admin (role check; ignores the client-supplied party id) ---
      "load-admin-data!"        {:action R :resource (always :admin)}
      "load-schedules!"         {:action R :resource (always :authenticated)}
-     ;; --- context stats / misc reads that any authed party may run ---
-     "get-room-context-stats!" {:action R :resource (always :authenticated)}
      ;; --- unread badges + per-room notify level (handler derives party from the principal) ---
      "load-unread-counts!"     {:action R :resource (always :authenticated)}
      "mark-read!"              {:action W :resource (always :authenticated)}
@@ -987,3 +960,55 @@
       (refuse! "not an agent of this room the principal may manage"
                {:room (str room-id) :agent (str agent-uuid) :sub (:sub p)}))
     (or (= me (:owner (party-facts db agent-uuid))) (admin? db me))))
+
+;; =============================================================================
+;; The sandbox's KBs — what an agent's code may reach in the room it runs in
+;; =============================================================================
+
+(defn sandbox-kb-allows?
+  "May `subject`, acting in room `room-id`'s sandbox, `action` (`:read` or
+   `:write`) the KB `kb-id`? THE check for every KB handle or KB write the
+   sandbox vocabulary hands out (`kb/*`, `knowledge_add`). All three must hold:
+
+   - `subject` may `action` the ROOM (a member, for :read and :write);
+   - THIS room holds a grant on the KB that permits `action` — the sandbox is
+     the room's, so a KB attached elsewhere is not addressable from it, and a
+     `:read` grant gives no write handle;
+   - `subject` may `action` the KB (`can?`).
+
+   For an agent the subject is the agent party, which reaches the KB through the
+   room's grants — what the agent-tool authorization (`tool-authorization`)
+   checks for the room. There is no fallback: a room with no grant reaches no
+   KB. (The room CREATOR's first KB used to be handed out to a room without
+   one, so any member's code wrote the owner's private KB on trunk.)"
+  [db subject room-id kb-id action]
+  (let [party (subject->party-uuid subject)
+        room-eid (room-eid-by-id db room-id)
+        kb-eid (kb-eid-by-id db kb-id)]
+    (boolean
+     (and party room-eid kb-eid (contains? #{:read :write} action)
+          (party-can-access-room? db party room-eid action)
+          (some (fn [perm] (permission-satisfies? (or perm :read) action))
+                (d/q '[:find [?perm ...] :in $ ?r ?k
+                       :where [?k :kb/system-id ?sid] [?s :system/id ?sid]
+                       [?g :grant/system ?s] [?g :grant/room ?r]
+                       [(get-else $ ?g :grant/permission :read) ?perm]]
+                     db room-eid kb-eid))
+          (party-can-access-kb? db party kb-eid action)))))
+
+(defn require-sandbox-kb!
+  "Throw `:not-authorized` unless `sandbox-kb-allows?`. Called on every use, not
+   once at join: detaching a KB or removing the agent from the room revokes its
+   handles without rebuilding the sandbox."
+  [subject room-id kb-id action]
+  (when-not (sandbox-kb-allows? (current-db) subject room-id kb-id action)
+    (refuse! "sandbox may not reach this KB"
+             {:action action :room (str room-id) :kb (str kb-id)
+              :subject (str (subject->party-uuid subject))})))
+
+(defn may-eval-in-room?
+  "May `subject` evaluate code in room `room-id`'s sandbox? The `eval-in-room!`
+   policy row's question (`:merge` on the room — the owner), asked so the UI can
+   hide the control from everyone else."
+  [db subject room-id]
+  (can? db subject :merge {:room room-id}))
