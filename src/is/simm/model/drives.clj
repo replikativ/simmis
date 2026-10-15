@@ -104,7 +104,7 @@
       drive)))
 
 (defn get-drive [drive-id]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? drive-id) (system-db/get-conn))]
     (when-let [e (d/q '[:find (pull ?d [*]) . :in $ ?id
                         :where [?d :drive/id ?id]]
                       @conn drive-id)]
@@ -149,7 +149,7 @@
   [room-id & {:keys [owner-id room-name]}]
   (or (first (get-room-drives room-id))
       (when-let [owner (or owner-id
-                           (when-let [conn (system-db/get-conn)]
+                           (when-let [conn (and (some? room-id) (system-db/get-conn))]
                              (d/q '[:find ?o . :in $ ?rid :where
                                     [?r :room/id ?rid] [?r :room/created-by ?o]]
                                   @conn room-id)))]
@@ -160,7 +160,7 @@
 (defn get-room-drives
   "Drives attached to a room, each with :drive/permission from the grant."
   [room-id]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? room-id) (system-db/get-conn))]
     (let [rows (d/q '[:find ?did ?perm
                       :in $ ?rid
                       :where

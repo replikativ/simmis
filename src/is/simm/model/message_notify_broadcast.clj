@@ -187,9 +187,10 @@
   nil)
 
 (defn- party-room-ids [sys-db party-id]
-  (d/q '[:find [?rid ...] :in $ ?pid
-         :where [?p :party/id ?pid] [?r :room/parties ?p] [?r :room/id ?rid]]
-       sys-db party-id))
+  (when (some? party-id)
+    (d/q '[:find [?rid ...] :in $ ?pid
+           :where [?p :party/id ?pid] [?r :room/parties ?p] [?r :room/id ?rid]]
+         sys-db party-id)))
 
 (defn unread-counts-for-party
   "Compute {room-id-str → unread} for every room `party-id` is in. A room with no

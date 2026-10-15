@@ -289,7 +289,10 @@
   (ctx/with-server-context
     (let [conn (or (branching/get-kb-conn scope)
                    (throw (ex-info "no connection for scope" {:scope scope})))
-          eid (or (d/q '[:find ?e . :in $ ?u :where [?e :entity/uuid ?u]] @conn page-uuid)
+          ;; `some?` first: a nil `:in` binding is UNBOUND to datahike, and the
+          ;; bare query would pick an arbitrary entity to write the task onto
+          eid (or (when (some? page-uuid)
+                    (d/q '[:find ?e . :in $ ?u :where [?e :entity/uuid ?u]] @conn page-uuid))
                   (throw (ex-info "no such page" {:scope scope :page page-uuid})))
           status (when (contains? attrs :status) (normalize-status status))
           now (java.util.Date.)

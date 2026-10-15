@@ -87,6 +87,8 @@
    room) and the party a member. Refuses a room that keeps no experiments, so
    this cannot be used to enter an arbitrary room."
   [room-id party-id]
+  (system-db/require-id! :room-id room-id)
+  (system-db/require-id! :party-id party-id)
   (let [conn (system-db/get-conn)
         db @conn]
     (when-not (d/q '[:find ?r . :in $ ?id :where [?r :room/id ?id]] db room-id)

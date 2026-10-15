@@ -153,8 +153,11 @@
                 :proposal/message-error (str error)]]))
 
 (defn get-proposal [id]
-  (when-let [e (d/q '[:find ?e . :in $ ?id :where [?e :proposal/id ?id]]
-                    @(conn) id)]
+  ;; nil guard: datahike reads a nil `:in` binding as unbound and would answer
+  ;; an arbitrary proposal (see system-db/require-id!)
+  (when-let [e (when (some? id)
+                 (d/q '[:find ?e . :in $ ?id :where [?e :proposal/id ?id]]
+                      @(conn) id))]
     (d/pull @(conn) '[* {:proposal/forks [*]}] e)))
 
 (defn list-proposals

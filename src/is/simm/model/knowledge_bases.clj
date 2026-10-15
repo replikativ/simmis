@@ -59,7 +59,7 @@
    is still derivable for them. Without the fallback a KB with no `:system/id`
    yet (the case `ensure-kb-system!` exists to handle) would be unresolvable."
   [db-scope]
-  (or (when-let [conn (system-db/get-conn)]
+  (or (when-let [conn (and (some? db-scope) (system-db/get-conn))]
         (d/q '[:find ?scope .
                :in $ ?ds
                :where [?k :kb/db-scope ?ds] [?k :kb/system-id ?sid]
@@ -256,7 +256,7 @@
 (defn get-kb
   "Get a KB by ID."
   [kb-id]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? kb-id) (system-db/get-conn))]
     (when-let [eid (d/q '[:find ?e . :in $ ?kid :where [?e :kb/id ?kid]]
                         @conn kb-id)]
       (dissoc (d/pull @conn '[*] eid) :db/id))))
@@ -264,7 +264,7 @@
 (defn get-party-kbs
   "Get all KBs a user owns or has access to."
   [user-id]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? user-id) (system-db/get-conn))]
     (let [;; KBs user owns
           owned (d/q '[:find [(pull ?e [:kb/id :kb/name :kb/owner :kb/created
                                          :kb/db-scope :kb/tags]) ...]
@@ -286,6 +286,8 @@
 (defn share-kb!
   "Share a KB with a user."
   [kb-id user-id]
+  (system-db/require-id! :kb-id kb-id)
+  (system-db/require-id! :user-id user-id)
   (when-let [conn (system-db/get-conn)]
     (when-let [eid (d/q '[:find ?e . :in $ ?kid :where [?e :kb/id ?kid]]
                         @conn kb-id)]
@@ -298,6 +300,8 @@
 (defn unshare-kb!
   "Remove a user's access to a KB."
   [kb-id user-id]
+  (system-db/require-id! :kb-id kb-id)
+  (system-db/require-id! :user-id user-id)
   (when-let [conn (system-db/get-conn)]
     (when-let [eid (d/q '[:find ?e . :in $ ?kid :where [?e :kb/id ?kid]]
                         @conn kb-id)]
@@ -306,6 +310,7 @@
 (defn delete-kb!
   "Delete a KB (metadata only — Datahike DB cleanup is separate)."
   [kb-id]
+  (system-db/require-id! :kb-id kb-id)
   (when-let [conn (system-db/get-conn)]
     (when-let [eid (d/q '[:find ?e . :in $ ?kid :where [?e :kb/id ?kid]]
                         @conn kb-id)]
@@ -363,7 +368,7 @@
 (defn room-kb-ids
   "KB ids attached to a room (via grants)."
   [room-id]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? room-id) (system-db/get-conn))]
     (d/q '[:find [?kid ...]
            :in $ ?rid
            :where
@@ -375,7 +380,7 @@
 (defn get-room-kbs
   "Get KBs attached to a room, each with its grant :kb/permission."
   [room-id]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? room-id) (system-db/get-conn))]
     (let [rows (d/q '[:find ?kid ?perm
                       :in $ ?rid
                       :where
@@ -393,7 +398,7 @@
   "Rooms a KB is attached to (via grants). Returns room maps
    (:room/id :room/name :room/type)."
   [kb-id]
-  (when-let [conn (system-db/get-conn)]
+  (when-let [conn (and (some? kb-id) (system-db/get-conn))]
     (->> (d/q '[:find [(pull ?r [:room/id :room/name :room/type]) ...]
                 :in $ ?kid
                 :where
@@ -451,6 +456,7 @@
 (defn ensure-default-kb!
   "Ensure user has a default personal KB. Creates one if not."
   [user-id user-name]
+  (system-db/require-id! :user-id user-id)
   (when-let [conn (system-db/get-conn)]
     (let [existing (d/q '[:find (pull ?e [:kb/id :kb/name :kb/db-scope]) .
                            :in $ ?uid

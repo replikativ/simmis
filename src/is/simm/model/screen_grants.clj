@@ -29,17 +29,20 @@
          (and beat (< (- now beat) stale-after-ms)))))
 
 (defn- grant-eid [db party room]
-  (ffirst (d/q '[:find ?e
-                 :in $ ?p ?r
-                 :where [?e :screen-grant/party ?p]
-                        [?e :screen-grant/room ?r]]
-               db party room)))
+  (when (and (some? party) (some? room))
+    (ffirst (d/q '[:find ?e
+                   :in $ ?p ?r
+                   :where [?e :screen-grant/party ?p]
+                          [?e :screen-grant/room ?r]]
+                 db party room))))
 
 (defn open-grant!
   "Open (or refresh) the window exposing `party`'s stream to `room`. Idempotent:
    an already-open grant is heartbeated; a closed or missing one is (re)opened
    with a fresh `from`. Returns the grant uuid."
   [party room]
+  (system-db/require-id! :party party)
+  (system-db/require-id! :room room)
   (let [c (conn)
         db @c
         now (System/currentTimeMillis)
@@ -86,7 +89,8 @@
   "Rooms whose window onto `party`'s stream is open right now."
   [party]
   (let [db @(conn) now (System/currentTimeMillis)]
-    (->> (d/q '[:find [?e ...] :in $ ?p :where [?e :screen-grant/party ?p]] db party)
+    (->> (when (some? party)
+           (d/q '[:find [?e ...] :in $ ?p :where [?e :screen-grant/party ?p]] db party))
          (map #(d/entity db %))
          (filter #(active? % now))
          (mapv :screen-grant/room))))
@@ -96,7 +100,8 @@
    window bounds — [{:party uuid :from ms :beat ms} …]."
   [room]
   (let [db @(conn) now (System/currentTimeMillis)]
-    (->> (d/q '[:find [?e ...] :in $ ?r :where [?e :screen-grant/room ?r]] db room)
+    (->> (when (some? room)
+           (d/q '[:find [?e ...] :in $ ?r :where [?e :screen-grant/room ?r]] db room))
          (map #(d/entity db %))
          (filter #(active? % now))
          (mapv (fn [g] {:party (:screen-grant/party g)
@@ -125,13 +130,14 @@
 (defn personal-room-id
   "The party's :personal-ai room uuid (they are a member of exactly one), or nil."
   [party]
-  (d/q '[:find ?rid .
-         :in $ ?pid
-         :where [?p :party/id ?pid]
-                [?e :room/parties ?p]
-                [?e :room/type :personal-ai]
-                [?e :room/id ?rid]]
-       @(conn) party))
+  (when (some? party)
+    (d/q '[:find ?rid .
+           :in $ ?pid
+           :where [?p :party/id ?pid]
+                  [?e :room/parties ?p]
+                  [?e :room/type :personal-ai]
+                  [?e :room/id ?rid]]
+         @(conn) party)))
 
 (defn open-grant-with-personal!
   "Open a grant for `room`, and — unless `room` already IS it — a standing grant

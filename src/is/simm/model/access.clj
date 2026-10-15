@@ -72,13 +72,19 @@
 
 (defn- as-uuid [x] (cond (uuid? x) x (string? x) (parse-uuid x) :else nil))
 
+;; Every lookup here answers nil for a nil key. datahike reads a nil `:in`
+;; binding as UNBOUND, so the bare query would match an arbitrary entity — in an
+;; authorization module that is an allow, not a deny (see system-db/require-id!).
+
 (defn- kb-eid-by-scope [db scope]
-  (d/q '[:find ?e . :in $ ?s :where [?e :kb/db-scope ?s]] db scope))
+  (when (some? scope)
+    (d/q '[:find ?e . :in $ ?s :where [?e :kb/db-scope ?s]] db scope)))
 
 (defn- room-eid-by-scope [db scope]
   ;; a room owns two stores: its category-S content DB and dvergr's message DB
-  (or (d/q '[:find ?e . :in $ ?s :where [?e :room/content-db-scope ?s]] db scope)
-      (d/q '[:find ?e . :in $ ?s :where [?e :room/db-scope ?s]] db scope)))
+  (when (some? scope)
+    (or (d/q '[:find ?e . :in $ ?s :where [?e :room/content-db-scope ?s]] db scope)
+        (d/q '[:find ?e . :in $ ?s :where [?e :room/db-scope ?s]] db scope))))
 
 (defn- kb-eid-by-id [db kb-id]
   (when-let [id (as-uuid kb-id)]
@@ -93,8 +99,9 @@
     (d/q '[:find ?e . :in $ ?id :where [?e :mail-account/id ?id]] db id)))
 
 (defn- admin? [db party-uuid]
-  (= :admin (d/q '[:find ?role . :in $ ?p
-                   :where [?e :party/id ?p] [?e :party/role ?role]] db party-uuid)))
+  (and (some? party-uuid)
+       (= :admin (d/q '[:find ?role . :in $ ?p
+                        :where [?e :party/id ?p] [?e :party/role ?role]] db party-uuid))))
 
 (defn- proposal-room-eid
   "The room ENTITY a proposal is scoped to (via :proposal/room), or nil.
@@ -204,7 +211,8 @@
        (or owner? (some #(= party-uuid (:party/id %)) parties))))))
 
 (defn- system-eid-by-id [db system-id]
-  (d/q '[:find ?e . :in $ ?sid :where [?e :system/id ?sid]] db system-id))
+  (when (some? system-id)
+    (d/q '[:find ?e . :in $ ?sid :where [?e :system/id ?sid]] db system-id)))
 
 (defn- party-can-access-system?
   "True if `party-uuid` may `action` the dvergr registry system `system-id`.
