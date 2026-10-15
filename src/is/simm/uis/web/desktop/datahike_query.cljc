@@ -1138,44 +1138,80 @@
               [(not= ?uuid ?exclude)]]
             db title exclude-page-uuid))))
 
+;; The type-system queries below, as portable VALUES so the JVM suite can run
+;; them against a real installed store (`datahike-query-test`). Each pulls in
+;; `:find`: datahike's CLJS planner answered nil for pull-in-find and for
+;; collection bindings over joined vars until datahike #806/#807, and these used
+;; to work around that with one `d/pull` per row.
+
+(def page-types-q
+  "The types (roles in category S) a page instantiates."
+  '[:find [(pull ?role [:entity/uuid :entity/name
+                        :object/primitive? :object/icon]) ...]
+    :in $ ?page-uuid
+    :where
+    [?page :entity/uuid ?page-uuid]
+    [?page :instance/of-role ?role]
+    [?role :object/of-category _]])
+
+(def all-types-q
+  "Every object of category S."
+  '[:find [(pull ?type [:entity/uuid :entity/name
+                        :object/primitive? :object/icon]) ...]
+    :where
+    [?cat :entity/name "S"]
+    [?type :object/of-category ?cat]])
+
+(def type-properties-q
+  "The morphisms (properties) whose source is the named type."
+  '[:find [(pull ?morph [:entity/uuid :entity/name :morphism/property-type
+                         ;; WHERE the values live. Without it the two
+                         ;; derivations in `page-properties-query` compute an
+                         ;; attribute that does not exist for the 64% of
+                         ;; morphisms that are reflected — including
+                         ;; `created-at` and `updated-at` on S/Page, i.e. every
+                         ;; wiki page.
+                         :morphism/storage-attr
+                         :morphism/cardinality :morphism/optional?
+                         {:morphism/dst [:entity/uuid :entity/name]}]) ...]
+    :in $ ?type-name
+    :where
+    [?type :entity/name ?type-name]
+    [?morph :morphism/src ?type]])
+
+(def type-instances-q
+  "Instances of the named type, as list rows."
+  '[:find [(pull ?inst [:entity/uuid :entity/name :S.Page/title]) ...]
+    :in $ ?type-name
+    :where
+    [?type :entity/name ?type-name]
+    [?inst :instance/of-role ?type]])
+
+(def type-instance-entities-q
+  "Instances of the named type, whole — their attributes are the property values."
+  '[:find [(pull ?inst [*]) ...]
+    :in $ ?type-name
+    :where
+    [?type :entity/name ?type-name]
+    [?inst :instance/of-role ?type]])
+
 #?(:cljs
    (defn page-types-query
      "Query all types assigned to a page via :instance/of-role.
-      Returns vector of type entities with :entity/uuid and :entity/name.
-
-      NOTE: Uses tuple find spec [:find ?page ?role] to work around CLJS datahike
-      bug where collection binding [(pull ?role ...) ...] returns nil for joined
-      variables when combined with :in bindings."
+      Returns vector of type entities with :entity/uuid and :entity/name."
      [db page-uuid]
      (when (and db page-uuid)
-       (->> (d/q '[:find ?page ?role
-                   :in $ ?page-uuid
-                   :where
-                   [?page :entity/uuid ?page-uuid]
-                   [?page :instance/of-role ?role]
-                   [?role :object/of-category _]]
-                 db page-uuid)
-            (map second)
-            (map #(d/pull db [:entity/uuid :entity/name :object/primitive? :object/icon] %))
+       (->> (d/q page-types-q db page-uuid)
             (filter :entity/name)
             vec))))
 
 #?(:cljs
    (defn all-types-query
      "Query all available types (objects in category S).
-      Returns vector of type entities.
-
-      NOTE: Uses tuple find spec to work around CLJS datahike bug with
-      collection binding on joined variables."
+      Returns vector of type entities."
      [db]
      (when db
-       (->> (d/q '[:find ?cat ?type
-                   :where
-                   [?cat :entity/name "S"]
-                   [?type :object/of-category ?cat]]
-                 db)
-            (map second)
-            (map #(d/pull db [:entity/uuid :entity/name :object/primitive? :object/icon] %))
+       (->> (d/q all-types-q db)
             (filter :entity/name)
             (remove :object/primitive?)
             (sort-by :entity/name)
@@ -1184,28 +1220,10 @@
 #?(:cljs
    (defn type-properties-query
      "Query all properties (morphisms) for a type.
-      Returns vector of morphism entities with property metadata.
-
-      NOTE: Uses tuple find spec to work around CLJS datahike bug with
-      collection binding on joined variables."
+      Returns vector of morphism entities with property metadata."
      [db type-name]
      (when (and db type-name)
-       (->> (d/q '[:find ?type ?morph
-                   :in $ ?type-name
-                   :where
-                   [?type :entity/name ?type-name]
-                   [?morph :morphism/src ?type]]
-                 db type-name)
-            (map second)
-            (map #(d/pull db [:entity/uuid :entity/name :morphism/property-type
-                              ;; WHERE the values live. Without it the two
-                              ;; derivations below compute an attribute that
-                              ;; does not exist for the 64% of morphisms that
-                              ;; are reflected — including `created-at` and
-                              ;; `updated-at` on S/Page, i.e. every wiki page.
-                              :morphism/storage-attr
-                              :morphism/cardinality :morphism/optional?
-                              {:morphism/dst [:entity/uuid :entity/name]}] %))
+       (->> (d/q type-properties-q db type-name)
             (filter :entity/name)
             (sort-by :entity/name)
             vec))))
@@ -1274,20 +1292,10 @@
 #?(:cljs
    (defn type-instances-query
      "Query all instances of a type.
-      Returns vector of entities that have :instance/of-role pointing to this type.
-
-      NOTE: Uses tuple find spec to work around CLJS datahike bug with
-      collection binding on joined variables."
+      Returns vector of entities that have :instance/of-role pointing to this type."
      [db type-name]
      (when (and db type-name)
-       (->> (d/q '[:find ?type ?inst
-                   :in $ ?type-name
-                   :where
-                   [?type :entity/name ?type-name]
-                   [?inst :instance/of-role ?type]]
-                 db type-name)
-            (map second)
-            (map #(d/pull db [:entity/uuid :entity/name :S.Page/title] %))
+       (->> (d/q type-instances-q db type-name)
             (sort-by #(or (:S.Page/title %) (:entity/name %) ""))
             vec))))
 
@@ -1295,24 +1303,14 @@
    (defn type-instances-with-properties-query
      "Query all instances of a type with their property values.
       Returns {:properties [...] :instances [{:entity/uuid ... :values {...}}]}.
-      Properties are morphisms from the type, instances are entities with values.
-
-      NOTE: Uses tuple find spec to work around CLJS datahike bug with
-      collection binding on joined variables."
+      Properties are morphisms from the type, instances are entities with values."
      [db type-name]
      (when (and db type-name)
        (let [;; Get properties (morphisms) for this type
              properties (type-properties-query db type-name)
 
              ;; Get all instances - pull everything to get property values
-             instances (->> (d/q '[:find ?type ?inst
-                                   :in $ ?type-name
-                                   :where
-                                   [?type :entity/name ?type-name]
-                                   [?inst :instance/of-role ?type]]
-                                 db type-name)
-                            (map second)
-                            (map #(d/pull db '[*] %))
+             instances (->> (d/q type-instance-entities-q db type-name)
                             (sort-by #(or (:S.Page/title %) (:entity/name %) ""))
                             vec)
 
