@@ -1,0 +1,303 @@
+(ns is.simm.authority.control-plane-matrix-test
+  "The control plane's authority matrix: every `rpc-policy` row × every
+   principal kind, decided by the REAL `authorize-remote` → `can?` over a real
+   system DB (`authority.world`), not a stub.
+
+   `matrix` is the reviewed expectation, keyed exactly like `rpc-policy`.
+   `the-matrix-covers-the-policy-table` fails when a row is added without an
+   entry (or an entry outlives its row), so a new RPC cannot ship without
+   somebody writing down who may call it.
+
+   An entry is a vector of CASES. A case names a TARGET (which resource of the
+   world the arguments point at — `target-args`) and `:allow`, the principals
+   that SHOULD pass. Where today's answer is wider than `:allow`, the case also
+   names `:today` and a `:hole`: the extra principals are asserted through
+   `known-hole`, so the case passes until the hole is closed and then demands to
+   be flipped. Every principal outside `:today` is asserted refused and every
+   principal in `:allow` asserted admitted — each row carries both the attack
+   and its legitimate counterpart."
+  (:require [clojure.set :as set]
+            [clojure.test :refer [deftest is testing]]
+            [is.simm.authority.known-hole :refer [known-hole]]
+            [is.simm.authority.world :as world]
+            [is.simm.model.access :as access]))
+
+;; =============================================================================
+;; Targets: which resource of the world the arguments name
+;; =============================================================================
+
+(defn target-args
+  "The capture-var arg map pointing every key a resolver might read at the
+   target. Keys a row does not read are ignored by it; a row reading a key this
+   omits resolves nil and denies everyone — which the `:allow` side catches."
+  [w target]
+  (let [s #(str (get w %))]
+    (case target
+      :none        {}
+      :room        {:room-id-str (s :room) :room-uuid-str (s :room)}
+      :room-store  {:store-id (:room-scope w)}
+      :kb-store    {:store-id (:kb-granted-scope w)}
+      ;; the app's own store, which the server registers for remote access
+      :app-store   {:store-id @(requiring-resolve 'is.simm.runtimes.web/simmis-scope)}
+      :kb-scope    {:db-scope (:kb-granted-scope w) :db-scope-str (s :kb-granted-scope)
+                    :scope-str (s :kb-granted-scope)}
+      :kb          {:kb-id-str (s :kb-granted)}
+      :proposal    {:proposal-id-str (s :proposal)}
+      :mail        {:account-id-str (s :mail)}
+      ;; the owner's own id, in every key a self/settings row reads: the
+      ;; owner passing it is the legitimate call, anyone else passing it is
+      ;; impersonation
+      :owner-self  {:party-id-str (s :owner) :creator-id-str (s :owner)})))
+
+(def ^:private targets
+  #{:none :room :room-store :kb-store :app-store :kb-scope :kb :proposal :mail :owner-self})
+
+(def ^:private AUTH #{:owner :member :non-member :admin})
+(def ^:private MEMBERS #{:owner :member})
+(def ^:private OWNER #{:owner})
+(def ^:private ADMIN #{:admin})
+
+(defn- c
+  ([target allow] {:target target :allow allow})
+  ([target allow today hole]
+   {:target target :allow allow :today today :hole hole}))
+
+(def matrix
+  "fn name → [case …]. See the ns doc."
+  {;; --- datahike.kabel writer -------------------------------------------------
+   "dispatch"
+   [(c :room-store #{} MEMBERS
+       "§2.7 datahike.kabel dispatch on message stores: a room member may transact raw datoms into the room's single (message) DB")
+    (c :kb-store MEMBERS)
+    ;; registered for remote writes at boot; no principal may write it raw
+    (c :app-store #{})]
+   "create-database"         [(c :none AUTH)]
+   "delete-database"         [(c :none ADMIN)]
+   ;; --- block-remote, on a KB the team room holds :read-write -----------------
+   "create-block"            [(c :kb-scope MEMBERS)]
+   "create-sibling-after"    [(c :kb-scope MEMBERS)]
+   "delete-block"            [(c :kb-scope MEMBERS)]
+   "ensure-page"             [(c :kb-scope MEMBERS)]
+   "indent-block"            [(c :kb-scope MEMBERS)]
+   "outdent-block"           [(c :kb-scope MEMBERS)]
+   "move-block-up"           [(c :kb-scope MEMBERS)]
+   "move-block-down"         [(c :kb-scope MEMBERS)]
+   "rename-page"             [(c :kb-scope MEMBERS)]
+   "toggle-block-collapsed"  [(c :kb-scope MEMBERS)]
+   "update-block-collapsed"  [(c :kb-scope MEMBERS)]
+   "update-block-content"    [(c :kb-scope MEMBERS)]
+   "update-block-order"      [(c :kb-scope MEMBERS)]
+   "find-page-by-title"      [(c :kb-scope MEMBERS)]
+   "prepare-store!"          [(c :kb-scope MEMBERS)]
+   "add-type"                [(c :kb-scope MEMBERS)]
+   "remove-type"             [(c :kb-scope MEMBERS)]
+   "add-property"            [(c :kb-scope MEMBERS)]
+   "remove-property"         [(c :kb-scope MEMBERS)]
+   "save-property"           [(c :kb-scope MEMBERS)]
+   ;; --- branching --------------------------------------------------------------
+   "branch-kb!"              [(c :kb-scope MEMBERS)]
+   "discard-kb-branch!"      [(c :kb-scope MEMBERS)]
+   ;; the grantee may write a fork but not land it
+   "merge-kb!"               [(c :kb-scope OWNER)]
+   "kb-commit-graph!"        [(c :kb-scope MEMBERS)]
+   "kb-diff!"                [(c :kb-scope MEMBERS)]
+   "list-kb-branches!"       [(c :kb-scope MEMBERS)]
+   ;; --- KB by id ---------------------------------------------------------------
+   "create-kb!"              [(c :owner-self OWNER)]
+   "load-kb-details!"        [(c :kb MEMBERS)]
+   ;; Deleting a KB and handing out direct access to it are :grant-level
+   ;; (doc/authority.md: \"handing out authority\" stops at the owner). A
+   ;; :read-write grantee passes them today; `share-kb!` to oneself turns a
+   ;; room grant into `:kb/shared-with`, which can? treats as owner-equivalent
+   ;; (merge included).
+   "delete-kb!"
+   [(c :kb OWNER MEMBERS "UNLISTED delete-kb! is policed :write: a member of a room holding a :read-write grant deletes the KB")]
+   "share-kb!"
+   [(c :kb OWNER MEMBERS "UNLISTED share-kb! is policed :write: a :read-write grantee shares the KB (to anyone, or to themselves = :merge)")]
+   "unshare-kb!"
+   [(c :kb OWNER MEMBERS "UNLISTED unshare-kb! is policed :write: a :read-write grantee revokes other parties' direct access")]
+   ;; --- room ops ---------------------------------------------------------------
+   "add-agent-to-room!"      [(c :room MEMBERS)]
+   "update-agent-assignment!" [(c :room MEMBERS)]
+   "remove-agent-from-room!" [(c :room MEMBERS)]
+   ;; Membership IS authority over the room's grants, so changing it is
+   ;; :grant — which stops at the owner (doc/authority.md, can?'s B1 rule).
+   "add-room-party!"
+   [(c :room OWNER MEMBERS "UNLISTED add-room-party! is policed :write: any member adds any party to the room (and so to every KB the room is granted)")]
+   "remove-room-party!"
+   [(c :room OWNER MEMBERS "UNLISTED remove-room-party! is policed :write: any member removes any other member")]
+   "attach-drive-to-room!"   [(c :room MEMBERS)]
+   "detach-drive-from-room!" [(c :room MEMBERS)]
+   "attach-kb-to-room!"      [(c :room MEMBERS)]
+   "detach-kb-from-room!"    [(c :room MEMBERS)]
+   "delete-drive-node!"      [(c :room MEMBERS)]
+   "mkdir-drive-path!"       [(c :room MEMBERS)]
+   "put-drive-file!"         [(c :room MEMBERS)]
+   "dispatch-message!"       [(c :room MEMBERS)]
+   "ensure-room!"            [(c :room MEMBERS)]
+   "run-world-live!"         [(c :room MEMBERS)]
+   ;; the gate admits members; WHICH member may cancel WHICH run is the
+   ;; handler's (§2.9.2) — see runs-and-jobs-test
+   "cancel-room-run!"        [(c :room MEMBERS)]
+   "promote-room-run-world!" [(c :room MEMBERS)]
+   ;; Spend is egress (doc/authority.md, problem 4): authorized in advance by
+   ;; whoever pays, not raised by anyone who can speak in the room.
+   "update-room-budget!"
+   [(c :room OWNER MEMBERS "UNLISTED update-room-budget! is policed :write: any member raises the room's spend cap (and live agent budgets)")]
+   "load-room-details!"      [(c :room MEMBERS)]
+   "mint-video-token!"       [(c :room MEMBERS)]
+   "room-app-status!"        [(c :room MEMBERS)]
+   "search-screens!"         [(c :none AUTH)]
+   "delete-screenshot!"      [(c :none AUTH)]
+   "list-recordings!"        [(c :none AUTH)]
+   "delete-recording!"       [(c :none AUTH)]
+   "search-pages!"           [(c :none AUTH)]
+   "delete-page!"            [(c :none AUTH)]
+   "open-screen-grant!"      [(c :room MEMBERS)]
+   "close-screen-grant!"     [(c :room MEMBERS)]
+   "screen-grant-heartbeat!" [(c :room MEMBERS)]
+   "load-room-drive!"        [(c :room MEMBERS)]
+   ;; --- self ---------------------------------------------------------------------
+   "create-room!"            [(c :owner-self OWNER)]
+   "load-rooms!"             [(c :owner-self OWNER)]
+   "create-drive!"           [(c :none AUTH)]
+   "add-contact!"            [(c :owner-self OWNER)]
+   "add-contact-by-handle!"  [(c :owner-self OWNER)]
+   "remove-contact!"         [(c :owner-self OWNER)]
+   "list-parties!"           [(c :none AUTH)]
+   "update-agent-config!"    [(c :none ADMIN)]
+   ;; --- sandbox --------------------------------------------------------------
+   ;; §2.7: eval in a room is FULL room capability, so owner/:merge level.
+   "eval-in-room!"
+   [(c :room OWNER MEMBERS "§2.7 eval-in-room! is policed :write: any member evaluates code with the room's full capability (target: owner/:merge)")]
+   "get-room-state!"         [(c :room MEMBERS)]
+   ;; --- proposals ------------------------------------------------------------
+   "accept-proposal!"        [(c :proposal MEMBERS)]
+   "dismiss-proposal!"       [(c :proposal MEMBERS)]
+   "accept-fork!"            [(c :proposal MEMBERS)]
+   "dismiss-fork!"           [(c :proposal MEMBERS)]
+   "comment-on-proposal!"    [(c :proposal MEMBERS)]
+   "request-changes!"        [(c :proposal MEMBERS)]
+   "proposal-status!"        [(c :none AUTH)]
+   "proposal-diff!"          [(c :proposal MEMBERS)]
+   "proposal-checks!"        [(c :proposal MEMBERS)]
+   "list-proposals!"         [(c :none AUTH)]
+   ;; --- tasks / book / feed --------------------------------------------------
+   "list-tasks!"             [(c :none AUTH)]
+   "load-position!"          [(c :none AUTH)]
+   "load-book!"              [(c :room MEMBERS)]
+   "load-account-ledger!"    [(c :room MEMBERS)]
+   "load-feed!"              [(c :none AUTH)]
+   "set-task-status!"        [(c :kb-scope MEMBERS)]
+   ;; --- settings (own) -------------------------------------------------------
+   "load-settings!"          [(c :owner-self OWNER)]
+   "save-env-var!"           [(c :owner-self OWNER)]
+   "delete-env-var!"         [(c :owner-self OWNER)]
+   "save-preferred-model!"   [(c :owner-self OWNER)]
+   "save-syntax-pref!"       [(c :owner-self OWNER)]
+   ;; --- mail -----------------------------------------------------------------
+   "load-mail-accounts!"     [(c :none AUTH)]
+   "test-mail-connection!"   [(c :none AUTH)]
+   "save-mail-account!"      [(c :none AUTH)]
+   "sync-mail-account!"      [(c :mail OWNER)]
+   "load-mail-folders!"      [(c :mail OWNER)]
+   "load-mail-page!"         [(c :mail OWNER)]
+   "load-mail-message!"      [(c :mail OWNER)]
+   "save-schedule!"          [(c :none AUTH)]
+   ;; --- admin / misc ---------------------------------------------------------
+   "load-admin-data!"        [(c :none ADMIN)]
+   "load-schedules!"         [(c :none AUTH)]
+   "get-room-context-stats!" [(c :none AUTH)]
+   "load-unread-counts!"     [(c :none AUTH)]
+   "mark-read!"              [(c :none AUTH)]
+   "load-notify-prefs!"      [(c :none AUTH)]
+   "set-notify-pref!"        [(c :none AUTH)]
+   ;; --- experiments ----------------------------------------------------------
+   "load-leaderboard!"       [(c :room MEMBERS)]
+   "join-experiment-room!"   [(c :none ADMIN)]})
+
+;; =============================================================================
+;; Coverage — the table and the matrix name the same rows
+;; =============================================================================
+
+(deftest the-matrix-covers-the-policy-table
+  (let [policy (set (keys access/rpc-policy))
+        rows (set (keys matrix))]
+    (testing "every rpc-policy row has a matrix entry"
+      (is (= #{} (set/difference policy rows))
+          "a new rpc-policy row needs a reviewed entry in `matrix`: who may call it?"))
+    (testing "every matrix entry names a live rpc-policy row"
+      (is (= #{} (set/difference rows policy))
+          "a matrix entry for a row that no longer exists"))
+    (testing "the table is the size we think it is"
+      (is (< 100 (count policy))))))
+
+(deftest every-entry-is-well-formed
+  (doseq [[fn-name cases] matrix
+          {:keys [target allow today hole]} cases]
+    (testing fn-name
+      (is (contains? targets target) (str fn-name " unknown target " target))
+      (is (not (contains? allow :anon)) "nothing is open to an anonymous caller")
+      (is (not (contains? (or today #{}) :anon)))
+      (when today
+        (is (string? hole) "a widened case names its hole")
+        (is (set/subset? allow today) "a hole only ever WIDENS the answer")
+        (is (seq (set/difference today allow)) "a hole names at least one attacker"))))
+  (testing "every row has a legitimate caller in at least one case"
+    (doseq [[fn-name cases] matrix]
+      (is (some (comp seq :allow) cases)
+          (str fn-name " admits nobody — the matrix must show who CAN call it")))))
+
+;; =============================================================================
+;; The matrix itself
+;; =============================================================================
+
+(defn- decide [w kind fn-name args]
+  (boolean (access/authorize-remote (world/principal w kind) fn-name args)))
+
+(deftest every-row-decides-as-the-matrix-says
+  (world/with-world [_ w]
+    (doseq [[fn-name cases] (sort-by key matrix)
+            {:keys [target allow today hole]} cases
+            :let [args (target-args w target)
+                  today (or today allow)]
+            kind world/principal-kinds]
+      (testing (str fn-name " on " target " as " kind)
+        (cond
+          (contains? allow kind)
+          (is (true? (decide w kind fn-name args))
+              (str fn-name ": legitimate caller " kind " refused on " target))
+
+          (contains? today kind)
+          (known-hole hole (str fn-name " admits " (name kind) " on " (name target))
+                      (decide w kind fn-name args))
+
+          :else
+          (is (false? (decide w kind fn-name args))
+              (str fn-name ": " kind " admitted on " target)))))))
+
+(deftest an-id-in-the-arguments-is-not-an-identity
+  ;; The impersonation half of every self/settings row, spelled out: the
+  ;; member passing THEIR OWN id is admitted, passing the owner's is not.
+  (world/with-world [_ w]
+    (doseq [[fn-name cases] (sort-by key matrix)
+            :when (some #(= :owner-self (:target %)) cases)]
+      (testing fn-name
+        (is (true? (decide w :member fn-name {:party-id-str (str (:member w))
+                                              :creator-id-str (str (:member w))}))
+            "the member acting as themselves")
+        (is (false? (decide w :member fn-name (target-args w :owner-self)))
+            "the member naming the owner's id")))))
+
+(deftest a-row-asked-about-the-wrong-room-refuses
+  ;; Cross-tenant: the stranger is a member of their OWN room, and that buys
+  ;; nothing in the team room; the member's membership buys nothing there.
+  (world/with-world [_ w]
+    (doseq [[fn-name cases] (sort-by key matrix)
+            :when (some #(= :room (:target %)) cases)]
+      (testing fn-name
+        (is (false? (decide w :member fn-name {:room-id-str (str (:other-room w))
+                                               :room-uuid-str (str (:other-room w))})))
+        (is (true? (decide w :non-member fn-name {:room-id-str (str (:other-room w))
+                                                  :room-uuid-str (str (:other-room w))}))
+            "the stranger in their own room")))))

@@ -160,8 +160,20 @@ blob by hash. Blobs are content-addressed and deliberately shared, so the same
 bytes in two rooms are one blob, and scoping would need a record of which rooms
 referenced it. This is listed in the README's known gaps.
 
-## What is not covered
+## The authority matrix
 
-`can?`, the control plane and the data plane each have unit coverage, but
-nothing exercises them together against a real system DB and real grants. Every
-plane is currently tested against a stub of the others.
+`test/is/simm/authority/` exercises `can?`, the control plane and the data
+plane together, against a real system DB and real grants, with principals
+{owner, member, non-member, admin, anonymous}:
+
+- every `rpc-policy` row is decided for every principal, and a row without a
+  reviewed matrix entry fails the suite;
+- RPCs are delivered through distributed-scope's own inbound dispatch, so the
+  gate, the principal binding and the handler run as they do for a websocket
+  message;
+- each attack is paired with the legitimate use of the same path.
+
+Attacks that still succeed today are written as `known-hole`s carrying an id:
+they pass while the hole is open and fail once it closes, so the fix has to
+flip its test into a plain refusal. They are the open authority defects, and
+the suite is where they are listed — not here.
