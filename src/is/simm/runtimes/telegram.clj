@@ -19,9 +19,15 @@
    username is informational.
 
    The bot token comes from ./config.local.edn {:telegram {:token ...}} or
-   TELEGRAM_BOT_TOKEN (dvergr.substrate.config/telegram-token). An optional
-   allowlist {:telegram {:allowed-users #{123456 \"@name\"}}} gates access;
-   empty = open (dvergr logs a warning)."
+   TELEGRAM_BOT_TOKEN (dvergr.substrate.config/telegram-token). The allowlist
+   {:telegram {:allowed-users #{123456 \"@name\"}}} decides who may use the
+   bot: dvergr authenticates a sender only when the allowlist is NOT empty and
+   lists it (as the principal `telegram/<id>`), so an empty or missing
+   allowlist refuses every sender.
+
+   dvergr's `:telegram {:owners [id …]}` (numeric ids, acting as the process
+   itself) is read from a dvergr daemon's config. simmis runs no daemon and
+   passes none, so no Telegram sender is an owner here."
   (:require [dvergr.channels.telegram :as tg]
             [dvergr.channels.core :as channels]
             [dvergr.adapters.core :as adapters]
@@ -254,6 +260,10 @@
       (let [tg-cfg (:telegram (dcfg/config))
             _ (when-let [users (:allowed-users tg-cfg)]
                 (allowlist/set-users! users))
+            _ (when (empty? (allowlist/list-users))
+                (log/log! {:level :warn :id ::empty-allowlist
+                           :msg (str "Telegram :allowed-users is empty: every sender is refused. "
+                                     "List numeric ids or \"@handle\"s in config.local.edn.")}))
             send-fn (fn [chat-id text]
                       (tg/send-long-message! token chat-id text))
             caps {:ctx ctx/server-context

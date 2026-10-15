@@ -55,14 +55,17 @@
                               :execute (fn [& _]
                                          (swap! called inc)
                                          {:type :success})}}
-               party-id room-id)]
+               party-id room-id)
+        ;; an agent's turn names its actor; dvergr refuses a tool call that
+        ;; runs for nobody (no :principal, no :actor) before simmis is asked
+        ctx {:tools tools :actor (keyword "party" (str party-id))}]
     (with-redefs [access/can? (constantly false)]
-      (let [result (dvergr-tools/execute "write_file" {} {:tools tools})]
+      (let [result (dvergr-tools/execute "write_file" {} ctx)]
         (is (zero? @called))
         (is (= :error (:type result)))
         (is (= :denied (get-in result [:authorization :decision])))))
     (with-redefs [access/can? (constantly true)]
-      (let [result (dvergr-tools/execute "write_file" {} {:tools tools})]
+      (let [result (dvergr-tools/execute "write_file" {} ctx)]
         (is (= 1 @called))
         (is (= :success (:type result)))
         (is (= #{:agent-tool-grant :simmis-rebac}

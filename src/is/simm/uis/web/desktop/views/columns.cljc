@@ -1571,7 +1571,12 @@
                   item))
               (iv/get-new visible-iv))
              ;; One-shot scroll+highlight once the anchor is in the DOM.
-             ;; DOM-flag guarded (no reactive state); rAF for tree linkage.
+             ;; DOM-flag guarded (no reactive state). This runs in the BUILD,
+             ;; before the commit that renders the anchor, so the rAF waits for
+             ;; that commit and its layout (scrollIntoView). It is not a ref
+             ;; deferral, and a `:ref` would not replace it: spindel fires a
+             ;; ref on mount only, never on reconcile, so an anchor on a
+             ;; message that is already mounted would never scroll.
              _ #?(:cljs
                   (when anchor-idx
                     (js/requestAnimationFrame

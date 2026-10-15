@@ -41,8 +41,8 @@ repository, and open work is not tracked in documentation.
 Never use `setTimeout`/`Thread/sleep`/timeouts to "fix" timing or
 synchronization issues. Use real coordination: await events, channels,
 promises, signals, or pass data explicitly. (One legitimate exception:
-a `requestAnimationFrame` to defer DOM measurements until after tree
-linkage — a documented DOM lifecycle idiom, not a race patch.)
+a `requestAnimationFrame` to defer DOM measurements or scroll positions
+until after layout — a documented DOM lifecycle idiom, not a race patch.)
 
 ## Development environment
 
@@ -236,8 +236,13 @@ Each of these bit us. None of them fails loudly.
 2. **ifor-each memoizes on item equality** — closure variables are
    invisible to the diff. Anything that must re-render lives IN the
    item (`(assoc tab :active? ...)`).
-3. **Refs / foreign-node :on-mount fire before tree linkage** —
-   `.closest`/parent traversal needs a `requestAnimationFrame` deferral.
+3. **Refs / foreign-node :on-mount fire on MOUNT, after linkage** —
+   since spindel 0.1.122 (rule R5) the element is attached when the
+   callback runs, so `.closest`/parent traversal works directly; no
+   `requestAnimationFrame`. A rAF is only for post-layout measurement
+   (sizes, scroll positions). A ref does NOT re-fire on reconcile: work
+   that must follow a later change to an already-mounted element is not
+   a ref's job.
 4. **Signals/mailboxes are ctx-backed** — see "fork-safe state" above.
 
 ## Known instrumentation

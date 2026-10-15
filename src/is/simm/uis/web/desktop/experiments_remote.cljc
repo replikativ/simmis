@@ -17,11 +17,15 @@
 (defn-spin-remote load-leaderboard!
   [server-id room-id-str]
   (spin-remote server-id [room-id-str]
-    (let [rid (identity room-id-str)]
+    (let [rid (identity room-id-str)
+          ;; the JWT principal is bound only during the invoke: capture it now
+          party #?(:clj (access/authenticated-party-id) :cljs nil)]
       #?(:clj (ctx/with-server-context
-                (or (experiments/room-leaderboard (java.util.UUID/fromString rid))
-                    (throw (ex-info "The room is not live on this server"
-                                    {:error :room-not-live :room-id rid}))))
+                (if-not party
+                  (throw (ex-info "authentication required" {:error :authentication-required}))
+                  (or (experiments/room-leaderboard (java.util.UUID/fromString rid) party)
+                      (throw (ex-info "The room is not live on this server"
+                                      {:error :room-not-live :room-id rid})))))
          :cljs nil))))
 
 (defn-spin-remote join-experiment-room!

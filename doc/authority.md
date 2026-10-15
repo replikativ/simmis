@@ -67,7 +67,11 @@ A room dvergr makes for an experiment (`room-run`, `runner/run!` in a home,
 sees such rooms in the room list and joins one (`join-experiment-room!`,
 policed `:admin`; `is.simm.ops.experiments/join!` refuses a room that keeps no
 experiment): from then on it is an ordinary room, and its leaderboard
-(`load-leaderboard!`, `{:room id}`) is read by its members.
+(`load-leaderboard!`, `{:room id}`) is read by its members. The dvergr ops
+behind it run for the reading party as a dvergr principal
+(`experiments/party-principal`), not for the process; simmis configures no
+dvergr authorizer, so dvergr's default admits it and the policy row above is
+the check that decides.
 
 An RPC with no row is **refused**, so forgetting one produces a dead feature
 rather than an open one. `rpc-coverage-test` joins the live registry against

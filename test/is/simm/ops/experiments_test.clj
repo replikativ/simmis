@@ -62,7 +62,8 @@
 (deftest a-completed-experiment-is-its-scorecard-and-its-paired-comparison
   (with-experiment-room
     (fn [room]
-      (let [{:keys [experiments running]} (experiments/leaderboard room)
+      (let [{:keys [experiments running]} (experiments/leaderboard
+                                                  room (experiments/party-principal (random-uuid)))
             [e :as es] experiments]
         (is (= 1 (count es)))
         (is (= 0 running))

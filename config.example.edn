@@ -25,8 +25,9 @@
  ;;
  ;; The token can also come from TELEGRAM_BOT_TOKEN.
  ;; :allowed-users gates who may talk to the bot — numeric ids or "@handle".
- ;; LEAVE IT SET: an empty allowlist means anyone who finds the bot can post
- ;; into your rooms (dvergr warns at boot, but it does not refuse).
+ ;; An empty or missing allowlist refuses EVERY sender (dvergr authenticates a
+ ;; Telegram sender only when the allowlist lists it). Numeric ids are safer:
+ ;; a handle can be changed and then taken by someone else.
  #_:telegram #_{:token "123456:ABC-DEF..."
                 :allowed-users #{123456789 "@your-handle"}}
 
