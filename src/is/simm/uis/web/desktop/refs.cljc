@@ -44,7 +44,7 @@
 
    Pure apart from the roster lookup, so the mapping can be read in one place
    and tested without a DOM."
-  [{:keys [kind id scope page room message thread title] :as _ref}]
+  [{:keys [kind id scope page room room-name message thread run title] :as _ref}]
   #?(:cljs
      (case kind
        :page (when (and page scope)
@@ -74,6 +74,19 @@
                           sc (assoc :db-scope sc))
                   (or title "Chat")]))
        :files (when room [:files {:room-id (str room)} (or title "Files")])
+       ;; A team's book — the Accounting perspective's team heading.
+       :book (when room
+               [:book (cond-> {:room-id (str room) :room-name title}
+                        (room-scope (str room)) (assoc :db-scope (room-scope (str room))))
+                (str (or title "Team") " · Book")])
+       ;; One agent run, in the run inspector — a journal entry names the run
+       ;; that posted it.
+       :run (when (and room run)
+              (let [sc (or (some-> scope str) (room-scope (str room)))]
+                [:run-inspector (cond-> {:room-id (str room) :run-id (str run)}
+                                  room-name (assoc :room-name room-name)
+                                  sc (assoc :db-scope sc))
+                 (or title "Run")]))
        ;; The proposal itself, not the list it was listed in. This used to
        ;; discard the ref and open the Tasks tab the row was already on — a
        ;; dead end in the one view whose docstring promises navigation. Falls
@@ -97,14 +110,15 @@
    (defn open!
      "Open `ref` as a tab. `ref` is a ref map or a `dh://` URI string.
 
-      `opts`: `:new-column?` (cmd/ctrl-click), `:col-id` (source column), and
+      `opts`: `:new-column?` (cmd/ctrl-click), `:new-tab?` (open beside the
+      current tab instead of replacing it), `:col-id` (source column), and
       `:title` to override the label.
 
       Silent no-ops are the failure this replaces: a row that looks clickable
       and does nothing is worse than one that is not clickable, so an
       unopenable ref warns."
      ([ref] (open! ref {}))
-     ([ref {:keys [new-column? col-id title]}]
+     ([ref {:keys [new-column? new-tab? col-id title]}]
       ;; The binding wraps EVERYTHING, including `ref->tab`. It used to start
       ;; only at `open-tab!`, and `ref->tab`'s `:room`/`:message` cases call
       ;; `room-scope`, which derefs `sig/user-rooms` — unbound, that throws.
@@ -120,5 +134,6 @@
             (sig/open-tab! tab-type tab-data
                            (cond-> {:title (or title tab-title)
                                     :new-column? (boolean new-column?)}
+                             new-tab? (assoc :new-tab? true)
                              col-id (assoc :col-id col-id)))
             (js/console.warn "[refs] cannot open reference:" (pr-str ref))))))))

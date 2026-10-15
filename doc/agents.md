@@ -33,6 +33,14 @@ a curated vocabulary, injected as namespaces:
 Plus ordinary `datahike.api`, so an agent can query rather than being restricted
 to a hand-built accessor for every question.
 
+A `kontor/*` posting records no author: kontor's posting API takes no
+transaction metadata. A team's Book (Accounting → the team's heading;
+`ops.book-report`) recovers it from dvergr's call record instead — the
+`clojure_eval` call that invoked a `kontor/` verb and was running when the
+entry was sealed names the run, and the journal links to it. When no single
+call contains that instant, the entry reads "Posted outside an agent run"
+rather than guessing.
+
 The vocabulary carries `:doc` and `:arglists` (`agents/vocab.clj`) so `doc`
 works inside the sandbox. This matters more than it sounds: a capability an
 agent cannot discover is a capability it does not have, and the failure looks

@@ -510,6 +510,10 @@
      ;; the handler derives the party from the principal and filters each book
      ;; through can?, so there is no client-supplied id to police here
      "load-position!"          {:action R :resource (always :authenticated)}
+     ;; one team's book: a member of the room reads it (ops.book-report
+     ;; re-checks the same grant against the party it is reporting for)
+     "load-book!"              {:action R :resource (room :room-id-str)}
+     "load-account-ledger!"    {:action R :resource (room :room-id-str)}
      "load-feed!"              {:action R :resource (always :authenticated)}
      "set-task-status!"        {:action W :resource (scope :scope-str)}
      ;; --- settings (own) ---

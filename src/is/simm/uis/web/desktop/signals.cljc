@@ -207,6 +207,23 @@
             there is no single ledger, so this is an index over per-team books."
            (signal runtime nil)))
 
+#?(:cljs (def books
+           "Signal for open Book tabs: room-id string ->
+            {:data <ops.book-report/book-report> :error str? :opts {...}}, where
+            `:opts` is the period + time cut the data was loaded for, so a view
+            asking for different opts knows the data is not its own."
+           (signal runtime {})))
+
+#?(:cljs (def book-ledgers
+           "Signal for the Book Ledger report: [room-id path] ->
+            {:data {:path :rows} :error str? :opts {...}}."
+           (signal runtime {})))
+
+#?(:cljs (def book-ui
+           "Reading position per Book tab: room-id string ->
+            {:report kw :preset kw :account path}. Absent keys take defaults."
+           (signal runtime {})))
+
 #?(:cljs (def tasks-data
            "Signal for the Tasks aggregate:
             {:tasks [...] :include-done? bool :loaded-at ms} | {:error str …}

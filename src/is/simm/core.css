@@ -8323,6 +8323,81 @@ body.tab-dragging .column-drop-zone {
 .acct-commodity { color: var(--mono-text-tertiary); min-width: 3em; }
 
 /* ============================================================================
+   Book — one team's statements, journal and ledgers (views/book.cljc)
+   ============================================================================ */
+.book-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between;
+                gap: 8px 16px; padding: 10px 20px 0; }
+.book-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.book-tab { background: none; border: 1px solid var(--mono-border); border-radius: 6px;
+            padding: 4px 10px; font-size: 0.82em; color: var(--mono-text-secondary);
+            cursor: pointer; }
+.book-tab:hover { color: var(--mono-text-primary); border-color: var(--mono-text-tertiary); }
+.book-tab--active { color: var(--mono-text-primary); background: var(--mono-bg-elevated);
+                    border-color: var(--accent); }
+.book-periods .book-tab { font-size: 0.76em; }
+.book-body { padding-top: 14px; }
+.book-statements { display: flex; flex-direction: column; gap: 28px; }
+.book-commodity { font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.06em;
+                  color: var(--mono-text-secondary); margin-bottom: 6px; }
+.book-statement-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.book-commodity-note { font-size: 0.78em; color: var(--mono-text-tertiary); }
+.book-badge { font-size: 0.74em; padding: 2px 8px; border-radius: 999px; }
+.book-badge--ok { color: var(--status-success);
+                  border: 1px solid currentColor; }
+.book-badge--bad { color: var(--danger); border: 1px solid currentColor; }
+.book-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                gap: 12px 40px; max-width: 1100px; }
+.book-narrow { max-width: 760px; }
+.book-section { margin-bottom: 18px; }
+.book-section-head { font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.06em;
+                     color: var(--mono-text-secondary); margin-bottom: 4px; }
+.book-line { display: flex; align-items: baseline; gap: 10px; padding: 4px 0;
+             border-bottom: 1px solid var(--mono-border); font-size: 0.88em; }
+.book-line > :first-child { flex: 1; }
+.book-line--none { color: var(--mono-text-tertiary); }
+.book-line--total { font-weight: 600; border-bottom: none; }
+.book-line--grand { font-weight: 600; border-top: 2px solid var(--mono-border);
+                    border-bottom: none; margin-top: 4px; padding-top: 8px; }
+/* Figures right-aligned and tabular, as on the Accounting index. */
+.book-amount { font-variant-numeric: tabular-nums; text-align: right; min-width: 8em;
+               display: inline-block; color: var(--mono-text-primary); }
+.book-account { color: var(--mono-text-primary); }
+.book-account--link { cursor: pointer; }
+.book-account--link:hover { color: var(--accent); text-decoration: underline; }
+.book-account--derived { color: var(--mono-text-secondary); font-style: italic; }
+.book-table { width: 100%; border-collapse: collapse; font-size: 0.88em; }
+.book-table th { text-align: left; font-weight: 500; font-size: 0.85em;
+                 color: var(--mono-text-tertiary); padding: 4px 6px;
+                 border-bottom: 1px solid var(--mono-border); }
+.book-table td { padding: 4px 6px; border-bottom: 1px solid var(--mono-border);
+                 vertical-align: baseline; }
+.book-table .num { text-align: right; font-variant-numeric: tabular-nums; width: 9em; }
+.book-table-total td { font-weight: 600; border-bottom: none;
+                       border-top: 2px solid var(--mono-border); }
+.book-date-cell { white-space: nowrap; color: var(--mono-text-secondary);
+                  font-variant-numeric: tabular-nums; width: 7em; }
+.book-commodity-cell { color: var(--mono-text-tertiary); width: 3em; }
+.book-journal { display: flex; flex-direction: column; gap: 14px; max-width: 900px; }
+.book-entry { border: 1px solid var(--mono-border); border-radius: 8px; padding: 8px 12px; }
+.book-entry-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+                   margin-bottom: 4px; font-size: 0.88em; }
+.book-entry-date { font-variant-numeric: tabular-nums; color: var(--mono-text-secondary); }
+.book-entry-narration { flex: 1; color: var(--mono-text-primary); min-width: 16ch; }
+.book-chip { font-size: 0.78em; padding: 1px 6px; border-radius: 4px;
+             background: var(--mono-bg-elevated); color: var(--mono-text-secondary); }
+.book-chip--state { color: var(--accent); }
+.book-entry-by { display: inline-flex; align-items: center; gap: 4px; font-size: 0.82em;
+                 color: var(--mono-text-secondary); }
+.book-entry-by svg { width: 12px; height: 12px; }
+.book-entry-by--unknown { color: var(--mono-text-tertiary); }
+.book-table--entry td { border-bottom: none; padding: 2px 6px; }
+/* A credit is indented under its debits — how a journal entry is written. */
+.book-credit-account { padding-left: 2.2em !important; }
+.book-note { font-size: 0.8em; color: var(--mono-text-tertiary); }
+.book-ledger-pick { margin-bottom: 12px; }
+.book-ledger-pick select { min-width: 320px; }
+
+/* ============================================================================
    Add memory — create and connect in one list
    ============================================================================ */
 .addmem-view { padding: 16px 20px; max-width: 44rem; }
