@@ -19,7 +19,8 @@
    NEVER logged. At-rest encryption of this store arrives with konserve AEAD,
    covering pages/screens/recordings together — Phase 1 is plaintext on disk,
    like the screenshots, and we do not pretend otherwise."
-  (:require [is.simm.model.parties :as parties]
+  (:require [is.simm.runtimes.instance :as instance]
+            [is.simm.model.parties :as parties]
             [is.simm.model.blobs :as blobs]
             [clojure.string :as str]
             [datahike.api :as d]
@@ -60,7 +61,7 @@
 
 (defn- pages-cfg [party-uuid]
   {:store {:backend :file
-           :path (str "data/simmis-pages/" party-uuid)
+           :path (instance/data-path "simmis-pages" (str party-uuid))
            ;; STABLE id (the screens-cfg lesson): a random id per connect fails
            ;; to reconnect to an existing store after a restart.
            :id (java.util.UUID/nameUUIDFromBytes
@@ -83,7 +84,7 @@
               (when-not (:db.secondary/type (d/entity @conn pages-fulltext-ident))
                 (try ((requiring-resolve 'dvergr.search.secondary/declare-index!)
                       conn pages-fulltext-ident [:page/text]
-                      (str "data/simmis-pages/" party-uuid "-ft"))
+                      (instance/data-path "simmis-pages" (str party-uuid "-ft")))
                      (catch Throwable t
                        (log/log! {:level :warn :id ::fulltext-declare-failed
                                   :data {:party party-uuid :error (ex-message t)}}))))

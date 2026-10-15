@@ -36,7 +36,8 @@
    it only through an active screen-share grant (v2 for the room-side playback;
    v1 keys the store per owner so that view is a query, not a migration). The
    route is authenticated (`hauth/require-auth`); the owner is the caller."
-  (:require [clojure.java.io :as io]
+  (:require [is.simm.runtimes.instance :as instance]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [datahike.api :as d]
             [is.simm.model.blobs :as blobs]
@@ -44,7 +45,7 @@
             [taoensso.telemere :as log])
   (:import [java.io File FileOutputStream]))
 
-(def ^:private root "data/simmis-recordings")
+(defn- root [] (instance/data-path "simmis-recordings"))
 
 ;; ---------------------------------------------------------------------------
 ;; Schema — recordings live in the room's SCREENS db, beside the descriptions
@@ -87,7 +88,7 @@
 
 (defn- cfg [owner-uuid]
   {:store {:backend :file
-           :path (str root "/" owner-uuid "/db")
+           :path (str (root) "/" owner-uuid "/db")
            ;; STABLE store id, derived from the room. A fresh randomUUID per
            ;; call means every connect describes the store differently — which
            ;; is at best meaningless and at worst how a writer ends up fatally
@@ -154,7 +155,7 @@
     :else "bin"))
 
 (defn- segment-path [owner-uuid session-id idx mime]
-  (str root "/" owner-uuid "/" session-id "/seg-" idx "." (ext-for mime)))
+  (str (root) "/" owner-uuid "/" session-id "/seg-" idx "." (ext-for mime)))
 
 (defn- ffprobe-duration-ms
   "Actual duration of a finalized segment. The browser does not tell us — and
@@ -208,7 +209,7 @@
     :else
     (let [sid (parse-uuid (str session-id))
           now (System/currentTimeMillis)]
-      (.mkdirs (File. (str root "/" owner-uuid "/" sid)))
+      (.mkdirs (File. (str (root) "/" owner-uuid "/" sid)))
       (transact! owner-uuid
                   [{:recording.session/id sid
                     :recording.session/started-at now
@@ -412,7 +413,7 @@
                       db sid)
         s-eid (d/q '[:find ?s . :in $ ?sid
                      :where [?s :recording.session/id ?sid]] db sid)
-        dir (File. (str root "/" owner-uuid "/" sid))]
+        dir (File. (str (root) "/" owner-uuid "/" sid))]
     (when (.exists dir)
       (doseq [f (reverse (file-seq dir))] (.delete f)))
     (when (or s-eid (seq seg-eids))

@@ -6,6 +6,11 @@
    - Shadow-cljs watcher with nREPL (port 9631) for CLJS access
    - Simmis web server (ws://localhost:47295)
 
+   Those are the ports of the DEFAULT instance. SIMMIS_PORT_OFFSET moves all
+   of them (and shadow's own 9630 and the page's 8080) by one number, so a
+   second instance can run beside the first — see `is.simm.runtimes.instance`
+   and \"Running a second instance\" in CLAUDE.md.
+
    Usage:
      clj -A:dev              # Auto-starts everything
 
@@ -22,6 +27,7 @@
   (:require [nrepl.server :as nrepl]
             [cider.nrepl :refer [cider-nrepl-handler]]
             [clojure.java.shell]
+            [is.simm.runtimes.instance :as instance]
             [taoensso.telemere :as log]))
 
 ;; State management
@@ -31,21 +37,23 @@
          :web-started? false}))
 
 ;; =============================================================================
-;; nREPL Server (port 47888)
+;; nREPL Server (port 47888 + offset)
 ;; =============================================================================
 
 (defn start-nrepl!
-  "Start nREPL server on port 47888."
+  "Start the nREPL server on the instance's port (47888 + SIMMIS_PORT_OFFSET)."
   []
   (when-not (:nrepl @state)
-    (try
-      (let [server (nrepl/start-server :port 47888 :handler cider-nrepl-handler)]
-        (swap! state assoc :nrepl server)
-        (log/log! {:level :info :id ::nrepl-started :msg "nREPL started on port 47888"})
-        server)
-      (catch java.net.BindException _
-        (log/log! {:level :warn :id ::nrepl-port-in-use :msg "Port 47888 already in use, skipping nREPL start"})
-        nil))))
+    (let [port (instance/port :nrepl-clj)]
+      (try
+        (let [server (nrepl/start-server :port port :handler cider-nrepl-handler)]
+          (swap! state assoc :nrepl server)
+          (log/log! {:level :info :id ::nrepl-started :msg (str "nREPL started on port " port)})
+          server)
+        (catch java.net.BindException _
+          (log/log! {:level :warn :id ::nrepl-port-in-use
+                     :msg (str "Port " port " already in use, skipping nREPL start")})
+          nil)))))
 
 (defn stop-nrepl!
   "Stop nREPL server."
@@ -56,19 +64,55 @@
     (log/log! {:level :info :id ::nrepl-stopped :msg "nREPL stopped"})))
 
 ;; =============================================================================
-;; Shadow-cljs (watcher + nREPL on port 9631)
+;; Shadow-cljs (watcher + nREPL on port 9631 + offset)
 ;; =============================================================================
 
+(defn shadow-config
+  "shadow-cljs.edn with this instance's ports applied.
+
+   The file holds the default instance's ports, and `#shadow/env` can read a
+   port but not add an offset to one, so the dev JVM sets them here instead:
+   shadow's nREPL, its own server (9630, the devtools websocket), the page's
+   :dev-http port, the app server that :dev-http proxies to, and the websocket
+   port compiled into the client (`development-websocket-port`). Page and
+   websocket must agree, which is why they are derived from one offset. With
+   no offset every value equals what the file says.
+
+   Applies to `clj -M:dev` only; `npm run dev` runs shadow from the file and
+   is always the default instance. Editing shadow-cljs.edn while an offset
+   instance runs makes shadow reload the FILE's ports — restart that instance
+   afterwards."
+  []
+  (let [cfg ((requiring-resolve 'shadow.cljs.devtools.config/load-cljs-edn!))
+        {:keys [nrepl-cljs shadow-http http websocket]} (instance/ports)
+        ws-define 'is.simm.runtimes.web/development-websocket-port
+        dev-http (-> cfg :dev-http vals first
+                     (assoc :proxy-url (str "http://localhost:" websocket)))]
+    (-> cfg
+        (assoc-in [:nrepl :port] nrepl-cljs)
+        (assoc-in [:http :port] shadow-http)
+        (assoc :dev-http {http dev-http})
+        (update :builds update-vals
+                (fn [build]
+                  (cond-> build
+                    (get-in build [:dev :compiler-options :closure-defines ws-define])
+                    (assoc-in [:dev :compiler-options :closure-defines ws-define]
+                              (str websocket))))))))
+
 (defn start-shadow!
-  "Start shadow-cljs server and watch :app build."
+  "Start shadow-cljs server and watch :app build, on this instance's ports."
   []
   (when-not (:shadow-started? @state)
     (require '[shadow.cljs.devtools.server :as shadow-server])
     (require '[shadow.cljs.devtools.api :as shadow])
-    ((resolve 'shadow.cljs.devtools.server/start!))
-    ((resolve 'shadow.cljs.devtools.api/watch) :app)
-    (swap! state assoc :shadow-started? true)
-    (log/log! {:level :info :id ::shadow-started :msg "Shadow-cljs started, watching :app (CLJS nREPL on port 9631)"})))
+    (let [cfg (shadow-config)]
+      ((resolve 'shadow.cljs.devtools.server/start!) cfg)
+      ((resolve 'shadow.cljs.devtools.api/watch) (get-in cfg [:builds :app]))
+      (swap! state assoc :shadow-started? true)
+      (log/log! {:level :info :id ::shadow-started
+                 :msg (str "Shadow-cljs started, watching :app (CLJS nREPL on port "
+                           (instance/port :nrepl-cljs) ", page on http://localhost:"
+                           (instance/port :http) ")")}))))
 
 (defn stop-shadow!
   "Stop shadow-cljs watcher and server."
@@ -104,7 +148,7 @@
   (start-shadow!))
 
 ;; =============================================================================
-;; Web Server (ws://localhost:47295)
+;; Web Server (ws://localhost:47295 + offset)
 ;; =============================================================================
 
 (defn start-web!
@@ -176,7 +220,8 @@
 (defn start!
   "Start all development services: nREPL, shadow-cljs, and web server."
   []
-  (log/log! {:level :info :id ::dev-starting :msg "Starting development environment..."})
+  (log/log! {:level :info :id ::dev-starting :msg "Starting development environment..."
+             :data (instance/summary)})
   (ensure-css!)
   (start-nrepl!)
   ;; start-shadow! returns once the watcher is up; the web server binds its

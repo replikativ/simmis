@@ -33,6 +33,7 @@
             [dvergr.adapters.core :as adapters]
             [dvergr.security.allowlist :as allowlist]
             [dvergr.substrate.config :as dcfg]
+            [is.simm.runtimes.instance :as instance]
             [dvergr.rooms :as drooms]
             [dvergr.room.registry :as rreg]
             [dvergr.room.store :as rstore]
@@ -252,10 +253,26 @@
 
 (defn start-telegram!
   "Connect the Telegram bot when a token is configured; no-op otherwise.
-   Idempotent."
+   Idempotent.
+
+   Never on an OFFSET instance (SIMMIS_PORT_OFFSET > 0). The token is usually
+   the machine's — TELEGRAM_BOT_TOKEN in the shell, or the checkout's
+   config.local.edn — so a second instance would find the same one, and
+   Telegram serves a bot's updates to ONE poller: two of them answer each
+   other with 409 Conflict and the first instance's chats stop arriving."
   []
-  (if @tg-state
+  (cond
+    @tg-state
     :already-running
+
+    (pos? (instance/port-offset))
+    (do (when (dcfg/telegram-token)
+          (log/log! {:level :warn :id ::telegram-skipped-offset-instance
+                     :msg (str "Telegram not started: this is an offset instance "
+                               "(SIMMIS_PORT_OFFSET), and a bot token can have only one poller.")}))
+        :offset-instance)
+
+    :else
     (if-let [token (dcfg/telegram-token)]
       (let [tg-cfg (:telegram (dcfg/config))
             _ (when-let [users (:allowed-users tg-cfg)]

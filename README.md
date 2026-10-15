@@ -93,6 +93,10 @@ One command starts everything:
 Data lives in `data/simmis-v2` (app store) and `.dvergr/` (system DB, room
 stores, JWT secret). To start over, delete both.
 
+A second instance on the same machine moves all four ports with
+`SIMMIS_PORT_OFFSET` and its state with `DVERGR_HOME` and `SIMMIS_DATA_DIR`;
+`config.example.edn` documents them.
+
 ### Log in
 
 There is no self-registration — accounts come from config:

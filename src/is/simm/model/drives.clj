@@ -17,7 +17,8 @@
    — the datahike fs.node schema is an implementation detail, so a
    CAS-native merkle tree can replace it later as a custom yggdrasil
    system without consumer rewrites."
-  (:require [dvergr.drive.core :as dcore]
+  (:require [is.simm.runtimes.instance :as instance]
+            [dvergr.drive.core :as dcore]
             [is.simm.model.system-db :as system-db]
             [is.simm.model.blobs :as blobs]
             [is.simm.runtimes.branching :as branching]
@@ -41,7 +42,7 @@
    conformance (d/branch!, branch-as-db, merge-db all work)."
   [db-scope]
   {:store {:backend :file
-           :path (str "data/simmis-drives/" db-scope)
+           :path (instance/data-path "simmis-drives" (str db-scope))
            :id db-scope}
    :keep-history? true
    :branch-history? true
@@ -89,7 +90,7 @@
                                         ;; has bitten `:kb` already; `:fs` is not
                                         ;; registered by dvergr today, so this is
                                         ;; latent — keep it correct anyway.
-                                        :scope (str "data/simmis-drives/" db-scope)
+                                        :scope (instance/data-path "simmis-drives" (str db-scope))
                                         :owner-id owner-id})
           drive {:drive/id drive-id
                  :drive/name name

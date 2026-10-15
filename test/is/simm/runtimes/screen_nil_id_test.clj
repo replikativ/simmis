@@ -40,7 +40,7 @@
         sids [(random-uuid) (random-uuid)]]
     (swap! @#'rec/conns assoc owner conn)
     (try
-      (with-redefs-fn {#'rec/root (str root)}
+      (with-redefs-fn {#'rec/root (constantly (str root))}
         (fn []
           (doseq [[i sid] (map-indexed vector sids)]
             (d/transact conn [{:recording.session/id sid

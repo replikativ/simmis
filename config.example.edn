@@ -108,3 +108,24 @@
 ;;
 ;;   SIMMIS_JITSI_URL    Jitsi deployment backing the :video tab.
 ;;                       Default http://localhost:9100.
+;;
+;; Running a SECOND instance on the same machine (an agent's end-to-end run next
+;; to your demo). Unset, each of these is the default instance's value.
+;;
+;;   SIMMIS_PORT_OFFSET  Added to every dev port: nREPL 47888, shadow nREPL
+;;                       9631, shadow's own server 9630, the page 8080, the
+;;                       websocket 47295. One offset rather than one variable per
+;;                       port, because the page, shadow's proxy and the websocket
+;;                       URL compiled into the client only work as a set. An
+;;                       offset instance never starts Telegram (a bot token can
+;;                       have one poller) and names its blob cookie
+;;                       simmis_blob_<offset> (cookies are not port-scoped).
+;;   DVERGR_HOME         State home: system DB, room stores, generated secrets
+;;                       (jwt-secret, jitsi-jwt-secret, mail-credential-key).
+;;                       Default ./.dvergr. dvergr's own variable.
+;;   SIMMIS_DATA_DIR     simmis's stores (simmis-v2, KBs, blobs, drives, ...).
+;;                       Default ./data.
+;;   DVERGR_CONFIG       This file's path instead of ./config.local.edn.
+;;
+;; Point DVERGR_HOME and SIMMIS_DATA_DIR at a fresh directory, not a copy of
+;; another instance's: a copy carries the same store ids.
