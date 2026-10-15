@@ -14,6 +14,9 @@
             [is.simm.agents.room-agents :as ra]
             [is.simm.authority.world :as world]
             [is.simm.model.access :as access]
+            [is.simm.model.drives :as drives]
+            [is.simm.model.knowledge-bases :as kbs]
+            [is.simm.model.user-rooms-broadcast :as urb]
             [is.simm.model.model-catalog :as model-catalog]
             [is.simm.model.parties :as parties]
             [is.simm.model.rooms :as rooms]
@@ -41,7 +44,7 @@
 (deftest remove-agent-from-room-removes-only-the-rooms-agents
   ;; The handler retracts `agent-id-str` from the room, then DELETES the party
   ;; when it is in no room any more. It now first requires an AGENT that IS in
-  ;; this room, removable by the caller (`access/agent-removable?`).
+  ;; this room, removable by the caller (`access/agent-manageable?`).
   (world/with-world [_ w]
     (with-redefs [ra/unassign-room-agent! (fn [& _])]
       (testing "a non-member is refused at the gate"
@@ -362,3 +365,138 @@
                      @conn "proposal-agent")]
           (d/transact conn [{:db/id f :proposal.fork/status :dismissed}]))
         (is (true? (decide :member "update-block-content" (block :proposal-agent))))))))
+
+(defn- fork-status [conn branch]
+  (d/q '[:find ?st . :in $ ?b
+         :where [?f :proposal.fork/branch ?b] [(get-else $ ?f :proposal.fork/status :open) ?st]]
+       @conn branch))
+
+(deftest dismissing-a-fork-is-its-authors-and-its-deciders
+  ;; dismiss-fork! / dismiss-proposal! delete fork branches. They used to need
+  ;; only room :write, so any member could throw away another party's
+  ;; contribution while it was under review. The world's proposal holds
+  ;; "member-fork" (the member's) and "agent-fork" (the owner's agent's).
+  (world/with-world [conn w]
+    (let [fork-args (fn [branch] {:proposal-id-str (str (:proposal w)) :note ""
+                                  :scope-str (str (:kb-granted-scope w)) :branch branch})
+          decide (fn [kind fn-name args]
+                   (boolean (access/authorize-remote (world/principal w kind) fn-name args)))]
+      (testing "a member dismissing the AGENT's fork is refused, and the fork stays open"
+        (is (world/refused? (world/inbound! (world/principal w :member) "dismiss-fork!"
+                                            (fork-args "agent-fork"))))
+        (is (= :open (fork-status conn "agent-fork"))))
+      (testing "a member dismissing the whole proposal (which holds a fork not theirs) is refused"
+        (is (world/refused? (world/inbound! (world/principal w :member) "dismiss-proposal!"
+                                            {:proposal-id-str (str (:proposal w)) :note ""})))
+        (is (= :open (fork-status conn "agent-fork")))
+        (is (= :open (fork-status conn "member-fork"))))
+      (testing "a non-member is refused even naming a fork of their own scope"
+        (is (false? (decide :non-member "dismiss-fork!" (fork-args "member-fork")))))
+      (testing "a fork that is not in THIS proposal is refused"
+        (is (false? (decide :owner "dismiss-fork!" (fork-args "no-such-fork")))))
+      (testing "legitimate: the author withdraws their own fork; a decider refuses any"
+        (is (true? (decide :member "dismiss-fork!" (fork-args "member-fork"))))
+        (is (true? (decide :owner "dismiss-fork!" (fork-args "agent-fork"))))
+        (is (true? (decide :owner "dismiss-proposal!" {:proposal-id-str (str (:proposal w))}))))
+      (testing "legitimate: the proposal's filer withdraws the whole proposal"
+        (d/transact conn [{:proposal/id (:proposal w) :proposal/author (:member w)}])
+        (is (true? (decide :member "dismiss-proposal!" {:proposal-id-str (str (:proposal w))}))))
+      (testing "once the agent's fork is decided, the member controls every OPEN fork"
+        (d/transact conn [{:proposal/id (:proposal w) :proposal/author (:owner w)}])
+        (let [f (d/q '[:find ?f . :where [?f :proposal.fork/branch "agent-fork"]] @conn)]
+          (d/transact conn [{:db/id f :proposal.fork/status :dismissed}]))
+        (is (true? (decide :member "dismiss-proposal!" {:proposal-id-str (str (:proposal w))})))))))
+
+(deftest detaching-is-the-room-owners-or-the-resource-owners
+  (world/with-world [_ w]
+    (with-redefs [ra/reset-room-context! (fn [_])]
+      (kbs/attach-kb-to-room! (:room w) (:kb-private w))
+      (drives/attach-drive-to-room! (:room w) (:drive-owner w))
+      (testing "a plain member cannot take the room's KB or drive away"
+        (is (world/refused? (world/inbound! (world/principal w :member) "detach-kb-from-room!"
+                                            {:room-id-str (str (:room w))
+                                             :kb-id-str (str (:kb-granted w))})))
+        (is (world/refused? (world/inbound! (world/principal w :member) "detach-drive-from-room!"
+                                            {:room-id-str (str (:room w))
+                                             :drive-id-str (str (:drive-owner w))})))
+        (is (true? (access/can? (world/principal w :member) :write (:kb-granted-scope w))))
+        (is (true? (access/can? (world/principal w :member) :write {:drive (:drive-owner w)}))))
+      (testing "legitimate: the room's owner detaches a KB and a drive"
+        (is (ok? (world/inbound! (world/principal w :owner) "detach-kb-from-room!"
+                                 {:room-id-str (str (:room w)) :kb-id-str (str (:kb-private w))})))
+        (is (false? (access/can? (world/principal w :member) :read (:kb-private-scope w))))
+        (is (ok? (world/inbound! (world/principal w :owner) "detach-drive-from-room!"
+                                 {:room-id-str (str (:room w)) :drive-id-str (str (:drive-owner w))})))
+        (is (false? (access/can? (world/principal w :member) :read {:drive (:drive-owner w)}))))
+      (testing "legitimate: a resource's owner withdraws it from a room they are not in"
+        (kbs/attach-kb-to-room! (:other-room w) (:kb-private w))
+        (drives/attach-drive-to-room! (:other-room w) (:drive-owner w))
+        (is (true? (access/can? (world/principal w :non-member) :read (:kb-private-scope w))))
+        (is (ok? (world/inbound! (world/principal w :owner) "detach-kb-from-room!"
+                                 {:room-id-str (str (:other-room w)) :kb-id-str (str (:kb-private w))})))
+        (is (ok? (world/inbound! (world/principal w :owner) "detach-drive-from-room!"
+                                 {:room-id-str (str (:other-room w)) :drive-id-str (str (:drive-owner w))})))
+        (is (false? (access/can? (world/principal w :non-member) :read (:kb-private-scope w))))
+        (is (false? (access/can? (world/principal w :non-member) :read {:drive (:drive-owner w)})))))))
+
+(deftest changing-an-agents-assignment
+  ;; update-agent-assignment! took any agent id: a member could re-role the
+  ;; owner's agent, or write an assignment for an agent outside the room.
+  (world/with-world [conn w]
+    (d/transact conn [{:room/id (:room w) :room/slug "team-test"}])
+    (let [assigned (atom [])]
+      (with-redefs [ra/assign-room-agent! (fn [slug actor opts]
+                                            (swap! assigned conj [slug actor opts])
+                                            {:assignment/id (random-uuid)})
+                    urb/notify-parties! (fn [& _])]
+        (let [call (fn [kind agent]
+                     (world/inbound! (world/principal w kind) "update-agent-assignment!"
+                                     {:room-id-str (str (:room w)) :agent-id-str (str (agent w))
+                                      :role-kw :lead :response-policy-kw :always}))]
+          (testing "a member changing the OWNER's agent is refused, nothing is assigned"
+            (is (refused-by-handler? (call :member :team-agent)))
+            (is (empty? @assigned)))
+          (testing "naming an agent that is not in the room is refused"
+            (is (refused-by-handler? (call :owner :stranger-agent)))
+            (is (empty? @assigned)))
+          (testing "naming a human is refused"
+            (is (refused-by-handler? (call :owner :member)))
+            (is (empty? @assigned)))
+          (testing "legitimate: the room owner (and agent owner) changes it"
+            (is (= :ok (:status (:result (call :owner :team-agent)))))
+            (is (= 1 (count @assigned)))))))))
+
+(deftest a-rooms-drive-answers-to-the-rooms-owner
+  ;; load-room-drive! used to provision the room's drive OWNED BY whoever opened
+  ;; the Files tab first — a plain member then held owner authority over the
+  ;; room's files.
+  (world/with-world [conn w]
+    (with-redefs [drives/create-drive-database! (fn [_])
+                  drives/connect-drive-database (fn [_] nil)
+                  ra/reset-room-context! (fn [_])]
+      (testing "a member opening the Files tab first provisions a drive the ROOM'S OWNER owns"
+        (world/inbound! (world/principal w :member) "load-room-drive!"
+                        {:room-id-str (str (:room w)) :cut-ms nil})
+        (let [drive (first (drives/get-room-drives (:room w)))]
+          (is (some? drive))
+          (is (= (:owner w) (:drive/owner drive)))
+          (is (false? (access/can? (world/principal w :member) :grant {:drive (:drive/id drive)})))
+          (testing "and the member still uses it through the room"
+            (is (true? (access/can? (world/principal w :member) :write {:drive (:drive/id drive)}))))))
+      (testing "a drive provisioned the OLD way (owned by the member) answers to the room's owner"
+        (let [legacy (random-uuid) sys (random-uuid)]
+          (d/transact conn [{:db/id "s" :system/id sys :system/type :fs :system/name "Scratch Drive"}
+                            {:drive/id legacy :drive/name "Scratch Drive" :drive/owner (:member w)
+                             :drive/system-id sys :drive/created (java.util.Date.)}])
+          (drives/attach-drive-to-room! (:room-nogrant w) legacy)
+          (is (false? (access/can? (world/principal w :member) :grant {:drive legacy})))
+          (is (true? (access/can? (world/principal w :owner) :grant {:drive legacy})))
+          (is (true? (access/can? (world/principal w :member) :write {:drive legacy}))
+              "the member keeps what the room grants")
+          (testing "so the member cannot carry the room's files into a room of their own"
+            (is (refused-by-handler?
+                 (world/inbound! (world/principal w :member) "attach-drive-to-room!"
+                                 {:room-id-str (str (:room w)) :drive-id-str (str legacy)}))))
+          (testing "a drive the member created themselves stays theirs"
+            (is (true? (access/can? (world/principal w :non-member) :grant
+                                    {:drive (:drive-stranger w)})))))))))

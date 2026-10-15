@@ -43,6 +43,18 @@
                     :scope-str (s :kb-granted-scope)}
       :kb          {:kb-id-str (s :kb-granted)}
       :proposal    {:proposal-id-str (s :proposal)}
+      ;; one open fork of that proposal, written by the member / by the agent
+      :member-fork {:proposal-id-str (s :proposal) :scope-str (s :kb-granted-scope)
+                    :branch "member-fork"}
+      :agent-fork  {:proposal-id-str (s :proposal) :scope-str (s :kb-granted-scope)
+                    :branch "agent-fork"}
+      ;; a room and the Handbook / the owner's drive in it (detach)
+      :room-kb     {:room-id-str (s :room) :kb-id-str (s :kb-granted)
+                    :drive-id-str (s :drive-owner)}
+      ;; the stranger's room and the OWNER's Handbook / drive (the resource's
+      ;; owner withdrawing it from a room they are not in)
+      :foreign-room-kb {:room-id-str (s :other-room) :kb-id-str (s :kb-granted)
+                        :drive-id-str (s :drive-owner)}
       :mail        {:account-id-str (s :mail)}
       ;; the owner's own id, in every key a self/settings row reads: the
       ;; owner passing it is the legitimate call, anyone else passing it is
@@ -50,7 +62,8 @@
       :owner-self  {:party-id-str (s :owner) :creator-id-str (s :owner)})))
 
 (def ^:private targets
-  #{:none :room :room-store :kb-store :app-store :kb-scope :kb :proposal :mail :owner-self})
+  #{:none :room :room-store :kb-store :app-store :kb-scope :kb :proposal :mail :owner-self
+    :member-fork :agent-fork :room-kb :foreign-room-kb})
 
 (def ^:private AUTH #{:owner :member :non-member :admin})
 (def ^:private MEMBERS #{:owner :member})
@@ -123,9 +136,13 @@
    "add-room-party!"         [(c :room OWNER)]
    "remove-room-party!"      [(c :room OWNER)]
    "attach-drive-to-room!"   [(c :room MEMBERS)]
-   "detach-drive-from-room!" [(c :room MEMBERS)]
+   ;; detaching: the room's owner, or the resource's owner (or :admin) — a
+   ;; plain member may no longer take the room's KBs and drives away
+   "detach-drive-from-room!" [(c :room OWNER) (c :room-kb #{:owner :admin})
+                              (c :foreign-room-kb #{:owner :non-member :admin})]
    "attach-kb-to-room!"      [(c :room MEMBERS)]
-   "detach-kb-from-room!"    [(c :room MEMBERS)]
+   "detach-kb-from-room!"    [(c :room OWNER) (c :room-kb #{:owner :admin})
+                              (c :foreign-room-kb #{:owner :non-member :admin})]
    "delete-drive-node!"      [(c :room MEMBERS)]
    "mkdir-drive-path!"       [(c :room MEMBERS)]
    "put-drive-file!"         [(c :room MEMBERS)]
@@ -168,9 +185,11 @@
    "get-room-state!"         [(c :room MEMBERS)]
    ;; --- proposals ------------------------------------------------------------
    "accept-proposal!"        [(c :proposal MEMBERS)]
-   "dismiss-proposal!"       [(c :proposal MEMBERS)]
+   ;; every open fork must be the caller's (author) or decidable (:merge):
+   ;; the member wrote one of the two, the owner may merge both
+   "dismiss-proposal!"       [(c :proposal OWNER)]
    "accept-fork!"            [(c :proposal MEMBERS)]
-   "dismiss-fork!"           [(c :proposal MEMBERS)]
+   "dismiss-fork!"           [(c :member-fork MEMBERS) (c :agent-fork OWNER)]
    "comment-on-proposal!"    [(c :proposal MEMBERS)]
    "request-changes!"        [(c :proposal MEMBERS)]
    "proposal-status!"        [(c :none AUTH)]

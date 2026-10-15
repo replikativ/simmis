@@ -145,12 +145,21 @@
 
 (defn ensure-room-drive!
   "Room's primary drive, provisioning + attaching '<Room name> Drive'
-   on first need (owner falls back to the room creator). Returns the
-   drive map or nil."
-  [room-id & {:keys [owner-id room-name]}]
+   on first need. Returns the drive map or nil.
+
+   The drive is OWNED BY THE ROOM'S OWNER (falling back to its creator), never
+   by whoever triggered the provisioning: `load-room-drive!` used to pass the
+   caller, so the first member to open the Files tab owned the room's files —
+   could attach them to a room of their own, detach them, and keep that
+   authority after leaving. Drives provisioned that way still answer to the
+   room's owner: `access/room-provisioned-drive-owner` recognises them by name
+   and first grant."
+  [room-id & {:keys [room-name]}]
   (or (first (get-room-drives room-id))
-      (when-let [owner (or owner-id
-                           (when-let [conn (and (some? room-id) (system-db/get-conn))]
+      (when-let [owner (when-let [conn (and (some? room-id) (system-db/get-conn))]
+                         (or (d/q '[:find ?o . :in $ ?rid :where
+                                    [?r :room/id ?rid] [?r :room/owner ?oe] [?oe :party/id ?o]]
+                                  @conn room-id)
                              (d/q '[:find ?o . :in $ ?rid :where
                                     [?r :room/id ?rid] [?r :room/created-by ?o]]
                                   @conn room-id)))]

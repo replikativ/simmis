@@ -140,7 +140,7 @@
                           (or (:next-join-copy (:model-resolution agent))
                               "Not resolved")))
                       ;; the room's owner removes any agent, a member only
-                      ;; their own (access/agent-removable?)
+                      ;; their own (access/agent-manageable?)
                       (when (or can-grant?
                                 (and current-user
                                      (= (str (get-in agent [:party/owner :party/id]))
@@ -350,6 +350,9 @@
                     (el/div {:key (str (:kb/id kb)) :class "settings-env-row"}
                       (el/span {:class "settings-env-key"} (:kb/name kb))
                       (el/span {:class "settings-env-value"} "attached")
+                      ;; the room's owner, or the resource's own owner
+                      (when (or can-grant?
+                                (and current-user (= (str (:kb/owner kb)) (:id current-user))))
                       (el/button {:class "settings-env-delete"
                                   :title "Detach KB"
                                   :on-click (fn [_]
@@ -361,7 +364,7 @@
                                                    (s (fn [_] (room-details/load! room-id {:force? true}))
                                                       (fn [err] (js/console.error "[room-settings] detach KB error:" err))))
                                                  :clj nil))}
-                        (vc/icon "x")))))
+                        (vc/icon "x"))))))
                 (el/div {:class "settings-empty"} "No wikis attached")))
 
             ;; Attach KB dropdown
@@ -410,6 +413,9 @@
                     (el/div {:key (str (:drive/id drv)) :class "settings-env-row"}
                       (el/span {:class "settings-env-key"} (:drive/name drv))
                       (el/span {:class "settings-env-value"} "attached")
+                      ;; the room's owner, or the resource's own owner
+                      (when (or can-grant?
+                                (and current-user (= (str (:drive/owner drv)) (:id current-user))))
                       (el/button {:class "settings-env-delete"
                                   :title "Detach drive"
                                   :on-click (fn [_]
@@ -421,7 +427,7 @@
                                                    (s (fn [_] (room-details/load! room-id {:force? true}))
                                                       (fn [err] (js/console.error "[room-settings] detach drive error:" err))))
                                                  :clj nil))}
-                        (vc/icon "x")))))
+                        (vc/icon "x"))))))
                 (el/div {:class "settings-empty"} "No drives attached")))
 
             ;; Attach existing drive

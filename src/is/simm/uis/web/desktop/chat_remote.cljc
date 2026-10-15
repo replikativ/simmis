@@ -853,6 +853,8 @@
       #?(:clj
          (let [room-uuid (java.util.UUID/fromString rid)
                agent-uuid (java.util.UUID/fromString aid)
+               ;; an agent IN this room, by its owner or the room's owner
+               _ (access/require-agent-manageable! room-uuid agent-uuid)
                room (rooms/get-room room-uuid)]
            (if-let [slug (:room/slug room)]
              (if-let [assignment (room-agents/assign-room-agent!
@@ -872,7 +874,7 @@
 
 ;; Removes an agent party from a room. If the agent has no other rooms and the
 ;; caller owns it (or is admin), also deletes the party entirely. Only an agent
-;; that IS in this room may be named (`access/require-agent-removable!`).
+;; that IS in this room may be named (`access/require-agent-manageable!`).
 (defn-spin-remote remove-agent-from-room!
   [server-id room-id-str agent-id-str]
   (spin-remote server-id [room-id-str agent-id-str]
@@ -881,7 +883,7 @@
       #?(:clj
          (let [room-uuid  (java.util.UUID/fromString rid)
                agent-uuid (java.util.UUID/fromString aid)
-               may-delete? (access/require-agent-removable! room-uuid agent-uuid)
+               may-delete? (access/require-agent-manageable! room-uuid agent-uuid)
                room (rooms/get-room room-uuid)]
            (when-let [slug (:room/slug room)]
              (room-agents/unassign-room-agent!
@@ -1126,11 +1128,11 @@
     (let [rid (identity room-id-str)
           cut (identity cut-ms)]
       #?(:clj
-         (let [party-id (access/authenticated-party-id)
-               room-uuid (java.util.UUID/fromString rid)
+         (let [room-uuid (java.util.UUID/fromString rid)
                room (rooms/get-room room-uuid)
+               ;; NOT owned by the caller: a room's drive answers to the room's
+               ;; owner, whoever happens to open the Files tab first
                drive (drives/ensure-room-drive! room-uuid
-                                                :owner-id party-id
                                                 :room-name (:room/name room))]
            (when drive
              (when-let [conn (drives/connect-drive-database (:drive/db-scope drive))]

@@ -30,7 +30,9 @@
    `:drive-stranger` (the non-member's).
 
    Plus the team room's own repo system (`:repo-sys`, granted :owner to `:room`
-   as dvergr's provisioning records it), a proposal on `:room`, a mail account of the owner, and
+   as dvergr's provisioning records it), a proposal on `:room` with two open
+   forks of the Handbook (`\"member-fork\"` by the member, `\"agent-fork\"` by the
+   team agent), a mail account of the owner, and
    `:room-nogrant`, a room the owner created with the member in it and NO KB
    grant (the creator-KB fallback's precondition)."
   (:require [clojure.core.async :as a]
@@ -137,7 +139,15 @@
        :grant/permission :owner :grant/created now}
       ;; a proposal on the team room
       {:proposal/id (:proposal w) :proposal/room (:room w) :proposal/status :open
-       :proposal/title "Change the handbook"}
+       :proposal/title "Change the handbook"
+       ;; two open forks of the Handbook: one the member wrote, one the
+       ;; owner's agent wrote
+       :proposal/forks [{:proposal.fork/scope (:kb-granted-scope w)
+                         :proposal.fork/branch "member-fork"
+                         :proposal.fork/author (:member w)}
+                        {:proposal.fork/scope (:kb-granted-scope w)
+                         :proposal.fork/branch "agent-fork"
+                         :proposal.fork/author (:team-agent w)}]}
       ;; drives, each registered as a dvergr :fs system, attached nowhere
       {:db/id "sys-drive-owner" :system/id (:drive-owner-sys w) :system/type :fs :system/name "Owner Drive"}
       {:db/id "sys-drive-stranger" :system/id (:drive-stranger-sys w) :system/type :fs :system/name "Stranger Drive"}

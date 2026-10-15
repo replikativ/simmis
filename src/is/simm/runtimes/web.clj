@@ -204,6 +204,8 @@
 
 ;; Authentication middleware - validate auth FROM remote clients using JWT
 ;; Delayed to allow system DB initialization before config access
+(declare get-server)
+
 (defn auth-middleware-fn []
   (ws-auth/auth-middleware
     {:validate {:jwt (:jwt (auth-cfg/get-auth-config))
@@ -217,6 +219,21 @@
                            ;; here is gone: the client gets its roster from
                            ;; `load-rooms!`'s `:contacts`, which is server-filtered
                            ;; to reachable parties. See uis.desktop.people.)
+                           ;;
+                           ;; The party's `:notify/<party>` topic must exist
+                           ;; before its client subscribes. Boot registers every
+                           ;; party it finds, so an account created AFTER boot
+                           ;; (self-registration, `/auth/dev`, a new alpha user)
+                           ;; had none: the subscribe failed, kabel retired the
+                           ;; connection, and the client sat on a dead socket
+                           ;; with an empty sidebar.
+                           (when-let [pid (some-> (:sub principal) str parse-uuid)]
+                             (try
+                               ((requiring-resolve 'is.simm.model.message-notify-broadcast/ensure-topic-registered!)
+                                (get-server) pid)
+                               (catch Throwable t
+                                 (log/log! {:level :warn :id ::notify-topic-register-failed
+                                            :data {:party (str pid) :error (ex-message t)}}))))
                            nil)}}))
 
 ;; Server state - atom for restartability
