@@ -59,8 +59,7 @@
    blocks or only set a property does not appear. That is the right direction to
    be wrong in for a rail whose job is `when did this change` — a missing dot
    costs a scrub target, an extra dot for every schema assertion costs the whole
-   view. Kept to plain find-vars: the CLJS query planner's pull-in-find and
-   collection-binding-with-`:in` bugs are still open."
+   view."
   '[:find ?tx ?inst
     :where
     (or [_ :block/content _ ?tx]
@@ -105,13 +104,11 @@
   "tx → the party uuid (a string) that caused it, for the transactions that say.
 
    A separate query joined in Clojure rather than a `get-else` inside
-   `changed-blocks-q`, for two reasons. `:tx/author` is OPTIONAL — nothing
+   `changed-blocks-q`, because `:tx/author` is OPTIONAL — nothing
    written before the attribute existed has one, and no interactive write path
    sets it yet — so joining it as a pattern would silently drop every row it
-   cannot answer, turning `who changed this` into `this did not change`. And the
-   CLJS query planner is the one with open bugs (see `content-tx-q`), so the
-   less this asks of it the better. One query per replica, the same shape as
-   `page-resolver`."
+   cannot answer, turning `who changed this` into `this did not change`. One
+   query per replica, the same shape as `page-resolver`."
   '[:find ?tx ?author
     :where [?tx :tx/author ?author]])
 
@@ -121,8 +118,7 @@
    A separate query rather than a `get-else` in the walk, for the same reason
    `tx-authors-q` is separate: the attribute is OPTIONAL — an ordinary wiki page
    has no kind — and joining it as a pattern would silently drop every page that
-   is not a record. Plain find-vars, because the CLJS planner's open bugs are in
-   the fancier forms (see `content-tx-q`)."
+   is not a record."
   '[:find ?e ?kind :where [?e :S.Page/kind ?kind]])
 
 (defn- page-resolver
