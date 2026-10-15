@@ -40,6 +40,7 @@
             [clojure.string :as str]
             [datahike.api :as d]
             [is.simm.model.blobs :as blobs]
+            [is.simm.model.system-db :as system-db]
             [taoensso.telemere :as log])
   (:import [java.io File FileOutputStream]))
 
@@ -195,9 +196,17 @@
   "Open a recording session for `owner-uuid` (the authenticated sharer). Returns
    a ring response."
   [owner-uuid {:keys [session-id mime width height fps]}]
-  (if (nil? owner-uuid)
+  (cond
+    (nil? owner-uuid)
     {:status 401 :body "unauthenticated"}
-    (let [sid (parse-uuid session-id)
+
+    ;; a malformed id would parse to nil and create the session row with no id
+    ;; under the owner's recordings root
+    (nil? (some-> session-id str parse-uuid))
+    {:status 400 :body "malformed session-id"}
+
+    :else
+    (let [sid (parse-uuid (str session-id))
           now (System/currentTimeMillis)]
       (.mkdirs (File. (str root "/" owner-uuid "/" sid)))
       (transact! owner-uuid
@@ -390,7 +399,12 @@
    datoms and remove the raw segment files on disk. The CAS blobs are left for
    GC (content-addressed). Returns {:deleted-segments n}."
   [owner-uuid session-id-str]
-  (let [sid (parse-uuid session-id-str)
+  (system-db/require-id! :owner owner-uuid)
+  ;; BEFORE any query or file op. A malformed id parses to nil; datahike reads a
+  ;; nil `:in` binding as unbound, so both queries below matched ALL of the
+  ;; owner's sessions, and `dir` became the owner's whole recordings directory,
+  ;; deleted recursively.
+  (let [sid (system-db/require-id! :session-id (some-> session-id-str str parse-uuid))
         db @(conn-for owner-uuid)
         seg-eids (d/q '[:find [?seg ...] :in $ ?sid
                         :where [?s :recording.session/id ?sid]

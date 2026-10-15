@@ -291,10 +291,11 @@
                      :id ::alpha-party-seeded
                      :msg (str "Seeded alpha party: " email " (role: " (clojure.core/name role) ")")
                      :data {:party-id (:party/id party)}})))))
-  ;; Ensure each party has a personal AI room and default KB
-  (try
-    (let [s (get-auth-store)]
-      (doseq [{:keys [email name]} (alpha-parties)]
+  ;; Ensure each party has a personal AI room and default KB. The try is PER
+  ;; party: one bad alpha user must not stop the rest from being seeded.
+  (let [s (get-auth-store)]
+    (doseq [{:keys [email name]} (alpha-parties)]
+      (try
         (when-let [party (store/find-user-by-email s email)]
           (require 'is.simm.model.rooms)
           (require 'is.simm.model.knowledge-bases)
@@ -307,11 +308,12 @@
             ;; resolve against and knowledge tools see no product KB.
             (when (and (:room/id room) (:kb/id kb))
               ((resolve 'is.simm.model.knowledge-bases/attach-kb-to-room!)
-               (:room/id room) (:kb/id kb)))))))
-    (catch Exception e
-      (log/log! {:level :warn
-                 :id ::room-seed-error
-                 :msg (str "Could not seed personal AI rooms: " (.getMessage e))}))))
+               (:room/id room) (:kb/id kb)))))
+        (catch Exception e
+          (log/log! {:level :warn
+                     :id ::room-seed-error
+                     :msg (str "Could not seed personal AI room for " email ": " (.getMessage e))
+                     :data {:email email}}))))))
 
 ;; =============================================================================
 ;; Route Configuration

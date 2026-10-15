@@ -23,6 +23,7 @@
   (:require [is.simm.model.screen-grants :as grants]
             [is.simm.model.parties :as parties]
             [is.simm.model.blobs :as blobs]
+            [is.simm.model.system-db :as system-db]
             [clojure.string :as str]
             [datahike.api :as d]
             [taoensso.telemere :as log]))
@@ -193,6 +194,10 @@ screenshot for a colleague who cannot see it:
    drops it from the hot buffer. The CAS blob itself is left for GC (it is
    content-addressed and may be shared). Returns {:deleted n}."
   [party-uuid blob-id]
+  ;; a nil blob-id is UNBOUND to datahike: the query would match, and retract,
+  ;; every screenshot the owner has
+  (system-db/require-id! :party party-uuid)
+  (system-db/require-id! :blob-id blob-id)
   (let [conn (ensure-screens-conn party-uuid)
         eids (d/q '[:find [?e ...] :in $ ?b :where [?e :screenshot/blob-id ?b]] @conn blob-id)]
     (when (seq eids)

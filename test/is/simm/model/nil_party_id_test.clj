@@ -26,6 +26,11 @@
      (let [conn (d/connect cfg)]
        (chat-schema/ensure-full-schema! conn)
        (d/transact conn system-db/schema)
+       ;; dvergr declares :room/parties (dvergr.system.db) — installed here the
+       ;; way access_test does, as the ref it is in the shared system DB
+       (when-not (d/entity @conn :room/parties)
+         (d/transact conn [{:db/ident :room/parties :db/valueType :db.type/ref
+                            :db/cardinality :db.cardinality/many}]))
        (binding [*conn* conn]
          (with-redefs [system-db/get-conn (constantly conn)]
            (run)))
@@ -70,10 +75,39 @@
       (is (missing-id? #(parties/set-ui-pref! nil :ui-pref/syntax :markdown))))
     (is (= before (party-rows)) "no party row changed")))
 
+(defn- seed-room! [party-id]
+  (let [room-id (random-uuid)]
+    (d/transact *conn* [{:room/id room-id :room/name "Room" :room/type :group
+                         :room/parties [[:party/id party-id]]}])
+    room-id))
+
+(defn- seed-kb! [owner-id]
+  (let [kb-id (random-uuid)]
+    (d/transact *conn* [{:kb/id kb-id :kb/name "Wiki" :kb/owner owner-id
+                         :kb/db-scope (random-uuid)}])
+    kb-id))
+
+(defn- datoms []
+  (set (map (juxt :e :a :v) (d/datoms @*conn* :eavt))))
+
 (deftest nil-party-id-reads-answer-nothing
-  (let [pid (seed-party! :human "Someone")]
+  ;; Seeded so that every nil lookup below has something it COULD wrongly
+  ;; return: on the unguarded code each of these answered a real row.
+  (let [pid (seed-party! :human "Someone")
+        room-id (seed-room! pid)
+        kb-id (seed-kb! pid)
+        contact (seed-party! :human "Contact")]
+    (d/transact *conn* [{:party/id pid :party/handle "someone" :party/email "someone@example.org"}])
+    (parties/add-contact! pid contact)
+    (parties/set-ui-pref! pid :ui-pref/syntax :markdown)
     (parties/set-env-var! pid "OPENAI_API_KEY" "secret")
     (is (some? (parties/get-party pid)))
+    (is (= pid (:party/id (parties/get-party-by-handle "someone"))))
+    (is (seq (parties/get-contacts pid)))
+    (is (= {:ui-pref/syntax :markdown} (parties/get-ui-prefs pid)))
+    (is (= [room-id] (mapv :room/id (rooms/get-party-rooms pid))))
+    (is (= kb-id (:kb/id (kbs/get-kb kb-id))))
+    (is (seq (kbs/get-party-kbs pid)))
     (is (nil? (parties/get-party nil)))
     (is (nil? (parties/get-party-by-handle nil)))
     (is (nil? (parties/get-party-by-email nil)))
@@ -84,3 +118,16 @@
     (is (nil? (rooms/get-room nil)))
     (is (empty? (kbs/get-party-kbs nil)))
     (is (nil? (kbs/get-kb nil)))))
+
+(deftest nil-room-and-kb-writes-throw-and-touch-nothing
+  (let [pid (seed-party! :human "Member")
+        other (seed-party! :human "Other")
+        room-id (seed-room! pid)
+        kb-id (seed-kb! pid)
+        before (datoms)]
+    (is (missing-id? #(rooms/add-party! nil other)) "nil room would pick an arbitrary room")
+    (is (missing-id? #(rooms/add-party! room-id nil)))
+    (is (missing-id? #(kbs/delete-kb! nil)) "nil kb would delete an arbitrary KB")
+    (is (missing-id? #(kbs/share-kb! nil other)))
+    (is (missing-id? #(kbs/share-kb! kb-id nil)))
+    (is (= before (datoms)) "no row changed")))
