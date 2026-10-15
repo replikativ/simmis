@@ -26,6 +26,9 @@
    `:stranger-agent` (owned by the non-member, in no room). The admin, too, is
    in no room — which matters to `remove-agent-from-room!`.
 
+   Two drives, attached nowhere: `:drive-owner` (the owner's) and
+   `:drive-stranger` (the non-member's).
+
    Plus the team room's own repo system (`:repo-sys`, granted :owner to `:room`
    as dvergr's provisioning records it), a proposal on `:room`, a mail account of the owner, and
    `:room-nogrant`, a room the owner created with the member in it and NO KB
@@ -84,7 +87,9 @@
            :kb-stranger (random-uuid) :kb-stranger-scope (random-uuid) :kb-stranger-sys (random-uuid)
            :repo-sys (random-uuid)
            :proposal (random-uuid)
-           :mail (random-uuid) :mail-sys (random-uuid)}
+           :mail (random-uuid) :mail-sys (random-uuid)
+           :drive-owner (random-uuid) :drive-owner-sys (random-uuid)
+           :drive-stranger (random-uuid) :drive-stranger-sys (random-uuid)}
         now (java.util.Date.)
         pref (fn [k] [:party/id (get w k)])]
     (d/transact conn [(party-row (:owner w) "Owner")
@@ -133,6 +138,13 @@
       ;; a proposal on the team room
       {:proposal/id (:proposal w) :proposal/room (:room w) :proposal/status :open
        :proposal/title "Change the handbook"}
+      ;; drives, each registered as a dvergr :fs system, attached nowhere
+      {:db/id "sys-drive-owner" :system/id (:drive-owner-sys w) :system/type :fs :system/name "Owner Drive"}
+      {:db/id "sys-drive-stranger" :system/id (:drive-stranger-sys w) :system/type :fs :system/name "Stranger Drive"}
+      {:drive/id (:drive-owner w) :drive/name "Owner Drive" :drive/owner (:owner w)
+       :drive/system-id (:drive-owner-sys w) :drive/created now}
+      {:drive/id (:drive-stranger w) :drive/name "Stranger Drive" :drive/owner (:non-member w)
+       :drive/system-id (:drive-stranger-sys w) :drive/created now}
       ;; the owner's mail account
       {:mail-account/id (:mail w) :mail-account/owner (:owner w)
        :mail-account/system-id (:mail-sys w)}])

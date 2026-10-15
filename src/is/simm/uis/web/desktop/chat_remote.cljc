@@ -259,6 +259,9 @@
           mids (identity member-id-strs)]
       #?(:clj (let [creator-id (java.util.UUID/fromString cid)
                     member-ids (mapv #(java.util.UUID/fromString %) mids)
+                    ;; the initial members pass the same check as a party
+                    ;; added later: humans yes, only agents the creator owns
+                    _ (access/require-enlistable! member-ids)
                     room (rooms/create-room! creator-id rn :group member-ids)]
                 {:room/id (str (:room/id room))
                  :room/name (:room/name room)
@@ -510,7 +513,8 @@
   (spin-remote server-id [room-id-str]
     (let [rid (identity room-id-str)]
       #?(:clj
-         (let [room-uuid (java.util.UUID/fromString rid)
+         (let [viewer (access/authenticated-party-id)
+               room-uuid (java.util.UUID/fromString rid)
                room (rooms/get-room room-uuid)
                humans (rooms/get-room-humans room-uuid)
                raw-agents (rooms/get-room-agents room-uuid)
@@ -534,15 +538,22 @@
                             raw-agents)
                all-humans (parties/list-parties :human)
                room-kbs (or (kbs/get-room-kbs room-uuid) [])
-               party-kbs (->> (:room/parties room)
-                              (mapcat #(kbs/get-party-kbs %))
-                              (distinct)
-                              vec)]
+               ;; What the attach pickers offer: the KBs and drives the VIEWER
+               ;; may attach (`:grant`), never the room's other members'. This
+               ;; used to list every member's KBs and drives, private ones
+               ;; included — naming exactly the ids the unchecked attach
+               ;; handlers then accepted.
+               party-kbs (filterv #(access/can? viewer :grant {:kb (:kb/id %)})
+                                  (or (kbs/get-party-kbs viewer) []))]
            {:room (when room
                     (-> room
                         (update :room/created #(when % (str %)))
                         (assoc :room/budget-dollars (rooms/get-room-budget-dollars room-uuid))
                         (dissoc :room/parties)))
+            ;; Whether the viewer holds the room's owner-level authority, so the
+            ;; settings page offers membership and budget controls only to
+            ;; whoever the server will let use them.
+            :can-grant? (access/can? viewer :grant {:room room-uuid})
             :humans humans
             ;; Every agent carries current desired configuration resolution.
             ;; A join invokes the same resolver and captures its result, but
@@ -554,10 +565,12 @@
                           agents)
             :model-choices (model-catalog/choices)
             :all-humans all-humans
+            ;; who else a KB is shared with is its owner's business, not the
+            ;; room's
             :knowledge-bases (mapv (fn [kb]
                                      (-> kb
                                          (update :kb/created #(when % (str %)))
-                                         (dissoc :db/id)))
+                                         (dissoc :db/id :kb/shared-with)))
                                    room-kbs)
             :available-kbs (mapv (fn [kb]
                                    (-> kb
@@ -569,9 +582,7 @@
                                 (update :drive/created #(when % (str %)))
                                 (dissoc :db/id)))
                           (or (drives/get-room-drives room-uuid) []))
-            :available-drives (->> (:room/parties room)
-                                   (mapcat #(drives/list-drives %))
-                                   (distinct)
+            :available-drives (->> (when viewer (drives/list-drives viewer))
                                    (mapv (fn [drv]
                                            (-> drv
                                                (update :drive/created #(when % (str %)))
@@ -756,7 +767,10 @@
           tid  (identity template-id-str)]
       #?(:clj
          (let [room-uuid  (java.util.UUID/fromString rid)
-               owner-uuid (java.util.UUID/fromString oid)
+               ;; The agent is OWNED by — answers on the model and budget of —
+               ;; the caller, never a party the client names.
+               owner-uuid (access/authenticated-party-id)
+               _ (access/warn-on-sender-mismatch! oid owner-uuid ::add-agent-to-room!)
                tmpl       (when (seq tid) (templates/get-template tid))
                display    (if (seq aname) aname (or (:name tmpl) "Agent"))
                agent (parties/create-agent! owner-uuid
@@ -856,8 +870,9 @@
              {:status :error :error :room-has-no-dvergr-slug}))
          :cljs nil))))
 
-;; Removes an agent party from a room. If the agent has no other rooms,
-;; also deletes the party entirely.
+;; Removes an agent party from a room. If the agent has no other rooms and the
+;; caller owns it (or is admin), also deletes the party entirely. Only an agent
+;; that IS in this room may be named (`access/require-agent-removable!`).
 (defn-spin-remote remove-agent-from-room!
   [server-id room-id-str agent-id-str]
   (spin-remote server-id [room-id-str agent-id-str]
@@ -866,12 +881,13 @@
       #?(:clj
          (let [room-uuid  (java.util.UUID/fromString rid)
                agent-uuid (java.util.UUID/fromString aid)
+               may-delete? (access/require-agent-removable! room-uuid agent-uuid)
                room (rooms/get-room room-uuid)]
            (when-let [slug (:room/slug room)]
              (room-agents/unassign-room-agent!
               slug (room-agents/party->actor-kw agent-uuid)))
            (rooms/remove-party! room-uuid agent-uuid)
-           (when (empty? (rooms/get-party-rooms agent-uuid))
+           (when (and may-delete? (empty? (rooms/get-party-rooms agent-uuid)))
              (parties/delete-party! agent-uuid))
            {:status :ok})
          :cljs nil))))
@@ -888,6 +904,7 @@
       #?(:clj
          (let [room-uuid (java.util.UUID/fromString rid)
                party-uuid (java.util.UUID/fromString pid)]
+           (access/require-enlistable! [party-uuid])
            (rooms/add-party! room-uuid party-uuid)
            {:status :ok})
          :cljs nil))))
@@ -990,6 +1007,9 @@
           kid (identity kb-id-str)]
       #?(:clj (let [room-uuid (java.util.UUID/fromString rid)
                     kb-uuid (java.util.UUID/fromString kid)]
+                ;; attaching grants every member of the room this KB: the
+                ;; caller must hold that authority over it, not just the room
+                (access/require! :grant {:kb kb-uuid})
                 (kbs/attach-kb-to-room! room-uuid kb-uuid)
                 (room-agents/reset-room-context! room-uuid)
                 {:status :ok})
@@ -1189,6 +1209,7 @@
           did (identity drive-id-str)]
       #?(:clj (let [room-uuid (java.util.UUID/fromString rid)
                     drive-uuid (java.util.UUID/fromString did)]
+                (access/require! :grant {:drive drive-uuid})
                 (drives/attach-drive-to-room! room-uuid drive-uuid)
                 (room-agents/reset-room-context! room-uuid)
                 {:status :ok})

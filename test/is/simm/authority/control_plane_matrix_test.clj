@@ -96,6 +96,8 @@
    "save-property"           [(c :kb-scope MEMBERS)]
    ;; --- branching --------------------------------------------------------------
    "branch-kb!"              [(c :kb-scope MEMBERS)]
+   ;; on trunk / a plain branch; an open proposal fork narrows this to its
+   ;; author and deciders (handler-holes-test)
    "discard-kb-branch!"      [(c :kb-scope MEMBERS)]
    ;; the grantee may write a fork but not land it
    "merge-kb!"               [(c :kb-scope OWNER)]
@@ -106,26 +108,20 @@
    "create-kb!"              [(c :owner-self OWNER)]
    "load-kb-details!"        [(c :kb MEMBERS)]
    ;; Deleting a KB and handing out direct access to it are :grant-level
-   ;; (doc/authority.md: \"handing out authority\" stops at the owner). A
-   ;; :read-write grantee passes them today; `share-kb!` to oneself turns a
-   ;; room grant into `:kb/shared-with`, which can? treats as owner-equivalent
-   ;; (merge included).
-   "delete-kb!"
-   [(c :kb OWNER MEMBERS "UNLISTED delete-kb! is policed :write: a member of a room holding a :read-write grant deletes the KB")]
-   "share-kb!"
-   [(c :kb OWNER MEMBERS "UNLISTED share-kb! is policed :write: a :read-write grantee shares the KB (to anyone, or to themselves = :merge)")]
-   "unshare-kb!"
-   [(c :kb OWNER MEMBERS "UNLISTED unshare-kb! is policed :write: a :read-write grantee revokes other parties' direct access")]
+   ;; (doc/authority.md: \"handing out authority\" stops at the owner, plus
+   ;; the :admin role's authority override). A :read-write grantee used to
+   ;; pass all three; `share-kb!` to oneself then made them owner-equivalent.
+   "delete-kb!"              [(c :kb #{:owner :admin})]
+   "share-kb!"               [(c :kb #{:owner :admin})]
+   "unshare-kb!"             [(c :kb #{:owner :admin})]
    ;; --- room ops ---------------------------------------------------------------
    "add-agent-to-room!"      [(c :room MEMBERS)]
    "update-agent-assignment!" [(c :room MEMBERS)]
    "remove-agent-from-room!" [(c :room MEMBERS)]
    ;; Membership IS authority over the room's grants, so changing it is
    ;; :grant — which stops at the owner (doc/authority.md, can?'s B1 rule).
-   "add-room-party!"
-   [(c :room OWNER MEMBERS "UNLISTED add-room-party! is policed :write: any member adds any party to the room (and so to every KB the room is granted)")]
-   "remove-room-party!"
-   [(c :room OWNER MEMBERS "UNLISTED remove-room-party! is policed :write: any member removes any other member")]
+   "add-room-party!"         [(c :room OWNER)]
+   "remove-room-party!"      [(c :room OWNER)]
    "attach-drive-to-room!"   [(c :room MEMBERS)]
    "detach-drive-from-room!" [(c :room MEMBERS)]
    "attach-kb-to-room!"      [(c :room MEMBERS)]
@@ -142,8 +138,7 @@
    "promote-room-run-world!" [(c :room MEMBERS)]
    ;; Spend is egress (doc/authority.md, problem 4): authorized in advance by
    ;; whoever pays, not raised by anyone who can speak in the room.
-   "update-room-budget!"
-   [(c :room OWNER MEMBERS "UNLISTED update-room-budget! is policed :write: any member raises the room's spend cap (and live agent budgets)")]
+   "update-room-budget!"     [(c :room OWNER)]
    "load-room-details!"      [(c :room MEMBERS)]
    "mint-video-token!"       [(c :room MEMBERS)]
    "room-app-status!"        [(c :room MEMBERS)]

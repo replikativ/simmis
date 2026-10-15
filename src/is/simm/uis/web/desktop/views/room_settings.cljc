@@ -19,6 +19,9 @@
         humans (:humans data)
         agents (:agents data)
         all-humans (:all-humans data)
+        ;; membership and budget are owner-level (access/rpc-policy :grant);
+        ;; offer the controls only to whoever the server will let use them
+        can-grant? (:can-grant? data)
         current-user #?(:cljs @sig/current-user :clj nil)]
 
     (el/div {:class "settings-page"}
@@ -61,7 +64,7 @@
                     (el/div {:key (str pid) :class "settings-env-row"}
                       (el/span {:class "settings-env-key"} (or name email "Unknown"))
                       (el/span {:class "settings-env-value"} email)
-                      (when (and current-user (not= (str pid) (:id current-user)))
+                      (when (and can-grant? current-user (not= (str pid) (:id current-user)))
                         (el/button {:class "settings-env-delete"
                                     :title "Remove member"
                                     :on-click (fn [_]
@@ -77,7 +80,7 @@
               (el/div {:class "settings-empty"} "No members")))
 
           ;; Add member
-          (when all-humans
+          (when (and can-grant? all-humans)
             (el/div {:class "settings-env-add"}
               (el/select {:id "add-member-select"
                           :class "settings-input"
@@ -136,6 +139,12 @@
                         (el/span {:class "settings-agent-model-resolution"}
                           (or (:next-join-copy (:model-resolution agent))
                               "Not resolved")))
+                      ;; the room's owner removes any agent, a member only
+                      ;; their own (access/agent-removable?)
+                      (when (or can-grant?
+                                (and current-user
+                                     (= (str (get-in agent [:party/owner :party/id]))
+                                        (:id current-user))))
                       (el/button {:class "settings-env-delete"
                                   :title "Remove participant"
                                   :on-click (fn [_]
@@ -147,7 +156,7 @@
                                                    (s (fn [_] (room-details/load! room-id {:force? true}))
                                                       (fn [err] (js/console.error "[room-settings] remove agent error:" err))))
                                                  :clj nil))}
-                        (vc/icon "x")))
+                        (vc/icon "x"))))
                     (el/div {:class "settings-env-add"
                              :style {:margin-top "0.5rem"
                                      :align-items "end"
@@ -296,8 +305,12 @@
         (el/div {:class "settings-section"}
           (el/h3 {:class "settings-section-title"} "Budget")
           (el/p {:class "settings-section-desc"}
-            "Maximum spend in USD for AI responses in this room.")
-          (el/div {:class "settings-env-add"}
+            (if can-grant?
+              "Maximum spend in USD for AI responses in this room."
+              (str "Maximum spend for AI responses in this room: "
+                   (or (:room/budget-dollars room) 10.0) " USD. The room's owner sets it.")))
+          (when can-grant?
+           (el/div {:class "settings-env-add"}
             (el/input {:id "room-budget-input"
                        :type "number"
                        :class "settings-input"
@@ -321,7 +334,7 @@
                                              (s (fn [_] (room-details/load! room-id {:force? true}))
                                                 (fn [err] (js/console.error "[room-settings] budget error:" err))))))
                                        :clj nil))}
-              "Save")))
+              "Save"))))
 
         ;; --- Knowledge Bases Section ---
         (let [room-kbs (:knowledge-bases data)]

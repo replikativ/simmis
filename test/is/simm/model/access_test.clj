@@ -160,9 +160,11 @@
     (testing ":read grants neither"
       (is (false? (can-kb? db member kb :write)))
       (is (false? (can-kb? db member kb :merge))))
-    (testing "KB owner and shared-with merge directly, no grant needed"
-      (is (true? (can-kb? db owner kb :merge)))
-      (is (true? (can-kb? db sharee kb :merge))))
+    (testing "the KB owner merges directly, no grant needed"
+      (is (true? (can-kb? db owner kb :merge))))
+    (testing "a direct share is :read-write (access/shared-with-permission): no merge, no grant"
+      (is (false? (can-kb? db sharee kb :merge)))
+      (is (false? (can-kb? db sharee kb :grant))))
     (testing "a stranger merges nothing"
       (is (false? (can-kb? db stranger kb :merge))))))
 
