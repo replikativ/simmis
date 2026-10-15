@@ -57,6 +57,33 @@ One command starts: nREPL **47888** (CLJ server), shadow-cljs watcher
 with nREPL **9631** (CLJS), websocket server **ws://localhost:47295**,
 static files **http://localhost:8080**.
 
+### Running a second instance
+
+The ports and the home above are the DEFAULT instance's. To run another one
+beside it (e.g. an agent's end-to-end test while the demo runs), use a
+separate worktree — `public/js` and `.shadow-cljs` belong to the checkout, so
+two instances in ONE checkout overwrite each other's bundle — and from there:
+
+```bash
+env -u TELEGRAM_BOT_TOKEN SIMMIS_PORT_OFFSET=1000 \
+    DVERGR_HOME=/tmp/simmis-b/dvergr SIMMIS_DATA_DIR=/tmp/simmis-b/data \
+    SIMMIS_DEV_AUTH=true clj -J-Xmx3g -M:dev
+clj-nrepl-eval -p 48888 "(status)"   # page http://localhost:9080, ws 48295
+```
+
+`SIMMIS_PORT_OFFSET` moves every port (47888, 9631, shadow's 9630, 8080,
+47295) by one number, page and websocket together; `(status)` probes the
+offset ports and shows what the instance resolved. `DVERGR_HOME` (dvergr's own
+variable) holds the system DB, room stores and generated secrets;
+`SIMMIS_DATA_DIR` holds `data/`; `DVERGR_CONFIG` replaces
+`./config.local.edn`. An offset instance never starts Telegram — the token in
+your shell (`TELEGRAM_BOT_TOKEN`) or config is the machine's, and a second
+poller knocks out the first; `env -u` is belt and braces. It names its blob
+cookie `simmis_blob_<offset>`, because cookies are scoped by host, not port.
+Use a FRESH home, never a copy of the demo's (a copy carries the same store
+ids, so it is a replica, not a second home). `SIMMIS_DEV_AUTH`
+only on a throwaway instance like this one; delete its home afterwards.
+
 Dependencies come in three sets (deps.edn): Maven releases by default;
 `:stack` overlays ONLY `../dvergr` (the sibling simmis co-develops with); `:local`
 overlays every replikativ sibling (`../spindel`, `../datahike`, `../konserve`,
@@ -90,7 +117,8 @@ has died), reports whether the shadow watcher is up, and — the one that
 saves the most time — whether the bundle is STALE:
 
 ```clojure
-{:ports {:nrepl-clj true :nrepl-cljs true :http true :websocket true}
+{:instance {:port-offset 0 :ports {...} :home "…/.dvergr" :data-dir "data" …}
+ :ports {:nrepl-clj true :nrepl-cljs true :shadow-http true :http true :websocket true}
  :shadow {:app-watching? true}
  :bundle {:built? true :size-mb 34 :age-min 0 :stale? false}
  :system-db {:rooms 10 :parties 12 :kbs 8}}

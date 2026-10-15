@@ -1,6 +1,7 @@
 (ns is.simm.model.db
   "Database connection and initialization"
-  (:require [datahike.api :as d]
+  (:require [is.simm.runtimes.instance :as instance]
+            [datahike.api :as d]
             [datahike.db :as ddb]
             [is.simm.model.schema :as schema]
             [is.simm.model.seed :as seed]
@@ -54,7 +55,7 @@
    from the store when the caller omits them, which is what lets one config
    connect to a store built with either layout."
   {:store {:backend :file
-           :path "data/simmis-v2"
+           :path (instance/data-path "simmis-v2")
            :id #uuid "a1b2c3d4-e5f6-7890-abcd-ef1234567890"}
    :schema-flexibility :write     ;; allow dynamic property creation
    :keep-history? true            ;; the product's history (wiki/page revisions)

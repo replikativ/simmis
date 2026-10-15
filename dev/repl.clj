@@ -21,7 +21,8 @@
             [is.simm.model.system-db :as sdb]
             [is.simm.model.parties :as parties]
             [is.simm.model.knowledge-bases :as kbs]
-            [is.simm.model.room-databases :as room-dbs]))
+            [is.simm.model.room-databases :as room-dbs]
+            [is.simm.runtimes.instance :as instance]))
 
 ;; =============================================================================
 ;; Is it up?
@@ -63,16 +64,17 @@
 (defn status
   "What is actually running, and is the bundle current.
 
-   Ports are probed, not remembered. `:stale?` compares the bundle's mtime
+   Ports are probed, not remembered — this instance's ports, i.e. the defaults
+   plus SIMMIS_PORT_OFFSET, so an offset instance reports on itself and not on
+   whatever holds the default ports. `:stale?` compares the bundle's mtime
    against the newest .cljs/.cljc source — a failed build leaves the old
    bundle serving, which looks identical to success from the outside."
   []
   (let [conn (try (sdb/get-conn) (catch Exception _ nil))
-        db (some-> conn deref)]
-    {:ports {:nrepl-clj (listening? 47888)
-             :nrepl-cljs (listening? 9631)
-             :http (listening? 8080)
-             :websocket (listening? 47295)}
+        db (some-> conn deref)
+        ports (instance/ports)]
+    {:instance (instance/summary)
+     :ports (update-vals ports listening?)
      :shadow (try (let [running? (requiring-resolve 'shadow.cljs.devtools.api/worker-running?)]
                     {:app-watching? (boolean (running? :app))})
                   (catch Throwable _ {:app-watching? :unknown}))

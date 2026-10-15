@@ -4,8 +4,9 @@
    The browser only receives `:credentials-configured?`; passwords and the
    encrypted payload never cross a remote boundary. Production should set
    SIMMIS_CREDENTIAL_KEY to a base64url-encoded 32-byte key. Local development
-   gets a persistent key in .dvergr/mail-credential-key."
+   gets a persistent key in <home>/mail-credential-key (`.dvergr` by default)."
   (:require [clojure.edn :as edn]
+            [is.simm.runtimes.instance :as instance]
             [clojure.string :as str]
             [org.replikativ.geheimnis.aead :as aead]
             [org.replikativ.geheimnis.codec :as codec]
@@ -15,7 +16,7 @@
 (def ^:private key-size 32)
 (def ^:private nonce-size 12)
 
-(defn- key-file [] (java.io.File. ".dvergr/mail-credential-key"))
+(defn- key-file [] (java.io.File. ^String (instance/home-path "mail-credential-key")))
 
 (defn- load-key []
   (let [encoded (or (some-> (System/getenv "SIMMIS_CREDENTIAL_KEY") str/trim not-empty)

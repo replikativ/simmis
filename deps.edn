@@ -375,7 +375,8 @@
            ;; the CLI cannot compare them and the alias fails outright.
            :stack {:extra-deps {org.replikativ/dvergr {:local/root "../dvergr"}}}
 
-           ;; Development environment - starts nREPL (47888), shadow-cljs (9631), and web server (47295)
+           ;; Development environment - starts nREPL (47888), shadow-cljs (9631), and web server (47295);
+           ;; SIMMIS_PORT_OFFSET moves all of them (is.simm.runtimes.instance)
            :dev {:main-opts ["-e" "(require 'user)"]
                  :extra-paths ["dev" "test"]
                  :jvm-opts ["-Djdk.attach.allowAttachSelf"

@@ -1,4 +1,8 @@
 {:deps {:aliases [:shadow]}
+ ;; The DEFAULT instance's ports. `clj -M:dev` applies SIMMIS_PORT_OFFSET to
+ ;; :nrepl, shadow's own :http (9630), :dev-http, its :proxy-url and the
+ ;; development-websocket-port defines below (`user/shadow-config`); the npm
+ ;; scripts use them as written.
  :nrepl {:port 9631}  ;; Enable nREPL for CLJS access via clj-nrepl-eval
  ;; Non-file requests (e.g. /blobs/<id> — content-addressed media) proxy
  ;; to the app server, so relative URLs behave like production (where the

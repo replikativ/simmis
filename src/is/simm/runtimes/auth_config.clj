@@ -17,6 +17,7 @@
             [kabel.auth.jwt]
             [is.simm.model.system-db :as system-db]
             [dvergr.substrate.config :as dcfg]
+            [is.simm.runtimes.instance :as instance]
             [taoensso.telemere :as log]))
 
 ;; =============================================================================
@@ -46,7 +47,8 @@
 
 (def ^:private jwt-secret
   "JWT signing secret. From env var SIMMIS_JWT_SECRET, else a dev secret
-   persisted at .dvergr/jwt-secret (gitignored) — persisting it keeps
+   persisted at <home>/jwt-secret (`.dvergr/jwt-secret` unless DVERGR_HOME
+   says otherwise; gitignored) — persisting it keeps
    sessions valid across JVM restarts; a random per-boot secret silently
    invalidates every client token on restart (connections still work but
    carry no principal, so principal-derived sends fail).
@@ -55,7 +57,7 @@
    `ns-publics`, so a credential must never be a public var. That is defence in
    depth BEHIND the sandbox mirror allowlist, not a substitute for it."
   (or (System/getenv "SIMMIS_JWT_SECRET")
-      (let [f (java.io.File. ".dvergr/jwt-secret")]
+      (let [f (java.io.File. ^String (instance/home-path "jwt-secret"))]
         (if (.exists f)
           (str/trim (slurp f))
           (let [s (str (java.util.UUID/randomUUID))]
@@ -63,7 +65,7 @@
             (spit f s)
             (log/log! {:level :info
                        :id ::dev-jwt-secret-created
-                       :msg "Generated persistent dev JWT secret at .dvergr/jwt-secret"})
+                       :msg (str "Generated persistent dev JWT secret at " f)})
             s)))))
 
 (def ^:private dev-auth?
@@ -125,7 +127,7 @@
    persistence pattern: env var, else a dev secret at
    .dvergr/jitsi-jwt-secret (gitignored, matches the local jitsi .env)."
   (or (System/getenv "SIMMIS_JITSI_JWT_SECRET")
-      (let [f (java.io.File. ".dvergr/jitsi-jwt-secret")]
+      (let [f (java.io.File. ^String (instance/home-path "jitsi-jwt-secret"))]
         (if (.exists f)
           (str/trim (slurp f))
           (let [s (str (java.util.UUID/randomUUID))]
@@ -133,7 +135,7 @@
             (spit f s)
             (log/log! {:level :info
                        :id ::dev-jitsi-jwt-secret-created
-                       :msg "Generated dev jitsi JWT secret at .dvergr/jitsi-jwt-secret — copy into the jitsi .env JWT_APP_SECRET"})
+                       :msg (str "Generated dev jitsi JWT secret at " f " — copy into the jitsi .env JWT_APP_SECRET")})
             s)))))
 
 (def jitsi-app-id
@@ -350,8 +352,9 @@
 
    Read by `http-auth/cookie-token`. Defined here, on the issuing side, because
    `http-auth` already requires this namespace and the reverse would be a
-   cycle."
-  "simmis_blob")
+   cycle. `simmis_blob`, suffixed with the port offset on an offset instance:
+   cookies are not port-scoped, see `instance/blob-cookie-name`."
+  (instance/blob-cookie-name))
 
 (def blob-token-issuer
   "`iss` of a blob-read token. Not \"simmis\", so the main validator's issuer

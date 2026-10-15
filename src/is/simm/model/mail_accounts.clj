@@ -4,7 +4,8 @@
    Each account is a `:system/type :mail` registry resource with its own
    Briefkasten Datahike/Lucene/CAS state. IMAP owns folders, messages and flags;
    Simmis owns account visibility, room grants and future annotations."
-  (:require [clojure.string :as str]
+  (:require [is.simm.runtimes.instance :as instance]
+            [clojure.string :as str]
             [datahike.api :as d]
             [dvergr.system.db :as sdb]
             [is.simm.model.mail-credentials :as credentials]
@@ -20,7 +21,7 @@
 (def ^:private default-sync-seconds 300)
 
 (defn- account-key [account-id] (keyword "simmis.mail" (str account-id)))
-(defn- mail-root [] (or (System/getenv "SIMMIS_MAIL_DATA_DIR") "data/simmis-mail"))
+(defn- mail-root [] (or (System/getenv "SIMMIS_MAIL_DATA_DIR") (instance/data-path "simmis-mail")))
 (defn- data-path [account-id] (str (mail-root) "/" account-id))
 
 (defn- public-account [account]

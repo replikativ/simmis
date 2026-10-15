@@ -1,5 +1,6 @@
 (ns is.simm.runtimes.web
   (:require [is.simm.runtimes.http-auth :as hauth]
+            [is.simm.runtimes.instance :as instance]
             [superv.async :refer [S go-super <?? <?]]
             [kabel.peer :as peer]
             [kabel.http-kit :as http-kit]
@@ -183,7 +184,10 @@
 
 ;; kabel
 
-(def url (or (System/getenv "SIMMIS_WS_URL") "ws://localhost:47295"))
+(def url
+  "The URL the server binds: SIMMIS_WS_URL, else ws://localhost:<websocket
+   port> — 47295 plus SIMMIS_PORT_OFFSET (see `is.simm.runtimes.instance`)."
+  (instance/websocket-url))
 
 ;; this is useful to track messages, so each peer should have a unique id
 (def server-id #uuid "05a06e85-e7ca-4213-9fe5-04ae511e50a0")
@@ -623,7 +627,7 @@
    Uses file backend since client's TieredStore won't work on JVM."
   [scope-id _client-config]
   {:backend :file
-   :path (str "data/simmis-kbs/" scope-id)
+   :path (instance/data-path "simmis-kbs" (str scope-id))
    :scope scope-id})
 
 ;; Note: sync-store-config and setup-datahike-store-sync! removed
@@ -831,11 +835,11 @@
         (try
           ((requiring-resolve 'dvergr.rooms.subsystems/start-room-subsystems!)
            ctx/server-context
-           {:blob-store {:backend :file :path "data/simmis-blobs"
+           {:blob-store {:backend :file :path (instance/data-path "simmis-blobs")
                          ;; generic connect-store requires a stable :id;
                          ;; blobs on disk are key-hashed, unaffected by it
                          :id (java.util.UUID/nameUUIDFromBytes
-                              (.getBytes "simmis-blobs:data/simmis-blobs" "UTF-8"))
+                              (.getBytes (str "simmis-blobs:" (instance/data-path "simmis-blobs")) "UTF-8"))
                          :opts {:sync? true}}
             :drive-conn-fn
             (fn [room-uuid]
@@ -873,7 +877,7 @@
                                 (d-api/entity @conn :room/fulltext))
                        ((requiring-resolve 'dvergr.search.secondary/declare-index!)
                         conn :room/fulltext [:message/content]
-                        (str ".dvergr/room-ft/" (name (:id room))))))
+                        (instance/home-path "room-ft" (name (:id room))))))
                    (catch Throwable _ nil))))
           ;; Scheduled CODE tasks need a fully-joined agent ctx (kb/wiki), which
           ;; simmis injects on join — otherwise the fire hits an unresolved kb/.

@@ -9,7 +9,8 @@
    - Tags for project grouping
 
    KBs can be attached to rooms, giving room agents access."
-  (:require [is.simm.model.system-db :as system-db]
+  (:require [is.simm.runtimes.instance :as instance]
+            [is.simm.model.system-db :as system-db]
             [is.simm.model.schema :as schema]
             [is.simm.model.seed :as seed]
             [is.simm.model.store :as store]
@@ -46,7 +47,7 @@
    agent could not see the wiki: `knowledge_search` unions the room's granted
    KBs, but the simmis ones resolved to the wrong place."
   []
-  (str "data/simmis-kbs/" (random-uuid)))
+  (instance/data-path "simmis-kbs" (str (random-uuid))))
 
 (defn kb-store-path
   "Filesystem path of the KB whose store id is `db-scope`.
@@ -65,7 +66,7 @@
                :where [?k :kb/db-scope ?ds] [?k :kb/system-id ?sid]
                       [?s :system/id ?sid] [?s :system/scope ?scope]]
              @conn db-scope))
-      (str "data/simmis-kbs/" db-scope)))
+      (instance/data-path "simmis-kbs" (str db-scope))))
 
 (defn- kb-datahike-cfg
   "Datahike config for CONNECTING to a KB's database.

@@ -20,7 +20,8 @@
    DELIBERATELY NOT chat messages: auto-respond agents would reply to every
    frame. Agents PULL via `screen/*` in clojure_eval — it is a sandbox
    vocabulary, not a bespoke tool."
-  (:require [is.simm.model.screen-grants :as grants]
+  (:require [is.simm.runtimes.instance :as instance]
+            [is.simm.model.screen-grants :as grants]
             [is.simm.model.parties :as parties]
             [is.simm.model.blobs :as blobs]
             [is.simm.model.system-db :as system-db]
@@ -46,7 +47,7 @@
 
 (defn- screens-cfg [party-uuid]
   {:store {:backend :file
-           :path (str "data/simmis-screens/" party-uuid)
+           :path (instance/data-path "simmis-screens" (str party-uuid))
            ;; STABLE id derived from the party — a fresh randomUUID per connect
            ;; makes reconnecting to an EXISTING store fail with a store-identity
            ;; mismatch after any restart (the recordings store learned this).
@@ -70,7 +71,7 @@
               (when-not (:db.secondary/type (d/entity @conn screens-fulltext-ident))
                 (try ((requiring-resolve 'dvergr.search.secondary/declare-index!)
                       conn screens-fulltext-ident [:screenshot/transcript]
-                      (str "data/simmis-screens/" party-uuid "-ft"))
+                      (instance/data-path "simmis-screens" (str party-uuid "-ft")))
                      (catch Throwable t
                        (log/log! {:level :warn :id ::fulltext-declare-failed
                                   :data {:party party-uuid :error (ex-message t)}}))))

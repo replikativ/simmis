@@ -21,6 +21,12 @@ One JVM runs everything in development (`clj -M:dev`):
 | nREPL — server, Clojure | 47888 |
 | nREPL — browser, ClojureScript | 9631 |
 
+Those are the default instance's ports. `SIMMIS_PORT_OFFSET` adds one number
+to all of them (and to shadow's own 9630), so a second instance can run beside
+the first; `src/is/simm/runtimes/instance.clj` resolves the ports, the state
+home (`DVERGR_HOME`, default `.dvergr`) and the data root (`SIMMIS_DATA_DIR`,
+default `data`), and `user/shadow-config` applies the ports to shadow.
+
 `dev/user.clj` is the lifecycle; `src/is/simm/runtimes/web.clj` is the server
 boot — system DB, room hydration, kabel + auth + sync, telegram, then the HTTP
 routes.
