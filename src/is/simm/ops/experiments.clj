@@ -21,18 +21,17 @@
    context as its daemon context: a room's work is read in the room's ctx.
 
    Each op also runs for a principal (`dvergr.principal`): the party the
-   leaderboard is read for (`party-principal`), never the process itself.
-   simmis has already admitted that party through the room's own authority
-   (`{:room id}`, :read) before the read gets here; dvergr asks its
-   authorizer again, which simmis leaves at dvergr's default."
+   leaderboard is read for (`is.simm.ops.dvergr/party-principal`), never the process itself, and
+   through `is.simm.ops.dvergr/invoke`, which installs simmis's authorizer: a
+   party that may not read the room is refused by dvergr's ops themselves, not
+   only by the `load-leaderboard!` gate in front of them."
   (:require [datahike.api :as d]
             [dvergr.agent.experiment :as experiment]
             [dvergr.catalog.report :as report]
-            [dvergr.ops :as dops]
-            [dvergr.principal :as principal]
             [dvergr.room.store :as rstore]
             [dvergr.system.rooms :as srooms]
             [is.simm.agents.room-agents :as room-agents]
+            [is.simm.ops.dvergr :as ops]
             [is.simm.model.system-db :as system-db]
             [org.replikativ.spindel.engine.core :as rtc]
             [taoensso.telemere :as log]))
@@ -119,21 +118,11 @@
 ;; The leaderboard
 ;; =============================================================================
 
-(defn party-principal
-  "The dvergr principal of the simmis party `party-id`: a human that posts as
-   the party's participant keyword (`:party/<uuid>`), with no MCP scopes."
-  [party-id]
-  (let [id (str "party/" party-id)]
-    {:principal/id id
-     :principal/kind :human
-     :principal/actor (principal/actor {:principal/id id})
-     :principal/scopes #{}}))
-
 (defn- op
   "dvergr op `k` on the live Room `room`, in the room's own context, for
-   `principal`."
+   `principal`, authorized by simmis (`is.simm.ops.dvergr/invoke`)."
   [room principal k args]
-  (dops/invoke {:execution-ctx (:ctx room)} principal k (assoc args :room room)))
+  (ops/invoke (:ctx room) principal k (assoc args :room room)))
 
 (defn- id-str
   "A candidate id as dvergr's ops print it: namespaced in full."
@@ -233,5 +222,5 @@
    or nil when the room is not live."
   [room-id party-id]
   (when-let [room (room-agents/live-room room-id)]
-    (leaderboard room (party-principal party-id))))
+    (leaderboard room (ops/party-principal party-id))))
 

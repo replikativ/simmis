@@ -178,6 +178,22 @@
                  jwks-url   (assoc :jwks-url jwks-url)
                  public-key (assoc :public-key public-key))])))
 
+(def web-audience
+  "The `aud` of an access token for the web app — the websocket and the HTTP
+   routes, the one surface simmis serves today. Every token simmis issues
+   (`/auth/login`, `/auth/refresh`, `/auth/dev`) carries it, and the validator
+   accepts no other (`jwt-config` `:required-claims`), so a token minted for
+   another surface — MCP's `<origin>/mcp` (plan §2.5), a blob-read token
+   (`blobs`) — or one naming no audience at all does not open the socket.
+
+   \"simmis-api\" and not the plan's `<origin>/ws` because it is what the
+   issuer has always minted: every session in flight already carries it, so
+   enforcing it logs nobody out. An external IdP (`:oidc-issuers`) must be set
+   up to mint it too (its API identifier / resource indicator); kabel's issuer
+   registry takes ONE `:required-claims` for all issuers, so there is no
+   per-issuer audience."
+  "simmis-api")
+
 (defn- jwt-config
   "The `:jwt` section of the auth config: how ACCESS tokens are signed and
    verified. A function of its own because it needs no auth store — the
@@ -188,7 +204,13 @@
   {:secret jwt-secret
    :alg :HS256
    :issuer "simmis"
-   :audience "simmis-api"
+   ;; ISSUED with this audience (kabel's routes put `:audience` in `aud`) and
+   ;; VERIFIED against it: kabel's `build-bearer-validator` checks exactly the
+   ;; claims named in `:required-claims` (in the issuer-registry form all but
+   ;; `:iss`, which the registry decides), and checked none before — a token
+   ;; for any audience, or none, was accepted.
+   :audience web-audience
+   :required-claims {:aud web-audience}
    ;; VALIDATION registry (build-bearer-validator uses :issuers
    ;; exclusively when present; the token's `iss` selects the entry).
    ;; Our own self-issued HS256 lives here as "simmis"; configured
@@ -376,12 +398,10 @@
 
    DERIVED, so there is no second secret to provision or rotate — rotating
    `SIMMIS_JWT_SECRET` rotates this too. DISTINCT, so a blob token cannot
-   validate against the main issuer whatever claims it carries: the main
-   validator checks no audience (kabel's `build-bearer-validator` checks only
-   the claims listed in `:required-claims`, and the issuer registry drops
-   `:iss` from those), so separation by claim alone would hold only for as
-   long as nobody adds an issuer entry that happens to match. Separation by
-   key holds regardless. The derivation is one-way, so holding a blob token
+   validate against the main issuer whatever claims it carries. The main
+   validator now also requires `aud` = `web-audience` (a blob token says
+   `blobs`), but separation by claim holds only for as long as nobody adds an
+   issuer entry that happens to match; separation by key holds regardless. The derivation is one-way, so holding a blob token
    says nothing about the access-token key either.
 
    PRIVATE for the same reason `jwt-secret` is."

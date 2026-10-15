@@ -301,11 +301,14 @@
             Used to show 'Thinking...' indicator in the chat."
            (signal runtime false)))
 
-#?(:cljs (def run-world-live
-           "Run id -> whether this server still holds the Run world's settlement
-            capability. Not a durable fact (a restart drops it while the Run
-            stays under review), so it is asked of the server per reviewed Run;
-            every other Run fact is read from the room replica."
+#?(:cljs (def run-server-facts
+           "Run id -> what only the server can say about a Run, asked per Run:
+            `:world-live?`, whether this server still holds the Run world's
+            settlement capability (not durable: a restart drops it while the
+            Run stays under review), and `:can-cancel?`, whether THIS viewer
+            may stop the Run (its starter, the room owner or :admin —
+            doc/authority.md). Every other Run fact is read from the room
+            replica, which says nothing about the viewer."
            (signal runtime {})))
 
 #?(:cljs (def chat-scroll-windows

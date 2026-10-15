@@ -36,6 +36,9 @@
  ;; accepted alongside simmis's own, on the same socket — this is how WorkOS,
  ;; Clerk, Auth0 or Google sign-in attach. `:jwks-url` keys rotate and are
  ;; fetched on demand; `:public-key` pins a static one instead.
+ ;; The provider must mint the web app's audience, `aud` = "simmis-api" (its
+ ;; API identifier / resource indicator): a token for any other audience, or
+ ;; none, is refused, whoever issued it.
  #_:oidc-issuers #_[{:iss "https://your-tenant.authkit.app"
                      :jwks-url "https://your-tenant.authkit.app/oauth2/jwks"
                      :alg :RS256}]

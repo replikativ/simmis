@@ -944,9 +944,9 @@
              ;; execution context so UI forks do not share an ambient atom.
              chat-reply-targets (iv/get-new (track sig/chat-reply-targets))
              ;; Runs are read from each room's replica (tracked via room-states);
-             ;; only whether the server still holds a reviewed world's
-             ;; capability is asked of it, and kept here.
-             world-live (iv/get-new (track sig/run-world-live))
+             ;; what only the server can say about one (its world's capability,
+             ;; whether this viewer may stop it) is asked of it, and kept here.
+             run-facts (iv/get-new (track sig/run-server-facts))
              ;; Canonical Proposal review projection. Inline chat cards consume
              ;; the same rows/controllers as Tasks and the full inspector.
              proposal-data (iv/get-new (track sig/proposals-data))
@@ -999,7 +999,7 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets world-live proposal-data id)
+                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1198,7 +1198,7 @@
   "Render content for a tab based on its type.
 
    kb-states arg removed — wiki tabs self-track their KB signal."
-  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets world-live proposal-data col-id]]
+  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data col-id]]
   (case tab-type
     :home
     ;; Newcomer landing: the obvious first action is talking to your
@@ -1256,7 +1256,7 @@
     (render-tab-content :chat (assoc data :thread-view? true)
                         local-db chat-windows settings-data admin-data room-details room-states
                         syntax-pref gref video-info screen-sharing screens-results
-                        recordings-results web-captures-results chat-reply-targets world-live
+                        recordings-results web-captures-results chat-reply-targets run-facts
                         proposal-data col-id)
 
     :run-history
@@ -1382,11 +1382,11 @@
              run-state (when room-db (run-detail/query-room-runs room-db 24))
              with-world (fn [run]
                           (when run
-                            (cond-> run
-                              (contains? world-live (:id run))
-                              (assoc :world-live? (get world-live (:id run))))))
+                            (merge run (get run-facts (:id run)))))
              _ (when (= :review (get-in detail [:run :settlement-status]))
                  (run-actions/ensure-world-live! room-id run-id))
+             _ (when (some #(= run-id (:id %)) (:active run-state))
+                 (run-actions/ensure-can-cancel! room-id run-id))
              detail (cond-> detail (:run detail) (update :run with-world))
              active-run (with-world (some #(when (= run-id (:id %)) %)
                                           (:active run-state)))
@@ -1463,6 +1463,8 @@
              ;; The room's Runs, from its replica: live as it is.
              {active-runs :active recent-runs :recent}
              (if room-db (run-detail/query-room-runs room-db 24) {:active [] :recent []})
+             ;; whether the viewer may stop each live Run is the server's to say
+             _ (doseq [r active-runs] (run-actions/ensure-can-cancel! room-id (:id r)))
 
              open-run!
              (fn [event run-id]
@@ -1904,7 +1906,8 @@
                    :else "The root message is not available in this replica yet."))))
 
            (chat/run-strip
-            {:runs active-runs
+            {:runs (mapv #(assoc % :can-cancel? (get-in run-facts [(:id %) :can-cancel?] false))
+                         active-runs)
              :on-open open-run!
              :on-cancel #(run-actions/cancel! room-id %)})
 

@@ -115,6 +115,7 @@
   (let [room-id (random-uuid)]
     (doseq [[fn-name action] [["run-world-live!" :read]
                               ["cancel-room-run!" :write]
+                              ["can-cancel-room-run!" :read]
                               ["promote-room-run-world!" :write]]]
       (let [policy (get access/rpc-policy fn-name)]
         (is (= action (:action policy)))

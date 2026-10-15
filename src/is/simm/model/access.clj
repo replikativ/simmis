@@ -10,7 +10,10 @@
    –:grant/*→ system). It is enforced at two planes: the DATA plane
    (konserve-sync scope authorization in `runtimes/web.clj`) and the
    CONTROL plane (the RPCs in `ops/`). Both call this one predicate, so a
-   later swap to eacl's traversal engine happens behind this signature.
+   later swap to eacl's traversal engine happens behind this signature. So
+   does dvergr's `:authorize` seam for the dvergr ops simmis invokes
+   (`dvergr-authorize`, installed by `is.simm.ops.dvergr/invoke`), and the
+   Run-stop rule (`may-cancel-run?`).
 
    The action vocabulary and the fork model it encodes are written up in
    `doc/authority.md`; `permission-satisfies?` below is its
@@ -20,7 +23,8 @@
    `runtimes/data_plane_test`, and the authority suite under
    `test/is/simm/authority/`, which runs the predicate and both enforcement
    planes together against real grants (doc/authority.md)."
-  (:require [is.simm.distributed-scope :as ds]
+  (:require [clojure.string :as str]
+            [is.simm.distributed-scope :as ds]
             [is.simm.model.system-db :as system-db]
             [datahike.api :as d]
             [taoensso.telemere :as log]))
@@ -674,7 +678,11 @@
      "dispatch-message!"       {:action W :resource (room :room-id-str)}
      "ensure-room!"            {:action W :resource (room :room-id-str)}
      "run-world-live!"         {:action R :resource (room :room-id-str)}
+     ;; A member reaches the handler; stopping THIS Run is its starter's, the
+     ;; room owner's or an admin's (`require-run-cancellable!`, §2.9.2).
      "cancel-room-run!"        {:action W :resource (room :room-id-str)}
+     ;; whether to SHOW the stop control: the same question, asked for the caller
+     "can-cancel-room-run!"    {:action R :resource (room :room-id-str)}
      "promote-room-run-world!" {:action W :resource (room :room-id-str)}
      ;; spend is egress, authorized in advance by the owner, not by anyone who
      ;; can speak in the room
@@ -1012,3 +1020,121 @@
    hide the control from everyone else."
   [db subject room-id]
   (can? db subject :merge {:room room-id}))
+
+;; =============================================================================
+;; Runs — who may stop one
+;; =============================================================================
+
+(defn actor->party-uuid
+  "The party uuid of a dvergr actor id — `:party/<uuid>` or \"party/<uuid>\" —
+   or nil for anything else (`:scheduler`, `:dvergr`, a built-in agent)."
+  [actor]
+  (let [[ns-part id] (cond (keyword? actor) [(namespace actor) (name actor)]
+                           (string? actor) (let [[a b] (str/split actor #"/" 2)] [a b])
+                           :else nil)]
+    (when (= "party" ns-part) (parse-uuid (str id)))))
+
+(defn may-cancel-run?
+  "May `subject` stop a Run in room `room-id` that `starter` (a party uuid, or
+   nil when nobody determinable started it — a schedule, the process) started?
+   Decision 2026-10-15 (§2.9.2): seeing a Run is reading its room; STOPPING it
+   is for whoever started it, the room's owner, or `:admin` — and only from
+   inside the room (`:write`, the `cancel-room-run!` gate), so an admin who is
+   no member stops nothing there either. A Run nobody determinable started is
+   the owner's (or an admin's) to stop. Who started a Run is
+   `is.simm.agents.runs/run-starter`'s question."
+  [db subject room-id starter]
+  (let [me (subject->party-uuid subject)]
+    (boolean
+     (and me (can? db me :write {:room room-id})
+          (or (and (some? starter) (= me starter))
+              (can? db me :grant {:room room-id})
+              (admin? db me))))))
+
+(defn require-run-cancellable!
+  "Throw `:not-authorized` unless the connection's principal `may-cancel-run?`."
+  [room-id run-id starter]
+  (let [p (ds/require-principal)]
+    (when-not (may-cancel-run? (current-db) p room-id starter)
+      (refuse! "not a Run this principal may stop"
+               {:room (str room-id) :run (str run-id)
+                :starter (some-> starter str) :sub (:sub p)}))))
+
+;; =============================================================================
+;; dvergr's :authorize seam — dvergr ops invoked for a simmis party
+;; =============================================================================
+;;
+;; dvergr asks its authorizer before every op it runs for a non-local principal
+;; (`dvergr.principal`, `dvergr.ops/authorize!`), naming the resource as a
+;; dvergr DESCRIPTOR. This is simmis's answer: the descriptor mapped to a
+;; simmis resource, then `can?`. See doc/authority.md, "dvergr ops".
+
+(defn- room-uuid-of-dvergr-room
+  "The simmis `:room/id` of the dvergr room whose id string is `rid` (dvergr's
+   `resolve-resource` answers a room as its id: the slug, `/` encoded as
+   `_fork_`, or a uuid), or nil."
+  [db rid]
+  (when (and db (string? rid) (not (str/blank? rid)))
+    (or (when-let [u (parse-uuid rid)]
+          (d/q '[:find ?id . :in $ ?id :where [_ :room/id ?id]] db u))
+        (d/q '[:find ?id . :in $ ?slug :where [?r :room/slug ?slug] [?r :room/id ?id]]
+             db (str/replace rid "_fork_" "/")))))
+
+(defn dvergr-resource
+  "The simmis `[action resource]` a dvergr authorization request asks about,
+   or nil (deny). `request` is dvergr's `{:action :resource :resolved}`:
+
+     [:room x]  resolved to a room → `action` on `{:room id}`; dvergr's
+                :read/:write/:merge/:admin are the same words in `can?`, and on
+                a room :merge and :admin stop at the owner
+     [:job x]   :read → `:read` on the job's room; anything else (cancel) →
+                the job's starter, or the room owner — `may-cancel-run?`'s
+                rule, answered by `dvergr-authorize`
+     [:global]  :read → `:authenticated`; a write → `:admin` (plan §2.2: an op
+                that acts on nothing room-scoped changes the installation)
+     [:agent x] → `:admin` whatever the action (an agent's prompt, model and
+                tools are what `update-agent-config!` polices as :admin)
+
+   Any other descriptor, and a handle dvergr resolved to nothing, is nil."
+  [db {:keys [action resource resolved]}]
+  (let [[kind] resource]
+    (case kind
+      :room (when-let [rid (room-uuid-of-dvergr-room db (:room resolved))]
+              [action {:room rid}])
+      :job (when-let [rid (room-uuid-of-dvergr-room db (:room resolved))]
+             [action {:room rid}])
+      :global (if (= :read action) [:read :authenticated] [:admin :admin])
+      :agent [:admin :admin]
+      nil)))
+
+(defn dvergr-authorize
+  "simmis's implementation of dvergr's `:authorize` seam: `(fn [principal
+   request] → {:allow? :reason})`. The principal must name a party
+   (`:principal/id` \"party/<uuid>\", as `is.simm.ops.dvergr/party-principal`
+   builds it); `dvergr-resource` maps the request, `can?` decides. A job beyond
+   :read is its starter's (the job Run's `:owner` actor) or the room owner's.
+   Deny-by-default: no party, an unmapped descriptor, an unresolved handle or a
+   throw (dvergr also denies on a throw) all refuse."
+  ([principal request]
+   (dvergr-authorize (current-db) principal request))
+  ([db principal request]
+   (let [party (actor->party-uuid (:principal/id principal))
+         [action resource :as mapped] (when party (dvergr-resource db request))
+         allow? (boolean
+                 (and mapped
+                      (if (and (= :job (first (:resource request))) (not= :read action))
+                        (may-cancel-run? db party (:room resource)
+                                         (actor->party-uuid (:owner (:resolved request))))
+                        (can? db party action resource))))]
+     (when-not allow?
+       (log/log! {:level :warn :id ::dvergr-op-denied
+                  ;; the resource as dvergr RESOLVED it: the descriptor may
+                  ;; hold a whole live Room
+                  :data {:op (:op request) :action (:action request)
+                         :resource-kind (first (:resource request)) :resolved (:resolved request)
+                         :principal (:principal/id principal) :mapped mapped}}))
+     {:allow? allow?
+      :reason (when-not allow?
+                (str "not authorized: " (:principal/id principal) " may not "
+                     (some-> (:action request) name) " " (some-> (first (:resource request)) name)
+                     " " (pr-str (:resolved request))))})))
