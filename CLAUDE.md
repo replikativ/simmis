@@ -328,8 +328,15 @@ plane both have coverage — `access_test.clj`, `access_control_plane_test.clj`.
 The data plane has both halves covered too (`data_plane_test.clj`):
 `data-plane-authorized?` gates SUBSCRIBES, `data-plane-publish-authorized?`
 refuses every inbound PUBLISH — sync is one-directional here, so no client is
-ever a legitimate publisher. Known gap: no integration-level test running the
-predicate and the gates together against real grants.
+ever a legitimate publisher.
+
+`test/is/simm/authority/` runs the predicate and the gates TOGETHER against a
+real (in-memory) system DB and real grants: a matrix of every `rpc-policy` row
+× {owner, member, non-member, admin, anonymous} (a new row without a matrix
+entry fails), the data plane, and executed attacks on the raw paths, runs and
+handlers. Attacks that still succeed are `known-hole`s: they PASS while open
+and FAIL once fixed, demanding to be flipped into a plain refusal assertion.
+When you close one, flip it in the same PR.
 
 ## Secrets
 

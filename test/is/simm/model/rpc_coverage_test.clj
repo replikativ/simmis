@@ -63,9 +63,11 @@
   (let [live (into #{} (map access/normalize-remote-name) (keys @ds/remote-fn-registry))
         orphans (->> (keys access/rpc-policy) (remove live) sort vec)]
     (testing "a row for a fn that no longer exists is dead weight, not a risk"
-      ;; Reported, not failed. `datahike.kabel` registers store handlers at
-      ;; CONNECT time rather than require time, so some rows legitimately have
-      ;; no counterpart in a test JVM that never connects.
+      ;; Reported, not failed. `datahike.kabel`'s handlers register in
+      ;; `kabel.remote/functions`, not in this registry, so their rows
+      ;; (dispatch, create-database, delete-database) never have a
+      ;; counterpart here; the server does not serve that registry either
+      ;; (see authority/raw-paths-test).
       (when (seq orphans)
         (println "    note:" (count orphans)
                  "rpc-policy rows with no registered fn:" (pr-str orphans)))
