@@ -18,11 +18,18 @@
    unfinished experiment's are `experiment_progress` and `experiment_report`,
    and tokens and time per candidate are the report's frontier
    (`dvergr.catalog.report/rows`). Each op runs with the ROOM's execution
-   context as its daemon context: a room's work is read in the room's ctx."
+   context as its daemon context: a room's work is read in the room's ctx.
+
+   Each op also runs for a principal (`dvergr.principal`): the party the
+   leaderboard is read for (`party-principal`), never the process itself.
+   simmis has already admitted that party through the room's own authority
+   (`{:room id}`, :read) before the read gets here; dvergr asks its
+   authorizer again, which simmis leaves at dvergr's default."
   (:require [datahike.api :as d]
             [dvergr.agent.experiment :as experiment]
             [dvergr.catalog.report :as report]
             [dvergr.ops :as dops]
+            [dvergr.principal :as principal]
             [dvergr.room.store :as rstore]
             [dvergr.system.rooms :as srooms]
             [is.simm.agents.room-agents :as room-agents]
@@ -112,10 +119,21 @@
 ;; The leaderboard
 ;; =============================================================================
 
+(defn party-principal
+  "The dvergr principal of the simmis party `party-id`: a human that posts as
+   the party's participant keyword (`:party/<uuid>`), with no MCP scopes."
+  [party-id]
+  (let [id (str "party/" party-id)]
+    {:principal/id id
+     :principal/kind :human
+     :principal/actor (principal/actor {:principal/id id})
+     :principal/scopes #{}}))
+
 (defn- op
-  "dvergr op `k` on the live Room `room`, in the room's own context."
-  [room k args]
-  (dops/invoke {:execution-ctx (:ctx room)} k (assoc args :room room)))
+  "dvergr op `k` on the live Room `room`, in the room's own context, for
+   `principal`."
+  [room principal k args]
+  (dops/invoke {:execution-ctx (:ctx room)} principal k (assoc args :room room)))
 
 (defn- id-str
   "A candidate id as dvergr's ops print it: namespaced in full."
@@ -147,8 +165,8 @@
 (defn- completed
   "An experiment with a Scorecard: `scorecard_detail`'s leaderboard and paired
    comparisons, with the frontier's tokens and time."
-  [room scorecard-id]
-  (let [detail (op room :scorecard/detail {:id (str scorecard-id)})
+  [room principal scorecard-id]
+  (let [detail (op room principal :scorecard/detail {:id (str scorecard-id)})
         resources (frontier room scorecard-id)
         exp (:experiment detail)]
     {:experiment (:content-id exp)
@@ -175,8 +193,8 @@
   "An experiment without a Scorecard yet: per candidate what
    `experiment_progress` counts, and `experiment_report`'s paired comparisons
    over the cells certified so far."
-  [room {:keys [candidates] content-id :experiment/content-id}]
-  (let [report (op room :experiment/report {:experiment (str content-id)})]
+  [room principal {:keys [candidates] content-id :experiment/content-id}]
+  (let [report (op room principal :experiment/report {:experiment (str content-id)})]
     {:experiment (str content-id)
      :complete? false
      :cells (reduce + 0 (map :done candidates))
@@ -193,26 +211,27 @@
 (defn leaderboard
   "The experiments the live Room `room` keeps, newest Scorecard first, then
    those still without one: `{:experiments [...]}`. Each completed experiment
-   is its newest Scorecard."
-  [room]
-  (let [scorecards (op room :scorecard/list {:limit 200})
+   is its newest Scorecard. The reads run for `principal`."
+  [room principal]
+  (let [scorecards (op room principal :scorecard/list {:limit 200})
         newest (reduce (fn [m sc]
                          (let [cid (get-in sc [:experiment :content-id])]
                            (if (contains? m cid) m (assoc m cid (:id sc)))))
                        {} scorecards)
-        progress (op room :experiment/progress {})
+        progress (op room principal :experiment/progress {})
         unscored (remove #(contains? newest (str (:experiment/content-id %))) (:experiments progress))]
     {:experiments (into (vec (for [sc scorecards
                                    :let [cid (get-in sc [:experiment :content-id])]
                                    :when (= (:id sc) (get newest cid))]
-                               (completed room (:id sc))))
-                        (map #(in-progress room %))
+                               (completed room principal (:id sc))))
+                        (map #(in-progress room principal %))
                         unscored)
      :running (count (:running progress))}))
 
 (defn room-leaderboard
-  "`leaderboard` of the simmis room `room-id`, or nil when it is not live."
-  [room-id]
+  "`leaderboard` of the simmis room `room-id` read for the party `party-id`,
+   or nil when the room is not live."
+  [room-id party-id]
   (when-let [room (room-agents/live-room room-id)]
-    (leaderboard room)))
+    (leaderboard room (party-principal party-id))))
 
