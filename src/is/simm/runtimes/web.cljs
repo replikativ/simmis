@@ -107,14 +107,15 @@
   []
   (if (= "1" (.getItem js/sessionStorage "simmis-reauth-tried"))
     (do (.removeItem js/sessionStorage "simmis-reauth-tried")
-        (login/clear-auth!)
-        (js/location.reload))
+        ;; `clear-auth!` also ends the session server-side (and expires the
+        ;; HttpOnly blob cookie); reload once that has answered.
+        (.then (login/clear-auth!) #(js/location.reload)))
     (if-let [rt (login/get-stored-refresh-token)]
       (do (.setItem js/sessionStorage "simmis-reauth-tried" "1")
           (-> (login/refresh-token! rt)
               (.then (fn [_] (js/location.reload)))
-              (.catch (fn [_] (login/clear-auth!) (js/location.reload)))))
-      (do (login/clear-auth!) (js/location.reload)))))
+              (.catch (fn [_] (.then (login/clear-auth!) #(js/location.reload))))))
+      (.then (login/clear-auth!) #(js/location.reload)))))
 
 (defn maybe-reauth-on-rpc-error!
   "Recover the SESSION only when `err` is an AUTHENTICATION failure — the
@@ -238,6 +239,23 @@
     (show-app!)
     session))
 
+(defn- boot-app!
+  "Issue the blob-read cookie, THEN start the app and hand it to main.
+
+   Awaited, not fired alongside: the cookie lives an hour, so after a closed
+   tab or a suspended laptop the one the browser holds has likely expired, and
+   the first `<img src=\"/blobs/…\">` rendered would 401. The renewal never
+   rejects, so a refusal does not block boot — images then fail, the app
+   does not."
+  [token user]
+  (-> (login/start-blob-cookie-renewal!)
+      (.then (fn [_]
+               (let [session (start-app! token user)]
+                 ;; Require main.cljs to continue initialization
+                 ;; This is done lazily to avoid circular deps
+                 (when-let [main-init (aget js/window "__simmis_main_init")]
+                   (main-init session)))))))
+
 (defn ^:export init []
   ;; Telemere level: :info by default so DevTools isn't flooded by
   ;; spindel-engine / konserve / datahike trace lines on every fire —
@@ -261,11 +279,7 @@
   (-> (login/check-existing-auth)
       (.then (fn [{:keys [token user]}]
                (js/console.log "[Auth] Found existing token, starting app...")
-               (let [session (start-app! token user)]
-               ;; Require main.cljs to continue initialization
-               ;; This is done lazily to avoid circular deps
-                 (when-let [main-init (aget js/window "__simmis_main_init")]
-                   (main-init session)))))
+               (boot-app! token user)))
       (.catch (fn [_]
                (js/console.log "[Auth] No valid auth, showing login page...")
                (show-login!)
@@ -274,7 +288,4 @@
                  (fn [result]
                    (let [{:keys [access_token user]} (js->clj result :keywordize-keys true)]
                      (js/console.log "[Auth] Login successful, starting app...")
-                     (let [session (start-app! access_token user)]
-                       ;; Trigger main init
-                       (when-let [main-init (aget js/window "__simmis_main_init")]
-                         (main-init session))))))))))
+                     (boot-app! access_token user))))))))

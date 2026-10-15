@@ -91,6 +91,7 @@ Every route declares `:auth` in its route data:
 |---|---|
 | `:public` | no check — the SPA shell, its assets, the login endpoints |
 | `:authenticated` | a valid token, nothing more; correct when the handler scopes to the party itself |
+| `:blob-read` | `:authenticated`, or the blob-read cookie on GET/HEAD — blob reads only (see below) |
 | `{:action … :resource fn}` | a token, then `can?` — the same vocabulary as `rpc-policy` |
 
 `http-auth/validate-auth-declared!` runs as reitit's `:validate` hook, which
@@ -131,11 +132,28 @@ network while it is set.
 
 ## Blob reads
 
-`GET /blobs/<sha256>` is authenticated by an HttpOnly, `SameSite=Lax` cookie
-scoped to `/blobs/`, issued at login and expiring with the token. The cookie
-exists because the UI reaches blobs through `<img src>` and `<a href>` —
-requests the *browser* issues, which cannot carry an Authorization header. It
-authenticates reads only; a write must present the header.
+`GET /blobs/<sha256>` accepts the Authorization header or an HttpOnly,
+`SameSite=Lax` cookie scoped to `/blobs/`. The cookie exists because the UI
+reaches blobs through `<img src>` and `<a href>` — requests the *browser*
+issues, which cannot carry an Authorization header. It authenticates reads
+only (GET/HEAD); a write must present the header.
+
+The cookie does **not** hold the access token. Cookies are not scoped by port
+and every port of a host is the same site, so any server on another port of
+the same host — an agent's dev server, say — receives it. It holds a blob-read
+token instead: signed with a key derived from the JWT secret
+(HMAC-SHA256(secret, `"simmis/blob-read/v1"`)), issuer `simmis/blob-read`,
+audience `blobs`, one hour. Only routes declaring `:auth :blob-read` accept
+it (`http-auth/blob-reader-party-id`); the access-token validator — every
+other route, every RPC, the websocket handshake — refuses it, by key and by
+issuer, and the blob route in turn refuses an access token in the cookie.
+`/auth/login` and `/auth/refresh` set it, and the client renews it through
+`POST /auth/blob-cookie` (header-authenticated) before it expires, and again on
+waking up (visibility, focus, back online) since timers stall while a machine
+sleeps; `/auth/logout` expires it. The blob-read cookie itself still reaches
+other ports of the same host, so what such a server can obtain is a one-hour
+read capability for any blob by hash — not more, but not nothing, because blob
+reads are not room-scoped (below).
 
 It authenticates but does not **authorize**: any signed-in user can fetch any
 blob by hash. Blobs are content-addressed and deliberately shared, so the same

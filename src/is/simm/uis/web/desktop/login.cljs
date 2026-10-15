@@ -77,12 +77,150 @@
   (when user
     (.setItem js/localStorage USER_KEY (js/JSON.stringify (clj->js user)))))
 
-(defn clear-auth!
-  "Clear stored authentication data."
+;; =============================================================================
+;; The blob cookie
+;; =============================================================================
+;;
+;; The blob cookie holds a short-lived blob-READ token, not the access token (a
+;; cookie reaches every port of this host, so it must not be worth a bearer
+;; credential). It is HttpOnly, so this code never sees it: it only asks the
+;; server for a fresh one, authenticating with the header.
+;;
+;; Max-Age runs on WALL-CLOCK time, timers do not: they pause while the machine
+;; sleeps and are throttled in background tabs. So the renewal point is stored
+;; as a wall-clock instant, and waking up — the tab becoming visible, the
+;; window regaining focus, the network coming back — renews when it has passed.
+;; The timer is only the fast path for a tab that stays awake.
+
+(def ^:private blob-renew-at-fraction
+  "Renew once this fraction of the cookie's lifetime has elapsed."
+  0.8)
+
+(defonce ^:private blob-cookie
+  ;; :gen        bumped by every start/stop; a renewal from an older generation
+  ;;             must not reschedule (e.g. one in flight across a logout)
+  ;; :timer      the pending js/setTimeout id
+  ;; :renew-at   wall-clock ms after which a wake-up renews
+  ;; :in-flight  the pending renewal promise — at most one at a time
+  ;; :refused?   the server said no (401): stop asking until the next start,
+  ;;             the same no-loop behaviour as before
+  ;; :listeners  [[target event f] …] actually registered, so a re-init (hot
+  ;;             reload included — this is a defonce) removes exactly those
+  (atom {:gen 0}))
+
+(defn- clear-blob-timer! []
+  (when-let [t (:timer @blob-cookie)] (js/clearTimeout t))
+  (swap! blob-cookie assoc :timer nil))
+
+(declare renew-blob-cookie!)
+
+(defn- schedule-blob-renewal! [expires-in]
+  (clear-blob-timer!)
+  (let [delay-ms (* 1000 blob-renew-at-fraction expires-in)]
+    (swap! blob-cookie assoc
+           :renew-at (+ (js/Date.now) delay-ms)
+           :timer (js/setTimeout renew-blob-cookie! delay-ms))))
+
+(defn- renew-blob-cookie!
+  "POST /auth/blob-cookie with the access token and reschedule. Resolves to
+   true when the server granted a cookie, false otherwise; never rejects, so
+   boot can await it without being blocked by a failure."
   []
-  (.removeItem js/localStorage TOKEN_KEY)
-  (.removeItem js/localStorage REFRESH_TOKEN_KEY)
-  (.removeItem js/localStorage USER_KEY))
+  (or (:in-flight @blob-cookie)
+      (let [gen (:gen @blob-cookie)
+            current? #(= gen (:gen @blob-cookie))
+            p (if-not (get-stored-token)
+                (js/Promise.resolve false)
+                (-> (js/fetch (str (get-auth-base-url) "/auth/blob-cookie")
+                              #js {:method "POST" :headers (auth-headers)})
+                    (.then (fn [resp]
+                             (if (.-ok resp)
+                               (-> (.json resp)
+                                   (.then (fn [body]
+                                            (let [ttl (aget body "expires_in")]
+                                              (when (and (current?) (number? ttl) (pos? ttl))
+                                                (schedule-blob-renewal! ttl))
+                                              true))))
+                               (do (js/console.warn "[Auth] blob cookie renewal refused:"
+                                                    (.-status resp))
+                                   (when (current?)
+                                     (clear-blob-timer!)
+                                     (swap! blob-cookie assoc :refused? true))
+                                   false))))
+                    ;; Network failure: not a refusal. `renew-at` stays where it
+                    ;; was, so the next wake-up (`online` included) tries again.
+                    (.catch (fn [e]
+                              (js/console.warn "[Auth] blob cookie renewal failed:" e)
+                              false))))
+            p (.then p (fn [granted?]
+                         (when (current?) (swap! blob-cookie dissoc :in-flight))
+                         granted?))]
+        (swap! blob-cookie assoc :in-flight p)
+        p)))
+
+(defn- renew-blob-cookie-if-due! []
+  (let [{:keys [renew-at refused? listeners]} @blob-cookie]
+    (when (and listeners
+               (not refused?)
+               (or (nil? renew-at) (>= (js/Date.now) renew-at)))
+      (renew-blob-cookie!))))
+
+(defn stop-blob-cookie-renewal!
+  "Cancel the schedule and remove the wake-up listeners."
+  []
+  (clear-blob-timer!)
+  (doseq [[target event f] (:listeners @blob-cookie)]
+    (.removeEventListener target event f))
+  (swap! blob-cookie (fn [s] (-> s
+                                 (update :gen inc)
+                                 (assoc :listeners nil :renew-at nil :refused? false)
+                                 (dissoc :in-flight)))))
+
+(defn start-blob-cookie-renewal!
+  "Issue the blob cookie now and keep it fresh for as long as the server grants
+   it. Replaces any previous schedule and listeners, so calling it again (a
+   re-init, a hot reload) never duplicates them. Returns the first renewal's
+   promise — await it before rendering, so the first `<img src=\"/blobs/…\">`
+   does not race a cookie that expired while the tab was closed."
+  []
+  (stop-blob-cookie-renewal!)
+  (let [on-visible (fn [_]
+                     (when (= "visible" (.-visibilityState js/document))
+                       (renew-blob-cookie-if-due!)))
+        on-wake (fn [_] (renew-blob-cookie-if-due!))
+        listeners [[js/document "visibilitychange" on-visible]
+                   [js/window "focus" on-wake]
+                   [js/window "online" on-wake]]]
+    (doseq [[target event f] listeners]
+      (.addEventListener target event f))
+    (swap! blob-cookie assoc :listeners listeners)
+    (renew-blob-cookie!)))
+
+(defn clear-auth!
+  "Clear stored authentication data and end the session on the server.
+
+   The local half is synchronous. The server half — POST /auth/logout, which
+   deletes the refresh session and expires the blob cookie — is the only way
+   to clear that cookie at all: it is HttpOnly, so script cannot touch it.
+   `keepalive` lets the request finish even if the caller navigates away, but
+   callers that reload should still wait on the returned promise, which never
+   rejects."
+  []
+  (let [rt (get-stored-refresh-token)]
+    (stop-blob-cookie-renewal!)
+    (.removeItem js/localStorage TOKEN_KEY)
+    (.removeItem js/localStorage REFRESH_TOKEN_KEY)
+    (.removeItem js/localStorage USER_KEY)
+    (-> (js/fetch (str (get-auth-base-url) "/auth/logout")
+                  (clj->js {:method "POST"
+                            :keepalive true
+                            :headers {"Content-Type" "application/json"}
+                            :body (js/JSON.stringify
+                                    (clj->js {:refresh_token rt}))}))
+        (.then (constantly nil))
+        (.catch (fn [e]
+                  (js/console.warn "[Auth] server logout failed:" e)
+                  nil)))))
 
 ;; =============================================================================
 ;; API

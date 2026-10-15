@@ -16,7 +16,8 @@
             [reitit.ring :as ring]
             [is.simm.model.access :as access]
             [is.simm.runtimes.auth-config :as auth-cfg]
-            [is.simm.runtimes.http-auth :as hauth]))
+            [is.simm.runtimes.http-auth :as hauth]
+            [kabel.auth.jwt :as jwt]))
 
 (defn- build
   "Construct a router the way `web/make-handler` does. Returns :built, or the
@@ -122,33 +123,119 @@
 ;;
 ;; `<img src>` and `<a href>` are issued by the BROWSER, so they cannot carry
 ;; an Authorization header — a cookie is the only credential they can present.
-;; Which means this credential travels on requests our code did not write, and
-;; its scope has to be enforced where it cannot be argued with.
+;; Cookies are not port-scoped, and every port of a host is the same site, so
+;; any server on another port of this host receives it. Hence: the cookie holds
+;; a blob-READ capability, signed with its own key, and nothing but the blob
+;; read path accepts it. Real tokens throughout — what is under test is which
+;; credential each path accepts, so stubbing the validator would test nothing.
 
 (def ^:private a-party #uuid "cafe0000-0000-0000-0000-000000000001")
 
-(defn- with-stub-validator
-  "Run `f` with the bearer validator replaced by one that accepts exactly
-   `token` — the JWT machinery has its own coverage; what is under test is
-   WHICH requests are allowed to present a cookie."
-  [token f]
+(defn- now [] (quot (System/currentTimeMillis) 1000))
+
+(defn- access-token
+  "An access token exactly as `/auth/login` signs one."
+  [party]
+  (jwt/sign-hs256 @#'auth-cfg/jwt-secret
+                  {:iss "simmis" :aud "simmis-api" :sub (str party)
+                   :iat (now) :exp (+ (now) 3600)}))
+
+(defn- blob-token [party] (:token (#'auth-cfg/mint-blob-token party)))
+
+(defn- with-real-validator
+  "The access-token validator built from the same `:jwt` map the websocket
+   plane validates with (`web/auth-middleware-fn`), minus the auth store the
+   full config needs."
+  [f]
   (with-redefs [hauth/validator
-                (delay (fn [req]
-                         (when (= (str "Bearer " token)
-                                  (get-in req [:headers "authorization"]))
-                           {:sub (str a-party)})))]
+                (delay (jwt/build-bearer-validator (#'auth-cfg/jwt-config)))]
     (f)))
 
-(defn- party-for [method headers]
-  (with-stub-validator "good"
-    #(hauth/party-id {:request-method method :headers headers :uri "/blobs/x"})))
+(defn- req [method headers]
+  {:request-method method :headers headers :uri "/blobs/x"})
 
-(deftest the-cookie-authenticates-reads
+(defn- cookie [token] {"cookie" (str auth-cfg/blob-cookie-name "=" token)})
+(defn- bearer [token] {"authorization" (str "Bearer " token)})
+
+(defn- blob-reader [method headers]
+  (with-real-validator #(hauth/blob-reader-party-id (req method headers))))
+
+(defn- api-party [method headers]
+  (with-real-validator #(hauth/party-id (req method headers))))
+
+(deftest the-blob-token-authenticates-blob-reads
   (testing "the <img> case: no header, cookie only"
-    (is (= a-party (party-for :get {"cookie" (str auth-cfg/blob-cookie-name "=good")}))))
+    (is (= a-party (blob-reader :get (cookie (blob-token a-party)))))
+    (is (= a-party (blob-reader :head (cookie (blob-token a-party))))))
   (testing "alongside other cookies, which is how a browser sends them"
-    (is (= a-party (party-for :get {"cookie" (str "other=1; " auth-cfg/blob-cookie-name
-                                                  "=good; another=2")})))))
+    (is (= a-party (blob-reader :get {"cookie" (str "other=1; " auth-cfg/blob-cookie-name
+                                                    "=" (blob-token a-party)
+                                                    "; another=2")}))))
+  (testing "the header bearer still reads blobs, without any cookie"
+    (is (= a-party (blob-reader :get (bearer (access-token a-party)))))))
+
+(deftest the-blob-token-is-worth-nothing-anywhere-else
+  (let [bt (blob-token a-party)]
+    (testing "as a Bearer header on any route (HTTP API, RPCs)"
+      (is (nil? (api-party :get (bearer bt))))
+      (is (nil? (api-party :post (bearer bt)))))
+    (testing "as a Bearer header even on the blob route — only the cookie carries it"
+      (is (nil? (blob-reader :get (bearer bt)))))
+    (testing "in the cookie, for anything that is not a blob read"
+      (is (nil? (api-party :get (cookie bt)))
+          "`party-id` — every :authenticated route — must not read the cookie"))
+    (testing "against the validator the websocket handshake uses"
+      ;; `web/auth-middleware-fn` hands `(:jwt (get-auth-config))` to kabel,
+      ;; which builds exactly this validator. A blob token must not open a socket.
+      (is (nil? ((jwt/build-bearer-validator (#'auth-cfg/jwt-config))
+                 {:headers (bearer bt)}))))
+    (testing "and the access token still is worth what it was"
+      (is (= a-party (api-party :post (bearer (access-token a-party))))))))
+
+(deftest the-access-token-is-no-longer-accepted-from-the-cookie
+  (testing "the old cookie contents — a full access token — are refused"
+    (is (nil? (blob-reader :get (cookie (access-token a-party)))))
+    (is (nil? (api-party :get (cookie (access-token a-party)))))))
+
+(deftest a-blob-token-is-forged-by-nothing-but-its-own-key
+  (testing "blob claims signed with the ACCESS-token key are refused"
+    (is (nil? (auth-cfg/blob-read-claims
+                (jwt/sign-hs256 @#'auth-cfg/jwt-secret
+                                {:iss auth-cfg/blob-token-issuer
+                                 :aud auth-cfg/blob-token-audience
+                                 :sub (str a-party) :exp (+ (now) 600)})))))
+  (testing "the blob key, but the access token's issuer and audience"
+    (is (nil? (auth-cfg/blob-read-claims
+                (jwt/sign-hs256 @#'auth-cfg/blob-read-key
+                                {:iss "simmis" :aud "simmis-api"
+                                 :sub (str a-party) :exp (+ (now) 600)})))))
+  (testing "the blob key and issuer, but another audience"
+    (is (nil? (auth-cfg/blob-read-claims
+                (jwt/sign-hs256 @#'auth-cfg/blob-read-key
+                                {:iss auth-cfg/blob-token-issuer :aud "simmis-api"
+                                 :sub (str a-party) :exp (+ (now) 600)})))))
+  (testing "a well-formed cookie holding garbage"
+    (is (nil? (blob-reader :get (cookie "forged")))))
+  (testing "a cookie whose name merely ends in ours"
+    ;; The regex anchors on a boundary; `evil_simmis_blob=…` must not match.
+    (is (nil? (blob-reader :get {"cookie" (str "evil_" auth-cfg/blob-cookie-name
+                                               "=" (blob-token a-party))}))))
+  (testing "no cookie at all"
+    (is (nil? (blob-reader :get {})))))
+
+(deftest an-expired-blob-token-is-refused
+  (let [signed (fn [exp]
+                 (jwt/sign-hs256 @#'auth-cfg/blob-read-key
+                                 {:iss auth-cfg/blob-token-issuer
+                                  :aud auth-cfg/blob-token-audience
+                                  :sub (str a-party) :iat (- (now) 7200) :exp exp}))]
+    (testing "a minute past expiry — beyond the validator's few seconds of leeway"
+      (is (nil? (blob-reader :get (cookie (signed (- (now) 60)))))))
+    (testing "the same token, unexpired, is accepted"
+      (is (= a-party (blob-reader :get (cookie (signed (+ (now) 60)))))))
+    (testing "and a minted one expires within the hour"
+      (let [{:keys [exp iat]} (jwt/claims (blob-token a-party))]
+        (is (<= (- exp iat) 3600))))))
 
 (deftest the-cookie-cannot-authorize-a-write
   ;; `Path=/blobs/` was meant to keep it off the upload POST at `/blobs`, and
@@ -156,21 +243,101 @@
   ;; right, the scope of a credential is not the client's to decide.
   (testing "the same cookie that reads must not write"
     (doseq [m [:post :put :delete :patch]]
-      (is (nil? (party-for m {"cookie" (str auth-cfg/blob-cookie-name "=good")}))
-          (str m " must not be authenticated by the cookie"))))
-  (testing "a write still authenticates with the header"
-    (is (= a-party (party-for :post {"authorization" "Bearer good"})))))
+      (is (nil? (blob-reader m (cookie (blob-token a-party))))
+          (str m " must not be authenticated by the cookie")))))
 
-(deftest a-bad-cookie-is-not-a-principal
-  (testing "an invalid token in a well-formed cookie"
-    (is (nil? (party-for :get {"cookie" (str auth-cfg/blob-cookie-name "=forged")}))))
-  (testing "a cookie whose name merely ends in ours"
-    ;; The regex anchors on a boundary; `evil_simmis_blob=good` must not match.
-    (is (nil? (party-for :get {"cookie" (str "evil_" auth-cfg/blob-cookie-name "=good")}))))
-  (testing "no cookie at all"
-    (is (nil? (party-for :get {})))))
+;; --- the route form -----------------------------------------------------------
 
-(deftest the-header-still-wins
-  (testing "a valid header is used even when a cookie is present"
-    (is (= a-party (party-for :get {"authorization" "Bearer good"
-                                    "cookie" (str auth-cfg/blob-cookie-name "=forged")})))))
+(defn- blob-app
+  "`/blobs/:id` declared as web.clj declares it, beside an ordinary
+   :authenticated route, under the real gate and the real validators."
+  [method uri headers]
+  (let [handler (ring/ring-handler
+                  (ring/router [["/blobs/:id" {:auth :blob-read
+                                               :get {:handler ok}
+                                               :post {:handler ok}}]
+                                ["/api" {:auth :authenticated :get {:handler ok}}]]
+                               {:validate hauth/validate-auth-declared!
+                                :data {:middleware [hauth/auth-middleware]}}))]
+    (with-real-validator
+      #(:status (handler {:request-method method :uri uri :headers headers})))))
+
+(deftest blob-read-is-a-declared-route-form
+  (let [bt (blob-token a-party)]
+    (testing "a valid blob cookie reads a blob"
+      (is (= 200 (blob-app :get "/blobs/abc" (cookie bt)))))
+    (testing "the same cookie on an :authenticated route is no credential"
+      (is (= 401 (blob-app :get "/api" (cookie bt)))))
+    (testing "nor on a write to the blob route itself"
+      (is (= 401 (blob-app :post "/blobs/abc" (cookie bt)))))
+    (testing "no credential, no blob"
+      (is (= 401 (blob-app :get "/blobs/abc" {}))))
+    (testing "an access token in the cookie, no blob"
+      (is (= 401 (blob-app :get "/blobs/abc" (cookie (access-token a-party))))))))
+
+;; --- issuance -----------------------------------------------------------------
+
+(defn- cookie-value [set-cookie]
+  (second (re-find (re-pattern (str "^" auth-cfg/blob-cookie-name "=([^;]*)"))
+                   set-cookie)))
+
+(deftest token-issuing-responses-set-a-blob-token-not-the-access-token
+  (let [at (access-token a-party)
+        login (fn [_] {:status 200 :body {:access_token at :expires_in 604800}})
+        wrapped (#'auth-cfg/with-blob-cookie login)
+        sc (get-in (wrapped {:scheme :http}) [:headers "Set-Cookie"])
+        v (cookie-value sc)]
+    (testing "the cookie does not carry the access token"
+      (is (some? v))
+      (is (not= at v)))
+    (testing "it carries a blob-read token for the same party"
+      (is (= (str a-party) (:sub (auth-cfg/blob-read-claims v)))))
+    (testing "Max-Age is the blob token's lifetime, not the access token's"
+      (is (re-find (re-pattern (str "Max-Age=" auth-cfg/blob-token-lifetime "$")) sc)))
+    (testing "the attributes are unchanged"
+      (is (re-find #"; Path=/blobs/; HttpOnly; SameSite=Lax" sc))
+      (is (not (re-find #"Secure" sc)))
+      (is (re-find #"; Secure"
+                   (get-in (wrapped {:scheme :https}) [:headers "Set-Cookie"]))))
+    (testing "a failed login sets no cookie"
+      (is (nil? (get-in ((#'auth-cfg/with-blob-cookie
+                          (fn [_] {:status 401 :body {:error "invalid-credentials"}}))
+                         {})
+                        [:headers "Set-Cookie"]))))))
+
+(deftest the-renewal-response-sets-a-fresh-blob-token
+  (let [resp (auth-cfg/blob-cookie-response {:scheme :http} a-party)
+        v (cookie-value (get-in resp [:headers "Set-Cookie"]))]
+    (is (= 200 (:status resp)))
+    (is (= (str a-party) (:sub (auth-cfg/blob-read-claims v))))
+    (is (nil? (api-party :get (bearer v))))))
+
+(defn- renewal
+  "POST /auth/blob-cookie through the route data web.clj mounts, under the
+   real gate and the real validators."
+  [headers]
+  (let [handler (ring/ring-handler
+                  (ring/router [["/auth" {:auth :public} (hauth/blob-cookie-route)]]
+                               {:validate hauth/validate-auth-declared!
+                                :data {:middleware [hauth/auth-middleware]}}))]
+    (with-real-validator
+      #(handler {:request-method :post :uri "/auth/blob-cookie" :headers headers}))))
+
+(deftest the-renewal-route-takes-the-header-and-nothing-else
+  (testing "an access token in the header renews the cookie"
+    (let [resp (renewal (bearer (access-token a-party)))
+          v (cookie-value (get-in resp [:headers "Set-Cookie"]))]
+      (is (= 200 (:status resp)))
+      (is (= (str a-party) (:sub (auth-cfg/blob-read-claims v))))))
+  (testing "the cookie alone cannot extend itself"
+    (let [resp (renewal (cookie (blob-token a-party)))]
+      (is (= 401 (:status resp)))
+      (is (nil? (get-in resp [:headers "Set-Cookie"])))))
+  (testing "a blob token presented as a bearer mints nothing"
+    (is (= 401 (:status (renewal (bearer (blob-token a-party)))))))
+  (testing "a principal whose sub is not a party uuid gets a 401, not a token for \"\""
+    ;; The gate already refuses this (`party-id` parses the sub); the handler
+    ;; refuses it again in case a gate in front of it ever does not.
+    (let [h (get-in (hauth/blob-cookie-route) [1 :post :handler])]
+      (with-redefs [hauth/validator (delay (fn [_] {:sub "user_2abc"}))]
+        (is (= 401 (:status (h {:request-method :post :headers {}}))))))))
