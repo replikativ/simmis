@@ -78,11 +78,16 @@
   "Summarize the room's conversation window since the last chat-summary
    record (whole recent history on first run) into a wikilinked record
    page + timeline marker. Returns {:page … :links n :messages n} or
-   {:skipped reason}."
-  [room-uuid live-room-fn & {:keys [max-messages min-messages model]
+   {:skipped reason}.
+
+   `:kb-id` names the KB to write — the caller's choice, already authorized
+   (`wiki/summarize!` passes a KB its sandbox may write). Without one there is
+   no target: this used to take the room's first attached KB whatever its
+   grant, a `:read` one included."
+  [room-uuid live-room-fn & {:keys [max-messages min-messages model kb-id]
                              :or   {max-messages 150 min-messages 8}}]
   (let [room (live-room-fn room-uuid)
-        kb   (first (kbs/get-room-kbs room-uuid))
+        kb   (some-> kb-id kbs/get-kb)
         kb-conn (some-> kb :kb/db-scope kbs/connect-kb-database)]
     (cond
       (nil? room)    {:skipped :no-live-room}

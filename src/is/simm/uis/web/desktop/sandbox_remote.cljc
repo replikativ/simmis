@@ -3,6 +3,8 @@
   (:require [org.replikativ.spindel.distributed.macros :refer [defn-spin-remote] :include-macros true]
             [org.replikativ.spindel.distributed.core :as dist]
             #?(:clj [is.simm.agents.room-agents :as room-agents])
+            #?(:clj [is.simm.model.access :as access])
+            #?(:clj [is.simm.model.system-db :as system-db])
             #?(:clj [is.simm.model.room-databases :as room-dbs])
             #?(:clj [is.simm.model.knowledge-bases :as kbs])
             #?(:clj [dvergr.sandbox :as sandbox])
@@ -139,20 +141,36 @@
      (room-agents/room-context-state room-uuid)))
 
 #?(:clj
-   (defn get-room-state-server [room-uuid-str]
+   (defn- may-eval? [viewer room-uuid]
+     (boolean (and viewer room-uuid
+                   (access/may-eval-in-room? (some-> (system-db/get-conn) deref)
+                                             viewer room-uuid)))))
+
+#?(:clj
+   (defn get-room-state-server
+     "The sandbox panel's state. `viewer` (the authenticated party) decides
+      `:can-eval?`, so the panel shows the eval box only to who may use it."
+     [room-uuid-str viewer]
      (let [uuid     (parse-uuid room-uuid-str)
            state    (find-room-context uuid)
            sci-ctx  (:sci-ctx state)
            db-scope (when uuid (room-dbs/get-room-db-scope uuid))
            room-conn (when db-scope (room-dbs/connect-room-database db-scope))
            cwd      (System/getProperty "user.dir")]
-       {:namespace-vars (if sci-ctx (namespace-vars sci-ctx) [])
+       {:can-eval?      (may-eval? viewer uuid)
+        :namespace-vars (if sci-ctx (namespace-vars sci-ctx) [])
         :eval-history   (if room-conn (eval-history room-conn uuid) [])
         :databases      (if room-conn (db-info uuid room-conn) [])
         :repos          (keep identity [(repo-info cwd)])})))
 
 #?(:clj
-   (defn eval-in-room-server [room-uuid-str code user-uuid-str]
+   (defn eval-in-room-server
+     "Evaluate `code` in the room's sandbox and record it under `author`, the
+      AUTHENTICATED party (`access/authenticated-party-id`, captured by the
+      caller). The RPC used to take the author from the client, so a member's
+      code was recorded as whoever they named. Who may call this at all is the
+      policy row's: `:merge` on the room, the owner."
+     [room-uuid-str code author]
      (let [uuid  (parse-uuid room-uuid-str)
            state (find-room-context uuid)]
        (if-let [sci-ctx (:sci-ctx state)]
@@ -167,14 +185,12 @@
                room-conn  (when db-scope (room-dbs/connect-room-database db-scope))]
            (when room-conn
              (try
-               (let [agent-uuid (or (parse-uuid user-uuid-str)
-                                    #uuid "00000000-0000-0000-0000-000000000029")
-                     now        (java.util.Date.)]
+               (let [now (java.util.Date.)]
                  (d/transact room-conn
                    [{:entity/uuid      (random-uuid)
                      :entity/created-at now
                      :S.EvalEntry/room  [:entity/uuid uuid]
-                     :S.EvalEntry/agent [:entity/uuid agent-uuid]
+                     :S.EvalEntry/agent [:entity/uuid author]
                      :S.EvalEntry/code  code
                      :S.EvalEntry/result (let [s result-str]
                                            (if (> (count s) 2000) (str (subs s 0 2000) "\n…") s))
@@ -196,21 +212,32 @@
   [server-id room-uuid-str]
   (spin-remote server-id [room-uuid-str]
     (let [ruid (identity room-uuid-str)]
-      #?(:clj  (get-room-state-server ruid)
+      #?(:clj  (get-room-state-server ruid (access/authenticated-party-id))
          :cljs nil))))
 
+;; No author argument: the author is the connection's principal, read here,
+;; synchronously, while it is bound.
 (defn-spin-remote eval-in-room!
-  [server-id room-uuid-str code user-uuid-str]
-  (spin-remote server-id [room-uuid-str code user-uuid-str]
+  [server-id room-uuid-str code]
+  (spin-remote server-id [room-uuid-str code]
     (let [ruid (identity room-uuid-str)
-          c    (identity code)
-          uid  (identity user-uuid-str)]
-      #?(:clj  (eval-in-room-server ruid c uid)
+          c    (identity code)]
+      #?(:clj  (eval-in-room-server ruid c (access/authenticated-party-id))
+         :cljs nil))))
+
+(defn-spin-remote can-eval-in-room!
+  [server-id room-uuid-str]
+  (spin-remote server-id [room-uuid-str]
+    (let [ruid (identity room-uuid-str)]
+      #?(:clj  (may-eval? (access/authenticated-party-id) (parse-uuid ruid))
          :cljs nil))))
 
 ;; Convenience wrappers used by client UI (server-id pre-applied)
 (defn get-room-state-remote! [room-uuid]
   (get-room-state! server-id (str room-uuid)))
 
-(defn eval-in-room-remote! [room-uuid code & [user-uuid]]
-  (eval-in-room! server-id (str room-uuid) code (str user-uuid)))
+(defn eval-in-room-remote! [room-uuid code]
+  (eval-in-room! server-id (str room-uuid) code))
+
+(defn can-eval-in-room-remote! [room-uuid]
+  (can-eval-in-room! server-id (str room-uuid)))

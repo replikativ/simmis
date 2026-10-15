@@ -151,9 +151,8 @@
    by whoever triggered the provisioning: `load-room-drive!` used to pass the
    caller, so the first member to open the Files tab owned the room's files —
    could attach them to a room of their own, detach them, and keep that
-   authority after leaving. Drives provisioned that way still answer to the
-   room's owner: `access/room-provisioned-drive-owner` recognises them by name
-   and first grant."
+   authority after leaving. Drives provisioned that way are rewritten to the
+   room's owner once, at boot (`migrate-room-provisioned-drive-owners!`)."
   [room-id & {:keys [room-name]}]
   (or (first (get-room-drives room-id))
       (when-let [owner (when-let [conn (and (some? room-id) (system-db/get-conn))]
@@ -166,6 +165,59 @@
         (let [drive (create-drive! owner (str (or room-name "Room") " Drive"))]
           (attach-drive-to-room! room-id (:drive/id drive))
           drive))))
+
+(defn- legacy-room-drive-fixes
+  "`[{:drive-eid :drive-id :name :from :to :room}]` for every drive that
+   `ensure-room-drive!` provisioned for a room but recorded as owned by someone
+   other than that room's owner — the caller who first opened the room's Files
+   tab, before P1. Recognised by the provisioning's fingerprint: named
+   \"<room name> Drive\" or \"Room Drive\", and FIRST granted to that room
+   (provisioning attaches it in the same call). A room without an owner, or a
+   drive already owned by it, needs nothing."
+  [db]
+  (->> (d/q '[:find ?d ?did ?name ?owner ?sid :where
+              [?d :drive/id ?did] [?d :drive/name ?name]
+              [?d :drive/owner ?owner] [?d :drive/system-id ?sid]]
+            db)
+       (keep (fn [[d did nm owner sid]]
+               (let [[_ room-eid] (->> (d/q '[:find ?t ?r :in $ ?sid
+                                              :where [?s :system/id ?sid] [?g :grant/system ?s]
+                                              [?g :grant/room ?r] [?g :grant/created ?t]]
+                                            db sid)
+                                       (sort-by first)
+                                       first)]
+                 (when room-eid
+                   (let [{room-name :room/name room-id :room/id room-owner :room/owner}
+                         (d/pull db [:room/name :room/id {:room/owner [:party/id]}] room-eid)
+                         to (:party/id room-owner)]
+                     (when (and to (not= to owner)
+                                (contains? #{(str room-name " Drive") "Room Drive"} nm))
+                       {:drive-eid d :drive-id did :system-id sid :name nm
+                        :from owner :to to :room room-id}))))))
+       vec))
+
+(defn migrate-room-provisioned-drive-owners!
+  "One-off, idempotent migration run at server boot: a room's auto-provisioned
+   drive that records the wrong owner (`legacy-room-drive-fixes`) is rewritten
+   to the room's owner — `:drive/owner`, and the registry's `:system/owner`.
+   Authorization reads `:drive/owner` alone; until this ran, access.clj carried
+   a name heuristic to answer for these drives. Returns the fixes applied
+   (none on a second run) and logs each."
+  ([] (some-> (system-db/get-conn) migrate-room-provisioned-drive-owners!))
+  ([conn]
+   (let [fixes (legacy-room-drive-fixes @conn)]
+     (when (seq fixes)
+       (d/transact conn
+                   (vec (mapcat (fn [{:keys [drive-eid system-id to]}]
+                                  [[:db/add drive-eid :drive/owner to]
+                                   {:system/id system-id :system/owner [:party/id to]}])
+                                fixes)))
+       (doseq [{:keys [drive-id name from to room]} fixes]
+         (log/log! {:level :info :id ::drive-owner-migrated
+                    :msg "Room drive re-owned by the room's owner"
+                    :data {:drive-id drive-id :name name :room-id room
+                           :from-owner from :to-owner to}})))
+     fixes)))
 
 (defn get-room-drives
   "Drives attached to a room, each with :drive/permission from the grant."

@@ -35,10 +35,6 @@
     (case target
       :none        {}
       :room        {:room-id-str (s :room) :room-uuid-str (s :room)}
-      :room-store  {:store-id (:room-scope w)}
-      :kb-store    {:store-id (:kb-granted-scope w)}
-      ;; the app's own store, which the server registers for remote access
-      :app-store   {:store-id @(requiring-resolve 'is.simm.runtimes.web/simmis-scope)}
       :kb-scope    {:db-scope (:kb-granted-scope w) :db-scope-str (s :kb-granted-scope)
                     :scope-str (s :kb-granted-scope)}
       :kb          {:kb-id-str (s :kb-granted)}
@@ -62,7 +58,7 @@
       :owner-self  {:party-id-str (s :owner) :creator-id-str (s :owner)})))
 
 (def ^:private targets
-  #{:none :room :room-store :kb-store :app-store :kb-scope :kb :proposal :mail :owner-self
+  #{:none :room :kb-scope :kb :proposal :mail :owner-self
     :member-fork :agent-fork :room-kb :foreign-room-kb})
 
 (def ^:private AUTH #{:owner :member :non-member :admin})
@@ -77,15 +73,10 @@
 
 (def matrix
   "fn name → [case …]. See the ns doc."
-  {;; --- datahike.kabel writer -------------------------------------------------
-   "dispatch"
-   [(c :room-store #{} MEMBERS
-       "§2.7 datahike.kabel dispatch on message stores: a room member may transact raw datoms into the room's single (message) DB")
-    (c :kb-store MEMBERS)
-    ;; registered for remote writes at boot; no principal may write it raw
-    (c :app-store #{})]
-   "create-database"         [(c :none AUTH)]
-   "delete-database"         [(c :none ADMIN)]
+  {;; datahike.kabel's `dispatch`/`create-database`/`delete-database` have no
+   ;; row and no entry: unreachable, and refused by the gate if they were
+   ;; (raw-paths-test). Rows for `save-schedule!` and
+   ;; `get-room-context-stats!` went too — no such fn is registered.
    ;; --- block-remote, on a KB the team room holds :read-write -----------------
    "create-block"            [(c :kb-scope MEMBERS)]
    "create-sibling-after"    [(c :kb-scope MEMBERS)]
@@ -180,8 +171,9 @@
    "update-agent-config!"    [(c :none ADMIN)]
    ;; --- sandbox --------------------------------------------------------------
    ;; §2.7: eval in a room is FULL room capability, so owner/:merge level.
-   "eval-in-room!"
-   [(c :room OWNER MEMBERS "§2.7 eval-in-room! is policed :write: any member evaluates code with the room's full capability (target: owner/:merge)")]
+   "eval-in-room!"           [(c :room OWNER)]
+   ;; answers false rather than refusing, so the UI can hide the control
+   "can-eval-in-room!"       [(c :none AUTH)]
    "get-room-state!"         [(c :room MEMBERS)]
    ;; --- proposals ------------------------------------------------------------
    "accept-proposal!"        [(c :proposal MEMBERS)]
@@ -217,11 +209,9 @@
    "load-mail-folders!"      [(c :mail OWNER)]
    "load-mail-page!"         [(c :mail OWNER)]
    "load-mail-message!"      [(c :mail OWNER)]
-   "save-schedule!"          [(c :none AUTH)]
    ;; --- admin / misc ---------------------------------------------------------
    "load-admin-data!"        [(c :none ADMIN)]
    "load-schedules!"         [(c :none AUTH)]
-   "get-room-context-stats!" [(c :none AUTH)]
    "load-unread-counts!"     [(c :none AUTH)]
    "mark-read!"              [(c :none AUTH)]
    "load-notify-prefs!"      [(c :none AUTH)]

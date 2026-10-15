@@ -41,6 +41,7 @@
             [is.simm.model.rooms :as rooms]
             [is.simm.agents.dispatch :as dispatch]
             [is.simm.agents.tool-authorization :as tool-auth]
+            [is.simm.model.access :as access]
             [is.simm.agents.vocab :as vocab]
             [is.simm.model.parties :as parties]
             [is.simm.model.system-db :as system-db]
@@ -374,30 +375,31 @@
 ;; =============================================================================
 
 (defn- get-room-kb-conns
-  "Product KBs the agent can read/write in this room. Prefers KBs attached
-   via grants; falls back to the room creator's default KB."
-  [room-uuid]
-  (let [room-kbs (kbs/get-room-kbs room-uuid)
-        named-conns (->> room-kbs
-                         (keep (fn [kb]
-                                 (when-let [conn (kbs/connect-kb-database (:kb/db-scope kb))]
-                                   {:name (:kb/name kb)
-                                    :conn conn
-                                    :db-scope (:kb/db-scope kb)
-                                    ;; katzen binding: Entity ≡ S/Page (doc/kb-unification.md)
-                                    :binding kbs/simmis-kb-binding})))
-                         vec)]
-    (if (seq named-conns)
-      named-conns
-      (let [room (rooms/get-room room-uuid)
-            creator-id (:room/created-by room)
-            first-kb (first (when creator-id (kbs/get-party-kbs creator-id)))
-            creator-conn (when first-kb
-                           (kbs/connect-kb-database (:kb/db-scope first-kb)))]
-        (when creator-conn
-          [{:name (:kb/name first-kb)
-            :conn creator-conn
-            :db-scope (:kb/db-scope first-kb)}])))))
+  "The product KBs `party-uuid` (the acting party — for an agent, the agent)
+   may reach from this room's sandbox: those attached to the room whose grant,
+   and the party's own authority, permit at least `:read`
+   (`access/sandbox-kb-allows?`). Each is `{:name :conn :db-scope :kb-id
+   :room-id :writable? :binding}`; `:writable?` is the answer at join time, and
+   every write asks again (`add-kb-write-ns!`).
+
+   A room with no KB grant reaches no KB. It used to fall back to the room
+   CREATOR's first KB, so a member's code in such a room wrote the owner's
+   private KB on trunk (plan §2.7)."
+  [room-uuid party-uuid]
+  (let [db (some-> (system-db/get-conn) deref)]
+    (->> (kbs/get-room-kbs room-uuid)
+         (keep (fn [kb]
+                 (when (and db (access/sandbox-kb-allows? db party-uuid room-uuid (:kb/id kb) :read))
+                   (when-let [conn (kbs/connect-kb-database (:kb/db-scope kb))]
+                     {:name (:kb/name kb)
+                      :conn conn
+                      :db-scope (:kb/db-scope kb)
+                      :kb-id (:kb/id kb)
+                      :room-id room-uuid
+                      :writable? (access/sandbox-kb-allows? db party-uuid room-uuid (:kb/id kb) :write)
+                      ;; katzen binding: Entity ≡ S/Page (doc/kb-unification.md)
+                      :binding kbs/simmis-kb-binding}))))
+         vec)))
 
 ;; =============================================================================
 ;; Simmis SCI vocabulary: wiki/* (read) + kb/* (write) over product KBs
@@ -889,7 +891,9 @@
    over the room's product KBs. EVERY fn takes an EXPLICIT database as its first
    arg: a KB NAME (string, as shown in the room-context block) or its db-scope
    uuid/string. It is resolved against the KBs attached to THIS room, so an
-   unknown/ungranted name is refused — the agent can only touch KBs in its room.
+   unknown/ungranted name is refused — the agent can only touch KBs in its room —
+   and every use is authorized for `agent-uuid` (the acting party) by
+   `access/require-sandbox-kb!`: a write needs a room grant permitting write.
    Branch-aware (an active proposal overlay redirects writes onto its fork
    branch). `kb-conns` is the room's KB list ([{:name :conn :db-scope}…]).
    `overlay-fn` is called PER WRITE rather than closed over once: an agent can
@@ -898,12 +902,20 @@
   [sci-ctx kb-conns overlay-fn agent-uuid]
   (let [by-name  (into {} (map (juxt :name identity)) kb-conns)
         by-scope (into {} (map (juxt (comp str :db-scope) identity)) kb-conns)
-        target   (fn [db]
-                   (or (get by-name db)
-                       (get by-scope (str db))
-                       (throw (ex-info (str "no KB " (pr-str db) " attached to this room. "
-                                            "Available: " (pr-str (mapv :name kb-conns)))
-                                       {:type :unknown-kb :db db}))))
+        ;; Every resolution asks `access/require-sandbox-kb!` again — reads
+        ;; for :read, the write half for :write — so a detached KB or an agent
+        ;; removed from the room loses its handles mid-session, and a KB the
+        ;; room holds only :read never yields a write conn.
+        target   (fn target
+                   ([db] (target db :read))
+                   ([db action]
+                    (let [t (or (get by-name db)
+                                (get by-scope (str db))
+                                (throw (ex-info (str "no KB " (pr-str db) " attached to this room. "
+                                                     "Available: " (pr-str (mapv :name kb-conns)))
+                                                {:type :unknown-kb :db db})))]
+                      (access/require-sandbox-kb! agent-uuid (:room-id t) (:kb-id t) action)
+                      t)))
         ;; Branch/overlay-aware live conns for a resolved target map, in two
         ;; halves. WRITE mints the fork on first use; READ resolves one only if
         ;; it already exists (see `existing-fork`) and otherwise reads trunk.
@@ -921,7 +933,7 @@
                               (ctx/with-server-context (branching/get-kb-conn-on-branch db-scope b)))
                             (branching/get-kb-conn db-scope)
                             conn))
-        write-conn-of (fn [db] (write-conn-for (target db)))
+        write-conn-of (fn [db] (write-conn-for (target db :write)))
         read-conn-of  (fn [db] (read-conn-for (target db)))
         ;; the conditional writers' shape: check on read, transact on write
         conn-of  write-conn-of
@@ -1077,11 +1089,13 @@
        ;; `d/entity` — instead of a bespoke wrapper that has to be learned and
        ;; kept in step with datahike's own surface.
        ;;
-       ;; The handle IS the permission. `db` resolves the read path (an existing
-       ;; fork, else trunk) and hands back an immutable value; `conn` resolves
-       ;; the write path, so transacting on it lands on this agent's proposal
-       ;; fork exactly as `kb/upsert-block!` would. Neither can address a KB
-       ;; that is not attached to this room — `target` refuses by name first.
+       ;; The handle IS the permission, so it is handed out only after the
+       ;; check. `db` resolves the read path (an existing fork, else trunk) and
+       ;; hands back an immutable value; `conn` resolves the write path, so
+       ;; transacting on it lands on this agent's proposal fork exactly as
+       ;; `kb/upsert-block!` would, and it exists only for a KB the room grants
+       ;; write on (`target` with :write). The owner's agents keep this raw
+       ;; conn in the owner's rooms (plan §2.9.3); P2 wraps it.
        'db
        (fn [db] @(read-conn-of db))
 
@@ -1133,10 +1147,11 @@
 
 (defn- add-wiki-ns!
   "Install the `wiki/*` read vocabulary over the room's product KBs.
-   `room-uuid` (optional) additionally enables `wiki/summarize!` — the
+   `room-uuid` and `agent-uuid` (the acting party; optional) additionally
+   enable `wiki/summarize!` — the
    chat→wiki summarizer as a sandbox call, so agents AND room schedules
    can trigger it (`(wiki/summarize!)` in a :schedule/code task)."
-  [sci-ctx kb-conns & [room-uuid]]
+  [sci-ctx kb-conns & [room-uuid agent-uuid]]
   ;; `refs/strip-html`, not a fourth local copy. This one decoded three
   ;; entities of six, so `&quot;` and `&nbsp;` reached the agent's prompt
   ;; literally — in the verb an agent uses to READ a page before writing.
@@ -1233,11 +1248,17 @@
 
        'summarize!
        (fn []
-         (if room-uuid
-           ((requiring-resolve 'is.simm.agents.summarizer/summarize-room!)
-            room-uuid
-            (requiring-resolve 'is.simm.agents.room-agents/live-room))
-           {:error "summarize! needs a room-bound wiki ns"}))}
+         (if-not room-uuid
+           {:error "summarize! needs a room-bound wiki ns"}
+           ;; it WRITES a page: the first KB this sandbox may write, asked
+           ;; again now (`access/require-sandbox-kb!`)
+           (if-let [{:keys [kb-id]} (first (filter :writable? kb-conns))]
+             (do (access/require-sandbox-kb! agent-uuid room-uuid kb-id :write)
+                 ((requiring-resolve 'is.simm.agents.summarizer/summarize-room!)
+                  room-uuid
+                  (requiring-resolve 'is.simm.agents.room-agents/live-room)
+                  :kb-id kb-id))
+             {:skipped :no-writable-kb})))}
        vocab/wiki-docs))))
 
 (defn- overlay-forks
@@ -1835,7 +1856,7 @@
   [kb-conns]
   (let [kb-blocks
         (->> kb-conns
-             (map (fn [{:keys [name conn]}]
+             (map (fn [{:keys [name conn writable?]}]
                     (let [db @conn
                           titles (->> (d-api/q '[:find ?title
                                                  :where [?e :S.Page/title ?title]]
@@ -1864,7 +1885,10 @@
                                      ;; one row per TYPE, sized by its widest attribute
                                      (reduce (fn [m [t n]] (update m t (fnil max 0) n)) {})
                                      (sort-by key))]
-                      (str "- " (or name "Knowledge Base") ":\n"
+                      (str "- " (or name "Knowledge Base")
+                           ;; a :read grant: kb/conn and every kb/* write refuse it
+                           (when-not writable? " (read-only in this room)")
+                           ":\n"
                            "  pages: "
                            (if (seq titles) (str/join ", " titles) "(none)")
                            (when (seq types)
@@ -1910,7 +1934,8 @@
          "like the `kb/*` verbs.\n\n"
          "Every `kb/*` WRITE takes the target database as its FIRST argument — a KB "
          "name from the list above (e.g. \"" (or (some-> kb-conns first :name) "My KB") "\"). "
-         "You may only write to KBs attached to this room.\n"
+         "You may only write to KBs attached to this room with write access "
+         "(not those marked read-only above).\n"
          "- `(kb/ensure-page! \"KB Name\" \"New Title\")` — create a page, returns its uuid\n"
          "- `(kb/upsert-block! \"KB Name\" page-uuid content)` — add a block to a page\n"
          "- `(kb/archive-page! \"KB Name\" \"Title\")` — archive an emptied/obsolete page\n"
@@ -2066,54 +2091,60 @@
    through to dvergr's room-internal knowledge graph (standalone
    behavior). The room-internal store remains the agent's EPISODIC
    memory either way — knowledge_add means 'publish to shared
-   knowledge'."
-  [ka-tool kb-conns]
-  (if (empty? kb-conns)
-    ka-tool
-    (-> ka-tool
-        (update :description str
-                "\n\nThis room publishes into the attached shared knowledge base(s): "
-                (str/join ", " (map :name kb-conns))
-                ". Entries become wiki pages — reference them as [[Title]] in your replies "
-                "so people can click through. Optional :kb (name) targets a specific base."
-                "\n\nPROTOCOL (read before write): run (wiki/search \"…\") and "
-                "(wiki/neighborhood \"Title\") in clojure_eval FIRST to load what "
-                "already exists; EXTEND the closest existing page rather than creating "
-                "a near-duplicate; cross-reference related pages as [[Title]] inside "
-                "your :summary/:context text — those links are stored and power "
-                "backlinks/navigation. Titles are matched case-insensitively; a close "
-                "match reuses the existing page.")
-        (update-in [:parameters :properties] assoc
-                   :kb {:type "string"
-                        :description "Target knowledge base by name (default: primary)"})
-        (assoc :execute
-               (fn [{:keys [title summary context source url kb] :as _params} _tctx]
-                 (let [target (or (when kb (first (filter #(= kb (:name %)) kb-conns)))
-                                  (first kb-conns))
-                       conn (:conn target)]
-                   (if-not conn
-                     {:error (str "knowledge base " (:name target) " not reachable")}
-                     (let [;; fuzzy dedup: a case/whitespace-insensitive title
-                           ;; match reuses the EXISTING page instead of forking
-                           ;; a near-duplicate (drift guard).
-                           norm (fn [t] (-> (str t) str/trim str/lower-case
-                                            (str/replace #"\s+" " ")))
-                           existing-titles (map first
-                                             (d-api/q '[:find ?t :where [?e :S.Page/title ?t]]
-                                                      @conn))
-                           match (some (fn [t] (when (= (norm t) (norm title)) t))
-                                       existing-titles)
-                           title' (or match title)
-                           page-uuid (kbs/kb-upsert-knowledge-page!
-                                      conn title'
-                                      :summary summary :context context
-                                      :source source :url url)]
-                       {:content (str "Recorded [[" title' "]] in " (:name target)
-                                      " (page " page-uuid ")."
-                                      (when match
-                                        (str " (Matched existing page [[" match
-                                             "]] — extended it instead of duplicating.)"))
-                                      " Reference it as [[" title' "]] in your reply.")}))))))))
+   knowledge'.
+
+   Only KBs the room grants WRITE on are targets, and each call is authorized
+   for `agent-uuid` again (`access/require-sandbox-kb!`), like `kb/*`."
+  [ka-tool all-kb-conns agent-uuid]
+  (let [kb-conns (filterv :writable? all-kb-conns)]
+    (if (empty? kb-conns)
+      ka-tool
+      (-> ka-tool
+          (update :description str
+                  "\n\nThis room publishes into the attached shared knowledge base(s): "
+                  (str/join ", " (map :name kb-conns))
+                  ". Entries become wiki pages — reference them as [[Title]] in your replies "
+                  "so people can click through. Optional :kb (name) targets a specific base."
+                  "\n\nPROTOCOL (read before write): run (wiki/search \"…\") and "
+                  "(wiki/neighborhood \"Title\") in clojure_eval FIRST to load what "
+                  "already exists; EXTEND the closest existing page rather than creating "
+                  "a near-duplicate; cross-reference related pages as [[Title]] inside "
+                  "your :summary/:context text — those links are stored and power "
+                  "backlinks/navigation. Titles are matched case-insensitively; a close "
+                  "match reuses the existing page.")
+          (update-in [:parameters :properties] assoc
+                     :kb {:type "string"
+                          :description "Target knowledge base by name (default: primary)"})
+          (assoc :execute
+                 (fn [{:keys [title summary context source url kb] :as _params} _tctx]
+                   (let [target (or (when kb (first (filter #(= kb (:name %)) kb-conns)))
+                                    (first kb-conns))
+                         conn (:conn target)]
+                     (if-not conn
+                       {:error (str "knowledge base " (:name target) " not reachable")}
+                       (let [_ (access/require-sandbox-kb! agent-uuid (:room-id target)
+                                                           (:kb-id target) :write)
+                             ;; fuzzy dedup: a case/whitespace-insensitive title
+                             ;; match reuses the EXISTING page instead of forking
+                             ;; a near-duplicate (drift guard).
+                             norm (fn [t] (-> (str t) str/trim str/lower-case
+                                              (str/replace #"\s+" " ")))
+                             existing-titles (map first
+                                               (d-api/q '[:find ?t :where [?e :S.Page/title ?t]]
+                                                        @conn))
+                             match (some (fn [t] (when (= (norm t) (norm title)) t))
+                                         existing-titles)
+                             title' (or match title)
+                             page-uuid (kbs/kb-upsert-knowledge-page!
+                                        conn title'
+                                        :summary summary :context context
+                                        :source source :url url)]
+                         {:content (str "Recorded [[" title' "]] in " (:name target)
+                                        " (page " page-uuid ")."
+                                        (when match
+                                          (str " (Matched existing page [[" match
+                                               "]] — extended it instead of duplicating.)"))
+                                        " Reference it as [[" title' "]] in your reply.")})))))))))
 
 ;; =============================================================================
 ;; Provider resolution + billing
@@ -2478,7 +2509,7 @@
         {:keys [model provider]} chosen
         agent-uuid (:party/id agent-party)
             actor-kw (party->actor-kw agent-party)
-            kb-conns (get-room-kb-conns room-uuid)
+            kb-conns (get-room-kb-conns room-uuid agent-uuid)
             budget-dollars (rooms/get-room-budget-dollars room-uuid)
             ;; Base prompt via dvergr's ONE assembler (discourse-preamble +
             ;; [SKIP] convention + skills + tool-use-guideline + the sandbox
@@ -2545,7 +2576,7 @@
                 ;; resolved per write, not captured: `join-campaign!` changes
                 ;; which overlay is active in the middle of a turn
                 (let [overlay-fn #(active-overlay room-uuid agent-uuid)]
-                  (add-wiki-ns! sci-ctx kb-conns room-uuid)
+                  (add-wiki-ns! sci-ctx kb-conns room-uuid agent-uuid)
                   (add-kb-write-ns! sci-ctx kb-conns overlay-fn agent-uuid)
                   (add-proposal-ns! sci-ctx room-uuid agent-uuid)
                   (add-book-ns! sci-ctx room-uuid overlay-fn agent-uuid)
@@ -2574,7 +2605,7 @@
                           (get base-tools "knowledge_add")
                           (assoc "knowledge_add"
                                  (wrap-knowledge-add-tool
-                                  (get base-tools "knowledge_add") kb-conns)))
+                                  (get base-tools "knowledge_add") kb-conns agent-uuid)))
             ;; Code forks. Applied LAST and over the already-wrapped map, so
             ;; `clojure_eval` keeps its transcript persistence and additionally
             ;; writes into the fork. The overlay is resolved PER CALL for the

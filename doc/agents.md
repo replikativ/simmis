@@ -33,6 +33,14 @@ a curated vocabulary, injected as namespaces:
 Plus ordinary `datahike.api`, so an agent can query rather than being restricted
 to a hand-built accessor for every question.
 
+`wiki` and `kb` reach the KBs attached to the agent's room, and only those the
+agent itself may reach through the room's grants (`access/sandbox-kb-allows?`,
+doc/authority.md). A KB the room holds `:read` is listed as read-only in the
+agent's room context: `kb/db` and the `wiki` readers work on it, `kb/conn` and
+every `kb/*` write refuse with `:not-authorized`. Each use is checked again, so
+detaching a KB takes it away from a running agent. A room with no KB attached
+has no KB in its sandbox; nothing falls back to its creator's KBs.
+
 A `kontor/*` posting records no author: kontor's posting API takes no
 transaction metadata. A team's Book (Accounting → the team's heading;
 `ops.book-report`) recovers it from dvergr's call record instead — the
