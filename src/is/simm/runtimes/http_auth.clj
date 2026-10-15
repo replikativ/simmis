@@ -57,6 +57,29 @@
       (log/log! {:level :debug :id ::bearer-invalid :data {:error (ex-message t)}})
       nil)))
 
+(defn principal
+  "The authenticated principal of a ring request, or nil.
+
+   The Authorization header, validated against the access-token issuers —
+   nothing else. In particular NOT the blob cookie: that holds a blob-read
+   capability, which only `blob-reader-party-id` accepts. It used to be
+   accepted here, by handing the cookie to this same validator, back when the
+   cookie held the access token itself — which made a cookie any same-host
+   port could receive worth a full bearer credential on every route."
+  [req]
+  (bearer-principal req))
+
+(defn party-id
+  "The authenticated party uuid, or nil. The JWT's :sub."
+  [req]
+  (when-let [p (principal req)]
+    (let [sub (or (:sub p) (get p "sub"))]
+      (try (parse-uuid (str sub)) (catch Throwable _ nil)))))
+
+;; ---------------------------------------------------------------------------
+;; The blob read path
+;; ---------------------------------------------------------------------------
+
 (defn- cookie-token
   "The blob cookie's token, or nil.
 
@@ -83,26 +106,20 @@
    here, where it cannot be talked out of."
   #{:get :head})
 
-(defn principal
-  "The authenticated principal of a ring request, or nil.
+(defn blob-reader-party-id
+  "The party a BLOB READ may be attributed to, or nil.
 
-   Header first, then — for a read — the blob cookie. The cookie is validated
-   by presenting it to the SAME bearer validator rather than by a second code
-   path, so issuer, algorithm and expiry are checked in exactly one place and a
-   cookie can never be worth more than the header it is made of."
+   The header bearer (an access token) first, exactly as `party-id`; then, for
+   GET/HEAD only, the blob cookie — validated by `auth-config/blob-read-claims`,
+   the blob-read key and issuer, and never by the access-token validator. The
+   two credentials do not cross: an access token in the cookie is refused, and
+   a blob token in the header is refused. Only routes declaring
+   `:auth :blob-read` reach this."
   [req]
-  (or (bearer-principal req)
+  (or (party-id req)
       (when (contains? cookie-methods (:request-method req))
-        (when-let [t (cookie-token req)]
-          (bearer-principal
-            (assoc-in req [:headers "authorization"] (str "Bearer " t)))))))
-
-(defn party-id
-  "The authenticated party uuid, or nil. The JWT's :sub."
-  [req]
-  (when-let [p (principal req)]
-    (let [sub (or (:sub p) (get p "sub"))]
-      (try (parse-uuid (str sub)) (catch Throwable _ nil)))))
+        (when-let [c (some-> (cookie-token req) auth-cfg/blob-read-claims)]
+          (try (parse-uuid (str (:sub c))) (catch Throwable _ nil))))))
 
 (defn read-body
   "Read at most `max-body-bytes` from the request body.
@@ -136,6 +153,14 @@
   [req]
   (when-not (party-id req)
     (log/log! {:level :warn :id ::unauthenticated
+               :data {:uri (:uri req) :method (:request-method req)}})
+    (deny 401 "authentication required")))
+
+(defn require-blob-reader
+  "nil when the request may read a blob (`blob-reader-party-id`), else 401."
+  [req]
+  (when-not (blob-reader-party-id req)
+    (log/log! {:level :warn :id ::unauthenticated-blob-read
                :data {:uri (:uri req) :method (:request-method req)}})
     (deny 401 "authentication required")))
 
@@ -192,14 +217,21 @@
      :authenticated  — a valid bearer token, nothing more. Correct when the
                        HANDLER scopes to `party-id`, which is how the media
                        routes work.
+     :blob-read      — `:authenticated`, OR a valid blob-read cookie on a
+                       GET/HEAD (`blob-reader-party-id`). The ONLY form that
+                       accepts the cookie; declare it on blob reads and
+                       nowhere else.
      {:action a
       :resource f}   — a token, then `access/can? principal a (f req)`. The
                        same vocabulary `rpc-policy` uses, so both planes state
                        authorization in one language and share one predicate.
 
-   Deliberately small. A route that needs something else should not invent a
-   fourth form here; it should express itself as a `:resource` function."
-  #{:public :authenticated})
+   Deliberately small. A route that needs a different RULE should not invent
+   a new form here; it should express itself as a `:resource` function.
+   `:blob-read` is not a different rule — it is `:authenticated` with one more
+   accepted CREDENTIAL, and which credentials a route accepts has to be stated
+   by the route, not inferred from the request."
+  #{:public :authenticated :blob-read})
 
 (defn- declared-auth
   "The `:auth` for this match — method-level first, then route-level, so a
@@ -249,6 +281,7 @@
                (cond
                  (= :public a) (handler req)
                  (= :authenticated a) (or (require-auth req) (handler req))
+                 (= :blob-read a) (or (require-blob-reader req) (handler req))
                  (map? a) (or (check-resource req a) (handler req))
                  :else
                  (do (log/log! {:level :error :id ::undeclared-route

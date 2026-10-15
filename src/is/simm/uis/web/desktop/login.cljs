@@ -127,6 +127,43 @@
                  (.setItem js/localStorage TOKEN_KEY (:access_token result))
                  result)))))
 
+;; The blob cookie holds a short-lived blob-READ token, not the access token
+;; (a cookie reaches every port of this host, so it must not be worth a bearer
+;; credential). Login and refresh responses set it; a tab that stays open longer
+;; than its lifetime renews it here, authenticating with the header.
+(defonce ^:private blob-cookie-timer (atom nil))
+
+(defn- renew-blob-cookie!
+  "POST /auth/blob-cookie with the access token; resolves to the cookie's
+   lifetime in seconds, or nil when there is no token or the server refused."
+  []
+  (if-not (get-stored-token)
+    (js/Promise.resolve nil)
+    (-> (js/fetch (str (get-auth-base-url) "/auth/blob-cookie")
+                  #js {:method "POST" :headers (auth-headers)})
+        (.then (fn [resp]
+                 (if (.-ok resp)
+                   (-> (.json resp) (.then #(aget % "expires_in")))
+                   (do (js/console.warn "[Auth] blob cookie renewal refused:"
+                                        (.-status resp))
+                       nil)))))))
+
+(defn keep-blob-cookie-fresh!
+  "Issue the blob cookie now, then renew it at 80% of its lifetime for as long
+   as the server keeps granting it. Idempotent: a second call replaces the
+   schedule rather than adding one. The timer is the renewal SCHEDULE of an
+   expiring credential, not a wait for something to happen."
+  []
+  (when-let [t @blob-cookie-timer] (js/clearTimeout t))
+  (reset! blob-cookie-timer nil)
+  (-> (renew-blob-cookie!)
+      (.then (fn [expires-in]
+               (when (and (number? expires-in) (pos? expires-in))
+                 (reset! blob-cookie-timer
+                         (js/setTimeout keep-blob-cookie-fresh!
+                                        (* 800 expires-in))))))
+      (.catch (fn [e] (js/console.warn "[Auth] blob cookie renewal failed:" e)))))
+
 (defn- b64url->str [s]
   (let [b64 (-> s (str/replace "-" "+") (str/replace "_" "/"))
         pad (case (mod (count b64) 4) 2 "==" 3 "=" "")]

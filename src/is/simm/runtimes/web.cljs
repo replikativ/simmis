@@ -235,6 +235,9 @@
   (binding [rtc/*execution-context* runtime]
     (reset! sig/current-user user))
   (let [session (create-client! token)]
+    ;; `<img src="/blobs/…">` needs the blob-read cookie; it lives an hour,
+    ;; so a long-open tab must renew it.
+    (login/keep-blob-cookie-fresh!)
     (show-app!)
     session))
 

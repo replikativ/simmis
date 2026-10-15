@@ -302,7 +302,16 @@
                          (index-response)))
         ;; Reitit router for HTTP API routes
         router (ring/router
-                 [(into ["/auth" {:auth :public}] (auth-cfg/auth-route-data))
+                 [(-> ["/auth" {:auth :public}]
+                      (into (auth-cfg/auth-route-data))
+                      ;; Renews the blob-read cookie for a tab that outlives
+                      ;; it. Header bearer only — POST never accepts the
+                      ;; cookie, so a cookie cannot extend itself.
+                      (conj ["/blob-cookie"
+                             {:post {:auth :authenticated
+                                     :handler (fn [req]
+                                                (auth-cfg/blob-cookie-response
+                                                  req (hauth/party-id req)))}}]))
                   ;; Content-addressed blobs (voice-note audio, media
                   ;; stills). Content-addressing makes ids unguessable
                   ;; (SHA-256); real per-blob authz arrives with eacl.
@@ -432,17 +441,17 @@
                    ;; reaches blobs through `<img src>` and `<a href>`, which
                    ;; the BROWSER issues and which therefore cannot carry a
                    ;; bearer header. `auth-config/blob-cookie` gives those
-                   ;; requests a credential they can present —
-                   ;; `Path=/blobs/`, `HttpOnly`, `SameSite=Lax` — and
-                   ;; `http-auth/principal` accepts it by handing it to the same
-                   ;; bearer validator.
+                   ;; requests a credential they can present — a short-lived
+                   ;; blob-read token (NOT the access token), `Path=/blobs/`,
+                   ;; `HttpOnly`, `SameSite=Lax` — and `:blob-read` is the only
+                   ;; route form that accepts it.
                    ;;
-                   ;; Still `:authenticated` rather than a resource check: a
+                   ;; Authenticated rather than a resource check: a
                    ;; blob is content-addressed and deliberately shared, so the
                    ;; same bytes in two rooms are ONE blob and nothing records
                    ;; which rooms referenced it. Per-blob authorization needs
                    ;; that index; see README "Known gaps".
-                   {:auth :authenticated
+                   {:auth :blob-read
                     :get (fn [req]
                            (let [id (get-in req [:path-params :id])
                                  bytes ((requiring-resolve 'is.simm.model.blobs/get-bytes) id)]
