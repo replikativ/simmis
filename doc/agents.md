@@ -174,8 +174,9 @@ resolves to its newest available version REGISTERED as vision-capable, so
 `kimi-*` skips the text-only kimi-k3. Configured but unresolvable, the call
 fails with the reason — a frame is stored as failed and says why — and boot
 logs one `::task-model-unusable` warning; it never runs dvergr's default
-instead. dvergr's own defaults name withdrawn ids until simmis moves to the
-dvergr release with branch fix/retired-fireworks-models.
+instead. Dvergr 0.1.298 uses MiniMax M3 for the cheap call. Vision needs an
+explicit image-capable model in Simmis, `DVERGR_VISION_MODEL`, or Dvergr's
+registry defaults, with usable provider credentials; it has no bundled default.
 It is read at every resolution and never written onto an agent, so changing it
 and restarting moves every inheriting agent. A configured default is checked
 like any other choice: e.g. `codex-subscription-luna-6` on a machine without a

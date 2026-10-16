@@ -349,7 +349,9 @@
         ;; to 0.1.126 and yggdrasil to 0.3.49; it keeps datahike 0.8.1904 (simmis
         ;; pins 0.8.1906, for the fail-closed GC) and the client-sync set (konserve 0.9.394, konserve-sync, kabel 0.3.139)
         ;; does not move.
-        org.replikativ/dvergr {:mvn/version "0.1.291"}}
+        ;; 0.1.298: embedded MCP host hook, retired-model successors and
+        ;; explicit vision configuration, plus funded dispatch accounting.
+        org.replikativ/dvergr {:mvn/version "0.1.298"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
