@@ -50,6 +50,9 @@
     :authentication-required
     :validation-error
     :dispatch/invalid-mentions
+    ;; a merge that refused or failed and landed nothing (the proposal
+    ;; stays open), e.g. spindel's ::overlay-lost
+    :proposal/merge-failed
     :dvergr.principal/denied})
 
 (def max-message

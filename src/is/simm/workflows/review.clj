@@ -583,12 +583,26 @@
         (try
           (dvergr/invoke (:ctx room) principal :room/merge {:room world :expect-state token})
           (catch clojure.lang.ExceptionInfo e
-            (if (changed-since-review? e)
+            (cond
+              (changed-since-review? e)
               (throw (ex-info (str "The world changed after it was reviewed, so it was not merged."
                                    " Reject it, or have it reviewed again.")
                               {:error :world-changed :proposal proposal-id
                                :reviewed token}))
-              (throw e))))
+
+              ;; dvergr's merge refused or failed (e.g. spindel's
+              ;; ::overlay-lost: the world no longer holds the writable copy
+              ;; it was minted with, so merging would land nothing). dvergr
+              ;; reports it as a failed merge; say so plainly, nothing is
+              ;; recorded and the proposal stays open.
+              (= :dvergr.ops/merge-failed (:type (ex-data e)))
+              (throw (ex-info (str "The reviewed work was not merged, and nothing landed: "
+                                   (or (:error (ex-data e)) (ex-message e)))
+                              {:type :proposal/merge-failed :error :merge-failed
+                               :proposal proposal-id}
+                              e))
+
+              :else (throw e))))
         :reject
         (dvergr/invoke (:ctx room) principal :room/discard {:room world}))
       (let [status (proposals/record-decision! p (if (= :accept verdict) :accepted :dismissed)

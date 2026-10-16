@@ -208,9 +208,11 @@ with the refusal as its reason. Nothing starts reviews on its own yet.
 a datahike listener on each simmis room's store (`ensure-listener!`, armed by
 a dvergr register hook from boot, `install!`) sees `:review/decision
 :escalated` and queues the filing on a single escalation worker. dvergr also
-posts an escalation message, but as a plain map without `:type`, which a
-room's message listeners never receive (dvergr 0.1.286); the record is the
-authoritative half anyway. `sweep!` at boot files what a crash left behind.
+posts an escalation message, a typed room message since dvergr 0.1.291
+(`:kind :review/escalated`, object `[:review <id>]`). The record stays the
+trigger: the message files nothing, and the chat leaves it out
+(`datahike-query/covered-by-another-item?`), because the proposal card says
+the same with the controls. `sweep!` at boot files what a crash left behind.
 
 The proposal's id is a function of the Review id, and `:proposal/review` is a
 unique identity, so seeing a Review twice files nothing new. It is filed in
@@ -228,7 +230,13 @@ Filing posts the proposal card into the room, as every proposal does.
 verbs) route a review's proposal to `review/decide!`. Accept invokes dvergr's
 `room_merge` with `:expect-state` = the reviewed token, as the deciding party;
 a world that changed since it was reviewed is refused with `:world-changed`
-and the proposal stays open. Reject invokes `room_discard`. Who decides: `:merge`
+and the proposal stays open. A merge dvergr reports as failed (spindel's
+`::overlay-lost`, a fork that no longer holds the writable copy it was minted
+with, is one) is refused the same way, as `:proposal/merge-failed` with
+dvergr's reason; nothing is recorded. Run-world settlement turns a lost
+overlay into the same error. Sibling worlds that were each reviewed in turn
+both merge: `:review/id` is a `:db.unique/identity` since dvergr 0.1.291, so
+the second merge's replay of the Review it inherited upserts. Reject invokes `room_discard`. Who decides: `:merge`
 on the room (its owner), asked by `decide!` and again by dvergr's authorizer
 for the op. A dvergr fork id (`<slug>_fork_fork-<hex>`) answers as its room
 (`access/dvergr-resource`). Run-world adoption (`adopt!`, above) is NOT used:

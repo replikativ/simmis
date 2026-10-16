@@ -340,6 +340,13 @@
             #(mapv (fn [node] (replace-node node settlement-id replacement)) %))
     :else tree))
 
+(defn- overlay-lost?
+  "Did spindel refuse to merge a fork system that lost its overlay
+   (spindel 0.1.126: it throws instead of merging nothing)?"
+  [e]
+  (some #(= :org.replikativ.spindel.yggdrasil/overlay-lost (:type (ex-data %)))
+        (take-while some? (iterate ex-cause e))))
+
 (defn settle!
   "Settle one adopted Proposal component through Dvergr's durable frontier."
   [fork operation]
@@ -368,7 +375,16 @@
                        :proposal.fork/settlement-operation operation
                        :proposal.fork/descriptor
                        (descriptor-edn (:fork/descriptor terminal))}]))}
-        settled (room-forks/settle-adoption! node operation lifecycle)
+        settled (try (room-forks/settle-adoption! node operation lifecycle)
+                     (catch clojure.lang.ExceptionInfo e
+                       (if (overlay-lost? e)
+                         (throw (ex-info (str "This work was not merged, and nothing landed: its world "
+                                              "no longer holds the copy it was written in. The proposal stays open.")
+                                         {:type :proposal/merge-failed :error :overlay-lost
+                                          :adoption adoption-id
+                                          :scope (:proposal.fork/scope fork)}
+                                         e))
+                         (throw e))))
         status (get-in settled [:fork/settlement :status])]
     (swap! live-adoptions update adoption-id
            (fn [entry]

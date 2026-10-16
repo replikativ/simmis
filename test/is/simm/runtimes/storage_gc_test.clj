@@ -3,7 +3,13 @@
    sweeps the whole store, which is how dev.simm.is lost its system DB. These
    tests never sweep — `start!` is replaced, so no store is touched."
   (:require [clojure.test :refer [deftest is testing]]
-            [is.simm.runtimes.storage-gc :as gc]))
+            [dvergr.substrate.paths :as paths]
+            [dvergr.system.db :as sdb]
+            [dvergr.system.rooms :as srooms]
+            [is.simm.runtimes.storage-gc :as gc]
+            [taoensso.telemere :as tel]))
+
+(def ^:private test-home "/tmp/simmis-storage-gc-test-home")
 
 (deftest off-unless-asked
   (testing "no env, no config key: off"
@@ -30,7 +36,53 @@
       (is (= :started (gc/boot! (gc/enabled? "true" {}))))
       (is (= 2 @starts)))))
 
+(deftest flag-off-never-enables-deleting-gc
+  (with-redefs [paths/home (constantly test-home)
+                gc/start! (fn [& _] (throw (ex-info "start! must not run with the flag off" {})))]
+    (srooms/enable-storage-gc! false)
+    (is (= :disabled (gc/boot! (gc/enabled? nil {}))))
+    (is (= :disabled (gc/boot! (gc/enabled? "false" {:storage-gc {:enabled? true}}))))
+    (is (false? (srooms/storage-gc-enabled?)))))
+
+(deftest flag-on-enables-for-simmis-home-and-stop-revokes
+  ;; gc-stores! is mocked: the loop's boot sweep reaches it and goes no further.
+  (let [swept (promise)]
+    (with-redefs [paths/home (constantly test-home)
+                  srooms/gc-stores! (fn [opts]
+                                      (deliver swept {:enabled? (srooms/storage-gc-enabled?)
+                                                      :opts opts})
+                                      {:rooms 0 :system-db {:reclaimed 0}})
+                  sdb/all-rooms (constantly [])]
+      (try
+        (is (= :started (gc/boot! (gc/enabled? nil {:storage-gc {:enabled? true}}))))
+        (is (true? (srooms/storage-gc-enabled?)) "enabled for simmis's home")
+        (testing "only that home: another dvergr home in this JVM stays off"
+          (with-redefs [paths/home (constantly "/tmp/some-other-dvergr-home")]
+            (is (false? (srooms/storage-gc-enabled?)))))
+        (let [r (deref swept 30000 ::no-sweep)]
+          (is (not= ::no-sweep r) "the loop's boot sweep ran (against the mock)")
+          (is (= {:enabled? true :opts {}} r)
+              "orphan-only (no :remove-before), and enabled while it ran"))
+        (finally
+          (is (= :stopped (gc/stop!)))))
+      (is (false? (srooms/storage-gc-enabled?)) "stop! revokes it"))))
+
+(deftest a-refused-sweep-is-an-error-log-not-a-crash
+  (srooms/enable-storage-gc! false)
+  (let [sigs (atom [])]
+    (with-redefs [paths/home (constantly test-home)
+                  ;; dvergr's real refusal fires before any store is touched,
+                  ;; but keep the system DB out of reach regardless.
+                  sdb/get-conn (fn [] (throw (ex-info "must not reach the system DB" {})))]
+      (let [r (tel/with-handler :capture (fn [sig] (swap! sigs conj sig)) {:async nil}
+                (gc/sweep!))]
+        (is (string? (:error r)) "returns an error report instead of throwing")
+        (is (some #(and (= ::gc/sweep-refused (:id %)) (= :error (:level %))) @sigs)
+            "logged at :error as a refusal")))))
+
 (deftest datahike-version-floor
+  (testing "the floor is 0.8.1906, the first release containing datahike 51cf69d3"
+    (is (= "0.8.1906" gc/datahike-fail-closed-gc-version)))
   (is (false? (gc/version-at-least? "0.8.1904" "0.8.1905")))
   (is (true? (gc/version-at-least? "0.8.1905" "0.8.1905")))
   (is (true? (gc/version-at-least? "0.8.2000" "0.8.1905")))
@@ -39,9 +91,11 @@
   (testing "an unknown version (a source checkout) is not assumed safe"
     (is (false? (gc/version-at-least? nil "0.8.1905")))
     (is (false? (gc/version-at-least? "0.8.1905-SNAPSHOT" "0.8.1905"))))
-  (testing "the pinned datahike predates the fix, so an enabled loop warns"
-    (is (false? (gc/version-at-least? (gc/datahike-version)
-                                      gc/datahike-fail-closed-gc-version)))))
+  (testing "the pinned datahike carries the fix, so an enabled loop does not warn"
+    (is (true? (gc/version-at-least? (gc/datahike-version)
+                                     gc/datahike-fail-closed-gc-version))))
+  (testing "0.8.1905 shipped without it"
+    (is (false? (gc/version-at-least? "0.8.1905" gc/datahike-fail-closed-gc-version)))))
 
 (deftest a-failed-sweep-is-not-an-empty-sweep
   (is (= [] (gc/report-problems {:rooms 2 :system-db {:reclaimed 0}} 2)))

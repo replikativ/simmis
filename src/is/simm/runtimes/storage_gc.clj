@@ -27,15 +27,24 @@
 
    OFF BY DEFAULT. The dev.simm.is system DB was wiped by this loop: a mark
    phase died on an Error, the mark came back empty, and the sweep deleted every
-   key but `:branches`. datahike#1117 makes the mark fail closed; until a datahike
-   release carrying it is on the classpath, an Error inside a branch walk can
-   still do the same. So the loop starts only when asked to —
+   key but `:branches`. datahike#1117 makes the mark fail closed (released in
+   0.8.1906, which simmis pins); on an older datahike an Error inside a branch
+   walk can still do the same. The loop starts only when asked to —
    `:storage-gc {:enabled? true}` in config.local.edn, or
    `SIMMIS_STORAGE_GC=true` (the environment wins when set) — and while it is on
-   with an older datahike, every sweep warns."
+   with an older datahike, every sweep warns.
+
+   dvergr enforces the same rule on its side (dvergr#332): `gc-stores!` throws
+   `::srooms/storage-gc-disabled` unless deleting GC was enabled for the
+   process's dvergr home (`dvergr.substrate.paths/home`, the one DVERGR_HOME
+   resolves) with `srooms/enable-storage-gc!`. `start!` enables it for simmis's
+   home and `stop!` revokes it, so the grant lives exactly as long as the loop.
+   With the flag off nothing ever enables it, and a sweep that runs anyway (by
+   hand, or after a stop) is refused and logged as an error."
   (:require [clojure.string :as str]
             [datahike.tools :as dh-tools]
             [dvergr.substrate.config :as dcfg]
+            [dvergr.substrate.paths :as paths]
             [dvergr.system.db :as sdb]
             [dvergr.system.rooms :as srooms]
             [is.simm.runtimes.context :as ctx]
@@ -57,12 +66,11 @@
    incomplete mark (datahike#1117). Below it, an Error inside a branch walk
    empties the mark and the sweep deletes the store.
 
-   TODO: #1117 is not merged yet, so no release carries it. This is a LOWER
-   BOUND — the release after the one simmis pins (0.8.1904), and no release
-   at or below that has the fix. Set it to the exact release that ships #1117
-   when it does; until then a datahike bump to 0.8.1905 that lacks the fix
-   would silence the warning."
-  "0.8.1905")
+   It is the FIRST datahike release containing commit 51cf69d3 (the merged
+   #1117): 0.8.1906, verified in its tag. 0.8.1905 does not contain it. simmis
+   pins 0.8.1906, so an enabled loop on the Maven set does not warn; a
+   `:local` source checkout reports no version and still does."
+  "0.8.1906")
 
 (defn- parse-version
   "\"0.8.1904\" → [0 8 1904]; nil for anything that is not dotted numbers
@@ -130,10 +138,14 @@
       (and report (number? room-count) (number? rooms) (< rooms room-count))
       (conj :rooms-failed))))
 
+(defn- gc-disabled? [^Throwable e]
+  (= ::srooms/storage-gc-disabled (:type (ex-data e))))
+
 (defn sweep!
   "Run one orphan-only GC sweep across all stores. Returns the report map.
-   Callable by hand from the REPL — which runs it whether or not the loop is
-   enabled, so mind the datahike warning it logs."
+   Callable by hand from the REPL, but only deletes while the loop is running:
+   `start!` is what enables deleting GC in dvergr, and without it dvergr refuses
+   the sweep, which is logged as an error and returned as `{:error ...}`."
   []
   (ctx/with-server-context
     (warn-if-unsafe-datahike!)
@@ -150,33 +162,53 @@
                      :data r}))
         r)
       (catch Throwable e
-        (log/log! {:level :error :id ::sweep-failed
+        (if (gc-disabled? e)
+          (log/log! {:level :error :id ::sweep-refused
+                     :msg (str "Storage GC sweep refused: deleting GC is not enabled for this home. "
+                               "It is enabled only while the loop runs (:storage-gc {:enabled? true} "
+                               "or SIMMIS_STORAGE_GC=true).")
+                     :data {:home (paths/home)}
+                     :error e})
+          (log/log! {:level :error :id ::sweep-failed
                    :msg "Storage GC sweep failed"
-                   :error e})
+                   :error e}))
         {:error (.getMessage e)}))))
 
 (defn start!
-  "Start the periodic sweep (boot sweep, then every `interval-ms`). Idempotent."
+  "Enable deleting GC in dvergr for simmis's home, then start the periodic
+   sweep (boot sweep, then every `interval-ms`). Idempotent."
   ([] (start! default-interval-ms))
   ([interval-ms]
    (when-not @gc-thread
+     (srooms/enable-storage-gc! true)
      (let [t (Thread.
               (fn []
                 (loop []
-                  (sweep!)
-                  (Thread/sleep (long interval-ms))
-                  (when @gc-thread (recur))))
+                  ;; Only the thread `start!` installed sweeps: after a stop!
+                  ;; (or a stop!+start!) a sleeping old thread wakes and exits.
+                  (when (identical? @gc-thread (Thread/currentThread))
+                    (sweep!)
+                    (Thread/sleep (long interval-ms))
+                    (recur))))
               "simmis-storage-gc")]
        (.setDaemon t true)
        (reset! gc-thread t)
        (.start t)
        (log/log! {:level :info :id ::started
                   :msg (str "Storage GC started (orphan-only, every "
-                            (quot interval-ms 3600000) "h)")})))
+                            (quot interval-ms 3600000) "h); deleting GC enabled for this home")
+                  :data {:home (paths/home)}})))
    :started))
 
-(defn stop! []
+(defn stop!
+  "Stop the loop and revoke deleting GC for simmis's home. Idempotent."
+  []
+  (when (srooms/storage-gc-enabled?)
+    (log/log! {:level :info :id ::stopped
+               :msg "Storage GC stopped; deleting GC revoked for this home"
+               :data {:home (paths/home)}}))
   (reset! gc-thread nil)
+  (srooms/enable-storage-gc! false)
   :stopped)
 
 (defn boot!

@@ -518,6 +518,24 @@
       thread-root-id (assoc :message/thread-root-id thread-root-id)
       run-id (assoc :message/run-id run-id))))
 
+(def ^:private covered-message-kinds
+  "Canonical message kinds the room's chat does not show, because another
+   timeline item already tells the same thing.
+
+   `:review/escalated` — dvergr's review stage posts one when a Review needs a
+   person (a typed room message since dvergr 0.1.291). simmis files the Review
+   RECORD as a proposal (`is.simm.workflows.review`) and posts that proposal's
+   card into the room, which carries the reasons, the checks and the
+   decision controls. Showing the message too would put the same escalation in
+   the chat twice, once without anything to act on."
+  #{:review/escalated})
+
+(defn covered-by-another-item?
+  "Is canonical message pull `m` one the timeline leaves out (see
+   `covered-message-kinds`)?"
+  [m]
+  (contains? covered-message-kinds (:message/metadata-kind m)))
+
 (defn canonical-message-entity->timeline-item
   "Classify one canonical message for the Simmis timeline."
   [m]
@@ -700,6 +718,7 @@
                                db attempt-board/job-kinds)
                           (d/q {:find '[[?m ...]] :where room-message} db))]
        (->> (d/pull-many db pull-pattern message-eids)
+            (remove covered-by-another-item?)
             (map canonical-message-entity->timeline-item)
             vec))))
 
