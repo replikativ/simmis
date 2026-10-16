@@ -199,6 +199,7 @@ Concretely, with the action each RPC is policed as:
 | accept or reject an escalated review's proposal | `:merge` on the room (its owner): the policy row above, then `review/decide!`, then dvergr's authorizer for `room_merge` / `room_discard` | policy row + `workflows.review/decide!` + `access/dvergr-authorize` |
 | a wiki widget's data transaction (`widget-transact`) | `:write` on the KB's store (`{:kb-store …}` — never a room store); no schema in it | policy row + `block_remote` (shape, then `d/with`) |
 | declare an attribute from a widget (`widget-install-attr`) | `:merge` on the KB's store (its owner); the value type derived from the codomain object | policy row + `block_remote` |
+| declare an attribute from an agent's sandbox (`kb/install-attr!`) | `:merge` through the room: a member of the room, the room holding a `:merge`/`:owner` grant on the KB, and `can?` `:merge` on it; the value type derived from the codomain object | `access/require-sandbox-kb!` + `attributes/declaration` |
 | read a room's labels (`list-labels!`) | a member (`:read` on the room); no RPC writes a label | policy row |
 
 | stop a Run (`cancel-room-run!`) | its starter, the room's owner, or `:admin` — each from inside the room | policy row (`:write`) + `access/require-run-cancellable!` |
@@ -322,7 +323,11 @@ what it is handed is the authorization.
 `wiki/summarize!` reach a KB only through `access/sandbox-kb-allows?`: the
 acting party (for an agent, the agent) may `:read`/`:write` the room, the room
 holds a grant on the KB permitting the action, and `can?` lets the party do it
-to the KB. `room-agents/get-room-kb-conns` lists only KBs that pass for
+to the KB. Declaring an attribute (`kb/install-attr!`) is that check at
+`:merge` — still membership of the room, but a `:merge` or `:owner` grant on
+the KB, so a `:read-write` grant (what attaching records by default) writes
+data and not schema, as for a widget; the agent names the codomain object and the
+value type is derived. `room-agents/get-room-kb-conns` lists only KBs that pass for
 `:read`, and every use checks again (`access/require-sandbox-kb!`), so a `:read`
 grant never yields a write handle and detaching a KB or removing the agent
 revokes its handles in a running sandbox. A room with no KB grant reaches no

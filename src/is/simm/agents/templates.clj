@@ -122,18 +122,24 @@ Built-in attrs already declared: `:entity/uuid`, `:entity/name`,
 `:block/content`, `:block/widget-code`, `:S.Page/title`. Anything else you
 invent (`:todo/text`, `:todo/done?`, `:counter/value`, …) must be declared
 once. Declare it *outside* the widget, at authoring time via `clojure_eval`
-(those `kb/` verbs take the KB first and a value type):
+(those `kb/` verbs take the KB first). Both declare the same way: you name the
+attribute's CODOMAIN object and the server derives the value type from it —
+neither ever sends a `:db/valueType`:
 
 ```clojure
-(kb/install-attr! db :todo/text :db.type/string :db.cardinality/one)
-(kb/install-attr! db :todo/done? :db.type/boolean :db.cardinality/one)
+(kb/install-attr! db :todo/text \"S/String\" :one)
+(kb/install-attr! db :todo/done? \"S/Boolean\" :one)
 ```
 
-Inside a widget the declaration is the viewer's, so it works only when the KB's
-owner is the one looking — another viewer's click is refused. Codomain objects
-for a widget's `kb/install-attr!`: `\"S/String\"`, `\"S/Number\"` (integer),
-`\"S/Float\"`, `\"S/Boolean\"`, `\"S/Date\"`, `\"S/UUID\"`, or a type such as
-`\"S/Page\"` for a reference. Cardinality `:one` or `:many`.
+Declaring is the KB owner's level (`:merge`): from your sandbox it works on a
+KB the room holds a `:merge` grant on, and a `:read-write` grant (what
+attaching a wiki records by default) is refused — it writes data under
+declared attributes, not schema; ask the KB's owner to declare it. Inside a widget
+the declaration is the viewer's, so it works only when the KB's owner is the
+one looking — another viewer's click is refused. Codomain objects:
+`\"S/String\"`, `\"S/Number\"` (integer), `\"S/Float\"`, `\"S/Boolean\"`,
+`\"S/Date\"`, `\"S/UUID\"`, or a type such as `\"S/Page\"` for a reference.
+Cardinality `:one` (default) or `:many`.
 
 `kb/update-attr!` is the safe read-modify-write primitive — use it for counters,
 toggles, anything where rapid clicks could clobber:

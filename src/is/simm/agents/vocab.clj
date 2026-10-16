@@ -86,8 +86,8 @@
      :doc "Delete a block outright. Prefer editing when the text is merely wrong — a retraction is what a reviewer sees as a removal."}
 
     install-attr!
-    {:arglists ([db ident value-type cardinality])
-     :doc "Declare a new attribute, e.g. (kb/install-attr! db :S.Page/owner :db.type/string :db.cardinality/one). Writing an undeclared attribute REJECTS the whole transaction."}
+    {:arglists ([db ident codomain] [db ident codomain cardinality])
+     :doc "Declare a new attribute by its CODOMAIN object, e.g. (kb/install-attr! db :todo/owner \"S/String\" :one); the value type is derived from it (\"S/String\", \"S/Number\" integer, \"S/Float\", \"S/Boolean\", \"S/Date\", \"S/UUID\", or a type such as \"S/Page\" for a reference), never given. Cardinality :one (default) or :many. Needs a :merge grant of the KB to this room — a :read-write grant writes data under declared attributes, not schema; ask the KB's owner to declare it otherwise. Idempotent. Writing an undeclared attribute REJECTS the whole transaction."}
 
     upsert-viz-block!
     {:arglists ([db page-uuid viz-spec-edn] [db page-uuid viz-spec-edn caption])

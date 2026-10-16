@@ -11,6 +11,7 @@
    KBs can be attached to rooms, giving room agents access."
   (:require [is.simm.runtimes.instance :as instance]
             [is.simm.model.system-db :as system-db]
+            [is.simm.model.access :as access]
             [is.simm.model.schema :as schema]
             [is.simm.model.seed :as seed]
             [is.simm.model.store :as store]
@@ -394,6 +395,70 @@
         (vec (keep (fn [[kid perm]]
                      (some-> (get-kb kid) (assoc :kb/permission perm)))
                    rows))))))
+
+(defn party-room-grants
+  "Every KB grant held by a room `party-id` is a member of:
+   `[{:kb-id :room-id :room-name :permission}…]`, one per (KB, room). The
+   grant's permission is as recorded, `:read` when it records none (what
+   `access/can?` reads a missing one as).
+
+   These are the KBs a member reaches THROUGH a room — `get-party-kbs` lists
+   only the owned and directly shared ones. Rooms the party is not in
+   contribute nothing."
+  [party-id]
+  (when-let [conn (and (some? party-id) (system-db/get-conn))]
+    (->> (d/q '[:find ?kid ?rid ?rname ?perm
+                :in $ ?pid
+                :where
+                [?p :party/id ?pid] [?r :room/parties ?p]
+                [?r :room/id ?rid] [(get-else $ ?r :room/name "") ?rname]
+                [?g :grant/room ?r] [?g :grant/system ?s]
+                [(get-else $ ?g :grant/permission :read) ?perm]
+                [?s :system/id ?sid]
+                [?kb :kb/system-id ?sid] [?kb :kb/id ?kid]]
+              @conn party-id)
+         (mapv (fn [[kid rid rname perm]]
+                 {:kb-id kid :room-id rid :room-name rname :permission perm})))))
+
+(def ^:private sidebar-kb-keys
+  [:kb/id :kb/name :kb/owner :kb/created :kb/db-scope :kb/tags])
+
+(defn sidebar-kbs
+  "The wikis `party-id`'s navigation lists: the ones it owns or that were
+   shared with it directly (`get-party-kbs`), plus the ones it reaches only
+   through a grant to a room it is a member of — which the navigation used to
+   leave out, so a room-granted wiki was readable and unfindable.
+
+   Each carries `:kb/read-only?`: `party-id` may read it but not write it
+   (`access/can?`, which honours the grant's permission — a `:read` grant
+   reads). A room-granted one also carries `:kb/via-rooms`, the rooms and
+   grant permissions it is reached through. Nothing is listed that `can?`
+   does not let `party-id` read, and a grant to a room `party-id` is not in
+   contributes nothing (`party-room-grants`)."
+  [party-id]
+  (when (some? party-id)
+    (let [direct (or (get-party-kbs party-id) [])
+          direct-ids (into #{} (map :kb/id) direct)
+          via (group-by :kb-id (party-room-grants party-id))
+          granted (->> (keys via)
+                       (remove direct-ids)
+                       (filter #(access/can? party-id :read {:kb %}))
+                       (keep (fn [kid]
+                               (some-> (get-kb kid)
+                                       (select-keys sidebar-kb-keys)
+                                       (assoc :kb/via-rooms
+                                              (->> (get via kid)
+                                                   (mapv (fn [{:keys [room-id room-name permission]}]
+                                                           {:room/id room-id
+                                                            :room/name room-name
+                                                            :kb/permission permission}))
+                                                   (sort-by (comp str :room/name))
+                                                   vec))))))]
+      (->> (concat direct granted)
+           (mapv #(assoc % :kb/read-only?
+                         (not (access/can? party-id :write {:kb (:kb/id %)}))))
+           (sort-by (comp str :kb/name))
+           vec))))
 
 (defn rooms-using-kb
   "Rooms a KB is attached to (via grants). Returns room maps

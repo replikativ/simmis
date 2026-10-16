@@ -48,10 +48,11 @@ properties, and does so silently. Always go through `morphism/attr-of`.
 A morphism's destination object determines its Datahike `:db/valueType`, via
 `schema/codomain->db-type`. The **server** derives this; a client never sends
 it. `:db/ident` declarations are append-only, so a client that could declare an
-attribute's type could fix it permanently. Both browser paths that declare one —
-a type page's `add-property` and a widget's `kb/install-attr!`
-(`widget-install-attr`) — send the codomain object, and the handler derives the
-type and records the morphism.
+attribute's type could fix it permanently. Every path that declares one — a
+type page's `add-property`, a widget's `kb/install-attr!`
+(`widget-install-attr`) and an agent's `kb/install-attr!` in its sandbox —
+names the codomain object, and the server derives the type and records the
+morphism (`attributes/declaration`, for the latter two).
 
 Note `S/Number` is the integer primitive (`:db.type/long`) and `S/Float` is the
 decimal one (`:db.type/double`). A UI number field that accepts decimals names

@@ -1002,14 +1002,19 @@
 ;; =============================================================================
 
 (defn sandbox-kb-allows?
-  "May `subject`, acting in room `room-id`'s sandbox, `action` (`:read` or
-   `:write`) the KB `kb-id`? THE check for every KB handle or KB write the
-   sandbox vocabulary hands out (`kb/*`, `knowledge_add`). All three must hold:
+  "May `subject`, acting in room `room-id`'s sandbox, `action` (`:read`,
+   `:write` or `:merge`) the KB `kb-id`? THE check for every KB handle or KB
+   write the sandbox vocabulary hands out (`kb/*`, `knowledge_add`). All three
+   must hold:
 
-   - `subject` may `action` the ROOM (a member, for :read and :write);
+   - `subject` is in the ROOM (`:read`/`:write` on it: a member). For `:merge`
+     too — the sandbox's `:merge` is on the KB, declaring an attribute
+     (`kb/install-attr!`), not landing a fork of the room, which would be the
+     room owner's;
    - THIS room holds a grant on the KB that permits `action` — the sandbox is
-     the room's, so a KB attached elsewhere is not addressable from it, and a
-     `:read` grant gives no write handle;
+     the room's, so a KB attached elsewhere is not addressable from it, a
+     `:read` grant gives no write handle, and only a `:merge`/`:owner` grant
+     lets it declare schema (attaching records `:read-write` by default);
    - `subject` may `action` the KB (`can?`).
 
    For an agent the subject is the agent party, which reaches the KB through the
@@ -1022,8 +1027,8 @@
         room-eid (room-eid-by-id db room-id)
         kb-eid (kb-eid-by-id db kb-id)]
     (boolean
-     (and party room-eid kb-eid (contains? #{:read :write} action)
-          (party-can-access-room? db party room-eid action)
+     (and party room-eid kb-eid (contains? #{:read :write :merge} action)
+          (party-can-access-room? db party room-eid (if (= :merge action) :write action))
           (some (fn [perm] (permission-satisfies? (or perm :read) action))
                 (d/q '[:find [?perm ...] :in $ ?r ?k
                        :where [?k :kb/system-id ?sid] [?s :system/id ?sid]

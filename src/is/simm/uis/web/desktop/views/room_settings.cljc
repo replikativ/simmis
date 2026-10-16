@@ -35,7 +35,9 @@
         ;; --- Notifications (personal, per-room level) ---
         #?(:cljs
            (let [rid   (str (:room/id room))
-                 level (mns/room-notify-level rid)
+                 ;; passed in by the column, which TRACKS `sig/notify-prefs`
+                 ;; (a bare deref here re-rendered on nothing)
+                 level (:notify-level data :mentions)
                  btn   (fn [lvl label]
                          (el/button {:class (vc/class-names "settings-btn"
                                                             (when (= level lvl) "settings-btn--primary"))

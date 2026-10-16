@@ -157,6 +157,15 @@
             updated by the room-settings Notifications control (message-notify-sync)."
            (signal runtime {})))
 
+#?(:cljs (def block-conflicts
+           "Signal: wiki blocks whose content changed in the replica while
+            this session was editing them — {<block-uuid-str> <db content>}.
+            Written by the block editor (`block-editor/follow-replica!`), read
+            by the page editor, which puts `:conflict?` IN each block item
+            (ifor-each sees no closure variable) and renders the notice that
+            offers to load the other version (`block-sync`)."
+           (signal runtime {})))
+
 #?(:cljs (def screen-sharing
            "Signal: set of room-id strings with an active local screen
             share (screen-share/start! capture loop feeding agents)."

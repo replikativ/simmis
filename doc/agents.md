@@ -37,7 +37,11 @@ to a hand-built accessor for every question.
 agent itself may reach through the room's grants (`access/sandbox-kb-allows?`,
 doc/authority.md). A KB the room holds `:read` is listed as read-only in the
 agent's room context: `kb/db` and the `wiki` readers work on it, `kb/conn` and
-every `kb/*` write refuse with `:not-authorized`. Each use is checked again, so
+every `kb/*` write refuse with `:not-authorized`. Declaring an attribute
+(`kb/install-attr!`, by codomain object — the type is derived) needs a `:merge`
+grant of the KB to the room; a `:read-write` grant (what attaching records by
+default) writes data under
+existing attributes only. Each use is checked again, so
 detaching a KB takes it away from a running agent. A room with no KB attached
 has no KB in its sandbox; nothing falls back to its creator's KBs.
 

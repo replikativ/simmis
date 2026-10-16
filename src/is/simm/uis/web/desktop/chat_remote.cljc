@@ -81,7 +81,8 @@
   (spin-remote server-id [party-id-str]
     (let [pid (identity party-id-str)]
       #?(:clj (let [party-id  (java.util.UUID/fromString pid)
-                    party-kbs (kbs/get-party-kbs party-id)
+                    ;; owned, shared, and reached through a room's grant
+                    party-kbs (kbs/sidebar-kbs party-id)
                     party-rooms (rooms/get-party-rooms party-id)
                     ;; Derived contact set: explicit :party/contacts + everyone in shared rooms
                     ;; (excluding self). Agent entries carry their primary room for open-in-tab.
@@ -180,9 +181,12 @@
                               ;; roster. The client opens that store when this
                               ;; wiki is expanded or viewed and derives the
                               ;; folder tree reactively from its local DB.
-                              (-> kb
-                                  (update :kb/created remote/wire-instant)
-                                  (update :kb/db-scope str)))))
+                              (cond-> (-> kb
+                                          (update :kb/created remote/wire-instant)
+                                          (update :kb/db-scope str))
+                                (:kb/via-rooms kb)
+                                (update :kb/via-rooms
+                                        (fn [vs] (mapv #(update % :room/id str) vs)))))))
                  ;; Drives reachable from the user's rooms (the sidebar
                  ;; Files section). Room-scoped: clicking opens that
                  ;; room's :files tab.
