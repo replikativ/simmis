@@ -46,8 +46,29 @@
 
 (def product-default-model
   "The compiled-in product default: what `default-model` answers when the
-   deployment configures none."
-  "accounts/fireworks/models/glm-5p2")
+   deployment configures none.
+
+   A FAMILY, resolved at turn time to the newest GLM the account serves and
+   dvergr has registered. It used to be the exact id glm-5p2, and when
+   Fireworks withdrew that id every agent without a choice of its own stopped
+   joining — the freezing this namespace exists to prevent, one level up."
+  "accounts/fireworks/models/glm-*")
+
+(defn configured-model
+  "The `:models {k …}` entry of `config` (config.local.edn): a model id or
+   family string, trimmed, or nil when absent. A value that is not a non-blank
+   string is a configuration error and throws rather than being skipped. One
+   reader for every key of `:models` — `:default` here, `:vision`/`:cheap` in
+   `is.simm.model.task-models`."
+  [k config]
+  (let [configured (get-in config [:models k])]
+    (when (and (some? configured)
+               (not (and (string? configured) (seq (str/trim configured)))))
+      (throw (ex-info (str "`:models {" k " ...}` must be a model id or family string")
+                      {:type (if (= k :default) :invalid-default-model :invalid-task-model)
+                       :key k
+                       :configured configured})))
+    (some-> configured str/trim)))
 
 (declare ^:dynamic *env-lookup*)
 
@@ -68,16 +89,11 @@
    configuration error and throws rather than being skipped."
   ([] (default-model-choice (*env-lookup* "SIMMIS_DEFAULT_MODEL") (dcfg/config)))
   ([env config]
-   (let [configured (get-in config [:models :default])]
-     (when (and (some? configured)
-                (not (and (string? configured) (seq (str/trim configured)))))
-       (throw (ex-info "`:models {:default ...}` must be a model id or family string"
-                       {:type :invalid-default-model
-                        :configured configured})))
+   (let [configured (configured-model :default config)]
      (if-let [from-env (some-> env str/trim not-empty)]
        {:model from-env :source :env}
        (if configured
-         {:model (str/trim configured) :source :config}
+         {:model configured :source :config}
          {:model product-default-model :source :product})))))
 
 (defn default-model

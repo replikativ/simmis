@@ -20,6 +20,9 @@ jobs:
     resource_class: large
     steps:
       - checkout
+      - run:
+          name: Install audio processing dependency
+          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - restore_cache:
           keys:
             - deps-v1-{{ checksum "deps.edn" }}

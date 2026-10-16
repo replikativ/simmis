@@ -28,18 +28,29 @@
        (let [beat (:screen-grant/beat g)]
          (and beat (< (- now beat) stale-after-ms)))))
 
-(defn- grant-eid [db party room]
+(defn- grant-eid
+  "The CURRENT grant of `party` onto `room` — the most recently opened one.
+   Earlier grants for the same pair are the past windows (`windows-for-room`)."
+  [db party room]
   (when (and (some? party) (some? room))
-    (ffirst (d/q '[:find ?e
-                   :in $ ?p ?r
-                   :where [?e :screen-grant/party ?p]
-                          [?e :screen-grant/room ?r]]
-                 db party room))))
+    (->> (d/q '[:find ?e ?from
+                :in $ ?p ?r
+                :where [?e :screen-grant/party ?p]
+                       [?e :screen-grant/room ?r]
+                       [?e :screen-grant/from ?from]]
+              db party room)
+         ;; ties on `from` (a close and a reopen in one millisecond) go to
+         ;; the later entity, which is the newer grant
+         (sort-by (juxt second first) #(compare %2 %1))
+         ffirst)))
 
 (defn open-grant!
   "Open (or refresh) the window exposing `party`'s stream to `room`. Idempotent:
-   an already-open grant is heartbeated; a closed or missing one is (re)opened
-   with a fresh `from`. Returns the grant uuid."
+   an already-open grant is heartbeated. Otherwise a NEW grant opens with a fresh
+   `from`, and the previous one stays as a past window — an agent asked after a
+   meeting reads what was shared during it (`windows-for-room`). A previous grant
+   whose client died without closing it is closed at its last heartbeat, the
+   last moment it is known to have been open. Returns the grant uuid."
   [party room]
   (system-db/require-id! :party party)
   (system-db/require-id! :room room)
@@ -51,18 +62,16 @@
     (if (active? existing now)
       (do (d/transact c [{:db/id eid :screen-grant/beat now}])
           (:screen-grant/id existing))
-      (let [id (or (:screen-grant/id existing) (java.util.UUID/randomUUID))]
-        (d/transact c [(cond-> {:screen-grant/id id
+      (let [id (java.util.UUID/randomUUID)]
+        (d/transact c (cond-> [{:screen-grant/id id
                                 :screen-grant/party party
                                 :screen-grant/room room
                                 :screen-grant/from now
-                                :screen-grant/beat now}
-                         ;; reopening a previously-closed grant: drop the stale :until
-                         eid (assoc :db/id eid))])
-        (when eid
-          (when (:screen-grant/until existing)
-            (d/transact c [[:db/retract eid :screen-grant/until
-                            (:screen-grant/until existing)]])))
+                                :screen-grant/beat now}]
+                        (and existing (nil? (:screen-grant/until existing)))
+                        (conj {:db/id eid
+                               :screen-grant/until (or (:screen-grant/beat existing)
+                                                       (:screen-grant/from existing))})))
         (log/log! {:level :info :id ::grant-opened :data {:party party :room room}})
         id))))
 
@@ -107,6 +116,32 @@
          (mapv (fn [g] {:party (:screen-grant/party g)
                         :from (:screen-grant/from g)
                         :beat (:screen-grant/beat g)})))))
+
+(defn- window-of
+  "A grant as the window it exposes: `:until` is where it closed — explicitly,
+   or at its last heartbeat when its client died — and nil while it is open."
+  [g now]
+  (let [open? (active? g now)]
+    {:party (:screen-grant/party g)
+     :from (:screen-grant/from g)
+     :until (when-not open?
+              (or (:screen-grant/until g) (:screen-grant/beat g) (:screen-grant/from g)))
+     :active? open?}))
+
+(defn windows-for-room
+  "EVERY window any party has opened onto `room`, past and present —
+   [{:party uuid :from ms :until ms|nil :active? bool} …], oldest first. A
+   frame is visible to `room` only when its time falls inside one of its
+   sharer's windows here; nothing else of a member's stream ever is."
+  [room]
+  (let [db @(conn) now (System/currentTimeMillis)]
+    (->> (when (some? room)
+           (d/q '[:find [?e ...] :in $ ?r :where [?e :screen-grant/room ?r]] db room))
+         (map #(d/entity db %))
+         (filter :screen-grant/from)
+         (map #(window-of % now))
+         (sort-by :from)
+         vec)))
 
 (defn active-window
   "The open window bounds for `party`→`room`, or nil — {:from ms} for filtering

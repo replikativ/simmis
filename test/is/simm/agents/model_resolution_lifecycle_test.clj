@@ -28,7 +28,8 @@
         installed (atom [])
         vocab-installers '[add-wiki-ns! add-kb-write-ns! add-proposal-ns!
                            add-book-ns! add-sheet-ns! add-office-ns!
-                           add-screen-ns! add-workflow-ns! add-web-ns!]
+                           add-screen-ns! add-transcript-ns! add-workflow-ns!
+                           add-web-ns!]
         redefs {(room-agents-var 'get-room-kb-conns) (constantly [])
                 (room-agents-var 'persona+tools) (constantly "test prompt")
                 #'room-agents/describe-model-resolution

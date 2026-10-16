@@ -2250,8 +2250,9 @@
              :else
              (el/div {:class "screens-grid"}
                (ifor-each :blob-id (vec items)
-                 (fn [{:keys [blob-id at text score]}]
-                   (el/div {:key blob-id :class "screen-card"}
+                 (fn [{:keys [blob-id at text score failed]}]
+                   (el/div {:key blob-id :class (str "screen-card"
+                                                     (when failed " screen-card--failed"))}
                      (el/button {:class "screen-card-delete"
                                  :title "Delete this screenshot"
                                  :on-click (fn [_]
@@ -2268,7 +2269,11 @@
                        (when score
                          (el/span {:class "screen-card-score"}
                            (str "score " (.toFixed score 2)))))
-                     (el/div {:class "screen-card-text"} text))))))
+                     (if failed
+                       (el/div {:class "screen-card-failed"
+                                :title "This frame is stored, but agents get no text for it."}
+                         (str "Not described: " failed))
+                       (el/div {:class "screen-card-text"} text)))))))
 
            ;; Recordings — the caller's own video archive (owner-scoped)
            (render-recordings recordings-results)))

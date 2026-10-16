@@ -10,6 +10,7 @@
    as backlinks, zero new schema; dh:// record-refs when datahike#852
    ships. Bad merges stay cheap: datahike history + KB branching."
   (:require [is.simm.model.knowledge-bases :as kbs]
+            [is.simm.model.task-models :as task-models]
             [datahike.api :as d]
             [clojure.edn :as edn]
             [clojure.string :as str]
@@ -21,6 +22,20 @@
               [?b :entity/uuid ?u] [?b :block/content ?c]]
             @kb-conn title)
        (mapv (fn [[u c]] {:uuid u :content (str/replace (str c) #"<[^>]+>" "")}))))
+
+(defn- cheap-call
+  "One cheap one-shot call on the `:cheap` task model (`task-models`): dvergr's
+   default when none is configured, the configured one otherwise. A configured
+   model that resolves to nothing answers `{:error reason}` — the shape
+   `cheap-llm-call` answers its own failures in — and is logged, never
+   swapped for dvergr's default."
+  [prompt opts]
+  (try
+    ((requiring-resolve 'dvergr.tools.llm-call/cheap-llm-call)
+     prompt "" (merge opts (task-models/model-opts :cheap)))
+    (catch clojure.lang.ExceptionInfo e
+      (log/log! {:level :warn :id ::cheap-model-unavailable :data (ex-data e)})
+      {:error (ex-message e)})))
 
 (defn- parse-edn-ops [s]
   (try (let [v (edn/read-string (str/trim (str/replace (str s) #"(?s)```(edn)?|```" "")))]
@@ -43,8 +58,7 @@
                     ":add = genuinely new fact; :update = block N is now wrong/outdated; "
                     "NOTHING new → []. Never restate what the page already says. "
                     "Wrap entities/topics in [[wikilinks]] inside :claim.")
-        call #((requiring-resolve 'dvergr.tools.llm-call/cheap-llm-call)
-               prompt "" {:max-tokens 1200})
+        call #(cheap-call prompt {:max-tokens 1200})
         parse #(when-not (:error %)
                  (->> (parse-edn-ops (:text %))
                       (filterv (fn [o] (and (#{:add :update} (:op o))
@@ -59,11 +73,11 @@
 (defn review-op
   "Adversarial grounding check: is `claim` supported by `source-text`?"
   [claim source-text]
-  (let [r ((requiring-resolve 'dvergr.tools.llm-call/cheap-llm-call)
+  (let [r (cheap-call
            (str "Claim: " claim "\n\nSource:\n" source-text
                 "\n\nIs the claim DIRECTLY supported by the source, with no invented "
                 "details? Try to refute it. Answer ONLY yes or no.")
-           "" {:max-tokens 300})]           ; reasoning models think before answering
+           {:max-tokens 300})]           ; reasoning models think before answering
     ;; take the LAST yes/no in the visible text (ignore any leaked deliberation)
     ;;
     ;; LOWERCASE BEFORE COMPARING. The regex is case-insensitive, so it happily

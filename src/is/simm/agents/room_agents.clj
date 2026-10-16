@@ -58,6 +58,7 @@
             [is.simm.media.sheet :as sheet]
             [is.simm.media.office :as office]
             [is.simm.runtimes.screen-intake :as screen-intake]
+            [is.simm.runtimes.transcripts :as transcripts]
             [is.simm.runtimes.web-intake :as web-intake]
             [clojure.zip]
             [is.simm.agents.templates :as templates]
@@ -1851,6 +1852,16 @@
   [sci-ctx room-uuid]
   (sci/add-namespace! sci-ctx 'screen (screen-intake/sci-namespace room-uuid)))
 
+(defn- add-transcript-ns!
+  "Install `transcript/*` — the room's meeting transcripts (files under
+   /drive/transcripts/) to list and read, and `transcribe!` for an audio file
+   on the drive. Acts as `agent-uuid`, who authors a transcript it makes."
+  [sci-ctx room-uuid agent-uuid]
+  (sci/add-namespace! sci-ctx 'transcript
+                      (vocab/with-docs 'transcript
+                        (transcripts/sci-namespace room-uuid agent-uuid)
+                        vocab/transcript-docs)))
+
 (defn- add-web-ns!
   "Install `web/*` — the OWNER's captured web pages as DATA — but ONLY in their
    personal room. Browsing is personal: a shared room's agents must not see any
@@ -2566,7 +2577,8 @@
                                       " mkdir, mv). Files there are visible to the"
                                       " humans in the room and persist."
                                       sheet/prompt-block
-                                      office/prompt-block))
+                                      office/prompt-block
+                                      transcripts/prompt-block))
                                screen-intake/prompt-block
                                ;; web/* is installed only in the owner's personal
                                ;; room — describe it only there.
@@ -2594,6 +2606,7 @@
                   (add-sheet-ns! sci-ctx cctx room room-uuid)
                   (add-office-ns! sci-ctx cctx room room-uuid)
                   (add-screen-ns! sci-ctx room-uuid)
+                  (add-transcript-ns! sci-ctx room-uuid agent-uuid)
                   (add-workflow-ns! sci-ctx room-uuid)
                   (add-web-ns! sci-ctx room-uuid)))
 
@@ -2971,6 +2984,34 @@
                  :data {:room room-uuid
                         :agent (:party/id agent)
                         :error-message (.getMessage e2)}}))))
+
+(defn post-room-record!
+  "Post a message that RECORDS something into the room — a call transcript —
+   authored by `author` (a party uuid), with metadata `:kind kind`. Returns the
+   message id.
+
+   Unlike `post-user-message!` it wakes nobody: it goes to the reserved
+   `:_room-log` endpoint, so the projector persists it into the timeline and no
+   participant is handed an hour of transcript as a turn, and no mirror
+   (telegram) relays it out. People read it; agents read it when asked (the
+   transcript file on the drive is what `transcript/read` returns)."
+  [room-uuid author content kind]
+  (binding [rtc/*execution-context* ctx/server-context]
+    (let [room (or (live-room room-uuid)
+                   (throw (ex-info "No live discourse room" {:room-uuid room-uuid})))
+          room-conn (some-> (room-dbs/get-room-db-scope room-uuid)
+                            room-dbs/connect-room-database)
+          author-party (or (parties/get-party author)
+                           (throw (ex-info "Unknown author party" {:party author})))]
+      (ensure-room-party-entity! room-conn author-party)
+      (ensure-room-projector! room room-uuid room-conn)
+      (let [msg (binding [rtc/*execution-context* (:ctx room)]
+                  (assoc (d/message (party->actor-kw (:party/id author-party)) :_room-log
+                                    content nil {:role :user :kind kind})
+                         :id (random-uuid)))]
+        (binding [rtc/*execution-context* (:ctx room)]
+          (d/post! room msg))
+        (:id msg)))))
 
 (defn post-user-message!
   "Post a user message into the room's live dvergr discourse Room. Works

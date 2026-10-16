@@ -292,6 +292,31 @@
    :morphism/cardinality :one
    :morphism/property-type :checkbox})
 
+(def morphism-Page-source
+  "Page/source : Page → String (many) — the documents a wiki page's claims
+   cite, as citation targets: `doc`, `doc#Section` or `dh://…` (the wiki
+   layout pinned with dvergr's wiki/v4 checker; doc/data-model.md)."
+  {:entity/uuid #uuid "00000000-0000-0000-0000-000000000113"
+   :entity/name "S/Page/source"
+   :morphism/src [:entity/uuid #uuid "00000000-0000-0000-0000-000000000022"]
+   :morphism/dst [:entity/uuid #uuid "00000000-0000-0000-0000-000000000010"]
+   :morphism/of-category [:entity/uuid #uuid "00000000-0000-0000-0000-000000000001"]
+   :morphism/cardinality :many
+   :morphism/optional? true
+   :morphism/property-type :text})
+
+(def morphism-Page-entry-point
+  "Page/entry-point : Page → String — where a reader of the source starts
+   (a section, a timestamp, a file), for an atom or overview page."
+  {:entity/uuid #uuid "00000000-0000-0000-0000-000000000114"
+   :entity/name "S/Page/entry-point"
+   :morphism/src [:entity/uuid #uuid "00000000-0000-0000-0000-000000000022"]
+   :morphism/dst [:entity/uuid #uuid "00000000-0000-0000-0000-000000000010"]
+   :morphism/of-category [:entity/uuid #uuid "00000000-0000-0000-0000-000000000001"]
+   :morphism/cardinality :one
+   :morphism/optional? true
+   :morphism/property-type :text})
+
 ;; ============================================================================
 ;; Option Morphisms
 ;; ============================================================================
@@ -650,6 +675,8 @@
    (schema/morphism->attribute-schema morphism-Tag-color "S/String")
    (schema/morphism->attribute-schema morphism-Page-title "S/String")
    (schema/morphism->attribute-schema morphism-Page-archived "S/Boolean")
+   (schema/morphism->attribute-schema morphism-Page-source "S/String")
+   (schema/morphism->attribute-schema morphism-Page-entry-point "S/String")
    (schema/morphism->attribute-schema morphism-Option-name "S/String")
    (schema/morphism->attribute-schema morphism-Option-color "S/String")
    (schema/morphism->attribute-schema morphism-Option-for-property "S/Block")
@@ -718,6 +745,8 @@
     morphism-Tag-color
     morphism-Page-title
     morphism-Page-archived
+    morphism-Page-source
+    morphism-Page-entry-point
     morphism-Option-name
     morphism-Option-color
     morphism-Option-for-property
@@ -776,6 +805,8 @@
      [:entity/uuid (:entity/uuid morphism-Tag-color)]
      [:entity/uuid (:entity/uuid morphism-Page-title)]
      [:entity/uuid (:entity/uuid morphism-Page-archived)]
+     [:entity/uuid (:entity/uuid morphism-Page-source)]
+     [:entity/uuid (:entity/uuid morphism-Page-entry-point)]
      [:entity/uuid (:entity/uuid morphism-Option-name)]
      [:entity/uuid (:entity/uuid morphism-Option-color)]
      [:entity/uuid (:entity/uuid morphism-Option-for-property)]

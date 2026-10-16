@@ -8,10 +8,19 @@
    client posts to `/screen-frames` — no room in the path; the sharer's identity
    comes from the JWT.
 
-   A room sees a user's stream only through an active GRANT
+   A room sees a user's stream only through a GRANT
    (`is.simm.model.screen-grants`): the share button toggles a time-boxed window,
-   not a capture. The agent reads it through the `screen/*` SCI vocabulary
-   (`sci-namespace`), which resolves the room's active grants → the parties
+   not a capture. Windows that have ENDED stay readable to that room — an agent
+   asked after a meeting reads what was shared during it — and nothing outside
+   a window, or granted to another room, ever is.
+
+   A frame the vision model could not describe is STORED, failed, with the
+   reason (`:screenshot/failed`): the owner's gallery shows it and `screen/*`
+   returns it with `:failed`. It used to be dropped with a log line, so a
+   withdrawn model looked like nobody sharing anything.
+
+   The agent reads it through the `screen/*` SCI vocabulary
+   (`sci-namespace`), which resolves the room's grant windows → the parties
    sharing into it → their recent frames as DATA, ATTRIBUTED by name. So an agent
    can tell whose screen it is looking at and PROGRAM over it, and a member's raw
    frames are never pooled where the room can browse them — the room gets the
@@ -22,6 +31,7 @@
    vocabulary, not a bespoke tool."
   (:require [is.simm.runtimes.instance :as instance]
             [is.simm.model.screen-grants :as grants]
+            [is.simm.model.task-models :as task-models]
             [is.simm.model.parties :as parties]
             [is.simm.model.blobs :as blobs]
             [is.simm.model.system-db :as system-db]
@@ -39,6 +49,10 @@
    {:db/ident :screenshot/blob-id :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one}
    {:db/ident :screenshot/transcript :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   ;; why the frame has no transcript: its describe failed. Exactly one of
+   ;; :screenshot/transcript and :screenshot/failed is set on a frame.
+   {:db/ident :screenshot/failed :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one}])
 
 (def screens-fulltext-ident :screens/fulltext)
@@ -78,43 +92,53 @@
               (swap! screens-conns assoc party-uuid conn)
               conn)))))
 
-(defn- persist-frame! [party-uuid {:keys [at blob-id text]}]
+(defn- persist-frame! [party-uuid {:keys [at blob-id text failed]}]
   (try
     (d/transact (ensure-screens-conn party-uuid)
-                [{:screenshot/at at
-                  :screenshot/blob-id blob-id
-                  :screenshot/transcript text}])
+                [(cond-> {:screenshot/at at
+                          :screenshot/blob-id blob-id}
+                   text (assoc :screenshot/transcript text)
+                   failed (assoc :screenshot/failed failed))])
     (catch Throwable t
       (log/log! {:level :error :id ::persist-frame-failed
                  :data {:party party-uuid :error (str t)}}))))
 
+(defn- in-windows?
+  "Whether `at` lies inside one of `windows` ([{:from :until}], `until` nil =
+   still open). nil `windows` means unbounded — the owner's own view."
+  [windows at]
+  (or (nil? windows)
+      (boolean (some (fn [{:keys [from until]}]
+                       (and (>= (long at) (long from))
+                            (or (nil? until) (<= (long at) (long until)))))
+                     windows))))
+
+(defn- frame-of [e]
+  (cond-> {:at (:screenshot/at e) :blob-id (:screenshot/blob-id e)
+           :text (:screenshot/transcript e)}
+    (:screenshot/failed e) (assoc :failed (:screenshot/failed e))))
+
 (defn search-frames
   "Frames of ONE party's stream: ranked fulltext for `query`, or the latest `n`
-   when query is blank. Optional `since` (epoch ms) clips to a grant window.
-   Returns [{:at :blob-id :text :score}]."
+   when query is blank. `windows` ([{:from :until}]) clips to grant windows;
+   nil is the owner's unbounded view. Failed frames carry `:failed` (the
+   reason) and no `:text`; fulltext never finds them, a blank query lists them.
+   Returns [{:at :blob-id :text :failed? :score?}]."
   ([party-uuid query n] (search-frames party-uuid query n nil))
-  ([party-uuid query n since]
+  ([party-uuid query n windows]
    (let [conn (ensure-screens-conn party-uuid)
-         db @conn
-         after? (fn [at] (or (nil? since) (>= (long at) (long since))))]
+         db @conn]
      (if (str/blank? (str query))
-       (->> (d/q '[:find ?at ?blob ?text
-                   :where [?e :screenshot/at ?at]
-                          [?e :screenshot/blob-id ?blob]
-                          [?e :screenshot/transcript ?text]]
-                 db)
-            (filter (fn [[at _ _]] (after? at)))
-            (sort-by first >)
+       (->> (d/q '[:find ?e ?at :where [?e :screenshot/at ?at]] db)
+            (filter (fn [[_ at]] (in-windows? windows at)))
+            (sort-by second >)
             (take n)
-            (mapv (fn [[at blob text]] {:at at :blob-id blob :text text})))
+            (mapv (fn [[e _]] (frame-of (d/entity db e)))))
        (->> ((requiring-resolve 'dvergr.search.secondary/search)
              db screens-fulltext-ident (str query))
             (map (fn [[eid score]]
-                   (let [e (d/entity db eid)]
-                     {:score score :at (:screenshot/at e)
-                      :blob-id (:screenshot/blob-id e)
-                      :text (:screenshot/transcript e)})))
-            (filter #(after? (:at %)))
+                   (assoc (frame-of (d/entity db eid)) :score score)))
+            (filter #(in-windows? windows (:at %)))
             (take n)
             vec)))))
 
@@ -145,6 +169,27 @@ screenshot for a colleague who cannot see it:
   the user is working on over chrome/menus.
 - End with one line: what the user appears to be doing.")
 
+(defn- describe-frame
+  "Describe one frame: [description nil] or [nil reason]. The reason names
+   the model when one was configured (`:models {:vision …}`); dvergr's
+   `describe` answers nil on failure and logs the provider error itself
+   (`:dvergr.media.vision/vision-failed`)."
+  [^bytes bytes mime]
+  (try
+    (let [opts (task-models/model-opts :vision)
+          desc ((requiring-resolve 'dvergr.media.vision/describe)
+                bytes (or mime "image/jpeg")
+                (merge {:prompt describe-prompt :max-tokens 8000} opts))]
+      (if (str/blank? desc)
+        [nil (str "The vision model "
+                  (if-let [m (:model opts)] m "(dvergr's default)")
+                  " returned no description.")]
+        [desc nil]))
+    (catch clojure.lang.ExceptionInfo e
+      (if (= :task-model-unavailable (:type (ex-data e)))
+        [nil (ex-message e)]
+        (throw e)))))
+
 (defn handle-frame!
   "Accept a posted frame for `party-uuid` (the authenticated sharer). Stores it
    in the user's stream; grants decide who may see it. Returns a ring response."
@@ -164,23 +209,24 @@ screenshot for a colleague who cannot see it:
         (future
           (try
             (let [blob (blobs/store! bytes (or mime "image/jpeg"))
-                  describe (requiring-resolve 'dvergr.media.vision/describe)
-                  desc (describe bytes (or mime "image/jpeg")
-                                 {:prompt describe-prompt :max-tokens 8000})]
-              (if (and desc (not (str/blank? desc)))
-                (let [frame {:at now :text desc :blob-id (:blob/id blob)}]
-                  (swap! state update party-uuid
-                         (fn [s]
-                           (-> s
-                               (update :frames (fnil conj []) frame)
-                               (update :frames #(vec (take-last keep-frames %)))
-                               (assoc :busy? false))))
-                  (persist-frame! party-uuid frame)
-                  (log/log! {:level :info :id ::frame-described
-                             :data {:party party-uuid :blob (:blob/id blob)
-                                    :chars (count desc)}}))
-                (do (swap! state update party-uuid assoc :busy? false)
-                    (log/log! {:level :warn :id ::describe-failed :data {:party party-uuid}}))))
+                  [desc failed] (describe-frame bytes mime)
+                  frame (cond-> {:at now :blob-id (:blob/id blob)}
+                          desc (assoc :text desc)
+                          failed (assoc :failed failed))]
+              (swap! state update party-uuid
+                     (fn [s]
+                       (-> s
+                           (update :frames (fnil conj []) frame)
+                           (update :frames #(vec (take-last keep-frames %)))
+                           (assoc :busy? false))))
+              (persist-frame! party-uuid frame)
+              (if desc
+                (log/log! {:level :info :id ::frame-described
+                           :data {:party party-uuid :blob (:blob/id blob)
+                                  :chars (count desc)}})
+                (log/log! {:level :warn :id ::describe-failed
+                           :data {:party party-uuid :blob (:blob/id blob)
+                                  :reason failed}})))
             (catch Throwable e
               (swap! state update party-uuid assoc :busy? false)
               (log/log! {:level :error :id ::frame-failed
@@ -231,10 +277,32 @@ screenshot for a colleague who cannot see it:
           {:party (str party) :name (party-label party) :since from})
         (grants/active-parties-for-room room-uuid)))
 
+(defn room-shares
+  "Every share INTO `room-uuid`, ended or not, oldest first —
+   [{:party :name :from :until :active?} …]; `:until` is nil while open."
+  [room-uuid]
+  (mapv (fn [{:keys [party] :as w}]
+          (assoc w :party (str party) :name (party-label party)))
+        (grants/windows-for-room room-uuid)))
+
+(defn- windows-by-party
+  "`room-uuid`'s windows grouped by sharer, each clipped to [since, until]
+   when given — {party [{:from :until}]}. Clipping only narrows a window."
+  [room-uuid since until]
+  (->> (grants/windows-for-room room-uuid)
+       (keep (fn [{:keys [party from] :as w}]
+               (let [from (if since (max (long from) (long since)) from)
+                     wu (:until w)
+                     to (cond (and wu until) (min (long wu) (long until))
+                              :else (or wu until))]
+                 (when (or (nil? to) (<= (long from) (long to)))
+                   [party {:from from :until to}]))))
+       (reduce (fn [m [p w]] (update m p (fnil conj []) w)) {})))
+
 (defn room-frames
-  "The `n` most recent described frames visible to `room-uuid`, across every
+  "The `n` most recent frames visible to `room-uuid`, across every
    active sharer, newest first, each attributed —
-   [{:party :name :at :blob-id :text} …]."
+   [{:party :name :at :blob-id :text :failed?} …]."
   [room-uuid n]
   (let [n (max 1 (min n keep-frames))]
     (->> (for [{:keys [party from]} (grants/active-parties-for-room room-uuid)
@@ -245,28 +313,50 @@ screenshot for a colleague who cannot see it:
          (take n)
          vec)))
 
+(def ^:private max-history 200)
+
+(defn room-history
+  "Stored frames shared INTO `room-uuid` — during windows that have ended as
+   well as open ones — newest first, attributed. `since`/`until` (epoch ms)
+   narrow it to e.g. a meeting's time; they never widen a window.
+   [{:party :name :at :blob-id :text :failed?} …]"
+  [room-uuid {:keys [since until n] :or {n 20}}]
+  (let [n (max 1 (min (long n) max-history))]
+    (->> (for [[party windows] (windows-by-party room-uuid since until)
+               f (search-frames party "" n windows)]
+           (assoc f :party (str party) :name (party-label party)))
+         (sort-by :at >)
+         (take n)
+         vec)))
+
 (defn room-frame-search
-  "Fulltext over what each sharer has granted `room-uuid` (their whole shared
-   history within the window), attributed — [{:party :name :at :blob-id :text :score} …]."
+  "Fulltext over what each sharer has granted `room-uuid` — every window, ended
+   or open — attributed: [{:party :name :at :blob-id :text :score} …]."
   [room-uuid query n]
-  (->> (for [{:keys [party from]} (grants/active-parties-for-room room-uuid)
-             hit (search-frames party query n from)]
+  (->> (for [[party windows] (windows-by-party room-uuid nil nil)
+             hit (search-frames party query n windows)]
          (assoc hit :party (str party) :name (party-label party)))
        (sort-by (fn [h] (or (:score h) 0)) >)
        (take n)
        vec))
+
+(defn- frame-line [{:keys [name text failed]}]
+  (str name ": " (or text (str "[no description — " failed "]"))))
 
 (defn sci-namespace
   "Build the `screen/*` map for `sci/add-namespace!`, bound to `room-uuid`.
    Everything is room-scoped through grants and returns plain data."
   [room-uuid]
   {'sharers (fn [] (room-sharers room-uuid))
+   'shares  (fn [] (room-shares room-uuid))
    'frames  (fn ([] (room-frames room-uuid 1))
               ([n] (room-frames room-uuid n)))
+   'history (fn ([] (room-history room-uuid {}))
+              ([opts] (room-history room-uuid (or opts {}))))
    'search  (fn ([query] (room-frame-search room-uuid query 10))
               ([query n] (room-frame-search room-uuid query n)))
    'text    (fn [] (->> (room-frames room-uuid keep-frames)
-                        (map (fn [{:keys [name text]}] (str name ": " text)))
+                        (map frame-line)
                         (str/join "\n\n")))})
 
 (def prompt-block
@@ -277,10 +367,18 @@ screenshot for a colleague who cannot see it:
        " (each returns plain data you can filter/aggregate):\n"
        "- `(screen/sharers)` — who is sharing right now:"
        " [{:party :name :since}]\n"
-       "- `(screen/frames)` / `(screen/frames n)` — recent described frames,"
-       " newest first, attributed: [{:name :at :blob-id :text}]\n"
-       "- `(screen/search \"billing dashboard\")` — fulltext over what has been"
-       " shared into this room\n"
-       "- `(screen/text)` — the recent screen text concatenated, for a quick look\n"
-       "All are empty when nobody is sharing. Use them when the conversation"
-       " refers to something on screen ('this', 'here', an error, a document…)."))
+       "- `(screen/frames)` / `(screen/frames n)` — recent described frames of"
+       " the live shares, newest first, attributed: [{:name :at :blob-id :text}]\n"
+       "- `(screen/shares)` — every share into this room, ENDED ones too:"
+       " [{:name :from :until :active?}] (epoch ms; :until nil while open)\n"
+       "- `(screen/history)` / `(screen/history {:since ms :until ms :n 50})` —"
+       " stored frames from those shares, newest first. Use it after a meeting:"
+       " pass the meeting's time range.\n"
+       "- `(screen/search \"billing dashboard\")` — fulltext over everything shared"
+       " into this room\n"
+       "- `(screen/text)` — the live screen text concatenated, for a quick look\n"
+       "A frame whose description FAILED has `:failed` (the reason) and no `:text`"
+       " — say so rather than guessing what was on screen. You see only what was"
+       " shared into THIS room, inside its share windows. Use these when the"
+       " conversation refers to something on screen ('this', 'here', an error,"
+       " a document…)."))

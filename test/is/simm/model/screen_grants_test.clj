@@ -100,3 +100,28 @@
     (testing "a fresh heartbeat brings it back"
       (is (sg/heartbeat! alice r1))
       (is (= [r1] (sg/active-rooms-for-party alice))))))
+
+(deftest ended-windows-are-kept-as-history
+  (testing "reopening after a close opens a NEW window; the ended one stays,
+            bounded, so an agent asked after a meeting can read it"
+    (let [alice (uuid) r1 (uuid) r2 (uuid)]
+      (sg/open-grant! alice r1)
+      (sg/close-grant! alice r1)
+      (sg/open-grant! alice r1)
+      (sg/open-grant! alice r2)
+      (let [ws (sg/windows-for-room r1)]
+        (is (= 2 (count ws)))
+        (is (= [false true] (mapv :active? ws)) "oldest first: ended, then open")
+        (is (some? (:until (first ws))) "the ended window is bounded")
+        (is (nil? (:until (second ws))) "the open window is not")
+        (is (every? #(= alice (:party %)) ws)))
+      (is (= 1 (count (sg/windows-for-room r2))) "another room's windows are its own")))
+  (testing "a grant whose client died is closed at its last heartbeat when the
+            next share opens — never left open-ended in the history"
+    (let [bob (uuid) r (uuid)]
+      (sg/open-grant! bob r)
+      (let [beat (:beat (first (sg/active-parties-for-room r)))]
+        (with-redefs [sg/stale-after-ms -1]
+          (sg/open-grant! bob r))
+        (let [[old] (sg/windows-for-room r)]
+          (is (= beat (:until old))))))))

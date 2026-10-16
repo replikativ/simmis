@@ -67,6 +67,25 @@ keyword, and `:S.Page/kind` a select. `save-property` refuses a value that does
 not fit the attribute's type, with the reason, before it transacts
 (`model/page_kind.cljc`, `value-fits?`).
 
+A wiki page in the atom/overview/index layout records what it cites:
+`S/Page/source : Page → String`, cardinality many (`:S.Page/source`, a set of
+citation targets — `doc`, `doc#Section` or `dh://…`, e.g.
+`transcripts/2026-10-16-1400-planning.md`), and `S/Page/entry-point : Page →
+String` (`:S.Page/entry-point`, where a reader of the source starts). Both are
+seed morphisms, so every store gets them at its next install. The layout
+inside the page is block-level: a claim is a top-level block whose HTML starts
+with `<h2>`, evidence one block `<blockquote>"…"</blockquote><p>[[doc#Section]]</p>`,
+and a `<strong>Sources:</strong>` block closes it — the shape dvergr's wiki/v4
+checker projects to Markdown.
+
+A screen-share frame (the sharer's own screens DB, `runtimes/screen_intake.clj`)
+carries exactly one of `:screenshot/transcript` (its description) and
+`:screenshot/failed` (why there is none). A screen-share grant
+(`:screen-grant/*`, system DB) is one WINDOW: reopening a closed share opens a
+new grant entity, and the old one stays with its `:until` — or is closed at its
+last heartbeat when its client died — so past windows bound what a room may
+read after the meeting.
+
 `:S.Page/kind` holds two sorts of kind. The wiki layout's — `:wiki/atom`,
 `:wiki/overview`, `:wiki/index` — are a person's to set. `:bootstrap` (seeded
 pages; the timeline hides them) and `:chat-summary` (the summarizer's record
