@@ -41,15 +41,50 @@
   (:require [clojure.string :as str]
             [dvergr.model.api.codex-auth :as codex-auth]
             [dvergr.model.registry :as registry]
+            [dvergr.substrate.config :as dcfg]
             [taoensso.telemere :as log]))
 
-(def default-model
-  "The explicit product default used only when nobody selected a model.
-
-   It is still subject to the same availability check as every saved choice;
-   an unavailable configured model never falls through to this id. Single
-   source of truth — `parties/default-model` re-exports it."
+(def product-default-model
+  "The compiled-in product default: what `default-model` answers when the
+   deployment configures none."
   "accounts/fireworks/models/glm-5p2")
+
+(declare ^:dynamic *env-lookup*)
+
+(defn default-model-choice
+  "The product default used only when nobody selected a model, and where it
+   came from: `{:model id :source :env|:config|:product}`.
+
+   A deployment chooses it with `SIMMIS_DEFAULT_MODEL` (wins when set) or
+   `:models {:default \"<id or family>\"}` in config.local.edn; otherwise it
+   is `product-default-model`. It is read on every call — at configuration
+   reads and participant joins — and never stored on an agent, for the reason
+   in the namespace doc.
+
+   It is still subject to the same availability check as every saved choice:
+   a configured default whose credential is missing reports that, with the
+   provider's instructions, and is never replaced by `product-default-model`
+   or any other model. A configured value that is not a non-blank string is a
+   configuration error and throws rather than being skipped."
+  ([] (default-model-choice (*env-lookup* "SIMMIS_DEFAULT_MODEL") (dcfg/config)))
+  ([env config]
+   (let [configured (get-in config [:models :default])]
+     (when (and (some? configured)
+                (not (and (string? configured) (seq (str/trim configured)))))
+       (throw (ex-info "`:models {:default ...}` must be a model id or family string"
+                       {:type :invalid-default-model
+                        :configured configured})))
+     (if-let [from-env (some-> env str/trim not-empty)]
+       {:model from-env :source :env}
+       (if configured
+         {:model (str/trim configured) :source :config}
+         {:model product-default-model :source :product})))))
+
+(defn default-model
+  "The product default model id (or family). See `default-model-choice`.
+   Single source of truth — `parties/default-model` delegates here."
+  ([] (:model (default-model-choice)))
+  ([env config] (:model (default-model-choice env config))))
 
 (def provider-contracts
   "The provider facts simmis can know without asking a provider.
@@ -1052,11 +1087,52 @@
 ;; Resolution
 ;; ---------------------------------------------------------------------------
 
-(def default-family
-  "Family form of `default-model`, for callers making an explicit family
-   selection. New agents inherit instead of storing this value."
-  (or (family-of default-model)
-      "accounts/fireworks/models/glm-*"))
+(defn family? [s] (str/includes? (str s) "*"))
+
+(defn default-family
+  "Family form of the current `default-model`, for callers making an explicit
+   family selection. New agents inherit instead of storing this value. Nil
+   when the default is an unversioned id, which has no family form."
+  []
+  (let [m (default-model)]
+    (if (family? m) m (family-of m))))
+
+(defn warn-if-default-unusable!
+  "Boot check: one warning when the product default cannot run on this
+   machine — its provider is unknown, or its credential is missing (for the
+   Codex subscription: no `codex login` for the user running simmis).
+
+   Only a warning. The default is resolved at turn time like every other
+   choice, so it surfaces as unavailable with the same instructions in the
+   picker and at join; nothing switches to another model. Returns the
+   problem it logged, or nil."
+  []
+  (let [{:keys [model source]} (default-model-choice)
+        provider (infer-provider model)
+        problem (cond
+                  (nil? provider) :unknown-provider
+                  (nil? (provider-contract provider)) :unknown-provider
+                  (not (credential-present? provider)) :needs-credential)]
+    (when problem
+      (log/log! {:level :warn :id ::default-model-unusable
+                 :data {:model model :source source :provider provider
+                        :problem problem}
+                 :msg (str "The product default model " model
+                           " (from " (case source
+                                       :env "SIMMIS_DEFAULT_MODEL"
+                                       :config ":models {:default ...}"
+                                       :product "the built-in default")
+                           ") cannot run here: "
+                           (case problem
+                             :unknown-provider
+                             "no provider serves this id."
+                             :needs-credential
+                             (or (:credential-instructions (provider-contract provider))
+                                 (str "set " (:credential-source (provider-contract provider))
+                                      " in the server environment, then restart simmis.")))
+                           " Agents with no model choice will report it unavailable;"
+                           " nothing falls back to another model.")}))
+    problem))
 
 (defn- auto-version? [version]
   (or (nil? version) (= version :auto) (= version "auto")))
@@ -1183,8 +1259,6 @@
   (resolve-model {:family model-family
                   :version model-version
                   :model (when-not model-family model)}))
-
-(defn family? [s] (str/includes? (str s) "*"))
 
 (defn resolve-string
   "One string, either form. `gpt-*-luna` is a family at its latest version;

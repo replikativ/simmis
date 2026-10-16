@@ -1,6 +1,7 @@
 (ns is.simm.model.model-selection-test
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [dvergr.model.registry :as registry]
+            [dvergr.substrate.config :as dcfg]
             [is.simm.model.fake-models-server :as fake]
             [is.simm.model.model-selection :as selection]))
 
@@ -308,7 +309,7 @@
 
 (deftest unavailable-preferred-version-with-no-newer-candidate-is-unavailable
   (let [usable (atom #{[:openai "gpt-5.4-luna"]
-                       [:fireworks selection/default-model]})
+                       [:fireworks selection/product-default-model]})
         seen (atom [])]
     (with-redefs [selection/known-versions-in (fn [_ _] ["5.6" "5.5" "5.4"])
                   selection/model-availability (availability-stub usable seen)]
@@ -320,12 +321,12 @@
         (is (false? (:available? result)))
         (is (not-any? #(= [:openai "gpt-5.4-luna"] %) @seen)
             "an older usable version is never considered")
-        (is (not-any? #(= [:fireworks selection/default-model] %) @seen)
+        (is (not-any? #(= [:fireworks selection/product-default-model] %) @seen)
             "the product fallback is never considered")))))
 
 (deftest preferred-fallback-refuses-other-families
   (let [usable (atom #{[:openai "gpt-5.6-sol"]
-                       [:fireworks selection/default-model]})
+                       [:fireworks selection/product-default-model]})
         seen (atom [])]
     (with-redefs [selection/known-versions-in
                   (fn [provider family]
@@ -1026,3 +1027,57 @@
                 (:reachability (selection/provider-catalog-status :anthropic))))
          (is (= ["accounts/fireworks/models/glm-5p2"]
                 (mapv :model-id (selection/available-catalog)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Product default: per deployment, resolved on every call
+;; ---------------------------------------------------------------------------
+
+(deftest the-product-default-comes-from-env-then-config-then-the-constant
+  (testing "nothing configured: the compiled-in constant"
+    (is (= {:model selection/product-default-model :source :product}
+           (selection/default-model-choice nil {})))
+    (is (= {:model selection/product-default-model :source :product}
+           (selection/default-model-choice "  " {:models {}}))))
+  (testing "config.local.edn :models {:default ...}"
+    (is (= {:model "codex-subscription-luna-6" :source :config}
+           (selection/default-model-choice
+            nil {:models {:default "codex-subscription-luna-6"}}))))
+  (testing "SIMMIS_DEFAULT_MODEL wins over the config"
+    (is (= {:model "gpt-*-luna" :source :env}
+           (selection/default-model-choice
+            " gpt-*-luna " {:models {:default "codex-subscription-luna-6"}}))))
+  (testing "a configured value that is not a model string is refused, not skipped"
+    (is (= :invalid-default-model
+           (try (selection/default-model-choice nil {:models {:default :codex}})
+                nil
+                (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))))
+
+(deftest the-product-default-is-read-at-call-time-not-frozen
+  (with-redefs [dcfg/config (constantly {:models {:default "codex-subscription-luna-6"}})]
+    (binding [selection/*env-lookup* {}]
+      (is (= "codex-subscription-luna-6" (selection/default-model)))
+      (is (= "codex-subscription-luna-*" (selection/default-family))))
+    (binding [selection/*env-lookup* {"SIMMIS_DEFAULT_MODEL" "accounts/fireworks/models/glm-5p2"}]
+      (is (= "accounts/fireworks/models/glm-5p2" (selection/default-model))))))
+
+(deftest a-default-without-its-credential-warns-once-and-stays-unavailable
+  (with-redefs [dcfg/config (constantly {:models {:default "codex-subscription-luna-6"}})]
+    (binding [selection/*env-lookup* {}]
+      (testing "no codex login: the boot check names the problem"
+        (is (= :needs-credential (selection/warn-if-default-unusable!)))
+        (let [availability (selection/model-availability (selection/default-model))]
+          (is (= :codex-subscription (:provider availability)))
+          (is (= :needs-credential (:state availability)))
+          (is (false? (:available? availability))))
+        (is (nil? (selection/resolve-string (selection/default-model)))
+            "an unavailable default resolves to nothing, never to another model"))
+      (testing "with a login it is usable and the check is quiet"
+        (binding [selection/*codex-login?* (constantly true)]
+          (is (nil? (selection/warn-if-default-unusable!)))
+          (is (= "codex-subscription-luna-6"
+                 (selection/resolve-string (selection/default-model)))))))))
+
+(deftest a-default-no-provider-serves-is-reported
+  (with-redefs [dcfg/config (constantly {:models {:default "no-such-model-7"}})]
+    (binding [selection/*env-lookup* {}]
+      (is (= :unknown-provider (selection/warn-if-default-unusable!))))))

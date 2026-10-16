@@ -730,6 +730,12 @@
     (system-db/init!)
     (mail-accounts/boot!)
 
+    ;; One loud line when the product default (SIMMIS_DEFAULT_MODEL /
+    ;; :models {:default ...}) cannot run on this machine — e.g. the Codex
+    ;; subscription without a `codex login`. Warning only: it still resolves
+    ;; at turn time and reports itself unavailable; nothing falls back.
+    ((requiring-resolve 'is.simm.model.model-selection/warn-if-default-unusable!))
+
     ;; Expose the kontor accounting kernel inside the agent clojure_eval sandbox
     ;; (dvergr owns the generic injector hook; the kontor binding lives in simmis
     ;; since simmis depends on kontor and dvergr does not). Idempotent.

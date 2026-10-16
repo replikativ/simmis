@@ -59,6 +59,21 @@
                 :header-names ["X-Subscription-Token"]}]
 
  ;; ---------------------------------------------------------------------------
+ ;; Product default model (optional). Used only when nobody chose a model: an
+ ;; agent with no override whose owner set no preference. Unset, it is the
+ ;; Fireworks GLM default (accounts/fireworks/models/glm-5p2). An exact id or a
+ ;; family ("gpt-*-luna" = newest available). Read at every join, never stored
+ ;; on an agent, so changing it and restarting moves every inheriting agent.
+ ;; SIMMIS_DEFAULT_MODEL overrides this.
+ ;;
+ ;; The Codex subscription has no API key: run `codex login` AS THE USER RUNNING
+ ;; SIMMIS (it writes ~/.codex/auth.json, or $CODEX_HOME/auth.json), then
+ ;; restart. Without that login simmis warns once at boot, and inheriting
+ ;; agents show "Credential required" with that instruction and do not join —
+ ;; they never fall back to another model.
+ #_:models #_{:default "codex-subscription-luna-6"}
+
+ ;; ---------------------------------------------------------------------------
  ;; Storage GC (optional, OFF by default). Every 6h (and at boot) sweep the
  ;; orphaned Datahike index nodes of the system DB and every room's stores;
  ;; orphan-only, every branch head and its history is kept. OFF because a
@@ -99,8 +114,10 @@
 ;;
 ;;   FIREWORKS_API_KEY   LLM providers. A provider is registered at boot only
 ;;   OPENAI_API_KEY      if its key is present. The explicit default (only when
-;;   ANTHROPIC_API_KEY   nobody chose a model) is the Fireworks GLM family, so
-;;                       FIREWORKS_API_KEY is the least-effort option. A missing,
+;;   ANTHROPIC_API_KEY   nobody chose a model) is the Fireworks GLM family unless
+;;                       :models {:default ...} / SIMMIS_DEFAULT_MODEL says
+;;                       otherwise, so FIREWORKS_API_KEY is the least-effort
+;;                       option. A missing,
 ;;                       withdrawn, unsupported, or unreachable choice is never
 ;;                       replaced with that default. Set several; each agent
 ;;                       picks its own model, and the provider follows from it.
@@ -148,6 +165,12 @@
 ;;                       stored mail credential undecryptable (accounts must be
 ;;                       re-entered). Generate one with
 ;;                       `head -c32 /dev/urandom | basenc --base64url`.
+;;
+;;   SIMMIS_DEFAULT_MODEL
+;;                       The product default model; overrides :models
+;;                       {:default ...} above. E.g. codex-subscription-luna-6
+;;                       (needs `codex login`, see above). Default
+;;                       accounts/fireworks/models/glm-5p2.
 ;;
 ;;   SIMMIS_STORAGE_GC   "true" turns the storage GC loop on, "false" off;
 ;;                       overrides :storage-gc above. Default off.

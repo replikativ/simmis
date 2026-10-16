@@ -2197,7 +2197,7 @@
         preference (some-> (parties/get-party owner-id) :party/preferred-model)]
     (if (seq preference)
       {:value preference :source :owner-preference}
-      {:value parties/default-model :source :product-default})))
+      {:value (parties/default-model) :source :product-default})))
 
 (defn- decorate-resolution
   "Decorate one desired model resolution for person-facing surfaces."

@@ -7,6 +7,7 @@
             [dvergr.chat.schema :as chat-schema]
             [dvergr.room.registry :as rreg]
             [dvergr.room.store :as rstore]
+            [dvergr.substrate.config :as dcfg]
             [is.simm.agents.room-agents :as room-agents]
             [is.simm.agents.templates :as templates]
             [is.simm.model.model-catalog :as catalog]
@@ -440,7 +441,7 @@
                   room-agents/describe-model-resolution identity]
       (chat-remote/update-agent-config-server
        (str (:party/id agent)) "" catalog/inherit-choice-value nil))
-    (is (= [parties/default-model] @validated))
+    (is (= [(parties/default-model)] @validated))
     (is (= {:auto-respond? true}
            (stored-config (:party/id agent))))))
 
@@ -544,3 +545,45 @@
       (is (= "Inherited from product default" (:selection-label info)))
       (is (re-find #"^Use owner preference — not set; product default "
                    (get-in info [:inheritance-choice :label]))))))
+
+(deftest a-configured-product-default-without-its-credential-is-unavailable
+  ;; dev.simm.is defaults to the Codex subscription. On a machine without a
+  ;; `codex login` the inheriting agent must report THAT, with the login
+  ;; instruction — not quietly run the built-in Fireworks default instead.
+  (with-redefs [dcfg/config (constantly {:models {:default "codex-subscription-luna-6"}})]
+    (binding [selection/*env-lookup* {}
+              selection/*codex-login?* (constantly false)]
+      (selection/reset-catalog!)
+      (let [owner-id (seed-owner!)
+            agent (parties/create-agent! owner-id {:display-name "Inherited"})
+            info (room-agents/describe-model-resolution agent)
+            row (:inheritance-choice info)]
+        (is (= :product-default (:selection-source info)))
+        (is (= "codex-subscription-luna-6" (:resolves row)))
+        (is (= :codex-subscription (:provider info)))
+        (is (false? (:available? info)))
+        (is (nil? (:model info)) "no silent switch to another model")
+        (is (= :needs-credential (:availability info)))
+        (is (re-find #"codex login" (:availability-explanation info)))
+        (is (= "Credential required — will not join until this resolves"
+               (:next-join-copy info)))
+        (is (not (contains? (stored-config (:party/id agent)) :model))
+            "the default is never written onto the agent"))
+      (testing "the same agent follows a login, with nothing migrated"
+        (binding [selection/*codex-login?* (constantly true)]
+          (let [owner-id (seed-owner!)
+                agent (parties/create-agent! owner-id {:display-name "Inherited"})
+                info (room-agents/describe-model-resolution agent)]
+            (is (:available? info))
+            (is (= "codex-subscription-luna-6" (:model info)))))))))
+
+(deftest the-product-default-follows-the-environment
+  (with-redefs [dcfg/config (constantly {:models {:default "codex-subscription-luna-6"}})]
+    (binding [selection/*env-lookup* {"SIMMIS_DEFAULT_MODEL" "accounts/fireworks/models/glm-5p2"}
+              selection/*codex-login?* (constantly true)]
+      (selection/reset-catalog!)
+      (let [owner-id (seed-owner!)
+            agent (parties/create-agent! owner-id {:display-name "Inherited"})
+            row (:inheritance-choice (room-agents/describe-model-resolution agent))]
+        (is (= "accounts/fireworks/models/glm-5p2" (:resolves row)))
+        (is (= :fireworks (:provider row)))))))
