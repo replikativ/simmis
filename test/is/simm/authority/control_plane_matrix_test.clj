@@ -147,6 +147,7 @@
                               (c :foreign-room-kb #{:owner :non-member :admin})]
    "delete-drive-node!"      [(c :room MEMBERS)]
    "mkdir-drive-path!"       [(c :room MEMBERS)]
+   "transcribe-drive-file!"  [(c :room MEMBERS)]
    "put-drive-file!"         [(c :room MEMBERS)]
    "dispatch-message!"       [(c :room MEMBERS)]
    "ensure-room!"            [(c :room MEMBERS)]

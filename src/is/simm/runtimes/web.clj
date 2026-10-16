@@ -735,6 +735,13 @@
     ;; subscription without a `codex login`. Warning only: it still resolves
     ;; at turn time and reports itself unavailable; nothing falls back.
     ((requiring-resolve 'is.simm.model.model-selection/warn-if-default-unusable!))
+    ;; The same for `:models {:vision … :cheap …}` (screen descriptions, the
+    ;; summarizer/merger): one warning per configured value that resolves to
+    ;; nothing. Those calls then fail with the reason; nothing falls back.
+    (try ((requiring-resolve 'is.simm.model.task-models/warn-unusable!))
+         (catch Throwable e
+           (log/log! {:level :warn :id ::task-models-check-failed
+                      :data {:error (ex-message e)}})))
 
     ;; Expose the kontor accounting kernel inside the agent clojure_eval sandbox
     ;; (dvergr owns the generic injector hook; the kontor binding lives in simmis
@@ -972,6 +979,14 @@
             (log/log! {:level :warn :id ::watchdog-start-failed
                        :data {:error (str e)}})))
 
+        ;; jigasi call transcripts → their rooms. Off (one info line) unless
+        ;; SIMMIS_TRANSCRIPTS_DIR names the directory jigasi saves into.
+        (try
+          ((requiring-resolve 'is.simm.runtimes.transcripts/start!))
+          (catch Exception e
+            (log/log! {:level :warn :id ::transcripts-start-failed
+                       :data {:error (str e)}})))
+
         ;; Storage GC — datahike leaves superseded index nodes orphaned and only
         ;; an explicit sweep reclaims them. dvergr owns the sweep but drives it
         ;; from its own daemon, which simmis does not boot. Orphan-only: no
@@ -1002,6 +1017,9 @@
       (require 'is.simm.runtimes.telegram)
       ((resolve 'is.simm.runtimes.telegram/stop-telegram!))
       (catch Exception _ nil))
+    (try ((requiring-resolve 'is.simm.runtimes.transcripts/stop!))
+         (catch Exception e
+           (log/log! {:level :warn :id ::transcripts-stop-failed :data {:error (str e)}})))
     (when-let [server (:server @server-state)]
       (go-super S
         (<? S (peer/stop server))

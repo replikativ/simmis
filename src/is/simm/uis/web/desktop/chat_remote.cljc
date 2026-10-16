@@ -1218,6 +1218,32 @@
            {:status :ok})
          :cljs nil))))
 
+(defn-spin-remote transcribe-drive-file!
+  [server-id room-id-str node-id-str]
+  (spin-remote server-id [room-id-str node-id-str]
+    (let [rid (identity room-id-str)
+          nid (identity node-id-str)]
+      #?(:clj
+         ;; The asker is the transcript's author and the one told if it fails.
+         ;; Speech-to-text takes minutes for a long call, so it runs on a
+         ;; worker; the transcript (or the failure) arrives as a room message.
+         (let [party-id (access/authenticated-party-id)
+               room-uuid (java.util.UUID/fromString rid)
+               node-id (java.util.UUID/fromString nid)
+               conn (room-drive-conn! room-uuid)
+               node (drives/stat conn node-id)
+               audio? (requiring-resolve 'is.simm.runtimes.transcripts/audio-file?)]
+           (cond
+             (nil? party-id) {:status :error :error :authentication-required}
+             (nil? node) {:status :error :error :not-found}
+             (not (audio? node)) {:status :error :error :not-audio
+                                  :message (str (:fs.node/name node) " is not an audio file")}
+             :else
+             (do ((requiring-resolve 'is.simm.runtimes.transcripts/transcribe-in-background!)
+                  room-uuid party-id node-id (:fs.node/name node))
+                 {:status :ok :started (:fs.node/name node)})))
+         :cljs nil))))
+
 (defn-spin-remote mkdir-drive-path!
   [server-id room-id-str dir-path]
   (spin-remote server-id [room-id-str dir-path]

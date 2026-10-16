@@ -61,7 +61,8 @@
  ;; ---------------------------------------------------------------------------
  ;; Product default model (optional). Used only when nobody chose a model: an
  ;; agent with no override whose owner set no preference. Unset, it is the
- ;; Fireworks GLM default (accounts/fireworks/models/glm-5p2). An exact id or a
+ ;; Fireworks GLM family (accounts/fireworks/models/glm-*: the newest GLM the
+ ;; account serves and dvergr registers). An exact id or a
  ;; family ("gpt-*-luna" = newest available). Read at every join, never stored
  ;; on an agent, so changing it and restarting moves every inheriting agent.
  ;; SIMMIS_DEFAULT_MODEL overrides this.
@@ -71,7 +72,18 @@
  ;; restart. Without that login simmis warns once at boot, and inheriting
  ;; agents show "Credential required" with that instruction and do not join —
  ;; they never fall back to another model.
- #_:models #_{:default "codex-subscription-luna-6"}
+ ;;
+ ;; :vision and :cheap point simmis's own one-shot calls at a model: :vision
+ ;; describes shared screen frames, :cheap runs the chat summarizer and the
+ ;; wiki merger. Unset, dvergr's default is used. An id or a family; a :vision
+ ;; family resolves to its newest AVAILABLE version registered as
+ ;; vision-capable (kimi-k3 is registered text-only, so "kimi-*" skips it).
+ ;; A configured value that resolves to nothing warns once at boot, and those
+ ;; calls then FAIL with the reason (a screen frame is stored as failed and
+ ;; shows why) — they never use dvergr's default or another family instead.
+ #_:models #_{:default "codex-subscription-luna-6"
+              :vision  "accounts/fireworks/models/kimi-*"
+              :cheap   "accounts/fireworks/models/minimax-*"}
 
  ;; ---------------------------------------------------------------------------
  ;; Storage GC (optional, OFF by default). Every 6h (and at boot) sweep the
@@ -170,13 +182,30 @@
 ;;                       The product default model; overrides :models
 ;;                       {:default ...} above. E.g. codex-subscription-luna-6
 ;;                       (needs `codex login`, see above). Default
-;;                       accounts/fireworks/models/glm-5p2.
+;;                       accounts/fireworks/models/glm-* (newest served GLM).
 ;;
 ;;   SIMMIS_STORAGE_GC   "true" turns the storage GC loop on, "false" off;
 ;;                       overrides :storage-gc above. Default off.
 ;;
 ;;   SIMMIS_MAIL_SYNC    "false" stops boot from starting IMAP sync; overrides
 ;;                       :mail {:sync? ...} above. Default on.
+;;
+;;   SIMMIS_TRANSCRIPTS_DIR
+;;                       Directory the jigasi transcriber saves finished call
+;;                       transcripts into (JIGASI_TRANSCRIBER_ENABLE_SAVING=1;
+;;                       the docker compose mounts ${CONFIG}/transcripts). Set,
+;;                       boot watches it and posts each NEW file into its room
+;;                       (the meeting name is the room id) as a drive file under
+;;                       transcripts/ plus a message. Unset, no watcher.
+;;
+;;   GROQ_API_KEY        Speech-to-text for "Transcribe" on an audio file and
+;;                       telegram voice notes (dvergr.audio.stt): Groq whisper
+;;                       when set, else OpenAI whisper with a real (non-fw_)
+;;                       OPENAI_API_KEY, else local faster-whisper
+;;                       (`pip install faster-whisper`; scripts/transcribe.py,
+;;                       DVERGR_WHISPER_MODEL picks the size, default "base").
+;;                       Audio over 20 MB is cut into 10-minute pieces with
+;;                       ffmpeg first, so long recordings need ffmpeg.
 ;;
 ;; Running a SECOND instance on the same machine (an agent's end-to-end run next
 ;; to your demo). Unset, each of these is the default instance's value.

@@ -319,6 +319,21 @@ behind `can?`.
 Code that runs in a room's sandbox holds whatever the sandbox was handed, so
 what it is handed is the authorization.
 
+**Screens.** A member's screen capture is theirs; a room sees a slice of it
+only through its own grant windows (`screen-grants/windows-for-room`).
+`screen/*` returns a frame to a room's agent only when its time lies inside one
+of THAT room's windows for its sharer — open, or ended (so an agent asked after
+the meeting reads what was shown during it). A frame from before, between or
+after the windows, or inside a window granted to another room, is never
+returned; `since`/`until` narrow a window and never widen it
+(`test/is/simm/runtimes/screen_history_test.clj`). A window whose client died
+ends at its last heartbeat, not when the next share opens.
+
+**Transcripts.** "Transcribe" (`transcribe-drive-file!`) is `:write` on the
+room, like `put-drive-file!`: it reads a file already on the room's drive and
+posts into the room as the caller. `transcript/*` reads only the agent's own
+room's drive.
+
 **KB handles.** `kb/*`, `kb/conn`, `kb/db`, `knowledge_add` and
 `wiki/summarize!` reach a KB only through `access/sandbox-kb-allows?`: the
 acting party (for an agent, the agent) may `:read`/`:write` the room, the room

@@ -87,6 +87,33 @@ Money that leaves the company is a decision, not a note. Check the handbook's
 spend authority before posting anything you were not explicitly asked to post,
 and if it is above your limit, say so instead.
 
+### The wiki layout — atoms, overviews, an index
+
+Knowledge from a source (a meeting, a document) is written as small pages a
+reviewer can check claim by claim. Three page kinds, set as a property:
+
+- `:wiki/atom` — ONE topic. Each claim is its own top-level block starting with
+  an `<h2>`: the heading states the claim, the text under it explains it.
+- `:wiki/overview` — one per source or theme: what it covered, linking the
+  atoms as [[Atom Title]].
+- `:wiki/index` — the entry list of overviews (one per KB; extend, don't fork).
+
+Evidence is a VERBATIM quote of the source, one block per quote, followed by
+the citation — never a paraphrase in quote marks:
+
+```clojure
+(kb/upsert-block! db page \"<h2>Launch moves to March</h2><p>The team agreed to ship after the audit.</p>\")
+(kb/upsert-block! db page \"<blockquote>\\\"we push the launch to March, after the audit\\\"</blockquote><p>[[transcripts/2026-10-16-1400-planning.md]]</p>\")
+(kb/upsert-block! db page \"<p><strong>Sources:</strong> [[transcripts/2026-10-16-1400-planning.md]]</p>\")
+```
+
+Record the sources and kind on the page itself (the attributes exist on every
+KB): `(kb/set-property! db page :S.Page/kind :wiki/atom)`,
+`(kb/set-property! db page :S.Page/source #{\"transcripts/2026-10-16-1400-planning.md\"})`
+(a set of citation targets: `doc`, `doc#Section` or `dh://…`), and
+`(kb/set-property! db page :S.Page/entry-point \"transcripts/2026-10-16-1400-planning.md\")`
+— where a reader of the source should start.
+
 ### Widgets — Reactive UI components inside wiki pages
 
 A widget is a Clojure expression stored on a block. It is evaluated client-side
@@ -260,11 +287,50 @@ When writing code:
 - Write clear docstrings
 - Test with small examples before saving"})
 
+(def meeting-scribe-template
+  {:id :meeting-scribe
+   :name "Meeting scribe"
+   :description "Turns a meeting's transcript and shared screens into reviewable wiki pages"
+   :icon "notebook-pen"
+   :system-prompt
+   "You are the meeting scribe. When someone asks you to record a meeting, you
+turn what was SAID (the transcript) and what was SHOWN (the shared screens) into
+wiki pages a person reviews before they land.
+
+Do it in this order, all in clojure_eval:
+
+1. `(proposal/start! \"Meeting notes: <meeting>\")` FIRST — every page you write
+   then lands on a fork for review, never straight on the wiki.
+2. Find the transcript: `(transcript/list)`, then `(transcript/read path)`. If
+   there is none but an audio file is on the drive and they asked you to,
+   `(transcript/transcribe! \"/drive/<file>\")`.
+3. Read what was on screen during the meeting: `(screen/shares)` gives each
+   share's :from/:until; `(screen/history {:since from :until until :n 100})`
+   the frames. A frame with `:failed` was not described — say so, never guess.
+4. Read before you write: `wiki/search` and `wiki/neighborhood` for every topic,
+   so you extend an existing atom instead of duplicating it.
+5. Write ATOM pages (`:S.Page/kind :wiki/atom`), one topic each: one claim per
+   top-level `<h2>` block, each followed by at least one VERBATIM quote block
+   from the transcript (`<blockquote>\"…\"</blockquote><p>[[transcripts/<file>.md]]</p>`),
+   copied exactly — a quote you cannot find in the transcript does not go in.
+   Screen content is supporting context: say what was shown and when.
+6. Write ONE overview page (`:wiki/overview`) for the meeting: date, who spoke,
+   decisions, open questions, and a [[link]] to every atom you wrote or extended.
+7. On every page set (with `kb/set-property!`) `:S.Page/source` (the transcript
+   path, and nothing you did not cite) and `:S.Page/entry-point`, and end it with a
+   `<p><strong>Sources:</strong> …</p>` block.
+8. `(proposal/file! \"<one paragraph: what the meeting decided and which pages
+   carry it>\")`, then tell the room what you filed.
+
+Only record decisions, facts, owners and dates the transcript supports. When the
+transcript is ambiguous, write the open question, not your guess."})
+
 (def all-templates
   [secretary-template
    researcher-template
    analyst-template
-   coder-template])
+   coder-template
+   meeting-scribe-template])
 
 (def templates-by-id
   (into {} (map (juxt :id identity) all-templates)))

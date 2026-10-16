@@ -45,7 +45,10 @@ a deleting sweep unless it was enabled for the process's home
 simmis's home and `stop!` (also on server stop) revokes it, so with the switch
 off nothing is ever enabled and a sweep run anyway is logged as refused. **Mail sync**
 for stored accounts is ON unless `:mail {:sync? false}` or
-`SIMMIS_MAIL_SYNC=false`, which isolated instances use. A system-DB directory
+`SIMMIS_MAIL_SYNC=false`, which isolated instances use. The **transcript
+watcher** (`runtimes/transcripts.clj`) runs only when `SIMMIS_TRANSCRIPTS_DIR`
+names the directory jigasi saves call transcripts into; unset, boot logs one
+info line and watches nothing. A system-DB directory
 with no `:db` head stops the boot with that diagnosis; it is never created
 over or deleted.
 
@@ -214,6 +217,10 @@ src/is/simm/
 │   ├── branching.clj        yggdrasil branching and branch GC
 │   ├── storage_gc.clj       periodic orphan GC of every store — OFF unless
 │   │                        enabled (see below)
+│   ├── screen_intake.clj    screen-share frames → descriptions, per-user
+│   │                        store; `screen/*` for agents, through grants
+│   ├── transcripts.clj      jigasi watcher + "Transcribe" → drive file and
+│   │                        room message; `transcript/*` for agents
 │   └── telegram.clj         adapter over dvergr's telegram channel
 ├── agents/                  personas, prompts, tools, summaries, merges
 └── uis/web/desktop/         the spindel UI

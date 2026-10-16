@@ -375,7 +375,7 @@ committed template is `config.example.edn` — when you add a config key,
 document it there, since that file IS the setup instructions.
 The product default model (used only when neither the agent nor its owner
 chose one) is per deployment: `SIMMIS_DEFAULT_MODEL`, else `:models {:default
-"<id or family>"}`, else Fireworks `glm-5p2`. It is resolved at join time,
+"<id or family>"}`, else the Fireworks family `glm-*`. It is resolved at join time,
 never stored on agents. `codex-subscription-luna-6` (the Codex subscription)
 needs `codex login` as the user running simmis; without it boot warns
 (`::default-model-unusable`) and inheriting agents report "Credential

@@ -699,6 +699,8 @@
      "detach-kb-from-room!"    {:action G :resource (attachment :kb-id-str)}
      "delete-drive-node!"      {:action W :resource (room :room-id-str)}
      "mkdir-drive-path!"       {:action W :resource (room :room-id-str)}
+     ;; transcribing posts a message into the room: speaking in it is a write
+     "transcribe-drive-file!"  {:action W :resource (room :room-id-str)}
      "put-drive-file!"         {:action W :resource (room :room-id-str)}
      "dispatch-message!"       {:action W :resource (room :room-id-str)}
      "ensure-room!"            {:action W :resource (room :room-id-str)}

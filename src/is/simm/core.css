@@ -5259,6 +5259,14 @@ body.tab-dragging .column-drop-zone {
   opacity: 0.9;
 }
 
+/* A frame the vision model could not describe: stored, and says why. */
+.screen-card-failed {
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  color: var(--danger);
+}
+
 .chat-settings-btn--active {
   color: var(--accent);
   background: var(--accent-muted);
@@ -8272,6 +8280,13 @@ body.tab-dragging .column-drop-zone {
                 opacity: 0; color: inherit; }
 .files-delete:hover { opacity: 1 !important; color: #e05555; }
 .files-delete-icon { width: 13px; height: 13px; }
+.files-transcribe { background: none; border: 1px solid var(--mono-border);
+                    border-radius: 4px; cursor: pointer; padding: 1px 6px; font-size: 0.78em;
+                    color: inherit; opacity: 0; display: inline-flex; align-items: center; gap: 3px; }
+.files-row:hover .files-transcribe { opacity: 0.8; }
+.files-transcribe:hover { opacity: 1 !important; }
+.files-transcribe-icon { width: 12px; height: 12px; }
+.files-read-only .files-transcribe { display: none !important; }
 .files-empty { opacity: 0.6; font-size: 0.9em; padding: 16px 6px; }
 .files-upload-status { font-size: 0.82em; opacity: 0.75; }
 

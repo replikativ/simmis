@@ -20,6 +20,7 @@
   (:require [is.simm.model.knowledge-bases :as kbs]
             [is.simm.model.rooms :as rooms]
             [is.simm.model.room-databases :as room-dbs]
+            [is.simm.model.task-models :as task-models]
             [datahike.api :as d]
             [clojure.string :as str]
             [taoensso.telemere :as log]))
@@ -99,7 +100,11 @@
           {:skipped :window-too-small :messages (count msgs)}
           (let [text ((requiring-resolve 'dvergr.tools.llm-call/cheap-llm-call)
                       summary-prompt (transcript msgs)
-                      (cond-> {:max-tokens 600} model (assoc :model model)))
+                      ;; an explicit `model` wins; otherwise the `:cheap` task
+                      ;; model, which throws (with its reason) when configured
+                      ;; and unresolvable rather than using dvergr's default
+                      (merge {:max-tokens 600}
+                             (if model {:model model} (task-models/model-opts :cheap))))
                 _ (when (:error text)
                     (throw (ex-info "summarizer llm call failed" text)))
                 summary (:text text)

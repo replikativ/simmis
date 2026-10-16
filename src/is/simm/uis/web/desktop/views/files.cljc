@@ -105,6 +105,32 @@
 
 
 #?(:cljs
+   (defn- transcribe-node!
+     "Ask the server to transcribe this audio file. It runs there for minutes
+      on a long call; the transcript (or why it failed) arrives as a room
+      message and a file under transcripts/."
+     [room-id node]
+     (binding [rtc/*execution-context* runtime]
+       (let [s (chat-remote/transcribe-drive-file! web/server-id (str room-id)
+                                                   (str (:fs.node/id node)))]
+         (s (fn [r]
+              (if-let [e (rem/result-failure r)]
+                (rem/report-error! (str "Could not transcribe " (:fs.node/name node) ".") e)
+                (sig/show-success! (str "Transcribing " (:fs.node/name node)
+                                        " — the transcript will appear in the chat"
+                                        " and under transcripts/."))))
+            (fn [err] (rem/report-error! (str "Could not transcribe " (:fs.node/name node) ".")
+                                         err)))))))
+
+(defn- audio-node?
+  "Mirrors `transcripts/audio-file?` (server-side) for showing the button."
+  [{:fs.node/keys [mime name]}]
+  (boolean
+   (or (some-> mime (str/starts-with? "audio/"))
+       (some-> mime (str/starts-with? "video/"))
+       (re-find #"(?i)\.(mp3|m4a|wav|ogg|oga|opus|webm|flac|aac|mp4|mkv|mov)$" (str name)))))
+
+#?(:cljs
    (defn- sha256-hex
      "Browser SHA-256 → lowercase hex — matches the server CAS keying,
       so we can skip uploading blobs the drive already has."
@@ -260,6 +286,13 @@
                  :target "_blank"}
             (:fs.node/name node)))
         (el/span {:class "files-size"} (fmt-size (:fs.node/size node)))
+        #?(:cljs
+           (when (and (not dir?) (audio-node? node))
+             (el/button {:class "files-transcribe" :title "Transcribe this recording"
+                         :on-click (fn [_] (transcribe-node! room-id node))}
+               (vc/icon "captions" {:class "files-transcribe-icon"})
+               " Transcribe"))
+           :clj nil)
         #?(:cljs
            (el/button {:class "files-delete" :title "Delete"
                        :on-click (fn [_] (delete-node! room-id (:fs.node/id node)))}

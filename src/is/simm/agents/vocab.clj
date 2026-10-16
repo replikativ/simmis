@@ -190,3 +190,16 @@
     abandon!
     {:arglists ([])
      :doc "Discard your open work and its branches. In a campaign this withdraws only YOUR forks and leaves the campaign standing for the others. Nothing reaches trunk."}})
+
+(def transcript-docs
+  '{list
+    {:arglists ([])
+     :doc "This room's meeting transcripts — files under /drive/transcripts/ — as [{:path :name :size}], newest first."}
+
+    read
+    {:arglists ([path])
+     :doc "A transcript's text (Markdown) by its path or file name, or nil. Cite it in a wiki page as [[transcripts/<file>.md]]."}
+
+    transcribe!
+    {:arglists ([path])
+     :doc "Transcribe an audio file on the drive (\"/drive/call.m4a\") with speech-to-text, save it under /drive/transcripts/ and announce it in the room; returns {:path :message-id}. Slow — minutes for an hour of audio. Only when someone asks."}})

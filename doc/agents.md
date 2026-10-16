@@ -27,7 +27,8 @@ a curated vocabulary, injected as namespaces:
 | `kontor` | the room's double-entry book — `entry!`, `balances`, `accounts` |
 | `proposal` | opening, filing and releasing proposals |
 | `sheet` / `office` | spreadsheet and document intake |
-| `screen` | screen captures the room has been granted |
+| `screen` | screen captures the room has been granted — live, and from shares that have ended |
+| `transcript` | the room's meeting transcripts (`/drive/transcripts/`), and `transcribe!` for audio on the drive |
 | a shell | over a [muschel](https://github.com/replikativ/muschel) mount, so file tools and the shell see one filesystem |
 
 Plus ordinary `datahike.api`, so an agent can query rather than being restricted
@@ -58,6 +59,39 @@ works inside the sandbox. This matters more than it sounds: a capability an
 agent cannot discover is a capability it does not have, and the failure looks
 like the agent being unable to do something rather than being unable to find
 it.
+
+### Meetings: transcripts, screens, the scribe
+
+A meeting reaches a room two ways. What was SAID is a transcript
+(`runtimes/transcripts.clj`): jigasi's transcriber saves a file per finished
+call into `SIMMIS_TRANSCRIPTS_DIR`, which a filesystem watcher started at boot
+posts into the room whose id is the meeting name; or someone presses
+"Transcribe" on an audio file in Files (or an agent calls
+`transcript/transcribe!`), and `dvergr.audio.stt` turns it into text — Groq or
+OpenAI whisper with a key, else local faster-whisper — after cutting audio over
+20 MB into ten-minute ffmpeg pieces. Transcription is never automatic on upload.
+Either way the transcript becomes a Markdown file under `transcripts/` on the
+room drive — the document wiki pages cite — and one `:kind :transcript`
+message posted to the room log, which wakes no agent: an hour of call is
+nobody's turn until someone asks for it.
+
+What was SHOWN is the screen-share stream (`runtimes/screen_intake.clj`).
+`screen/frames` reads the live shares; `screen/shares` lists every share into
+the room, ended ones too, and `screen/history {:since :until}` reads their
+stored frames, so an agent asked after the meeting sees what was on screen
+during it. A frame the vision model could not describe is stored with
+`:failed` and the reason, and shows as failed in the owner's gallery and to
+agents; it is never dropped.
+
+The **Meeting scribe** persona (`templates/meeting-scribe-template`) turns the
+two into wiki pages in the layout the tool manual teaches: it opens a proposal,
+reads the transcript and the screens, writes `:wiki/atom` pages (one claim per
+top-level `<h2>` block, a verbatim `<blockquote>` quote citing
+`[[transcripts/<file>.md]]`, a `<strong>Sources:</strong>` block,
+`:S.Page/source` and `:S.Page/entry-point`) and one `:wiki/overview`, then
+files the proposal for review. `test/is/simm/agents/meeting_scribe_test.clj`
+checks every verb the persona names exists in its sandbox and plays a scripted
+run back through it.
 
 **The sandbox is a soft boundary.** It is a curated SCI context hardened
 against the escapes we have found, not a VM. Do not run untrusted agents
@@ -125,7 +159,21 @@ role and system prompt, not a hidden model. An agent follows its owner's model
 preference from Settings, then the product fallback when the owner has no
 preference. The product fallback is per deployment: `SIMMIS_DEFAULT_MODEL`, else
 `:models {:default "<id or family>"}` in config.local.edn, else the built-in
-`accounts/fireworks/models/glm-5p2` (`model-selection/default-model-choice`).
+FAMILY `accounts/fireworks/models/glm-*`, resolved at turn time to the newest
+GLM the account serves and dvergr registers
+(`model-selection/default-model-choice`). It was the exact id glm-5p2 until
+Fireworks withdrew it and every inheriting agent stopped joining.
+
+simmis's own one-shot calls read the same `:models` map: `:vision` (screen
+frame descriptions, `dvergr.media.vision/describe`) and `:cheap` (the chat
+summarizer and the wiki merger, `cheap-llm-call`), an id or a family each
+(`model/task_models.clj`). Unset, dvergr's default runs. A `:vision` family
+resolves to its newest available version REGISTERED as vision-capable, so
+`kimi-*` skips the text-only kimi-k3. Configured but unresolvable, the call
+fails with the reason — a frame is stored as failed and says why — and boot
+logs one `::task-model-unusable` warning; it never runs dvergr's default
+instead. dvergr's own defaults name withdrawn ids until simmis moves to the
+dvergr release with branch fix/retired-fireworks-models.
 It is read at every resolution and never written onto an agent, so changing it
 and restarting moves every inheriting agent. A configured default is checked
 like any other choice: e.g. `codex-subscription-luna-6` on a machine without a
