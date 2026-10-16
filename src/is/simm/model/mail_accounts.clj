@@ -7,6 +7,7 @@
   (:require [is.simm.runtimes.instance :as instance]
             [clojure.string :as str]
             [datahike.api :as d]
+            [dvergr.substrate.config :as dcfg]
             [dvergr.system.db :as sdb]
             [is.simm.model.mail-credentials :as credentials]
             [is.simm.model.system-db :as system-db]
@@ -30,8 +31,10 @@
         (dissoc :db/id :mail-account/secret-nonce :mail-account/secret-ciphertext)
         (assoc :mail-account/credentials-configured?
                (boolean (:mail-account/secret-ciphertext account)))
-        (update :mail-account/created #(when % (str %)))
-        (update :mail-account/last-sync #(when % (str %))))))
+        ;; ISO-8601, not Date/toString (which browsers cannot parse) — the
+        ;; same encoding as `is.simm.uis.web.desktop.remote/wire-instant`.
+        (update :mail-account/created #(some-> ^Date % .toInstant str))
+        (update :mail-account/last-sync #(some-> ^Date % .toInstant str)))))
 
 (defn- require-account [account-id]
   (or (when-let [conn (and (some? account-id) (system-db/get-conn))]
@@ -230,3 +233,27 @@
   (doseq [{:mail-account/keys [id]} (list-accounts)]
     (start-sync! id))
   true)
+
+(defn sync-enabled?
+  "Should boot start IMAP sync for the stored accounts? `SIMMIS_MAIL_SYNC`
+   decides when it is set (\"false\" turns it off); otherwise
+   `:mail {:sync? false}` in the config. Default ON: that is what a production
+   server does. An isolated or test instance turns it off, so it does not poll
+   real mailboxes with credentials it may have been handed."
+  ([] (sync-enabled? (System/getenv "SIMMIS_MAIL_SYNC") (dcfg/config)))
+  ([env config]
+   (if-let [v (some-> env str/trim not-empty)]
+     (not= "false" (str/lower-case v))
+     (not (false? (get-in config [:mail :sync?]))))))
+
+(defn boot!
+  "`start-all!` when mail sync is enabled; one info line when it is not.
+   Returns `:started` or `:disabled`."
+  ([] (boot! (sync-enabled?)))
+  ([enabled]
+   (if enabled
+     (do (start-all!) :started)
+     (do (log/log! {:level :info :id ::sync-disabled
+                    :msg (str "Mail sync is OFF (SIMMIS_MAIL_SYNC=false or :mail {:sync? false}): "
+                              "stored mail accounts are not polled at boot.")})
+         :disabled))))

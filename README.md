@@ -150,6 +150,12 @@ npm run release        # optimized JS + CSS
 clojure -T:build uber  # uberjar
 ```
 
+A server needs, beyond `SIMMIS_JWT_SECRET`: `SIMMIS_JITSI_URL` (calls point at
+`localhost:9100` without it, and boot warns), `SIMMIS_JITSI_JWT_SECRET`, and a
+persistent `SIMMIS_CREDENTIAL_KEY` (stored mail passwords are undecryptable
+after a redeploy that loses the generated key). Storage GC is off unless
+enabled. `config.example.edn` documents each.
+
 ## Dependency sets
 
 Three, selected by alias:

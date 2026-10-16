@@ -56,7 +56,24 @@
  #_:secrets #_[{:name "BRAVE_API_KEY" :env "BRAVE_API_KEY"
                 :allowed-domains ["https://api.search.brave.com"]
                 :allowed-locations [:header :query]
-                :header-names ["X-Subscription-Token"]}]}
+                :header-names ["X-Subscription-Token"]}]
+
+ ;; ---------------------------------------------------------------------------
+ ;; Storage GC (optional, OFF by default). Every 6h (and at boot) sweep the
+ ;; orphaned Datahike index nodes of the system DB and every room's stores;
+ ;; orphan-only, every branch head and its history is kept. OFF because a
+ ;; failed mark on datahike without #1117 makes the sweep delete the whole
+ ;; store — it wiped the dev.simm.is system DB. While on with such a datahike,
+ ;; every sweep logs a warning. SIMMIS_STORAGE_GC=true|false overrides this.
+ #_:storage-gc #_{:enabled? true}
+
+ ;; ---------------------------------------------------------------------------
+ ;; Mail sync (optional). At boot simmis starts IMAP sync for every mail account
+ ;; stored in the system DB. ON by default; `false` leaves them unpolled (an
+ ;; isolated or test instance). SIMMIS_MAIL_SYNC=true|false overrides this.
+ ;; `:mail` is also where dvergr looks up mail accounts by id; `:sync?` sits
+ ;; beside them.
+ #_:mail #_{:sync? false}}
 
 ;; -----------------------------------------------------------------------------
 ;; Environment variables (NOT this file)
@@ -110,7 +127,32 @@
 ;;                       treated as compatible, not as native OpenAI behavior.
 ;;
 ;;   SIMMIS_JITSI_URL    Jitsi deployment backing the :video tab.
-;;                       Default http://localhost:9100.
+;;                       Default http://localhost:9100 — the development Jitsi,
+;;                       i.e. every viewer's OWN machine. SET IT ON A SERVER:
+;;                       without it calls go nowhere. A server run (-main) warns
+;;                       at boot while it is unset.
+;;
+;;   SIMMIS_JITSI_JWT_SECRET
+;;                       Shared secret with the Jitsi prosody (its
+;;                       JWT_APP_SECRET), used to sign meeting tokens. Distinct
+;;                       from SIMMIS_JWT_SECRET on purpose. Unset: generated once
+;;                       into <DVERGR_HOME>/jitsi-jwt-secret, which the Jitsi
+;;                       deployment must then be given. Set it on a server.
+;;
+;;   SIMMIS_CREDENTIAL_KEY
+;;                       base64url-encoded 32-byte key encrypting stored mail
+;;                       passwords. Unset: generated into
+;;                       <DVERGR_HOME>/mail-credential-key. SET IT, AND KEEP IT,
+;;                       on a server: a redeploy that loses that file leaves every
+;;                       stored mail credential undecryptable (accounts must be
+;;                       re-entered). Generate one with
+;;                       `head -c32 /dev/urandom | basenc --base64url`.
+;;
+;;   SIMMIS_STORAGE_GC   "true" turns the storage GC loop on, "false" off;
+;;                       overrides :storage-gc above. Default off.
+;;
+;;   SIMMIS_MAIL_SYNC    "false" stops boot from starting IMAP sync; overrides
+;;                       :mail {:sync? ...} above. Default on.
 ;;
 ;; Running a SECOND instance on the same machine (an agent's end-to-end run next
 ;; to your demo). Unset, each of these is the default instance's value.
@@ -129,6 +171,11 @@
 ;;   SIMMIS_DATA_DIR     simmis's stores (simmis-v2, KBs, blobs, drives, ...).
 ;;                       Default ./data.
 ;;   DVERGR_CONFIG       This file's path instead of ./config.local.edn.
+;;
+;;   Use offset 1000 or 3000, not 2000: that puts the page on 10080, which
+;;   browsers refuse (ERR_UNSAFE_PORT). On a test instance also set
+;;   SIMMIS_MAIL_SYNC=false, and keep it off the machine's LLM credentials —
+;;   CLAUDE.md "Running a second instance" has the full command.
 ;;
 ;; Point DVERGR_HOME and SIMMIS_DATA_DIR at a fresh directory, not a copy of
 ;; another instance's: a copy carries the same store ids.

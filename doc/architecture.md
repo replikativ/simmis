@@ -28,8 +28,20 @@ home (`DVERGR_HOME`, default `.dvergr`) and the data root (`SIMMIS_DATA_DIR`,
 default `data`), and `user/shadow-config` applies the ports to shadow.
 
 `dev/user.clj` is the lifecycle; `src/is/simm/runtimes/web.clj` is the server
-boot — system DB, room hydration, kabel + auth + sync, telegram, then the HTTP
-routes.
+boot — system DB, mail sync, room hydration, kabel + auth + sync, telegram,
+then the HTTP routes.
+
+Two boot steps are switches. **Storage GC** (`runtimes/storage_gc.clj`, which
+drives dvergr's `gc-stores!` at boot and every 6h) is OFF unless
+`:storage-gc {:enabled? true}` or `SIMMIS_STORAGE_GC=true`: on datahike without
+#1117 a mark that dies on an Error comes back empty and the sweep deletes the
+whole store, which is how the dev.simm.is system DB was lost. While enabled on
+such a datahike it warns on every sweep, and it logs a sweep that timed out,
+failed or skipped rooms as an error rather than as an empty one. **Mail sync**
+for stored accounts is ON unless `:mail {:sync? false}` or
+`SIMMIS_MAIL_SYNC=false`, which isolated instances use. A system-DB directory
+with no `:db` head stops the boot with that diagnosis; it is never created
+over or deleted.
 
 ## Stores: one owns each concept
 
@@ -129,6 +141,8 @@ src/is/simm/
 │   ├── rpc_errors.clj       what a failed RPC tells the client (no traces)
 │   ├── auth_config.clj      kabel-auth store, JWT, accounts from config
 │   ├── branching.clj        yggdrasil branching and branch GC
+│   ├── storage_gc.clj       periodic orphan GC of every store — OFF unless
+│   │                        enabled (see below)
 │   └── telegram.clj         adapter over dvergr's telegram channel
 ├── agents/                  personas, prompts, tools, summaries, merges
 └── uis/web/desktop/         the spindel UI
