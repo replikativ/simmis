@@ -16,6 +16,7 @@
             [is.simm.agents.room-agents :as room-agents]
             [is.simm.model.parties :as parties]
             [is.simm.model.rooms :as rooms]
+            [org.replikativ.spindel.core :as sp]
             [taoensso.telemere :as tel]))
 
 (defn- room-agents-var [sym]
@@ -106,12 +107,11 @@
     (testing "the user's message is posted anyway"
       (is (= :ok (:status result)))
       (let [sent (user-messages posted text)]
-        (is (= 2 (count sent)) "one copy per JOINED recipient")
-        (is (= 1 (count (set (map :id sent))))
-            "all copies share one id so the projector dedupes them")
+        (is (= 1 (count sent)) "one durable envelope, not same-id per-target copies")
+        (is (nil? (:to (first sent))) "explicit multicast, not a direct send")
         (is (= #{(room-agents/party->actor-kw var-vor)
                  (room-agents/party->actor-kw sol)}
-               (set (map :to sent))))))
+               (get-in (first sent) [:metadata :dvergr/recipients])))))
 
     (testing "the healthy agents still join and are still addressed"
       (is (= #{var-vor sol} (set joined)))
@@ -228,7 +228,7 @@
       (is (= :ok (:status value)))
       (is (= #{var-vor sol} (set (:recipients value))))
       (is (= [lun] (:join-errors value)))
-      (is (= 2 (count (user-messages @posted text)))))
+      (is (= 1 (count (user-messages @posted text)))))
     (testing "the room note has no raw error, credential, URL, or internal class"
       (let [note (:content (first (notes @posted text)))]
         (is (str/includes? note "server-side fault"))
@@ -422,6 +422,70 @@
     (is (= {:role :system :kind t}
            (room-store/validate-message-metadata! {:role :system :kind t}))
         "the note's metadata must survive the durable vocabulary check")))
+
+(deftest a-durable-human-send-reaches-all-selected-agents-exactly-once
+  (doseq [threaded? [false true]]
+   (let [room-uuid (random-uuid)
+        room (d/make-room {:id (keyword (str "simmis-multicast-" room-uuid))
+                          :store (memory-store/make)})
+        selected [(room-agents/party->actor-kw var-vor)
+                  (room-agents/party->actor-kw sol)]
+        labels (conj selected :unrelated-listener)
+        barriers (zipmap labels (repeatedly promise))
+        seen (atom {})
+        send-id (random-uuid)
+        root (d/message :human :_room-log "root")
+        parent (d/reply :human :_room-log "nested parent" root)
+        parent-id (when threaded? (:id parent))]
+    (try
+      (when threaded?
+        (d/post! room root)
+        (d/post! room parent))
+      (doseq [actor labels]
+        (d/join room
+          (d/participant
+            {:id actor
+             :on-message (fn [_ message]
+                           (sp/spin
+                             (cond
+                               (= "barrier" (:content message))
+                               (deliver (get barriers actor) true)
+                               (= send-id (:id message))
+                               (swap! seen update actor (fnil conj []) message))
+                             nil))})))
+      (with-redefs-fn
+        {(room-agents-var 'ensure-providers!) (constantly nil)
+         #'rooms/get-room-parties (constantly (vec (take 2 agents)))
+         #'rooms/get-room (constantly {})
+         #'parties/get-party (constantly {:party/id sender :party/type :human})
+         #'room-agents/live-room (constantly room)
+         #'room-agents/ensure-room-party-entity! (constantly nil)
+         #'room-agents/ensure-room-projector! (constantly nil)
+         #'room-agents/ensure-agent-joined! (constantly nil)}
+        (fn []
+          (dotimes [_ 2]
+            (is (= [var-vor sol]
+                   (:recipients (room-agents/post-user-message!
+                                  room-uuid "shared work" sender nil send-id parent-id)))))))
+      ;; FIFO inbox barriers establish that prior sends and retries were consumed.
+      ;; No sleeping or assumed delivery interval, and no model/provider involved.
+      (doseq [actor labels]
+        (d/post! room (d/message :human actor "barrier")))
+      (doseq [barrier (vals barriers)]
+        (is (true? (deref barrier 10000 ::timeout))))
+      (let [stored (filter #(= send-id (:id %)) (d/messages room))
+            envelope (first stored)]
+        (is (= 1 (count stored)))
+        (is (= parent-id (:in-reply-to envelope)))
+        (is (= (if threaded? (:id root) send-id) (d/thread-root-id envelope))
+            "published root and nested replies retain the canonical thread on retry")
+        (is (= (set selected) (get-in envelope [:metadata :dvergr/recipients])))
+        (is (= [] (get-in envelope [:metadata :audience]))
+            "selected responders are not fabricated @mentions")
+        (doseq [actor selected]
+          (is (= [envelope] (get @seen actor))))
+        (is (empty? (get @seen :unrelated-listener))))
+      (finally (d/close-room! room))))))
 
 (deftest real-discourse-and-projector-keep-the-send-and-healthy-reply
   (let [room-uuid (random-uuid)

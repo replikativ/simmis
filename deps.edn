@@ -351,7 +351,9 @@
         ;; does not move.
         ;; 0.1.298: embedded MCP host hook, retired-model successors and
         ;; explicit vision configuration, plus funded dispatch accounting.
-        org.replikativ/dvergr {:mvn/version "0.1.298"}}
+        ;; 0.1.299: one durable message can address an explicit recipient set;
+        ;; duplicate same-id per-target posts no longer stand in for multicast.
+        org.replikativ/dvergr {:mvn/version "0.1.299"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
