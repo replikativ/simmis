@@ -34,10 +34,7 @@
                       (set! (.-className code-el) "hljs language-clojure")
                       (set! (.-innerHTML code-el)
                             (or (md/highlight-code (or code "")) (or code "")))
-                      (.appendChild container code-el)))
-        :on-unmount (fn [container]
-                      (when container
-                        (set! (.-innerHTML container) "")))})
+                      (.appendChild container code-el)))})
      :clj
      (el/pre {:class (str "sandbox-code" (when extra-class (str " " extra-class)))}
        (or code ""))))
@@ -391,10 +388,6 @@
               (set! (.-onclick refresh-btn)
                     (fn [e]
                       (.stopPropagation e)
-                      (fetch-state!))))))
-
-        :on-unmount (fn [host]
-                      (when host
-                        (set! (.-innerHTML host) "")))})
+                      (fetch-state!))))))})
      :clj
      (el/div {:class "sandbox-panel-host"} "Sandbox panel (browser only)")))

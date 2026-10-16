@@ -176,6 +176,23 @@ that one keeps its text and shows a notice offering the other version
 the page's `ifor-each`, whose items carry everything a block renders from —
 depth, children, the conflict flag.
 
+When a block's editor leaves the page, typed text that was not saved is never
+dropped (`block-sync/unmounted`): if the block still exists (the page closed,
+the block moved) the text is saved, as leaving the block would; if another
+session deleted it, the text is kept in a notice on the page ("This block was
+deleted in another session") that restores it as a new block where the old
+one was, or discards it (`sig/orphaned-blocks`). Existence is read from the
+effective db, and a block this session deleted itself is not kept.
+
+The editor itself — TipTap, which listens on the document, plus the replica
+observer — is then destroyed. spindel calls a foreign node's `:on-unmount`
+with nil and fires the unmount of the LAST committed vnode, a closure from a
+later render than the mount, so a handle closed over in the render body is a
+different, empty one by then. `uis/web/desktop/foreign_lifecycle.cljc`
+(`owned`) keys what a mount acquired by the node's place in the tree (parent
+address, slot, `:key`) and releases it on unmount; the block editor, the
+chat input and the Vega chart use it.
+
 The navigation lists the wikis a user owns, those shared with them, and those
 reached through a grant to a room they are in (`kbs/sidebar-kbs`), each marked
 read-only when `can?` refuses the user `:write` — a room's `:read` grant — and

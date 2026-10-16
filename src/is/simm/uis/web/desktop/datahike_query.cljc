@@ -1258,11 +1258,17 @@
              types (page-types-query db page-uuid)
              type-names (map :entity/name types)
 
-             ;; Collect properties from all types
+             ;; Collect properties from all types. Each carries the value
+             ;; type of the attribute it stores under, which is what its
+             ;; editor must produce (`views.types/property-row`): a keyword
+             ;; attribute edited as text sent a string, and the save was
+             ;; refused.
+             schema (d/schema db)
              all-properties (->> type-names
                                  (mapcat #(type-properties-query db %))
                                  distinct
-                                 vec)
+                                 (mapv #(assoc % :property/value-type
+                                               (get-in schema [(mor/attr-of %) :db/valueType]))))
 
              ;; Get the page entity to read property values.
              ;; Resolve the eid via d/q first — d/pull with a [:entity/uuid …]

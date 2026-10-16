@@ -58,6 +58,22 @@ Note `S/Number` is the integer primitive (`:db.type/long`) and `S/Float` is the
 decimal one (`:db.type/double`). A UI number field that accepts decimals names
 `S/Float`.
 
+The attribute's type also decides what a property VALUE must be. The page
+header's property box picks its editor from the attribute's `:db/valueType`
+(`page-properties-query` puts it on each property), not from the morphism's
+UI hint — katzen's `kind : Entity → Keyword` projects with hint `:text`, and a
+text box sends a string. A keyword attribute gets an input that produces a
+keyword, and `:S.Page/kind` a select. `save-property` refuses a value that does
+not fit the attribute's type, with the reason, before it transacts
+(`model/page_kind.cljc`, `value-fits?`).
+
+`:S.Page/kind` holds two sorts of kind. The wiki layout's — `:wiki/atom`,
+`:wiki/overview`, `:wiki/index` — are a person's to set. `:bootstrap` (seeded
+pages; the timeline hides them) and `:chat-summary` (the summarizer's record
+pages; the nav hides them) are the system's: `save-property` refuses to give a
+page one of those, or to change or clear one (`page-kind/change-refusal`), and
+the property box shows them without an editor.
+
 ## One abstract schema, two bindings
 
 A KB and a room store hold the same shapes under different names, and

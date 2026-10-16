@@ -166,6 +166,15 @@
             offers to load the other version (`block-sync`)."
            (signal runtime {})))
 
+#?(:cljs (def orphaned-blocks
+           "Signal: text typed into a wiki block that another session deleted
+            before it was saved — {<block-uuid-str> {:id :page-uuid :db-scope
+            :branch :parent-id :order :html :text}}. Written by the block
+            editor when the block's editor unmounts (`block-sync/unmounted`),
+            read by the page editor, which shows each entry as a notice that
+            offers to restore the text as a new block or discard it."
+           (signal runtime {})))
+
 #?(:cljs (def screen-sharing
            "Signal: set of room-id strings with an active local screen
             share (screen-share/start! capture loop feeding agents)."

@@ -28,6 +28,7 @@
             [is.simm.uis.web.desktop.remote :as rem]
             [is.simm.uis.web.desktop.optimistic-write :as ow]
             [is.simm.uis.web.desktop.block-sync :as bs]
+            [is.simm.uis.web.desktop.foreign-lifecycle :as fl]
             [is.simm.uis.web.desktop.views.types :as types]
             [is.simm.uis.web.desktop.widget-sandbox :as widget-sandbox]
             ;; Use shared kabel client from web.cljs
@@ -1166,12 +1167,12 @@
       (set-conflict! block-id (:conflict (.-_syncState el))))))
 
 (defn- watch-replica!
-  "Follow `el`'s `data-content` from now on. The observer goes with the
-   element: nothing else holds it."
+  "Follow `el`'s `data-content` from now on. Returns the observer; the editor's
+   release disconnects it (`release-block-editor!`)."
   [^js el block-id]
   (let [observer (js/MutationObserver. (fn [_ _] (follow-replica! el block-id)))]
     (.observe observer el #js {:attributes true :attributeFilter #js ["data-content"]})
-    (set! (.-_replicaObserver el) observer)))
+    observer))
 
 (defn- leave-block!
   "The editor in `el` lost focus, showing `html` (`block-sync/leaving`)."
@@ -1287,13 +1288,143 @@
                  nil)))))
     editor))
 
-(defn destroy-tiptap-editor!
-  "Destroy a TipTap editor stored on a DOM element."
-  [element]
-  (when element
-    (when-let [editor (.-_tiptapEditor element)]
-      (.destroy editor)
-      (set! (.-_tiptapEditor element) nil))))
+(defn- view-db
+  "The db the page editor shows for `db-scope` on `branch`, now: the trunk's
+   effective db (replica + this session's predictions), or a fork's
+   projection (`sig/projected-branch-dbs`)."
+  [db-scope branch]
+  (binding [rtc/*execution-context* runtime]
+    (cond
+      (and db-scope (not (trunk? branch)))
+      (get @sig/projected-branch-dbs [(str db-scope) branch])
+
+      db-scope
+      (if-let [overlay (db-signal/get-kb-overlay db-scope)]
+        (opt/db overlay)
+        (db-signal/get-kb-db db-scope))
+
+      :else @sig/local-db)))
+
+(defn- html->text [html]
+  (.-textContent (.-body (.parseFromString (js/DOMParser.) (or html "") "text/html"))))
+
+(defn- keep-orphaned-text!
+  "Another session deleted block `block-id` while this one held unsaved text
+   in it: keep the text in a notice on the page (`sig/orphaned-blocks`). Where
+   the block sat comes off its node (`data-parent`/`data-order`), which the
+   last commit set — the mount's closure only knows where it sat then."
+  [^js el block-id page-uuid db-scope branch html]
+  (binding [rtc/*execution-context* runtime]
+    (swap! sig/orphaned-blocks assoc (str block-id)
+           {:id block-id :page-uuid page-uuid :db-scope db-scope :branch branch
+            :parent-id (some-> (not-empty (.getAttribute el "data-parent")) uuid)
+            :order (not-empty (.getAttribute el "data-order"))
+            :html html :text (html->text html)})))
+
+(defn- release-block-editor!
+  "The block's editor node left the page. Keep what the user typed
+   (`block-sync/unmounted`), then disconnect the replica observer and destroy
+   the editor — TipTap listens on the document, so an editor that is not
+   destroyed keeps itself, its observer and its detached DOM alive for the
+   life of the page."
+  [^js el ^js observer block-id page-uuid db-scope branch]
+  (let [^js editor (.-_tiptapEditor el)
+        state (.-_syncState el)]
+    ;; From here on this editor writes nothing: destroying a focused editor
+    ;; can blur it, and `leave-block!` would save into a block that is gone.
+    (set! (.-_syncState el) nil)
+    (.disconnect observer)
+    (when (and editor state)
+      (let [local (.getHTML editor)
+            db (view-db db-scope branch)]
+        (case (bs/unmounted state local
+                            (if db (bs/present? db block-id) true)
+                            (contains? @deleted-here block-id))
+          :orphan (keep-orphaned-text! el block-id page-uuid db-scope branch local)
+          ;; still there: save it as leaving would — but only into the branch
+          ;; the text was typed on (a branch switch remounts every editor)
+          :save (when (= branch (active-branch-for db-scope))
+                  (update-block-content-remote! block-id local db-scope))
+          :none nil)))
+    ;; the conflict notice belongs to the block, which may be open elsewhere
+    (when (empty? (remove #(identical? % el) (editor-elements block-id)))
+      (set-conflict! block-id nil))
+    (when editor (.destroy editor))
+    (set! (.-_tiptapEditor el) nil)))
+
+(defn- restore-orphan!
+  "The orphan notice's \"Restore as new block\": put the kept text back as a
+   NEW block where the deleted one was — under its parent if that still
+   exists, else at the top level of the page. On trunk it shows at once (a
+   prediction); a refusal puts the notice back."
+  [{:keys [id page-uuid db-scope branch parent-id order html] :as orphan}]
+  (when-not (refuse-past-write! "restore a block")
+    (let [db (view-db db-scope branch)
+          parent (if (and parent-id db
+                          (or (= parent-id page-uuid) (bs/present? db parent-id)))
+                   parent-id
+                   page-uuid)
+          ;; its old place among its old siblings; at the end of the page
+          ;; when the parent went too
+          order (if (and order (= parent parent-id))
+                  order
+                  (frac/generate-key-between
+                   (when db
+                     ;; sorted here: `compare` on strings, as everywhere
+                     ;; fractional keys are ordered on the client
+                     (last (sort (dh/q '[:find [?o ...] :in $ ?p
+                                         :where [?pe :entity/uuid ?p] [?b :block/parent ?pe]
+                                                [?b :block/order ?o]]
+                                       db parent))))
+                   nil))
+          new-uuid (random-uuid)
+          k (str id)
+          drop! #(binding [rtc/*execution-context* runtime]
+                   (swap! sig/orphaned-blocks dissoc k))
+          undo! #(binding [rtc/*execution-context* runtime]
+                   (swap! sig/orphaned-blocks assoc k orphan))
+          overlay (when (and db-scope (trunk? (active-branch-for db-scope)))
+                    (db-signal/get-kb-overlay db-scope))]
+      (drop!)
+      (reset! focus-on-mount new-uuid)
+      (if overlay
+        (predict! overlay
+                  [{:entity/uuid new-uuid
+                    :entity/created-at (js/Date.)
+                    :entity/updated-at (js/Date.)
+                    :instance/of-role [:entity/name "S/Block"]
+                    :block/content html
+                    :block/order order
+                    :block/parent [:entity/uuid parent]}]
+                  #(remote/create-block-remote! parent html order db-scope :db new-uuid)
+                  "Could not restore that block."
+                  undo!)
+        (go (when-not (<! (rem/invoke! (remote/create-block-remote!
+                                        parent html order db-scope
+                                        (active-branch-for db-scope) new-uuid)
+                                       {:message "Could not restore that block."}))
+              (undo!)))))))
+
+(defn- discard-orphan!
+  "The orphan notice's \"Discard\": let the deleted block's text go."
+  [block-id]
+  (binding [rtc/*execution-context* runtime]
+    (swap! sig/orphaned-blocks dissoc (str block-id))))
+
+(defn- orphan-notice
+  "A block another session deleted while this one held unsaved text in it:
+   the text, and what to do with it."
+  [{:keys [id text] :as orphan}]
+  (el/div {:key (str "orphan-" id) :class "block-orphan" :role "status"}
+    (el/span {} "This block was deleted in another session. Your unsaved text:")
+    (el/div {:class "block-orphan-text"} text)
+    (el/div {:class "block-orphan-actions"}
+      (el/button {:class "block-conflict-btn"
+                  :on-click (fn [_] (restore-orphan! orphan))}
+        "Restore as new block")
+      (el/button {:class "block-conflict-btn"
+                  :on-click (fn [_] (discard-orphan! id))}
+        "Discard"))))
 
 ;; =============================================================================
 ;; Block Rendering
@@ -1324,7 +1455,6 @@
                         :args [\"my-run-id\"]}}}"
   [block & [db-scope]]
   (let [block-id  (str (:id block))
-        watcher-k (keyword "viz-watcher" block-id)
         ;; Get the appropriate datahike connection to watch.
         ;; Datahike connections implement IWatchable (unlike spindel SignalRefs).
         get-conn  (fn []
@@ -1332,11 +1462,25 @@
                       (db-signal/get-kb-conn db-scope)
                       @db-signal/local-conn))]
     (foreign-node
-      {:key (str "viz-" block-id)
-       :class "block-viz"
-       :data-id block-id
-       :on-mount
-       (fn [el]
+      (merge
+       {:key (str "viz-" block-id)
+        :class "block-viz"
+        :data-id block-id}
+       ;; the view and the conn watch, released when the node goes
+       ;; (`foreign-lifecycle`: spindel's unmount gets no element)
+       (fl/owned
+        (str "viz-" block-id)
+        (fn [^js el]
+         (let [;; per mount: the same block open in two columns watches twice
+              watcher-k (keyword "viz-watcher" (str block-id "-" (random-uuid)))
+              released? (atom false)
+              release! (fn []
+                         (reset! released? true)
+                         (when-let [conn (get-conn)]
+                           (remove-watch conn watcher-k))
+                         (when-let [^js view (.-_vegaView el)]
+                           (.finalize view)
+                           (set! (.-_vegaView el) nil)))]
          (when (exists? js/vegaEmbed)
            (try
              (let [raw-spec  (reader/read-string (:viz-spec block))
@@ -1368,11 +1512,13 @@
                                          :compiled false :editor false}
                                :renderer "svg" :theme "quartz"}))
                    (.then
-                     (fn [result]
-                       (let [view (.-view result)]
+                     (fn [^js result]
+                       (let [^js view (.-view result)]
                          (set! (.-_vegaView el) view)
+                         ;; the node went while the chart was embedding
+                         (when @released? (release!))
                          ;; Watch the datahike connection for DB changes
-                         (when db-query
+                         (when (and db-query (not @released?))
                            (when-let [conn (get-conn)]
                              (add-watch conn watcher-k
                                (fn [_ _ old-db new-db]
@@ -1389,16 +1535,8 @@
                        (set! (.-textContent el) (str "Chart error: " (.-message e)))))))
              (catch :default e
                (js/console.error "Vega-Lite render error:" e)
-               (set! (.-textContent el) (str "Viz error: " (.-message e)))))))
-       :on-unmount
-       (fn [_el]
-         ;; Remove watcher from the connection to avoid leaks
-         (when-let [conn (get-conn)]
-           (remove-watch conn watcher-k))
-         ;; Finalize Vega view; spindel passes nil as _el, guard before property access
-         (when _el
-           (when-let [view (.-_vegaView _el)]
-             (.finalize view))))})))
+               (set! (.-textContent el) (str "Viz error: " (.-message e))))))
+         release!)))))))
 
 (defn- code-block? [block]
   (str/includes? (or (:content block) "") "<pre>"))
@@ -1441,8 +1579,10 @@
    active-branch: branch keyword (`:db` for trunk). Embedded in the
    foreign-node's :key so a branch switch unmounts + remounts TipTap
    with the new branch's content. Within a branch the key is stable,
-   so normal typing reuses the same TipTap instance + DOM nodes."
-  [block & [db-scope syntax-pref db widget-kb active-branch]]
+   so normal typing reuses the same TipTap instance + DOM nodes.
+   page-uuid: the page the block is shown on (a block deleted elsewhere keeps
+   its unsaved text in a notice on that page)."
+  [block & [db-scope syntax-pref db widget-kb active-branch page-uuid]]
   (swap! render-block-count inc)
   (let [{:keys [depth has-children]} block
         hidden?  (:hidden block)
@@ -1484,45 +1624,48 @@
                         :innerHTML (or (md/highlight-code sup-text "superficie") sup-text)}))))
 
         :else
-        (foreign-node
-          {:key (str "editor-"
-                     (name (or active-branch :db))
-                     ;; editable or not is fixed at mount
-                     (when (:read-only? block) "-ro")
-                     "-"
-                     (:id block))
-           :class "block-content"
-           :data-id (str (:id block))
-           ;; the content the editor follows — see `follow-replica!`
-           :data-content (or (:content block) "")
-           :on-mount (fn [^js el]
-                       ;; `focus-on-mount` carries the UUID of the
-                       ;; most recently created block (set by the
-                       ;; Enter handler before its prediction). The
-                       ;; new block's `:on-mount` fires once and we
-                       ;; autofocus iff this mount matches the pending
-                       ;; UUID, then clear the atom so a stale UUID
-                       ;; doesn't accidentally focus a later mount.
-                       ;;
-                       ;; With spindel's discharge in-place
-                       ;; reconciliation (`:update` deltas reuse the
-                       ;; DOM element when `:tag`+`:key`+`:addr` match
-                       ;; — see dom/discharge.cljc `reconcile-vnode!`),
-                       ;; `:on-mount` no longer re-fires on each
-                       ;; per-render closure flip; only the actual
-                       ;; mount of the new element triggers us.
-                       (when-not (.-_tiptapEditor el)
-                         (let [should-focus? (= @focus-on-mount (:id block))]
-                           (when should-focus? (reset! focus-on-mount nil))
-                           ;; the committed attribute, not this closure's
-                           ;; block: the two agree here, and the attribute
-                           ;; is what the observer follows from now on
-                           (create-tiptap-editor!
-                             el (:id block) (.getAttribute el "data-content") db-scope nil
-                             (when should-focus? "start") (:read-only? block))
-                           (watch-replica! el (:id block)))))
-           :on-unmount (fn [el]
-                         (destroy-tiptap-editor! el))}))
+        (let [editor-key (str "editor-"
+                              (name (or active-branch :db))
+                              ;; editable or not is fixed at mount
+                              (when (:read-only? block) "-ro")
+                              "-"
+                              (:id block))]
+          (foreign-node
+            (merge
+             {:key editor-key
+              :class "block-content"
+              :data-id (str (:id block))
+              ;; the content the editor follows — see `follow-replica!`
+              :data-content (or (:content block) "")
+              ;; where the block sits, as of the last commit: where a block
+              ;; deleted elsewhere is restored to (`release-block-editor!`)
+              :data-parent (str (:parent-id block))
+              :data-order (or (:order block) "")}
+             ;; The editor and its observer, released when the node goes
+             ;; (`foreign-lifecycle`: spindel's unmount gets no element).
+             (fl/owned
+              editor-key
+              (fn [^js el]
+                ;; `focus-on-mount` carries the UUID of the most recently
+                ;; created block (set by the Enter handler before its
+                ;; prediction). The new block's mount fires once and we
+                ;; autofocus iff this mount matches the pending UUID, then
+                ;; clear the atom so a stale UUID doesn't accidentally focus
+                ;; a later mount. A reconciled re-render does not re-fire it
+                ;; (spindel `reconcile-vnode!`): only a real mount does.
+                (let [should-focus? (= @focus-on-mount (:id block))]
+                  (when should-focus? (reset! focus-on-mount nil))
+                  ;; the committed attribute, not this closure's block: the
+                  ;; two agree here, and the attribute is what the observer
+                  ;; follows from now on
+                  (create-tiptap-editor!
+                    el (:id block) (.getAttribute el "data-content") db-scope nil
+                    (when should-focus? "start") (:read-only? block))
+                  (let [observer (watch-replica! el (:id block))]
+                    (fn []
+                      (release-block-editor! el observer (:id block)
+                                             page-uuid db-scope
+                                             (or active-branch :db)))))))))))
       ;; This block changed elsewhere while it was being edited here
       ;; (`block-sync`). The buttons keep the editor's focus (mousedown is
       ;; cancelled): a blur would save the local text before the choice.
@@ -2103,6 +2246,9 @@
           ;; conflict notice. At the TOP (sharp edge #1); it reaches the
           ;; blocks as `:conflict?` IN their items (sharp edge #2).
           conflicts (iv/get-new (track sig/block-conflicts))
+          ;; Text kept from blocks deleted elsewhere (`release-block-editor!`).
+          ;; At the TOP, like every track.
+          orphans (iv/get-new (track sig/orphaned-blocks))
           ;; The roster says whether this viewer may write this KB
           ;; (`kbs/sidebar-kbs`, `:kb/read-only?` — a wiki reached through a
           ;; room's `:read` grant). At the top, like every track.
@@ -2270,6 +2416,18 @@
 
           ;; Blocks content
           (el/div {:class "blocks-container"}
+            ;; Unsaved text of blocks another session deleted: everything a
+            ;; notice renders is in its item (sharp edge 2).
+            (let [page-orphans (->> (vals orphans)
+                                    (filter #(and (= (str page-uuid) (str (:page-uuid %)))
+                                                  (= (some-> db-scope str)
+                                                     (some-> (:db-scope %) str))))
+                                    (sort-by #(str (:id %)))
+                                    vec)]
+              (when (seq page-orphans)
+                (el/div {:class "block-orphans"}
+                  (ifor-each #(str (:id %)) page-orphans
+                    (fn [orphan] (orphan-notice orphan))))))
             (if (seq all-blocks)
               (el/div {:class "blocks-list"}
                 ;; Use ifor-each for incremental DOM updates - only changed blocks re-render
@@ -2283,7 +2441,8 @@
                           widget-kb (when (and db-scope (trunk? active-branch))
                                       (when-let [ov (db-signal/get-kb-overlay db-scope)]
                                         {:db-scope db-scope :overlay ov}))]
-                      (render-block block db-scope syntax-pref db-value widget-kb active-branch)))))
+                      (render-block block db-scope syntax-pref db-value widget-kb active-branch
+                                    page-uuid)))))
               ;; Empty state: new pages auto-create first block, so this is just loading
               (el/div {:class "empty-state"}
                 (el/p "Loading blocks...")))

@@ -29,7 +29,12 @@
 
    Every block takes a change, except the one being edited — focused, or
    holding text the user typed and has not saved. That one keeps its text and
-   records the change as a conflict, which the UI offers to load.")
+   records the change as a conflict, which the UI offers to load.
+
+   When a block leaves the page (`unmounted`), text the user typed and did not
+   save is never dropped: it is saved when the block still exists, and kept in
+   a notice when another session deleted it."
+  (:require [datahike.api :as d]))
 
 (defn mounted
   "The sync state of an editor that just took `content`, showing `html`."
@@ -80,3 +85,32 @@
     (dirty? state local) :save
     (some? (:conflict state)) :apply
     :else :none))
+
+(defn present?
+  "Is block `block-uuid` in `db` as a block — in a tree, with a parent? A
+   pending save of a block that was deleted underneath it still predicts a
+   bare `{:entity/uuid … :block/content …}`; that is not a block on any page."
+  [db block-uuid]
+  (some? (d/q '[:find ?p . :in $ ?u :where [?b :entity/uuid ?u] [?b :block/parent ?p]]
+              db block-uuid)))
+
+(defn unmounted
+  "What an editor does when its block leaves the page, showing `local`.
+   `exists?` is whether the block is still in the db the page shows
+   (`present?`); `deleted-here?` whether this session deleted it.
+
+     :orphan  another session deleted the block while the user had typed text
+              here that was not saved — keep the text: the UI shows it in a
+              notice that offers to restore it as a new block
+     :save    the block still exists (the page closed, it moved) and holds
+              unsaved typing — save it, as leaving the block would
+     :none    nothing typed, or this session deleted the block itself
+
+   The editor is destroyed either way; the save or the notice is what keeps
+   the text."
+  [state local exists? deleted-here?]
+  (cond
+    (not (dirty? state local)) :none
+    deleted-here? :none
+    (not exists?) :orphan
+    :else :save))

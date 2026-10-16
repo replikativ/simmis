@@ -297,6 +297,11 @@ Each of these bit us. None of them fails loudly.
    that must follow a later change to an already-mounted element is not
    a ref's job.
 4. **Signals/mailboxes are ctx-backed** — see "fork-safe state" above.
+5. **foreign-node `:on-unmount` gets nil, from the LAST render's
+   closure** — not the mount's. A handle closed over in the render body
+   (`(atom nil)` in a `let`) is a fresh, empty atom by then, so nothing is
+   released. Use `foreign-lifecycle/owned`: `mount!` returns a release
+   thunk, keyed by the node's place in the tree.
 
 ## Known instrumentation
 
