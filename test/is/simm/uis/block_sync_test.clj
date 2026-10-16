@@ -165,3 +165,54 @@
       (let [s (bs/mounted "<p>refused</p>" "<p>refused</p>")]
         (is (= :apply (first (bs/incoming s "<p>a</p>" "<p>refused</p>" false))))))
     (opt/close! overlay)))
+
+;; =============================================================================
+;; A block leaving the page
+;; =============================================================================
+
+(deftest leaving-the-page-keeps-unsaved-text
+  (testing "deleted in another session with unsaved typing: keep the text"
+    (is (= :orphan (bs/unmounted taken "<p>a, typed</p>" false false))))
+  (testing "deleted elsewhere, nothing typed: nothing to keep"
+    (is (= :none (bs/unmounted taken "<p>a</p>" false false))))
+  (testing "this session deleted it: the user meant to drop it"
+    (is (= :none (bs/unmounted taken "<p>a, typed</p>" false true))))
+  (testing "still there (the page closed, the block moved): save it, as leaving would"
+    (is (= :save (bs/unmounted taken "<p>a, typed</p>" true false)))
+    (is (= :none (bs/unmounted taken "<p>a</p>" true false))))
+  (testing "normalised content is not typing"
+    (let [s (bs/mounted "<p>[[Home]]</p>" "<p><span class=\"page-reference\">[[Home]]</span></p>")]
+      (is (= :none (bs/unmounted s "<p><span class=\"page-reference\">[[Home]]</span></p>"
+                                 false false))))))
+
+(deftest a-remote-delete-under-unsaved-typing-is-an-orphan
+  ;; The editor asks the EFFECTIVE db (replica + this session's predictions)
+  ;; whether its block is still there, as `release-block-editor!` does.
+  (testing "another session's delete syncs in while the user has typed"
+    (let [conn (fresh-kb)
+          overlay (opt/open conn)]
+      (is (bs/present? (opt/db overlay) block-uuid))
+      (d/transact conn [[:db/retractEntity [:entity/uuid block-uuid]]])
+      (is (not (bs/present? (opt/db overlay) block-uuid)) "gone from the view")
+      (is (= :orphan (bs/unmounted taken "<p>a, typed</p>"
+                                   (bs/present? (opt/db overlay) block-uuid) false)))
+      (opt/close! overlay)))
+  (testing "this session's own delete (a prediction) is not an orphan"
+    (let [conn (fresh-kb)
+          overlay (opt/open conn)
+          _ (ow/predict-remote! overlay [[:db/retractEntity [:entity/uuid block-uuid]]]
+                                (fn [] (a/promise-chan)) {})]
+      (is (not (bs/present? (opt/db overlay) block-uuid)))
+      (is (= :none (bs/unmounted taken "<p>a, typed</p>"
+                                 (bs/present? (opt/db overlay) block-uuid) true)))
+      (opt/close! overlay)))
+  (testing "a pending save of the block does not keep it on the page once it is deleted"
+    ;; the prediction rebases onto the replica without the block: what is left
+    ;; is a bare entity with content and no parent — not a block on a page
+    (let [conn (fresh-kb)
+          overlay (opt/open conn)
+          _ (ow/predict-remote! overlay [{:entity/uuid block-uuid :block/content "<p>mine</p>"}]
+                                (fn [] (a/promise-chan)) {})]
+      (d/transact conn [[:db/retractEntity [:entity/uuid block-uuid]]])
+      (is (not (bs/present? (opt/db overlay) block-uuid)))
+      (opt/close! overlay))))

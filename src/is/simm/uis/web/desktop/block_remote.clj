@@ -12,6 +12,7 @@
             [is.simm.distributed-scope :as ds]
             [is.simm.model.crud :as crud]
             [is.simm.model.morphism :as mor]
+            [is.simm.model.page-kind :as page-kind]
             [is.simm.model.db :as db]
             [is.simm.model.knowledge-bases :as kbs]
             [is.simm.model.fractional-index :as frac]
@@ -118,13 +119,20 @@
      content - HTML content string
      order - Optional: explicit fractional index string
      insert-after-order - Optional: fractional index to insert after
+     new-uuid - Optional: the new block's uuid, chosen by a browser that
+                already shows it (must name nothing yet)
 
    If `insert-after-order` is provided, generates a key between it and the next sibling.
-   Otherwise, appends at the end using fractional indexing."
-  [{:keys [parent-uuid content order insert-after-order db-scope branch-kw]}]
+   Otherwise, appends at the end using fractional indexing.
+
+   Returns {:block-uuid <the new block> :max-tx <head after the write>}."
+  [{:keys [parent-uuid content order insert-after-order new-uuid db-scope branch-kw]}]
   (go-try S
     (let [conn (resolve-conn db-scope branch-kw)
-          db @conn]
+          db @conn
+          with-uuid (fn [opts] (cond-> opts
+                                 new-uuid (assoc :uuid (unused-uuid db new-uuid))))
+          created
       (if insert-after-order
         ;; Insert after specific position: find next sibling and generate key between
         (let [;; Find all siblings with order > insert-after-order, get the min (next one)
@@ -139,9 +147,9 @@
                               db parent-uuid insert-after-order)
               ;; Generate fractional index between insert-after-order and next-order
               new-order (frac/generate-key-between insert-after-order next-order)]
-          (crud/create-block! conn {:parent parent-uuid
-                                    :content content
-                                    :order new-order}))
+          (crud/create-block! conn (with-uuid {:parent parent-uuid
+                                               :content content
+                                               :order new-order})))
 
         ;; Simple append or explicit order
         (let [final-order (if order
@@ -156,7 +164,9 @@
                                                    [?block :block/order ?order]]
                                                  db parent-uuid)]
                              (frac/generate-key-between max-order nil)))]
-          (crud/create-block! conn {:parent parent-uuid :content content :order final-order}))))))
+          (crud/create-block! conn (with-uuid {:parent parent-uuid :content content
+                                               :order final-order}))))]
+      {:block-uuid created :max-tx (head conn)})))
 
 (defn -create-sibling-after-handler
   "Create a sibling block after the given block.
@@ -450,23 +460,47 @@
    is not declared, that threw `:transact/schema` for all 80 reflected
    morphisms on a `store/install!`ed store — including `created-at` and
    `updated-at` on S/Page, i.e. on every wiki page. The user saw \"Could not
-   save that property.\" Refusing deliberately says why."
+   save that property.\" Refusing deliberately says why.
+
+   REFUSES a value of the wrong type, with the reason. A keyword attribute
+   (`:S.Page/kind`) edited as text arrived as a string, and the transaction
+   failed with nothing the user could act on. And a page's kind changes only
+   between the kinds a person may set (`page-kind/change-refusal`): the
+   system's kinds hide pages."
   [{:keys [page-uuid morphism-name value db-scope branch-kw]}]
   (go-try S
     (let [conn (resolve-conn db-scope branch-kw)
+          db @conn
           morphism (d/q '[:find (pull ?m [:entity/name :morphism/storage-attr]) .
                           :in $ ?n :where [?m :entity/name ?n]]
-                        @conn morphism-name)]
-      (if (mor/reflected? morphism)
-        {:success false
-         :error :reflected-property
-         :attr (str (mor/attr-of morphism))
-         :message (str "\"" morphism-name "\" reflects data owned by another "
-                       "system (" (mor/attr-of morphism) "). It is read here, "
-                       "not edited here.")}
-        (let [attr (mor/attr-of (or morphism {:entity/name morphism-name}))]
+                        db morphism-name)
+          attr (mor/attr-of (or morphism {:entity/name morphism-name}))
+          clear? (or (nil? value) (and (string? value) (str/blank? value)))
+          value-type (get-in (d/schema db) [attr :db/valueType])
+          refusal (cond
+                    (mor/reflected? morphism)
+                    {:error :reflected-property
+                     :message (str "\"" morphism-name "\" reflects data owned by another "
+                                   "system (" attr "). It is read here, not edited here.")}
+
+                    (and (not clear?) value-type
+                         (not (page-kind/value-fits? value-type value)))
+                    {:error :wrong-value-type
+                     :message (str "\"" morphism-name "\" holds a " (name value-type)
+                                   "; " (pr-str value) " is not one.")}
+
+                    (= page-kind/attr attr)
+                    (when-let [why (page-kind/change-refusal
+                                    (d/q '[:find ?k . :in $ ?p
+                                           :where [?e :entity/uuid ?p] [?e :S.Page/kind ?k]]
+                                         db page-uuid)
+                                    (when-not clear? value))]
+                      {:error :system-page-kind :message why}))]
+      (if refusal
+        (assoc refusal :success false :attr (str attr))
+        (do
           (d/transact conn
-            (if (or (nil? value) (and (string? value) (str/blank? value)))
+            (if clear?
               [[:db/retract [:entity/uuid page-uuid] attr]]
               [{:entity/uuid page-uuid attr value}]))
           {:success true})))))

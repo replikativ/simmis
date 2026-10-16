@@ -321,10 +321,7 @@
                         ;; textContent, not innerHTML — unhighlighted panes carry
                         ;; raw tool output, which must never parse as markup
                         (set! (.-textContent code-el) text))
-                      (.appendChild container code-el)))
-        :on-unmount (fn [container]
-                      (when container
-                        (set! (.-innerHTML container) "")))})))
+                      (.appendChild container code-el)))})))
 
 (defn eval-entry-view
   "One tool call in the chat timeline: a collapsed chip that opens into
@@ -566,10 +563,7 @@
                   :class "thinking-text"
                   :on-mount (fn [container]
                               (set! (.-innerHTML container)
-                                    (md/render-markdown (or reasoning ""))))
-                  :on-unmount (fn [container]
-                                (when container
-                                  (set! (.-innerHTML container) "")))})
+                                    (md/render-markdown (or reasoning ""))))})
                :clj
                (el/div {:class "thinking-text"} reasoning)))))
       ;; Attachment (e.g. original voice-note audio) — served from the
@@ -692,10 +686,7 @@
                                     holder (.createElement js/document "div")]
                                 (set! (.-className holder) "mermaid-diagram")
                                 (.replaceWith pre-el holder)
-                                (mmd/render-into! holder code)))))
-              :on-unmount (fn [container]
-                            (when container
-                              (set! (.-innerHTML container) "")))})
+                                (mmd/render-into! holder code)))))})
              (el/div {:class "chat-message-content message-text"}
                (render-rich-content content)))
            :clj

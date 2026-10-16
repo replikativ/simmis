@@ -15,6 +15,8 @@
             [org.replikativ.spindel.signal :refer [->SignalRef ensure-signal-initialized!]]
             [org.replikativ.spindel.effects.track :refer [track]]
             [is.simm.uis.web.desktop.views.core :as vc]
+            [is.simm.model.morphism :as mor]
+            [is.simm.model.page-kind :as page-kind]
             [clojure.string :as str])
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]]
@@ -395,7 +397,17 @@
   [{:keys [property value on-save on-property-click]}]
   (let [prop-name (:entity/name property)
         prop-title (format-property-name prop-name)
-        prop-type (or (:morphism/property-type property) :text)
+        ;; What the attribute STORES decides what the editor produces — not
+        ;; the UI hint: katzen's `kind : Entity → Keyword` projects with
+        ;; property-type :text, and a text box sends a string.
+        prop-type (cond
+                    (= page-kind/attr (mor/attr-of property)) :page-kind
+                    (= :db.type/keyword (:property/value-type property)) :keyword
+                    :else (or (:morphism/property-type property) :text))
+        ;; a kind the system set (`page-kind/system-kinds`) is shown, not edited
+        on-save (when-not (and (= :page-kind prop-type)
+                               (contains? page-kind/system-kinds value))
+                  on-save)
         row-id (str "prop-row-" (:entity/uuid property))
 
         ;; Toggle edit mode via DOM class
@@ -439,7 +451,7 @@
                                   (.stopPropagation e)
                                   (on-property-click property))
                                 :clj nil))
-                           start-editing!)}
+                           (when on-save start-editing!))}
         (str prop-title ":"))
 
       ;; Display value (shown when not editing)
@@ -477,6 +489,53 @@
                                         "Escape" (stop-editing!)
                                         nil)
                                       :clj nil))})
+
+          ;; A page's kind: one of the kinds a person sets, or none. The server
+          ;; holds the same list (`page-kind/change-refusal`).
+          :page-kind
+          (el/select {:class "property-edit-input"
+                      :on-change (fn [e]
+                                   #?(:cljs
+                                      (let [v (.. e -target -value)]
+                                        (save-value! (when (seq v) (keyword v))))
+                                      :clj nil))
+                      :on-keydown (fn [e]
+                                    #?(:cljs
+                                       (when (= (.-key e) "Escape")
+                                         (stop-editing!))
+                                       :clj nil))}
+            (el/option {:value "" :selected (nil? value)} "(none)")
+            (ifor-each :value (mapv (fn [k] {:value (subs (str k) 1)
+                                             :selected? (= k value)})
+                                    page-kind/user-kinds)
+              (fn [{v :value :keys [selected?]}]
+                (el/option {:key v :value v :selected selected?} v))))
+
+          ;; Any other keyword attribute: typed as text, saved as a keyword.
+          ;; Something that does not read as one keyword is not saved; the
+          ;; input says so.
+          :keyword
+          (let [save-typed! (fn [^js input]
+                              #?(:cljs
+                                 (let [k (page-kind/parse-keyword (.-value input))]
+                                   (if (page-kind/invalid? k)
+                                     (do (.setCustomValidity input "Not a keyword, e.g. wiki/atom")
+                                         (.reportValidity input))
+                                     (do (.setCustomValidity input "")
+                                         (save-value! k))))
+                                 :clj nil))]
+            (el/input {:class "property-edit-input"
+                       :type "text"
+                       :value (if (keyword? value) (subs (str value) 1) (or value ""))
+                       :placeholder "namespace/name"
+                       :on-blur (fn [e] (save-typed! (.-target e)))
+                       :on-keydown (fn [e]
+                                     #?(:cljs
+                                        (case (.-key e)
+                                          "Enter" (save-typed! (.-target e))
+                                          "Escape" (stop-editing!)
+                                          nil)
+                                        :clj nil))}))
 
           :date
           (el/input {:class "property-edit-input"

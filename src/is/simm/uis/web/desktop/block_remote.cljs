@@ -24,13 +24,15 @@
 ;; =============================================================================
 
 (defn create-block-remote!
-  "Create a new block on the server."
-  [parent-uuid content order & [db-scope branch-kw]]
+  "Create a new block on the server. `new-uuid`, when given, is the new
+   block's uuid — the one a prediction already shows."
+  [parent-uuid content order & [db-scope branch-kw new-uuid]]
   (invoke-remote server-id
                  'block-remote/create-block
                  (cond-> {:parent-uuid parent-uuid :content content :order order}
                    db-scope (assoc :db-scope db-scope)
-                   branch-kw (assoc :branch-kw branch-kw))))
+                   branch-kw (assoc :branch-kw branch-kw)
+                   new-uuid (assoc :new-uuid new-uuid))))
 
 (defn create-block-after-remote!
   "Create a new block after a specific position using fractional indexing."

@@ -68,6 +68,7 @@
             #?(:cljs [is.simm.uis.web.desktop.datahike-query :as dq])
             #?(:cljs [org.replikativ.spindel.incremental.combinators :as comb])
             #?(:cljs [is.simm.uis.web.desktop.chat-tiptap-input :as chat-input])
+            #?(:cljs [is.simm.uis.web.desktop.foreign-lifecycle :as fl])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.dom.elements :as el]
@@ -1760,9 +1761,7 @@
              ;; header's Open-app button can open /apps/<slug>/ synchronously on
              ;; click (window.open after an async hop would be popup-blocked).
              ;; Idempotent per room; a raw go block, so not cancelled on re-render.
-             _ #?(:cljs (load-room-app-status-into-signal! room-id) :clj nil)
-             ;; Store editor instance for cleanup
-             editor-atom (atom nil)]
+             _ #?(:cljs (load-room-app-status-into-signal! room-id) :clj nil)]
 
          ;; NOTE: We use the locally computed `window` for rendering
          ;; and do NOT update signals during render to avoid cascade re-renders.
@@ -2151,27 +2150,30 @@
              ;; Prompt chevron — the "type here" affordance (no send
              ;; button; Enter sends, like a terminal prompt).
              (el/span {:class "chat-prompt-marker"} ">")
-             (foreign-node
-               {:key (str "chat-editor-" room-id
-                          (when thread-view? (str "-thread-" thread-root-id)))
-                :class "chat-tiptap-container"
-                :on-mount (fn [el]
-                            (let [editor (chat-input/create-chat-editor
-                                           {:element el
-                                            :on-send on-send-tiptap
-                                            :placeholder "Ask your agents anything — Enter to send"})]
-                              (reset! editor-atom editor)))
-                            ;; No scroll controller needed: .chat-messages is
-                            ;; flex column-reverse, which natively opens at
-                            ;; the tail (scrollTop 0), keeps the viewport
-                            ;; stable when history is prepended, and pins to
-                            ;; the tail while there. The former
-                            ;; MutationObserver used normal-column math and
-                            ;; defeated all three.
-                :on-unmount (fn [_el]
-                              (when-let [editor @editor-atom]
-                                (chat-input/destroy-chat-editor editor)
-                                (reset! editor-atom nil)))}))))  ;; closes }, foreign-node, div.input, div.chat-panel, let
+             ;; The editor is released when the node goes (`foreign-lifecycle`).
+             ;; It used to sit in an `(atom nil)` bound in this spin's `let` —
+             ;; a new, empty atom on every render, while spindel fires the
+             ;; unmount of the LAST render: no chat editor was ever destroyed.
+             ;;
+             ;; No scroll controller needed: .chat-messages is flex
+             ;; column-reverse, which natively opens at the tail (scrollTop 0),
+             ;; keeps the viewport stable when history is prepended, and pins
+             ;; to the tail while there. The former MutationObserver used
+             ;; normal-column math and defeated all three.
+             (let [editor-key (str "chat-editor-" room-id
+                                   (when thread-view? (str "-thread-" thread-root-id)))]
+               (foreign-node
+                 (merge
+                  {:key editor-key
+                   :class "chat-tiptap-container"}
+                  (fl/owned
+                   editor-key
+                   (fn [el]
+                     (let [editor (chat-input/create-chat-editor
+                                    {:element el
+                                     :on-send on-send-tiptap
+                                     :placeholder "Ask your agents anything — Enter to send"})]
+                       #(chat-input/destroy-chat-editor editor))))))))))  ;; closes …, let, div.input, div.chat-panel, let
        :clj
        (el/div {:class "content-chat"}
          (el/p {} "Chat (CLJ mode)")))

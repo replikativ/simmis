@@ -933,6 +933,33 @@ body {
   background: var(--mono-bg-overlay);
 }
 
+/* A block deleted in another session while this one had unsaved text in it:
+   the text, kept, with restore/discard (block-editor `orphan-notice`). */
+.block-orphan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  margin-bottom: var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-left: 2px solid var(--status-unread);
+  background: var(--status-unread-bg);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--mono-text-secondary);
+}
+
+.block-orphan-text {
+  color: var(--mono-text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.block-orphan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+}
+
 /* Block focus state */
 .block.focused .block-content {
   outline: none;
