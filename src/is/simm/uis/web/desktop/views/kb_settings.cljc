@@ -4,6 +4,7 @@
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as cr])
+            #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
@@ -73,8 +74,8 @@
                                     :on-click (fn [_]
                                                 #?(:cljs
                                                    (let [s (cr/unshare-kb! web/server-id kb-id-str (str pid))]
-                                                     (s (fn [_] (reload-kb-details! kb-id-str))
-                                                        (fn [err] (js/console.error "[kb-settings] unshare error:" err))))
+                                                     (s (rem/on-ok "Could not unshare the wiki." (fn [_] (reload-kb-details! kb-id-str)))
+                                                        (rem/on-error "Could not unshare the wiki.")))
                                                    :clj nil))}
                           (vc/icon "x")))))))
               (el/div {:class "settings-empty"} "Not shared with anyone")))
@@ -103,10 +104,10 @@
                                                uid (.-value sel)]
                                            (when (and uid (seq uid))
                                              (let [s (cr/share-kb! web/server-id kb-id-str uid)]
-                                               (s (fn [_]
+                                               (s (rem/on-ok "Could not share the wiki." (fn [_]
                                                     (set! (.-value sel) "")
-                                                    (reload-kb-details! kb-id-str))
-                                                  (fn [err] (js/console.error "[kb-settings] share error:" err))))))
+                                                    (reload-kb-details! kb-id-str)))
+                                                  (rem/on-error "Could not share the wiki.")))))
                                          :clj nil))}
                 "Share"))))
 
@@ -135,9 +136,9 @@
                                     #?(:cljs
                                        (when (js/confirm "Delete this wiki? This cannot be undone.")
                                          (let [s (cr/delete-kb! web/server-id kb-id-str)]
-                                           (s (fn [_]
+                                           (s (rem/on-ok "Could not delete the wiki." (fn [_]
                                                 (reload-nav!)
-                                                (reset! sig/admin-data nil))
-                                              (fn [err] (js/console.error "[kb-settings] delete error:" err)))))
+                                                (reset! sig/admin-data nil)))
+                                              (rem/on-error "Could not delete the wiki."))))
                                        :clj nil))}
               "Delete Wiki")))))))

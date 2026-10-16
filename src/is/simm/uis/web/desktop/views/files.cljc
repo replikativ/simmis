@@ -74,7 +74,12 @@
                                                  (or (not-empty (.-type file))
                                                      "application/octet-stream")})
                                  :body buf})))
-         (.then (fn [resp] (.json resp)))
+         ;; a refused upload (401, 413 …) is not a blob: stop here and say so
+         (.then (fn [resp]
+                  (if (.-ok resp)
+                    (.json resp)
+                    (throw (ex-info (str "HTTP " (.-status resp))
+                                    {:error (str "upload refused (HTTP " (.-status resp) ")")})))))
          (.then (fn [j]
                   (let [blob-id (.-id j) size (.-size j)]
                     (binding [rtc/*execution-context* runtime]
@@ -211,7 +216,10 @@
                                                                                 (or (not-empty (.-type (:file item)))
                                                                                     "application/octet-stream")})
                                                                 :body buf})
-                                                 (.then (fn [r] (.json r)))
+                                                 (.then (fn [r]
+                                                          (if (.-ok r)
+                                                            (.json r)
+                                                            (throw (ex-info (str "HTTP " (.-status r)) {})))))
                                                  (.then (fn [j]
                                                           (put-node! item (.-id j) (.-size j)))))))))))
                      (.then (fn [_] (bump!)))

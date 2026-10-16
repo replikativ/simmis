@@ -24,6 +24,7 @@
             #?(:cljs [is.simm.uis.web.desktop.message-notify-sync :as mns])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
             #?(:cljs [is.simm.uis.web.desktop.experiments-remote :as experiments-remote])
+            #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [cljs.core.async :refer [go]])
             #?(:cljs [is.simm.runtimes.web :as web])
             #?(:cljs [is.simm.uis.web.desktop.branching-sync :as br-sync])
@@ -833,7 +834,7 @@
               (binding [rtc/*execution-context* runtime]
                 (when-let [me @sig/current-user]
                   (urs/refresh-user-rooms! (:id me)))))
-            (fn [err] (js/console.error "[nav] join experiment room failed:" err)))))))
+            (rem/on-error "Could not join that experiment room."))))))
 
 #?(:cljs
    (defn render-chats-section-spin

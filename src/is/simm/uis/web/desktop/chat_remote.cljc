@@ -1179,19 +1179,28 @@
                   :cut cut}))))
          :cljs nil))))
 
+;; A drive write in a room with no drive used to answer nil, which a client
+;; reads as success: the upload, the folder, the delete simply did not happen.
+#?(:clj
+   (defn- room-drive-conn!
+     "The conn of `room-uuid`'s drive, or a refusal the client can show."
+     [room-uuid]
+     (let [drive (or (first (drives/get-room-drives room-uuid))
+                     (throw (ex-info "This room has no drive" {:type :validation-error})))]
+       (or (drives/connect-drive-database (:drive/db-scope drive))
+           (throw (ex-info "This room's drive could not be opened"
+                           {:type :validation-error}))))))
+
 (defn-spin-remote put-drive-file!
   [server-id room-id-str dir-path file-name blob-id mime size]
   (spin-remote server-id [room-id-str dir-path file-name blob-id mime size]
     (let [rid (identity room-id-str)]
       #?(:clj
-         (let [room-uuid (java.util.UUID/fromString rid)]
-           (when-let [drive (first (drives/get-room-drives room-uuid))]
-             (when-let [conn (drives/connect-drive-database (:drive/db-scope drive))]
-               (let [segs (vec (remove str/blank?
-                                       (str/split (or dir-path "") #"/")))
-                     dir-id (drives/ensure-path! conn segs)
-                     node (drives/link-blob! conn dir-id file-name blob-id mime size :upload)]
-                 {:status :ok :node-id (str (:fs.node/id node))}))))
+         (let [conn (room-drive-conn! (java.util.UUID/fromString rid))
+               segs (vec (remove str/blank? (str/split (or dir-path "") #"/")))
+               dir-id (drives/ensure-path! conn segs)
+               node (drives/link-blob! conn dir-id file-name blob-id mime size :upload)]
+           {:status :ok :node-id (str (:fs.node/id node))})
          :cljs nil))))
 
 (defn-spin-remote delete-drive-node!
@@ -1200,13 +1209,9 @@
     (let [rid (identity room-id-str)
           nid (identity node-id-str)]
       #?(:clj
-         (let [room-uuid (java.util.UUID/fromString rid)]
-           (when-let [drive (first (drives/get-room-drives room-uuid))]
-             (when-let [conn (drives/connect-drive-database (:drive/db-scope drive))]
-               (try (drives/rm! conn (java.util.UUID/fromString nid))
-                    {:status :ok}
-                    (catch Exception e
-                      {:status :error :message (ex-message e)})))))
+         (let [conn (room-drive-conn! (java.util.UUID/fromString rid))]
+           (drives/rm! conn (java.util.UUID/fromString nid))
+           {:status :ok})
          :cljs nil))))
 
 (defn-spin-remote mkdir-drive-path!
@@ -1214,12 +1219,9 @@
   (spin-remote server-id [room-id-str dir-path]
     (let [rid (identity room-id-str)]
       #?(:clj
-         (let [room-uuid (java.util.UUID/fromString rid)]
-           (when-let [drive (first (drives/get-room-drives room-uuid))]
-             (when-let [conn (drives/connect-drive-database (:drive/db-scope drive))]
-               (let [segs (vec (remove str/blank?
-                                       (str/split (or dir-path "") #"/")))]
-                 {:status :ok :dir-id (str (drives/ensure-path! conn segs))}))))
+         (let [conn (room-drive-conn! (java.util.UUID/fromString rid))
+               segs (vec (remove str/blank? (str/split (or dir-path "") #"/")))]
+           {:status :ok :dir-id (str (drives/ensure-path! conn segs))})
          :cljs nil))))
 
 (defn-spin-remote create-drive!

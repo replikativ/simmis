@@ -78,6 +78,22 @@
           (ex-message err)
           (str err)))))
 
+(defn result-failure
+  "A remote call can ANSWER and still have done nothing. Several handlers
+   report a refusal or a failure as a value — `{:status :error …}`,
+   `{:success false …}`, `{:status :recovery-required …}` — instead of
+   throwing, so the failure continuation never runs and a caller that only
+   looks for an error reports nothing. Returns an error describing such a
+   result, or nil for one that is not a failure."
+  [r]
+  (when (and (map? r)
+             (or (= :error (:status r))
+                 (= :recovery-required (:status r))
+                 (false? (:success r))))
+    (let [why (or (:message r) (:error r) (:reason r) (:status r))]
+      (ex-info (str "refused: " (if (keyword? why) (name why) why))
+               {:error (if (keyword? why) (name why) (str why)) :response r}))))
+
 #?(:cljs
    (defn- report!
      [err {:keys [message silent? on-error]}]
@@ -101,7 +117,8 @@
      "Take the outcome of a channel-returning remote call and route it.
 
       Returns a channel yielding the result, or `nil` when the call failed —
-      the failure having already been reported. Callers that only need the
+      the failure having already been reported. A refusal the server ANSWERS
+      (`result-failure`) is a failure too. Callers that only need the
       request sent can ignore the returned channel; the reporting happens
       regardless, which is the whole point of the wrapper.
 
@@ -109,8 +126,8 @@
      ([ch] (invoke! ch nil))
      ([ch opts]
       (go (let [r (<! ch)]
-            (if (failure? r)
-              (do (report! r opts) nil)
+            (if-let [e (if (failure? r) r (result-failure r))]
+              (do (report! e opts) nil)
               r))))))
 
 #?(:cljs
@@ -139,3 +156,24 @@
                   cb (cb ok err)
                   err (report! err opts)
                   :else ok))))))))
+
+#?(:cljs
+   (defn on-error
+     "The failure continuation of a write: tell the user `message`. For a
+      spin-remote invoked as `(s on-ok on-err)` from a DOM callback."
+     [message]
+     (fn [err]
+       (binding [rtc/*execution-context* runtime]
+         (report! (or err (ex-info "remote call failed" {})) {:message message})))))
+
+#?(:cljs
+   (defn on-ok
+     "The success continuation of a write: `(f result)` — unless the result
+      is itself a refusal (`result-failure`), which is reported as `message`
+      instead. `f` may be nil."
+     [message f]
+     (fn [r]
+       (binding [rtc/*execution-context* runtime]
+         (if-let [e (result-failure r)]
+           (report! e {:message message})
+           (when f (f r)))))))

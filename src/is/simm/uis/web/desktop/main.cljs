@@ -27,6 +27,7 @@
             [is.simm.uis.web.desktop.views.columns :as columns]
             [is.simm.uis.web.desktop.block-editor :as block-editor]
             [is.simm.uis.web.desktop.block-remote :as remote]
+            [is.simm.uis.web.desktop.remote :as rem]
             [is.simm.uis.web.desktop.settings-remote :as settings-remote]
             [is.simm.uis.web.desktop.refs :as refs]
             [org.replikativ.spindel.effects.await :refer [await] :include-macros true]
@@ -404,13 +405,15 @@
                         :col-id source-col-id})
         (let [target-scope (first-room-kb-db-scope room-id)
               new-uuid (random-uuid)]
-          (when target-scope
-            (<! (block-editor/ensure-page-remote! new-uuid page-name target-scope)))
-          (sig/open-tab! :wiki (cond-> {:page-uuid new-uuid}
-                                 target-scope (assoc :db-scope target-scope))
-                         {:title page-name
-                          :new-column? new-column?
-                          :col-id source-col-id})))
+          ;; `ensure-page-remote!` reports a failure itself and yields nil; a
+          ;; tab onto a page that was never created would show nothing at all
+          (when (or (nil? target-scope)
+                    (some? (<! (block-editor/ensure-page-remote! new-uuid page-name target-scope))))
+            (sig/open-tab! :wiki (cond-> {:page-uuid new-uuid}
+                                   target-scope (assoc :db-scope target-scope))
+                           {:title page-name
+                            :new-column? new-column?
+                            :col-id source-col-id}))))
 
       ;; Wiki-side or legacy: existing remote flow.
       :else
@@ -447,12 +450,12 @@
           ;; Genuine not-found (nil/false) — create it.
           :else
           (let [new-uuid (random-uuid)]
-            (<! (block-editor/ensure-page-remote! new-uuid page-name db-scope))
-            (sig/open-tab! :wiki (cond-> {:page-uuid new-uuid}
-                                   db-scope (assoc :db-scope db-scope))
-                           {:title page-name
-                            :new-column? new-column?
-                            :col-id source-col-id})))))))
+            (when (some? (<! (block-editor/ensure-page-remote! new-uuid page-name db-scope)))
+              (sig/open-tab! :wiki (cond-> {:page-uuid new-uuid}
+                                     db-scope (assoc :db-scope db-scope))
+                             {:title page-name
+                              :new-column? new-column?
+                              :col-id source-col-id}))))))))
 
 (defn- open-dh-reference!
   "Open a cross-database `[[dh://…]]` link. The URI already carries the target
@@ -558,8 +561,8 @@
           "toggle"
           (when-let [block-uuid-str (.getAttribute action-el "data-id")]
             (let [block-uuid (uuid block-uuid-str)]
-              (js/console.log "[TOGGLE-CLICK] Toggling block:" (str block-uuid))
-              (remote/toggle-block-collapsed-remote! block-uuid source-db-scope)))
+              (rem/invoke! (remote/toggle-block-collapsed-remote! block-uuid source-db-scope)
+                           {:message "Could not fold that block."})))
 
           nil)))))
 

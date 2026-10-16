@@ -34,8 +34,14 @@
       wouldn't re-render the spin."
      [pid f]
      (binding [rtc/*execution-context* runtime]
-       (swap! sig/proposals-data update :proposals
-              (fn [ps] (mapv #(if (= (:id %) pid) (f %) %) ps))))))
+       (if (some #(= (:id %) pid) (:proposals @sig/proposals-data))
+         (swap! sig/proposals-data update :proposals
+                (fn [ps] (mapv #(if (= (:id %) pid) (f %) %) ps)))
+         ;; Not in the list: the action came from a chat card for a proposal
+         ;; the list has not loaded. An `:action-error` written here would be
+         ;; written nowhere, and the refusal would be invisible.
+         (when-let [msg (:action-error (f {}))]
+           (sig/show-error! "The proposal action did not complete." msg :remote))))))
 
 #?(:cljs
    (defn- current-diff-request? [pid request-id]
@@ -358,14 +364,16 @@
            (rem/spin!
             #(pr/comment-on-proposal! web/server-id pid body "")
             (fn [_ok err]
-              (clear-comment! pid)
+              ;; the typed comment is cleared only once it landed: a refused
+              ;; one stays in the box to send again
               (if err
                 (update-proposal! pid #(-> % (dissoc :busy?)
                                            (assoc :action-error (rem/error-text err))))
                 ;; reload rather than append locally: the server stamps the time
                 ;; and resolves the author's display name, and inventing either
                 ;; here would show the reviewer something the record does not say
-                (load-proposals!)))))))))
+                (do (clear-comment! pid)
+                    (load-proposals!))))))))))
 
 #?(:cljs
    (defn request-changes!
@@ -383,7 +391,7 @@
            (rem/spin!
             #(pr/request-changes! web/server-id pid body "")
             (fn [ok err]
-              (clear-comment! pid)
+              (when-not err (clear-comment! pid))
               (cond
                 err (update-proposal! pid #(-> % (dissoc :busy?)
                                                (assoc :action-error (rem/error-text err))))

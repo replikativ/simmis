@@ -29,8 +29,9 @@ fork.
 
 `principal` is always derived from a validated JWT, never from an id the client
 passed. `resource` is one of a small set of shapes — a store scope, `{:kb id}`,
-`{:drive id}`, `{:branch {:scope s :branch b}}`, `{:room id}`, `{:proposal id}`,
-`{:self party}`, `{:settings party}`, `:admin`, or `:authenticated`.
+`{:kb-store scope}` (a KB's store and nothing else), `{:drive id}`,
+`{:branch {:scope s :branch b}}`, `{:room id}`, `{:proposal id}`, `{:self party}`,
+`{:settings party}`, `:admin`, or `:authenticated`.
 
 `can?` answers as plain Datalog over relations that already exist — party
 –`:room/parties`→ room –`:grant/*`→ system. Authorization is a query, not a
@@ -108,7 +109,27 @@ member transact raw datoms, forged messages included, into the room's store.
 So the browser never writes through its replica's writer: wiki edits are
 `block_remote` RPCs, gated by the `{:branch …}` rows above, with the optimistic
 display a prediction the client drops or rejects on the RPC's answer (see
-architecture.md, "Writes go through the server"). Where the browser names the
+architecture.md, "Writes go through the server"). `browser-write-guard-test`
+fails on any browser code that calls a replica's writer, `d/transact!` or a
+konserve write.
+
+A wiki widget's writes are the one raw-transaction path the browser has, and
+they are policed as such. `widget-transact` takes a widget's data transaction
+under `:write` on `{:kb-store scope}` — a resource `can?` answers only for a
+KB's store, so no principal can address a room's message store, repo or agent
+DB through it. The handler (`block_remote.clj`) refuses schema in the data:
+tx functions and any operation but add/retract/retractEntity are refused by
+shape, and the transaction is then computed with `d/with` and refused if any
+datom names a `:db/*`, `:db.*/*` or `:tx/*` attribute, touches a schema entity,
+or writes the transaction entity beyond the `:db/txInstant` and `:tx/author`
+the handler stamps. `widget-install-attr` declares an attribute under `:merge`
+(the KB's owner — a `:read-write` grantee may not, and `:admin`'s authority
+override covers `:grant` only): a `:db/ident` is append-only and global to the
+KB. The widget names the codomain object; the handler derives the value type
+with `schema/codomain->db-type` and records the morphism, and refuses a
+`:db.type/*` keyword, an unknown object and the store's own namespaces
+(`data-model.md`, "Schema types"). `widget-writes-test` runs each attack with
+its legitimate twin. Where the browser names the
 uuid of a block it is creating (`create-sibling-after`'s `:new-uuid`,
 `ensure-page`'s `:first-block-uuid`), the handler refuses one that already
 names an entity: `:entity/uuid` is a unique identity, so it would upsert onto
@@ -176,6 +197,8 @@ Concretely, with the action each RPC is policed as:
 | dismiss one fork of a proposal (`dismiss-fork!`) | `:write` on the proposal's room AND control of that fork, as above | policy row (`{:proposal-fork …}`) |
 | dismiss a whole proposal (`dismiss-proposal!`) | `:write` on the room AND (its filer, or control of every open fork) | policy row (`{:proposal-forks …}`) |
 | accept or reject an escalated review's proposal | `:merge` on the room (its owner): the policy row above, then `review/decide!`, then dvergr's authorizer for `room_merge` / `room_discard` | policy row + `workflows.review/decide!` + `access/dvergr-authorize` |
+| a wiki widget's data transaction (`widget-transact`) | `:write` on the KB's store (`{:kb-store …}` — never a room store); no schema in it | policy row + `block_remote` (shape, then `d/with`) |
+| declare an attribute from a widget (`widget-install-attr`) | `:merge` on the KB's store (its owner); the value type derived from the codomain object | policy row + `block_remote` |
 | read a room's labels (`list-labels!`) | a member (`:read` on the room); no RPC writes a label | policy row |
 
 | stop a Run (`cancel-room-run!`) | its starter, the room's owner, or `:admin` — each from inside the room | policy row (`:write`) + `access/require-run-cancellable!` |

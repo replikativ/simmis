@@ -18,8 +18,10 @@
             [is.simm.model.references :as refs]
             [is.simm.model.schema :as schema]
             [is.simm.runtimes.branching :as branching]
+            [is.simm.model.access :as access]
             [datahike.api :as d]
-            [superv.async :refer [go-try S]]))
+            [superv.async :refer [go-try S]]
+            [taoensso.telemere :as log]))
 
 ;; =============================================================================
 ;; Connection Resolution
@@ -496,6 +498,179 @@
         nil))))
 
 ;; =============================================================================
+;; Widget writes
+;; =============================================================================
+;;
+;; A wiki widget (`widget_sandbox.cljs`) writes the KB its page lives in. It
+;; used to `d/transact!` its replica conn, whose KabelWriter waits forever for
+;; a `kabel.remote` route simmis does not serve — nothing was sent, nothing
+;; failed, and the write was gone after a reload. These two handlers are the
+;; widget's only writes, gated like every other one (`access/rpc-policy`):
+;;
+;;   widget-transact      DATA, `:write` on the KB (`{:kb-store …}` — never a
+;;                        room store). Schema in it is refused.
+;;   widget-install-attr  SCHEMA, `:merge` on the KB (its owner). The client
+;;                        names the attribute and its CODOMAIN object; the
+;;                        value type is derived here (`doc/data-model.md`,
+;;                        "Schema types"), never taken from the wire.
+;;
+;; Both write the trunk: a widget is only handed writes on a trunk view.
+
+(def ^:private widget-ops
+  "The transaction operations a widget may send. No tx functions (`:db.fn/call`
+   runs code), no purge, no compare-and-swap of schema."
+  #{:db/add :db/retract :db/retractEntity :db.fn/retractEntity})
+
+(def ^:private max-widget-ops 500)
+
+(defn- reserved-attr?
+  "An attribute a widget's data may not name: datahike's own (`:db/*`,
+   `:db.*/*` — schema and installation), the transaction's provenance (`:tx/*`),
+   and anything unqualified."
+  [a]
+  (or (not (keyword? a))
+      (let [n (namespace a)]
+        (or (nil? n) (= "db" n) (str/starts-with? n "db.") (= "tx" n)))))
+
+(defn- tx-entity? [e]
+  (contains? #{"datomic.tx" "datahike.tx" :db/current-tx} e))
+
+(defn- invalid! [msg data]
+  (throw (ex-info msg (assoc data :type :validation-error))))
+
+(defn- schema-refused! [msg data]
+  (log/log! {:level :warn :id ::widget-schema-refused :msg msg :data data})
+  (throw (ex-info (str "not authorized: " msg) (assoc data :type :not-authorized))))
+
+(defn- check-widget-entity-map! [m]
+  (doseq [[k v] m]
+    (cond
+      (= :db/id k) (when (tx-entity? v)
+                     (schema-refused! "a widget may not write the transaction entity" {}))
+      (reserved-attr? k) (schema-refused! "schema is not data: declare attributes with kb/install-attr!"
+                                          {:attr (str k)})
+      :else (doseq [x (if (and (coll? v) (not (map? v))) v [v])
+                    :when (map? x)]
+              (check-widget-entity-map! x)))))
+
+(defn- check-widget-tx-shape!
+  "Refuse, before anything runs, what a widget's data transaction may not
+   carry. The shape check names the problem; `check-widget-effect!` below is
+   the one that cannot be talked around."
+  [tx-data]
+  (when-not (and (sequential? tx-data) (seq tx-data))
+    (invalid! "a transaction is a non-empty vector" {}))
+  (when (> (count tx-data) max-widget-ops)
+    (invalid! "too many operations in one widget transaction" {:max max-widget-ops}))
+  (doseq [op tx-data]
+    (cond
+      (map? op) (check-widget-entity-map! op)
+      (sequential? op)
+      (let [[f e a] op]
+        (when-not (contains? widget-ops f)
+          (invalid! "unsupported transaction operation" {:op (pr-str f)}))
+        (when (tx-entity? e)
+          (schema-refused! "a widget may not write the transaction entity" {}))
+        (when (and (#{:db/add :db/retract} f) (reserved-attr? a))
+          (schema-refused! "schema is not data: declare attributes with kb/install-attr!"
+                           {:attr (pr-str a)})))
+      :else (invalid! "unsupported transaction element" {:op (pr-str op)}))))
+
+(defn- check-widget-effect!
+  "Refuse a transaction by what it WOULD do, computed with `d/with` on the
+   current db: every datom must be data — an attribute outside datahike's own
+   namespaces, on an entity that is not a schema entity — except the
+   transaction entity's own `:db/txInstant` and the `:tx/author` this handler
+   stamps. This is what makes a `:db/retractEntity` of an attribute, or a
+   schema change smuggled through a lookup ref, a refusal rather than a
+   permanent change to the KB."
+  [db tx-data party]
+  (let [report (d/with db {:tx-data tx-data :tx-meta {:tx/author (str party)}})
+        tx (:max-tx (:db-after report))]
+    (doseq [[e a] (map (juxt :e :a) (:tx-data report))]
+      (if (= e tx)
+        (when-not (#{:db/txInstant :tx/author} a)
+          (schema-refused! "a widget may not write the transaction entity" {:attr (str a)}))
+        (when (or (reserved-attr? a) (:db/ident (d/entity db e)))
+          (schema-refused! "schema is not data: declare attributes with kb/install-attr!"
+                           {:attr (str a)}))))))
+
+(defn -widget-transact-handler
+  "A widget's data transaction on the trunk of KB `db-scope`, as the caller.
+   Returns `{:max-tx head}` (see `optimistic-write`)."
+  [{:keys [db-scope tx-data]}]
+  ;; the principal is bound for the invoke only: read it before the go block
+  (let [party (access/authenticated-party-id)]
+   (go-try S
+    (let [conn (resolve-conn db-scope)]
+      (check-widget-tx-shape! tx-data)
+      (check-widget-effect! @conn tx-data party)
+      (d/transact conn {:tx-data (vec tx-data) :tx-meta {:tx/author (str party)}})
+      {:max-tx (head conn)}))))
+
+(def ^:private reserved-ident-namespaces
+  "Namespaces whose attributes the store's own schema owns. A widget declares
+   its own attributes (`:todo/text`), not new ones in these."
+  #{"db" "tx" "entity" "instance" "object" "morphism" "block" "kb" "category"})
+
+(defn -widget-install-attr-handler
+  "Declare attribute `ident` on KB `db-scope`, with the value type its CODOMAIN
+   object determines, plus the morphism describing it.
+
+   `codomain` is an object NAME in the store (`\"S/String\"`, `\"S/Number\"`,
+   `\"S/Page\"` for a reference). A `:db.type/*` keyword is refused: the client
+   never chooses a value type (`doc/data-model.md`) — schema is append-only,
+   so a client that could choose one could fix an attribute's type for good.
+   Idempotent: an `ident` that exists is answered `:exists` and not touched."
+  [{:keys [db-scope ident codomain cardinality]}]
+  (let [party (access/authenticated-party-id)]
+   (go-try S
+    (let [conn (resolve-conn db-scope)
+          db @conn]
+      (when-not (and (keyword? ident) (namespace ident))
+        (invalid! "an attribute is a qualified keyword" {:ident (pr-str ident)}))
+      (if-let [existing (d/q '[:find ?vt . :in $ ?i :where [?a :db/ident ?i] [?a :db/valueType ?vt]]
+                             db ident)]
+        {:status :exists :ident ident :value-type existing :max-tx (head conn)}
+        (let [ns-root (first (str/split (namespace ident) #"\."))
+              _ (when (or (contains? reserved-ident-namespaces (namespace ident))
+                          (= "db" ns-root))
+                  (invalid! "that namespace belongs to the store's own schema"
+                            {:ident (str ident)}))
+              _ (when-not (string? codomain)
+                  (invalid! (str "name the codomain object, e.g. \"S/String\" — a widget "
+                                 "never sends a :db/valueType")
+                            {:codomain (pr-str codomain)}))
+              _ (when-not (d/q '[:find ?o . :in $ ?n
+                                 :where [?o :entity/name ?n] [?o :object/of-category _]]
+                               db codomain)
+                  (invalid! "no such object in this store" {:codomain codomain}))
+              many? (contains? #{:many :db.cardinality/many} cardinality)
+              _ (when-not (contains? #{nil :one :many :db.cardinality/one :db.cardinality/many}
+                                     cardinality)
+                  (invalid! "cardinality is :one or :many" {:cardinality (pr-str cardinality)}))
+              mname (schema/attr-ident->morphism ident)
+              _ (when-not (= ident (mor/name->attr-ident mname))
+                  (invalid! "attribute name does not round-trip to a morphism"
+                            {:ident (str ident)}))
+              ;; DERIVED, as `add-property` derives it
+              value-type (schema/codomain->db-type codomain)
+              morphism? (d/q '[:find ?m . :in $ ?n :where [?m :entity/name ?n]] db mname)]
+          (d/transact conn
+            {:tx-data (cond-> [{:db/ident ident
+                                :db/valueType value-type
+                                :db/cardinality (if many? :db.cardinality/many :db.cardinality/one)
+                                :db/doc (str "Property: " mname)}]
+                        (not morphism?)
+                        (conj {:entity/uuid (random-uuid)
+                               :entity/name mname
+                               :entity/created-at (java.util.Date.)
+                               :morphism/dst [:entity/name codomain]
+                               :morphism/cardinality (if many? :many :one)}))
+             :tx-meta {:tx/author (str party)}})
+          {:status :installed :ident ident :value-type value-type :max-tx (head conn)}))))))
+
+;; =============================================================================
 ;; Auto-registration at namespace load time
 ;; =============================================================================
 
@@ -518,3 +693,5 @@
 (ds/register-remote-fn! 'block-remote/add-property -add-property-handler)
 (ds/register-remote-fn! 'block-remote/remove-property -remove-property-handler)
 (ds/register-remote-fn! 'block-remote/save-property -save-property-handler)
+(ds/register-remote-fn! 'block-remote/widget-transact -widget-transact-handler)
+(ds/register-remote-fn! 'block-remote/widget-install-attr -widget-install-attr-handler)

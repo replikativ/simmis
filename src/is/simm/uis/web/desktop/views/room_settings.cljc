@@ -5,6 +5,7 @@
             [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [is.simm.uis.web.desktop.room-details :as room-details])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as cr])
+            #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.uis.web.desktop.message-notify-sync :as mns])
             #?(:cljs [is.simm.uis.web.desktop.user-rooms-sync :as urs])
             #?(:cljs [is.simm.runtimes.web :as web]))
@@ -104,8 +105,8 @@
                                                              web/server-id
                                                              (str (:room/id room))
                                                              (str pid))]
-                                                     (s (fn [_] (room-details/load! room-id {:force? true}))
-                                                        (fn [err] (js/console.error "[room-settings] remove error:" err))))
+                                                     (s (rem/on-ok "Could not remove that member." (fn [_] (room-details/load! room-id {:force? true})))
+                                                        (rem/on-error "Could not remove that member.")))
                                                    :clj nil))}
                           (vc/icon "x")))))))
               (el/div {:class "settings-empty"} "No members")))
@@ -133,10 +134,10 @@
                                                        web/server-id
                                                        (str (:room/id room))
                                                        pid)]
-                                               (s (fn [_]
+                                               (s (rem/on-ok "Could not add that member." (fn [_]
                                                     (set! (.-value sel) "")
-                                                    (room-details/load! room-id {:force? true}))
-                                                  (fn [err] (js/console.error "[room-settings] add error:" err))))))
+                                                    (room-details/load! room-id {:force? true})))
+                                                  (rem/on-error "Could not add that member.")))))
                                          :clj nil))}
                 "Add"))))
 
@@ -184,8 +185,8 @@
                                                            web/server-id
                                                            (str (:room/id room))
                                                            agent-id)]
-                                                   (s (fn [_] (room-details/load! room-id {:force? true}))
-                                                      (fn [err] (js/console.error "[room-settings] remove agent error:" err))))
+                                                   (s (rem/on-ok "Could not remove that agent." (fn [_] (room-details/load! room-id {:force? true})))
+                                                      (rem/on-error "Could not remove that agent.")))
                                                  :clj nil))}
                         (vc/icon "x"))))
                     (el/div {:class "settings-env-add"
@@ -237,11 +238,8 @@
                                        agent-id
                                        (keyword (.-value role-el))
                                        (keyword (.-value policy-el)))]
-                                (s (fn [_] (reset! sig/admin-data nil))
-                                   (fn [err]
-                                     (js/console.error
-                                      "[room-settings] update assignment error:"
-                                      err))))
+                                (s (rem/on-ok "Could not save the participation settings." (fn [_] (reset! sig/admin-data nil)))
+                                   (rem/on-error "Could not save the participation settings.")))
                               :clj nil))}
                         "Save participation"))
                     (el/div {:class "settings-agent-prompt"}
@@ -265,8 +263,8 @@
                                                  (:party/display-name agent)
                                                  ""
                                                  sp)]
-                                        (s (fn [_] (room-details/load! room-id {:force? true}))
-                                           (fn [err] (js/console.error "[room-settings] update agent error:" err))))
+                                        (s (rem/on-ok "Could not save the agent's prompt." (fn [_] (room-details/load! room-id {:force? true})))
+                                           (rem/on-error "Could not save the agent's prompt.")))
                                       :clj nil))}
                       "Save")))))
               (el/div {:class "settings-empty"} "No AI participants in this room")))
@@ -293,15 +291,15 @@
                                                       (:id current-user)
                                                       tmpl-label
                                                       tmpl-id)]
-                                              (s (fn [_]
+                                              (s (rem/on-ok "Could not add that agent." (fn [_]
                                                    (room-details/load! room-id {:force? true})
                                                    ;; Contacts render from
                                                    ;; sig/user-rooms, which
                                                    ;; nothing here refreshed —
                                                    ;; a new agent showed up only
                                                    ;; after a page reload.
-                                                   (urs/refresh-user-rooms! (:id current-user)))
-                                                 (fn [err] (js/console.error "[room-settings] add agent error:" err)))))
+                                                   (urs/refresh-user-rooms! (:id current-user))))
+                                                 (rem/on-error "Could not add that agent."))))
                                           :clj nil))}
                     (vc/icon tmpl-icon)
                     (el/span {:class "settings-agent-template-name"} tmpl-label)))))
@@ -324,11 +322,11 @@
                                                          (:id current-user)
                                                          agent-name
                                                          "")]
-                                                 (s (fn [_]
+                                                 (s (rem/on-ok "Could not add that agent." (fn [_]
                                                       (set! (.-value input) "")
                                                       (room-details/load! room-id {:force? true})
-                                                      (urs/refresh-user-rooms! (:id current-user)))
-                                                    (fn [err] (js/console.error "[room-settings] add agent error:" err)))))))
+                                                      (urs/refresh-user-rooms! (:id current-user))))
+                                                    (rem/on-error "Could not add that agent."))))))
                                          :clj nil))}
                 "Add Custom"))))
 
@@ -362,8 +360,8 @@
                                                      web/server-id
                                                      (str (:room/id room))
                                                      v)]
-                                             (s (fn [_] (room-details/load! room-id {:force? true}))
-                                                (fn [err] (js/console.error "[room-settings] budget error:" err))))))
+                                             (s (rem/on-ok "Could not save the budget." (fn [_] (room-details/load! room-id {:force? true})))
+                                                (rem/on-error "Could not save the budget.")))))
                                        :clj nil))}
               "Save"))))
 
@@ -392,8 +390,8 @@
                                                            web/server-id
                                                            (str (:room/id room))
                                                            (str (:kb/id kb)))]
-                                                   (s (fn [_] (room-details/load! room-id {:force? true}))
-                                                      (fn [err] (js/console.error "[room-settings] detach KB error:" err))))
+                                                   (s (rem/on-ok "Could not detach that wiki." (fn [_] (room-details/load! room-id {:force? true})))
+                                                      (rem/on-error "Could not detach that wiki.")))
                                                  :clj nil))}
                         (vc/icon "x"))))))
                 (el/div {:class "settings-empty"} "No wikis attached")))
@@ -423,10 +421,10 @@
                                                            web/server-id
                                                            (str (:room/id room))
                                                            kb-id)]
-                                                   (s (fn [_]
+                                                   (s (rem/on-ok "Could not attach that wiki." (fn [_]
                                                         (set! (.-value sel) "")
-                                                        (room-details/load! room-id {:force? true}))
-                                                      (fn [err] (js/console.error "[room-settings] attach KB error:" err))))))
+                                                        (room-details/load! room-id {:force? true})))
+                                                      (rem/on-error "Could not attach that wiki.")))))
                                              :clj nil))}
                     "Attach"))))))
 
@@ -455,8 +453,8 @@
                                                            web/server-id
                                                            (str (:room/id room))
                                                            (str (:drive/id drv)))]
-                                                   (s (fn [_] (room-details/load! room-id {:force? true}))
-                                                      (fn [err] (js/console.error "[room-settings] detach drive error:" err))))
+                                                   (s (rem/on-ok "Could not detach that drive." (fn [_] (room-details/load! room-id {:force? true})))
+                                                      (rem/on-error "Could not detach that drive.")))
                                                  :clj nil))}
                         (vc/icon "x"))))))
                 (el/div {:class "settings-empty"} "No drives attached")))
@@ -486,9 +484,9 @@
                                                            web/server-id
                                                            (str (:room/id room))
                                                            drive-id)]
-                                                   (s (fn [_]
+                                                   (s (rem/on-ok "Could not attach that drive." (fn [_]
                                                         (set! (.-value sel) "")
-                                                        (room-details/load! room-id {:force? true}))
-                                                      (fn [err] (js/console.error "[room-settings] attach drive error:" err))))))
+                                                        (room-details/load! room-id {:force? true})))
+                                                      (rem/on-error "Could not attach that drive.")))))
                                              :clj nil))}
                     "Attach"))))))))))

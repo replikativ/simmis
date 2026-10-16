@@ -14,6 +14,7 @@
             #?(:cljs [is.simm.uis.web.desktop.settings-remote :as sr])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
             #?(:cljs [is.simm.uis.web.desktop.mail-remote :as mail-remote])
+            #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.uis.web.desktop.message-notify-sync :as mns])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el]
@@ -106,8 +107,8 @@
                                                (let [s (mail-remote/sync-mail-account!
                                                         web/server-id
                                                         (str (:mail-account/id account)))]
-                                                 (s (fn [_] (reload-settings!))
-                                                    #(js/console.error "[mail] sync failed" %)))
+                                                 (s (rem/on-ok "Mail sync did not start." (fn [_] (reload-settings!)))
+                                                    (rem/on-error "Mail sync did not start.")))
                                                :clj nil))}
                       "Sync"))))
               (el/div {:class "settings-empty"} "No email accounts configured")))
@@ -175,10 +176,10 @@
                                                (when-let [user @sig/current-user]
                                                  (let [s (sr/delete-env-var!
                                                            web/server-id (:id user) key)]
-                                                   (s (fn [_]
+                                                   (s (rem/on-ok "Could not delete that variable." (fn [_]
                                                         ;; Reset to nil triggers reload on next render
-                                                        (reload-settings!))
-                                                      (fn [err] (js/console.error "[settings] delete error:" err)))))
+                                                        (reload-settings!)))
+                                                      (rem/on-error "Could not delete that variable."))))
                                                :clj nil))}
                       (vc/icon "x")))))
               (el/div {:class "settings-empty"} "No environment variables set")))
@@ -203,11 +204,10 @@
                                            (when-let [user @sig/current-user]
                                              (let [s (sr/save-env-var!
                                                        web/server-id (:id user) k v)]
-                                               (s (fn [_]
+                                               (s (rem/on-ok "Could not save that variable." (fn [_]
                                                     ;; Reset to nil triggers reload on next render
-                                                    (reload-settings!))
-                                                  (fn [err]
-                                                    (js/console.error "[settings] save error:" err)))))))
+                                                    (reload-settings!)))
+                                                  (rem/on-error "Could not save that variable."))))))
                                        :clj nil))}
               "Add")))
 
@@ -235,9 +235,8 @@
                       (when-let [user @sig/current-user]
                         (let [s (sr/save-preferred-model!
                                  web/server-id (:id user) value)]
-                          (s (fn [_] (reload-settings!))
-                             (fn [err]
-                               (js/console.error "[settings] save error:" err)))))
+                          (s (rem/on-ok "Could not save the model preference." (fn [_] (reload-settings!)))
+                             (rem/on-error "Could not save the model preference."))))
                       :clj nil)))))))
 
         ;; --- Code View Section ---
@@ -256,12 +255,21 @@
                                                     (when selected? "selected"))
                              :on-click (fn [_]
                                          #?(:cljs
-                                            (do (reset! sig/syntax-pref kw)
-                                                (when-let [user @sig/current-user]
-                                                  (let [s (sr/save-syntax-pref!
-                                                            web/server-id (:id user) kw)]
-                                                    (s (fn [_] (reload-settings!))
-                                                       (fn [err] (js/console.error "[settings] save syntax error:" err))))))
+                                            (let [prev @sig/syntax-pref
+                                                  ;; shown at once; put back if the server
+                                                  ;; does not take it
+                                                  undo! (fn [err]
+                                                          (reset! sig/syntax-pref prev)
+                                                          ((rem/on-error "Could not save the code view.") err))]
+                                              (reset! sig/syntax-pref kw)
+                                              (when-let [user @sig/current-user]
+                                                (let [s (sr/save-syntax-pref!
+                                                          web/server-id (:id user) kw)]
+                                                  (s (fn [r]
+                                                       (if-let [e (rem/result-failure r)]
+                                                         (undo! e)
+                                                         (reload-settings!)))
+                                                     undo!))))
                                             :clj nil))}
                       (el/div {:class "settings-model-name"} label)
                       (el/div {:class "settings-model-provider"} desc)
@@ -320,11 +328,10 @@
                                              (when-let [user @sig/current-user]
                                                (let [s (chat-remote/create-kb!
                                                          web/server-id (:id user) kb-name)]
-                                                 (s (fn [_]
+                                                 (s (rem/on-ok "Could not create the wiki." (fn [_]
                                                       (set! (.-value input) "")
-                                                      (reload-settings!))
-                                                    (fn [err]
-                                                      (js/console.error "[settings] create KB error:" err)))))))
+                                                      (reload-settings!)))
+                                                    (rem/on-error "Could not create the wiki."))))))
                                          :clj nil))}
                 "Create"))))
 

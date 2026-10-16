@@ -11,6 +11,7 @@
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.chat-remote :as cr]
+            [is.simm.uis.web.desktop.remote :as rem]
             [is.simm.runtimes.web :as web]))
 
 (defn notify-topic
@@ -98,8 +99,10 @@
   (sig/mark-room-read! room-id-str)
   (binding [rtc/*execution-context* runtime]
     (let [s (cr/mark-read! web/server-id (str room-id-str))]
-      (s (fn [_] nil)
-         (fn [err] (js/console.warn "[notify-sync] mark-read error:" err))))))
+      ;; The badge stays cleared — the person did read the room — but a
+      ;; cursor that did not advance brings it back on reload, so say so.
+      (s (rem/on-ok "Could not mark the room as read." nil)
+         (rem/on-error "Could not mark the room as read.")))))
 
 (defonce ^:private prefs-loaded? (atom false))
 
@@ -128,10 +131,17 @@
   "Set a room's notification level (:all/:mentions/:none) locally + on the server."
   [room-id-str level]
   (binding [rtc/*execution-context* runtime]
-    (swap! sig/notify-prefs assoc (str room-id-str) level)
-    (let [s (cr/set-notify-pref! web/server-id (str room-id-str) level)]
-      (s (fn [_] nil)
-         (fn [err] (js/console.warn "[notify-sync] set-notify-pref error:" err))))))
+    (let [prev (get @sig/notify-prefs (str room-id-str))
+          ;; shown at once; put back when the server does not take it
+          undo! (fn [err]
+                  (binding [rtc/*execution-context* runtime]
+                    (swap! sig/notify-prefs
+                           #(if prev (assoc % (str room-id-str) prev) (dissoc % (str room-id-str)))))
+                  ((rem/on-error "Could not change the notification level.") err))]
+      (swap! sig/notify-prefs assoc (str room-id-str) level)
+      (let [s (cr/set-notify-pref! web/server-id (str room-id-str) level)]
+        (s (fn [r] (when-let [e (rem/result-failure r)] (undo! e)))
+           undo!)))))
 
 (defonce ^:private subscribed? (atom false))
 

@@ -4,6 +4,7 @@
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as cr])
+            #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
@@ -11,11 +12,11 @@
 #?(:cljs
    (defn- add-by-id! [current-user target-id]
      (let [s (cr/add-contact! web/server-id (:id current-user) target-id)]
-       (s (fn [_]
+       (s (rem/on-ok "Could not add that contact." (fn [_]
             (let [rs (cr/load-rooms! web/server-id (:id current-user))]
               (rs (fn [r] (reset! sig/user-rooms r))
-                  (fn [err] (js/console.error "[new-contact] reload error:" err)))))
-          (fn [err] (js/console.error "[new-contact] add error:" err))))))
+                  (fn [err] (js/console.error "[new-contact] reload error:" err))))))
+          (rem/on-error "Could not add that contact.")))))
 
 (defn render-new-contact-content
   "all-humans is a list of party maps or nil.
@@ -57,7 +58,7 @@
                                                               (fn [err]
                                                                 (js/console.error "[new-contact] reload error:" err)))))
                                                     (js/alert (str "Handle not found: " handle))))
-                                                (fn [err] (js/console.error "[new-contact] add error:" err))))))
+                                                (rem/on-error "Could not add that contact.")))))
                                        :clj nil))}
               "Add")))
 

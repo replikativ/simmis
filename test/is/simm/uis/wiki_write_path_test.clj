@@ -20,9 +20,9 @@
      handlers a prediction relies on return the head, honour the uuid the
      browser already shows, refuse a uuid that names something, and a reader
      is refused;
-   - that no browser code goes back to `opt/transact!`."
+   - that no browser code goes back to `opt/transact!` — now one entry point
+     of several that `browser-write-guard-test` refuses."
   (:require [clojure.core.async :as a :refer [<!! >!! go]]
-            [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
             [datahike.api :as d]
             [datahike.optimistic :as opt]
@@ -166,8 +166,10 @@
         overlay (opt/open conn)
         log (atom [])
         release-first (a/promise-chan)
+        ;; the first RPC leaves on a go thread: wait for it, not for a clock
+        first-sent (a/promise-chan)
         r1 (ow/predict-remote! overlay [{:entity/uuid block-uuid :block/content "<p>1</p>"}]
-                               (fn [] (swap! log conj :sent-1)
+                               (fn [] (swap! log conj :sent-1) (a/put! first-sent true)
                                  (go (a/<! release-first)
                                      (d/transact conn [{:entity/uuid block-uuid :block/content "<p>1</p>"}])
                                      (swap! log conj :answered-1)
@@ -179,12 +181,51 @@
                                      {:max-tx (:max-tx @conn)}))
                                {})]
     (is (= "<p>2</p>" (content (opt/db overlay) block-uuid)) "both show at once, in order")
+    (<!! first-sent)
     (is (= [:sent-1] @log) "the second waits for the first")
     (>!! release-first true)
     (is (some? (<!! r1)))
     (is (some? (<!! r2)))
     (is (= [:sent-1 :answered-1 :sent-2] @log))
     (is (= "<p>2</p>" (content @conn block-uuid)) "the later write wins on the server too")
+    (opt/close! overlay)))
+
+(deftest an-unpredicted-write-queues-with-the-predicted-ones
+  ;; A widget declares an attribute (not predicted: the replica cannot apply
+  ;; data whose type it does not know) and writes data under it in the same
+  ;; click. The declaration must reach the server first, and a refusal of it
+  ;; must be reported like any other.
+  (let [conn (seed-page! (fresh-kb))
+        overlay (opt/open conn)
+        log (atom [])
+        release (a/promise-chan)
+        schema-sent (a/promise-chan)
+        failures (atom [])
+        r1 (ow/send-in-order! overlay
+                              (fn [] (swap! log conj :schema-sent) (a/put! schema-sent true)
+                                (go (a/<! release) (swap! log conj :schema-answered)
+                                    {:max-tx (:max-tx @conn)}))
+                              {})
+        r2 (ow/predict-remote! overlay [{:entity/uuid block-uuid :block/content "<p>w</p>"}]
+                               (fn [] (swap! log conj :data-sent)
+                                 (go (d/transact conn [{:entity/uuid block-uuid :block/content "<p>w</p>"}])
+                                     {:max-tx (:max-tx @conn)}))
+                               {})]
+    (<!! schema-sent)
+    (is (= [:schema-sent] @log) "the data write waits for the declaration")
+    (>!! release true)
+    (is (some? (<!! r1)))
+    (is (some? (<!! r2)))
+    (is (= [:schema-sent :schema-answered :data-sent] @log))
+    (testing "a refused declaration is reported, and yields nil"
+      (is (nil? (<!! (ow/send-in-order! overlay
+                                        (fn [] (go (ex-info "not authorized" {:type :not-authorized})))
+                                        {:on-failure #(swap! failures conj %)}))))
+      (is (= 1 (count @failures)))
+      (is (nil? (<!! (ow/send-in-order! overlay (fn [] (go {:no "head"}))
+                                        {:on-failure #(swap! failures conj %)})))
+          "an answer without a head is not an acknowledgement")
+      (is (= 2 (count @failures))))
     (opt/close! overlay)))
 
 ;; =============================================================================
@@ -279,19 +320,3 @@
                                               {:block-uuid block-uuid :content "<p>owner</p>"
                                                :db-scope (:kb-private-scope w)}))))
             (is (= "<p>owner</p>" (content @conn block-uuid)))))))))
-
-;; =============================================================================
-;; No writer-backed overlay writes in the browser
-;; =============================================================================
-
-(deftest no-browser-write-hands-the-transaction-to-the-replica-writer
-  ;; `opt/transact!` makes the replica's KabelWriter the durable half: a raw
-  ;; transaction past `can?`, which this server does not serve — so it never
-  ;; arrives and never fails. Every browser write goes through an RPC.
-  (let [offenders (for [f (file-seq (io/file "src/is/simm/uis"))
-                        :when (re-find #"\.clj[cs]$" (.getName f))
-                        [i line] (map-indexed vector (line-seq (io/reader f)))
-                        :when (and (re-find #"\(opt/transact!" line)
-                                   (not (re-find #"^\s*;" line)))]
-                    (str (.getPath f) ":" (inc i)))]
-    (is (empty? offenders) (str "writer-backed overlay writes: " (vec offenders)))))
