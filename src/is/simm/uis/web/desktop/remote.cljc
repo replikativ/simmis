@@ -28,6 +28,16 @@
                        [is.simm.uis.web.desktop.runtime :refer [runtime]]]))
   #?(:cljs (:require-macros [cljs.core.async.macros :refer [go]])))
 
+#?(:clj
+   (defn wire-instant
+     "A Datahike instant as it crosses to the client: ISO-8601 UTC
+      (\"2026-10-16T09:12:03.120Z\"), which `js/Date.` parses everywhere.
+      NOT `(str date)` — `java.util.Date/toString` is \"Fri Oct 16 09:12:03
+      CEST 2026\", a zone abbreviation browsers cannot parse, so the admin
+      dashboard showed \"Invalid Date\". nil stays nil."
+     [d]
+     (when d (str (.toInstant ^java.util.Date d)))))
+
 #?(:cljs
    (defn failure?
      "`invoke-remote` reports a server-side failure by yielding the error as an

@@ -19,8 +19,10 @@
    Accounting lives on dvergr's :ledger/* + :budget/* schema (see
    is.simm.model.billing); the old :llm-log/* and :party-budget/* attrs
    are no longer declared (dead data in old stores is left in place)."
-  (:require [datahike.api :as d]
+  (:require [clojure.string :as str]
+            [datahike.api :as d]
             [dvergr.chat.schema :as chat-schema]
+            [dvergr.substrate.paths :as paths]
             [dvergr.system.db :as sdb]
             [taoensso.telemere :as log]))
 
@@ -819,6 +821,36 @@
                     {:type :missing-id :id-kind kind})))
   id)
 
+(defn- store-exists-refusal?
+  "Is `t` (or a cause of it) konserve refusing to create a store over an
+   existing directory?"
+  [t]
+  (some #(some-> (ex-message %) (str/starts-with? "File store already exists at path"))
+        (take-while some? (iterate ex-cause t))))
+
+(defn- connect!
+  "dvergr's system-DB connection, with the one boot failure that misleads
+   rephrased.
+
+   dvergr asks datahike whether the database exists — which means whether
+   the store has a `:db` head — and creates it when it does not. A directory
+   that is there but has no head (a store a GC swept, a partial copy) makes
+   that creation fail with konserve's \"File store already exists at path\",
+   which reads like a harmless double-create. It is data loss, or a copy that
+   did not finish, and the refusal is right: creating over it would bury
+   whatever is left. So refuse, and say so. Never delete it here."
+  []
+  (try
+    (sdb/get-conn)
+    (catch Throwable e
+      (if (store-exists-refusal? e)
+        (let [path (paths/system-db-dir)]
+          (throw (ex-info (str "system DB store at " path " has no :db head (data loss or "
+                               "partial copy); refusing to create over it")
+                          {:type :system-db/missing-db-head :path path}
+                          e)))
+        (throw e)))))
+
 (defn init!
   "Initialize the system database. Idempotent - safe to call multiple times.
 
@@ -834,7 +866,7 @@
    extension schema (idempotent upserts), then runs `migrate-to-actors!`."
   []
   (when-not @conn
-    (let [c (sdb/get-conn)]
+    (let [c (connect!)]
       ;; dvergr core: :actor/*, :ledger/*, :budget/*, :chat/*, ...
       (chat-schema/ensure-full-schema! c)
       ;; simmis extensions on the same entities — guarded against silent

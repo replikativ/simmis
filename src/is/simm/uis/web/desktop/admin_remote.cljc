@@ -5,7 +5,8 @@
             #?(:clj [is.simm.model.system-db :as system-db])
             #?(:clj [is.simm.model.parties :as parties])
             #?(:clj [is.simm.model.billing :as billing])
-            #?(:clj [datahike.api :as d])))
+            #?(:clj [datahike.api :as d])
+            #?(:clj [is.simm.uis.web.desktop.remote :as remote])))
 
 #?(:clj
    (defn load-admin-data-server [party-id-str]
@@ -17,13 +18,16 @@
            ;; Admin view lists all human parties
            humans (->> (d/q '[:find [(pull ?e [:party/id :party/email :party/display-name
                                                :party/role :party/handle :party/created
-                                               :party/last-login]) ...]
+                                               :actor/created-at :party/last-login]) ...]
                               :where [?e :party/type :human]]
                             @conn)
                        (map (fn [p]
-                              (-> (dissoc p :db/id)
-                                  (update :party/created (fn [v] (when v (str v))))
-                                  (update :party/last-login (fn [v] (when v (str v)))))))
+                              ;; the actor core wins, as in `parties/ent->party`
+                              (-> (dissoc p :db/id :actor/created-at)
+                                  (assoc :party/created (remote/wire-instant
+                                                         (or (:actor/created-at p)
+                                                             (:party/created p))))
+                                  (update :party/last-login remote/wire-instant))))
                        (sort-by :party/email)
                        vec)
            humans-with-budget (mapv (fn [h]

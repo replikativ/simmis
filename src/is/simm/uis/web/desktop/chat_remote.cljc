@@ -25,6 +25,7 @@
             #?(:clj [is.simm.model.message-notify-broadcast :as mnb])
             #?(:clj [is.simm.model.user-rooms-broadcast :as urb])
             #?(:clj [datahike.api :as d])
+            #?(:clj [is.simm.uis.web.desktop.remote :as remote])
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -123,7 +124,7 @@
                                 (-> r
                                     (assoc :room/assignments
                                            (room-assignment-summaries r))
-                                    (update :room/created #(when % (str %)))
+                                    (update :room/created remote/wire-instant)
                                     (update :room/content-db-scope #(when % (str %)))
                                     ;; Stringify the room's attached KB
                                     ;; UUIDs so the click handler can
@@ -180,7 +181,7 @@
                               ;; wiki is expanded or viewed and derives the
                               ;; folder tree reactively from its local DB.
                               (-> kb
-                                  (update :kb/created #(when % (str %)))
+                                  (update :kb/created remote/wire-instant)
                                   (update :kb/db-scope str)))))
                  ;; Drives reachable from the user's rooms (the sidebar
                  ;; Files section). Room-scoped: clicking opens that
@@ -572,7 +573,7 @@
                                   (or (kbs/get-party-kbs viewer) []))]
            {:room (when room
                     (-> room
-                        (update :room/created #(when % (str %)))
+                        (update :room/created remote/wire-instant)
                         (assoc :room/budget-dollars (rooms/get-room-budget-dollars room-uuid))
                         (dissoc :room/parties)))
             ;; Whether the viewer holds the room's owner-level authority, so the
@@ -598,23 +599,23 @@
             ;; room's
             :knowledge-bases (mapv (fn [kb]
                                      (-> kb
-                                         (update :kb/created #(when % (str %)))
+                                         (update :kb/created remote/wire-instant)
                                          (dissoc :db/id :kb/shared-with)))
                                    room-kbs)
             :available-kbs (mapv (fn [kb]
                                    (-> kb
-                                       (update :kb/created #(when % (str %)))
+                                       (update :kb/created remote/wire-instant)
                                        (dissoc :db/id)))
                                  party-kbs)
             :drives (mapv (fn [drv]
                             (-> drv
-                                (update :drive/created #(when % (str %)))
+                                (update :drive/created remote/wire-instant)
                                 (dissoc :db/id)))
                           (or (drives/get-room-drives room-uuid) []))
             :available-drives (->> (when viewer (drives/list-drives viewer))
                                    (mapv (fn [drv]
                                            (-> drv
-                                               (update :drive/created #(when % (str %)))
+                                               (update :drive/created remote/wire-instant)
                                                (dissoc :db/id)))))})
          :cljs nil))))
 
@@ -895,8 +896,8 @@
                   :assignment (-> assignment
                                   (update :assignment/id str)
                                   (update :assignment/room-id str)
-                                  (update :assignment/created-at #(when % (str %)))
-                                  (update :assignment/updated-at #(when % (str %))))})
+                                  (update :assignment/created-at remote/wire-instant)
+                                  (update :assignment/updated-at remote/wire-instant))})
                {:status :error :error :assignment-api-unavailable})
              {:status :error :error :room-has-no-dvergr-slug}))
          :cljs nil))))

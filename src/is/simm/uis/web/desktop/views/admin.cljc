@@ -20,10 +20,14 @@
 ;; =============================================================================
 
 (defn- format-date [d]
-  #?(:cljs (when d
-             (try (.toLocaleDateString (js/Date. d) "en-US"
-                                        #js {:year "numeric" :month "short" :day "numeric"})
-                  (catch :default _ "—")))
+  ;; `d` is ISO-8601 (`remote/wire-instant`). An unparseable value does not
+  ;; throw — `js/Date.` yields an invalid date that prints "Invalid Date" —
+  ;; so check for it rather than catch.
+  #?(:cljs (let [date (some-> d js/Date.)]
+             (if (and date (not (js/isNaN (.getTime date))))
+               (.toLocaleDateString date "en-US"
+                                    #js {:year "numeric" :month "short" :day "numeric"})
+               "—"))
      :clj "—"))
 
 (defn- format-dollars [microdollars]

@@ -5,14 +5,15 @@
             #?(:clj [is.simm.model.parties :as parties])
             #?(:clj [is.simm.model.knowledge-bases :as kbs])
             #?(:clj [is.simm.model.mail-accounts :as mail])
-            #?(:clj [is.simm.model.model-catalog :as model-catalog])))
+            #?(:clj [is.simm.model.model-catalog :as model-catalog])
+            #?(:clj [is.simm.uis.web.desktop.remote :as remote])))
 
 #?(:clj
    (defn load-settings-server [party-id-str]
      (let [party-id (java.util.UUID/fromString party-id-str)]
        {:profile (-> (parties/get-party party-id)
-                     (update :party/created #(when % (str %)))
-                     (update :party/last-login #(when % (str %))))
+                     (update :party/created remote/wire-instant)
+                     (update :party/last-login remote/wire-instant))
         :env-vars (parties/get-env-vars party-id)
         :budget (parties/get-budget party-id)
         :ui-prefs (parties/get-ui-prefs party-id)
@@ -24,7 +25,7 @@
         :knowledge-bases (->> (kbs/get-party-kbs party-id)
                               (mapv (fn [kb]
                                       (-> kb
-                                          (update :kb/created #(when % (str %)))))))})))
+                                          (update :kb/created remote/wire-instant)))))})))
 
 #?(:clj
    (defn save-model-server [party-id-str model-id]

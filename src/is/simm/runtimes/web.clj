@@ -728,7 +728,7 @@
 
     ;; Initialize system DB (must be before auth store)
     (system-db/init!)
-    (mail-accounts/start-all!)
+    (mail-accounts/boot!)
 
     ;; Expose the kontor accounting kernel inside the agent clojure_eval sandbox
     ;; (dvergr owns the generic injector hook; the kontor binding lives in simmis
@@ -968,12 +968,14 @@
 
         ;; Storage GC — datahike leaves superseded index nodes orphaned and only
         ;; an explicit sweep reclaims them. dvergr owns the sweep but drives it
-        ;; from its own daemon, which simmis does not boot, so nothing has ever
-        ;; reclaimed. Orphan-only: no retention window, every branch head and its
-        ;; history is kept. Must stay in THIS process — it is the writer.
+        ;; from its own daemon, which simmis does not boot. Orphan-only: no
+        ;; retention window, every branch head and its history is kept. Must
+        ;; stay in THIS process — it is the writer. OPT-IN: without datahike#1117
+        ;; a failed mark sweeps the whole store (it wiped dev.simm.is's system
+        ;; DB), so `boot!` starts it only when the config or env says so.
         (try
           (require 'is.simm.runtimes.storage-gc)
-          ((resolve 'is.simm.runtimes.storage-gc/start!))
+          ((resolve 'is.simm.runtimes.storage-gc/boot!))
           (catch Exception e
             (log/log! {:level :warn :id ::storage-gc-start-failed
                        :data {:error (str e)}})))))))
@@ -1023,6 +1025,17 @@
       (log/log! {:level :info :id ::nrepl-started
                  :msg (str "nREPL on 127.0.0.1:" port " (SSH-tunnel access only)")}))))
 
+(defn- warn-deployment-defaults!
+  "Warn about settings whose development default is wrong on a server. Only
+   from `-main`: development boots through dev/user.clj, where these
+   defaults are the right ones."
+  []
+  (when-not (some-> (System/getenv "SIMMIS_JITSI_URL") str/trim not-empty)
+    (log/log! {:level :warn :id ::jitsi-url-unset
+               :msg (str "SIMMIS_JITSI_URL is unset: calls will point every browser at "
+                         auth-cfg/jitsi-url " — the development Jitsi on the "
+                         "viewer's own machine. Set it to this deployment's Jitsi.")})))
+
 ;; Entry point for standalone usage
 (defn -main [& _args]
   (log/log! {:level :info
@@ -1031,6 +1044,7 @@
              :data {:url url
                     :jwt-configured? (some? (System/getenv "SIMMIS_JWT_SECRET"))}})
   (maybe-start-nrepl!)
+  (warn-deployment-defaults!)
   (start-server!)
   ;; Park the main thread — the server's own threads must not depend on
   ;; main staying alive by accident, and a returning -main would let the

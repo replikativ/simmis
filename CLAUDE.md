@@ -67,9 +67,15 @@ two instances in ONE checkout overwrite each other's bundle — and from there:
 ```bash
 env -u TELEGRAM_BOT_TOKEN SIMMIS_PORT_OFFSET=1000 \
     DVERGR_HOME=/tmp/simmis-b/dvergr SIMMIS_DATA_DIR=/tmp/simmis-b/data \
-    SIMMIS_DEV_AUTH=true clj -J-Xmx3g -M:dev
+    SIMMIS_MAIL_SYNC=false SIMMIS_DEV_AUTH=true \
+    CODEX_HOME=/tmp/simmis-b/codex CLAUDE_CONFIG_DIR=/tmp/simmis-b/claude \
+    clj -J-Xmx3g -J-Duser.home=/tmp/simmis-b/home -M:dev
 clj-nrepl-eval -p 48888 "(status)"   # page http://localhost:9080, ws 48295
 ```
+
+Use offset 1000 or 3000, not 2000: it puts the page on 10080, which browsers
+refuse to open (`ERR_UNSAFE_PORT`, the Amanda backup port), so the instance
+boots and nothing can look at it.
 
 `SIMMIS_PORT_OFFSET` moves every port (47888, 9631, shadow's 9630, 8080,
 47295) by one number, page and websocket together; `(status)` probes the
@@ -83,6 +89,22 @@ cookie `simmis_blob_<offset>`, because cookies are scoped by host, not port.
 Use a FRESH home, never a copy of the demo's (a copy carries the same store
 ids, so it is a replica, not a second home). `SIMMIS_DEV_AUTH`
 only on a throwaway instance like this one; delete its home afterwards.
+
+`SIMMIS_MAIL_SYNC=false` stops boot from polling the IMAP accounts the system
+DB lists (default on; `:mail {:sync? false}` in a config does the same). The
+machine's LLM CREDENTIALS are the other thing a test instance picks up without
+asking: dvergr reads the Codex login from `$CODEX_HOME`, else
+`<user.home>/.codex`, user-level definitions from `<user.home>/.dvergr`, and
+the `claude` CLI it spawns for `claude-code-*` models inherits the process
+environment, so it uses your interactive login unless `CLAUDE_CONFIG_DIR`
+points elsewhere. `-J-Duser.home=<throwaway>` covers the JVM-side lookups (it
+is not `$HOME`, so `~/.m2` and the Clojure CLI are unaffected), and
+`CODEX_HOME`/`CLAUDE_CONFIG_DIR` cover the env-var ones. Provider API keys
+(`FIREWORKS_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) come from the
+environment: `env -u` them too if the instance must not spend on them.
+
+Storage GC never runs on such an instance unless you turn it on — it is off
+by default everywhere (see `is.simm.runtimes.storage-gc`).
 
 Dependencies come in three sets (deps.edn): Maven releases by default;
 `:stack` overlays ONLY `../dvergr` (the sibling simmis co-develops with); `:local`
@@ -208,6 +230,9 @@ src/is/simm/
 │   ├── branching.clj        - yggdrasil KB branching + internal-branch GC
 │   ├── auth_config.clj      - kabel-auth store/JWT; alpha users from
 │   │                          config.local.edn :alpha-users
+│   ├── storage_gc.clj       - periodic store GC; OFF unless
+│   │                          :storage-gc {:enabled? true} /
+│   │                          SIMMIS_STORAGE_GC=true (datahike#1117)
 │   └── pump_watchdog.clj    - loud detector for the room-bus wedge
 ├── agents/
 │   ├── room_agents.clj      - thin policy layer over dvergr's turn
