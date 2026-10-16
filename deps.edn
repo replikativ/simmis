@@ -66,8 +66,10 @@
         com.taoensso/timbre {:mvn/version "6.8.0"}
         ;; partial-cps moved to the org.replikativ group at 0.1.68 (namespaces
         ;; unchanged: is.simm.partial-cps.*). Libraries released before the
-        ;; move still declare is.simm/partial-cps; those are excluded below so
-        ;; only one jar provides the namespaces.
+        ;; move declared is.simm/partial-cps and were excluded; datahike
+        ;; 0.8.1904, yggdrasil 0.3.48 and geschichte 0.1.19 declare the new
+        ;; coordinate, so the exclusions are gone (`clj -Stree` has no
+        ;; is.simm/partial-cps).
         org.replikativ/partial-cps {:mvn/version "0.1.68"}
 
         ;; replikativ substrate
@@ -85,8 +87,10 @@
         ;; NOTE: booting on current Datahike needs the undeclared-attr
         ;; strictness pass (it raises where 0.8.1729 was lenient — e.g. seed
         ;; entities carrying attrs not yet in the installed schema).
-        org.replikativ/datahike {:mvn/version "0.8.1903"
-                                 :exclusions [is.simm/partial-cps]}
+        ;; 0.8.1904 only moves its partial-cps dependency to org.replikativ
+        ;; 0.1.68 (datahike#1113); konserve, kabel and konserve-sync stay, so
+        ;; the client-sync set does not move with it. dvergr 0.1.286 pins it.
+        org.replikativ/datahike {:mvn/version "0.8.1904"}
         org.replikativ/konserve {:mvn/version "0.9.394"}
         ;; 0.1.40 additionally limits client inventory to keys reachable from
         ;; the configured walker (konserve-sync#14). Clients no longer scan or
@@ -185,13 +189,15 @@
         ;; 0.3.41 makes Datahike graph/history reads snapshot-independent
         ;; (yggdrasil#19): inspection no longer writes a fresh snapshot or
         ;; mutates branch heads. It also carries persistent-sorted-set 0.5.140.
-        org.replikativ/yggdrasil {:mvn/version "0.3.46"
-                                  :exclusions [is.simm/partial-cps]}
+        ;; 0.3.48 (dvergr 0.1.286's pin): a merge costs what the branch changed
+        ;; (#22/#23), a diverged geschichte overlay merges down three-way
+        ;; (#24), org.replikativ/partial-cps (#26).
+        org.replikativ/yggdrasil {:mvn/version "0.3.48"}
         ;; Keep the direct Geschichte dependency aligned with dvergr: nearest
         ;; wins, and Simmis also relies on Yggdrasil's Geschichte adapter and
         ;; its content-level merge API.
-        org.replikativ/geschichte {:mvn/version "0.1.17"
-                                   :exclusions [is.simm/partial-cps]}
+        ;; 0.1.19: datahike 0.8.1904 and org.replikativ/partial-cps only.
+        org.replikativ/geschichte {:mvn/version "0.1.19"}
         ;; Datahike's bundled secondary-index adapter uses
         ;; scriptum.core/warm!, introduced before this release.
         org.replikativ/scriptum {:mvn/version "0.1.32"}
@@ -303,7 +309,20 @@
         ;; stack: spindel 0.1.122, partial-cps 0.1.68 (org.replikativ),
         ;; datahike 0.8.1903, konserve 0.9.394, kabel 0.3.139 (via spindel),
         ;; yggdrasil 0.3.46, kontor 0.1.39 — the client-sync set is unchanged.
-        org.replikativ/dvergr {:mvn/version "0.1.278"}}
+        ;; 0.1.286: sandbox database handles follow the room's grant
+        ;; (dvergr#326). `dvergr.room/db`, the guarded `d/connect` and
+        ;; `*room*` write only where the grant permits `:write`; the messages
+        ;; store is read-only from the sandbox (`dvergr.room/post!` posts).
+        ;; dvergr asks the host what a permission permits through
+        ;; `dvergr.system.rooms/set-grant-permits!`; simmis answers with
+        ;; `access/permission-satisfies?`, set in `web/start-server!` before
+        ;; rooms hydrate, so a `:merge` grant writes. The sandbox prompt
+        ;; changed (`*room*` is read-only), so Run inputs ids change and a
+        ;; resumed experiment re-runs its cells. Its stack moves datahike to
+        ;; 0.8.1904, yggdrasil 0.3.48 and geschichte 0.1.19 (all three only
+        ;; for org.replikativ/partial-cps, plus yggdrasil's merge work);
+        ;; spindel 0.1.122, konserve 0.9.394, kontor 0.1.39 unchanged.
+        org.replikativ/dvergr {:mvn/version "0.1.286"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead

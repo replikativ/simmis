@@ -43,6 +43,7 @@
             [is.simm.model.access :as access]
             [is.simm.model.parties :as parties]
             [is.simm.model.system-db :as system-db]
+            [is.simm.runtimes.rpc-errors :as rpc-errors]
             [superv.async :as sv]))
 
 (def principal-kinds
@@ -204,7 +205,8 @@
    symbol sent verbatim, as a client names a fn the registry may not hold)
    with `arg-map` as a network-inbound invocation from
    `principal`, through distributed-scope's `dispatch-invocation!` with simmis's
-   `authorize-remote` as the gate — the path a websocket message takes once
+   `authorize-remote` as the gate, wrapped as the server wraps it
+   (`rpc-errors/gate`, `rpc-errors/install!`) — the path a websocket message takes once
    kabel-auth has attached `:kabel/principal`. Returns
    `{:result …}` or `{:error \"…\" :refused? bool}`; `:refused?` is true when the
    GATE refused (the handler never ran)."
@@ -213,8 +215,11 @@
         router-id (random-uuid)
         out (a/chan 1)
         owners @#'ds/invocation-owners]
+    ;; the server's wiring (`web/start-server!`): the gate and the handlers
+    ;; answer a failure with `rpc-errors`' short map, never the exception
+    (rpc-errors/install!)
     (swap! owners assoc peer-id {:supervisor sv/S
-                                 :authorize-fn access/authorize-remote
+                                 :authorize-fn (rpc-errors/gate access/authorize-remote)
                                  :router-id router-id})
     (try
       (@#'ds/dispatch-invocation! peer-id router-id

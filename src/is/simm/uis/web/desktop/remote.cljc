@@ -20,7 +20,9 @@
    `spin!` also carries the `*execution-context*` binding that spin-remote
    needs on both the invoke and the callback — omitting it makes the call a
    silent no-op, which is the same failure mode by another route."
-  (:require #?@(:cljs [[cljs.core.async :refer [promise-chan put! <!]]
+  (:require [clojure.string :as str]
+            #?(:clj [clojure.edn :as edn] :cljs [cljs.reader :as edn])
+            #?@(:cljs [[cljs.core.async :refer [promise-chan put! <!]]
                        [is.simm.uis.web.desktop.signals :as sig]
                        [org.replikativ.spindel.engine.core :as rtc]
                        [is.simm.uis.web.desktop.runtime :refer [runtime]]]))
@@ -34,24 +36,37 @@
      [v]
      (instance? js/Error v)))
 
-#?(:cljs
-   (defn error-text
-     "Short, human-readable form of a remote failure.
+(defn error-info
+  "The server's account of a failed remote call, as a map, or nil when `err`
+   carries none.
 
-      The server sends its cause under `:error` in ex-data. `invoke-remote`
-      pr-str's the server-side error before putting it on the wire, so what
-      arrives is a rendered `#error {…}` blob with a full JVM stack trace in
-      it. Lift the `:cause` out — the trace under it is not for someone
-      reading a status bar, and it is the whole string otherwise."
-     [err]
-     (let [e (:error (ex-data err))]
-       (or (when (map? e) (or (:cause e) (:message e)))
-           (when (string? e)
-             (or (second (re-find #":cause\s+\"([^\"]*)\"" e))
-                 (not-empty e)))
-           (some-> e str not-empty)
-           (ex-message err)
-           (str err)))))
+   `invoke-remote` puts what the server sent under `:error` in ex-data: the
+   server's `pr-str` of its error. The server reduces every failure to
+   `{:error \"<short message>\" :type <kw, when the client may see it>
+   :correlation-id \"<uuid>\"}` before that `pr-str`
+   (`is.simm.runtimes.rpc-errors`), so the string reads back as that map. The
+   correlation id is what to quote in a report: the server logged the full
+   exception under it."
+  [err]
+  (let [e (:error (ex-data err))]
+    (cond
+      (map? e) e
+      (and (string? e) (str/starts-with? e "{"))
+      (let [m (try (edn/read-string e)
+                   (catch #?(:clj Exception :cljs :default) _ nil))]
+        (when (map? m) m)))))
+
+(defn error-text
+  "Short, human-readable form of a remote failure: the server's message, and
+   the start of its correlation id to quote when reporting it."
+  [err]
+  (if-let [{:keys [error correlation-id]} (error-info err)]
+    (str error (when (seq correlation-id)
+                 (str " (ref " (subs correlation-id 0 (min 8 (count correlation-id))) ")")))
+    (let [e (:error (ex-data err))]
+      (or (some-> e str not-empty)
+          (ex-message err)
+          (str err)))))
 
 #?(:cljs
    (defn- report!

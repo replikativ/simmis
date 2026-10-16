@@ -69,6 +69,21 @@ with the shared helpers in `access.clj` (`require!`, `require-enlistable!`,
 `{:type :not-authorized}`, the same shape the gate uses. So the review question
 has a second half: does the handler act on any id its row does not name?
 
+**What a refused or failed call tells the client.** distributed-scope replies
+to a failed invocation with the `pr-str` of the exception, which on the JVM is
+every stack frame, the class and file names and all of `ex-data`.
+`is.simm.runtimes.rpc-errors` decides what that string is: the gate
+(`rpc-errors/gate` around `authorize-remote`) throws, and every registered
+handler is wrapped (`rpc-errors/install!`) to replace its failure with, an
+error that prints as `{:error "<message>" :type <kw> :correlation-id "<uuid>"}`
+and nothing else. `:error` is the first line of an `ex-info`'s message, or
+"internal error" for any other throwable; `:type` only when it is in
+`rpc-errors/client-types` (`:not-authorized`, `:authentication-required`, …).
+The full exception is logged (`::remote-call-failed`; a gate refusal is
+`::remote-call-refused`, next to `access`'s `::rpc-denied` with the policy
+row) under the same correlation id, which the client shows as `(ref xxxxxxxx)`
+(`remote/error-text`), so a report can be matched to the log.
+
 A room dvergr makes for an experiment (`room-run`, `runner/run!` in a home,
 `catalog_benchmark`) has no members, so membership admits nobody to it. An admin
 sees such rooms in the room list and joins one (`join-experiment-room!`,
@@ -278,15 +293,27 @@ owners' agents keep the raw `kb/conn` on the KBs the room may write (plan
 §2.9.3); wrapping it (`:tx/author` on every transaction) comes later.
 
 dvergr's own sandbox surface (`dvergr.room/kb`, `dvergr.room/db`, the guarded
-`datahike.api/connect`) resolves databases from the room's grants in the
-dvergr registry and never reaches a KB the room is not granted. It does not
-consult `can?`: `dvergr.room/db` and `connect` return a conn by name for any
-database attached to the room, whatever the grant's permission.
+`datahike.api/connect`, `dvergr.room/*room*`) resolves databases from the
+room's grants in the dvergr registry and never reaches a KB the room is not
+granted. It writes only where the grant permits `:write`: every
+`transact`/`transact!` on a sandbox handle asks first, so a `:read` grant
+yields a read-only handle and a grant downgraded after the handle was handed
+out refuses at once. The room's messages store is read-only from the sandbox
+whatever the grant (messages go through `dvergr.room/post!`). dvergr asks the
+host what a permission permits, and `web/install-grant-permits!` answers with
+`access/permission-satisfies?`, the ladder `can?` uses, before any room
+hydrates; without it a `:merge` grant, which dvergr does not know, would be
+read-only there. The same answer decides the writable-KB list
+`knowledge_add` uses, which systems `dvergr.room/gc!` collects, and whether a
+fork may merge into a system (dvergr#326). `authority/sandbox_grants_test`
+runs the attacks through the room's sandbox.
 
 **Evaluating code in a room** (`eval-in-room!`, the sandbox panel's quick eval
 and the wiki's ▶ Run) is the room's full capability, so its policy row is
 `:merge` on the room, the owner. The author recorded with the evaluation is the
-connection's principal, not an id from the client. `can-eval-in-room!` and
+connection's principal, not an id from the client. The code runs in the room's
+execution context, as an agent's `clojure_eval` does, so the databases attached
+to the room resolve and their grants apply. `can-eval-in-room!` and
 `get-room-state!`'s `:can-eval?` answer the same question for the UI, which
 shows the eval controls only to the owner.
 

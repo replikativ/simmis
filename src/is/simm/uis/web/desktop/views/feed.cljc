@@ -18,6 +18,7 @@
             #?(:cljs [is.simm.uis.web.desktop.feed-remote :as fr])
             #?(:cljs [is.simm.uis.web.desktop.refs :as refs])
             #?(:cljs [is.simm.uis.web.desktop.aggregate :as agg])
+            #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.incremental.interval]
@@ -47,7 +48,7 @@
               (binding [rtc/*execution-context* runtime]
                 (reset! sig/feed-data
                         (if err
-                          {:items [] :error (or (some-> (ex-data err) :error str)
+                          {:items [] :error (or (rem/error-text err)
                                                 (ex-message err) (str err))}
                           {:items (vec ok) :loaded-at (js/Date.now)})))
               ;; exactly once, on both paths — a gate that never reopens is an

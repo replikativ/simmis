@@ -2841,8 +2841,11 @@
 ;; =============================================================================
 
 (defn room-context-state
-  "Any agent's working state for `room-uuid` — {:chat-ctx … :sci-ctx …} —
-   resolved through dvergr's per-(room, agent) registry. Replaces the old
+  "Any agent's working state for `room-uuid` — {:chat-ctx … :sci-ctx …
+   :room-ctx …} — resolved through dvergr's per-(room, agent) registry.
+   `:room-ctx` is the room's execution context: code evaluated in `:sci-ctx`
+   runs in it, as an agent's `clojure_eval` does, or the databases attached to
+   the room (registered in ITS composite) do not resolve. Replaces the old
    local `contexts` cache walked by chat_remote/sandbox_remote."
   [room-uuid]
   (when-let [slug (:room/slug (rooms/get-room room-uuid))]
@@ -2851,7 +2854,8 @@
       (some (fn [[_ aid] ]
               (when-let [cctx (room-ctx/lookup room-id (party->actor-kw aid))]
                 {:chat-ctx cctx
-                 :sci-ctx  (when room (chat-ctx/sci-context-in cctx (:ctx room)))}))
+                 :sci-ctx  (when room (chat-ctx/sci-context-in cctx (:ctx room)))
+                 :room-ctx (:ctx room)}))
             (filter (fn [[rid _]] (= rid room-uuid)) @joined)))))
 
 ;; =============================================================================
