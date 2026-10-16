@@ -4,6 +4,8 @@
             [dvergr.mcp.json-rpc :as rpc]
             [dvergr.mcp.server :as server]
             [dvergr.mcp.surface :as surface]
+            [dvergr.ops :as dops]
+            [is.simm.ops.results :as results]
             [is.simm.model.parties :as parties]
             [is.simm.runtimes.auth-config :as auth]
             [is.simm.runtimes.instance :as instance]
@@ -20,7 +22,10 @@
   (fn [f]
     (with-redefs [auth/get-auth-config (constantly {:jwt {:secret "test-mcp-signing-key"}})
                   parties/get-party (fn [id] (when (= person id) {:party/id id :party/type :human}))]
-      (f))))
+      (try
+        (results/install!)
+        (f)
+        (finally (results/uninstall!))))))
 
 (deftest only-mcp-credentials-for-an-existing-human-authenticate
   (let [authenticate (mcp/authenticator)
@@ -73,9 +78,30 @@
     (let [listed (rpc/handle-message ctx {:jsonrpc "2.0" :id 2 :method "tools/list" :params {}})]
       (is (= mcp/read-tools (set (map :name (get-in listed [:result :tools]))))))
     (let [response (rpc/handle-message ctx {:jsonrpc "2.0" :id 3 :method "tools/call"
-                                           :params {:name "clojure_eval"
-                                                    :arguments {:room "anything" :code "(+ 1 2)"}}})]
+                                            :params {:name "clojure_eval"
+                                                     :arguments {:room "anything" :code "(+ 1 2)"}}})]
       (is (or (:error response) (get-in response [:result :isError]))))))
+
+(deftest signed-capabilities-do-not-upgrade-legacy-or-restricted-credentials
+  (let [now (quot (System/currentTimeMillis) 1000)
+        base {:iss mcp/audience :aud mcp/audience :sub (str person)
+              :iat now :exp (+ now 3600)}
+        authenticate (mcp/authenticator)
+        call #(authenticate {:bearer (jwt/sign-hs256 (#'mcp/signing-key) %)})]
+    (is (= mcp/legacy-read-tools (:principal/tools (call base))))
+    (is (= #{"room_read"} (:principal/tools
+                           (call (assoc base :capability-version 1 :tools ["room_read"]))))
+        "a credential stays restricted even if the server adds more tools")
+    (doseq [caps [{:capability-version 2 :tools ["room_read"]}
+                  {:capability-version 1 :tools ["room_post"]}
+                  {:capability-version 1 :tools []}
+                  {:capability-version 1 :tools "room_read"}
+                  {:tools ["room_read"]} {:capability-version 1}]]
+      (is (nil? (call (merge base caps)))))
+    (let [principal (call base)
+          definitions (server/resource-definitions principal)]
+      (is (not-any? #(= "room_file" (:name %)) (:templates definitions))
+          "legacy tokens gain neither new tools nor file resources"))))
 
 (deftest listener-is-opt-in-private-idempotent-and-cleans-up
   (let [events (atom [])]
@@ -95,6 +121,7 @@
         (is (nil? (:token @@#'mcp/listener)))
         (mcp/stop!)
         (mcp/stop!)
+        (is (not-any? #(contains? (dops/operations) %) (keys results/specifications)))
         (is (= [[:stop] [:host false]] (take-last 2 @events)))
         (finally (mcp/stop!))))))
 
@@ -110,9 +137,9 @@
 (deftest web-login-exchanges-only-its-own-human-identity
   (let [other #uuid "44444444-4444-4444-4444-444444444444"
         handler (ring/ring-handler
-                  (ring/router [["/auth" {:auth :public} (mcp/token-route)]]
-                               {:validate http-auth/validate-auth-declared!
-                                :data {:middleware [http-auth/auth-middleware]}}))
+                 (ring/router [["/auth" {:auth :public} (mcp/token-route)]]
+                              {:validate http-auth/validate-auth-declared!
+                               :data {:middleware [http-auth/auth-middleware]}}))
         request {:request-method :post :uri "/auth/mcp-token"
                  :body {:party-id other :sub (str other) :profile "admin"}}]
     (with-redefs [mcp/configured-port (constantly 47889)]
@@ -137,13 +164,13 @@
         key "web-exchange-test"
         now (quot (System/currentTimeMillis) 1000)
         validator (jwt/build-bearer-validator
-                    {:alg :HS256 :secret key :leeway-seconds 0
-                     :required-claims {:iss "simmis" :aud "simmis-api"}})
+                   {:alg :HS256 :secret key :leeway-seconds 0
+                    :required-claims {:iss "simmis" :aud "simmis-api"}})
         claims {:iss "simmis" :aud "simmis-api" :sub (str other)
                 :iat now :exp (+ now 60)}
         handler (ring/ring-handler
-                  (ring/router [["/auth" {:auth :public} (mcp/token-route)]]
-                               {:data {:middleware [http-auth/auth-middleware]}}))
+                 (ring/router [["/auth" {:auth :public} (mcp/token-route)]]
+                              {:data {:middleware [http-auth/auth-middleware]}}))
         request (fn [token]
                   (handler {:request-method :post :uri "/auth/mcp-token"
                             :headers {"authorization" (str "Bearer " token)}
@@ -151,7 +178,7 @@
     (with-redefs [http-auth/validator (delay validator)
                   mcp/configured-port (constantly 47889)
                   parties/get-party (fn [id] (when (#{person other} id)
-                                             {:party/id id :party/type :human}))]
+                                               {:party/id id :party/type :human}))]
       (let [response (request (jwt/sign-hs256 key claims))
             principal ((mcp/authenticator) {:bearer (get-in response [:body :token])})]
         (is (= 200 (:status response)))
@@ -175,4 +202,4 @@
       (is (= (str "party/" person) (:principal/id principal)))
       (with-redefs [http-auth/party-id (constantly nil)]
         (is (= 401 (:status (handler {:request-method :post :uri "/auth/mcp-token"
-                                     :headers {}}))))))))
+                                      :headers {}}))))))))

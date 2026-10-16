@@ -169,13 +169,46 @@ HTTP router. Access it through an SSH local forward. It runs against the
 existing server execution context through `is.simm.ops.dvergr/host`, not a
 second daemon or a second set of store connections.
 
-This initial surface permits only `room_list`, `room_detail`, `room_messages`,
-`run_list` and `run_detail`. Each authenticated principal carries that hard
-tool ceiling, independent of the profile a client requests. Every operation
+The surface permits these selected reads:
+
+- conversations: `room_list`, `room_detail`, `room_messages`, `run_list`, `run_detail`;
+- workspace and world inspection: `room_files`, `room_read`, `room_diff`, `room_review`;
+- resources and executions: `room_wallet`, `job_list`, `job_status`, `attempt_list`, `attempt_detail`, `review_list`;
+- experiments: `scorecard_list`, `scorecard_detail`, `experiment_progress`, `experiment_report`, `catalog_list`.
+- captured artifacts: `simmis_attempt-files`, `simmis_attempt-file`.
+
+`room_read` reads the CURRENT workspace. `attempt_detail` returns the certified
+Attempt's immutable evidence (including captured output files), not files from
+today's workspace or a discarded execution world. These reuse Dvergr's existing
+records; there is no second result store. Oversized upstream MCP results may
+be truncated; workspace file reads support byte offsets and lengths. Captured
+artifacts do not require reading the full evidence response:
+`simmis_attempt-files {room, id, offset?}` lists up to 100 paths with sizes and
+content identities, and `simmis_attempt-file {room, id, path, offset?, length?}`
+returns at most 16384 bytes as base64. Follow `next-offset`, concatenate the
+decoded bytes, then decode UTF-8; individual chunks can split a character.
+These are the text-file outputs the upstream evaluator captures, not a binary
+artifact ingestion API. Both reads include the Attempt's content identity;
+neither can fall back to the current workspace when a captured path is absent.
+Their schemas reject extra fields and validate direct in-process callers too.
+
+Each authenticated principal carries a signed exact tool ceiling, independent
+of the profile a client requests. Tokens with no capability claims retain only
+the original five conversation/run tools, including through MCP resources.
+Versioned claims must name a nonempty subset of the server's selected reads;
+malformed/unknown versions are refused. Adding a tool on the server does not
+widen an already-issued credential. Every operation
 and resource read also passes the existing `access/dvergr-authorize` gate;
 room listings are filtered and a valid credential grants no access to another
 party's room.
 No raw database write, code evaluation or chat post is exposed.
+The host validates MCP argument shapes at runtime against upstream schemas
+(Dvergr's invoke does not itself validate them), and caps list limits at 1000.
+Visibility filters and already-open resource sessions recheck room authority.
+Checker execution/calibration and workflow export (which calibrates on export),
+paid starts and host-path trajectory exports are not on this read surface.
+The two Simmis artifact ops register through Dvergr's authorized host-op seam,
+not dynamic unguarded tools, and are removed when the listener stops.
 
 An operator can call `is.simm.runtimes.mcp/mint-token!` for an existing human
 party UUID. Its result contains a credential and must be saved privately, not
@@ -230,6 +263,10 @@ startup_timeout_sec = 30
 tool_timeout_sec = 60
 enabled_tools = ["room_list", "room_detail", "room_messages", "run_list", "run_detail"]
 ```
+
+The optional `enabled_tools` line above intentionally narrows this client to
+the original five tools; omit it to discover the full selected read surface.
+New tools also require a freshly exchanged credential and client reconnect.
 
 Claude Code's HTTP MCP entry uses the same URL and command under
 `headersHelper`. No subscription credential, signing key, or operator nREPL
