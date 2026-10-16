@@ -330,7 +330,8 @@
                       ;; Renews the blob-read cookie for a tab that outlives
                       ;; it. Header bearer only — POST never accepts the
                       ;; cookie, so a cookie cannot extend itself.
-                      (conj (hauth/blob-cookie-route)))
+                      (conj (hauth/blob-cookie-route)
+                            ((requiring-resolve 'is.simm.runtimes.mcp/token-route))))
                   ;; Content-addressed blobs (voice-note audio, media
                   ;; stills). Content-addressing makes ids unguessable
                   ;; (SHA-256); real per-blob authz arrives with eacl.

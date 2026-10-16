@@ -77,3 +77,4 @@ simmis-whilo
 doc/presentations/
 doc/presentations.zip
 .alpha-credentials*
+__pycache__/

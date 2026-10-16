@@ -187,8 +187,54 @@ There is no individual-token revocation registry in this first surface.
 MCP tokens use issuer/audience `simmis-mcp` and an HMAC-derived signing key
 distinct from the web and blob keys. Web tokens, blob capabilities, the
 Dvergr local-admin token and Dvergr agent-run tokens are not accepted here;
-MCP tokens do not authenticate to the web. This operator-issued human-read
-surface is not yet an OAuth flow or an agent-delegation API.
+MCP tokens do not authenticate to the web. This human-read surface is not yet
+an OAuth flow or an agent-delegation API.
+
+`POST /auth/mcp-token` exchanges a validated web Authorization bearer for the
+same one-hour read capability. It takes no identity or scope from its body;
+only the authenticated existing human may obtain their own credential. It
+refuses agent/deleted accounts, cookie-only requests and disabled MCP, and its
+response is `Cache-Control: no-store`. The exchange is on the web server;
+the MCP protocol listener remains private. This is an explicit credential
+exchange, not acceptance of web tokens by MCP.
+
+### Connecting a second operator
+
+Each person logs in as themselves; no account, room membership or grant is
+created by MCP login. From the person's own machine, forward **only** the MCP
+port with their existing SSH access (substitute their SSH account if different):
+
+```sh
+ssh -N -T -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:47990:127.0.0.1:47889 simmis@simm.is
+python3 /absolute/path/to/simmis/scripts/mcp_client.py login --origin https://dev.simm.is
+```
+
+The helper prompts for the person's email and password and saves a web session
+in `~/.config/simmis/mcp-session.json` (mode 600), not the password. Treat this
+file as a full web-login credential: it is broader than the MCP read token.
+`headers` exchanges it for the read-only MCP bearer, renewing the web access
+token through `/auth/refresh` when needed. Once the refresh session expires or
+is revoked, run `login` again. Never paste the output of `headers` into logs.
+Authentication requests require HTTPS except on loopback, refuse redirects and
+ignore environment proxies; the session's origin is retained with the login.
+
+For Codex, add the following to the person's user `config.toml`
+([HTTP MCP configuration](https://learn.chatgpt.com/docs/extend/mcp)):
+
+```toml
+[mcp_servers.simmis_dev]
+url = "http://127.0.0.1:47990/mcp"
+http_headers_helper = "python3 /absolute/path/to/simmis/scripts/mcp_client.py headers"
+startup_timeout_sec = 30
+tool_timeout_sec = 60
+enabled_tools = ["room_list", "room_detail", "room_messages", "run_list", "run_detail"]
+```
+
+Claude Code's HTTP MCP entry uses the same URL and command under
+`headersHelper`. No subscription credential, signing key, or operator nREPL
+access is needed. These clients still see only the rooms their human account
+may read; SSH access alone does not grant Simmis membership.
 
 The listener starts with the server when configured and stops before its host
 is cleared. Its handle is process-level transport state, not room or UI state

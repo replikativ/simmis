@@ -21,8 +21,8 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Install audio processing dependency
-          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+          name: Install audio and MCP helper dependencies
+          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg python3
       - restore_cache:
           keys:
             - deps-v1-{{ checksum "deps.edn" }}
@@ -31,6 +31,9 @@ jobs:
           name: Run JVM tests (Maven baseline)
           command: clojure -X:test
           no_output_timeout: 15m
+      - run:
+          name: Test private MCP client helper
+          command: python3 -m unittest discover -s test/scripts
       - run:
           name: Build browser release (CLJS + CSS gate)
           command: |

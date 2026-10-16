@@ -11,6 +11,7 @@
             [is.simm.ops.dvergr :as ops]
             [is.simm.runtimes.auth-config :as auth]
             [is.simm.runtimes.context :as context]
+            [is.simm.runtimes.http-auth :as http-auth]
             [is.simm.runtimes.instance :as instance]
             [kabel.auth.jwt :as jwt]
             [taoensso.telemere :as log]))
@@ -29,9 +30,9 @@
   (= :human (:party/type (parties/get-party party-id))))
 
 (defn mint-token!
-  "Operator REPL only: a one-hour MCP credential for an existing human party.
-   Returns {:token :expires-in}. Never log the result or expose this as a tool.
-   No account, membership or grant is created."
+  "Trusted issuer: a one-hour MCP credential for an existing human party.
+   Used by the operator REPL and the authenticated self-exchange route, never
+   a tool. Returns {:token :expires-in}; never log it. Creates no grant."
   [party-id]
   (when-not (and (uuid? party-id) (human? party-id))
     (throw (ex-info "MCP credentials require an existing human party" {:type ::invalid-party})))
@@ -74,6 +75,28 @@
       (when-not (<= 1 port 65535)
         (throw (ex-info "MCP port must be between 1 and 65535" {:type ::invalid-port})))
       port)))
+
+(defn token-route
+  "Exchange a validated web bearer for a one-hour, read-only MCP token.
+   Identity comes only from authentication, never from the request body.
+   This issues credentials; the MCP transport itself remains loopback-only."
+  []
+  ["/mcp-token"
+   {:post {:auth :authenticated
+           :handler
+           (fn [req]
+             (let [id (http-auth/party-id req)
+                   headers {"Content-Type" "application/json"
+                            "Cache-Control" "no-store"}]
+               (cond
+                 (nil? id) {:status 401 :headers headers
+                            :body {:error "authentication required"}}
+                 (not (human? id)) {:status 403 :headers headers
+                                   :body {:error "an existing human account is required"}}
+                 (nil? (configured-port)) {:status 404 :headers headers
+                                          :body {:error "private MCP is disabled"}}
+                 :else {:status 200 :headers headers
+                        :body (assoc (mint-token! id) :token-type "Bearer")})))}}])
 
 (defn start!
   "Start the configured listener once. The bind is not configurable: SSH
