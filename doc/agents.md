@@ -16,6 +16,13 @@ channel. simmis adds policy on top: which personas exist, what prompt they get,
 which tools they are handed. That policy lives in `agents/room_agents.clj`, and
 the personas and the tool manual in `agents/templates.clj`.
 
+A human send is one durable message, even when several agents are selected to
+respond. Multiple recipients use Dvergr's explicit recipient set on that same
+envelope, not copies with the same id (durable deduplication would suppress
+all but the first). Mentions stay separate from delivery selection. A failed
+join removes only that recipient; unrelated participants are not broadcast to.
+The client-supplied id and thread parent remain on the canonical message.
+
 ## The sandbox
 
 An agent's code runs in an [SCI](https://github.com/babashka/sci) context with

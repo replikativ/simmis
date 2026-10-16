@@ -2033,7 +2033,7 @@
    - tool-call events (:tool-uses present) are SKIPPED — the timeline
      renders tool activity from dvergr's own tool-call rows;
    - everything else persists idempotently under the message id
-     (multi-recipient sends share one id, so the upsert dedupes);
+     (a multi-recipient send is one canonical envelope);
    - author entities are ensured so the timeline's author join holds.
 
    Idempotent per room per JVM."
@@ -3021,8 +3021,8 @@
       dvergr room store ALSO persists it via the bus.
    2. Resolve @handles to room-local actor ids. Unknown/ambiguous mentions fail
       closed; assignment response policies select recipients.
-   3. Join the selected recipients via `join-agents!` and post one Message per
-      JOINED recipient; replies route back via the projector. Joins are isolated
+   3. Join the selected recipients via `join-agents!` and post ONE Message
+      addressed to those JOINED recipients; replies route back via the projector. Joins are isolated
       per agent — an agent that cannot be joined drops out of this send (logged,
       named in the room by a system note) and never blocks the message or the
       other agents.
@@ -3079,22 +3079,23 @@
                         (seq joined) (mapv party->actor-kw joined)
                         (seq all-agents) [:_room-log]
                         :else [(d/room-target room)])
-              ;; All copies of a multi-recipient send share ONE id
-              ;; (client-supplied when present) — the projector's upsert
-              ;; dedupes them into a single timeline row.
+              ;; One durable envelope per send. Same-id per-target copies are
+              ;; deduped BEFORE delivery, losing all but the first recipient.
+              ;; Explicit multicast is not a room broadcast or a mention list.
               send-id (or msg-uuid (random-uuid))
               metadata {:role :user :mentions mentions :audience audience}
-              msgs (binding [rtc/*execution-context* (:ctx room)]
-                     (->> targets
-                          (mapv #(d/message from-kw % user-message in-reply-to metadata))
-                          (mapv #(assoc % :id send-id))))]
+              msg (binding [rtc/*execution-context* (:ctx room)]
+                    (let [message (assoc (d/message from-kw (first targets) user-message
+                                                    in-reply-to metadata) :id send-id)]
+                      (if (next targets)
+                        (d/with-recipients message targets)
+                        message)))]
           (binding [rtc/*execution-context* (:ctx room)]
-            (doseq [m msgs]
-              (d/post! room m)))
+            (d/post! room msg))
           ;; After the send, so the room reads in causal order: the human's
           ;; message, then why an agent stayed silent.
           (doseq [failure failures]
-            (post-join-failure-note! room room-uuid failure from-kw (first msgs)
+            (post-join-failure-note! room room-uuid failure from-kw msg
                                      (boolean (seq joined))))
           ;; Reported apart, because they are apart: `:unavailable` is a
           ;; settings state a person can act on, `:join-errors` is a fault an
