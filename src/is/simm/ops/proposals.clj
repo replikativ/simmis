@@ -43,10 +43,15 @@
    (some-> descriptor pr-str) fork-author])
 
 (defn- filing-hash
-  [{:keys [title summary author room run adoption forks intent]}]
-  (sha-256 [title summary author room run adoption
-            (or intent fs/default-intent)
-            (mapv fork-filing-value forks)]))
+  [{:keys [title summary author room run adoption forks intent attrs comments]}]
+  (sha-256 (cond-> [title summary author room run adoption
+                    (or intent fs/default-intent)
+                    (mapv fork-filing-value forks)]
+             ;; only when present, so every hash filed before these existed
+             ;; is unchanged
+             (or (seq attrs) (seq comments))
+             (conj (into (sorted-map) attrs)
+                   (mapv #(into (sorted-map) %) comments)))))
 
 (defn- file-proposal-if-absent
   "Datahike transaction function: an id is one immutable ForkSet filing."
@@ -70,8 +75,13 @@
    `intent` (default `:change`) says what KIND of proposed future this is —
    see `is.simm.model.forkset`. It decides which view the row appears in, so a
    caller filing a budget rather than a patch must say so; nothing about the
-   fork itself distinguishes them."
-  [{:keys [id title summary author room run adoption forks intent]}]
+   fork itself distinguishes them.
+
+   `attrs` are further `:proposal/*` attributes filed in the same transaction
+   (an escalated review's linkage, `is.simm.workflows.review`), and `comments`
+   the opening `:proposal.comment/*` rows — both part of the ONE immutable
+   filing, so a retried filing cannot add a second first comment."
+  [{:keys [id title summary author room run adoption forks intent attrs comments]}]
   {:pre [(string? title) (seq forks)
          (or (nil? intent) (contains? fs/intents intent))]}
   (let [id (or id (random-uuid))
@@ -82,7 +92,8 @@
         message-id (when room (proposal-message-id id))
         filing-hash (filing-hash {:title title :summary summary :author author
                                   :room room :run run :adoption adoption
-                                  :forks forks :intent intent})
+                                  :forks forks :intent intent
+                                  :attrs attrs :comments comments})
         entity
         (cond-> {:proposal/id id
                 :proposal/title title
@@ -115,6 +126,8 @@
                         :proposal/message-status :pending)
          run     (assoc :proposal/run run)
          adoption (assoc :proposal/adoption [:world-adoption/id adoption])
+         (seq attrs) (merge attrs)
+         (seq comments) (assoc :proposal/comments (vec comments))
          ;; only when non-default: absent already MEANS :change, and writing
          ;; the default would make old and new rows differ for no reason
          (and intent (not= fs/default-intent intent))
@@ -262,14 +275,20 @@
   "Annotate adopted-world components with process-local capability availability.
    Ordinary branch-backed forks are durable/reopenable and remain unannotated."
   [proposals]
-  (let [live? (requiring-resolve 'is.simm.ops.run-world-proposals/live-scope?)]
+  (let [live? (requiring-resolve 'is.simm.ops.run-world-proposals/live-scope?)
+        review-live? (requiring-resolve 'is.simm.workflows.review/world-live?)]
     (mapv (fn [p]
             (update p :proposal/forks
                     (fn [forks]
                       (mapv (fn [f]
-                              (if (= :world (:proposal.fork/system-type f))
-                                (assoc f :proposal.fork/capability-live?
-                                       (live? (:proposal.fork/scope f)))
+                              (case (:proposal.fork/system-type f)
+                                :world (assoc f :proposal.fork/capability-live?
+                                              (live? (:proposal.fork/scope f)))
+                                ;; a reviewed world is a live dvergr fork: after a
+                                ;; restart that did not bring it back, nothing
+                                ;; can merge it
+                                :review-world (assoc f :proposal.fork/capability-live?
+                                                     (review-live? (:proposal.fork/scope f)))
                                 f))
                             forks))))
           proposals)))
@@ -565,6 +584,30 @@
           'is.simm.ops.run-world-proposals/release-proposal!) id)
         status))))
 
+(defn record-decision!
+  "Record a decision taken OUTSIDE the branch backends: every open fork of `p`
+   and `p` itself become `status` (`:accepted` | `:dismissed`) in one
+   transaction, with who decided and why. For an escalated review
+   (`is.simm.workflows.review/decide!`), whose world dvergr merges or discards
+   itself — the merge is pinned to the reviewed state, which no branch backend
+   here can do."
+  [p status note by]
+  (d/transact (conn) (conj (mapv #(fork-resolution-tx % status note by) (open-forks p))
+                           (merge {:proposal/id (:proposal/id p)
+                                   :proposal/status status
+                                   :proposal/resolved-at (java.util.Date.)}
+                                  (resolution-facts note by))))
+  status)
+
+(defn- review-decision
+  "The decision verb for an escalated review's proposal, or nil for every other
+   proposal. Its world is not a branch the backends can land: it is merged by
+   dvergr, pinned to the state that was reviewed, and every decision records a
+   label — so all four verbs route there rather than to `land-fork!`."
+  [p]
+  (when (:proposal/review p)
+    (requiring-resolve 'is.simm.workflows.review/decide!)))
+
 (defn reconcile-status!
   "Close a Proposal whose component statuses are already durably terminal.
    Used by recovery backends after replaying an ambiguous terminal commit."
@@ -699,69 +742,72 @@
   [id & {:keys [force? note by]}]
   (let [p (open-proposal! id)
         forks (open-forks p)]
-    (authorize-forks! id by forks)
-    (ctx/with-server-context
-      (let [warnings (vec (mapcat fork-conflicts forks))]
-        (if (and (seq warnings) (not force?))
-          {:warnings warnings}
-          ;; ONE FORK AT A TIME, each recording its own outcome before the next
-          ;; is attempted. Two things forced this shape, and both are only
-          ;; reachable on a backend whose merge can actually fail — repos, since
-          ;; the datahike adapter reports no conflicts and never refuses:
-          ;;
-          ;; 1. The pre-check above compares every fork against TRUNK, and two
-          ;;    forks off one base each merge into trunk cleanly. They conflict
-          ;;    only with EACH OTHER, which becomes visible the moment the first
-          ;;    lands. So a mutually-conflicting ForkSet passes the gate with no
-          ;;    warnings at all — the gate cannot be made to catch this, because
-          ;;    before anything lands there is nothing to catch.
-          ;;
-          ;; 2. Recording every status in one transaction AFTER the loop meant a
-          ;;    throw on the second fork rolled back the record of the first —
-          ;;    which had already merged and had its branch deleted. The
-          ;;    proposal was then permanently wedged: both rows still `:open`,
-          ;;    and every retry threw "Unknown Geschichte merge source" on a
-          ;;    branch that no longer exists.
-          ;;
-          ;; Landing is not atomic across forks and cannot be (each merge is its
-          ;; own commit on its own trunk), so the RECORD must track it fork by
-          ;; fork. A partial landing is then a truthful state a reviewer can act
-          ;; on — the landed forks read `:accepted`, the rest stay open — rather
-          ;; than a lie that cannot be retried.
-          (let [outcomes
-                (doall
-                 (for [f forks]
-                   (try
-                     (land-fork! f)
-                     (d/transact (conn) [(fork-resolution-tx f :accepted note by)])
-                     {:fork f :landed? true}
-                     (catch Exception e
-                       (log/log! {:level :warn :id ::fork-land-failed
-                                  :msg "Fork did not land — it stays open and retryable"
-                                  :data {:proposal id
-                                         :scope (str (:proposal.fork/scope f))
-                                         :branch (fork-branch-kw f)
-                                         :error (.getMessage e)}})
-                       {:fork f :landed? false :error (.getMessage e)}))))
-                landed (filterv :landed? outcomes)
-                failed (filterv (complement :landed?) outcomes)
-                status (settle-proposal! id note by)]
-            (log/log! {:level :info :id ::accepted
-                       :data {:proposal id :forced (boolean force?)
-                              :overridden-warnings (count warnings)
-                              :landed (count landed) :failed (count failed)
-                              :status status
-                              :noted? (not (str/blank? note))}})
-            (cond-> {:status status}
-              ;; surfaced, not swallowed: the reviewer pressed Accept on N forks
-              ;; and fewer landed. Naming which ones and why is the difference
-              ;; between a retryable state and a silent partial merge.
-              (seq failed)
-              (assoc :failed (mapv (fn [{:keys [fork error]}]
-                                     {:scope (:proposal.fork/scope fork)
-                                      :branch (name (fork-branch-kw fork))
-                                      :error error})
-                                   failed)))))))))
+    (if-let [decide! (review-decision p)]
+      (decide! id :accept :note note :by by)
+      (do
+        (authorize-forks! id by forks)
+        (ctx/with-server-context
+          (let [warnings (vec (mapcat fork-conflicts forks))]
+            (if (and (seq warnings) (not force?))
+              {:warnings warnings}
+              ;; ONE FORK AT A TIME, each recording its own outcome before the next
+              ;; is attempted. Two things forced this shape, and both are only
+              ;; reachable on a backend whose merge can actually fail — repos, since
+              ;; the datahike adapter reports no conflicts and never refuses:
+              ;;
+              ;; 1. The pre-check above compares every fork against TRUNK, and two
+              ;;    forks off one base each merge into trunk cleanly. They conflict
+              ;;    only with EACH OTHER, which becomes visible the moment the first
+              ;;    lands. So a mutually-conflicting ForkSet passes the gate with no
+              ;;    warnings at all — the gate cannot be made to catch this, because
+              ;;    before anything lands there is nothing to catch.
+              ;;
+              ;; 2. Recording every status in one transaction AFTER the loop meant a
+              ;;    throw on the second fork rolled back the record of the first —
+              ;;    which had already merged and had its branch deleted. The
+              ;;    proposal was then permanently wedged: both rows still `:open`,
+              ;;    and every retry threw "Unknown Geschichte merge source" on a
+              ;;    branch that no longer exists.
+              ;;
+              ;; Landing is not atomic across forks and cannot be (each merge is its
+              ;; own commit on its own trunk), so the RECORD must track it fork by
+              ;; fork. A partial landing is then a truthful state a reviewer can act
+              ;; on — the landed forks read `:accepted`, the rest stay open — rather
+              ;; than a lie that cannot be retried.
+              (let [outcomes
+                    (doall
+                     (for [f forks]
+                       (try
+                         (land-fork! f)
+                         (d/transact (conn) [(fork-resolution-tx f :accepted note by)])
+                         {:fork f :landed? true}
+                         (catch Exception e
+                           (log/log! {:level :warn :id ::fork-land-failed
+                                      :msg "Fork did not land — it stays open and retryable"
+                                      :data {:proposal id
+                                             :scope (str (:proposal.fork/scope f))
+                                             :branch (fork-branch-kw f)
+                                             :error (.getMessage e)}})
+                           {:fork f :landed? false :error (.getMessage e)}))))
+                    landed (filterv :landed? outcomes)
+                    failed (filterv (complement :landed?) outcomes)
+                    status (settle-proposal! id note by)]
+                (log/log! {:level :info :id ::accepted
+                           :data {:proposal id :forced (boolean force?)
+                                  :overridden-warnings (count warnings)
+                                  :landed (count landed) :failed (count failed)
+                                  :status status
+                                  :noted? (not (str/blank? note))}})
+                (cond-> {:status status}
+                  ;; surfaced, not swallowed: the reviewer pressed Accept on N forks
+                  ;; and fewer landed. Naming which ones and why is the difference
+                  ;; between a retryable state and a silent partial merge.
+                  (seq failed)
+                  (assoc :failed (mapv (fn [{:keys [fork error]}]
+                                         {:scope (:proposal.fork/scope fork)
+                                          :branch (name (fork-branch-kw fork))
+                                          :error error})
+                                       failed)))))))))))
 
 (defn dismiss-proposal!
   "Discard every remaining fork branch; flip status. `:note` / `:by` record who
@@ -775,32 +821,34 @@
    landed on trunk."
   [id & {:keys [note by]}]
   (let [p (open-proposal! id)]
-    (let [forks (open-forks p)]
-      (ctx/with-server-context
-        (doseq [f forks] (discard-fork-branch! id f)))
-      (d/transact (conn) (conj (mapv #(fork-resolution-tx % :dismissed note by) forks)
-                               (merge {:proposal/id id
-                                       :proposal/status :dismissed
-                                       :proposal/resolved-at (java.util.Date.)}
-                                      (resolution-facts note by))))
-      ;; Whole-Proposal dismissal bypasses settle-proposal!, unlike every
-      ;; per-fork decision path. Release adopted-world ancestry only after the
-      ;; component and Proposal terminal records above are durable.
-      ((requiring-resolve
-        'is.simm.ops.run-world-proposals/release-proposal!) id)
-      (log/log! {:level :info :id ::dismissed
-                 :data {:proposal id :forks (count forks)
-                        :noted? (not (str/blank? note))}})
-      {:status :dismissed})))
+    (if-let [decide! (review-decision p)]
+      (decide! id :reject :note note :by by)
+      (let [forks (open-forks p)]
+        (ctx/with-server-context
+          (doseq [f forks] (discard-fork-branch! id f)))
+        (d/transact (conn) (conj (mapv #(fork-resolution-tx % :dismissed note by) forks)
+                                 (merge {:proposal/id id
+                                         :proposal/status :dismissed
+                                         :proposal/resolved-at (java.util.Date.)}
+                                        (resolution-facts note by))))
+        ;; Whole-Proposal dismissal bypasses settle-proposal!, unlike every
+        ;; per-fork decision path. Release adopted-world ancestry only after the
+        ;; component and Proposal terminal records above are durable.
+        ((requiring-resolve
+          'is.simm.ops.run-world-proposals/release-proposal!) id)
+        (log/log! {:level :info :id ::dismissed
+                   :data {:proposal id :forks (count forks)
+                          :noted? (not (str/blank? note))}})
+        {:status :dismissed}))))
 
-;; ---------------------------------------------------------------------------
-;; Per-fork resolution — one contribution at a time
-;;
-;; A proposal carrying four agents' work is refused wholesale today, so a single
-;; unacceptable fork (a customer notice that admits legal liability) costs the
-;; other three their landing. These two settle ONE fork and leave the ForkSet
-;; open for the rest; when the last one is settled, `settle-proposal!` closes it.
-;; ---------------------------------------------------------------------------
+  ;; ---------------------------------------------------------------------------
+  ;; Per-fork resolution — one contribution at a time
+  ;;
+  ;; A proposal carrying four agents' work is refused wholesale today, so a single
+  ;; unacceptable fork (a customer notice that admits legal liability) costs the
+  ;; other three their landing. These two settle ONE fork and leave the ForkSet
+  ;; open for the rest; when the last one is settled, `settle-proposal!` closes it.
+  ;; ---------------------------------------------------------------------------
 
 (defn dismiss-fork!
   "Refuse ONE fork: discard its branch, mark the fork dismissed, keep the note.
@@ -817,14 +865,17 @@
   [id scope branch & {:keys [note by]}]
   (let [p (open-proposal! id)
         f (open-fork! p scope branch)]
-    (ctx/with-server-context (discard-fork-branch! id f))
-    (d/transact (conn) [(fork-resolution-tx f :dismissed note by)])
-    (let [status (settle-proposal! id note by)]
-      (log/log! {:level :info :id ::fork-dismissed
-                 :data {:proposal id :scope (str scope) :branch (str branch)
-                        :proposal-status status
-                        :noted? (not (str/blank? note))}})
-      {:status :dismissed :proposal status})))
+    (if-let [decide! (review-decision p)]
+      (decide! id :reject :note note :by by)
+      (do
+        (ctx/with-server-context (discard-fork-branch! id f))
+        (d/transact (conn) [(fork-resolution-tx f :dismissed note by)])
+        (let [status (settle-proposal! id note by)]
+          (log/log! {:level :info :id ::fork-dismissed
+                     :data {:proposal id :scope (str scope) :branch (str branch)
+                            :proposal-status status
+                            :noted? (not (str/blank? note))}})
+          {:status :dismissed :proposal status})))))
 
 (defn accept-fork!
   "Land ONE fork on its own trunk, leaving the rest of the ForkSet open.
@@ -837,35 +888,38 @@
   [id scope branch & {:keys [force? note by]}]
   (let [p (open-proposal! id)
         f (open-fork! p scope branch)]
-    (authorize-forks! id by [f])
-    (ctx/with-server-context
-      (let [warnings (vec (fork-conflicts f))]
-        (if (and (seq warnings) (not force?))
-          {:warnings warnings}
-          (do
-            ;; RECORD THE LAND EVEN IF SOMETHING AFTER IT THROWS. `land-fork!`
-            ;; merges onto trunk and then deletes the branch; once that has
-            ;; happened the fork is landed whatever else fails. Leaving the row
-            ;; `:open` is what wedges a proposal — `accept-proposal!`'s own
-            ;; comment records the incident: a throw on the second fork rolled
-            ;; back the record of the first, which had already merged and had
-            ;; its branch deleted, and every retry then threw "Unknown
-            ;; Geschichte merge source" on a branch that no longer existed. The
-            ;; multi-fork path was hardened; this single-fork path was not.
-            (land-fork! f)
-            (try
-              (d/transact (conn) [(fork-resolution-tx f :accepted note by)])
-              (catch Throwable e
-                (log/log! {:level :error :id ::fork-resolution-not-recorded
-                           :error e
-                           :data {:proposal id :scope (str scope) :branch (str branch)}}
-                          "fork LANDED but its resolution was not recorded")
-                (throw e)))
-            (let [status (settle-proposal! id note by)]
-              (log/log! {:level :info :id ::fork-accepted
-                         :data {:proposal id :scope (str scope) :branch (str branch)
-                                :forced (boolean force?)
-                                :overridden-warnings (count warnings)
-                                :proposal-status status
-                                :noted? (not (str/blank? note))}})
-              {:status :accepted :proposal status})))))))
+    (if-let [decide! (review-decision p)]
+      (decide! id :accept :note note :by by)
+      (do
+        (authorize-forks! id by [f])
+        (ctx/with-server-context
+          (let [warnings (vec (fork-conflicts f))]
+            (if (and (seq warnings) (not force?))
+              {:warnings warnings}
+              (do
+                ;; RECORD THE LAND EVEN IF SOMETHING AFTER IT THROWS. `land-fork!`
+                ;; merges onto trunk and then deletes the branch; once that has
+                ;; happened the fork is landed whatever else fails. Leaving the row
+                ;; `:open` is what wedges a proposal — `accept-proposal!`'s own
+                ;; comment records the incident: a throw on the second fork rolled
+                ;; back the record of the first, which had already merged and had
+                ;; its branch deleted, and every retry then threw "Unknown
+                ;; Geschichte merge source" on a branch that no longer existed. The
+                ;; multi-fork path was hardened; this single-fork path was not.
+                (land-fork! f)
+                (try
+                  (d/transact (conn) [(fork-resolution-tx f :accepted note by)])
+                  (catch Throwable e
+                    (log/log! {:level :error :id ::fork-resolution-not-recorded
+                               :error e
+                               :data {:proposal id :scope (str scope) :branch (str branch)}}
+                              "fork LANDED but its resolution was not recorded")
+                    (throw e)))
+                (let [status (settle-proposal! id note by)]
+                  (log/log! {:level :info :id ::fork-accepted
+                             :data {:proposal id :scope (str scope) :branch (str branch)
+                                    :forced (boolean force?)
+                                    :overridden-warnings (count warnings)
+                                    :proposal-status status
+                                    :noted? (not (str/blank? note))}})
+                  {:status :accepted :proposal status})))))))))

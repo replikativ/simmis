@@ -14,7 +14,8 @@
             #?(:clj [is.simm.runtimes.branching :as branching])
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.model.parties :as parties])
-            #?(:clj [is.simm.runtimes.context :as ctx])))
+            #?(:clj [is.simm.runtimes.context :as ctx])
+            #?(:clj [is.simm.workflows.review :as wreview])))
 
 #?(:clj
    (defn- fork-author-name
@@ -35,6 +36,43 @@
      (when-let [a (:proposal.comment/author c)]
        (let [p (parties/get-party a)]
          (or (:party/display-name p) (:party/handle p) (str a))))))
+
+#?(:clj
+   (defn- review-view
+     "What a card shows of an escalated review: the reviewer's verdict, reasons
+      and concerns, every check with its evidence, whether this is a spot check
+      of an approval, and whether the world changed since it was reviewed (then
+      Accept will refuse). Checks and evidence travel as printed EDN — they are
+      open-ended data, shown, never interpreted, by the client."
+     [p]
+     (when (:proposal/review p)
+       (let [rv (wreview/review-record p)
+             f (first (:proposal/forks p))
+             live? (and (nil? (:proposal.fork/status f))
+                        (wreview/world-live? (:proposal.fork/scope f)))
+             now (when live? (wreview/world-head-id (:proposal.fork/scope f) nil))]
+         {:id (str (:proposal/review p))
+          :spot-check? (boolean (:proposal/review-spot-check? p))
+          :verdict (get-in rv [:review/verdict :review/verdict])
+          :reviewer-reasons (vec (get-in rv [:review/verdict :review/reasons]))
+          :concerns (vec (get-in rv [:review/verdict :review/concerns]))
+          :reasons (vec (:review/reasons rv))
+          :checks (mapv (fn [{:keys [check pass? evidence]}]
+                          {:check (pr-str check) :pass? (boolean pass?)
+                           :evidence (when (seq evidence) (pr-str evidence))})
+                        (:review/checks rv))
+          :workflow (:proposal/workflow-id p)
+          :changed? (boolean (and now (not= now (str "state:" (:proposal/review-state p)))))}))))
+
+;; A room's labels: what its people decided on reviewed work, newest first.
+;; Append-only — there is no RPC that changes or removes one.
+(defn-spin-remote list-labels!
+  [server-id room-id-str]
+  (spin-remote server-id [room-id-str]
+    (let [rid (identity room-id-str)]
+      #?(:clj (ctx/with-server-context
+                (wreview/labels-for-wire (java.util.UUID/fromString rid)))
+         :cljs nil))))
 
 (defn-spin-remote list-proposals!
   [server-id status-kw]
@@ -65,6 +103,8 @@
                               :created-at (:proposal/created-at p)
                               :author (some-> (:proposal/author p) str)
                               :room (some-> (:proposal/room p) str)
+                              ;; an escalated review's notes; nil otherwise
+                              :review (review-view p)
                               ;; oldest first — a conversation reads forward
                               :comments (->> (:proposal/comments p)
                                              (sort-by :proposal.comment/at)

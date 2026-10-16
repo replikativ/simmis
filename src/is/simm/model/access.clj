@@ -767,6 +767,9 @@
      "proposal-status!"        {:action R :resource (always :authenticated)}
      "proposal-diff!"          {:action R :resource (proposal :proposal-id-str)}
      "proposal-checks!"        {:action R :resource (proposal :proposal-id-str)}
+     ;; a room's labels (`is.simm.workflows.review`): reading the room. There
+     ;; is no row that writes one — a label is recorded by the decision itself
+     "list-labels!"            {:action R :resource (room :room-id-str)}
      "list-proposals!"         {:action R :resource (always :authenticated)}
      ;; --- tasks (aggregate; the handler derives the party from the principal
      ;; and ops.tasks filters each KB through can?, so there is no id to police
@@ -1076,16 +1079,30 @@
 ;; dvergr DESCRIPTOR. This is simmis's answer: the descriptor mapped to a
 ;; simmis resource, then `can?`. See doc/authority.md, "dvergr ops".
 
+(def ^:private fork-chain
+  "A dvergr fork's room id: its parent's id, then `_fork_fork-<8 hex>` once per
+   level of forking (`dvergr.discourse/fork-room`, `rstore/slug->room-id`).
+   simmis slugs are `[a-z0-9-]` (`rooms/room-slug`), so the first `_fork_`
+   is exactly where the root room's slug ends."
+  #"^([a-z0-9-]+)((?:_fork_fork-[0-9a-f]{8})+)$")
+
 (defn- room-uuid-of-dvergr-room
   "The simmis `:room/id` of the dvergr room whose id string is `rid` (dvergr's
    `resolve-resource` answers a room as its id: the slug, `/` encoded as
-   `_fork_`, or a uuid), or nil."
+   `_fork_`, or a uuid), or nil.
+
+   A FORK of a room — a Run's world, the world a review decides — answers as
+   the room it forks: it branches that room's conversation and substrate, and
+   landing it lands on that room. dvergr's ops ask about the fork itself
+   (`room_merge` reads `[:room fork]`, `room_discard` is `:admin` on it), so
+   without this every op on a world was refused for everyone."
   [db rid]
   (when (and db (string? rid) (not (str/blank? rid)))
     (or (when-let [u (parse-uuid rid)]
           (d/q '[:find ?id . :in $ ?id :where [_ :room/id ?id]] db u))
         (d/q '[:find ?id . :in $ ?slug :where [?r :room/slug ?slug] [?r :room/id ?id]]
-             db (str/replace rid "_fork_" "/")))))
+             db (or (second (re-matches fork-chain rid))
+                    (str/replace rid "_fork_" "/"))))))
 
 (defn dvergr-resource
   "The simmis `[action resource]` a dvergr authorization request asks about,

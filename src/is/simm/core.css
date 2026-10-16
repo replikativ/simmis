@@ -8730,6 +8730,31 @@ body.tab-dragging .column-drop-zone {
                           white-space: pre; overflow-x: auto; max-height: 16em;
                           overflow-y: auto; margin: 6px 0 0; opacity: 0.85; }
 
+/* An escalated review's notes (is.simm.workflows.review): why a person is
+   asked. A spot check gets the calmer rail — the reviewer approved it. */
+.proposal-review { font-size: 0.86em; padding: 8px 10px; margin: 8px 0;
+                   border-radius: 3px; border-left: 3px solid #d79657;
+                   background: rgba(215,150,87,0.08); }
+.proposal-review--spot { border-left-color: #3ca05a;
+                         background: rgba(60,160,90,0.08); }
+.proposal-review-head { font-weight: 600; display: flex; gap: 8px;
+                        align-items: baseline; flex-wrap: wrap; }
+.proposal-review-workflow { font-family: monospace; font-weight: normal;
+                            opacity: 0.6; font-size: 0.9em; }
+.proposal-review-part { margin-top: 6px; }
+.proposal-review-label { font-size: 0.8em; text-transform: uppercase;
+                         letter-spacing: 0.04em; opacity: 0.65; }
+.proposal-review-list { margin: 2px 0 0; padding-left: 18px; }
+.proposal-check--pass { opacity: 0.6; }
+.proposal-check--fail { color: #c84646; }
+.proposal-review-evidence { display: block; font-size: 0.9em; white-space: pre-wrap;
+                            overflow-wrap: anywhere; opacity: 0.85; }
+.proposal-actions-group { display: flex; gap: 8px; }
+.proposal-world-file { font-family: monospace; font-size: 0.85em; padding: 1px 0; }
+.label-verdict { font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.04em; }
+.label-verdict--accept { color: #3ca05a; }
+.label-verdict--reject { color: #c84646; }
+
 /* The review conversation. Indented under the diff rather than beside it —
    comments answer the change, so they read after it. */
 .proposal-comments { margin-top: 12px; padding-top: 10px;
