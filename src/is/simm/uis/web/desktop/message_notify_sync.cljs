@@ -121,12 +121,6 @@
              (reset! prefs-loaded? false)
              (js/console.error "[notify-sync] load-notify-prefs error:" err)))))))
 
-(defn room-notify-level
-  "The notification level for `room-id-str` — :mentions when unset."
-  [room-id-str]
-  (binding [rtc/*execution-context* runtime]
-    (get @sig/notify-prefs (str room-id-str) :mentions)))
-
 (defn set-notify-pref!
   "Set a room's notification level (:all/:mentions/:none) locally + on the server."
   [room-id-str level]

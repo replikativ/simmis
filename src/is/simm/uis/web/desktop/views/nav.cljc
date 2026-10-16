@@ -656,8 +656,12 @@
            ;; rather than being repeated under each. Below rather than beside
            ;; the title: the sidebar is narrow and team names truncated to
            ;; "Ops — Maint…", which is worse than no answer.
-           (when (seq (:scopes kb))
-             (el/div {:class "nav-scope"} (str/join " · " (:scopes kb))))
+           ;; A wiki the viewer may only read (a room's `:read` grant) says
+           ;; so here, next to the rooms it is reached through.
+           (when (or (seq (:scopes kb)) (:kb/read-only? kb))
+             (el/div {:class "nav-scope"}
+               (str/join " · " (cond-> (vec (:scopes kb))
+                                 (:kb/read-only? kb) (conj "read-only")))))
            (when-not kb-collapsed?
              (el/div {:class "nav-section-items"}
                ;; Branch UI removed deliberately: branches are

@@ -17,6 +17,7 @@
             [is.simm.model.fractional-index :as frac]
             [is.simm.model.references :as refs]
             [is.simm.model.schema :as schema]
+            [is.simm.model.attributes :as attributes]
             [is.simm.runtimes.branching :as branching]
             [is.simm.model.access :as access]
             [datahike.api :as d]
@@ -608,14 +609,10 @@
       (d/transact conn {:tx-data (vec tx-data) :tx-meta {:tx/author (str party)}})
       {:max-tx (head conn)}))))
 
-(def ^:private reserved-ident-namespaces
-  "Namespaces whose attributes the store's own schema owns. A widget declares
-   its own attributes (`:todo/text`), not new ones in these."
-  #{"db" "tx" "entity" "instance" "object" "morphism" "block" "kb" "category"})
-
 (defn -widget-install-attr-handler
   "Declare attribute `ident` on KB `db-scope`, with the value type its CODOMAIN
-   object determines, plus the morphism describing it.
+   object determines, plus the morphism describing it (`attributes/declaration`,
+   shared with an agent's `kb/install-attr!`).
 
    `codomain` is an object NAME in the store (`\"S/String\"`, `\"S/Number\"`,
    `\"S/Page\"` for a reference). A `:db.type/*` keyword is refused: the client
@@ -626,49 +623,13 @@
   (let [party (access/authenticated-party-id)]
    (go-try S
     (let [conn (resolve-conn db-scope)
-          db @conn]
-      (when-not (and (keyword? ident) (namespace ident))
-        (invalid! "an attribute is a qualified keyword" {:ident (pr-str ident)}))
-      (if-let [existing (d/q '[:find ?vt . :in $ ?i :where [?a :db/ident ?i] [?a :db/valueType ?vt]]
-                             db ident)]
-        {:status :exists :ident ident :value-type existing :max-tx (head conn)}
-        (let [ns-root (first (str/split (namespace ident) #"\."))
-              _ (when (or (contains? reserved-ident-namespaces (namespace ident))
-                          (= "db" ns-root))
-                  (invalid! "that namespace belongs to the store's own schema"
-                            {:ident (str ident)}))
-              _ (when-not (string? codomain)
-                  (invalid! (str "name the codomain object, e.g. \"S/String\" — a widget "
-                                 "never sends a :db/valueType")
-                            {:codomain (pr-str codomain)}))
-              _ (when-not (d/q '[:find ?o . :in $ ?n
-                                 :where [?o :entity/name ?n] [?o :object/of-category _]]
-                               db codomain)
-                  (invalid! "no such object in this store" {:codomain codomain}))
-              many? (contains? #{:many :db.cardinality/many} cardinality)
-              _ (when-not (contains? #{nil :one :many :db.cardinality/one :db.cardinality/many}
-                                     cardinality)
-                  (invalid! "cardinality is :one or :many" {:cardinality (pr-str cardinality)}))
-              mname (schema/attr-ident->morphism ident)
-              _ (when-not (= ident (mor/name->attr-ident mname))
-                  (invalid! "attribute name does not round-trip to a morphism"
-                            {:ident (str ident)}))
-              ;; DERIVED, as `add-property` derives it
-              value-type (schema/codomain->db-type codomain)
-              morphism? (d/q '[:find ?m . :in $ ?n :where [?m :entity/name ?n]] db mname)]
-          (d/transact conn
-            {:tx-data (cond-> [{:db/ident ident
-                                :db/valueType value-type
-                                :db/cardinality (if many? :db.cardinality/many :db.cardinality/one)
-                                :db/doc (str "Property: " mname)}]
-                        (not morphism?)
-                        (conj {:entity/uuid (random-uuid)
-                               :entity/name mname
-                               :entity/created-at (java.util.Date.)
-                               :morphism/dst [:entity/name codomain]
-                               :morphism/cardinality (if many? :many :one)}))
-             :tx-meta {:tx/author (str party)}})
-          {:status :installed :ident ident :value-type value-type :max-tx (head conn)}))))))
+          {:keys [status value-type tx-data]}
+          (attributes/declaration @conn {:ident ident :codomain codomain
+                                         :cardinality cardinality})]
+      (if (= :exists status)
+        {:status :exists :ident ident :value-type value-type :max-tx (head conn)}
+        (do (d/transact conn {:tx-data tx-data :tx-meta {:tx/author (str party)}})
+            {:status :installed :ident ident :value-type value-type :max-tx (head conn)}))))))
 
 ;; =============================================================================
 ;; Auto-registration at namespace load time

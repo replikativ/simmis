@@ -49,6 +49,7 @@
             [is.simm.model.model-catalog :as model-catalog]
             [is.simm.model.seed :as seed]
             [is.simm.model.knowledge-bases :as kbs]
+            [is.simm.model.attributes :as attributes]
             [is.simm.model.room-databases :as room-dbs]
             [is.simm.model.accounting-sandbox :as acct-sandbox]
             [is.simm.model.references :as refs]
@@ -1003,13 +1004,23 @@
          nil)
 
        'install-attr!
-       (fn [db ident value-type cardinality]
-         ;; already-declared ⇒ no-op, and a no-op must not mint a fork
-         (when-not (d-api/q '[:find ?e . :in $ ?id :where [?e :db/ident ?id]]
-                            @(read-conn-of db) ident)
-           (d-api/transact (write-conn-of db) [{:db/ident ident :db/valueType value-type
-                                                :db/cardinality cardinality}]))
-         ident)
+       ;; The same rule as a widget's (`block-remote/widget-install-attr`):
+       ;; the agent names the attribute's CODOMAIN object and the value type
+       ;; is derived from it (`attributes/declaration`), and declaring is
+       ;; `:merge` on the KB — schema is append-only and global to the KB, so
+       ;; a `:read-write` grant writes data under attributes but does not
+       ;; fix new ones. It used to take a `:db/valueType` from the agent's
+       ;; code, at `:write`.
+       (fn [db ident codomain & [cardinality]]
+         (let [t (target db :merge)
+               {:keys [status tx-data]}
+               (attributes/declaration @(read-conn-for t)
+                                       {:ident ident :codomain codomain
+                                        :cardinality cardinality})]
+           ;; already declared ⇒ no-op, and a no-op must not mint a fork
+           (when (= :new status)
+             (d-api/transact (write-conn-for t) tx-data))
+           ident))
 
        'upsert-viz-block!
        (fn [db page-uuid viz-spec-edn & [caption]]

@@ -162,6 +162,25 @@ Remote calls from the client go through
 `uis/web/desktop/remote.cljc` — `invoke!`, `spin!`, `report-error!` — which
 surfaces failures to the user by default.
 
+An open wiki page follows its replica. A block's text lives in a TipTap
+editor, a foreign node spindel renders the container of and never the
+children, so the block's content also rides on the container as
+`data-content`, an attribute spindel reconciles on every commit; a
+MutationObserver on it hands the committed content to the editor
+(`block_editor.cljs`, `follow-replica!`). The content comes from the
+effective db — replica plus this session's predictions — so a pending write
+of one's own is never overwritten by an older replica value. Every block takes
+the change except the one being edited (focused, or holding unsaved typing):
+that one keeps its text and shows a notice offering the other version
+(`block_sync.cljc`). Blocks added, deleted or moved elsewhere arrive through
+the page's `ifor-each`, whose items carry everything a block renders from —
+depth, children, the conflict flag.
+
+The navigation lists the wikis a user owns, those shared with them, and those
+reached through a grant to a room they are in (`kbs/sidebar-kbs`), each marked
+read-only when `can?` refuses the user `:write` — a room's `:read` grant — and
+a read-only wiki's pages open non-editable.
+
 ## Where things live
 
 ```

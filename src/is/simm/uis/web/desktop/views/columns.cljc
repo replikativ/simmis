@@ -956,6 +956,12 @@
              ;; Canonical Proposal review projection. Inline chat cards consume
              ;; the same rows/controllers as Tasks and the full inspector.
              proposal-data (iv/get-new (track sig/proposals-data))
+             ;; Per-room notification levels, for the room-settings tab's
+             ;; Notifications buttons. It read them with a bare deref inside
+             ;; this spin's body, which subscribes to nothing: a click changed
+             ;; the level (and the server's copy) and the buttons kept showing
+             ;; the old one until something else re-ran this column.
+             notify-prefs (iv/get-new (track sig/notify-prefs))
              ;; Track the commit graph so the History subway (a plain fn in
              ;; the context footer) re-renders when a graph loads. Value
              ;; unused here — the subway bare-derefs it.
@@ -1005,7 +1011,7 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id)
+                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1204,7 +1210,7 @@
   "Render content for a tab based on its type.
 
    kb-states arg removed — wiki tabs self-track their KB signal."
-  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data col-id]]
+  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data col-id notify-prefs]]
   (case tab-type
     :home
     ;; Newcomer landing: the obvious first action is talking to your
@@ -1263,7 +1269,7 @@
                         local-db chat-windows settings-data admin-data room-details room-states
                         syntax-pref gref video-info screen-sharing screens-results
                         recordings-results web-captures-results chat-reply-targets run-facts
-                        proposal-data col-id)
+                        proposal-data col-id notify-prefs)
 
     :run-history
     #?(:cljs
@@ -2410,7 +2416,10 @@
              (load-room-details-into-signal! want)))
          ;; Render
          (if-let [room-data (room-details/data-for room-details (:room-id data))]
-           (room-settings-view/render-room-settings room-data)
+           ;; the level rides in the data, from the column's tracked signal
+           (room-settings-view/render-room-settings
+            (assoc room-data :notify-level
+                   (get notify-prefs (str (get-in room-data [:room :room/id])) :mentions)))
            (el/div {:class "settings-page"}
              (el/div {:class "settings-loading"}
                (el/p {} (if-let [error (room-details/error-for room-details (:room-id data))]

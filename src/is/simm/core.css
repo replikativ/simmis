@@ -898,6 +898,41 @@ body {
   border-left: 1px solid var(--mono-border-subtle);
 }
 
+/* A block changed in another session while it was being edited here
+   (block_sync.cljc): the local text stays, this offers the other version. */
+.block:has(> .block-conflict) {
+  flex-wrap: wrap;
+}
+
+.block-conflict {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-left: calc(var(--spacing-lg) + var(--spacing-sm));
+  padding: 2px var(--spacing-sm);
+  border-left: 2px solid var(--status-unread);
+  background: var(--status-unread-bg);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--mono-text-secondary);
+}
+
+.block-conflict-btn {
+  border: 1px solid var(--mono-border-subtle);
+  background: transparent;
+  color: var(--mono-text-primary);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--spacing-sm);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.block-conflict-btn:hover {
+  background: var(--mono-bg-overlay);
+}
+
 /* Block focus state */
 .block.focused .block-content {
   outline: none;

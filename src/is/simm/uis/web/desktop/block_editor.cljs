@@ -27,6 +27,7 @@
             [is.simm.uis.web.desktop.block-remote :as remote]
             [is.simm.uis.web.desktop.remote :as rem]
             [is.simm.uis.web.desktop.optimistic-write :as ow]
+            [is.simm.uis.web.desktop.block-sync :as bs]
             [is.simm.uis.web.desktop.views.types :as types]
             [is.simm.uis.web.desktop.widget-sandbox :as widget-sandbox]
             ;; Use shared kabel client from web.cljs
@@ -250,11 +251,24 @@
         (recur (:parent-id parent)))
       false)))
 
-(defn add-hidden-state
-  "Add hidden state to all blocks based on ancestor collapsed states."
+(declare block-depth)
+
+(defn add-tree-state
+  "Put each block's place in the tree INTO its item: `:hidden` (an ancestor
+   is collapsed), `:depth` and `:has-children`. `ifor-each` memoises on item
+   equality, so what a block renders from must be in the item (CLAUDE.md,
+   spindel sharp edge 2). Depth and has-children used to be computed in the
+   render fn from indices it closed over, so a block that gained a child
+   through someone else's indent kept its bullet, and one whose parent moved
+   kept its indentation, until something in its own row changed."
   [blocks]
-  (let [block-index (into {} (map (juxt :id identity)) blocks)]
-    (mapv #(assoc % :hidden (compute-hidden-state % block-index)) blocks)))
+  (let [block-index (into {} (map (juxt :id identity)) blocks)
+        parents (into #{} (keep :parent-id) blocks)]
+    (mapv #(assoc %
+                  :hidden (compute-hidden-state % block-index)
+                  :depth (block-depth % block-index)
+                  :has-children (contains? parents (:id %)))
+          blocks)))
 
 (defn- collapse-or-parent-changed?
   "True if an :update delta on a raw datahike block changes
@@ -276,18 +290,28 @@
    synthesising delta shapes here — `:deltas nil` is the right
    advisory signal.
 
+   `conflicts` is `sig/block-conflicts`' value: a block in it carries
+   `:conflict?`, which renders the notice (see `block-sync`). `read-only?`
+   (the viewer may only read this KB) puts `:read-only?` in every block, which
+   mounts its editor non-editable.
+
    `db-tx` is stamped onto WIDGET blocks only. A widget renders the whole db,
    not its own block row, so its row is unchanged when what it shows changes —
    and `ifor-each` memoises on item equality, so it would never re-evaluate:
    a click's write landed and the widget kept showing the old value. The
    stamp puts the db's identity in the item (CLAUDE.md, spindel sharp edge 2)."
-  [dh-blocks-iv focused-id db-tx]
+  [dh-blocks-iv focused-id db-tx & [conflicts read-only?]]
   (let [ui-of (fn [bs]
                 (when bs
                   (-> (mapv #(let [b (datahike-block->ui-block-base % focused-id)]
-                               (cond-> b (:widget-code b) (assoc :widget-db-tx db-tx)))
+                               (cond-> b
+                                 (:widget-code b) (assoc :widget-db-tx db-tx)
+                                 ;; the conflict notice, from `sig/block-conflicts`
+                                 (contains? conflicts (str (:id b))) (assoc :conflict? true)
+                                 ;; a KB this viewer may only read
+                                 read-only? (assoc :read-only? true)))
                             bs)
-                      add-hidden-state)))]
+                      add-tree-state)))]
     (iv/->Interval (ui-of (iv/get-old dh-blocks-iv))
                    (ui-of (iv/get-new dh-blocks-iv))
                    nil)))
@@ -1086,6 +1110,98 @@
                                           :contentDOM code-el
                                           :update (fn [^js _] true)})))})))
 
+;; =============================================================================
+;; Following the replica (see `block-sync`)
+;; =============================================================================
+;;
+;; The editor is a foreign node: spindel re-renders the block's item when its
+;; content changes in the db, but never touches the editor's own DOM, so an
+;; open page used to keep showing what it was mounted with until a remount.
+;; The item's content now also rides on the container as `data-content`, an
+;; attribute spindel DOES reconcile on every commit. A MutationObserver on
+;; that attribute is the editor's commit hook: it runs once the new content
+;; is committed, never for a superseded render, and hands it to
+;; `block-sync/incoming`.
+
+(defn- editor-elements
+  "Every mounted editor container of `block-id` (a page open in two columns
+   has two)."
+  [block-id]
+  (array-seq (js/Array.from
+              (js/document.querySelectorAll
+               (str ".block-content[data-id=\"" block-id "\"]")))))
+
+(defn- set-conflict!
+  "Record (`remote` content) or clear (nil) the conflict notice of `block-id`."
+  [block-id remote]
+  (binding [rtc/*execution-context* runtime]
+    (let [k (str block-id)
+          current @sig/block-conflicts]
+      (cond
+        (and (some? remote) (not= remote (get current k)))
+        (swap! sig/block-conflicts assoc k remote)
+
+        (and (nil? remote) (contains? current k))
+        (swap! sig/block-conflicts dissoc k)))))
+
+(defn- take-content!
+  "Set the editor in `el` to the db's `content` and record that it took it."
+  [^js el content]
+  (when-let [^js editor (.-_tiptapEditor el)]
+    (.setContent (.-commands editor) (preprocess-page-references (or content ""))
+                 #js {:emitUpdate false})
+    (set! (.-_syncState el) (bs/mounted content (.getHTML editor)))))
+
+(defn- follow-replica!
+  "The block's db content changed (its `data-content` was committed): apply it,
+   or keep the user's text and raise the conflict notice."
+  [^js el block-id]
+  (when-let [^js editor (.-_tiptapEditor el)]
+    (let [remote (or (.getAttribute el "data-content") "")
+          [action state] (bs/incoming (.-_syncState el) remote (.getHTML editor)
+                                      (.-isFocused editor))]
+      (set! (.-_syncState el) state)
+      (when (= :apply action)
+        (take-content! el remote))
+      (set-conflict! block-id (:conflict (.-_syncState el))))))
+
+(defn- watch-replica!
+  "Follow `el`'s `data-content` from now on. The observer goes with the
+   element: nothing else holds it."
+  [^js el block-id]
+  (let [observer (js/MutationObserver. (fn [_ _] (follow-replica! el block-id)))]
+    (.observe observer el #js {:attributes true :attributeFilter #js ["data-content"]})
+    (set! (.-_replicaObserver el) observer)))
+
+(defn- leave-block!
+  "The editor in `el` lost focus, showing `html` (`block-sync/leaving`)."
+  [^js el block-id html db-scope]
+  (when-let [state (.-_syncState el)]
+    (case (bs/leaving state html)
+      :save  (do (set! (.-_syncState el) (assoc state :conflict nil))
+                 (set-conflict! block-id nil)
+                 (update-block-content-remote! block-id html db-scope))
+      :apply (do (take-content! el (or (.getAttribute el "data-content") ""))
+                 (set-conflict! block-id nil))
+      :none  nil)))
+
+(defn- load-remote-version!
+  "The conflict notice's \"Load theirs\": the editor takes the db's content."
+  [block-id]
+  (doseq [^js el (editor-elements block-id)]
+    (take-content! el (or (.getAttribute el "data-content") "")))
+  (set-conflict! block-id nil))
+
+(defn- keep-local-version!
+  "The conflict notice's \"Keep mine\": save the editor's text over the other
+   version now."
+  [block-id db-scope]
+  (when-let [^js el (first (editor-elements block-id))]
+    (when-let [^js editor (.-_tiptapEditor el)]
+      (set! (.-_syncState el) (assoc (.-_syncState el) :conflict nil))
+      (update-block-content-remote! block-id (.getHTML editor) db-scope)))
+  (set-conflict! block-id nil))
+
 (defn create-tiptap-editor!
   "Create a TipTap editor for a block.
 
@@ -1101,7 +1217,7 @@
 
    NOTE: parent-id and order are fetched fresh from the database on each keypress,
    not captured at editor creation time."
-  [element block-id initial-content & [db-scope room-uuid autofocus]]
+  [^js element block-id initial-content & [db-scope room-uuid autofocus read-only?]]
   (let [;; Preprocess content to convert [[Page Name]] to proper marks
         processed-content (preprocess-page-references (or initial-content ""))
         editor (Editor.
@@ -1130,11 +1246,15 @@
                                        (make-block-keyboard-extension block-id db-scope)
                                        (make-run-code-extension room-uuid)]
                       :content processed-content
+                      :editable (not read-only?)
                       :onBlur (fn [^js props]
-                                ;; Save content to Datahike on blur (unless operation in progress)
+                                ;; Leaving the block: save what the user typed,
+                                ;; or take what the db got while they were in it
+                                ;; (`block-sync/leaving`). Not during a structural
+                                ;; operation or arrow navigation.
                                 (when-not @operation-in-progress?
-                                  (let [html (.getHTML (.-editor props))]
-                                    (update-block-content-remote! block-id html db-scope))))
+                                  (leave-block! element block-id
+                                                (.getHTML (.-editor props)) db-scope)))
                       :onFocus (fn [_]
                                  ;; Update local UI state
                                  (swap! ui-state assoc :focused-id block-id)
@@ -1149,6 +1269,8 @@
     ;; Store editor on the DOM element itself
     (set! (.-_tiptapEditor element) editor)
     (set! (.-_blockId element) (str block-id))
+    ;; What the editor took from the db, and how it shows it (`block-sync`)
+    (set! (.-_syncState element) (bs/mounted (or initial-content "") (.getHTML editor)))
     ;; Focus on initial creation if requested. TipTap fires `create`
     ;; once the editor is fully initialised AND attached. Calling
     ;; .commands.focus() at constructor time can no-op if the element
@@ -1320,9 +1442,10 @@
    foreign-node's :key so a branch switch unmounts + remounts TipTap
    with the new branch's content. Within a branch the key is stable,
    so normal typing reuses the same TipTap instance + DOM nodes."
-  [block depth has-children & [db-scope syntax-pref db widget-kb active-branch]]
+  [block & [db-scope syntax-pref db widget-kb active-branch]]
   (swap! render-block-count inc)
-  (let [hidden?  (:hidden block)
+  (let [{:keys [depth has-children]} block
+        hidden?  (:hidden block)
         viz?     (some? (:viz-spec block))
         widget?  (some? (:widget-code block))
         code?    (code-block? block)
@@ -1364,11 +1487,15 @@
         (foreign-node
           {:key (str "editor-"
                      (name (or active-branch :db))
+                     ;; editable or not is fixed at mount
+                     (when (:read-only? block) "-ro")
                      "-"
                      (:id block))
            :class "block-content"
            :data-id (str (:id block))
-           :on-mount (fn [el]
+           ;; the content the editor follows — see `follow-replica!`
+           :data-content (or (:content block) "")
+           :on-mount (fn [^js el]
                        ;; `focus-on-mount` carries the UUID of the
                        ;; most recently created block (set by the
                        ;; Enter handler before its prediction). The
@@ -1387,11 +1514,29 @@
                        (when-not (.-_tiptapEditor el)
                          (let [should-focus? (= @focus-on-mount (:id block))]
                            (when should-focus? (reset! focus-on-mount nil))
+                           ;; the committed attribute, not this closure's
+                           ;; block: the two agree here, and the attribute
+                           ;; is what the observer follows from now on
                            (create-tiptap-editor!
-                             el (:id block) (:content block) db-scope nil
-                             (when should-focus? "start")))))
+                             el (:id block) (.getAttribute el "data-content") db-scope nil
+                             (when should-focus? "start") (:read-only? block))
+                           (watch-replica! el (:id block)))))
            :on-unmount (fn [el]
-                         (destroy-tiptap-editor! el))})))))
+                         (destroy-tiptap-editor! el))}))
+      ;; This block changed elsewhere while it was being edited here
+      ;; (`block-sync`). The buttons keep the editor's focus (mousedown is
+      ;; cancelled): a blur would save the local text before the choice.
+      (when (:conflict? block)
+        (el/div {:class "block-conflict" :role "status"}
+          (el/span {:class "block-conflict-text"} "Changed in another session.")
+          (el/button {:class "block-conflict-btn"
+                      :on-mousedown (fn [e] (.preventDefault e))
+                      :on-click (fn [_] (load-remote-version! (:id block)))}
+            "Load their version")
+          (el/button {:class "block-conflict-btn"
+                      :on-mousedown (fn [e] (.preventDefault e))
+                      :on-click (fn [_] (keep-local-version! (:id block) db-scope))}
+            "Keep mine"))))))
 
 ;; =============================================================================
 ;; Main App Spin
@@ -1421,10 +1566,7 @@
           focused-id (:focused-id @ui-state)
           blocks-iv (transform-datahike-blocks dh-blocks-iv focused-id (:max-tx (iv/get-new db-iv)))
 
-          ;; Build indices for tree operations
-          all-blocks (iv/get-new blocks-iv)
-          block-index (when all-blocks (build-block-index all-blocks))
-          children-index (when all-blocks (build-children-index all-blocks))]
+          all-blocks (iv/get-new blocks-iv)]
 
       (el/div {:class "block-editor-app"}
         (el/header {:class "editor-header"}
@@ -1435,9 +1577,7 @@
           (if (seq all-blocks)
             (ifor-each :id blocks-iv
               (fn [block]
-                (let [depth (block-depth block block-index)
-                      has-children (has-children? (:id block) children-index)]
-                  (render-block block depth has-children))))
+                (render-block block)))
             ;; No blocks yet - auto-creation happens during init
             (el/div {:class "empty-state"}
               (el/p "Loading..."))))
@@ -1959,6 +2099,19 @@
           ;; the (scope,ref) registry signal carrying the as-of db, and
           ;; the page renders read-only.
           gref (iv/get-new (track sig/global-ref))
+          ;; Blocks whose replica content changed under an edit — the
+          ;; conflict notice. At the TOP (sharp edge #1); it reaches the
+          ;; blocks as `:conflict?` IN their items (sharp edge #2).
+          conflicts (iv/get-new (track sig/block-conflicts))
+          ;; The roster says whether this viewer may write this KB
+          ;; (`kbs/sidebar-kbs`, `:kb/read-only?` — a wiki reached through a
+          ;; room's `:read` grant). At the top, like every track.
+          roster (iv/get-new (track sig/user-rooms))
+          kb-read-only? (boolean
+                         (and db-scope (map? roster)
+                              (some #(and (= (str db-scope) (str (:kb/db-scope %)))
+                                          (:kb/read-only? %))
+                                    (:knowledge-bases roster))))
           ;; Tracked at the TOP too (sharp edge #1). It used to live inside the
           ;; `db-value` branch below, so it was registered only once the db had
           ;; arrived — a conditional subscription. Tracks must not be downstream
@@ -2071,15 +2224,13 @@
 
             ;; Transform Datahike format to UI format
             focused-id (:focused-id @ui-state)
-            blocks-iv (transform-datahike-blocks dh-blocks-iv focused-id (:max-tx db-value))
+            blocks-iv (transform-datahike-blocks dh-blocks-iv focused-id (:max-tx db-value)
+                                                 (when-not time-travel? conflicts)
+                                                 kb-read-only?)
 
-            ;; Build indices for tree operations
             all-blocks (iv/get-new blocks-iv)
             ;; Update visible blocks order for arrow key navigation
             _ (when all-blocks (reset! visible-blocks-order all-blocks))
-
-            block-index (when all-blocks (build-block-index all-blocks))
-            children-index (when all-blocks (build-children-index all-blocks))
 
             ;; Check if this page is a type (for rendering instances)
             type-entity (dq/is-type-page? db-value page-uuid)
@@ -2096,8 +2247,12 @@
           (when time-travel?
             (el/div {:class "time-travel-banner"}
               (el/span {} "🕰 Viewing a past version — read-only")))
+          (when (and kb-read-only? (not time-travel?))
+            (el/div {:class "time-travel-banner"}
+              (el/span {} "Read only — this wiki reaches you through a room's read grant.")))
           ;; Page header with types and properties - await the spin
-          (await (render-page-header page-uuid db-value db-scope time-travel?))
+          (await (render-page-header page-uuid db-value db-scope
+                                     (or time-travel? kb-read-only?)))
 
           ;; Instances table (only for type pages)
           (when (and type-entity (seq instances))
@@ -2120,9 +2275,7 @@
                 ;; Use ifor-each for incremental DOM updates - only changed blocks re-render
                 (ifor-each :id blocks-iv
                   (fn [block]
-                    (let [depth (block-depth block block-index)
-                          has-children (has-children? (:id block) children-index)
-                          ;; Widget writes only on a KB-scoped tab's TRUNK: they
+                    (let [;; Widget writes only on a KB-scoped tab's TRUNK: they
                           ;; are predictions on the trunk overlay and RPCs to
                           ;; trunk, so handing them out on a fork would land a
                           ;; fork view's writes on trunk. Widgets-on-forks need
@@ -2130,7 +2283,7 @@
                           widget-kb (when (and db-scope (trunk? active-branch))
                                       (when-let [ov (db-signal/get-kb-overlay db-scope)]
                                         {:db-scope db-scope :overlay ov}))]
-                      (render-block block depth has-children db-scope syntax-pref db-value widget-kb active-branch)))))
+                      (render-block block db-scope syntax-pref db-value widget-kb active-branch)))))
               ;; Empty state: new pages auto-create first block, so this is just loading
               (el/div {:class "empty-state"}
                 (el/p "Loading blocks...")))

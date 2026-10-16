@@ -548,14 +548,21 @@
           (el/div {:class "property-box-content"}
             (if (seq properties)
               (el/div {:class "property-rows"}
-                (ifor-each #(str (:entity/uuid %)) properties
-                  (fn [prop]
-                    (let [prop-name (:entity/name prop)]
-                      (el/div {:key (str (:entity/uuid prop))}
-                        (property-row {:property prop
-                                       :value (get values prop-name)
-                                       :on-save on-save
-                                       :on-property-click on-property-click}))))))
+                ;; The VALUE rides in the item. `ifor-each` memoises on item
+                ;; equality, and the property entities do not change when a
+                ;; value does — so with the value read from the `values`
+                ;; closure, a saved value landed and the row kept showing the
+                ;; old one until a reload (CLAUDE.md, spindel sharp edge 2).
+                (ifor-each #(str (:entity/uuid (:property %)))
+                           (mapv (fn [prop] {:property prop
+                                             :value (get values (:entity/name prop))})
+                                 properties)
+                  (fn [{:keys [property value]}]
+                    (el/div {:key (str (:entity/uuid property))}
+                      (property-row {:property property
+                                     :value value
+                                     :on-save on-save
+                                     :on-property-click on-property-click})))))
               (el/div {:class "property-box-empty"}
                 "No properties available."))
 
@@ -633,15 +640,20 @@
                                      :clj nil)))}
               (or (:S.Page/title inst) (:entity/name inst) "Untitled"))
 
-            ;; Property value cells
-            (ifor-each #(str (:entity/uuid %)) properties
-              (fn [prop]
-                (let [prop-name (:entity/name prop)
-                      value (get-in inst [:values prop-name])]
-                  (el/td {:key (str (:entity/uuid inst) "-" prop-name)
-                          :class "instances-table-cell"}
-                    (instance-value-cell {:value value
-                                          :property-type (:morphism/property-type prop)})))))))))))
+            ;; Property value cells. The value rides in the item: these
+            ;; items are the property entities, which do not change when an
+            ;; instance's value does, and `ifor-each` memoises on item
+            ;; equality (sharp edge 2) — a closed-over `inst` kept the cell
+            ;; showing the old value.
+            (ifor-each #(str (:entity/uuid (:property %)))
+                       (mapv (fn [prop] {:property prop
+                                         :value (get-in inst [:values (:entity/name prop)])})
+                             properties)
+              (fn [{prop :property value :value}]
+                (el/td {:key (str (:entity/uuid inst) "-" (:entity/name prop))
+                        :class "instances-table-cell"}
+                  (instance-value-cell {:value value
+                                        :property-type (:morphism/property-type prop)}))))))))))
 
 (defn instances-box
   "Box showing all instances of a type as a table.
@@ -894,21 +906,26 @@
    - options: Vector of {:value uuid-str :label string}
    - on-save: Handler when selection changes"
   [{:keys [value options on-save]}]
-  (let [selected-set (set (or value []))]
+  (let [current (vec (or value []))
+        selected-set (set current)]
     (el/div {:class "property-multi-select"}
-      (ifor-each :value options
-        (fn [{opt-value :value opt-label :label}]
+      ;; the selection rides in the items (ifor-each memoises on them): both
+      ;; the box's checked state and the value its handler edits
+      (ifor-each :value (mapv #(assoc % :checked? (contains? selected-set (:value %))
+                                        :current current)
+                              options)
+        (fn [{opt-value :value opt-label :label :keys [checked? current]}]
           (el/label {:key opt-value
                      :class "property-multi-option"}
             (el/input {:type "checkbox"
-                       :checked (contains? selected-set opt-value)
+                       :checked checked?
                        :on-change (fn [e]
                                     #?(:cljs
                                        (when on-save
                                          (let [checked? (.. e -target -checked)
                                                new-value (if checked?
-                                                           (conj (vec (or value [])) opt-value)
-                                                           (vec (remove #(= % opt-value) (or value []))))]
+                                                           (conj current opt-value)
+                                                           (vec (remove #(= % opt-value) current)))]
                                            (on-save new-value)))
                                        :clj nil))})
             (el/span {} opt-label)))))))
