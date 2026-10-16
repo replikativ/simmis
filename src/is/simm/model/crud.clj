@@ -48,13 +48,19 @@
            back-date a store to the beginning of its narrative time, so a cut
            taken before the store existed in wall-clock terms still finds the
            entities the store is made of — see `store/install!`.
+   - :uuid - the block's `:entity/uuid`, when the caller has to know it before
+             the block exists (a browser that already shows the block it asked
+             for). Omitted → a fresh one. The caller is responsible for it
+             naming nothing yet: `:entity/uuid` is a unique identity, so an
+             existing uuid would UPSERT onto that entity.
 
    Returns the UUID of created block."
   [conn {:keys [name roles parent order content properties at]
+         requested-uuid :uuid
          :or {roles ["S/Block"]
               content ""}}]
   (let [db @conn
-        block-uuid (uuid)
+        block-uuid (or requested-uuid (uuid))
         now-inst (or at (now))
         ;; Resolve role names to entity refs
         role-refs (mapv (fn [role-name] [:entity/name role-name]) roles)

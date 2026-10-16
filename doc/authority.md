@@ -105,6 +105,14 @@ datahike.kabel's raw store handlers (`dispatch`, `create-database`,
 row, so the gate would refuse them if they became reachable. `dispatch` checks
 nothing itself: served behind any row admitting room members, it would let a
 member transact raw datoms, forged messages included, into the room's store.
+So the browser never writes through its replica's writer: wiki edits are
+`block_remote` RPCs, gated by the `{:branch …}` rows above, with the optimistic
+display a prediction the client drops or rejects on the RPC's answer (see
+architecture.md, "Writes go through the server"). Where the browser names the
+uuid of a block it is creating (`create-sibling-after`'s `:new-uuid`,
+`ensure-page`'s `:first-block-uuid`), the handler refuses one that already
+names an entity: `:entity/uuid` is a unique identity, so it would upsert onto
+that entity rather than create a block.
 
 ### Data plane — replication
 
