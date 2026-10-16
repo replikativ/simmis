@@ -3,12 +3,14 @@
    surface is read-only; it does not expose the raw database writer or eval.
    Credentials are short-lived, MCP-only capabilities for an existing human.
    The listener is a host resource, not forkable application state."
-  (:require [clojure.string :as str]
+  (:require [clojure.set :as set]
+            [clojure.string :as str]
             [dvergr.mcp.http :as http]
             [dvergr.mcp.server :as server]
             [dvergr.substrate.config :as config]
             [is.simm.model.parties :as parties]
             [is.simm.ops.dvergr :as ops]
+            [is.simm.ops.results :as results]
             [is.simm.runtimes.auth-config :as auth]
             [is.simm.runtimes.context :as context]
             [is.simm.runtimes.http-auth :as http-auth]
@@ -17,13 +19,35 @@
             [taoensso.telemere :as log]))
 
 (def audience "simmis-mcp")
-(def read-tools #{"room_list" "room_detail" "room_messages" "run_list" "run_detail"})
+(def legacy-read-tools
+  "The immutable ceiling of credentials issued before explicit capabilities."
+  #{"room_list" "room_detail" "room_messages" "run_list" "run_detail"})
+
+(def read-tools
+  "Deliberately selected room/workflow/result reads, not all upstream reads.
+   Workspace reads are current files; Attempt evidence is a recorded result.
+   Excludes host-path exports, raw evaluation, writes and agent administration."
+  (into legacy-read-tools
+        #{"room_files" "room_read" "room_diff" "room_review" "room_wallet"
+          "job_list" "job_status" "attempt_list" "attempt_detail" "review_list"
+          "scorecard_list" "scorecard_detail" "experiment_progress" "experiment_report"
+          "catalog_list" "simmis_attempt-files" "simmis_attempt-file"}))
+
+(defn- credential-tools [claims]
+  (if (and (not (contains? claims :capability-version))
+           (not (contains? claims :tools)))
+    legacy-read-tools
+    (let [tools (:tools claims)]
+      (when (and (= 1 (:capability-version claims))
+                 (vector? tools) (seq tools) (<= (count tools) (count read-tools))
+                 (every? string? tools) (set/subset? (set tools) read-tools))
+        (set tools)))))
 
 (defn- signing-key []
   (let [mac (javax.crypto.Mac/getInstance "HmacSHA256")]
     (.init mac (javax.crypto.spec.SecretKeySpec.
-                 (.getBytes ^String (get-in (auth/get-auth-config) [:jwt :secret]) "UTF-8")
-                 "HmacSHA256"))
+                (.getBytes ^String (get-in (auth/get-auth-config) [:jwt :secret]) "UTF-8")
+                "HmacSHA256"))
     (.doFinal mac (.getBytes "simmis/mcp/v1" "UTF-8"))))
 
 (defn- human? [party-id]
@@ -38,8 +62,9 @@
     (throw (ex-info "MCP credentials require an existing human party" {:type ::invalid-party})))
   (let [now (quot (System/currentTimeMillis) 1000)]
     {:token (jwt/sign-hs256 (signing-key)
-                           {:iss audience :aud audience :sub (str party-id)
-                            :iat now :exp (+ now 3600)})
+                            {:iss audience :aud audience :sub (str party-id)
+                             :iat now :exp (+ now 3600)
+                             :capability-version 1 :tools (vec (sort read-tools))})
      :expires-in 3600}))
 
 (defn authenticator
@@ -48,20 +73,22 @@
    Recheck the party each request, so deleting it revokes access."
   []
   (let [validate (jwt/build-bearer-validator
-                   {:alg :HS256 :secret (signing-key) :leeway-seconds 0
-                    :required-claims {:iss audience :aud audience}})]
+                  {:alg :HS256 :secret (signing-key) :leeway-seconds 0
+                   :required-claims {:iss audience :aud audience}})]
     (fn [{:keys [bearer]}]
       (try
         (when (and (string? bearer) (not (str/blank? bearer)))
           (when-let [claims (validate {:headers {"authorization" (str "Bearer " bearer)}})]
             (when (and (integer? (:iat claims)) (integer? (:exp claims))
                        (<= 1 (- (:exp claims) (:iat claims)) 3600))
-              (when-let [id (some-> (:sub claims) str parse-uuid)]
-                (when (human? id)
-                  (assoc (ops/party-principal id)
-                         :principal/scopes #{:toolset/rooms :toolset/runs}
-                         ;; A hard ceiling even when a client requests admin profile.
-                         :principal/tools read-tools))))))
+              (when-let [tools (credential-tools claims)]
+                (when-let [id (some-> (:sub claims) str parse-uuid)]
+                  (when (human? id)
+                    (assoc (ops/party-principal id)
+                           :principal/mcp? true
+                           :principal/scopes #{:dvergr/read-only}
+                           ;; A hard ceiling even when a client requests admin profile.
+                           :principal/tools tools)))))))
         (catch Exception _ nil)))))
 
 (defonce ^:private listener (atom nil))
@@ -92,9 +119,9 @@
                  (nil? id) {:status 401 :headers headers
                             :body {:error "authentication required"}}
                  (not (human? id)) {:status 403 :headers headers
-                                   :body {:error "an existing human account is required"}}
+                                    :body {:error "an existing human account is required"}}
                  (nil? (configured-port)) {:status 404 :headers headers
-                                          :body {:error "private MCP is disabled"}}
+                                           :body {:error "private MCP is disabled"}}
                  :else {:status 200 :headers headers
                         :body (assoc (mint-token! id) :token-type "Bearer")})))}}])
 
@@ -108,13 +135,16 @@
         (let [authenticate (authenticator)]
           (server/set-host! (ops/host context/server-context))
           (try
+            (results/install!)
             (let [started (http/start! {:bind "127.0.0.1" :port port
-                                        :profile :readonly :authenticate authenticate})]
+                                        :profile :readonly :toolsets #{:host}
+                                        :authenticate authenticate})]
               ;; Never retain/log the transport's unused local-admin token.
               (reset! listener (select-keys started [:port :stop]))
               (log/log! {:level :info :id ::started
                          :data {:bind "127.0.0.1" :port port :read-only? true}}))
             (catch Exception e
+              (results/uninstall!)
               (server/set-host! nil)
               (throw e))))))))
 
@@ -123,4 +153,5 @@
     (when-let [{:keys [stop]} @listener]
       (stop)
       (reset! listener nil)
+      (results/uninstall!)
       (server/set-host! nil))))

@@ -18,7 +18,9 @@
 (def ^:private exact-evaluator
   (evaluation/make-evaluator
    {:id :simmis-test/exact :version 1 :basis "simmis-experiments-test:v1"
-    :observe (fn [{:keys [default]}] default)
+    :capture (fn [_] {:files {"/out/result.md" "captured attempt output"}})
+    :observe (fn [{:keys [default] captured :execution/evidence}]
+               (assoc default :files (:files captured)))
     :verify (fn [definition evidence]
               (let [ok? (= (:environment/task definition) (:result evidence))]
                 {:checks {:exact? ok?} :reward (if ok? 1.0 0.0)}))}))

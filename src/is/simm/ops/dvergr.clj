@@ -19,7 +19,20 @@
    behind `can?` is P2's (plan §2.4), not a side effect of this."
   (:require [dvergr.ops :as dops]
             [dvergr.principal :as principal]
+            [malli.core :as m]
             [is.simm.model.access :as access]))
+
+(defn authorize
+  "Shared authority with runtime argument validation for external MCP calls.
+   Dvergr advertises schemas but does not validate them in invoke. Visibility
+   filter requests have no :args and still use the normal resource predicate."
+  [principal {:keys [op args] :as request}]
+  (if (and (:principal/mcp? principal) (contains? request :args)
+           (not (and (m/validate (dops/malli-schema op) args)
+                     (m/validate [:map [:limit {:optional true} [:int {:min 1 :max 1000}]]]
+                                 args))))
+    {:allow? false :reason "Invalid operation arguments"}
+    (access/dvergr-authorize principal request)))
 
 (defn party-principal
   "The dvergr principal of the simmis party `party-id`: a human that posts as
@@ -36,7 +49,7 @@
    `ctx` they run in, and simmis's authorizer."
   [ctx]
   {:execution-ctx ctx
-   :config {:auth {:authorize access/dvergr-authorize}}})
+   :config {:auth {:authorize authorize}}})
 
 (defn invoke
   "Run dvergr op `op` with `args` in execution context `ctx` for `principal`
