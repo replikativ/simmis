@@ -56,9 +56,12 @@ An optional private MCP listener (`runtimes/mcp.clj`) starts in the same JVM
 when `SIMMIS_MCP_PORT` or `:mcp {:port ...}` is configured. Its bind is always
 loopback, its base port receives the instance offset, and it serves the
 existing rooms through Dvergr's embedding host hook. It owns no databases.
-The surface is selected room/message/run, workspace, Attempt, job and experiment
-reads for an explicitly authenticated human, not a raw database or code execution
-endpoint. Recorded Attempt evidence is distinct from mutable workspace files. See
+The default surface is selected room/message/run, workspace, Attempt, job and experiment
+reads for an explicitly authenticated human. Explicit work credentials add canonical
+chat dispatch and one bounded isolated candidate, not a raw database writer or
+unrestricted eval endpoint. The typed system-DB admission journal makes request
+retries observe existing Dvergr Jobs/Runs; it is not a second workflow engine.
+Recorded Attempt evidence is distinct from mutable workspace files. See
 [authority.md](authority.md#private-mcp).
 
 ## Stores: one owns each concept

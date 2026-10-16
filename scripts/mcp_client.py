@@ -1,7 +1,8 @@
 """Private MCP credential helper. Stdout of `headers` is credential material.
 
 Login keeps a private web session locally, never the password. Only a short-lived
-read-only MCP credential is passed to the coding client. No SSH/operator REPL
+MCP credential is passed to the coding client (read-only unless login explicitly
+uses --access work). No SSH/operator REPL
 credentials are needed by this program. Requires Python 3 on Linux/macOS.
 """
 import argparse
@@ -74,8 +75,18 @@ def save(path, session):
 
 def exchange(path, session):
     base = origin(session["origin"])
+    mode = session.get("mcp_mode", "read")
+    if mode not in ("read", "work"):
+        raise ValueError("Unknown MCP access mode")
+
+    def credential():
+        result = post(base, "/auth/mcp-token", {"mode": mode}, token=session["access_token"])
+        if result.get("mode", "read") != mode:
+            raise ValueError("Server did not issue the requested MCP mode")
+        return result
+
     try:
-        return post(base, "/auth/mcp-token", token=session["access_token"])
+        return credential()
     except urllib.error.HTTPError as error:
         if error.code != 401:
             raise
@@ -87,7 +98,7 @@ def exchange(path, session):
         session["refresh_token"] = renewed["refresh_token"]
     # Save rotation BEFORE another request, so a transient failure doesn't lose it.
     save(path, session)
-    return post(base, "/auth/mcp-token", token=session["access_token"])
+    return credential()
 
 
 def main():
@@ -97,7 +108,11 @@ def main():
                         default=Path.home() / ".config/simmis/mcp-session.json")
     parser.add_argument("--origin", default="https://dev.simm.is")
     parser.add_argument("--email")
+    parser.add_argument("--access", choices=("read", "work"),
+                        help="Login only: explicitly choose work access; default read")
     args = parser.parse_args()
+    if args.command != "login" and args.access is not None:
+        raise ValueError("Choose access mode during login, not header renewal")
     path = args.session.expanduser().absolute()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock_fd = private_file(str(path) + ".lock", os.O_CREAT | os.O_RDWR)
@@ -109,13 +124,18 @@ def main():
             email = args.email or input("Simmis email: ")
             result = post(base, "/auth/login", {"email": email, "password": getpass.getpass()})
             session = {"origin": base, "access_token": result["access_token"],
-                       "refresh_token": result["refresh_token"]}
+                       "refresh_token": result["refresh_token"],
+                       "mcp_mode": args.access or "read"}
             # Check MCP availability before replacing an existing session.
-            post(base, "/auth/mcp-token", token=session["access_token"])
+            credential = post(base, "/auth/mcp-token", {"mode": session["mcp_mode"]},
+                              token=session["access_token"])
+            if credential.get("mode", "read") != session["mcp_mode"]:
+                raise ValueError("Server did not issue the requested MCP mode")
             if path.exists() or path.is_symlink():
                 os.close(private_file(path, os.O_RDONLY))
             save(path, session)
-            print("Simmis login saved privately; MCP access is read-only.", file=sys.stderr)
+            print("Simmis login saved privately; MCP access: " + session["mcp_mode"] + ".",
+                  file=sys.stderr)
         else:
             with os.fdopen(private_file(path, os.O_RDONLY)) as stream:
                 session = json.load(stream)

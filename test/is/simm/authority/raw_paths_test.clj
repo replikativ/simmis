@@ -232,8 +232,8 @@
   (world/with-world [_ w]
     (let [posted (atom [])]
       (with-redefs [room-dbs/connect-room-database (fn [_] (schemaless-conn))
-                    is.simm.uis.web.desktop.chat-remote/ensure-room-chatroom! (fn [& _])
-                    is.simm.uis.web.desktop.chat-remote/ensure-party-projection! (fn [& _])
+                    is.simm.ops.chat/ensure-room-chatroom! (fn [& _])
+                    is.simm.ops.chat/ensure-party-projection! (fn [& _])
                     ra/post-user-message! (fn [room-uuid msg sender-id & _]
                                             (swap! posted conj [room-uuid msg sender-id]))]
         (let [send! (fn [kind sender-id text]

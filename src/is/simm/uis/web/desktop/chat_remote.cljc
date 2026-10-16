@@ -21,6 +21,8 @@
             #?(:clj [org.replikativ.spindel.engine.core :as rtc])
             #?(:clj [is.simm.ops.run-world-proposals :as world-proposals])
             #?(:clj [is.simm.ops.experiments :as experiments])
+            #?(:clj [is.simm.ops.chat :as chat-ops])
+            #?(:clj [is.simm.ops.dvergr :as dvergr-ops])
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.model.message-notify-broadcast :as mnb])
             #?(:clj [is.simm.model.user-rooms-broadcast :as urb])
@@ -289,29 +291,12 @@
 
 #?(:clj
    (defn ensure-room-chatroom! [room-conn room-id room-name]
-     (when-not (d/q '[:find ?e . :in $ ?uuid :where [?e :entity/uuid ?uuid]]
-                    @room-conn room-id)
-       (d/transact room-conn
-         [{:entity/uuid room-id
-           :entity/created-at (java.util.Date.)
-           :entity/name (str "S.ChatRoom/" room-name)
-           :instance/of-role [:entity/uuid #uuid "00000000-0000-0000-0000-00000000002a"]
-           :S.ChatRoom/name room-name}]))))
+     (chat-ops/ensure-room-chatroom! room-conn room-id room-name)))
 
 #?(:clj
    (defn- ensure-party-projection! [room-conn party-id]
      "Cache the party's display info as a S.User projection in the room DB."
-     (when-not (d/q '[:find ?e . :in $ ?uuid :where [?e :entity/uuid ?uuid]]
-                    @room-conn party-id)
-       (when-let [party (parties/get-party party-id)]
-         (d/transact room-conn
-           [(cond-> {:entity/uuid party-id
-                     :entity/created-at (java.util.Date.)
-                     :instance/of-role [:entity/uuid #uuid "00000000-0000-0000-0000-000000000029"]
-                     :S.User/display-name (or (:party/display-name party) "Unknown")}
-              (:party/handle party) (assoc :S.User/handle (:party/handle party))
-              (:party/email party)  (assoc :S.User/email (:party/email party))
-              (= :agent (:party/type party)) (assoc :S.User/is-ai true))])))))
+     (chat-ops/ensure-party-projection! room-conn party-id)))
 
 (defn-spin-remote ensure-room!
   [server-id room-id-str party-id-str]
@@ -998,22 +983,10 @@
                ;; mismatch warning (see is.simm.model.access).
                sender-id  (access/authenticated-party-id)
                _ (access/warn-on-sender-mismatch! sid sender-id ::dispatch-message!)
-               room-uuid  (java.util.UUID/fromString rid)
-               room-info  (rooms/get-room room-uuid)
-               db-scope   (:room/content-db-scope room-info)
-               room-conn  (when db-scope (room-dbs/connect-room-database db-scope))]
-           (when room-conn
-             (ensure-room-chatroom! room-conn room-uuid (or (:room/name room-info) "Chat"))
-             (when sender-id
-               (ensure-party-projection! room-conn sender-id))
-             ;; Fire-and-forget: post into the room's dvergr.discourse Room
-             ;; and return immediately. The room projector persists the send
-             ;; (and the replies) from the bus; the client renders the send
-             ;; optimistically under `muid` and reconciles on the sync echo.
-             (room-agents/post-user-message! room-uuid msg sender-id room-conn
-                                             (when muid (java.util.UUID/fromString muid))
-                                             (when parent-id
-                                               (java.util.UUID/fromString parent-id)))))
+               room-uuid  (java.util.UUID/fromString rid)]
+           (chat-ops/post! (dvergr-ops/party-principal sender-id)
+                          {:room room-uuid :id (if muid (java.util.UUID/fromString muid) (random-uuid))
+                           :content msg :in-reply-to (when parent-id (java.util.UUID/fromString parent-id))}))
          :cljs nil))))
 
 ;; =============================================================================

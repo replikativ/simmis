@@ -777,6 +777,13 @@
                    :msg "dvergr room hydration failed"
                    :data {:error (str e)}})))
 
+    ;; Host admission is not speculative state. Recover only after Dvergr has
+    ;; reconciled orphan Runs, and before any new MCP work can be accepted.
+    (ctx/with-server-context
+      ((requiring-resolve 'is.simm.ops.work/recover!)
+       ((requiring-resolve 'is.simm.model.system-db/get-conn)) ctx/server-context
+       (requiring-resolve 'is.simm.agents.room-agents/live-room)))
+
     ;; Complete any cross-store Proposal publication interrupted by the prior
     ;; process. This runs only after the live room registry exists; every retry
     ;; reuses the message UUID reserved with the Proposal, so a crash after the

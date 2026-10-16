@@ -121,6 +121,26 @@ class ClientTest(unittest.TestCase):
             self.assertEqual("mcp", client.exchange(None, session)["token"])
         self.assertEqual("r1", session["refresh_token"])
 
+    def test_old_sessions_stay_read_only_and_work_requires_server_confirmation(self):
+        session = {"origin": "https://dev.simm.is", "access_token": "web"}
+        with patch.object(client, "post", return_value={"token": "read"}) as request:
+            self.assertEqual("read", client.exchange(None, session)["token"])
+            self.assertEqual({"mode": "read"}, request.call_args.args[2])
+        session["mcp_mode"] = "work"
+        with patch.object(client, "post", return_value={"token": "read"}):
+            with self.assertRaises(ValueError):
+                client.exchange(None, session)
+        with patch.object(client, "post", return_value={"token": "work", "mode": "work"}) as request:
+            self.assertEqual("work", client.exchange(None, session)["token"])
+            self.assertEqual({"mode": "work"}, request.call_args.args[2])
+
+    def test_header_command_cannot_silently_upgrade_a_saved_session(self):
+        result = subprocess.run([sys.executable, str(Path(client.__file__)),
+                                 "headers", "--access", "work"],
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

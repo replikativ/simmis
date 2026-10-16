@@ -6,6 +6,7 @@
             [dvergr.mcp.surface :as surface]
             [dvergr.ops :as dops]
             [is.simm.ops.results :as results]
+            [is.simm.ops.work-api :as work-api]
             [is.simm.model.parties :as parties]
             [is.simm.runtimes.auth-config :as auth]
             [is.simm.runtimes.instance :as instance]
@@ -24,8 +25,9 @@
                   parties/get-party (fn [id] (when (= person id) {:party/id id :party/type :human}))]
       (try
         (results/install!)
+        (work-api/install!)
         (f)
-        (finally (results/uninstall!))))))
+        (finally (work-api/uninstall!) (results/uninstall!))))))
 
 (deftest only-mcp-credentials-for-an-existing-human-authenticate
   (let [authenticate (mcp/authenticator)
@@ -103,6 +105,30 @@
       (is (not-any? #(= "room_file" (:name %)) (:templates definitions))
           "legacy tokens gain neither new tools nor file resources"))))
 
+(deftest work-is-an-explicit-signed-ceiling-not-an-admin-profile-escalation
+  (let [authenticate (mcp/authenticator)
+        read (authenticate {:bearer (:token (mcp/mint-token! person))})
+        work (authenticate {:bearer (:token (mcp/mint-token! person :work))})]
+    (is (= #{:dvergr/read-only} (:principal/scopes read)))
+    (is (= #{} (:principal/scopes work)))
+    (is (= mcp/work-tools (:principal/tools work)))
+    (is (not (contains? (:principal/tools read) "simmis_task")))
+    (doseq [[p expected] [[read mcp/read-tools] [work mcp/work-tools]]]
+      (let [ctx (server/session-context (fn [_]) (surface/selection {:profile :admin}) p)]
+        (rpc/handle-message ctx {:jsonrpc "2.0" :id 1 :method "initialize"
+                                 :params {:protocolVersion "2025-06-18" :capabilities {}
+                                          :clientInfo {:name "spoofed-admin" :version "1"}
+                                          :_meta {:dvergr/profile "admin"}}})
+        (rpc/handle-message ctx {:jsonrpc "2.0" :method "notifications/initialized"})
+        (is (= expected (set (map :name (get-in (rpc/handle-message ctx
+                                                                    {:jsonrpc "2.0" :id 2 :method "tools/list"})
+                                                [:result :tools])))))
+        (doseq [tool ["room_write" "room_post" "clojure_eval" "catalog_benchmark" "attempt_export"]]
+          (let [r (rpc/handle-message ctx {:jsonrpc "2.0" :id 3 :method "tools/call"
+                                           :params {:name tool :arguments {}}})]
+            (is (or (:error r) (get-in r [:result :isError])))))))
+    (is (thrown? clojure.lang.ExceptionInfo (mcp/mint-token! person :admin)))))
+
 (deftest listener-is-opt-in-private-idempotent-and-cleans-up
   (let [events (atom [])]
     (with-redefs [mcp/configured-port (constantly nil)
@@ -117,7 +143,7 @@
         (with-redefs [mcp/configured-port (constantly 17889)]
           (mcp/start!)
           (mcp/start!))
-        (is (= [[:host true] [:start {:port 17889 :bind "127.0.0.1" :profile :readonly}]] @events))
+        (is (= [[:host true] [:start {:port 17889 :bind "127.0.0.1" :profile :admin}]] @events))
         (is (nil? (:token @@#'mcp/listener)))
         (mcp/stop!)
         (mcp/stop!)
@@ -146,7 +172,8 @@
       (with-redefs [http-auth/party-id (constantly nil)]
         (is (= 401 (:status (handler request)))))
       (with-redefs [http-auth/party-id (constantly person)]
-        (let [response (handler request)
+        (is (= 400 (:status (handler request))) "caller identity/profile fields are not accepted")
+        (let [response (handler (assoc request :body {}))
               principal ((mcp/authenticator) {:bearer (get-in response [:body :token])})]
           (is (= 200 (:status response)))
           (is (= "no-store" (get-in response [:headers "Cache-Control"])))
@@ -174,7 +201,7 @@
         request (fn [token]
                   (handler {:request-method :post :uri "/auth/mcp-token"
                             :headers {"authorization" (str "Bearer " token)}
-                            :body {:party-id person}}))]
+                            :body {}}))]
     (with-redefs [http-auth/validator (delay validator)
                   mcp/configured-port (constantly 47889)
                   parties/get-party (fn [id] (when (#{person other} id)

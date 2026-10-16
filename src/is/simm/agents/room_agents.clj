@@ -3037,7 +3037,7 @@
    only the agents whose MODEL cannot run here — an expected, settings-shaped
    state; `:join-errors` names the ones whose join failed unexpectedly. The
    send itself never fails because a participant could not be joined."
-  [room-uuid user-message sender-party-id room-conn & [msg-uuid in-reply-to]]
+  [room-uuid user-message sender-party-id room-conn & [msg-uuid in-reply-to source]]
   (ensure-providers!)
   (let [room-parties (rooms/get-room-parties room-uuid)
         all-agents (filterv #(= :agent (:party/type %)) room-parties)
@@ -3083,7 +3083,10 @@
               ;; deduped BEFORE delivery, losing all but the first recipient.
               ;; Explicit multicast is not a room broadcast or a mention list.
               send-id (or msg-uuid (random-uuid))
-              metadata {:role :user :mentions mentions :audience audience}
+              metadata (cond-> {:role :user :mentions mentions :audience audience}
+                         ;; Typed, existing metadata-kind field: source is a
+                         ;; trusted adapter argument, not clientInfo or sender.
+                         (= :mcp source) (assoc :kind :mcp-user-message))
               msg (binding [rtc/*execution-context* (:ctx room)]
                     (let [message (assoc (d/message from-kw (first targets) user-message
                                                     in-reply-to metadata) :id send-id)]

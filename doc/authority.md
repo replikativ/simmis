@@ -195,19 +195,19 @@ Their schemas reject extra fields and validate direct in-process callers too.
 Each authenticated principal carries a signed exact tool ceiling, independent
 of the profile a client requests. Tokens with no capability claims retain only
 the original five conversation/run tools, including through MCP resources.
-Versioned claims must name a nonempty subset of the server's selected reads;
+Version-one claims must name a nonempty subset of the server's selected reads;
 malformed/unknown versions are refused. Adding a tool on the server does not
 widen an already-issued credential. Every operation
 and resource read also passes the existing `access/dvergr-authorize` gate;
 room listings are filtered and a valid credential grants no access to another
 party's room.
-No raw database write, code evaluation or chat post is exposed.
+No raw database writer or unrestricted code-evaluation tool is exposed.
 The host validates MCP argument shapes at runtime against upstream schemas
 (Dvergr's invoke does not itself validate them), and caps list limits at 1000.
 Visibility filters and already-open resource sessions recheck room authority.
 Checker execution/calibration and workflow export (which calibrates on export),
 paid starts and host-path trajectory exports are not on this read surface.
-The two Simmis artifact ops register through Dvergr's authorized host-op seam,
+The Simmis artifact and work ops register through Dvergr's authorized host-op seam,
 not dynamic unguarded tools, and are removed when the listener stops.
 
 An operator can call `is.simm.runtimes.mcp/mint-token!` for an existing human
@@ -220,16 +220,66 @@ There is no individual-token revocation registry in this first surface.
 MCP tokens use issuer/audience `simmis-mcp` and an HMAC-derived signing key
 distinct from the web and blob keys. Web tokens, blob capabilities, the
 Dvergr local-admin token and Dvergr agent-run tokens are not accepted here;
-MCP tokens do not authenticate to the web. This human-read surface is not yet
+MCP tokens do not authenticate to the web. This human-account surface is not yet
 an OAuth flow or an agent-delegation API.
 
 `POST /auth/mcp-token` exchanges a validated web Authorization bearer for the
-same one-hour read capability. It takes no identity or scope from its body;
+same one-hour read capability by default. A closed JSON body may choose only
+`{"mode":"read"}` or explicitly `{"mode":"work"}`; it cannot choose an identity
+or arbitrary scopes. Empty bodies retain read access. Version-two work credentials
+carry signed `mode=work` and an exact ceiling of the selected reads plus
+`simmis_post`, `simmis_task`, `simmis_work-allowance`, `simmis_work-status` and
+`job_cancel`. Old credentials and saved client sessions do not gain writes.
 only the authenticated existing human may obtain their own credential. It
 refuses agent/deleted accounts, cookie-only requests and disabled MCP, and its
 response is `Cache-Control: no-store`. The exchange is on the web server;
 the MCP protocol listener remains private. This is an explicit credential
 exchange, not acceptance of web tokens by MCP.
+
+### Conversation and bounded work
+
+`simmis_post` uses the same `ops/chat.clj` dispatch as the browser, authenticated
+as the human account, with the room's existing `:write` permission, recipient
+selection and threading. It can wake assigned agents on their ongoing ROOM
+budgets. It is not a bounded isolated task. The durable message's typed kind
+`:mcp-user-message` records its trusted transport source; clientInfo is not a
+verified Codex/Claude agent identity, and tool arguments cannot override the author.
+
+`simmis_task` requires current room read AND `:merge` authority, the same
+privileged boundary as generic code in the UI. It starts one generic code/file
+candidate, not an existing Simmis party, with an explicit model, microdollar cap,
+native dispatch count, model-step limit, timeout, and `review` or `discard`
+settlement. These limits are finite and validated at runtime. No automatic merge
+is available. Its speculative effect policy forbids room/lifecycle mutations,
+native processes, undeclared external tools and sandbox HTTP; file writes stay
+inside the fork and under a quota. The native model gateway has separate conserved
+dispatch/spend admission. Subscription providers are not accepted as having these
+native cost guarantees.
+
+Owners explicitly provision a finite execution allowance through
+`simmis_work-allowance`. It is NOT payment, a billing balance or an agent-accessible
+mint capability. Both microUSD and model-dispatch units are conserved: room → job
+→ candidate Run. Unused resources return only after the job's evaluation cleanup
+group confirms physical completion, not merely cancellation of its Spin. Unresolved
+provider reservation wallets are never refunded as unused Run balances.
+
+`model/work_requests.clj` stores a typed host-system admission journal, keyed by
+authenticated party, room and caller request UUID. Its immutable content-addressed
+intent pins the candidate/environment and limits. Only the atomic insert winner
+may start a job; same-intent retries observe it, changed intent conflicts. The job
+pointer commits before evaluation starts. An interrupted pointerless admission is
+reported, never silently re-executed. This is at-most-once admission, not a promise
+of exactly-once completion. Boot recovery runs after orphan-Run reconciliation;
+terminal descendant wallets return bottom-up, while unresolved/live work remains
+pending. `simmis_work-status` projects safe admission metadata (not its ownership
+token); execution state remains in Dvergr Jobs/Runs.
+
+The completion evaluator captures bounded text deliverables under `/out` before
+world discard into the certified Attempt, readable through the existing artifact
+tools. Its check means the Run completed, NOT that the task was correct. The capture
+bound is 100 files and two million characters; the upstream tree reader counts
+characters rather than UTF-8 bytes. Retained worlds remain reviewable through
+the existing run/proposal flow.
 
 ### Connecting a second operator
 
@@ -246,11 +296,15 @@ python3 /absolute/path/to/simmis/scripts/mcp_client.py login --origin https://de
 The helper prompts for the person's email and password and saves a web session
 in `~/.config/simmis/mcp-session.json` (mode 600), not the password. Treat this
 file as a full web-login credential: it is broader than the MCP read token.
-`headers` exchanges it for the read-only MCP bearer, renewing the web access
+`headers` exchanges it for the chosen MCP bearer, renewing the web access
 token through `/auth/refresh` when needed. Once the refresh session expires or
 is revoked, run `login` again. Never paste the output of `headers` into logs.
 Authentication requests require HTTPS except on loopback, refuse redirects and
 ignore environment proxies; the session's origin is retained with the login.
+To opt into work, rerun `login --access work`. The saved choice is used by
+credential renewal; an existing session without that choice stays read-only.
+`headers` cannot change it. Work login requires the server to confirm work
+mode, and it still creates no room permission or execution allowance.
 
 For Codex, add the following to the person's user `config.toml`
 ([HTTP MCP configuration](https://learn.chatgpt.com/docs/extend/mcp)):
@@ -265,7 +319,8 @@ enabled_tools = ["room_list", "room_detail", "room_messages", "run_list", "run_d
 ```
 
 The optional `enabled_tools` line above intentionally narrows this client to
-the original five tools; omit it to discover the full selected read surface.
+the original five tools; omit it to discover the credential's full selected
+surface (reads by default, bounded work only after explicit work login).
 New tools also require a freshly exchanged credential and client reconnect.
 
 Claude Code's HTTP MCP entry uses the same URL and command under

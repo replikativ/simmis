@@ -3,6 +3,15 @@
 Everything stored in a KB or a room store is described by one small vocabulary.
 You cannot read the wiki, type or property code without it.
 
+Host-side work admission is control-plane data in the system DB, separate from
+the speculative KB/room worlds. `model/work_requests.clj` declares typed
+`:work.request/*` identities, ownership, limits, lifecycle and job-pointer
+attributes. The complete immutable intent uses a Datahike `store-ref`, not an EDN
+string or an exploded runtime object. Atomic insert/CAS transitions decide who
+may schedule; Dvergr's room-store Jobs, Runs, Attempts and accounting remain the
+execution and result records. Fork rollback does not duplicate the host admission
+or its conserved resource authority.
+
 ## Objects, morphisms, instances
 
 The model is a category, called **S**, stored as ordinary Datahike entities.
