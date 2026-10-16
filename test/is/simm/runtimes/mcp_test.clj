@@ -9,6 +9,8 @@
             [is.simm.runtimes.instance :as instance]
             [is.simm.runtimes.http-auth :as http-auth]
             [is.simm.runtimes.mcp :as mcp]
+            [is.simm.runtimes.web :as web]
+            [jsonista.core :as json]
             [reitit.ring :as ring]
             [kabel.auth.jwt :as jwt]))
 
@@ -158,3 +160,19 @@
                      (jwt/sign-hs256 key (assoc claims :exp (- now 60)))
                      (jwt/sign-hs256 key (assoc claims :sub "invalid"))]]
         (is (= 401 (:status (request token))))))))
+
+(deftest web-composite-handler-mounts-and-encodes-the-exchange
+  (with-redefs [auth/auth-route-data (constantly [])
+                mcp/configured-port (constantly 47889)
+                http-auth/party-id (constantly person)]
+    (let [handler (web/wrap-composite-handler (fn [_] {:status 599}))
+          response (handler {:request-method :post :uri "/auth/mcp-token" :headers {}})
+          body (json/read-value (:body response) json/keyword-keys-object-mapper)
+          principal ((mcp/authenticator) {:bearer (:token body)})]
+      (is (= 200 (:status response)))
+      (is (= "no-store" (get-in response [:headers "Cache-Control"])))
+      (is (= "Bearer" (:token-type body)))
+      (is (= (str "party/" person) (:principal/id principal)))
+      (with-redefs [http-auth/party-id (constantly nil)]
+        (is (= 401 (:status (handler {:request-method :post :uri "/auth/mcp-token"
+                                     :headers {}}))))))))
