@@ -970,6 +970,10 @@
                        :msg "Telegram channel failed to start"
                        :data {:error (str e)}})))
 
+        ;; Private MCP uses this process's rooms, identity and authority.
+        ;; Disabled unless explicitly configured; never bound publicly.
+        ((requiring-resolve 'is.simm.runtimes.mcp/start!))
+
         ;; Bus pump watchdog — loud detection of the source-pump
         ;; waiter-loss wedge until its root cause is fixed.
         (try
@@ -1005,6 +1009,7 @@
   "Stop the web server. Idempotent - does nothing if not started."
   []
   (when (:started? @server-state)
+    ((requiring-resolve 'is.simm.runtimes.mcp/stop!))
     (mail-accounts/close-all!)
     ;; Revokes deleting GC for this home along with the loop.
     (try

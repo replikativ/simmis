@@ -52,6 +52,14 @@ info line and watches nothing. A system-DB directory
 with no `:db` head stops the boot with that diagnosis; it is never created
 over or deleted.
 
+An optional private MCP listener (`runtimes/mcp.clj`) starts in the same JVM
+when `SIMMIS_MCP_PORT` or `:mcp {:port ...}` is configured. Its bind is always
+loopback, its base port receives the instance offset, and it serves the
+existing rooms through Dvergr's embedding host hook. It owns no databases.
+The first surface is room/message/run reads for an explicitly authenticated
+human, not a raw database or code execution endpoint. See
+[authority.md](authority.md#private-mcp).
+
 ## Stores: one owns each concept
 
 Everything references across a store boundary **by value** — a uuid — never by

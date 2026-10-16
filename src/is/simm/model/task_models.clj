@@ -3,10 +3,11 @@
    (`:vision`) and the summarizer/merger (`:cheap`).
 
    Both calls go through dvergr (`dvergr.media.vision/describe`,
-   `dvergr.tools.llm-call/cheap-llm-call`), which has its own fixed defaults.
+   `dvergr.tools.llm-call/cheap-llm-call`). Vision requires an explicitly
+   configured image-capable model; the cheap call has a served default.
    A deployment overrides them with
 
-     :models {:vision \"accounts/fireworks/models/kimi-*\"
+     :models {:vision \"gpt-5.4-mini\"
               :cheap  \"accounts/fireworks/models/minimax-*\"}
 
    in config.local.edn, beside `:default` (the agents' product default,
@@ -20,11 +21,8 @@
    with that reason (`screen-intake`). One boot warning names the problem
    (`warn-unusable!`).
 
-   WORKAROUND, temporary: dvergr's fixed defaults name ids Fireworks
-   withdrew (kimi-k2p6 for vision, minimax-m2p7 for the cheap call). dvergr
-   branch fix/retired-fireworks-models replaces them with served defaults.
-   Once simmis is on the dvergr release containing that branch, the defaults
-   work unconfigured and this namespace only carries the override."
+   When no Simmis vision override is set, dvergr accepts DVERGR_VISION_MODEL
+   or its registry's :vision-model default, and refuses an unconfigured call."
   (:require [clojure.string :as str]
             [dvergr.model.registry :as registry]
             [dvergr.substrate.config :as dcfg]
