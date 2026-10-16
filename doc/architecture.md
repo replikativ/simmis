@@ -97,6 +97,15 @@ store, checks `can?`, and transacts. A client never declares schema —
 `:db/ident` is append-only, so a browser that could declare an attribute could
 permanently fix its type.
 
+The replica's own writer is never used for this. A write the user should see
+at once is a datahike.optimistic PREDICTION over the RPC that makes it durable
+(`uis/web/desktop/optimistic_write.cljc`): the RPC answers with the store's
+head after the write, the prediction is dropped once the replica reaches that
+head, and a refused or failed RPC rejects it and tells the user. `opt/transact!`
+would hand the transaction to the replica's KabelWriter — a raw
+`datahike.kabel/dispatch`, past `can?`, which this server does not serve — and
+such a write never arrives and never fails.
+
 **Aggregates are views over sources.** No persisted aggregate, no denormalised
 index. If an aggregate is slow, cache it on a key derived from the sources' own
 heads, so a stale entry is impossible rather than unlikely.
@@ -154,6 +163,7 @@ src/is/simm/
 └── uis/web/desktop/         the spindel UI
     ├── signals.cljc         all UI signals and mutators
     ├── db_signal.cljc       client replicas, tiered stores, konserve-sync
+    ├── optimistic_write.cljc a write shown at once, made durable by an RPC
     ├── tab_heal.cljc        open tabs reconciled against the room roster
     ├── backlink_target.cljc what a backlink row opens, or why it opens nothing
     ├── *_remote.cljc        RPC endpoints

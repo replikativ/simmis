@@ -64,6 +64,45 @@
      (db/get-conn))))
 
 ;; =============================================================================
+;; What a browser needs back from a write
+;; =============================================================================
+;;
+;; The browser shows its own writes at once, as a datahike.optimistic
+;; PREDICTION, and this server is what makes them durable. It drops the
+;; prediction once its replica has caught up with the write, which it can only
+;; tell by a head: `:max-tx` of the store after the write. Every handler the
+;; browser predicts for returns one. See `optimistic-write`.
+
+(defn- head
+  "The store's head after a write: what the browser's replica must reach
+   before it holds that write."
+  [conn]
+  (:max-tx @conn))
+
+(defn- unused-uuid
+  "`u`, a uuid the browser chose for an entity it is about to create — after
+   checking it names nothing yet. `:entity/uuid` is a unique identity: a uuid
+   that already exists would turn the create into an UPSERT onto that entity
+   (a page, someone else's block), not a new block."
+  [db u]
+  (when-not (uuid? u)
+    (throw (ex-info "Not a uuid" {:type :invalid-argument :value (pr-str u)})))
+  (when (d/q '[:find ?e . :in $ ?u :where [?e :entity/uuid ?u]] db u)
+    (throw (ex-info "That uuid already names an entity"
+                    {:type :invalid-argument :uuid (str u)})))
+  u)
+
+(defn- existing-block
+  "`u`, after checking it names an entity. An UPDATE of a uuid that names
+   nothing would create one — `:entity/uuid` is a unique identity, so the
+   transaction upserts — and a late save of a block deleted a moment earlier
+   would bring back a parentless fragment of it."
+  [db u]
+  (when-not (d/q '[:find ?e . :in $ ?u :where [?e :entity/uuid ?u]] db u)
+    (throw (ex-info "No such block" {:type :not-found :block-uuid (str u)})))
+  u)
+
+;; =============================================================================
 ;; Remote Block Handlers
 ;; These are executed on the server when invoked via distributed-scope
 ;; =============================================================================
@@ -124,8 +163,12 @@
 
    Args:
      block-uuid - UUID of the block to create a sibling after
-     content - HTML content for the new block"
-  [{:keys [block-uuid content db-scope branch-kw]}]
+     content - HTML content for the new block
+     new-uuid - optional: the new block's uuid, chosen by a browser that
+                already shows it (must name nothing yet)
+
+   Returns {:block-uuid <the new block> :max-tx <head after the write>}."
+  [{:keys [block-uuid content new-uuid db-scope branch-kw]}]
   (go-try S
     (let [conn (resolve-conn db-scope branch-kw)
           db @conn
@@ -146,10 +189,12 @@
                                 [(> ?order ?after-order)]]
                               db parent-uuid current-order)
               ;; Generate fractional index between current and next
-              new-order (frac/generate-key-between current-order next-order)]
-          (crud/create-block! conn {:parent parent-uuid
-                                    :content content
-                                    :order new-order}))
+              new-order (frac/generate-key-between current-order next-order)
+              created (crud/create-block! conn (cond-> {:parent parent-uuid
+                                                        :content content
+                                                        :order new-order}
+                                                 new-uuid (assoc :uuid (unused-uuid db new-uuid))))]
+          {:block-uuid created :max-tx (head conn)})
         ;; Block not found or missing data
         (throw (ex-info "Block not found or missing parent/order"
                        {:block-uuid block-uuid
@@ -157,8 +202,12 @@
 
 (defn -ensure-page-handler
   "Ensure a page exists with the given UUID. Creates it if it doesn't exist.
-   When creating a new page, also creates the first block automatically."
-  [{:keys [page-uuid title db-scope branch-kw]}]
+   When creating a new page, also creates the first block automatically —
+   under `first-block-uuid` when the browser chose one (it already shows that
+   block, and focuses it).
+
+   Returns {:status :exists|:created :uuid page-uuid :max-tx head}."
+  [{:keys [page-uuid title first-block-uuid db-scope branch-kw]}]
   (go-try S
     (let [conn (resolve-conn db-scope branch-kw)
           db @conn
@@ -169,7 +218,7 @@
                             db page-uuid))]
       (if exists?
         ;; Page exists, return its UUID
-        {:status :exists :uuid page-uuid}
+        {:status :exists :uuid page-uuid :max-tx (head conn)}
         ;; Page doesn't exist, create it with the specific UUID and first block
         (do
           (d/transact conn [{:entity/uuid page-uuid
@@ -187,14 +236,20 @@
             (when (seq backfill)
               (d/transact conn backfill)))
           ;; Create first block for the new page
-          (crud/create-block! conn {:parent page-uuid
-                                   :content ""
-                                   :order (frac/generate-key-between nil nil)})
-          {:status :created :uuid page-uuid})))))
+          (crud/create-block! conn (cond-> {:parent page-uuid
+                                            :content ""
+                                            :order (frac/generate-key-between nil nil)}
+                                     first-block-uuid
+                                     (assoc :uuid (unused-uuid @conn first-block-uuid))))
+          {:status :created :uuid page-uuid :max-tx (head conn)})))))
 
-(defn -update-block-content-handler [{:keys [block-uuid content db-scope branch-kw]}]
+(defn -update-block-content-handler
+  "Returns {:block-uuid … :max-tx <head after the write>}."
+  [{:keys [block-uuid content db-scope branch-kw]}]
   (go-try S
-    (crud/update-block! (resolve-conn db-scope branch-kw) block-uuid {:block/content content})))
+    (let [conn (resolve-conn db-scope branch-kw)]
+      (crud/update-block! conn (existing-block @conn block-uuid) {:block/content content})
+      {:block-uuid block-uuid :max-tx (head conn)})))
 
 (defn -rename-page-handler
   "Rename a page, keeping its inbound links coherent.
@@ -225,9 +280,13 @@
   (go-try S
     (crud/update-block! (resolve-conn db-scope branch-kw) block-uuid {:block/order new-order})))
 
-(defn -update-block-collapsed-handler [{:keys [block-uuid collapsed db-scope branch-kw]}]
+(defn -update-block-collapsed-handler
+  "Returns {:block-uuid … :max-tx <head after the write>}."
+  [{:keys [block-uuid collapsed db-scope branch-kw]}]
   (go-try S
-    (crud/update-block! (resolve-conn db-scope branch-kw) block-uuid {:block/collapsed collapsed})))
+    (let [conn (resolve-conn db-scope branch-kw)]
+      (crud/update-block! conn (existing-block @conn block-uuid) {:block/collapsed collapsed})
+      {:block-uuid block-uuid :max-tx (head conn)})))
 
 (defn -toggle-block-collapsed-handler
   "Toggle the collapsed state of a block.
@@ -241,9 +300,13 @@
           new-collapsed (not current-collapsed)]
       (crud/update-block! conn block-uuid {:block/collapsed new-collapsed}))))
 
-(defn -delete-block-handler [{:keys [block-uuid cascade? db-scope branch-kw]}]
+(defn -delete-block-handler
+  "Returns {:deleted <blocks removed> :max-tx <head after the write>}."
+  [{:keys [block-uuid cascade? db-scope branch-kw]}]
   (go-try S
-    (crud/delete-block! (resolve-conn db-scope branch-kw) block-uuid {:cascade? cascade?})))
+    (let [conn (resolve-conn db-scope branch-kw)
+          n (crud/delete-block! conn block-uuid {:cascade? cascade?})]
+      {:deleted n :max-tx (head conn)})))
 
 (defn -indent-block-handler [{:keys [block-uuid db-scope branch-kw]}]
   (go-try S

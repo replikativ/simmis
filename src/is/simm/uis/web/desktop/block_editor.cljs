@@ -26,6 +26,7 @@
             [is.simm.uis.web.desktop.datahike-query :as dq]
             [is.simm.uis.web.desktop.block-remote :as remote]
             [is.simm.uis.web.desktop.remote :as rem]
+            [is.simm.uis.web.desktop.optimistic-write :as ow]
             [is.simm.uis.web.desktop.views.types :as types]
             [is.simm.uis.web.desktop.widget-sandbox :as widget-sandbox]
             ;; Use shared kabel client from web.cljs
@@ -359,19 +360,21 @@
 ;; Branch awareness
 ;; ----------------
 ;; KB writes are dispatched against `(active-branch-for db-scope)` which
-;; reads `sig/active-kb-branch`. Two cases:
+;; reads `sig/active-kb-branch`. EVERY write is a `block_remote` RPC — the
+;; server resolves the store, checks `can?` and transacts. Two cases:
 ;;
-;;   - **Trunk** (`:db` or nil) — optimistic local `opt/transact!` on the
-;;     replicated kabel conn, server reconciles via store sync. Snappy.
-;;   - **Fork** — must round-trip through the server's spin-remote with
-;;     `:branch-kw` so the server's writer-per-store serializes the tx
-;;     against the right branch-bound conn. Editor view re-renders when
-;;     kabel store sync replicates the new branch state back. Slightly
-;;     less snappy than trunk; correct under SI + writer-per-store.
+;;   - **Trunk** (`:db` or nil) — the RPC, plus a PREDICTION of its effect on
+;;     the KB's overlay, so the edit shows at once
+;;     (`optimistic-write/predict-remote!`). The prediction is dropped when
+;;     the replica catches up with the head the RPC reports, and rejected —
+;;     with an error shown — when the RPC fails or is refused.
+;;   - **Fork** — the RPC alone, with `:branch-kw`. The local overlay is on
+;;     trunk; predicting there would put fork data in the trunk view. The
+;;     editor re-renders when the branch's state replicates back.
 ;;
-;; The local-only optimistic path can't target a fork: the local conn is
-;; on trunk, and `opt/transact!` is branch-unaware. Until datahike's
-;; optimistic overlay grows branch addressing, forks pay the round-trip.
+;; Never `opt/transact!`: that hands the durable write to the replica's
+;; KabelWriter, a raw transaction past `can?` that this server does not serve.
+;; It never reaches the server and never fails — see `optimistic-write`.
 
 (defn- active-branch-for
   "Active branch keyword for `db-scope` from the session-local signal.
@@ -426,9 +429,31 @@
     (rem/invoke! (remote/create-block-remote! parent-uuid content order db-scope branch)
                  {:message "Could not create that block."})))
 
+(declare get-editor-for-block deleted-here)
+
+(defn- predict!
+  "Predict `tx-data` on `overlay` and make it durable with `(send!)` — see
+   `optimistic-write/predict-remote!`. A failure is reported to the user as
+   `message`, after `undo!` (when given) has put the screen back."
+  ([overlay tx-data send! message] (predict! overlay tx-data send! message nil))
+  ([overlay tx-data send! message undo!]
+   (ow/predict-remote! overlay tx-data send!
+                       {:on-failure (fn [err]
+                                      (when undo! (undo!))
+                                      (rem/report-error! message err))})))
+
+(defn- restore-editor-content!
+  "Put `content` back into the mounted editor of `block-uuid`. A rejected
+   prediction reverts the DB, but a mounted TipTap editor holds its own
+   document and is not re-rendered from it — without this the refused text
+   would stay on screen, looking saved."
+  [block-uuid content]
+  (when-let [^js editor (get-editor-for-block block-uuid)]
+    (.setContent (.-commands editor) (or content "") #js {:emitUpdate false})))
+
 (defn ensure-page-remote!
-  "Ensure a page exists. Optimistic local write for KB pages on trunk,
-   remote invoke for shared DB or fork writes."
+  "Ensure a page exists. For a KB page on trunk the page shows at once (a
+   prediction); every write is the server's `ensure-page`."
   [page-uuid title & [db-scope]]
   (let [branch (active-branch-for db-scope)
         overlay (when (and db-scope (trunk? branch))
@@ -441,48 +466,50 @@
           (go {:status :exists :uuid page-uuid})
           (let [now (js/Date.)
                 resolved-title (or title "Untitled Page")
+                first-block-uuid (random-uuid)
                 ;; Pre-compute backfill for any existing blocks that
                 ;; contain `[[title]]` — same shape as the server's
                 ;; -ensure-page-handler. Lights up backlinks
                 ;; optimistically the moment the page is created.
                 backfill (refs/backfill-tx-for-page db page-uuid resolved-title)]
-            ;; Page + an empty first block in one optimistic transaction.
-            ;; Mirrors the server-side -ensure-page-handler, which always
-            ;; seeds a new page with an empty first block so the editor has
-            ;; a block to render and focus. The block references the page
-            ;; via the :db/id tempid so the parent link resolves within the
-            ;; same tx.
-            (opt/transact! overlay
-                           (into [{:db/id "new-page"
+            ;; Page + an empty first block, predicted together. Mirrors the
+            ;; server-side -ensure-page-handler, which always seeds a new
+            ;; page with an empty first block so the editor has a block to
+            ;; render and focus — under the SAME uuid, which the server is
+            ;; given, so the block the editor focuses is the one that lands.
+            ;; The block references the page via the :db/id tempid so the
+            ;; parent link resolves within the same tx.
+            (predict! overlay
+                      (into [{:db/id "new-page"
                                    :entity/uuid page-uuid
                                    :entity/name (str "Page " (subs (str page-uuid) 0 8))
                                    :entity/created-at now
                                    :entity/updated-at now
                                    :instance/of-role [:entity/name "S/Page"]
                                    :S.Page/title resolved-title}
-                                  {:entity/uuid (random-uuid)
+                                  {:entity/uuid first-block-uuid
                                    :entity/created-at now
                                    :entity/updated-at now
                                    :instance/of-role [:entity/name "S/Block"]
                                    :block/content ""
                                    :block/order (frac/generate-key-between nil nil)
                                    :block/parent "new-page"}]
-                                 backfill))
-            (go {:status :created :uuid page-uuid}))))
+                                 backfill)
+                      #(remote/ensure-page-remote! page-uuid title db-scope branch first-block-uuid)
+                      "Could not create that page."))))
       (do
         (js/console.log "[Remote] Ensuring page exists:" (str page-uuid) "branch:" branch)
         (remote/ensure-page-remote! page-uuid title db-scope branch)))))
 
 (defn update-block-content-remote!
-  "Update block content. Optimistic local write for KB pages on trunk,
-   remote invoke for shared DB or fork writes.
+  "Update block content. For KB pages on trunk the edit shows at once (a
+   prediction); every write is the server's `update-block-content`.
 
-   For the local path we skip the transact when the new content matches
-   what's already in the effective DB. Reason: the Enter handler runs
-   a coalesced transact that already saves the leaving block's content,
-   and TipTap then fires `onBlur` with the same HTML — without this
-   guard that fires a redundant `opt/transact!`, which in turn triggers
-   another full reactive pass for no benefit."
+   On trunk we skip the write when the new content matches what's already in
+   the effective DB. Reason: the Enter handler already saves the leaving
+   block's content, and TipTap then fires `onBlur` with the same HTML —
+   without this guard that is a redundant RPC and another full reactive pass
+   for no benefit."
   [block-uuid content & [db-scope]]
   (when-not (refuse-past-write! "edit block content")
     (let [branch (active-branch-for db-scope)
@@ -492,8 +519,16 @@
         (let [db (opt/db overlay)
               current (some-> (dh/entity db [:entity/uuid block-uuid])
                               :block/content)]
-          (if (= current content)
-          (js/console.log "[Local] Skipping content update (unchanged) for:" (str block-uuid))
+          (cond
+            ;; Deleted here (Backspace on an empty block): its editor blurs on
+            ;; the way out with a last save, which would only be refused.
+            (contains? @deleted-here block-uuid)
+            (js/console.log "[Local] Skipping content update (deleted):" (str block-uuid))
+
+            (= current content)
+            (js/console.log "[Local] Skipping content update (unchanged) for:" (str block-uuid))
+
+            :else
           (let [;; Resolve [[Page]] refs against the local KB db, so
                 ;; backlinks light up optimistically — no waiting for
                 ;; the server roundtrip. Pages that don't exist
@@ -507,20 +542,24 @@
                   mentions (refs/extract-user-mentions content)]
               (js/console.log "[Local] Updating content for:" (str block-uuid)
                               "refs:" (count resolved-refs) "mentions:" (count mentions))
-              (opt/transact! overlay [(cond-> {:entity/uuid block-uuid
-                                               :block/content content}
-                                        (seq resolved-refs)
-                                        (assoc :block/references resolved-refs)
-                                   (seq mentions)
-                                   (assoc :block/mentions (vec mentions)))]))))
+              (predict! overlay
+                        [(cond-> {:entity/uuid block-uuid
+                                  :block/content content}
+                           (seq resolved-refs)
+                           (assoc :block/references resolved-refs)
+                           (seq mentions)
+                           (assoc :block/mentions (vec mentions)))]
+                        #(remote/update-block-content-remote! block-uuid content db-scope branch)
+                        "Could not save that block."
+                        #(restore-editor-content! block-uuid current)))))
       (do
         (js/console.log "[Remote] Updating content for:" (str block-uuid) "branch:" branch)
         (rem/invoke! (remote/update-block-content-remote! block-uuid content db-scope branch)
                      {:message "Could not save that block."}))))))
 
 (defn update-block-collapsed-remote!
-  "Update block collapsed state. Optimistic local for KB pages on trunk,
-   remote invoke for shared DB or fork writes."
+  "Update block collapsed state. Predicted for KB pages on trunk; every write
+   is the server's `update-block-collapsed`."
   [block-uuid collapsed & [db-scope]]
   (when-not (refuse-past-write! "collapse a block")
     (let [branch (active-branch-for db-scope)
@@ -529,24 +568,35 @@
       (if overlay
         (do
           (js/console.log "[Local] Updating collapsed for:" (str block-uuid) "to:" collapsed)
-          (opt/transact! overlay [{:entity/uuid block-uuid :block/collapsed collapsed}]))
+          (predict! overlay [{:entity/uuid block-uuid :block/collapsed collapsed}]
+                    #(remote/update-block-collapsed-remote! block-uuid collapsed db-scope branch)
+                    "Could not fold that block."))
         (do
           (js/console.log "[Remote] Updating collapsed for:" (str block-uuid) "to:" collapsed "branch:" branch)
           (rem/invoke! (remote/update-block-collapsed-remote! block-uuid collapsed db-scope branch)
                      {:message "Could not fold that block."}))))))
 
+(defonce ^:private deleted-here
+  ;; Blocks this editor deleted. Recorded at the delete itself, not read back
+  ;; from the replica: a replica read can fail while blobs are still syncing,
+  ;; and reading "no such block" there would drop a real save.
+  (atom #{}))
+
 (defn delete-block-remote!
-  "Delete a block. Optimistic local for KB pages on trunk, remote invoke
-   for shared DB or fork writes."
+  "Delete a block (and its children). Predicted for KB pages on trunk; every
+   write is the server's `delete-block`."
   [block-uuid & [db-scope]]
   (when-not (refuse-past-write! "delete a block")
+    (swap! deleted-here conj block-uuid)
     (let [branch (active-branch-for db-scope)
           overlay (when (and db-scope (trunk? branch))
                     (db-signal/get-kb-overlay db-scope))]
       (if overlay
         (do
           (js/console.log "[Local] Deleting block:" (str block-uuid))
-          (opt/transact! overlay [[:db/retractEntity [:entity/uuid block-uuid]]]))
+          (predict! overlay [[:db/retractEntity [:entity/uuid block-uuid]]]
+                    #(remote/delete-block-remote! block-uuid true db-scope branch)
+                    "Could not delete that block."))
         (do
           (js/console.log "[Remote] Deleting block:" (str block-uuid) "branch:" branch)
           (rem/invoke! (remote/delete-block-remote! block-uuid true db-scope branch)
@@ -584,54 +634,13 @@
 ;; Local KB Block Operations
 ;; =============================================================================
 
-(defn- create-sibling-after-local!
-  "Create a sibling block after block-uuid via opt/transact!.
-   Replicates the server-side create-sibling-after logic on the client."
-  [overlay block-uuid content]
-  (let [db (opt/db overlay)
-        ;; Get current block's parent and order — use q since pull with :in has CLJS bugs
-        all-blocks (dh/q '[:find [(pull ?b [:entity/uuid :block/order {:block/parent [:entity/uuid]}]) ...]
-                           :where [?b :block/parent _]]
-                          db)
-        block (first (filter #(= (:entity/uuid %) block-uuid) all-blocks))
-        parent-uuid (get-in block [:block/parent :entity/uuid])
-        current-order (:block/order block)]
-    (when (and parent-uuid current-order)
-      ;; Find next sibling order
-      (let [siblings (filter #(= (get-in % [:block/parent :entity/uuid]) parent-uuid) all-blocks)
-            ;; `>` on strings in CLJS coerces to NaN and returns nonsense.
-            ;; Use `compare` for proper lexical ordering — without this
-            ;; next-order is always nil and `generate-key-between` falls
-            ;; back to "append after current-order" which puts the new
-            ;; block at the end of the order space rather than next to
-            ;; the current block.
-            next-order (->> siblings
-                            (map :block/order)
-                            (filter #(when % (pos? (compare % current-order))))
-                            sort
-                            first)
-            new-order (frac/generate-key-between current-order next-order)
-            new-uuid (random-uuid)
-            resolved-refs (refs/resolve-references db content)]
-        (js/console.log "[Local] Creating sibling after:" (str block-uuid) "order:" new-order
-                        "refs:" (count resolved-refs))
-        (opt/transact! overlay [(cond-> {:entity/uuid new-uuid
-                                         :entity/created-at (js/Date.)
-                                         :entity/updated-at (js/Date.)
-                                         :instance/of-role [:entity/name "S/Block"]
-                                      :block/content content
-                                      :block/order new-order
-                                      :block/parent [:entity/uuid parent-uuid]}
-                               (seq resolved-refs)
-                               (assoc :block/references resolved-refs))])
-        new-uuid))))
-
 (defn- update-content-and-create-sibling-local!
-  "Coalesced version of update-block-content-remote! + create-sibling-
-  after-local! for the Enter handler. Both mutations go through a
-  single `opt/transact!` so the kb-state listener fires ONCE for the
-  optimistic apply and ONCE for the server reply (instead of twice each)."
-  [overlay block-uuid current-content sibling-content]
+  "Enter on a KB page on trunk: save the current block's content and create
+  an empty sibling after it. ONE prediction covers both, so the kb-state
+  listener fires once for the optimistic apply; the server gets the two RPCs
+  in order (`update-block-content`, then `create-sibling-after` under the
+  uuid predicted here, which the new block's editor focuses)."
+  [overlay block-uuid current-content sibling-content db-scope]
   (let [db (opt/db overlay)
         all-blocks (dh/q '[:find [(pull ?b [:entity/uuid :block/order {:block/parent [:entity/uuid]}]) ...]
                            :where [?b :block/parent _]]
@@ -655,15 +664,23 @@
             new-order (frac/generate-key-between current-order next-order)
             new-uuid (random-uuid)]
         (js/console.log "[Local] Enter: update content +" (str block-uuid) "+ create sibling order:" new-order)
-        ;; Stash focus target BEFORE the transact: spindel processes
+        ;; Stash focus target BEFORE the prediction: spindel processes
         ;; the change synchronously and the new block's `:on-mount`
-        ;; reads `focus-on-mount` during `opt/transact!`. Setting it
+        ;; reads `focus-on-mount` while the overlay publishes. Setting it
         ;; after would race the on-mount and the new block would
         ;; render without focus.
         (reset! focus-on-mount new-uuid)
         (let [current-refs (refs/resolve-references db current-content)
-              sibling-refs (refs/resolve-references db sibling-content)]
-          (opt/transact! overlay
+              sibling-refs (refs/resolve-references db sibling-content)
+              send! (fn []
+                      (go
+                        (let [r (<! (remote/update-block-content-remote!
+                                     block-uuid current-content db-scope :db))]
+                          (if (rem/failure? r)
+                            r
+                            (<! (remote/create-sibling-block-after-remote!
+                                 block-uuid sibling-content db-scope :db new-uuid))))))]
+          (predict! overlay
                          [(cond-> {:entity/uuid block-uuid
                                    :block/content current-content}
                             (seq current-refs)
@@ -676,7 +693,9 @@
                                    :block/order new-order
                                    :block/parent [:entity/uuid parent-uuid]}
                             (seq sibling-refs)
-                            (assoc :block/references sibling-refs))]))
+                            (assoc :block/references sibling-refs))]
+                         send!
+                         "Could not save that block."))
         new-uuid))))
 
 ;; =============================================================================
@@ -851,9 +870,8 @@
                                                "content=" current-content)
                                (if at-end?
                                  ;; At end: save current content + create new sibling block.
-                                 ;; For KB pages, both writes go through a single opt/transact!
-                                 ;; so the kb-state listener fires ONCE (instead of twice)
-                                 ;; and we get ONE server roundtrip (instead of two).
+                                 ;; For KB pages on trunk, both writes are ONE prediction
+                                 ;; so the kb-state listener fires ONCE (instead of twice).
                                  ;; Stash the new block's UUID in `focus-on-mount` so the
                                  ;; foreign-node's :on-mount callback focuses TipTap as
                                  ;; soon as the new DOM element appears.
@@ -863,7 +881,7 @@
                                                                         (trunk? (active-branch-for db-scope)))
                                                                (db-signal/get-kb-overlay db-scope))]
                                               (when-let [new-uuid (update-content-and-create-sibling-local!
-                                                                   overlay block-id current-content "")]
+                                                                   overlay block-id current-content "" db-scope)]
                                                 (reset! focus-on-mount new-uuid))
                                               (do
                                                 (update-block-content-remote! block-id current-content db-scope)
@@ -1336,7 +1354,7 @@
            :on-mount (fn [el]
                        ;; `focus-on-mount` carries the UUID of the
                        ;; most recently created block (set by the
-                       ;; Enter handler before `opt/transact!`). The
+                       ;; Enter handler before its prediction). The
                        ;; new block's `:on-mount` fires once and we
                        ;; autofocus iff this mount matches the pending
                        ;; UUID, then clear the atom so a stale UUID

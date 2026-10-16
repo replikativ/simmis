@@ -43,23 +43,28 @@
 
 (defn create-sibling-block-after-remote!
   "Create a new sibling block after the given block.
-   Server figures out parent-id and order from block-id."
-  [block-uuid content & [db-scope branch-kw]]
+   Server figures out parent-id and order from block-id. `new-uuid`, when
+   given, is the new block's uuid — the one a prediction already shows."
+  [block-uuid content & [db-scope branch-kw new-uuid]]
   (invoke-remote server-id
                  'block-remote/create-sibling-after
                  (cond-> {:block-uuid block-uuid :content content}
                    db-scope (assoc :db-scope db-scope)
-                   branch-kw (assoc :branch-kw branch-kw))))
+                   branch-kw (assoc :branch-kw branch-kw)
+                   new-uuid (assoc :new-uuid new-uuid))))
 
 (defn ensure-page-remote!
   "Ensure a page exists with the given UUID. Creates it if it doesn't exist.
-   Returns a channel with {:status :exists|:created :uuid page-uuid}"
-  [page-uuid title & [db-scope branch-kw]]
+   Returns a channel with {:status :exists|:created :uuid page-uuid :max-tx t}.
+   `first-block-uuid`, when given, is the uuid of the empty first block a new
+   page is created with — the one a prediction already shows."
+  [page-uuid title & [db-scope branch-kw first-block-uuid]]
   (invoke-remote server-id
                  'block-remote/ensure-page
                  (cond-> {:page-uuid page-uuid :title title}
                    db-scope (assoc :db-scope db-scope)
-                   branch-kw (assoc :branch-kw branch-kw))))
+                   branch-kw (assoc :branch-kw branch-kw)
+                   first-block-uuid (assoc :first-block-uuid first-block-uuid))))
 
 (defn rename-page-remote!
   "Rename a page. Sends the INSTRUCTION, not the resulting transaction.
