@@ -82,7 +82,8 @@
  ;; calls then FAIL with the reason (a screen frame is stored as failed and
  ;; shows why) — they never use dvergr's default or another family instead.
  #_:models #_{:default "codex-subscription-luna-6"
-              :vision  "accounts/fireworks/models/kimi-*"
+              ;; Requires a real OpenAI API credential, not the Fireworks key.
+              :vision  "gpt-5.4-mini"
               :cheap   "accounts/fireworks/models/minimax-*"}
 
  ;; ---------------------------------------------------------------------------

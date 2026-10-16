@@ -60,7 +60,7 @@
             (testing "stt got the file's bytes, whole (it is small)"
               (is (= [[(alength (fixture-bytes)) "audio/wav"]] @heard)))
             (testing "the transcript is a Markdown document under transcripts/"
-              (is (re-matches #"transcripts/\d{4}-\d{2}-\d{2}-\d{4}-call\.md" path))
+              (is (re-matches #"transcripts/\d{4}-\d{2}-\d{2}-\d{4}-call-[0-9a-f-]{36}\.md" path))
               (let [md (String. ^bytes (:bytes (get @drive path)) "UTF-8")]
                 (is (str/starts-with? md "# call"))
                 (is (str/includes? md "we push the launch to March"))
@@ -113,6 +113,23 @@
       (is (= "text of part0\n\ntext of part1\n\ntext of part2"
              (tr/transcribe-bytes (fixture-bytes) "audio/wav" "long.wav")))
       (is (= ["audio/mpeg" "audio/mpeg" "audio/mpeg"] @sent)))))
+
+(deftest repeated-transcripts-do-not-overwrite-the-source-document
+  (with-room
+    (fn [{:keys [room author drive]}]
+      (let [a (tr/post-transcript! room author "first" {:title "Standup" :at 1000})
+            b (tr/post-transcript! room author "second" {:title "Standup" :at 1000})]
+        (is (not= (:path a) (:path b)))
+        (is (str/includes? (String. ^bytes (:bytes (get @drive (:path a))) "UTF-8") "first"))
+        (is (str/includes? (String. ^bytes (:bytes (get @drive (:path b))) "UTF-8") "second"))))))
+
+(deftest failed-audio-chunk-is-not-presented-as-a-complete-transcript
+  (with-redefs [tr/chunk-threshold-bytes 10
+                tr/ffmpeg-split! (fn [in _] [in in])
+                stt/transcribe (let [results (atom ["first part" nil])]
+                                 (fn [_] (let [r (first @results)] (swap! results rest) r)))]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Incomplete transcript of long.wav"
+                          (tr/transcribe-bytes (fixture-bytes) "audio/wav" "long.wav")))))
 
 (deftest ffmpeg-really-splits
   (if (zero? (:exit (try (clojure.java.shell/sh "ffmpeg" "-version")

@@ -50,10 +50,11 @@
     (if (str/blank? s) "call" (subs s 0 (min 60 (count s))))))
 
 (defn transcript-file-name
-  "`<yyyy-MM-dd-HHmm>-<slug>.md` for a transcript of `title` at `at` (ms)."
+  "`<yyyy-MM-dd-HHmm>-<slug>-<uuid>.md`: distinct ingestions never overwrite
+   one another, even for the same title and timestamp."
   [title at]
   (str (.format (java.text.SimpleDateFormat. "yyyy-MM-dd-HHmm") (java.util.Date. (long at)))
-       "-" (slug title) ".md"))
+       "-" (slug title) "-" (random-uuid) ".md"))
 
 (defn- markdown [title body at source]
   (str "# " title "\n\n"
@@ -148,6 +149,12 @@
       (throw (ex-info (str "No speech-to-text backend produced a transcript of " file-name
                            " (tried Groq, OpenAI, native, local faster-whisper — see the server log)")
                       {:type :transcription-failed :file file-name})))
+    (when (some str/blank? texts)
+      (throw (ex-info (str "Incomplete transcript of " file-name
+                           ": one or more audio chunks produced no text; retry from the original audio")
+                      {:type :transcription-failed :file file-name
+                       :chunks (count texts)
+                       :missing-chunks (into [] (keep-indexed (fn [i s] (when (str/blank? s) i))) texts)})))
     text))
 
 (defn audio-file?

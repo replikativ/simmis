@@ -70,8 +70,10 @@ posts into the room whose id is the meeting name; or someone presses
 `transcript/transcribe!`), and `dvergr.audio.stt` turns it into text — Groq or
 OpenAI whisper with a key, else local faster-whisper — after cutting audio over
 20 MB into ten-minute ffmpeg pieces. Transcription is never automatic on upload.
-Either way the transcript becomes a Markdown file under `transcripts/` on the
-room drive — the document wiki pages cite — and one `:kind :transcript`
+If any audio chunk produces no text, the request fails visibly rather than
+presenting a partial transcript as complete; the original audio stays on the drive.
+Either way a successful transcript becomes a uniquely named Markdown file under
+`transcripts/` on the room drive — the document wiki pages cite — and one `:kind :transcript`
 message posted to the room log, which wakes no agent: an hour of call is
 nobody's turn until someone asks for it.
 
