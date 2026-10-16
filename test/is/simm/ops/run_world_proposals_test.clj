@@ -341,3 +341,33 @@
                  (:world-adoption/status
                   (d/pull @sys-conn '[*]
                           [:world-adoption/id adoption-id])))))))))
+
+(deftest a-lost-overlay-fails-the-accept-clearly-and-leaves-it-open
+  ;; spindel 0.1.126 refuses to merge a fork system that lost its overlay
+  ;; (::overlay-lost) instead of reporting a merge that landed nothing
+  (let [sys-conn (fresh-system-db)
+        fixture (fixture-world)]
+    (with-promotion-mocks
+      sys-conn fixture
+      (fn []
+        (let [{:keys [proposal-id]}
+              (world-proposals/promote! (:room-id fixture) (:run-id fixture)
+                                        {:title "Land a component"})
+              a (first (:proposal/forks (proposals/get-proposal proposal-id)))]
+          (with-redefs [room-forks/settle-adoption!
+                        (fn [_ _ _]
+                          (throw (ex-info "Fork system is no longer an overlay; refusing to merge nothing"
+                                          {:type :org.replikativ.spindel.yggdrasil/overlay-lost
+                                           :system :messages})))]
+            (let [e (try (proposals/accept-fork! proposal-id
+                                                 (:proposal.fork/scope a)
+                                                 (:proposal.fork/branch a))
+                         nil
+                         (catch clojure.lang.ExceptionInfo e e))]
+              (is (= :proposal/merge-failed (:type (ex-data e))))
+              (is (clojure.string/includes? (ex-message e) "nothing landed"))
+              (is (= :open (:proposal/status (proposals/get-proposal proposal-id))))
+              (is (nil? (:proposal.fork/status
+                            (first (filter #(= (:proposal.fork/scope a) (:proposal.fork/scope %))
+                                           (:proposal/forks (proposals/get-proposal proposal-id))))))
+                  "the component is undecided"))))))))

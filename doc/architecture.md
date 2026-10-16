@@ -35,9 +35,15 @@ Two boot steps are switches. **Storage GC** (`runtimes/storage_gc.clj`, which
 drives dvergr's `gc-stores!` at boot and every 6h) is OFF unless
 `:storage-gc {:enabled? true}` or `SIMMIS_STORAGE_GC=true`: on datahike without
 #1117 a mark that dies on an Error comes back empty and the sweep deletes the
-whole store, which is how the dev.simm.is system DB was lost. While enabled on
-such a datahike it warns on every sweep, and it logs a sweep that timed out,
-failed or skipped rooms as an error rather than as an empty one. **Mail sync**
+whole store, which is how the dev.simm.is system DB was lost. simmis pins
+datahike 0.8.1906, the first release with #1117 (a mark that dies raises
+`:gc-incomplete-mark` and nothing is swept); the switch stays off by default
+regardless. While enabled on an older datahike (or a source checkout) it warns on every sweep, and it logs a sweep that timed out,
+failed or skipped rooms as an error rather than as an empty one. dvergr refuses
+a deleting sweep unless it was enabled for the process's home
+(`enable-storage-gc!`, dvergr 0.1.291): the loop's `start!` enables it for
+simmis's home and `stop!` (also on server stop) revokes it, so with the switch
+off nothing is ever enabled and a sweep run anyway is logged as refused. **Mail sync**
 for stored accounts is ON unless `:mail {:sync? false}` or
 `SIMMIS_MAIL_SYNC=false`, which isolated instances use. A system-DB directory
 with no `:db` head stops the boot with that diagnosis; it is never created

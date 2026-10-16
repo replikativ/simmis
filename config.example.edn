@@ -63,8 +63,9 @@
  ;; orphaned Datahike index nodes of the system DB and every room's stores;
  ;; orphan-only, every branch head and its history is kept. OFF because a
  ;; failed mark on datahike without #1117 makes the sweep delete the whole
- ;; store — it wiped the dev.simm.is system DB. While on with such a datahike,
- ;; every sweep logs a warning. SIMMIS_STORAGE_GC=true|false overrides this.
+ ;; store — it wiped the dev.simm.is system DB. simmis pins datahike 0.8.1906,
+ ;; which has #1117 (an incomplete mark refuses to sweep); on an older datahike
+ ;; every sweep logs a warning. Back up before you turn it on. SIMMIS_STORAGE_GC=true|false overrides this.
  #_:storage-gc #_{:enabled? true}
 
  ;; ---------------------------------------------------------------------------

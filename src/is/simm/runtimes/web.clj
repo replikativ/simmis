@@ -985,6 +985,13 @@
   []
   (when (:started? @server-state)
     (mail-accounts/close-all!)
+    ;; Revokes deleting GC for this home along with the loop.
+    (try
+      (require 'is.simm.runtimes.storage-gc)
+      ((resolve 'is.simm.runtimes.storage-gc/stop!))
+      (catch Exception e
+        (log/log! {:level :warn :id ::storage-gc-stop-failed
+                   :data {:error (str e)}})))
     (try
       (require 'is.simm.runtimes.telegram)
       ((resolve 'is.simm.runtimes.telegram/stop-telegram!))
