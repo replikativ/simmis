@@ -83,6 +83,28 @@ display name. Room names are not unique, so a row that carries only a name
 names no room; `uis/web/desktop/backlink_target.cljc` reports such a row as
 unavailable rather than guessing one.
 
+## Labels
+
+A label is a person's verdict on reviewed work (`workflows/review.clj`), one
+entity per decision in the ROOM's store, identified by `:entity/uuid`, with
+attributes under `:S.Label/*` (`schema/label-schema`, part of `full-schema`):
+
+| attribute | |
+|---|---|
+| `subject-kind`, `subject-id` | `:proposal` or `:run`, and its uuid |
+| `about` | `:workflow` (the work) or `:reviewer` (the reviewer's approval) |
+| `verdict` | `:accept`, `:reject` or `:edit`; about a reviewer, `:accept` agrees |
+| `review`, `policy`, `reviewer-verdict` | the dvergr Review, its spec's content id, what the reviewer said |
+| `workflow-id`, `workflow-version` | when known |
+| `edit` | the diff a person applied before accepting (verdict `:edit`) |
+| `by`, `reasons`, `at` | who decided, why, when |
+
+Labels are append-only: nothing updates or retracts one. `review/labels`
+reads them back as the `:label/*` maps of the workflows contract
+(`{:label/subject [:proposal id] :label/about … :label/workflow {:id
+:version} …}`). There is no `S/Label` object in category S yet; like
+`S.EvalEntry`, the attributes are simmis's own.
+
 ## Ordering
 
 Blocks are ordered by `:block/order`, a fractional index — a string chosen to

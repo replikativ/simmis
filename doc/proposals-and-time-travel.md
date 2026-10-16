@@ -189,6 +189,64 @@ do not recreate affine handles. Durable handle rehydration is a future Dvergr /
 Yggdrasil capability-store concern; Simmis deliberately does not reconstruct
 authority from serialized data.
 
+### Review escalations and labels
+
+dvergr's review stage (`dvergr.agent.review/review!`) decides a retained world:
+deterministic checks, an optional reviewer, then a merge pinned to the state
+it reviewed, an escalation to a person, or a discard. Each decision is one
+immutable Review record in the room's store. `workflows/review.clj` is the
+simmis half.
+
+`review-run!` runs a review on its own worker thread (a review blocks: diffs,
+checks, a merge). A merge or discard goes through `ops.dvergr/invoke` AS the
+reviewer's party, so simmis's authorizer decides whether the reviewer may land
+anything. A room's `:merge` is its owner's, so until delegation exists only a
+review run as the owner auto-merges; any other reviewer's approval escalates
+with the refusal as its reason. Nothing starts reviews on its own yet.
+
+**An escalated Review becomes a proposal.** The trigger is the Review RECORD:
+a datahike listener on each simmis room's store (`ensure-listener!`, armed by
+a dvergr register hook from boot, `install!`) sees `:review/decision
+:escalated` and queues the filing on a single escalation worker. dvergr also
+posts an escalation message, but as a plain map without `:type`, which a
+room's message listeners never receive (dvergr 0.1.286); the record is the
+authoritative half anyway. `sweep!` at boot files what a crash left behind.
+
+The proposal's id is a function of the Review id, and `:proposal/review` is a
+unique identity, so seeing a Review twice files nothing new. It is filed in
+ONE transaction (`file-proposal!`'s `:attrs` and `:comments`): the Review's
+id, state token, policy, spot-check flag and an EDN copy of its checks and
+verdict (a Review is immutable, so the copy cannot go stale), plus the
+reviewer's notes as the first comment, authored by the reviewer's party. Its
+one fork is `:system-type :review-world`: scope = the Review id, branch = the
+world's fork id, authority scope = the room's store scope. The world stays
+dvergr's live fork; `branching`'s `:review-world` backend only reads it (state
+token as head, changed paths as delta) and refuses `land!`/`drop-branch!`.
+Filing posts the proposal card into the room, as every proposal does.
+
+**Deciding.** `accept-proposal!` / `dismiss-proposal!` (and the per-fork
+verbs) route a review's proposal to `review/decide!`. Accept invokes dvergr's
+`room_merge` with `:expect-state` = the reviewed token, as the deciding party;
+a world that changed since it was reviewed is refused with `:world-changed`
+and the proposal stays open. Reject invokes `room_discard`. Who decides: `:merge`
+on the room (its owner), asked by `decide!` and again by dvergr's authorizer
+for the op. A dvergr fork id (`<slug>_fork_fork-<hex>`) answers as its room
+(`access/dvergr-resource`). Run-world adoption (`adopt!`, above) is NOT used:
+a transferred world leaves the registry, its settlement has no state pin, and
+its merge would not commit uncommitted files.
+
+A spot-checked review — the reviewer approved, and the review was sampled
+for a person — escalates in dvergr rather than merging, so it is the same
+kind of proposal, marked `:proposal/review-spot-check?` and titled "Spot
+check"; the card asks "Agree — merge" / "Disagree — discard".
+
+**Labels.** Every decision on a review's proposal records a label in the
+ROOM's store (data-model.md, "Labels"): `:workflow` (was the work right),
+and on a spot check also `:reviewer` (was the approval right; `:accept` =
+agree). Append-only — no RPC writes or removes one. Read with
+`review/labels` and the `list-labels!` RPC (a room read); the room settings
+page lists them under "Review decisions".
+
 ## 6. Semantic diff
 
 Server ns `ops/semantic_diff.clj` over `DatahikeDiff` (has FULL

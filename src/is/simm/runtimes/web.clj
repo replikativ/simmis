@@ -743,6 +743,10 @@
     ;; sandbox (dvergr asks before every sandbox write).
     (install-grant-permits!)
 
+    ;; Before any room hydrates: every simmis room's store is listened to for
+    ;; escalated Reviews, which become proposals (is.simm.workflows.review).
+    ((requiring-resolve 'is.simm.workflows.review/install!))
+
     ;; Hydrate dvergr rooms: per-room execution ctxs + yggdrasil systems are
     ;; in-memory, so after a JVM restart every provisioned room must be
     ;; rebuilt (ctx + systems), then its live discourse Room re-registered —
@@ -768,6 +772,15 @@
       (catch Exception e
         (log/log! {:level :warn :id ::proposal-publication-retry-failed
                    :msg "Pending proposal chat projections remain retryable"
+                   :data {:error (str e)}})))
+
+    ;; File the escalated Reviews a crash left without a proposal. After
+    ;; hydration: it reads each live room's Reviews and needs its worlds.
+    (try
+      ((requiring-resolve 'is.simm.workflows.review/sweep!))
+      (catch Exception e
+        (log/log! {:level :warn :id ::review-escalation-sweep-failed
+                   :msg "Escalated reviews without a proposal stay unfiled until the next boot"
                    :data {:error (str e)}})))
 
     ;; Reap orphaned repo workspace branches. AFTER hydration (it resolves each

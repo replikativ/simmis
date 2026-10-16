@@ -191,6 +191,8 @@
    "proposal-diff!"          [(c :proposal MEMBERS)]
    "proposal-checks!"        [(c :proposal MEMBERS)]
    "list-proposals!"         [(c :none AUTH)]
+   ;; labels: what the room's people decided on reviewed work — a room read
+   "list-labels!"            [(c :room MEMBERS)]
    ;; --- tasks / book / feed --------------------------------------------------
    "list-tasks!"             [(c :none AUTH)]
    "load-position!"          [(c :none AUTH)]

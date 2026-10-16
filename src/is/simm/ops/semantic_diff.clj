@@ -405,6 +405,13 @@
                       :counts (:summary delta)}
                (:files delta) (assoc :files (vec (:files delta))
                                      :stat (:stat delta))))
+    ;; the world an escalated review handed to a person: its changed paths
+    ;; (uncommitted included) and any other system it touched
+    :review-world (let [delta (branching/delta scope :review-world branch)]
+                    {:scope scope :system-type :review-world
+                     :files (vec (:files delta))
+                     :other-systems (vec (:other-systems delta))
+                     :counts (:summary delta)})
     {:scope scope :system-type system-type
      :counts (:summary (branching/kb-diff scope :db branch))}))
 

@@ -738,13 +738,14 @@
          ;; fork that has some.
          changed (case system-type
                    :book (count entries)
-                   :repo (or (:files-changed counts) (count files) 0)
+                   (:repo :review-world) (or (:files-changed counts) (count files) 0)
                    (or (:entities-touched counts) 0))]
      (el/div {:class (str "proposal-fork"
                           (when status (str " proposal-fork--" (name status))))
               :style (when resolved? resolved-style)}
        (el/div {:class "proposal-fork-head"}
          (str (case system-type :kb "Wiki" :fs "Drive" :book "Book" :repo "Code"
+                    :review-world "Workflow's work"
                     (str system-type))
               (when author-name (str " · " author-name))
               ;; entries, not datoms, for a book: "3 changed" over a double-entry
@@ -754,7 +755,7 @@
                 (zero? changed) " · no changes"
                 (= :book system-type)
                 (str " · " changed (if (= 1 changed) " entry" " entries"))
-                (= :repo system-type)
+                (#{:repo :review-world} system-type)
                 (str " · " changed (if (= 1 changed) " file" " files"))
                 :else (str " · " changed " changed"))
               (case status
@@ -794,6 +795,13 @@
            (when (seq stat)
              (el/div {:class "proposal-repo-stat"} (str stat)))
            (repo-patch-view patch patch-truncated?))
+         (= :review-world system-type)
+         (el/div {:class "proposal-repo-files"}
+           (for [[i {:keys [path]}] (map-indexed vector files)]
+             (el/div {:key (str i) :class "proposal-world-file"} (str path)))
+           (when (seq (:other-systems fk))
+             (el/div {:class "proposal-error"}
+               (str "Also changed: " (str/join ", " (:other-systems fk))))))
          :else (el/div {:class "proposal-counts"} (pr-str counts)))
        #?(:cljs (when (and (not resolved?) (not (:only-fork? fk)))
                   (fork-actions pid fk))
@@ -917,9 +925,47 @@
 (defn- unavailable-open-forks [forks]
   (filterv #(and (nil? (:status %)) (false? (:capability-live? %))) forks))
 
+(defn- review-notes-view
+  "Why an escalated review needs a person: the reviewer's verdict, reasons and
+   concerns, each check with its evidence, and — when the world moved after it
+   was reviewed — that Accept will refuse it. A spot check says what it is: the
+   reviewer APPROVED, and the person is asked whether they agree."
+  [{:keys [spot-check? verdict reviewer-reasons concerns reasons checks changed? workflow]}]
+  (let [items (fn [label xs]
+                (when (seq xs)
+                  (el/div {:class "proposal-review-part"}
+                    (el/div {:class "proposal-review-label"} label)
+                    (el/ul {:class "proposal-review-list"}
+                      (for [[i x] (map-indexed vector xs)]
+                        (el/li {:key (str label i)} (str x)))))))]
+    (el/div {:class (str "proposal-review" (when spot-check? " proposal-review--spot"))}
+      (el/div {:class "proposal-review-head"}
+        (cond
+          spot-check? "Spot check — the reviewer approved this. Do you agree?"
+          (= :escalate verdict) "The reviewer escalated this to you"
+          verdict "The review could not land this on its own"
+          :else "A check failed, so no reviewer was asked")
+        (when workflow (el/span {:class "proposal-review-workflow"} (str workflow))))
+      (items "Reviewer's reasons" reviewer-reasons)
+      (items "Concerns" concerns)
+      (when (empty? reviewer-reasons) (items "Why it needs a person" reasons))
+      (when (seq checks)
+        (el/div {:class "proposal-review-part"}
+          (el/div {:class "proposal-review-label"} "Checks")
+          (el/ul {:class "proposal-review-list proposal-review-checks"}
+            (for [[i {:keys [check pass? evidence]}] (map-indexed vector checks)]
+              (el/li {:key (str "chk" i)
+                      :class (if pass? "proposal-check--pass" "proposal-check--fail")}
+                (str (if pass? "passed " "FAILED ") check)
+                (when (and (not pass?) evidence)
+                  (el/code {:class "proposal-review-evidence"} evidence)))))))
+      (when changed?
+        (el/div {:class "proposal-error"}
+          "The work changed after it was reviewed — Accept will refuse it. Reject it, or have it reviewed again.")))))
+
 (defn- proposal-card [{:keys [id title summary diffs diff-error action-error busy?
                               tier intent conflicts comments checks ai-summary expanded
-                              accept-warned? forks]}]
+                              accept-warned? forks review]}]
   #?(:cljs
      (let [expanded (or expanded #{})
            toggle (fn [k] (update-proposal! id
@@ -935,7 +981,8 @@
            ;; cleanly and it still is not landable, so "no substantive change"
            ;; on a plan reads as a verdict the tier is not making.
            (when (= :change (or intent :change)) (tier-badge tier)))
-         (when (fs/auto-mergeable? intent tier)
+         (when review (review-notes-view review))
+         (when (and (not review) (fs/auto-mergeable? intent tier))
            (el/div {:class "proposal-note-line"}
              "Nothing substantive to review — this one merges cleanly."))
          (when (seq conflicts)
@@ -957,7 +1004,8 @@
                     (not= "none" (:risk ai-summary)))
            (el/div {:class (str "proposal-risk proposal-risk--" (or (:risk ai-summary) "low"))}
              (:risk-note ai-summary)))
-         (when (and summary (not (:headline ai-summary)))
+         ;; a review's summary is its reasons, which its notes already show
+         (when (and summary (not (:headline ai-summary)) (not review))
            (el/div {:class "proposal-summary"} summary))
          (el/div {:class "proposal-diffs"}
            (cond
@@ -1044,7 +1092,7 @@
          ;; `authorize-forks!` would name them in an error, but an error after
          ;; the fact is a worse place to learn it than the card.
          (let [blocked (unlandable-open-forks forks)]
-           (when (seq blocked)
+           (when (and (seq blocked) (not review))
              (el/div {:class "proposal-merge-blocked"}
                      (str (count blocked)
                           (if (= 1 (count blocked))
@@ -1055,7 +1103,37 @@
                           " rights on their targets."))))
          (when (seq (unavailable-open-forks forks))
            (el/div {:class "proposal-merge-blocked"}
-             "This process no longer holds the adopted world capability. The durable proposal remains auditable, but settlement requires recovery."))
+             (if review
+               "The reviewed work is not available in this server process — gone with a restart, or left unreadable by a merge that failed. Its notes remain; it can no longer be merged or discarded from here."
+               "This process no longer holds the adopted world capability. The durable proposal remains auditable, but settlement requires recovery.")))
+         ;; A reviewed world is decided by whoever may land onto its room —
+         ;; its owner. Everyone else sees the notes and may comment; offering
+         ;; them buttons that are certain to refuse would read as a bug. And
+         ;; there is no "request changes": nobody is holding the world open to
+         ;; revise it.
+         (if review
+           (let [decider? (and (seq forks) (every? :may-merge? (filter (comp nil? :status) forks)))
+                 unavailable? (seq (unavailable-open-forks forks))]
+             (el/div {:class "proposal-actions"}
+               (if decider?
+                 (el/div {:class "proposal-actions-group"}
+                   (el/button {:class "btn btn-affirm"
+                               :disabled (boolean (or busy? diff-error (nil? diffs) unavailable?
+                                                      (:changed? review)))
+                               :on-click (fn [_] (accept! id false))}
+                              (cond busy? "Working…"
+                                    unavailable? "Unavailable"
+                                    (:spot-check? review) "Agree — merge"
+                                    :else "Accept"))
+                   (el/button {:class "btn btn-secondary"
+                               :disabled (boolean (or busy? unavailable?))
+                               :on-click (fn [_] (dismiss! id))}
+                              (if (:spot-check? review) "Disagree — discard" "Reject")))
+                 (el/div {:class "proposal-note-line"}
+                   "Only the room's owner decides reviewed work."))
+               (el/button {:class "btn btn-secondary"
+                           :disabled (boolean busy?)
+                           :on-click (fn [_] (comment! id))} "Comment")))
          (el/div {:class "proposal-actions"}
            ;; `force?` is whether THIS press follows a conflict warning. It was
            ;; hardcoded false, so the "Accept again to proceed anyway" the
@@ -1089,7 +1167,7 @@
                        :on-click (fn [_] (comment! id))} "Comment")
            (el/button {:class "btn btn-secondary"
                        :disabled (boolean (or busy? (seq (unavailable-open-forks forks))))
-                       :on-click (fn [_] (dismiss! id))} "Dismiss"))))
+                       :on-click (fn [_] (dismiss! id))} "Dismiss")))))
      :clj nil))
 
 ;; The two destinations, in the order a reviewer wants them: what can land

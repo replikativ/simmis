@@ -50,6 +50,37 @@
                  (btn :none "None"))))
            :clj nil)
 
+        ;; --- Review decisions (labels) ---
+        ;; What people decided on work a review handed them
+        ;; (is.simm.workflows.review). Read-only: a label is the record of a
+        ;; decision and nothing edits one.
+        (let [labels (:labels data)]
+          (el/div {:class "settings-section"}
+            (el/h3 {:class "settings-section-title"}
+              (str "Review decisions" (when labels (str " (" (count labels) ")"))))
+            (el/p {:class "settings-section-desc"}
+              "Each decision on reviewed work, recorded as a label: whether the work was right, and on spot checks whether the reviewer was.")
+            (el/div {:class "settings-env-list"}
+              (cond
+                (nil? labels)
+                (el/div {:class "settings-empty"}
+                  "Not available: this room's store is not loaded on the server.")
+                (seq labels)
+                (ifor-each :id labels
+                  (fn [{:keys [id about verdict by-name reasons workflow]}]
+                    (el/div {:key id :class "settings-env-row label-row"}
+                      (el/span {:class "settings-env-key"}
+                        (str (if (= :reviewer about) "Reviewer" "Work")
+                             (when (:id workflow) (str " · " (:id workflow)))))
+                      (el/span {:class (str "label-verdict label-verdict--" (name verdict))}
+                        (case [about verdict]
+                          [:reviewer :accept] "agreed"
+                          [:reviewer :reject] "disagreed"
+                          (name verdict)))
+                      (el/span {:class "settings-env-value"}
+                        (str "by " by-name (when (seq reasons) (str " — " reasons)))))))
+                :else (el/div {:class "settings-empty"} "No decisions yet")))))
+
         ;; --- Humans Section ---
         (el/div {:class "settings-section"}
           (el/h3 {:class "settings-section-title"}

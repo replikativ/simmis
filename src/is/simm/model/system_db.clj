@@ -357,6 +357,36 @@
     :db/valueType :db.type/ref
     :db/cardinality :db.cardinality/one
     :db/doc "Durable ownership record for an adopted Dvergr world"}
+   ;; An escalated review (`is.simm.workflows.review`): the dvergr Review this
+   ;; proposal was filed for. ONE proposal per Review — the identity is what
+   ;; makes filing idempotent when the escalation is seen twice.
+   {:db/ident :proposal/review
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity
+    :db/doc "The dvergr Review (`:review/id`) whose escalation this proposal is"}
+   {:db/ident :proposal/review-state
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "The world's state token when it was reviewed; accepting merges only that state"}
+   {:db/ident :proposal/review-policy
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "The review spec's content id (`:review/policy`)"}
+   {:db/ident :proposal/review-spot-check?
+    :db/valueType :db.type/boolean
+    :db/cardinality :db.cardinality/one
+    :db/doc "The reviewer APPROVED and the review was sampled for a person"}
+   {:db/ident :proposal/review-record
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "EDN of the Review's checks, verdict and reasons — an immutable record, copied so the card renders without the room"}
+   {:db/ident :proposal/workflow-id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal/workflow-version
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
    {:db/ident :proposal/created-at
     :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one}
@@ -401,7 +431,7 @@
    {:db/ident :proposal.fork/system-type
     :db/valueType :db.type/keyword
     :db/cardinality :db.cardinality/one
-    :db/doc ":kb :fs :book :repo :room"}
+    :db/doc ":kb :fs :book :repo :room :world :review-world"}
    {:db/ident :proposal.fork/world-system-id
     :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one

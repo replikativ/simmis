@@ -167,6 +167,8 @@ Concretely, with the action each RPC is policed as:
 | write to or discard an open proposal fork | `:write` on the store AND (the fork's author, or `:merge` on its authority scope) | policy row (`{:branch …}`) |
 | dismiss one fork of a proposal (`dismiss-fork!`) | `:write` on the proposal's room AND control of that fork, as above | policy row (`{:proposal-fork …}`) |
 | dismiss a whole proposal (`dismiss-proposal!`) | `:write` on the room AND (its filer, or control of every open fork) | policy row (`{:proposal-forks …}`) |
+| accept or reject an escalated review's proposal | `:merge` on the room (its owner): the policy row above, then `review/decide!`, then dvergr's authorizer for `room_merge` / `room_discard` | policy row + `workflows.review/decide!` + `access/dvergr-authorize` |
+| read a room's labels (`list-labels!`) | a member (`:read` on the room); no RPC writes a label | policy row |
 
 | stop a Run (`cancel-room-run!`) | its starter, the room's owner, or `:admin` — each from inside the room | policy row (`:write`) + `access/require-run-cancellable!` |
 
@@ -253,7 +255,7 @@ dvergr's resource descriptor, as dvergr resolved it, onto a `can?` question:
 
 | dvergr resource | simmis question |
 |---|---|
-| `[:room x]` | the same action on `{:room id}` (dvergr's room id is the slug, `/` as `_fork_`, or a uuid); on a room `:merge` and `:admin` are the owner's |
+| `[:room x]` | the same action on `{:room id}` (dvergr's room id is the slug, `/` as `_fork_`, or a uuid); a fork (`<slug>_fork_fork-<hex>`, a Run's or a review's world) answers as its room; on a room `:merge` and `:admin` are the owner's |
 | `[:job x]` | `:read` on the job's room; anything else (cancel) is `access/may-cancel-run?` with the job's owner as starter |
 | `[:global]` | a read: `:authenticated`; a write: `:admin` |
 | `[:agent x]` | `:admin` |
@@ -265,6 +267,12 @@ denies on a throw too). Denials raise dvergr's 403 op error and log
 `scorecard_detail`, `experiment_progress`, `experiment_report`) therefore
 refuse a party that may not read the room themselves, not only behind the
 `load-leaderboard!` row.
+
+A review (`workflows.review/review-run!`) merges or discards AS the
+reviewer's party through this same seam, so an approval lands only when that
+party holds `:merge` on the room; otherwise dvergr escalates it with the
+refusal as the reason. Delegating merge to a reviewer for a workflow's scopes
+does not exist yet.
 
 The seam is installed per call, not process-wide (`principal/configure!`). The
 process-wide seam also answers every registry-tool call of every agent

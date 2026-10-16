@@ -902,11 +902,23 @@
           (symbol "is.simm.ops.run-world-proposals" (name sym)))
          args))
 
+;; A world an escalated review handed to a person (`is.simm.workflows.review`).
+;; It stays dvergr's — a live fork room, merged by dvergr pinned to the state
+;; that was reviewed — so this backend only READS it. Landing and dropping go
+;; through the review's decision, never through `land!`/`drop-branch!`.
+(defn- review-world? [system-type] (= :review-world system-type))
+
+(defn- review-call [sym & args]
+  (apply (requiring-resolve
+          (symbol "is.simm.workflows.review" (name sym)))
+         args))
+
 (defn trunk-of
   "The branch a fork of this system-type lands on."
   [scope system-type]
   (cond
     (world? system-type) :world/trunk
+    (review-world? system-type) :world/trunk
     (repo? system-type) (repo-trunk scope)
     :else :db))
 
@@ -915,6 +927,7 @@
   [scope system-type branch]
   (cond
     (world? system-type) (world-call 'head-id scope branch)
+    (review-world? system-type) (review-call 'world-head-id scope branch)
     (repo? system-type) (repo-head-id scope branch)
     :else (branch-head-id scope branch)))
 
@@ -922,8 +935,8 @@
   "Create a fork branch off trunk. `{:branch :parent :existed?}`."
   [scope system-type slug]
   (cond
-    (world? system-type)
-    (throw (ex-info "Adopted worlds are created by Run promotion, not branch minting"
+    (or (world? system-type) (review-world? system-type))
+    (throw (ex-info "Worlds are created by Runs, not branch minting"
                     {:scope scope :system-type system-type}))
 
     (repo? system-type) (branch-repo! scope slug)
@@ -941,6 +954,7 @@
    (let [trunk (trunk-of scope system-type)]
      (cond
        (world? system-type) (world-call 'delta scope)
+       (review-world? system-type) (review-call 'world-delta scope)
        (repo? system-type) (repo-diff scope trunk branch opts)
        :else (kb-diff scope trunk branch)))))
 
@@ -959,6 +973,9 @@
           (world? system-type)
           (world-call 'conflicts scope)
 
+          (review-world? system-type)
+          (review-call 'world-conflicts scope)
+
           (repo? system-type)
           ;; Real conflicts only, and that is now geschichte's own answer: a file
           ;; both sides touched in different places merges while planning, so it
@@ -976,6 +993,9 @@
   (let [trunk (trunk-of scope system-type)]
     (cond
       (world? system-type) (world-call 'settle-scope! scope :merge)
+      (review-world? system-type)
+      (throw (ex-info "A reviewed world is decided through its review, not landed"
+                      {:scope scope :system-type system-type}))
       (repo? system-type) (merge-repo! scope branch trunk)
       :else (merge-kb! scope branch trunk))))
 
@@ -984,6 +1004,9 @@
   [scope system-type branch]
   (cond
     (world? system-type) (world-call 'settle-scope! scope :discard)
+    (review-world? system-type)
+    (throw (ex-info "A reviewed world is decided through its review, not dropped"
+                    {:scope scope :system-type system-type}))
     (repo? system-type) (discard-repo-branch! scope branch)
     :else (discard-kb-branch! scope branch)))
 

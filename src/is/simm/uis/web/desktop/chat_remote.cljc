@@ -579,6 +579,10 @@
             ;; settings page offers membership and budget controls only to
             ;; whoever the server will let use them.
             :can-grant? (access/can? viewer :grant {:room room-uuid})
+            ;; what this room's people decided on reviewed work
+            ;; (`is.simm.workflows.review/labels`, also `list-labels!`)
+            :labels ((requiring-resolve 'is.simm.workflows.review/labels-for-wire)
+                     room-uuid)
             :humans humans
             ;; Every agent carries current desired configuration resolution.
             ;; A join invokes the same resolver and captures its result, but

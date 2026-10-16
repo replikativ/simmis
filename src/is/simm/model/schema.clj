@@ -42,12 +42,17 @@
    {:db/ident :entity/created-at
     :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one
-    :db/doc "Creation timestamp"}
+    ;; Word for word dvergr's (`dvergr.kb.schema/column-docs`). dvergr installs
+    ;; its chat schema again on every fork's branched store; with a different
+    ;; doc here, each fork of a room "changed" these two schema datoms back,
+    ;; and a review's `[:diff/only-paths …]` check failed every simmis world
+    ;; on a database nobody had touched.
+    :db/doc "When the entity was first mentioned"}
 
    {:db/ident :entity/updated-at
     :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one
-    :db/doc "Last update timestamp"}])
+    :db/doc "When the entity was last updated"}])
 
 ;; ============================================================================
 ;; Block Attributes
@@ -462,6 +467,65 @@
     :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one}])
 
+(def label-schema
+  "A person's verdict on a workflow's work or on its reviewer — one entity per
+   decision, in the ROOM's store (`is.simm.workflows.review`,
+   doc/proposals-and-time-travel.md \"Review escalations and labels\").
+
+   Append-only: nothing in simmis updates or retracts a label, so a later
+   reader (agreement rates, a case pack of this room's decisions) sees every
+   decision exactly as it was made. Identity is `:entity/uuid`, like every
+   entity in a store."
+  [{:db/ident :S.Label/subject-kind
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc ":proposal | :run — what the label is about, with `:S.Label/subject-id`"}
+   {:db/ident :S.Label/subject-id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/index true}
+   {:db/ident :S.Label/about
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc ":workflow (the work was right or wrong) | :reviewer (the reviewer's approval was)"}
+   {:db/ident :S.Label/review
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/index true
+    :db/doc "The dvergr Review (`:review/id`) the decision followed"}
+   {:db/ident :S.Label/policy
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "The review spec's content id (`:review/policy`) the Review ran under"}
+   {:db/ident :S.Label/reviewer-verdict
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc "What the reviewer said (:approve | :escalate); absent when no reviewer was asked"}
+   {:db/ident :S.Label/workflow-id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :S.Label/workflow-version
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :S.Label/verdict
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc ":accept | :reject | :edit. About the reviewer: :accept agrees with it, :reject does not"}
+   {:db/ident :S.Label/edit
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "The diff the person applied before accepting (verdict :edit)"}
+   {:db/ident :S.Label/by
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/doc "The deciding party"}
+   {:db/ident :S.Label/reasons
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :S.Label/at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}])
+
 (def full-schema
   "Complete categorical schema - all attributes.
    Note: chat/message/participant schema is installed separately via dvergr."
@@ -476,7 +540,8 @@
                message-record-schema
                provenance-schema
                customer-schema
-               code-schema)))
+               code-schema
+               label-schema)))
 
 ;; ============================================================================
 ;; Helper Functions
