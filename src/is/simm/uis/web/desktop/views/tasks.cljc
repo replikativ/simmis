@@ -57,9 +57,9 @@
    (defn- set-status! [{:keys [scope page]} status]
      (rem/spin!
       #(tr/set-task-status! web/server-id scope page status)
-      (fn [_ err]
-        (if err
-          (js/console.error "[tasks] status change failed:" err)
+      (fn [r err]
+        (if-let [e (or err (rem/result-failure r))]
+          (rem/report-error! "Could not change the task's status." e)
           ;; reload rather than patch locally: a status change can move the row
           ;; out of the list entirely (done), and the server owns that decision
           (load-tasks! (:include-done? @sig/tasks-data)))))))

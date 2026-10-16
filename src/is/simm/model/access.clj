@@ -493,6 +493,8 @@
      • {:proposal-forks <proposal-id>} — every open fork of a proposal
      • {:attachment {:room r :kb|:drive id}} — revoking an attachment (:grant)
      • {:room <room-id>}            — a room by :room/id (control plane)
+     • {:kb-store <scope>}          — a KB's store by scope, and nothing else:
+                                      a room store, repo or agent DB is false
      • {:settings <party>} | {:self <party>} — that party's own settings
      • :admin                       — requires the :admin role
      • :authenticated               — any authenticated party (e.g. creates)
@@ -542,6 +544,13 @@
           (contains? resource :branch)
           (let [{:keys [scope branch]} (:branch resource)]
             (party-can-access-branch? db party scope branch action))
+          ;; a KB's STORE, by scope — and only a KB's: a room's message
+          ;; store, its repo or an agent's DB answers false here, where a bare
+          ;; scope would answer for them. For raw transactions, which must
+          ;; never reach a room store (they would forge messages).
+          (contains? resource :kb-store)
+          (when-let [e (some->> (scope-uuid (:kb-store resource)) (kb-eid-by-scope db))]
+            (party-can-access-kb? db party e action))
           (contains? resource :settings) (= party (as-uuid (:settings resource)))
           (contains? resource :self) (= party (as-uuid (:self resource)))
           :else false)
@@ -606,6 +615,7 @@
                                       (= k :kb-id-str) (assoc :kb (get a k))
                                       (= k :drive-id-str) (assoc :drive (get a k)))}))
         mail     (fn [k] (fn [a] {:mail (get a k)}))
+        kb-store (fn [k] (fn [a] {:kb-store (get a k)}))
         always   (fn [r] (fn [_] r))
         ;; a write that names a branch of a store: on an open proposal fork it
         ;; is the fork author's or a decider's (see `party-can-access-branch?`)
@@ -638,6 +648,14 @@
      "add-property"            {:action W :resource (branch :db-scope :branch-kw)}
      "remove-property"         {:action W :resource (branch :db-scope :branch-kw)}
      "save-property"           {:action W :resource (branch :db-scope :branch-kw)}
+     ;; a wiki widget's own writes (`widget_sandbox.cljs`): raw transactions
+     ;; on the trunk of the KB its page lives in — never a room store, hence
+     ;; `:kb-store`. DATA is :write; the handler refuses schema in it.
+     ;; DECLARING an attribute is :merge (the owner): a `:db/ident` is
+     ;; append-only and global to the KB, so it outlives every fork and every
+     ;; grant. The server derives its value type from the codomain object.
+     "widget-transact"         {:action W :resource (kb-store :db-scope)}
+     "widget-install-attr"     {:action M :resource (kb-store :db-scope)}
      ;; --- branching (KB by :db-scope-str) ---
      "branch-kb!"              {:action W :resource (scope :db-scope-str)}
      ;; deleting a branch: someone else's open proposal fork is not yours to

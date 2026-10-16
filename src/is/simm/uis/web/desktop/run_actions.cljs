@@ -6,6 +6,7 @@
    Run — is asked here."
   (:require [org.replikativ.spindel.engine.core :as rtc]
             [is.simm.uis.web.desktop.chat-remote :as remote]
+            [is.simm.uis.web.desktop.remote :as rem]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.runtimes.web :as web]))
@@ -52,9 +53,10 @@
   [room-id run-id]
   (binding [rtc/*execution-context* runtime]
     (let [s (remote/cancel-room-run! web/server-id (str room-id) (str run-id))]
-      (s (fn [_])
-         (fn [error]
-           (js/console.warn "[run-actions] cancellation failed" run-id error))))))
+      ;; `{:status :not-active}` is not a failure: the Run is not running,
+      ;; which is what the person asked for.
+      (s (rem/on-ok "Could not stop that run." nil)
+         (rem/on-error "Could not stop that run.")))))
 
 (defn promote!
   "Promote one retained Run world and pass its durable Proposal result onward."
@@ -62,8 +64,10 @@
   (binding [rtc/*execution-context* runtime]
     (let [s (remote/promote-room-run-world! web/server-id (str room-id)
                                             (str run-id) (str title))]
-      (s (fn [result]
-           (swap! asked disj [(str run-id) :world-live?])
-           (when on-complete (on-complete result)))
-         (fn [error]
-           (js/console.warn "[run-actions] promotion failed" run-id error))))))
+      ;; `{:status :recovery-required …}` answers without a proposal: the
+      ;; world could not be transferred, and the person has to hear it.
+      (s (rem/on-ok "Could not turn that run into a proposal."
+                    (fn [result]
+                      (swap! asked disj [(str run-id) :world-live?])
+                      (when on-complete (on-complete result))))
+         (rem/on-error "Could not turn that run into a proposal.")))))

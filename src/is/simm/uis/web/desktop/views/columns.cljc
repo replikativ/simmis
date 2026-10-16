@@ -300,7 +300,9 @@
          (binding [rtc/*execution-context* runtime]
            (let [s (chat-remote/delete-screenshot! web/server-id blob-id)]
              (s (fn [r] (put! ch {:ok r})) (fn [e] (put! ch {:err e})))))
-         (<! ch)
+         (let [{:keys [ok err]} (<! ch)]
+           (when-let [e (or err (rem/result-failure ok))]
+             (rem/report-error! "Could not delete that screenshot." e)))
          (search-screens-into-signal! room-id (or query ""))))))
 
 #?(:cljs
@@ -330,7 +332,9 @@
          (binding [rtc/*execution-context* runtime]
            (let [s (chat-remote/delete-recording! web/server-id session-id)]
              (s (fn [r] (put! ch {:ok r})) (fn [e] (put! ch {:err e})))))
-         (<! ch)
+         (let [{:keys [ok err]} (<! ch)]
+           (when-let [e (or err (rem/result-failure ok))]
+             (rem/report-error! "Could not delete that recording." e)))
          (load-recordings-into-signal!)))))
 
 #?(:cljs
@@ -361,7 +365,9 @@
          (binding [rtc/*execution-context* runtime]
            (let [s (chat-remote/delete-page! web/server-id page-id)]
              (s (fn [r] (put! ch {:ok r})) (fn [e] (put! ch {:err e})))))
-         (<! ch)
+         (let [{:keys [ok err]} (<! ch)]
+           (when-let [e (or err (rem/result-failure ok))]
+             (rem/report-error! "Could not delete that page." e)))
          (search-pages-into-signal! (or query ""))))))
 
 #?(:cljs
@@ -1502,7 +1508,10 @@
                  (when-let [user @sig/current-user]
                    (let [s (chat-remote/ensure-room!
                              is.simm.runtimes.web/server-id room-id (:id user))]
-                     (s (fn [_] nil) (fn [_] nil)))))
+                     ;; a refusal is ANSWERED (`{:status :error :reason …}`):
+                     ;; the room's projection was not made, so say so
+                     (s (rem/on-ok "This room could not be prepared on the server." nil)
+                        (rem/on-error "This room could not be prepared on the server.")))))
              ;; Current user info from auth
              current-user-info @sig/current-user
              current-user-uuid (when current-user-info

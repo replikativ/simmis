@@ -242,3 +242,26 @@
                  (cond-> {:page-uuid page-uuid :morphism-name morphism-name :value value}
                    db-scope (assoc :db-scope db-scope)
                    branch-kw (assoc :branch-kw branch-kw))))
+
+;; =============================================================================
+;; Widget writes
+;; =============================================================================
+;;
+;; A widget's writes (`widget_sandbox.cljs`). Both act on the trunk of KB
+;; `db-scope` and answer `{:max-tx head …}`; see `block_remote.clj`.
+
+(defn widget-transact-remote!
+  "A widget's DATA transaction (`:write` on the KB). Schema in it is refused."
+  [db-scope tx-data]
+  (invoke-remote server-id
+                 'block-remote/widget-transact
+                 {:db-scope db-scope :tx-data tx-data}))
+
+(defn widget-install-attr-remote!
+  "Declare `ident` (`:merge` on the KB — its owner). `codomain` is an OBJECT
+   name (\"S/String\"); the server derives the value type from it."
+  [db-scope ident codomain cardinality]
+  (invoke-remote server-id
+                 'block-remote/widget-install-attr
+                 {:db-scope db-scope :ident ident :codomain codomain
+                  :cardinality cardinality}))

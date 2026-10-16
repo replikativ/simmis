@@ -25,7 +25,8 @@
    The binary chunk upload stays HTTP (blob size); the finalize marker rides the
    SAME queue so it lands AFTER the chunks it closes."
   (:require [clojure.string :as str]
-            [is.simm.uis.web.desktop.login :as login]))
+            [is.simm.uis.web.desktop.login :as login]
+            [is.simm.uis.web.desktop.remote :as rem]))
 
 (defonce ^:private session (atom nil))   ; the single recording session, or nil
 
@@ -87,6 +88,8 @@
                               #js {"Content-Type" "application/octet-stream"})
                    :body blob})))
 
+(declare stop!)
+
 (defn- drain!
   "Post queued items strictly in order, one in flight at a time. Chunks are
    container clusters: they do not commute, and the server rejects an
@@ -97,11 +100,19 @@
       (reset! draining? true)
       (-> (post-item (first @queue))
           (.then (fn [resp]
-                   (if (.-ok resp)
-                     (swap! queue rest)
-                     (js/console.warn "[rec] rejected" (.-status resp)))
                    (reset! draining? false)
-                   (drain!)))
+                   (if (.-ok resp)
+                     (do (swap! queue rest)
+                         (drain!))
+                     ;; Refused. Re-posting the same item at once (what this
+                     ;; did) is a tight loop that never lands; the items after
+                     ;; it cannot land either — chunks do not commute. Drop
+                     ;; the queue, stop recording, and say so.
+                     (do (reset! queue [])
+                         (rem/report-error! "Screen recording stopped: the server refused a segment."
+                                            (ex-info (str "HTTP " (.-status resp))
+                                                     {:error (str "HTTP " (.-status resp))}))
+                         (stop!)))))
           (.catch (fn [e]
                     (js/console.warn "[rec] upload failed, retrying:" e)
                     (reset! draining? false)
@@ -193,10 +204,16 @@
                                       :width width
                                       :height height
                                       :fps (js/Math.round fps)})})
-          (.then (fn [_] (start-segment!)))
+          (.then (fn [resp]
+                   (if (.-ok resp)
+                     (start-segment!)
+                     (do (reset! session nil)
+                         (rem/report-error! "Screen recording did not start."
+                                            (ex-info (str "HTTP " (.-status resp))
+                                                     {:error (str "HTTP " (.-status resp))}))))))
           (.catch (fn [e]
-                    (js/console.warn "[rec] could not start session:" e)
-                    (reset! session nil))))
+                    (reset! session nil)
+                    (rem/report-error! "Screen recording did not start." e))))
       (js/console.log "[rec] recording as" mime
                       (str width "x" height "@" (js/Math.round fps) "fps"))
       session-id)))
@@ -218,8 +235,14 @@
             (let [{:keys [queue]} @session]
               (when (or (nil? queue) (empty? @queue))
                 (js/clearInterval @poll)
-                (js/fetch (str "/screen-recordings/end?session=" session-id)
-                          #js {:method "POST" :headers (login/auth-headers)})
+                (-> (js/fetch (str "/screen-recordings/end?session=" session-id)
+                              #js {:method "POST" :headers (login/auth-headers)})
+                    (.then (fn [resp]
+                             (when-not (.-ok resp)
+                               (rem/report-error! "The recording may not have been closed."
+                                                  (ex-info (str "HTTP " (.-status resp))
+                                                           {:error (str "HTTP " (.-status resp))})))))
+                    (.catch (fn [e] (rem/report-error! "The recording may not have been closed." e))))
                 (reset! session nil)
                 (js/console.log "[rec] stopped"))))
           250)))))

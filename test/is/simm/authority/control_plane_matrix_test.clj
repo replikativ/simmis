@@ -52,13 +52,17 @@
       :foreign-room-kb {:room-id-str (s :other-room) :kb-id-str (s :kb-granted)
                         :drive-id-str (s :drive-owner)}
       :mail        {:account-id-str (s :mail)}
+      ;; the team room's own MESSAGE store, under the key a KB write names its
+      ;; store with: what a raw transaction must never be able to address
+      :room-store  {:db-scope (:room-scope w) :db-scope-str (s :room-scope)
+                    :scope-str (s :room-scope)}
       ;; the owner's own id, in every key a self/settings row reads: the
       ;; owner passing it is the legitimate call, anyone else passing it is
       ;; impersonation
       :owner-self  {:party-id-str (s :owner) :creator-id-str (s :owner)})))
 
 (def ^:private targets
-  #{:none :room :kb-scope :kb :proposal :mail :owner-self
+  #{:none :room :kb-scope :kb :proposal :mail :owner-self :room-store
     :member-fork :agent-fork :room-kb :foreign-room-kb})
 
 (def ^:private AUTH #{:owner :member :non-member :admin})
@@ -98,6 +102,13 @@
    "add-property"            [(c :kb-scope MEMBERS)]
    "remove-property"         [(c :kb-scope MEMBERS)]
    "save-property"           [(c :kb-scope MEMBERS)]
+   ;; a wiki widget's raw transactions: DATA is a write on the KB; DECLARING an
+   ;; attribute is append-only schema global to the KB, so it is the owner's
+   ;; (:merge — the read-write grantee may not). Neither reaches a room's own
+   ;; store, whoever asks: `{:kb-store …}` answers only for a KB. Attack tests
+   ;; with their legitimate twins: widget-writes-test.
+   "widget-transact"         [(c :kb-scope MEMBERS) (c :room-store #{})]
+   "widget-install-attr"     [(c :kb-scope OWNER) (c :room-store #{})]
    ;; --- branching --------------------------------------------------------------
    "branch-kb!"              [(c :kb-scope MEMBERS)]
    ;; on trunk / a plain branch; an open proposal fork narrows this to its

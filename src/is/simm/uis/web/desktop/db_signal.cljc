@@ -44,7 +44,11 @@
            (signal runtime nil)))
 
 #?(:cljs (def local-conn
-           "Atom holding the Datahike connection for local transactions."
+           "Atom holding the shared DB's replica conn: for reads and watches.
+            NEVER transact on it (nor on any replica conn here): its writer is
+            datahike's KabelWriter, which waits forever for a `kabel.remote`
+            route this app does not serve — the write is never sent and never
+            fails. Writes are RPCs; see `optimistic-write`."
            (atom nil)))
 
 #?(:cljs (def local-overlay
@@ -73,8 +77,8 @@
 
 #?(:cljs
    (defn get-conn
-     "Get the Datahike connection for local transactions.
-      Returns nil if not yet initialized."
+     "The shared DB's replica conn (reads and watches only — see
+      `local-conn`). Returns nil if not yet initialized."
      []
      @local-conn))
 
@@ -217,14 +221,14 @@
              conn (<! (connect-with-recovery config "simmis-client"))
              _ (js/console.log "[DB-SIGNAL] connect-kabel returned:" (some? conn))]
 
-         ;; Store connection for local transactions
+         ;; Store the replica conn (reads and watches; never transacted on)
          (reset! local-conn conn)
-         (js/console.log "[DB-SIGNAL] Connection stored for local transactions")
+         (js/console.log "[DB-SIGNAL] Replica connection stored")
 
          ;; Wire the conn into datahike.optimistic. The listener fires on:
-         ;;   - overlay add (after opt/transact!)
+         ;;   - overlay add (a prediction, `opt/predict!`)
          ;;   - overlay drop (after dispatch resolves or rejects)
-         ;;   - @conn advance (KabelWriter or konserve-sync echo)
+         ;;   - @conn advance (the konserve-sync echo of a server write)
          ;; Each fire delivers the *effective* db (overlay applied on top
          ;; of @conn). Pushing that into local-db means UI spins see the
          ;; optimistic state immediately and the durable state once the
@@ -320,7 +324,7 @@
                    (do
                    (js/console.log "[ROOM-CONN] Connected to room:" scope-str "max-tx:" (:max-tx (d/db conn)))
                    ;; Wire into datahike.optimistic. The listener fires on
-                   ;; overlay add (opt/transact!), overlay drop (server reply),
+                   ;; overlay add (a prediction), overlay drop (server reply),
                    ;; and @conn advance — pushing the effective-db into the
                    ;; signal each time. Subsumes the prior conn-watch.
                    ;;
@@ -724,74 +728,3 @@
      [scope-uuid]
      (get @kb-overlays (str scope-uuid))))
 
-;; ============================================================================
-;; Dynamic Database Test (for testing KabelWriter create/connect/transact/delete)
-;; ============================================================================
-
-#?(:cljs
-   (defn test-dynamic-database!
-     "Test dynamic database creation, connection, transaction, and deletion.
-      Call from browser console after app is loaded.
-
-      kabel-peer: The kabel client peer atom (from is.simm.runtimes.web/client)"
-     [kabel-peer]
-     (let [test-store-id (random-uuid)]
-       (js/console.log "=== Testing Dynamic Database ===" )
-       (js/console.log "Test store-id:" (str test-store-id))
-
-       (go
-         (try
-           ;; Step 1: Create database
-           (js/console.log "\nStep 1: Creating database...")
-           ;; Note: Uses :frontend-config/:backend-config to avoid collision with :backend :tiered
-           ;; Store :id is used as the sync topic for konserve-sync
-           (let [create-config {:store {:backend :tiered
-                                        :frontend-config {:backend :memory :id test-store-id}
-                                        :backend-config {:backend :indexeddb :name (str "test-idb-" test-store-id) :id test-store-id}
-                                        :id test-store-id}
-                                :writer {:backend :kabel
-                                         :peer-id server-peer-id
-                                         :local-peer kabel-peer}
-                                :schema-flexibility :write
-                                :keep-history? true}
-                 create-result (<! (d/create-database create-config))]
-             (js/console.log "Create result:" (pr-str create-result))
-
-             (when (:success create-result)
-               ;; Step 2: Connect to database
-               (js/console.log "\nStep 2: Connecting to database...")
-               (let [conn (<! (kc/connect-kabel create-config {:sync? false}))]
-                 (js/console.log "Connected! max-tx:" (:max-tx @(:wrapped-atom conn)))
-
-                 ;; Step 3: Transact schema first
-                 (js/console.log "\nStep 3a: Transacting schema...")
-                 (let [schema-result (<! (d/transact! conn [{:db/ident :test/name
-                                                             :db/valueType :db.type/string
-                                                             :db/cardinality :db.cardinality/one}]))]
-                   (js/console.log "Schema transacted, max-tx:" (get-in schema-result [:db-after :max-tx]))
-
-                   ;; Step 3b: Transact data
-                   (js/console.log "\nStep 3b: Transacting data...")
-                   (let [tx-result (<! (d/transact! conn [{:db/id -1 :test/name "Hello Dynamic DB!"}]))]
-                     (js/console.log "Transaction result - max-tx:" (get-in tx-result [:db-after :max-tx]))
-                     (js/console.log "Datoms added:" (count (:tx-data tx-result)))
-
-                     ;; Step 4: Query the data
-                     (js/console.log "\nStep 4: Querying data...")
-                     (let [db (d/db conn)
-                           results (d/q '[:find ?name :where [_ :test/name ?name]] db)]
-                       (js/console.log "Query results:" (pr-str results))
-
-                       ;; Step 5: Delete database
-                       (js/console.log "\nStep 5: Deleting database...")
-                       (let [delete-result (<! (d/delete-database create-config))]
-                         (js/console.log "Delete result:" (pr-str delete-result))
-
-                         (js/console.log "\n=== Test Complete ===")
-                         {:create create-result
-                          :transact tx-result
-                          :query results
-                          :delete delete-result})))))))
-           (catch :default e
-             (js/console.error "Test error:" e)
-             e))))))

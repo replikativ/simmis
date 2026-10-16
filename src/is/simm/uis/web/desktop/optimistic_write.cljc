@@ -54,6 +54,40 @@
   ;; write.
   (atom {}))
 
+(defn- in-order!
+  "Run `(send!)` on `overlay`'s queue — after every RPC queued on it before has
+   answered — and hand what it yielded to `k`. Returns a channel yielding
+   `k`'s value."
+  [overlay send! k]
+  (let [done (a/promise-chan)
+        [old _] (swap-vals! tails assoc overlay done)
+        previous (get old overlay)]
+    (go
+      (when previous (<! previous))
+      (k (try (<! (send!))
+              (finally (a/close! done)))))))
+
+(defn- as-error [r]
+  (if (instance? #?(:clj Throwable :cljs js/Error) r)
+    r
+    (ex-info "Write was not acknowledged" {:response r})))
+
+(defn send-in-order!
+  "Make `(send!)` durable in order with the other writes on `overlay`, with
+   nothing predicted: for a write the view can only show once the server has
+   it (a schema declaration — the replica cannot apply what it does not yet
+   know the type of). `send!` yields `{:max-tx head …}` or an error.
+
+   `on-failure` is called with the failure. Returns a channel yielding the
+   result, or nil when it failed."
+  [overlay send! {:keys [on-failure]}]
+  (in-order! overlay send!
+             (fn [r]
+               (if (failure? r)
+                 (do (when on-failure (on-failure (as-error r)))
+                     nil)
+                 r))))
+
 (defn predict-remote!
   "Show `tx-data` on `overlay` now and make it durable with `(send!)`, a
    channel-returning RPC that yields `{:max-tx head …}` on success and an error
@@ -65,27 +99,20 @@
   [overlay tx-data send! {:keys [on-failure]}]
   (let [head (atom nil)
         {:keys [ov-id]} (opt/predict! overlay tx-data
-                                      (fn [durable-db] (caught-up? durable-db @head)))
-        done (a/promise-chan)
-        [old _] (swap-vals! tails assoc overlay done)
-        previous (get old overlay)]
-    (go
-      (when previous (<! previous))
-      (let [r (try (<! (send!))
-                   (finally (a/close! done)))]
-        (if (failure? r)
-          (do (opt/reject! overlay ov-id
-                           (if (instance? #?(:clj Throwable :cljs js/Error) r)
-                             r
-                             (ex-info "Write was not acknowledged" {:response r})))
-              (when on-failure (on-failure r))
-              nil)
-          (let [t (:max-tx r)]
-            (reset! head t)
-            (opt/ack! overlay ov-id r)
-            ;; The replica may already hold this write: sync can land before
-            ;; the reply, and the predicate is only re-tested on the next base
-            ;; change. The durable outcome is known, so drop the prediction.
-            (when (caught-up? @(:conn overlay) t)
-              (opt/abandon! overlay ov-id :reconciled))
-            r))))))
+                                      (fn [durable-db] (caught-up? durable-db @head)))]
+    (in-order! overlay send!
+               (fn [r]
+                 (if (failure? r)
+                   (do (opt/reject! overlay ov-id (as-error r))
+                       (when on-failure (on-failure r))
+                       nil)
+                   (let [t (:max-tx r)]
+                     (reset! head t)
+                     (opt/ack! overlay ov-id r)
+                     ;; The replica may already hold this write: sync can land
+                     ;; before the reply, and the predicate is only re-tested
+                     ;; on the next base change. The durable outcome is known,
+                     ;; so drop the prediction.
+                     (when (caught-up? @(:conn overlay) t)
+                       (opt/abandon! overlay ov-id :reconciled))
+                     r))))))

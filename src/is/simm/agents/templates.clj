@@ -106,28 +106,34 @@ Available vocab inside a widget:
   Call as `(el/div {:class \"…\" :style \"…\" :on-click (fn [e] …)} child1 child2 …)`.
 - `dh/q`, `dh/pull`, `dh/entity` — read-only queries against the page's KB DB.
 - `kb/transact!`, `kb/upsert-block!`, `kb/set-attr!`, `kb/update-attr!`,
-  `kb/retract!`, `kb/install-attr!` — writes (authorized as the *viewer*, not Vár).
+  `kb/retract!` — data writes, authorized as the *viewer* (not Vár): a viewer
+  who may only read the KB sees the write refused. Shown at once, and put back
+  with an error if the server refuses it. Schema is never data: a `:db/*` key
+  in them is refused.
+- `kb/install-attr!` — declares an attribute; only the KB's owner may. It
+  names the attribute's CODOMAIN object, and the server derives the value type
+  from it (a widget never sends a `:db/valueType`):
+  `(kb/install-attr! :todo/text \"S/String\" :one)`.
 
 **Schema first.** KBs use `:schema-flexibility :write`: every attribute the
-widget writes must be installed *before* the first transaction that uses it.
-Built-in attrs already installed: `:entity/uuid`, `:entity/name`,
+widget writes must be declared *before* the first transaction that uses it.
+Built-in attrs already declared: `:entity/uuid`, `:entity/name`,
 `:entity/created-at`, `:entity/updated-at`, `:block/parent`, `:block/order`,
-`:block/content`, `:block/widget-code`, `:S.Page/title`, `:counter/value`.
-Anything else you invent (`:todo/text`, `:todo/done?`, `:note/body`, …) must
-be installed once via `kb/install-attr!`. Install it *outside* the widget
-(via `clojure_eval` before saving the widget), or use a backend-loaded page
-schema. Inside a widget you can call it idempotently at top of the form, but
-prefer one-time installation because the widget re-runs on every change.
+`:block/content`, `:block/widget-code`, `:S.Page/title`. Anything else you
+invent (`:todo/text`, `:todo/done?`, `:counter/value`, …) must be declared
+once. Declare it *outside* the widget, at authoring time via `clojure_eval`
+(those `kb/` verbs take the KB first and a value type):
 
 ```clojure
-;; Once, at authoring time (run via clojure_eval):
-(kb/install-attr! :todo/text :db.type/string :db.cardinality/one)
-(kb/install-attr! :todo/done? :db.type/boolean :db.cardinality/one)
+(kb/install-attr! db :todo/text :db.type/string :db.cardinality/one)
+(kb/install-attr! db :todo/done? :db.type/boolean :db.cardinality/one)
 ```
 
-Value types: `:db.type/string`, `:db.type/long`, `:db.type/double`,
-`:db.type/boolean`, `:db.type/instant`, `:db.type/keyword`, `:db.type/uuid`,
-`:db.type/ref`. Cardinalities: `:db.cardinality/one`, `:db.cardinality/many`.
+Inside a widget the declaration is the viewer's, so it works only when the KB's
+owner is the one looking — another viewer's click is refused. Codomain objects
+for a widget's `kb/install-attr!`: `\"S/String\"`, `\"S/Number\"` (integer),
+`\"S/Float\"`, `\"S/Boolean\"`, `\"S/Date\"`, `\"S/UUID\"`, or a type such as
+`\"S/Page\"` for a reference. Cardinality `:one` or `:many`.
 
 `kb/update-attr!` is the safe read-modify-write primitive — use it for counters,
 toggles, anything where rapid clicks could clobber:

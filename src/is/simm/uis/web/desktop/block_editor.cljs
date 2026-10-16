@@ -274,11 +274,19 @@
    source deltas and recomputes its child vnodes from this function's
    `:new` (per-key memoised), so we don't bother translating or
    synthesising delta shapes here — `:deltas nil` is the right
-   advisory signal."
-  [dh-blocks-iv focused-id]
+   advisory signal.
+
+   `db-tx` is stamped onto WIDGET blocks only. A widget renders the whole db,
+   not its own block row, so its row is unchanged when what it shows changes —
+   and `ifor-each` memoises on item equality, so it would never re-evaluate:
+   a click's write landed and the widget kept showing the old value. The
+   stamp puts the db's identity in the item (CLAUDE.md, spindel sharp edge 2)."
+  [dh-blocks-iv focused-id db-tx]
   (let [ui-of (fn [bs]
                 (when bs
-                  (-> (mapv #(datahike-block->ui-block-base % focused-id) bs)
+                  (-> (mapv #(let [b (datahike-block->ui-block-base % focused-id)]
+                               (cond-> b (:widget-code b) (assoc :widget-db-tx db-tx)))
+                            bs)
                       add-hidden-state)))]
     (iv/->Interval (ui-of (iv/get-old dh-blocks-iv))
                    (ui-of (iv/get-new dh-blocks-iv))
@@ -497,9 +505,11 @@
                                  backfill)
                       #(remote/ensure-page-remote! page-uuid title db-scope branch first-block-uuid)
                       "Could not create that page."))))
-      (do
-        (js/console.log "[Remote] Ensuring page exists:" (str page-uuid) "branch:" branch)
-        (remote/ensure-page-remote! page-uuid title db-scope branch)))))
+      ;; Off trunk (or no overlay): no prediction, but a failure is still
+      ;; reported, and the channel yields nil rather than the error value a
+      ;; caller would take for a result.
+      (rem/invoke! (remote/ensure-page-remote! page-uuid title db-scope branch)
+                   {:message "Could not create that page."}))))
 
 (defn update-block-content-remote!
   "Update block content. For KB pages on trunk the edit shows at once (a
@@ -1071,7 +1081,7 @@
                                                        (set! (.-textContent run-btn) "▶ Run"))
                                                      (fn [err]
                                                        (set! (.-textContent run-btn) "▶ Run")
-                                                       (js/console.error "[run-code] eval error" err))))))))
+                                                       (rem/report-error! "The code did not run." err))))))))
                                      #js {:dom wrapper
                                           :contentDOM code-el
                                           :update (fn [^js _] true)})))})))
@@ -1282,9 +1292,15 @@
 (defn- render-widget-block
   "Render a block whose :widget-code is a Clojure expression evaluated in
    the curated client-side SCI sandbox. Returns a vnode or an error indicator."
-  [block db conn]
-  (let [{:keys [ok error]} (widget-sandbox/eval-widget (:widget-code block) db conn)]
-    (el/div {:class "block-content widget-block"}
+  [block db widget-kb]
+  (let [{:keys [ok error]} (widget-sandbox/eval-widget (:widget-code block) db widget-kb)]
+    ;; Keyed by the db it rendered (`:widget-db-tx`, see
+    ;; `transform-datahike-blocks`). The widget's tree is plain
+    ;; `simple-element` vnodes; re-rendered under an unchanged key, the commit
+    ;; kept the old DOM text (measured: evaluated against the new db, node
+    ;; identical, text stale). A new key mounts the tree the evaluation built.
+    (el/div {:class "block-content widget-block"
+             :key (str "widget-" (:id block) "-" (:widget-db-tx block))}
       (if ok
         ok
         (el/div {:class "widget-error"
@@ -1298,12 +1314,13 @@
   "Render a single block with TipTap editor, Vega-Lite visualization, or widget.
    syntax-pref: :clojure or :superficie — controls how code blocks are displayed.
    db: current Datahike DB value (for widget reads).
-   conn: current Datahike connection (for widget writes through kabel writer).
+   widget-kb: `{:db-scope :overlay}` of the page's KB on its trunk, for widget
+   writes (RPCs through the server's gate — see `widget-sandbox`); nil off it.
    active-branch: branch keyword (`:db` for trunk). Embedded in the
    foreign-node's :key so a branch switch unmounts + remounts TipTap
    with the new branch's content. Within a branch the key is stable,
    so normal typing reuses the same TipTap instance + DOM nodes."
-  [block depth has-children & [db-scope syntax-pref db conn active-branch]]
+  [block depth has-children & [db-scope syntax-pref db widget-kb active-branch]]
   (swap! render-block-count inc)
   (let [hidden?  (:hidden block)
         viz?     (some? (:viz-spec block))
@@ -1330,7 +1347,7 @@
       ;; Content: widget, Vega-Lite viz, Superficie read-only view, or TipTap editor
       (cond
         widget?
-        (render-widget-block block db conn)
+        (render-widget-block block db widget-kb)
 
         viz?
         (render-viz-block block db-scope)
@@ -1402,7 +1419,7 @@
 
           ;; Transform Datahike format to UI format
           focused-id (:focused-id @ui-state)
-          blocks-iv (transform-datahike-blocks dh-blocks-iv focused-id)
+          blocks-iv (transform-datahike-blocks dh-blocks-iv focused-id (:max-tx (iv/get-new db-iv)))
 
           ;; Build indices for tree operations
           all-blocks (iv/get-new blocks-iv)
@@ -1675,25 +1692,18 @@
                         ;; default conn — the app store — so a type set on a KB
                         ;; page landed in a different database and the UI just
                         ;; appeared to do nothing.
-                        (go
-                          (try
-                            (<! (remote/remove-type-remote! page-uuid (:entity/uuid type-entity)
-                                                        db-scope))
-                            (catch :default e
-                              (js/console.error "[page-header] Failed to remove type:" e)
-                              (binding [rtc/*execution-context* runtime]
-                                (sig/show-error! "Could not remove that type.")))))))
+                        ;; `invoke-remote` hands a failure back as a VALUE, so
+                        ;; the try/catch this used to be wrapped in never ran:
+                        ;; a refusal was silent. `rem/invoke!` reports it.
+                        (rem/invoke! (remote/remove-type-remote! page-uuid (:entity/uuid type-entity)
+                                                                 db-scope)
+                                     {:message "Could not remove that type."})))
 
         on-add-type (fn [type-entity]
                         (when-not (refuse-past-write! "add a type tag")
-                      (go
-                        (try
-                          (<! (remote/add-type-remote! page-uuid (:entity/uuid type-entity)
-                                                   db-scope))
-                          (catch :default e
-                            (js/console.error "[page-header] Failed to add type:" e)
-                            (binding [rtc/*execution-context* runtime]
-                              (sig/show-error! "Could not add that type.")))))))
+                      (rem/invoke! (remote/add-type-remote! page-uuid (:entity/uuid type-entity)
+                                                            db-scope)
+                                   {:message "Could not add that type."})))
 
         ;; Handler for adding a new property to this type.
         ;; The client sends the SHAPE it wants; the server derives the attribute
@@ -1724,23 +1734,18 @@
                                                   (= :checkbox property-type) "S/Boolean"
                                                   (= :date property-type) "S/Date"
                                                   :else "S/String")]
-                              (go
-                                (try
-                                  (<! (remote/add-property-remote!
-                                       {:type-page-uuid page-uuid
-                                        :morphism-name morphism-name
-                                        :cardinality (if (= cardinality :many)
-                                                       :db.cardinality/many
-                                                       :db.cardinality/one)
-                                        :optional? optional?
-                                        :property-type (or property-type :text)
-                                        :target-type-uuid (when is-relation? (uuid target-type-uuid))
-                                        :target-object-name (when-not is-relation? target-object)}
-                                       db-scope))
-                                  (catch :default e
-                                    (js/console.error "[page-header] Failed to create property:" e)
-                                    (binding [rtc/*execution-context* runtime]
-                                      (sig/show-error! "Could not create that property."))))))))
+                              (rem/invoke! (remote/add-property-remote!
+                                            {:type-page-uuid page-uuid
+                                             :morphism-name morphism-name
+                                             :cardinality (if (= cardinality :many)
+                                                            :db.cardinality/many
+                                                            :db.cardinality/one)
+                                             :optional? optional?
+                                             :property-type (or property-type :text)
+                                             :target-type-uuid (when is-relation? (uuid target-type-uuid))
+                                             :target-object-name (when-not is-relation? target-object)}
+                                            db-scope)
+                                           {:message "Could not create that property."}))))
 
         ;; Handler for removing a property from this type.
         ;; DESTRUCTIVE: it retracts every VALUE stored under the attribute, not
@@ -1754,28 +1759,18 @@
                                       (str "Remove the property \"" prop-name "\"?\n\n"
                                            "This also deletes its value on every page "
                                            "that has one. This cannot be undone."))
-                                 (go
-                                   (try
-                                     (let [res (<! (remote/remove-property-remote!
-                                                    (:entity/uuid property) prop-name db-scope))]
-                                       (js/console.log "[page-header] Removed property:" prop-name
-                                                       "values:" (:values-removed res)))
-                                     (catch :default e
-                                       (js/console.error "[page-header] Failed to remove property:" e)
-                                       (binding [rtc/*execution-context* runtime]
-                                         (sig/show-error! "Could not remove that property.")))))))))
+                                 (rem/invoke! (remote/remove-property-remote!
+                                               (:entity/uuid property) prop-name db-scope)
+                                              {:message "Could not remove that property."})))))
 
         ;; Handler for saving a property value on this page
         on-save-property (fn [property new-value]
                         (when-not (refuse-past-write! "edit a property")
-                           (go
-                             (try
-                               (<! (remote/save-property-remote! page-uuid (:entity/name property)
-                                                             new-value db-scope))
-                               (catch :default e
-                                 (js/console.error "[page-header] Failed to save property:" e)
-                                 (binding [rtc/*execution-context* runtime]
-                                   (sig/show-error! "Could not save that property.")))))))
+                           ;; a reflected property is refused as an ANSWER
+                           ;; (`{:success false …}`), which `invoke!` reports too
+                           (rem/invoke! (remote/save-property-remote! page-uuid (:entity/name property)
+                                                                      new-value db-scope)
+                                        {:message "Could not save that property."})))
 
         page-title (dq/page-title-query db page-uuid)
 
@@ -2076,7 +2071,7 @@
 
             ;; Transform Datahike format to UI format
             focused-id (:focused-id @ui-state)
-            blocks-iv (transform-datahike-blocks dh-blocks-iv focused-id)
+            blocks-iv (transform-datahike-blocks dh-blocks-iv focused-id (:max-tx db-value))
 
             ;; Build indices for tree operations
             all-blocks (iv/get-new blocks-iv)
@@ -2127,14 +2122,15 @@
                   (fn [block]
                     (let [depth (block-depth block block-index)
                           has-children (has-children? (:id block) children-index)
-                          ;; Resolve live conn for widget writes when this is a KB-scoped
-                          ;; tab AND the active branch is the trunk. Optimistic widget
-                          ;; writes go through opt/transact! on the trunk-bound conn;
-                          ;; passing it on a fork would silently land widget writes on
-                          ;; trunk. Widgets-on-forks need branch-aware writes (deferred).
-                          conn (when (and db-scope (trunk? active-branch))
-                                 (db-signal/get-kb-conn db-scope))]
-                      (render-block block depth has-children db-scope syntax-pref db-value conn active-branch)))))
+                          ;; Widget writes only on a KB-scoped tab's TRUNK: they
+                          ;; are predictions on the trunk overlay and RPCs to
+                          ;; trunk, so handing them out on a fork would land a
+                          ;; fork view's writes on trunk. Widgets-on-forks need
+                          ;; branch-aware writes (deferred).
+                          widget-kb (when (and db-scope (trunk? active-branch))
+                                      (when-let [ov (db-signal/get-kb-overlay db-scope)]
+                                        {:db-scope db-scope :overlay ov}))]
+                      (render-block block depth has-children db-scope syntax-pref db-value widget-kb active-branch)))))
               ;; Empty state: new pages auto-create first block, so this is just loading
               (el/div {:class "empty-state"}
                 (el/p "Loading blocks...")))

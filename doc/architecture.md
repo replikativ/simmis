@@ -104,7 +104,27 @@ head after the write, the prediction is dropped once the replica reaches that
 head, and a refused or failed RPC rejects it and tells the user. `opt/transact!`
 would hand the transaction to the replica's KabelWriter — a raw
 `datahike.kabel/dispatch`, past `can?`, which this server does not serve — and
-such a write never arrives and never fails.
+such a write never arrives and never fails. The same holds for `d/transact!` on
+any replica conn and for konserve writes into a synced store;
+`browser-write-guard-test` reads every ClojureScript file (and the `:cljs`
+branch of every `.cljc`) and fails on any of them.
+
+A wiki widget (`widget_sandbox.cljs`) is browser code too. Its `kb/*` writes
+are `block-remote/widget-transact` (data, predicted on the KB's overlay) and
+`block-remote/widget-install-attr` (an attribute declaration, sent in order
+with the data writes but not predicted, since the replica cannot apply data of
+a type it does not know). Widgets write only on a KB tab's trunk. A widget
+block carries the db's `:max-tx` in its row and is keyed by it, so it
+re-evaluates when what it shows changes.
+
+A write that is not shown at once is still never silent. Every call site routes
+its outcome through `uis/web/desktop/remote.cljc`: `rem/invoke!` and `rem/spin!`
+report a failure by default, `rem/on-ok`/`rem/on-error` are the two
+continuations of a spin-remote invoked from a DOM callback, and
+`rem/result-failure` treats a refusal a handler ANSWERS — `{:status :error …}`,
+`{:success false …}` — as a failure rather than a result. A setting shown
+before the server took it (notification level, code view) is put back when
+the server refuses it.
 
 **Aggregates are views over sources.** No persisted aggregate, no denormalised
 index. If an aggregate is slow, cache it on a key derived from the sources' own

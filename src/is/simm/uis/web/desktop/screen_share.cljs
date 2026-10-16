@@ -19,6 +19,7 @@
   (:require [is.simm.uis.web.desktop.screen-recorder :as rec]
             [is.simm.uis.web.desktop.login :as login]
             [is.simm.uis.web.desktop.chat-remote :as chat-remote]
+            [is.simm.uis.web.desktop.remote :as rem]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.runtimes.web :as web]
             [org.replikativ.spindel.engine.core :as rtc]))
@@ -88,7 +89,12 @@
                                         :headers (login/auth-header-map
                                                    #js {"Content-Type" "image/jpeg"})
                                         :body blob})
-                         (.catch (fn [e] (js/console.warn "[screen-share] post failed:" e))))))
+                         (.then (fn [resp]
+                                  (when-not (.-ok resp)
+                                    (rem/report-error! "Your screen is not reaching the server."
+                                                       (ex-info (str "HTTP " (.-status resp))
+                                                                {:error (str "HTTP " (.-status resp))})))))
+                         (.catch (fn [e] (rem/report-error! "Your screen is not reaching the server." e))))))
                  "image/jpeg" 0.85)))))
 
 ;; ---------------------------------------------------------------------------
@@ -98,15 +104,36 @@
 ;; Grants are CONTROL-plane, so RPCs over distributed-scope — not HTTP glue.
 ;; From a DOM/interval callback the spin-remote needs the execution-context
 ;; bound, or it silently no-ops (feedback_spin_remote_ctx_binding).
-(defn- rpc! [rpc-fn room-id]
+(defn- rpc!
+  "Call a grant RPC; `on-done` gets nil on success or the failure — a thrown
+   one, or a refusal ANSWERED as `{:status :error …}` (not a member, unknown
+   room), which used to count as success: the share button lit up while the
+   room saw nothing."
+  [rpc-fn room-id on-done]
   (binding [rtc/*execution-context* runtime]
     (let [s (rpc-fn web/server-id room-id)]
-      (s (fn [_] nil)
-         (fn [e] (js/console.warn "[screen-share] grant rpc failed:" e))))))
+      (s (fn [r] (on-done (rem/result-failure r)))
+         (fn [e] (on-done (or e (ex-info "grant call failed" {}))))))))
 
-(defn- grant-open!  [room-id] (rpc! chat-remote/open-screen-grant! room-id))
-(defn- grant-beat!  [room-id] (rpc! chat-remote/screen-grant-heartbeat! room-id))
-(defn- grant-close! [room-id] (rpc! chat-remote/close-screen-grant! room-id))
+(declare stop!)
+
+(defn- grant-open! [room-id on-done] (rpc! chat-remote/open-screen-grant! room-id on-done))
+
+(defn- grant-beat!
+  "Keep the grant alive. A refused heartbeat means the room no longer sees the
+   screen: stop sharing into it and say so, rather than keep a lit button."
+  [room-id]
+  (rpc! chat-remote/screen-grant-heartbeat! room-id
+        (fn [err]
+          (when-let [{:keys [on-change]} (and err (get @grants room-id))]
+            (rem/report-error! "Screen sharing into this room stopped." err)
+            (stop! room-id on-change)))))
+
+(defn- grant-close! [room-id]
+  (rpc! chat-remote/close-screen-grant! room-id
+        (fn [err]
+          (when err
+            (rem/report-error! "The room may still see your screen: closing the share failed." err)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Capture lifecycle
@@ -201,9 +228,14 @@
     (-> (ensure-capture! (fn [] (when on-change (on-change false))))
         (.then
          (fn [_]
-           (grant-open! room-id)
-           (let [beat (js/setInterval #(grant-beat! room-id) grant-beat-ms)]
-             (swap! grants assoc room-id {:heartbeat beat}))
-           (js/console.log "[screen-share] sharing into" room-id)
-           (when on-change (on-change true))))
+           ;; Lit only once the server has opened the grant.
+           (grant-open! room-id
+                        (fn [err]
+                          (if err
+                            (do (rem/report-error! "Could not share your screen into this room." err)
+                                (when (empty? @grants) (stop-capture!))
+                                (when on-change (on-change false)))
+                            (let [beat (js/setInterval #(grant-beat! room-id) grant-beat-ms)]
+                              (swap! grants assoc room-id {:heartbeat beat :on-change on-change})
+                              (when on-change (on-change true))))))))
         (.catch (fn [_] nil)))))

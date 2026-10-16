@@ -28,6 +28,7 @@
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as cr])
+            #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.uis.web.desktop.user-rooms-sync :as urs])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el])))
@@ -94,8 +95,13 @@
        (binding [rtc/*execution-context* runtime]
          (when-let [me @sig/current-user]
            (let [s (make-spin (:id me))]
-             (s (fn [_] (binding [rtc/*execution-context* runtime]
-                          (urs/refresh-user-rooms! (:id me))))
+             (s (fn [r]
+                  (binding [rtc/*execution-context* runtime]
+                    ;; `create-drive!` answers a refusal as `{:status :error}`
+                    (if-let [e (rem/result-failure r)]
+                      (sig/show-error! (str "Could not create the " what ".")
+                                       (rem/error-text e))
+                      (urs/refresh-user-rooms! (:id me)))))
                 (fn [err]
                   (js/console.error (str "[add-source] create " what " failed:") err)
                   (binding [rtc/*execution-context* runtime]

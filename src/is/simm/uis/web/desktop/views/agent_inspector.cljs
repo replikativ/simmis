@@ -6,6 +6,7 @@
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.runtimes.web :as web]
             [is.simm.uis.web.desktop.chat-remote :as chat-remote]
+            [is.simm.uis.web.desktop.remote :as rem]
             [is.simm.uis.web.desktop.room-details :as room-details]
             [org.replikativ.spindel.engine.core :as rtc]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
@@ -211,12 +212,10 @@
                            ;; "Loading…" on its way to a refill that a re-run
                            ;; then cancelled. `:force?` is what makes the
                            ;; reload observe the write just made.
-                           (s (fn [_]
+                           (s (rem/on-ok "Could not change the agent's model." (fn [_]
                                 (room-details/load!
-                                 (:room-id selected-row) {:force? true}))
-                              (fn [err]
-                                (js/console.error
-                                 "[agent-inspector] model error:" err)))))))))))
+                                 (:room-id selected-row) {:force? true})))
+                              (rem/on-error "Could not change the agent's model."))))))))))
 
             ;; System prompt section — always editable
             (let [prompt (or (:party/system-prompt agent-config) "")
@@ -253,9 +252,9 @@
                                    ;; the prompt, and must not restore a model choice.
                                    s  (chat-remote/update-agent-config!
                                         web/server-id agent-id agent-name "" sp)]
-                               (s (fn [_]
-                                    (room-details/load! room-id {:force? true}))
-                                  (fn [err] (js/console.error "[agent-inspector] update error:" err)))))}
+                               (s (rem/on-ok "Could not save the agent's prompt." (fn [_]
+                                    (room-details/load! room-id {:force? true})))
+                                  (rem/on-error "Could not save the agent's prompt."))))}
                 "Save")))
 
             ;; Knowledge bases section
