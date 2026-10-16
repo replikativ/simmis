@@ -51,11 +51,14 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Install audio processing dependency
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Install audio and MCP helper dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg python3
 
       - name: Run backend tests
         run: clojure -X:test
+
+      - name: Test private MCP client helper
+        run: python3 -m unittest discover -s test/scripts
 
       - name: Build production frontend
         run: npm run release

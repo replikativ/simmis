@@ -7,7 +7,9 @@
             [is.simm.model.parties :as parties]
             [is.simm.runtimes.auth-config :as auth]
             [is.simm.runtimes.instance :as instance]
+            [is.simm.runtimes.http-auth :as http-auth]
             [is.simm.runtimes.mcp :as mcp]
+            [reitit.ring :as ring]
             [kabel.auth.jwt :as jwt]))
 
 (def person #uuid "33333333-3333-3333-3333-333333333333")
@@ -102,3 +104,57 @@
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"occupied" (mcp/start!)))
       (is (some? (first @hosts)))
       (is (nil? (last @hosts))))))
+
+(deftest web-login-exchanges-only-its-own-human-identity
+  (let [other #uuid "44444444-4444-4444-4444-444444444444"
+        handler (ring/ring-handler
+                  (ring/router [["/auth" {:auth :public} (mcp/token-route)]]
+                               {:validate http-auth/validate-auth-declared!
+                                :data {:middleware [http-auth/auth-middleware]}}))
+        request {:request-method :post :uri "/auth/mcp-token"
+                 :body {:party-id other :sub (str other) :profile "admin"}}]
+    (with-redefs [mcp/configured-port (constantly 47889)]
+      (with-redefs [http-auth/party-id (constantly nil)]
+        (is (= 401 (:status (handler request)))))
+      (with-redefs [http-auth/party-id (constantly person)]
+        (let [response (handler request)
+              principal ((mcp/authenticator) {:bearer (get-in response [:body :token])})]
+          (is (= 200 (:status response)))
+          (is (= "no-store" (get-in response [:headers "Cache-Control"])))
+          (is (= (str "party/" person) (:principal/id principal)))
+          (is (= mcp/read-tools (:principal/tools principal))))
+        (with-redefs [mcp/configured-port (constantly nil)]
+          (is (= 404 (:status (handler request)))))
+        (with-redefs [parties/get-party (constantly {:party/type :agent})]
+          (is (= 403 (:status (handler request)))))
+        (with-redefs [parties/get-party (constantly nil)]
+          (is (= 403 (:status (handler request)))))))))
+
+(deftest credential-exchange-uses-the-real-web-validator
+  (let [other #uuid "44444444-4444-4444-4444-444444444444"
+        key "web-exchange-test"
+        now (quot (System/currentTimeMillis) 1000)
+        validator (jwt/build-bearer-validator
+                    {:alg :HS256 :secret key :leeway-seconds 0
+                     :required-claims {:iss "simmis" :aud "simmis-api"}})
+        claims {:iss "simmis" :aud "simmis-api" :sub (str other)
+                :iat now :exp (+ now 60)}
+        handler (ring/ring-handler
+                  (ring/router [["/auth" {:auth :public} (mcp/token-route)]]
+                               {:data {:middleware [http-auth/auth-middleware]}}))
+        request (fn [token]
+                  (handler {:request-method :post :uri "/auth/mcp-token"
+                            :headers {"authorization" (str "Bearer " token)}
+                            :body {:party-id person}}))]
+    (with-redefs [http-auth/validator (delay validator)
+                  mcp/configured-port (constantly 47889)
+                  parties/get-party (fn [id] (when (#{person other} id)
+                                             {:party/id id :party/type :human}))]
+      (let [response (request (jwt/sign-hs256 key claims))
+            principal ((mcp/authenticator) {:bearer (get-in response [:body :token])})]
+        (is (= 200 (:status response)))
+        (is (= (str "party/" other) (:principal/id principal))))
+      (doseq [token ["wrong" (:token (mcp/mint-token! person))
+                     (jwt/sign-hs256 key (assoc claims :exp (- now 60)))
+                     (jwt/sign-hs256 key (assoc claims :sub "invalid"))]]
+        (is (= 401 (:status (request token))))))))
