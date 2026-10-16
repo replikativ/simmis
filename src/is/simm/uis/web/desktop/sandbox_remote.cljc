@@ -174,7 +174,11 @@
      (let [uuid  (parse-uuid room-uuid-str)
            state (find-room-context uuid)]
        (if-let [sci-ctx (:sci-ctx state)]
-         (let [result     (sandbox/eval-code sci-ctx code)
+         (let [;; in the room's world, as the agent's clojure_eval runs: the
+               ;; caller's binding is the server context, where the KBs and
+               ;; data DBs attached to the room are not registered
+               result     (sandbox/eval-code sci-ctx code
+                                             :execution-context (:room-ctx state))
                success?   (:success result)
                result-str (if success?
                             (str "=> " (pr-str (:value result))

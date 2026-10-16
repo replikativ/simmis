@@ -137,8 +137,15 @@
    the stores it owns without anyone granting anything."
   [:read :read-write :merge :owner])
 
-(defn- permission-satisfies?
+(defn permission-satisfies?
   "Does a grant `permission` permit `action`?
+
+   dvergr asks the same question of the grants it enforces itself (the sandbox's
+   database handles, the writable-KB list, GC, fork merges) and takes the
+   host's answer through `dvergr.system.rooms/set-grant-permits!`. simmis
+   installs THIS function there (`web/install-grant-permits!`, at boot before
+   any room hydrates), so the two never disagree on what `:merge` permits —
+   dvergr's own default knows only `:read`, `:read-write` and `:owner`.
 
    The action vocabulary, fixed here (see `doc/authority.md`):
 

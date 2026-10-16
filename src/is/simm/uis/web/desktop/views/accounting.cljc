@@ -19,6 +19,7 @@
             #?(:cljs [is.simm.uis.web.desktop.accounting-remote :as ar])
             #?(:cljs [is.simm.uis.web.desktop.refs :as refs])
             #?(:cljs [is.simm.uis.web.desktop.aggregate :as agg])
+            #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.incremental.interval]))
@@ -43,7 +44,7 @@
               (binding [rtc/*execution-context* runtime]
                 (reset! sig/accounting-data
                         (if err
-                          {:books [] :error (or (some-> (ex-data err) :error str)
+                          {:books [] :error (or (rem/error-text err)
                                                 (ex-message err) (str err))}
                           {:books (vec ok) :loaded-at (js/Date.now)})))
               (done))))))))

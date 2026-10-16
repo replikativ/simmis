@@ -63,7 +63,9 @@ That gives two distinct channels, and they are authorized separately:
 
 - **Control plane** — RPC. `defn-spin-remote` in `.cljc` declares a function
   that exists on both sides; the client call travels to the server handler.
-  Every inbound call passes `access/authorize-remote` first.
+  Every inbound call passes `access/authorize-remote` first. A refused or
+  failed call reaches the client as a short message, a type and a correlation
+  id (`runtimes/rpc_errors.clj`); the exception stays in the server log.
 - **Data plane** — replication. konserve-sync subscribes the client to store
   scopes it may read. Subscription is gated; publication from a client is
   refused outright, because sync here is one-directional.
@@ -124,6 +126,7 @@ src/is/simm/
 │   ├── web.clj              server boot and the HTTP routes
 │   ├── web.cljs             client boot
 │   ├── http_auth.clj        route auth: the gate and its boot-time validator
+│   ├── rpc_errors.clj       what a failed RPC tells the client (no traces)
 │   ├── auth_config.clj      kabel-auth store, JWT, accounts from config
 │   ├── branching.clj        yggdrasil branching and branch GC
 │   └── telegram.clj         adapter over dvergr's telegram channel

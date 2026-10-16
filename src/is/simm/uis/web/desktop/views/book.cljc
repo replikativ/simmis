@@ -16,6 +16,7 @@
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]])
             #?(:cljs [is.simm.uis.web.desktop.accounting-remote :as ar])
             #?(:cljs [is.simm.uis.web.desktop.refs :as refs])
+            #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.incremental.interval]))
@@ -44,13 +45,12 @@
 
 #?(:cljs
    (defn- error-text
-     "A readable reason. A refused remote arrives as the server's exception
-      AS DATA (`{:cause … :data …}`), whose printed form is a stack trace."
+     "A readable reason: the server's short message and correlation id
+      (`remote/error-text`)."
      [err]
-     (or (some-> (ex-data err) :error str)
-         (ex-message err)
-         (when (map? err) (or (some-> (:data err) :error name) (:cause err)))
-         (str err))))
+     (if (map? err)
+       (or (some-> (:data err) :error name) (:cause err) (str err))
+       (rem/error-text err))))
 
 #?(:cljs
    (defonce ^:private requested

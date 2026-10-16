@@ -46,7 +46,7 @@
               ;; like a clear plate.
               (reset! sig/tasks-data
                       (if err
-                        {:tasks [] :error (or (some-> (ex-data err) :error str)
+                        {:tasks [] :error (or (rem/error-text err)
                                               (ex-message err) (str err))
                          :include-done? include-done?}
                         {:tasks (vec ok) :include-done? include-done?

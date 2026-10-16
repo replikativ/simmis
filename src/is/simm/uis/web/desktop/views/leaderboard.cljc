@@ -15,6 +15,7 @@
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]])
             #?(:cljs [is.simm.uis.web.desktop.experiments-remote :as er])
             #?(:cljs [is.simm.uis.web.desktop.aggregate :as agg])
+            #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el]
                             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -59,7 +60,7 @@
               (binding [rtc/*execution-context* runtime]
                 (swap! sig/leaderboards assoc room-id
                        (if err
-                         {:error (or (some-> (ex-data err) :error str) (ex-message err) (str err))
+                         {:error (or (rem/error-text err) (ex-message err) (str err))
                           :attempts attempts}
                          {:data ok :attempts attempts})))
               (done))))))))

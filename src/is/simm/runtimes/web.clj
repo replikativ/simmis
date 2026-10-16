@@ -18,6 +18,8 @@
             ;; System DB (must init before auth)
             [is.simm.model.system-db :as system-db]
             [is.simm.model.access :as access]
+            [is.simm.runtimes.rpc-errors :as rpc-errors]
+            [dvergr.system.rooms :as srooms]
             [is.simm.model.message-notify-broadcast :as mnb]
             [is.simm.model.mail-accounts :as mail-accounts]
             ;; Auth configuration
@@ -697,6 +699,19 @@
   (log/log! {:level :info :id ::warm-up-complete
              :data {:count (count deferred-namespaces)}}))
 
+(defn install-grant-permits!
+  "Tell dvergr what a grant permission permits, in simmis's vocabulary.
+
+   dvergr enforces grants itself where the sandbox reaches a database
+   (`dvergr.room/db`, the guarded `d/connect`, `*room*`), in the writable-KB
+   list `knowledge_add` uses, in GC and in fork merges, and asks the host what
+   a permission permits. Its default knows `:read`, `:read-write` and `:owner`,
+   so without this a simmis `:merge` grant would be read-only in the sandbox.
+   The answer is `access/permission-satisfies?`, the same ladder `can?` uses —
+   one statement of what each permission means, not two."
+  []
+  (srooms/set-grant-permits! access/permission-satisfies?))
+
 (defn start-server!
   "Start the web server. Idempotent - does nothing if already started."
   []
@@ -723,6 +738,10 @@
       (catch Throwable e
         (log/log! {:level :warn :id ::kontor-sandbox-register-failed
                    :data {:error (str e)}})))
+
+    ;; Before any room hydrates: what a simmis grant permits in dvergr's
+    ;; sandbox (dvergr asks before every sandbox write).
+    (install-grant-permits!)
 
     ;; Hydrate dvergr rooms: per-room execution ctxs + yggdrasil systems are
     ;; in-memory, so after a JVM restart every provisioned room must be
@@ -780,8 +799,12 @@
       ;; Set kabel peer for spin-remote distributed functions
       (dist/set-system-peer! server)
 
-      ;; Start invocation loop
-      (let [inv-loop (invoke-on-peer server {:authorize-fn access/authorize-remote})]
+      ;; Start invocation loop. A failed call reaches the client only as
+      ;; `rpc-errors`' short map: the gate throws it on a refusal, and every
+      ;; registered handler is wrapped to turn its exceptions into one — the
+      ;; full exception goes to the log under the id the client is given.
+      (rpc-errors/install!)
+      (let [inv-loop (invoke-on-peer server {:authorize-fn (rpc-errors/gate access/authorize-remote)})]
         (swap! server-state assoc :invocation-loop inv-loop))
 
       (go-super S
