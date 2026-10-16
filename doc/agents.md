@@ -123,7 +123,15 @@ subscription rather than per token.
 New agents store no model selection. Persona/template selection supplies the
 role and system prompt, not a hidden model. An agent follows its owner's model
 preference from Settings, then the product fallback when the owner has no
-preference. Only an explicit per-agent override stores a model FAMILY
+preference. The product fallback is per deployment: `SIMMIS_DEFAULT_MODEL`, else
+`:models {:default "<id or family>"}` in config.local.edn, else the built-in
+`accounts/fireworks/models/glm-5p2` (`model-selection/default-model-choice`).
+It is read at every resolution and never written onto an agent, so changing it
+and restarting moves every inheriting agent. A configured default is checked
+like any other choice: e.g. `codex-subscription-luna-6` on a machine without a
+`codex login` reports "Credential required" with the login instruction and the
+agent does not join — it never runs the built-in default instead. Boot logs one
+`::default-model-unusable` warning in that case. Only an explicit per-agent override stores a model FAMILY
 (`gpt-*-luna`, `accounts/fireworks/models/glm-*`) with `:auto`, or a preferred
 model version. Clearing that override physically removes the agent's model keys
 and returns it to inheritance; existing explicit choices are not migrated or

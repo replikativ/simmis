@@ -373,6 +373,14 @@ When you close one, flip it in the same PR.
 `config.local.edn` (gitignored): telegram bot token, alpha users. Its
 committed template is `config.example.edn` — when you add a config key,
 document it there, since that file IS the setup instructions.
+The product default model (used only when neither the agent nor its owner
+chose one) is per deployment: `SIMMIS_DEFAULT_MODEL`, else `:models {:default
+"<id or family>"}`, else Fireworks `glm-5p2`. It is resolved at join time,
+never stored on agents. `codex-subscription-luna-6` (the Codex subscription)
+needs `codex login` as the user running simmis; without it boot warns
+(`::default-model-unusable`) and inheriting agents report "Credential
+required" — no fallback to another model. See doc/agents.md.
+
 JWT dev secret persists at `.dvergr/jwt-secret` (gitignored). Never
 print tokens/secrets into chat, logs, or commits.
 

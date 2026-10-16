@@ -323,16 +323,19 @@
 ;; Agents (create, update, delete — agents are parties)
 ;; =============================================================================
 
-(def default-model
-  "Concrete fallback id. Re-exported from `model-selection`, which owns it.
-   Prefer `default-family` + :auto — a creation-time default is exactly what froze Vár on
-   glm-5p1 for eleven days after the code default said 5p2."
-  model-selection/default-model)
+(defn default-model
+  "The product fallback, as configured for this deployment. Delegates to
+   `model-selection/default-model`, which owns it and reads it on every call.
+   Never store its result on an agent — a creation-time default is exactly
+   what froze Vár on glm-5p1 for eleven days after the code default said 5p2."
+  []
+  (model-selection/default-model))
 
-(def default-family
+(defn default-family
   "Family form of the product fallback. Kept for callers that deliberately
    request an explicit family override; new agents store no model choice."
-  model-selection/default-family)
+  []
+  (model-selection/default-family))
 
 (defn create-agent!
   "Create a new agent party. Returns the agent party.
