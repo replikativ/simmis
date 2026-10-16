@@ -87,6 +87,14 @@
               :cheap   "accounts/fireworks/models/minimax-*"}
 
  ;; ---------------------------------------------------------------------------
+ ;; Private MCP (optional, OFF by default). Loopback only, accessed over SSH;
+ ;; SIMMIS_MCP_PORT overrides this base port; SIMMIS_PORT_OFFSET is added.
+ ;; Initially exposes only room/message/run reads under normal room grants.
+ ;; Mint an MCP-only, one-hour token for an existing human in the operator
+ ;; REPL with is.simm.runtimes.mcp/mint-token!; never print/log its result.
+ #_:mcp #_{:port 17889}
+
+ ;; ---------------------------------------------------------------------------
  ;; Storage GC (optional, OFF by default). Every 6h (and at boot) sweep the
  ;; orphaned Datahike index nodes of the system DB and every room's stores;
  ;; orphan-only, every branch head and its history is kept. OFF because a

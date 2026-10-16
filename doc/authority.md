@@ -161,6 +161,39 @@ If the server refuses to boot with `:http/undeclared-routes`, that is this.
 Decide what the route needs; do not reach for `:public` to make the message go
 away.
 
+## Private MCP
+
+The optional MCP listener (`runtimes/mcp.clj`, `SIMMIS_MCP_PORT` or
+`:mcp {:port ...}`) binds only `127.0.0.1`; it is not mounted on the public
+HTTP router. Access it through an SSH local forward. It runs against the
+existing server execution context through `is.simm.ops.dvergr/host`, not a
+second daemon or a second set of store connections.
+
+This initial surface permits only `room_list`, `room_detail`, `room_messages`,
+`run_list` and `run_detail`. Each authenticated principal carries that hard
+tool ceiling, independent of the profile a client requests. Every operation
+and resource read also passes the existing `access/dvergr-authorize` gate;
+room listings are filtered and a valid credential grants no access to another
+party's room.
+No raw database write, code evaluation or chat post is exposed.
+
+An operator can call `is.simm.runtimes.mcp/mint-token!` for an existing human
+party UUID. Its result contains a credential and must be saved privately, not
+printed or logged. Tokens expire after one hour, authenticate as that party,
+and create no membership or grant. The party is checked on each request;
+deleting it revokes access, and grant changes affect subsequent operations.
+There is no individual-token revocation registry in this first surface.
+
+MCP tokens use issuer/audience `simmis-mcp` and an HMAC-derived signing key
+distinct from the web and blob keys. Web tokens, blob capabilities, the
+Dvergr local-admin token and Dvergr agent-run tokens are not accepted here;
+MCP tokens do not authenticate to the web. This operator-issued human-read
+surface is not yet an OAuth flow or an agent-delegation API.
+
+The listener starts with the server when configured and stops before its host
+is cleared. Its handle is process-level transport state, not room or UI state
+that a world fork should copy.
+
 ## Grants
 
 A grant is a `:grant/*` row in the system DB — subject, relation, resource —
