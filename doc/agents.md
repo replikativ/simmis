@@ -223,14 +223,18 @@ new intent and reuse it on a retry:
 /usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
   --session /private/operator-session.json task --request-id ANOTHER_REQUEST_UUID \
   --task 'Read the selected input and write a report under /out/' \
-  --path docs/input.md --timeout-ms 180000 --settlement review
+  --path docs/input.md --timeout-ms 300000 --settlement review
 
 /usr/bin/python3 scripts/worker_driver.py --state /private/room-worker run \
   --codex-home /absolute/local/codex-login-directory
 ```
 
-`run` handles one queued assignment, or accepts `--run RUN_UUID`. The controller
-receives no human credential; the guest receives neither credential family nor
+`run` handles one queued assignment, or accepts `--run RUN_UUID`. The task's
+total deadline includes queue time and cold JVM startup;
+`task` defaults to five minutes, with a ten-minute maximum. Start the local
+runner promptly after submitting. Fresh interpreter/broker JVMs may spend a
+substantial part of that bound loading the stack before inference begins.
+The controller receives no human credential; the guest receives neither credential family nor
 the native login. This uses Dvergr's native subscription provider and SCI loop,
 not the Codex CLI's tool harness. The native login is read only by the broker;
 an expired login fails without refresh or persistence. Renew it separately.

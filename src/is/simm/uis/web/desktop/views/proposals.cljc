@@ -338,7 +338,7 @@
                                              ". It stays open and can be retried"
                                              " once the conflict is resolved on"
                                              " its branch."))))
-          :else (load-proposals!)))))))
+          :else (retry-proposal-state! pid)))))))
 
 #?(:cljs
    (defn- comment-text
@@ -429,7 +429,7 @@
           (do (js/console.error "[proposals] dismiss error:" err)
               (update-proposal! pid #(-> % (dissoc :busy?)
                                          (assoc :action-error (rem/error-text err)))))
-          (load-proposals!)))))))
+          (retry-proposal-state! pid)))))))
 
 #?(:cljs
    (defn- fork-action!
@@ -457,7 +457,7 @@
                                         (str "This fork conflicts with its trunk ("
                                              (count (:warnings ok))
                                              ") — it cannot be landed on its own."))))
-          :else (load-proposals!))))))
+          :else (retry-proposal-state! pid))))))
 
 #?(:cljs
    (defn- accept-fork! [pid scope branch]
@@ -1201,6 +1201,10 @@
               all (:proposals data)
               focused (when focus-id
                         (first (filter #(= (str (:id %)) (str focus-id)) all)))
+              ;; Share the compact card's cache invalidation when an open
+              ;; row arrives. An earlier :open verification must not outlive
+              ;; that row and mask a subsequent accept/dismiss by any client.
+              _ (when focused (proposal-state data focus-id))
               ;; Not in the list is not yet an answer — ask, once.
               _ (when (and focus-id (nil? focused)) (recheck-focus! focus-id))
               ;; …and only THEN is an absence worth reporting as a resolution.

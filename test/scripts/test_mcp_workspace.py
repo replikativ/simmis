@@ -15,6 +15,20 @@ spec.loader.exec_module(workspace)
 
 
 class WorkspaceTest(unittest.TestCase):
+    def test_native_business_result_is_not_unwrapped_as_an_rpc_envelope(self):
+        client = workspace.MCP("http://127.0.0.1:47990/mcp", "synthetic-token")
+        attempt = {"id": "attempt", "reward": 1, "result": {"summary": "Done"}}
+        for value in [attempt, {"result": "literal application field"}, [attempt], None]:
+            with self.subTest(value=value):
+                structured = value if isinstance(value, dict) else {"result": value}
+                client.request = lambda *args: {"content": [{"type": "text", "text": json.dumps(value)}],
+                                                "structuredContent": structured}
+                self.assertEqual(client.call("attempt_detail", {}), value)
+        client.request = lambda *args: {"structuredContent": attempt}
+        self.assertEqual(client.call("attempt_detail", {}), attempt)
+        client.request = lambda *args: {"structuredContent": {"result": [attempt]}}
+        self.assertEqual(client.call("attempt_list", {}), [attempt])
+
     def fixture(self, change=None):
         data = b"synthetic bundle bytes\x00\xff" * 1000
         descriptor = {"snapshot": str(uuid.uuid4()), "bytes": len(data), "files": 1,

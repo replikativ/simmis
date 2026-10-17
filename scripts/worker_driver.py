@@ -216,7 +216,8 @@ def main():
     task.add_argument("--request-id", required=True, help="Stable UUID; reuse on retry")
     task.add_argument("--task", required=True)
     task.add_argument("--path", action="append", default=[])
-    task.add_argument("--timeout-ms", type=int, default=180000)
+    task.add_argument("--timeout-ms", type=int, default=300000,
+                      help="Total task deadline including cold JVM startup; default 300000, maximum 600000")
     task.add_argument("--settlement", choices=["review", "discard"], default="review")
     commands.add_parser("revoke")
     run = commands.add_parser("run")

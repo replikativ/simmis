@@ -100,12 +100,16 @@ class MCP:
         result = self.request("tools/call", {"name": name, "arguments": arguments})
         if not isinstance(result, dict) or result.get("isError"):
             raise ValueError("Workspace read refused; check access or restart after workspace changes")
-        if "result" in result.get("structuredContent", {}):
-            return result["structuredContent"]["result"]
         content = result.get("content", [])
-        if len(content) != 1 or content[0].get("type") != "text":
-            raise ValueError("Invalid workspace response")
-        return json.loads(content[0]["text"])
+        # Dvergr's text contains the original value. A map may legitimately
+        # have a business `result` field (e.g. Attempt detail); it is NOT an
+        # RPC envelope. Only non-map values are wrapped in structuredContent.
+        if len(content) == 1 and content[0].get("type") == "text":
+            return json.loads(content[0]["text"])
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            return structured["result"] if set(structured) == {"result"} else structured
+        raise ValueError("Invalid workspace response")
 
 
 def download(call, room, destination):

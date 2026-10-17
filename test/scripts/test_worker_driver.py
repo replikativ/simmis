@@ -31,6 +31,20 @@ def reply(arguments):
 
 
 class DriverTest(unittest.TestCase):
+    def test_cli_deadline_includes_cold_start_and_keeps_the_finite_maximum(self):
+        args = ["worker_driver.py", "--state", "/private/fixture-worker", "--session", "/private/session",
+                "task", "--request-id", str(uuid.uuid4()), "--task", "Bounded task"]
+        with patch.object(sys, "argv", args), patch.object(driver, "state_root", return_value=Path("/private/fixture-worker")), \
+                patch.object(driver, "operate", return_value={}) as operate, patch("sys.stdout", new_callable=io.StringIO):
+            driver.main()
+            self.assertEqual(operate.call_args.args[-1]["limits"]["timeout-ms"], 300000)
+        with patch.object(sys, "argv", args + ["--timeout-ms", "600001"]), \
+                patch.object(driver, "state_root", return_value=Path("/private/fixture-worker")), \
+                patch.object(driver, "operate") as operate, patch("sys.stderr", new_callable=io.StringIO):
+            with self.assertRaises(SystemExit):
+                driver.main()
+            operate.assert_not_called()
+
     def prepare(self, root):
         selection = selected(root)
         with patch.object(driver, "preflight", return_value=selection), \
