@@ -78,6 +78,14 @@ narrow operations use separate worker credentials, immutable selected-file
 inputs and bounded output receipts. Application startup does not install
 these bindings or enable worker authentication. Completion alone never
 imports files or certifies a Run. See [data-model.md](data-model.md).
+The separate `ops/worker-frames.clj` provides bounded LF-delimited JSON for
+private process pipes: string keys preserve filenames; duplicate fields,
+trailing values, invalid Unicode and oversized/deep frames are refused.
+A malformed frame or I/O failure poisons the channel rather than retrying.
+This is framing, not authentication or executor attestation: every guest
+message (including ready/result) is candidate-controlled. Shutdown evidence
+comes only from the external controller, never a guest report. The framing
+module is not a process launcher or installed transport.
 The host-only `ops/worker-work.clj` adapter connects these to Dvergr's existing
 Protocol/WorldSetup/Evaluator capabilities. It owns no alternative execution
 engine or result store. Separate conserved admission allowance funds local
