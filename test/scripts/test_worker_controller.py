@@ -20,6 +20,20 @@ import test_worker_transport as transport_fixture
 
 
 class ControllerTest(unittest.TestCase):
+    def test_missing_host_observer_dependency_never_claims_or_creates_a_run_journal(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.chmod(root, 0o700)
+            worker, run = str(uuid.uuid4()), str(uuid.uuid4())
+            instance = controller.Controller(root, worker, journal_fixture.ENDPOINT, fixture.CONFIG)
+            with patch.object(controller.unit, "UnitBus", side_effect=ModuleNotFoundError("dbus")), \
+                    patch.object(controller, "MCP") as network:
+                with self.assertRaises(ModuleNotFoundError):
+                    instance.run(run, "fixture-enrollment", argv=["/unused"])
+                network.assert_not_called()
+                self.assertFalse((Path(root) / "runs" / run).exists())
+                self.assertEqual([], journal.unresolved(Path(root) / "runs", worker))
+                instance.close()
+
     def test_receipt_is_exact_and_live_not_just_a_matching_run(self):
         ticket = {"worker": str(uuid.uuid4()), "run": str(uuid.uuid4()), "nonce": str(uuid.uuid4())}
         value = {"run": ticket["run"], "lease": ticket["nonce"], "state": "claimed",
@@ -104,9 +118,11 @@ class ControllerTest(unittest.TestCase):
             instance = controller.Controller(root, worker, journal_fixture.ENDPOINT, fixture.CONFIG)
             folder = controller._child_directory(instance.runs, old_run)
             claim.prepare(folder / "claim.json", worker, old_run)
-            with patch.object(controller, "MCP") as network, self.assertRaises(ValueError):
+            with patch.object(controller, "MCP") as network, \
+                    patch.object(controller.unit, "UnitBus") as physical, self.assertRaises(ValueError):
                 instance.run(new_run, "never sent", ["/usr/bin/true"])
             network.assert_not_called()
+            physical.assert_not_called()
             self.assertFalse((instance.runs / new_run).exists())
             instance.close()
 

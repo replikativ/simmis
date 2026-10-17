@@ -293,6 +293,11 @@ total deadline includes queue time and cold JVM startup;
 `task` and `workflow` default to five minutes, with a ten-minute maximum. Start the local
 runner promptly after submitting. Fresh interpreter/broker JVMs may spend a
 substantial part of that bound loading the stack before inference begins.
+Use the documented `/usr/bin/python3`: it needs the host D-Bus/GLib bindings.
+The controller initializes its physical observer under its permanent ownership
+lock before creating a Run journal or claiming work. Missing host bindings or
+an unavailable observer therefore cannot strand a new lease. Unresolved prior
+Run journals still block admission before even initializing that observer.
 The controller receives no human credential; the guest receives neither credential family nor
 the native login. This uses Dvergr's native subscription provider and SCI loop,
 not the Codex CLI's tool harness. The native login is read only by the broker;

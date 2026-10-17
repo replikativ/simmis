@@ -197,6 +197,10 @@ class Controller:
                 raise ValueError("Reconcile every unresolved worker Run before claiming new work")
             if os.path.lexists(self.runs / run):
                 raise ValueError("Existing Run journals may only be reconciled, never executed again")
+            # Validate host D-Bus/GLib dependencies and the physical observer
+            # before leasing work. A failed observer setup creates no Run
+            # journal and cannot strand a newly claimed assignment.
+            self.observer = unit.UnitBus(**({} if sci is None else {"sci": True}))
             folder = _child_directory(self.runs, run)
             ticket = claim.prepare(folder / "claim.json", self.worker, run)
             with MCP(self.endpoint, enrollment_credential, lease_proof=ticket["proof"], timeout=5) as enrollment:
@@ -218,7 +222,6 @@ class Controller:
                     lease.tick(force=True)
                     profile_options = {} if sci is None else {"execution_profile": sci["profile"]}
                     self.launch = journal.prepare(folder, ticket, self.endpoint, frozen, self.config, **profile_options)
-                    self.observer = unit.UnitBus(**({} if sci is None else {"sci": True}))
                     input_read, input_write = os.pipe()
                     output_read, output_write = os.pipe()
                     self.frames = Frames(input_write, output_read, lease.tick)
