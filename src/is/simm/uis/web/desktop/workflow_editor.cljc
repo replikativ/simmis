@@ -12,7 +12,20 @@
   {:backend "hosted" :worker "" :worker-admissions "1"
    :model "" :case "" :mode "run" :repetitions "1"
    :budget-microdollars "100000" :max-dispatches "4"
-   :max-model-steps "4" :timeout-ms "120000" :settlement "review"})
+   :max-model-steps "4" :timeout-ms "120000" :timeout-default? true :settlement "review"})
+
+(defn set-form-field
+  "Change a field, preserving explicit time limits across backend switches.
+   Only newly created, default-owned values follow the backend's default;
+   legacy forms without ownership metadata are left unchanged."
+  [form key value]
+  (let [updated (assoc form key value)
+        timeout (get {"hosted" "120000" "local" "300000"} value)]
+    (cond
+      (= :timeout-ms key) (assoc updated :timeout-default? false)
+      (and (= :backend key) (true? (:timeout-default? form)) timeout)
+      (assoc updated :timeout-ms timeout)
+      :else updated)))
 
 (defn parameters [source]
   (into (sorted-map) (map (fn [[k v]] [(name k) v])) (get-in source [:definition :params])))

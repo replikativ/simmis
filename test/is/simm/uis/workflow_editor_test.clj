@@ -6,6 +6,23 @@
              :definition {:params {:goal "old default"}}
              :inspection {:ok true :bundle "bundle" :cases []}})
 
+(deftest backend-default-timeouts-never-replace-explicit-or-legacy-values
+  (let [hosted editor/defaults
+        local (editor/set-form-field hosted :backend "local")]
+    (is (= "120000" (:timeout-ms hosted)))
+    (is (= "300000" (:timeout-ms local)))
+    (is (true? (:timeout-default? local)))
+    (is (= "120000" (:timeout-ms (editor/set-form-field local :backend "hosted"))))
+    (doseq [value ["120000" "5000" ""]]
+      (let [edited (editor/set-form-field hosted :timeout-ms value)
+            switched (editor/set-form-field edited :backend "local")]
+        (is (false? (:timeout-default? edited)))
+        (is (= value (:timeout-ms switched)))
+        (is (= value (:timeout-ms (editor/set-form-field switched :backend "hosted"))))))
+    (is (= "120000" (:timeout-ms (editor/set-form-field
+                                  (dissoc hosted :timeout-default?) :backend "local"))))
+    (is (= local (editor/set-form-field local :backend "local")))))
+
 (deftest edits-are-an-exact-source-diff
   (let [draft (-> (editor/draft source) (assoc :files {"notes.md" "new"}))]
     (is (= {"workflow.edn" nil "notes.md" "new"} (editor/edits draft)))

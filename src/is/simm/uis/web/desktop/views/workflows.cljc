@@ -20,7 +20,7 @@
         local? (editor/local? form)
         funded-here? (and (:funded? draft) (= (:fund-backend draft "hosted") (:backend form "hosted")))
         change #(apply (:change actions) selected %&)
-        set-form (fn [key value] (change assoc-in [:form key] value))
+        set-form (fn [key value] (change update :form editor/set-form-field key value))
         submission (:submission draft)
         uncertain? (and submission (nil? (:reply submission)))]
     (el/div {:class "workflow-panel"}
@@ -120,7 +120,7 @@
                                                           (when (get-in state [:workers :next-after])
                                                             (el/button {:disabled (get-in state [:loading :workers])
                                                                         :on-click (fn [_] ((:more-workers actions)))} "More workers"))
-                                                          (el/p {:class "workflow-note"} "Enrollment is not liveness. Start the private local driver separately; no login is uploaded. Allowance uses admissions, not measured dollars or tokens."))
+                                                          (el/p {:class "workflow-note"} "Enrollment is not liveness. Start the private local driver separately; no login is uploaded. Allowance uses admissions, not measured dollars or tokens. Wall time includes cold JVM/interpreter startup; new local forms default to 300000 ms."))
                                                   (field "Model id (explicit native provider)" (:model form) #(set-form :model %)))
                                                 (el/label {:class "workflow-field"}
                                                           (el/span {} "Mode")

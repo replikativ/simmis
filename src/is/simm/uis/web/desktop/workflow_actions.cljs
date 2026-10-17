@@ -116,6 +116,9 @@
                                                          " cells/admissions. Usage unreported.\n")
                                                     (str "Budget: " (get-in payload [:limits :budget-microdollars])
                                                          " microdollars; " (get-in payload [:limits :max-dispatches]) " dispatches.\n"))
+                                        (if (= mode "benchmark") "Wall time per cell: " "Wall time: ")
+                                        (get-in payload [:limits :timeout-ms]) " ms"
+                                        (when (= backend "local") " (includes cold startup)") ".\n"
                                         (if (= mode "benchmark")
                                           "Operator benchmark: executes the saved checker, uses saved parameter defaults and discards candidate worlds."
                                           (if (= backend "local")

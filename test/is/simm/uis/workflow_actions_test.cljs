@@ -193,6 +193,34 @@
                 ((:ok (first @requests)) {:workers [{:worker "old-session"}]})))
             (is (= before @sig/workflow-editor-state))))))))
 
+(deftest local-timeout-default-is-confirmed-and-retry-keeps-the-admitted-limit
+  (with-state
+    (fn [ui k]
+      (let [runs (atom []) benchmarks (atom []) confirmations (atom [])]
+        (with-redefs [remote/submit-local-workflow-run! (deferred runs)
+                      remote/submit-local-workflow-benchmark! (deferred benchmarks)
+                      actions/confirm! (fn [message] (swap! confirmations conj message) true)]
+          ((:change ui) "a" update :form editor/set-form-field :backend "local")
+          ((:change ui) "a" update :form editor/set-form-field
+           :worker "99999999-9999-4999-8999-999999999999")
+          ((:submit ui) "a" false)
+          (is (= 300000 (get-in (last (:args (first @runs))) [:limits :timeout-ms])))
+          (is (re-find #"Wall time: 300000 ms \(includes cold startup\)" (first @confirmations)))
+          ((:error (first @runs)) :connection-lost)
+          ((:change ui) "a" update :form editor/set-form-field :timeout-ms "1000")
+          ((:change ui) "a" update :form editor/set-form-field :backend "hosted")
+          ((:submit ui) "a" true)
+          (is (= 1 (count @confirmations)))
+          (is (= (:args (first @runs)) (:args (second @runs))))
+          (is (= "1000" (get-in @sig/workflow-editor-state [k :drafts "a" :form :timeout-ms])))
+          ((:change ui) "b" update :form editor/set-form-field :backend "local")
+          ((:change ui) "b" assoc-in [:form :mode] "benchmark")
+          ((:change ui) "b" assoc-in [:form :worker] "99999999-9999-4999-8999-999999999999")
+          ((:submit ui) "b" false)
+          (is (= 1 (count @benchmarks)))
+          (is (re-find #"Wall time per cell: 300000 ms \(includes cold startup\)"
+                       (second @confirmations))))))))
+
 (deftest result-navigation-keeps-the-owning-room-replica-and-column
   (with-state
     (fn [_ _]
