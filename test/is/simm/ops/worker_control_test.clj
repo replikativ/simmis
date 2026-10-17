@@ -3,6 +3,7 @@
             [dvergr.model.registry :as registry]
             [dvergr.ops :as ops]
             [is.simm.ops.work-api :as api]
+            [is.simm.ops.worker-benchmarks :as benchmarks]
             [is.simm.ops.worker-control :as control]
             [is.simm.ops.worker-service :as service]
             [is.simm.ops.worker-work :as work]
@@ -24,8 +25,30 @@
 (def workflow (-> (dissoc task :task :paths)
                   (assoc :name "echo" :expected-bundle (str request-id)
                          :params {:subject "literal"} :inputs {(keyword "/docs/input.md") "text"})))
+(def benchmark (-> (dissoc workflow :params :inputs)
+                   (assoc :repetitions 2 :cases ["one" "two"])
+                   (assoc-in [:limits :settlement] "discard")))
 
 (defn call [op args] ((get-in control/specifications [op :impl]) host args))
+
+(deftest benchmark-control-is-bounded-and-uses-the-authenticated-room
+  (let [seen (atom [])]
+    (with-redefs [benchmarks/submit! (fn [& args] (swap! seen conj args) {:job request-id})]
+      (is (= {:job request-id} (call :simmis/local-worker-benchmark benchmark)))
+      (is (= [::conn context/server-context principal room-id ::room]
+             (vec (take 5 (first @seen)))))
+      (is (= (-> (dissoc benchmark :room)
+                 (assoc :request-id request-id :worker worker-id :expected-bundle request-id))
+             (last (first @seen))))
+      (doseq [bad [(assoc benchmark :repetitions 3)
+                   (assoc benchmark :repetitions 0)
+                   (assoc benchmark :cases ["1" "2" "3" "4" "5"])
+                   (assoc-in benchmark [:limits :settlement] "review")
+                   (assoc benchmark :model "forbidden")
+                   (assoc benchmark :params {"x" "override"})
+                   (assoc benchmark :worker "not-a-uuid")]]
+        (is (thrown? clojure.lang.ExceptionInfo (call :simmis/local-worker-benchmark bad))))
+      (is (= 1 (count @seen))))))
 
 (deftest workflow-control-normalizes-only-literal-map-keys
   (let [seen (atom nil)]
@@ -74,7 +97,8 @@
                   work/provision! (fn [& _] (swap! writes conj :fund))
                   work/submit! (fn [& _] (swap! writes conj :submit))]
       (doseq [[op args] [[:simmis/local-worker-enroll enroll] [:simmis/local-worker-allowance allowance]
-                         [:simmis/local-worker-task task] [:simmis/local-worker-workflow workflow]]]
+                         [:simmis/local-worker-task task] [:simmis/local-worker-workflow workflow]
+                         [:simmis/local-worker-benchmark benchmark]]]
         (is (thrown? clojure.lang.ExceptionInfo (call op args))))
       (is (empty? @writes))
       (is (= {:revoked true} (call :simmis/local-worker-revoke revoke)))

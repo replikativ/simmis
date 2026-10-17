@@ -248,6 +248,28 @@ a JSON map of canonical absolute workspace paths to text. The worker sees only
 the pinned workflow source and fixture/input overlays, not all room files.
 Authored checkers are not executed by this ordinary workflow control.
 
+To measure that workflow, an installation operator with current room read/merge
+authority can use the separate bounded benchmark control:
+
+```bash
+/usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
+  --session /private/operator-session.json benchmark --request-id REQUEST_UUID \
+  --name WORKFLOW_NAME --expected-bundle INSPECTED_BUNDLE_UUID \
+  --case CASE_NAME --repetitions 1 --timeout-ms 300000
+```
+
+Omit `--case` for all cases (at most four); repeat it to select cases. One or
+two repetitions allow at most eight serial cells. Fund the required admissions
+explicitly before submission; this command never funds or retries work. Run the
+local driver once per queued cell. Each cell is discarded after evaluation.
+An empty queue between serial cells is not completion: check the Job's settled
+status through `job_status` before treating the benchmark as finished.
+Only clean fixtures reach the guest: checkers, gold and calibration remain on
+the server. Results use the existing room experiment/Scorecard views; authored
+checks remain ad-hoc, not independently trusted, and subscription cost/usage
+is unreported rather than measured as zero. Existing operator tokens do not gain
+the new tool automatically: request a new private `worker-control` session.
+
 `run` handles one queued assignment, or accepts `--run RUN_UUID`. The task's
 total deadline includes queue time and cold JVM startup;
 `task` and `workflow` default to five minutes, with a ten-minute maximum. Start the local

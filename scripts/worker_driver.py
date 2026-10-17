@@ -183,11 +183,11 @@ def run_one(root, *, codex_home=None, run=None, reconcile=False):
 def operate(root, session, command, arguments):
     intent, issued = enrollment(root)
     fields = {**arguments, "room": issued["room"]}
-    if command in {"revoke", "task", "workflow"}:
+    if command in {"revoke", "task", "workflow", "benchmark"}:
         fields["worker"] = intent["worker"]
-    if command in {"allowance", "task", "workflow"}:
+    if command in {"allowance", "task", "workflow", "benchmark"}:
         inputs.canonical_uuid(fields["request-id"])
-    if command == "workflow":
+    if command in {"workflow", "benchmark"}:
         inputs.canonical_uuid(fields["expected-bundle"])
     response = human_call(intent["endpoint"], session, "simmis_local-worker-" + command, fields)
     # Never print arbitrary server fields or worker credentials. Full execution
@@ -203,7 +203,7 @@ def operate(root, session, command, arguments):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", required=True, help="Dedicated private controller directory; parent must exist")
-    parser.add_argument("--session", type=Path, help="Private human worker-control session (enroll/allowance/task/workflow/revoke only)")
+    parser.add_argument("--session", type=Path, help="Private human worker-control session (enroll/allowance/task/workflow/benchmark/revoke only)")
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("enroll")
     init.add_argument("--endpoint", required=True)
@@ -231,6 +231,13 @@ def main():
     workflow.add_argument("--inputs", default="{}", help="JSON object of canonical absolute input paths and text")
     workflow.add_argument("--timeout-ms", type=int, default=300000)
     workflow.add_argument("--settlement", choices=["review", "discard"], default="review")
+    benchmark = commands.add_parser("benchmark")
+    benchmark.add_argument("--request-id", required=True, help="Stable UUID; reuse on retry")
+    benchmark.add_argument("--name", required=True)
+    benchmark.add_argument("--expected-bundle", required=True, help="Exact inspected workflow bundle UUID")
+    benchmark.add_argument("--case", action="append", default=[], help="Select up to four distinct case names")
+    benchmark.add_argument("--repetitions", type=int, default=1, help="One or two repetitions; at most eight cells total")
+    benchmark.add_argument("--timeout-ms", type=int, default=300000)
     commands.add_parser("revoke")
     run = commands.add_parser("run")
     run.add_argument("--codex-home", required=True, help="Canonical broker-only local login directory; never uploaded")
@@ -238,7 +245,7 @@ def main():
     recover = commands.add_parser("reconcile")
     recover.add_argument("--run", required=True)
     args = parser.parse_args()
-    if args.command in {"enroll", "allowance", "task", "workflow", "revoke"} and args.session is None:
+    if args.command in {"enroll", "allowance", "task", "workflow", "benchmark", "revoke"} and args.session is None:
         parser.error("This control requires an explicitly selected private worker-control session")
     root = state_root(args.state, create=args.command == "enroll")
     if args.command == "enroll":
@@ -275,6 +282,17 @@ def main():
         if args.case is not None:
             fields["case"] = args.case
         result = operate(root, args.session, "workflow", fields)
+    elif args.command == "benchmark":
+        if (not 1000 <= args.timeout_ms <= 600000 or not 1 <= args.repetitions <= 2
+                or len(args.case) > 4 or len(args.case) != len(set(args.case))
+                or any(not 1 <= len(case) <= 100 for case in args.case)):
+            parser.error("Benchmark exceeds finite worker bounds")
+        fields = {"request-id": args.request_id, "name": args.name, "expected-bundle": args.expected_bundle,
+                  "repetitions": args.repetitions,
+                  "limits": {"timeout-ms": args.timeout_ms, "settlement": "discard"}}
+        if args.case:
+            fields["cases"] = args.case
+        result = operate(root, args.session, "benchmark", fields)
     else:
         result = operate(root, args.session, "revoke", {})
     print(json.dumps(result, separators=(",", ":")))

@@ -52,6 +52,18 @@
       (is (thrown? clojure.lang.ExceptionInfo
                    (local-benchmarks/prepare snapshot bad file-fixture/config {}))))))
 
+(deftest omitted-cases-never-expands-past-the-four-case-bound
+  (let [source (reduce (fn [files name]
+                         (assoc files (str "cases/" name "/gold.edn") "{:expected \"x\"}"
+                                      (str "cases/" name "/fixtures/docs/input.md") "x"))
+                       source ["c" "d" "e"])
+        request (assoc (input (random-uuid)) :expected-bundle (:id (catalog/bundle "echo" source)))]
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (local-benchmarks/prepare {:files source} request file-fixture/config {})))
+    (is (= 4 (count (get-in (local-benchmarks/prepare {:files source}
+                                                   (assoc request :cases ["a" "b" "c" "d"])
+                                                   file-fixture/config {}) [:basis :frozen]))))))
+
 (deftest failed-fixture-retirement-retains-and-releases-its-exact-physical-permit
   (let [slot (java.util.concurrent.Semaphore. 1) calls (atom 0) id (random-uuid) job (random-uuid)]
     (with-redefs-fn {#'benchmarks/checker-slot slot

@@ -26,7 +26,7 @@
    [:cases {:optional true} [:vector {:min 1 :max 4} [:string {:min 1 :max 100}]]]
    [:limits files/limits-schema]])
 
-(def policy {:version 1 :max-cells 8 :parallelism 1 :retry :explicit-new-request
+(def policy {:version 1 :max-cases 4 :max-cells 8 :parallelism 1 :retry :explicit-new-request
              :source :clean-fixtures :usage :unreported-local-subscription})
 
 (defn- refuse! [message] (throw (ex-info message {:type ::invalid})))
@@ -64,6 +64,7 @@
         available (set (:cases inspection))
         selected (if (seq available) (or cases (vec (sort available))) [nil])]
     (when-not (and (:ok inspection) (= (str expected-bundle) (:bundle inspection))
+                   (<= (count selected) (:max-cases policy))
                    (= (count selected) (count (set selected)))
                    (if (seq available) (every? available selected) (nil? cases))
                    (<= 1 (* repetitions (count selected)) (:max-cells policy)))

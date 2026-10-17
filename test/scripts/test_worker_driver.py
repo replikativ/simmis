@@ -31,6 +31,29 @@ def reply(arguments):
 
 
 class DriverTest(unittest.TestCase):
+    def test_benchmark_cli_is_explicit_serial_discard_only_and_finite(self):
+        request, bundle = str(uuid.uuid4()), str(uuid.uuid4())
+        args = ["worker_driver.py", "--state", "/private/fixture-worker", "--session", "/private/session",
+                "benchmark", "--request-id", request, "--name", "echo", "--expected-bundle", bundle]
+        with patch.object(sys, "argv", args + ["--case", "one", "--case", "two", "--repetitions", "2"]), \
+                patch.object(driver, "state_root", return_value=Path("/private/fixture-worker")), \
+                patch.object(driver, "operate", return_value={}) as operate, patch("sys.stdout", new_callable=io.StringIO):
+            driver.main()
+            self.assertEqual("benchmark", operate.call_args.args[2])
+            self.assertEqual({"request-id": request, "name": "echo", "expected-bundle": bundle,
+                              "repetitions": 2, "cases": ["one", "two"],
+                              "limits": {"timeout-ms": 300000, "settlement": "discard"}},
+                             operate.call_args.args[3])
+        for invalid in [["--repetitions", "3"], ["--case", "one", "--case", "one"],
+                        ["--timeout-ms", "600001"], ["--settlement", "review"],
+                        sum((["--case", str(i)] for i in range(5)), [])]:
+            with patch.object(sys, "argv", args + invalid), \
+                    patch.object(driver, "state_root", return_value=Path("/private/fixture-worker")), \
+                    patch.object(driver, "operate") as operate, patch("sys.stderr", new_callable=io.StringIO):
+                with self.assertRaises(SystemExit):
+                    driver.main()
+                operate.assert_not_called()
+
     def test_workflow_cli_uses_exact_bundle_and_literal_string_maps(self):
         request, bundle = str(uuid.uuid4()), str(uuid.uuid4())
         args = ["worker_driver.py", "--state", "/private/fixture-worker", "--session", "/private/session",
@@ -120,13 +143,20 @@ class DriverTest(unittest.TestCase):
                 task = driver.operate(root, "private-session", "task", {"request-id": str(uuid.uuid4()), "task": "fixture"})
                 driver.operate(root, "private-session", "workflow",
                                {"request-id": str(uuid.uuid4()), "name": "echo", "expected-bundle": str(uuid.uuid4())})
+                driver.operate(root, "private-session", "benchmark",
+                               {"request-id": str(uuid.uuid4()), "name": "echo", "expected-bundle": str(uuid.uuid4()),
+                                "repetitions": 2, "cases": ["one", "two"],
+                                "limits": {"timeout-ms": 300000, "settlement": "discard"}})
                 driver.operate(root, "private-session", "revoke", {})
             self.assertEqual(["simmis_local-worker-allowance", "simmis_local-worker-task",
-                              "simmis_local-worker-workflow", "simmis_local-worker-revoke"],
+                              "simmis_local-worker-workflow", "simmis_local-worker-benchmark", "simmis_local-worker-revoke"],
                              [name for name, _ in calls])
             self.assertTrue(all(args["room"] == ROOM for _, args in calls))
             self.assertEqual(issued["worker"], calls[1][1]["worker"])
             self.assertEqual(issued["worker"], calls[2][1]["worker"])
+            self.assertEqual(issued["worker"], calls[3][1]["worker"])
+            self.assertEqual(2, calls[3][1]["repetitions"])
+            self.assertEqual("discard", calls[3][1]["limits"]["settlement"])
             self.assertNotIn("credential", allowance)
             self.assertNotIn("credential", task)
 

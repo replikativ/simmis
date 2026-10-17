@@ -75,8 +75,10 @@
     (is (= mcp/worker-control-tools (:principal/tools control)))
     (is (contains? (:principal/tools control) "simmis_local-worker-enroll"))
     (is (contains? (:principal/tools control) "simmis_local-worker-workflow"))
+    (is (contains? (:principal/tools control) "simmis_local-worker-benchmark"))
     (doseq [principal [read work]]
       (is (not (contains? (:principal/tools principal) "simmis_local-worker-workflow")))
+      (is (not (contains? (:principal/tools principal) "simmis_local-worker-benchmark")))
       (is (not (contains? (:principal/tools principal) "simmis_local-worker-enroll"))))
     (doseq [name ["simmis_task" "simmis_workflow-write" "clojure_eval" "simmis_worker-claim"]]
       (is (not (contains? (:principal/tools control) name))))
@@ -90,12 +92,13 @@
 (deftest adding-workflow-controls-never-widens-an-existing-signed-token
   (let [new-tools mcp/worker-control-tools
         old-tools (disj new-tools "simmis_local-worker-workflow" "simmis_workflow-list"
-                        "simmis_workflow-source" "simmis_workflow-check")
+                        "simmis_workflow-source" "simmis_workflow-check" "simmis_local-worker-benchmark")
         token (with-redefs [mcp/worker-control-tools old-tools]
                 (:token (mcp/mint-token! person :worker-control)))
         principal ((mcp/authenticator) {:bearer token})]
     (is (= old-tools (:principal/tools principal)))
     (is (not (contains? (:principal/tools principal) "simmis_local-worker-workflow")))
+    (is (not (contains? (:principal/tools principal) "simmis_local-worker-benchmark")))
     (doseq [[principal expected]
             [[principal false]
              [((mcp/authenticator) {:bearer (:token (mcp/mint-token! person :worker-control))}) true]]]
@@ -104,15 +107,15 @@
                                  :params {:protocolVersion "2025-06-18" :capabilities {}
                                           :clientInfo {:name "old-ceiling-regression" :version "1"}}})
         (rpc/handle-message ctx {:jsonrpc "2.0" :method "notifications/initialized"})
-        (is (= expected
-               (contains? (set (map :name (get-in (rpc/handle-message ctx
-                                                                    {:jsonrpc "2.0" :id 2 :method "tools/list"})
-                                                 [:result :tools])))
-                          "simmis_local-worker-workflow")))
-        (when-not expected
-          (let [response (rpc/handle-message ctx {:jsonrpc "2.0" :id 3 :method "tools/call"
-                                                 :params {:name "simmis_local-worker-workflow" :arguments {}}})]
-            (is (or (:error response) (get-in response [:result :isError])))))))))
+        (doseq [name ["simmis_local-worker-workflow" "simmis_local-worker-benchmark"]]
+          (is (= expected
+                 (contains? (set (map :name (get-in (rpc/handle-message ctx
+                                                                      {:jsonrpc "2.0" :id 2 :method "tools/list"})
+                                                   [:result :tools]))) name)))
+          (when-not expected
+            (let [response (rpc/handle-message ctx {:jsonrpc "2.0" :id 3 :method "tools/call"
+                                                   :params {:name name :arguments {}}})]
+              (is (or (:error response) (get-in response [:result :isError]))))))))))
 
 (deftest worker-prefix-authentication-never-falls-through-to-human-authority
   (let [human-calls (atom 0) worker-calls (atom [])]

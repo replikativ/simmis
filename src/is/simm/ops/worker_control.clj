@@ -8,6 +8,7 @@
             [dvergr.ops :as ops]
             [dvergr.substrate.config :as config]
             [is.simm.ops.work-api :as api]
+            [is.simm.ops.worker-benchmarks :as benchmarks]
             [is.simm.ops.worker-service :as service]
             [is.simm.ops.worker-work :as work]
             [is.simm.ops.workflow-runs :as workflow-runs]
@@ -45,6 +46,17 @@
          (map (fn [entry] (if (= :expected-bundle (first entry))
                            [:expected-bundle uuid-string] entry)))
          (concat (drop 2 workflow-runs/source-schema) [[:limits (nth (last task-schema) 1)]]))))
+
+(def benchmark-schema
+  (into [:map {:closed true} room-entry]
+        (map (fn [[key & _ :as entry]]
+               (cond
+                 (#{:request-id :worker :expected-bundle} key) [key uuid-string]
+                 (= :limits key) [:limits [:map {:closed true}
+                                           [:timeout-ms [:int {:min 1000 :max 600000}]]
+                                           [:settlement [:= "discard"]]]]
+                 :else entry)))
+        (drop 2 benchmarks/schema)))
 
 (defn- require-admission! []
   (when-not (and (admission-open?) (maintenance/claims-ready?))
@@ -116,7 +128,17 @@
                         (workflow-runs/transport-for
                          work/workflow-schema
                          (-> (dissoc args :room) (update :request-id uuid!)
-                             (update :worker uuid!) (update :expected-bundle uuid!)))))))}}))
+                             (update :worker uuid!) (update :expected-bundle uuid!)))))))}
+    :simmis/local-worker-benchmark
+    {:kind :write :schema benchmark-schema :authz {:action :write}
+     :doc "HUMAN control only: benchmark an inspected workflow revision on your enrolled local SCI worker. Requires installation-operator AND current room read/merge authority. At most four cases and two repetitions, serial and discard-only; one explicitly funded admission per cell, no automatic retries or funding. Only clean fixtures reach the guest; checkers and calibration run on the server. Usage remains unreported, not zero. Exact retries observe one Job."
+     :impl (fn [host args]
+             (invoke host benchmark-schema args true
+                     (fn [conn id room]
+                       (benchmarks/submit!
+                        conn (:execution-ctx host) ops/*principal* id room
+                        (-> (dissoc args :room) (update :request-id uuid!)
+                            (update :worker uuid!) (update :expected-bundle uuid!))))))}}))
 
 (defn install! []
   (doseq [[op spec] specifications] (ops/register-op! op spec))
