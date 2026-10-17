@@ -400,11 +400,18 @@
     :fs (semantic-fs-diff scope branch :base-commit base-commit)
     :book (semantic-book-diff scope branch :base-commit base-commit)
     :repo (semantic-repo-diff scope branch :base-commit base-commit)
-    :world (let [delta (branching/delta scope :world branch {:patch? false})]
+    :world (let [delta (branching/delta scope :world branch {:patch? false})
+                 _ (when (or (nil? delta) (:error delta))
+                     (throw (ex-info "Adopted world change details are unavailable"
+                                     {:type ::world-diff-unavailable :scope scope})))
+                 patch (or (:patch delta) "")
+                 long? (> (count patch) max-patch-chars)]
              (cond-> {:scope scope :system-type :world
                       :counts (:summary delta)}
                (:files delta) (assoc :files (vec (:files delta))
-                                     :stat (:stat delta))))
+                                     :stat (:stat delta)
+                                     :patch (if long? (subs patch 0 max-patch-chars) patch)
+                                     :patch-truncated? long?)))
     ;; the world an escalated review handed to a person: its changed paths
     ;; (uncommitted included) and any other system it touched
     :review-world (let [delta (branching/delta scope :review-world branch)]
