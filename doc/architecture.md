@@ -78,6 +78,12 @@ narrow operations use separate worker credentials, immutable selected-file
 inputs and bounded output receipts. Application startup does not install
 these bindings or enable worker authentication. Completion alone never
 imports files or certifies a Run. See [data-model.md](data-model.md).
+The host-only `ops/worker-work.clj` adapter connects these to Dvergr's existing
+Protocol/WorldSetup/Evaluator capabilities. It owns no alternative execution
+engine or result store. Separate conserved admission allowance funds local
+work; remote subscription usage remains explicitly unpriced. Cancellation
+retains the native supervisor until remote stop, and output import stays in
+the canonical isolated Run world with current permission checks.
 Recorded Attempt evidence is distinct from mutable workspace files. See
 [authority.md](authority.md#private-mcp).
 Read-only current-workspace Git bundles use Geschichte's Git object/pack

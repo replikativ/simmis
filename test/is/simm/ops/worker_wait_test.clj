@@ -68,6 +68,20 @@
           (is (get-in stopped [:assignment :simmis.worker.assignment/stop-ack-at]))
           (is (:cancelled? stopped)))))))
 
+(deftest an-injected-publication-closer-can-resolve-a-missing-assignment-safely
+  (fixture/with-store
+    (fn [conn]
+      (let [{:keys [assignment]} (fixture/fixture conn)
+            pending (assoc assignment :id (random-uuid))
+            {:keys [result]} (start-waiter conn (:id pending)
+                                           {:cancelled? (constantly true)
+                                            :cancel! #(workers/withdraw! conn pending (Date. 11000))})
+            stopped (deref result 10000 nil)]
+        (is (:cancelled? stopped))
+        (is (= :withdrawn (get-in stopped [:assignment :simmis.worker.assignment/state])))
+        (is (get-in stopped [:assignment :simmis.worker.assignment/stop-ack-at]))
+        (is (= :withdrawn (:simmis.worker.assignment/state (workers/enqueue! conn pending))))))))
+
 (deftest acknowledgement-between-read-and-take-cannot-be-missed
   (fixture/with-store
     (fn [conn]
@@ -82,6 +96,24 @@
                                                (read c id)))]
             (is (:simmis.worker.assignment/stop-ack-at (:assignment (wait/await-stop! watch)))))
           (finally (wait/close! watch)))))))
+
+(deftest a-cancellation-callback-cannot-acknowledge-a-different-assignment
+  (fixture/with-store
+    (fn [conn]
+      (let [{:keys [assignment] :as owned} (fixture/claimed conn)
+            waiting (promise) event @#'wait/await-event!]
+        (with-redefs [wait/await-event! (fn [& args] (deliver waiting true) (apply event args))]
+          (let [{:keys [result]} (start-waiter conn (:id assignment)
+                                               {:cancelled? (constantly true)
+                                                :cancel! #(hash-map :simmis.worker.assignment/id (random-uuid)
+                                                                    :simmis.worker.assignment/stop-ack-at (Date.))})]
+            (try
+              (is (= true (deref waiting 10000 nil)))
+              (is (not (realized? result)))
+              (stop! conn owned)
+              (is (= (:id assignment) (get-in (deref result 10000 nil)
+                                              [:assignment :simmis.worker.assignment/id])))
+              (finally (stop! conn owned) (deref result 10000 nil)))))))))
 
 (deftest interrupt-requests-cancel-but-retains-the-owner-until-physical-stop
   (fixture/with-store

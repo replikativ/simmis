@@ -262,6 +262,56 @@
   (d/transact conn [[:db.fn/call cancel-tx id now]])
   (assignment conn id))
 
+(defn- withdraw-tx [db row digest ref clock]
+  (let [id (:simmis.worker.assignment/id row)
+        old (entity db :simmis.worker.assignment/id id)
+        now (instant clock)]
+    (if old
+      (do
+        (when-not (= digest (:simmis.worker.assignment/intent-id old))
+          (refuse! ::conflict "Cannot close a different assignment intent"))
+        (cancel-tx db id now))
+      ;; This serialized tombstone also fences an enqueue whose response was
+      ;; lost or whose writer work arrives later. insert-tx must never revive it.
+      [(assoc row :simmis.worker.assignment/input-ref ref
+              :simmis.worker.assignment/state :withdrawn
+              :simmis.worker.assignment/cancel-at now
+              :simmis.worker.assignment/stop-ack-at now)])))
+
+(defn- publication-closed? [row digest]
+  (and (= digest (:simmis.worker.assignment/intent-id row))
+       (:simmis.worker.assignment/cancel-at row)
+       (if (:simmis.worker.assignment/lease row)
+         (contains? #{:quarantined :stopped :completed} (:simmis.worker.assignment/state row))
+         (and (= :withdrawn (:simmis.worker.assignment/state row))
+              (:simmis.worker.assignment/stop-ack-at row)))))
+
+(defn withdraw!
+  "Host-only closure of the SAME publication intent, even after revocation.
+   Missing/queued intent becomes withdrawn+ack; an existing lease is quarantined
+   without inventing shutdown. A late enqueue cannot revive this Run. Failed
+   responses are reconciled by the actual closing state, not digest alone."
+  [conn {:keys [id worker generation room request job input]} clock]
+  (when-not (and (every? uuid? [id worker room request job]) (pos-int? generation)
+                 (map? input) (roster/data-value? input)
+                 (or (instance? Date clock) (fn? clock)))
+    (refuse! ::invalid "Invalid worker publication closure"))
+  (let [digest (hasch/uuid [:simmis/worker-assignment-v1 worker generation room request job input])
+        row {:db/id -1 :simmis.worker.assignment/id id
+             :simmis.worker.assignment/worker worker :simmis.worker.assignment/generation generation
+             :simmis.worker.assignment/room room :simmis.worker.assignment/request request
+             :simmis.worker.assignment/job job :simmis.worker.assignment/intent-id digest
+             :simmis.worker.assignment/queued-at (Date.)}]
+    (try
+      (artifact/publish-value! (artifact/datahike-store conn) input
+                               (fn [ref] (d/transact conn [[:db.fn/call withdraw-tx row digest ref clock]])))
+      (catch Exception error
+        (when-not (publication-closed? (assignment conn id) digest) (throw error))))
+    (let [result (assignment conn id)]
+      (when-not (publication-closed? result digest)
+        (refuse! ::unavailable "Worker publication is not durably closed"))
+      result)))
+
 (defn- heartbeat-tx [db id lease hash clock ttl-ms permitted?]
   (let [now (instant clock) row (owned! db id lease hash)
         worker (entity db :simmis.worker/id (:simmis.worker.assignment/worker row))]

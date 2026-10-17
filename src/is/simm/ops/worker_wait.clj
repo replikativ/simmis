@@ -12,7 +12,7 @@
    must await-stop! after publication, and close! only after that acknowledgement
    and its own DB cleanup. Handles are lexical physical resources, never SCI or
    fork-visible application state. cancelled? is a trusted host predicate."
-  [conn id {:keys [cancelled? clock] :or {cancelled? (constantly false) clock #(Date.)}}]
+  [conn id {:keys [cancelled? clock cancel!] :or {cancelled? (constantly false) clock #(Date.)}}]
   (let [key (random-uuid) wake (ArrayBlockingQueue. 1)
         interrupted? (volatile! false)
         signal! (fn [& _] (.offer wake true))]
@@ -20,6 +20,7 @@
     (try
       (run/register-cancel-hook! id key signal!)
       {:conn conn :id id :key key :wake wake :cancelled? cancelled? :clock clock
+       :cancel! (or cancel! #(workers/cancel! conn id (clock)))
        :interrupted? interrupted?}
       (catch Throwable error
         (d/unlisten conn key)
@@ -52,12 +53,12 @@
   "Reread durable state after every event. Expiry requests cancellation but
    NEVER releases physical ownership. Failed reads/writes hold this wait until
    another DB/cancellation event; they do not invent a stopped remote process.
-   A missing assignment also remains unresolved: caller must not publish one
-   after deciding that absence was a physical-stop acknowledgement.
+   A missing assignment remains unresolved unless a trusted same-intent
+   cancel! installs a durable withdrawn fence against later publication.
 
    Returns {:assignment row :cancelled? boolean}. Interrupt status is restored
    by close!, AFTER the owner's remaining cleanup, not before its DB writes."
-  [{:keys [conn id wake cancelled? clock interrupted?]}]
+  [{:keys [conn id wake cancelled? clock cancel! interrupted?]}]
   (loop [cancel? @interrupted?]
     (let [observation (attempt interrupted? #(workers/assignment conn id))
           row (:value observation)
@@ -72,9 +73,10 @@
                                (and row (not (instance? Date (:value now))))
                                (and remaining (<= remaining 0))))
           ;; Only this owner thread transacts; listeners/hooks never do.
-          cancellation (when (and row cancel? (nil? (:simmis.worker.assignment/cancel-at row)))
-                         (attempt interrupted? #(workers/cancel! conn id (clock))))
-          row (or (:value cancellation) row)]
+          cancellation (when (and cancel? (nil? (:simmis.worker.assignment/cancel-at row)))
+                         (attempt interrupted? cancel!))
+          closed (:value cancellation)
+          row (if (= id (:simmis.worker.assignment/id closed)) closed row)]
       (if (:simmis.worker.assignment/stop-ack-at row)
         {:assignment row :cancelled? (boolean (or cancel? @interrupted?
                                                   (:simmis.worker.assignment/cancel-at row)))}

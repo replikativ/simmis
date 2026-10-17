@@ -29,6 +29,72 @@
         row (workers/claim! conn (:id assignment) (:id enrollment) 1 nonce secret (Date. 10000) 10000)]
     (assoc f :row row :secret secret :nonce nonce :lease (:simmis.worker.assignment/lease row))))
 
+(deftest a-publication-tombstone-prevents-a-delayed-enqueue-from-reviving-the-run
+  (with-store
+    (fn [conn]
+      (let [{:keys [assignment enrollment]} (fixture conn)
+            pending (assoc assignment :id (random-uuid))
+            closed (workers/withdraw! conn pending (Date. 11000))]
+        (is (= :withdrawn (:simmis.worker.assignment/state closed)))
+        (is (:simmis.worker.assignment/stop-ack-at closed))
+        (is (= closed (workers/enqueue! conn pending)))
+        (is (= (:input pending) (workers/payload conn closed :simmis.worker.assignment/input-ref)))
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (workers/claim! conn (:id pending) (:id enrollment) 1 (random-uuid)
+                                     (workers/new-secret) (Date. 12000) 10000)))))))
+
+(deftest publication-closure-and-enqueue-have-one-serialized-outcome
+  (with-store
+    (fn [conn]
+      (dotimes [_ 4]
+        (let [{:keys [assignment]} (fixture conn)
+              pending (assoc assignment :id (random-uuid))
+              ready (promise)
+              enqueue (future @ready (workers/enqueue! conn pending))
+              close (future @ready (workers/withdraw! conn pending (Date. 11000)))]
+          (deliver ready true)
+          (is (map? (deref enqueue 10000 nil)))
+          (is (map? (deref close 10000 nil)))
+          (let [row (workers/assignment conn (:id pending))]
+            (is (= :withdrawn (:simmis.worker.assignment/state row)))
+            (is (:simmis.worker.assignment/stop-ack-at row))))))))
+
+(deftest closing-an-already-claimed-or-revoked-publication-does-not-invent-stop
+  (with-store
+    (fn [conn]
+      (let [{:keys [assignment enrollment lease secret]} (claimed conn)]
+        (workers/revoke! conn (:id enrollment))
+        (let [closed (workers/withdraw! conn assignment (Date. 11000))]
+          (is (= :quarantined (:simmis.worker.assignment/state closed)))
+          (is (nil? (:simmis.worker.assignment/stop-ack-at closed))))
+        (is (:simmis.worker.assignment/stop-ack-at
+             (workers/acknowledge-stop! conn (:id assignment) lease secret (Date. 12000))))
+        (let [never-published (assoc assignment :id (random-uuid))]
+          (is (:simmis.worker.assignment/stop-ack-at (workers/withdraw! conn never-published (Date. 12000)))))))))
+
+(deftest closing-response-reconciliation-proves-the-transition-not-just-the-intent
+  (with-store
+    (fn [conn]
+      (let [{:keys [assignment]} (fixture conn) transact d/transact]
+        (with-redefs [d/transact (fn [& _] (throw (ex-info "writer unavailable before commit" {})))]
+          (is (thrown? clojure.lang.ExceptionInfo (workers/withdraw! conn assignment (Date. 11000)))))
+        (is (= :queued (:simmis.worker.assignment/state (workers/assignment conn (:id assignment)))))
+        (let [closed (with-redefs [d/transact (fn [& args] (apply transact args) (throw (ex-info "lost response" {})))]
+                       (workers/withdraw! conn assignment (Date. 11000)))]
+          (is (= :withdrawn (:simmis.worker.assignment/state closed)))
+          (is (:simmis.worker.assignment/stop-ack-at closed))
+          (is (= closed (workers/withdraw! conn assignment (Date. 12000)))))))))
+
+(deftest a-different-immutable-intent-cannot-close-an-existing-assignment
+  (with-store
+    (fn [conn]
+      (let [{:keys [assignment]} (fixture conn)]
+        (doseq [different [(assoc assignment :worker (random-uuid)) (assoc assignment :generation 2)
+                           (assoc assignment :room (random-uuid)) (assoc assignment :request (random-uuid))
+                           (assoc assignment :job (random-uuid)) (assoc assignment :input {:task "different"})]]
+          (is (thrown? clojure.lang.ExceptionInfo (workers/withdraw! conn different (Date. 11000)))))
+        (is (nil? (:simmis.worker.assignment/cancel-at (workers/assignment conn (:id assignment)))))))))
+
 (deftest enrollment-is-immutable-idempotent-and-stores-no-plaintext-secret
   (with-store
     (fn [conn]

@@ -32,6 +32,11 @@ lease proofs never enter database transaction arguments.
 Each enrollment represents one physical worker slot: another assignment cannot
 be claimed while a previous lease lacks its shutdown acknowledgement, even
 after expiry or quarantine.
+Host publication withdrawal can install a same-intent withdrawn tombstone
+even if enqueue's result was ambiguous. A late enqueue cannot revive it. If
+a worker already claimed, the same transaction quarantines that lease without
+acknowledging shutdown. Closing-state reconciliation checks the transition,
+not merely the existence of a matching intent.
 
 These assignment states are transport receipts, not another execution model.
 Expiry/revocation quarantines ownership without inventing physical shutdown;
@@ -86,6 +91,33 @@ world handlers. A failure may leave partial changes in the isolated world,
 never trunk, and must fail the Run. The adapter supplies the verified immutable
 assignment payload and current canonical Run world; this helper neither
 certifies successful task execution nor interprets a nonzero CLI exit code.
+
+`ops/worker-work.clj` connects these host primitives to existing Dvergr Jobs,
+isolated Runs and certified Attempts. Only the enrolling human, with current
+room read/merge authority, may submit. The immutable request pins worker
+generation/configuration, selected files, task and limits. Exact retries return
+the original Job even after parent files change or enrollment is revoked;
+changed intent conflicts. World setup refuses input drift before publication.
+
+Local execution uses a separate conserved `local-worker-admission` coordinate,
+explicitly provisioned by a human room owner. One admission is consumed before
+remote publication; a failed publication attempt still consumes it. This is
+neither a provider-call count, USD measurement nor proof of CLI startup.
+Native money/dispatch balances cannot fund it. Typed
+`:work.request/max-worker-admissions` metadata records the allowance/limit.
+The shared work adapter accepts trusted prepared resource vectors; external
+request schemas cannot inject them.
+
+The Run waits for physical stop, then checks current enrollment/grants,
+cancellation, exact live Run/Job and canonical world before each import effect.
+Capture uses a fork-local Spindel context marker and rereads actual files/modes,
+not the worker's asserted result alone. Nonzero exit fails the Run while
+retaining captured diagnostics; completion reward requires a completed Run,
+successful import and exit zero. Receipt spend is explicitly unpriced because
+remote subscription usage is unreported. Provenance distinguishes local-worker
+execution and host versus MCP submission. This host API is not enabled at
+application startup. Generic restart recovery excludes `:local-worker`: a dead
+local JVM cannot certify that a remote process stopped.
 
 ## Objects, morphisms, instances
 

@@ -111,7 +111,28 @@
                           :work.request/state :work.request/job :work.request/incident
                           :work.request/return-pending? :work.request/budget-microdollars
                           :work.request/max-dispatches :work.request/max-model-steps
+                          :work.request/max-worker-admissions
                           :work.request/timeout-ms :work.request/settlement])))
+
+(defn provision-prepared!
+  "Trusted host seam for an already validated allowance vector and unit
+   definitions. Public adapters must validate their closed schemas first.
+   Explicit room-owner allowance, never automatic minting or agent authority."
+  [conn host-ctx principal room-id room input {:keys [limits resources units]}]
+  (let [journal (fn [f] (binding [ec/*execution-context* host-ctx] (f)))
+        party (journal #(owner! conn principal room-id))
+        row (:request (journal #(requests/claim!
+                                 conn {:party party :room room-id :client-id (:request-id input)
+                                       :kind :allowance :limits limits
+                                       :intent {:resources resources}})))
+        id (:work.request/id row)]
+    (binding [ec/*execution-context* (:ctx room)]
+      (doseq [unit units] (resource/install-unit! room unit))
+      (resource/mint! room {:id id :resources resources
+                            :effective-date (:work.request/created-at row)
+                            :posted-at (:work.request/created-at row)
+                            :actor (:principal/actor principal)}))
+    (public-request (journal #(requests/record-provisioned! conn id (:work.request/claim row))))))
 
 (defn provision!
   "Explicit owner provisioning of EXECUTION ALLOWANCE, not a payment or a
@@ -119,22 +140,10 @@
    request pins its vector and the ledger's stable receipt makes replay safe."
   [conn host-ctx principal room-id room input]
   (when-not (m/validate allowance-schema input) (invalid! "Invalid work allowance"))
-  (let [journal (fn [f] (binding [ec/*execution-context* host-ctx] (f)))
-        party (journal #(owner! conn principal room-id))
-        limits (select-keys input [:budget-microdollars :max-dispatches])
-        row (:request (journal #(requests/claim!
-                                 conn {:party party :room room-id :client-id (:request-id input)
-                                       :kind :allowance :limits limits
-                                       :intent {:resources (resources limits)}})))
-        id (:work.request/id row)]
-    (binding [ec/*execution-context* (:ctx room)]
-      (resource/install-unit! room {:symbol resource/model-dispatches
-                                    :name "Model dispatches" :precision 0})
-      (resource/mint! room {:id id :resources (resources limits)
-                            :effective-date (:work.request/created-at row)
-                            :posted-at (:work.request/created-at row)
-                            :actor (:principal/actor principal)}))
-    (public-request (journal #(requests/record-provisioned! conn id (:work.request/claim row))))))
+  (let [limits (select-keys input [:budget-microdollars :max-dispatches])]
+    (provision-prepared! conn host-ctx principal room-id room input
+                         {:limits limits :resources (resources limits)
+                          :units [{:symbol resource/model-dispatches :name "Model dispatches" :precision 0}]})))
 
 (defn- return-wallet! [room id parent]
   (when-let [balance (resource/run-wallet-balance room id)]
@@ -182,9 +191,10 @@
                (try
                  (binding [ec/*execution-context* (:ctx room)]
                    (when-let [admit! (:admit! prepared)] (admit! job-id))
-                   (resource/install-unit! room {:symbol resource/model-dispatches
-                                                 :name "Model dispatches" :precision 0})
-                   (resource/allocate-run! room job-id nil (resources (:limits input)))
+                   (doseq [unit (or (:resource-units prepared)
+                                    [{:symbol resource/model-dispatches :name "Model dispatches" :precision 0}])]
+                     (resource/install-unit! room unit))
+                   (resource/allocate-run! room job-id nil (or (:resources prepared) (resources (:limits input))))
                    (if-let [start! (:start! prepared)]
                      (start! job-id)
                      (evaluation/evaluate room (:team prepared) (:agent prepared)
@@ -192,8 +202,9 @@
                                           (merge (select-keys prepared [:protocol :world-setup])
                                                  {:parent-run job-id :cleanup-group job-id
                                                   :from (:principal/actor principal)
-                                                  :metrics {:requester-party party :submission-channel :mcp
-                                                            :execution-kind :workflow-candidate
+                                                  :metrics {:requester-party party
+                                                            :submission-channel (or (:submission-channel prepared) :mcp)
+                                                            :execution-kind (or (:execution-kind prepared) :workflow-candidate)
                                                             :request-id id}}))))
                  (catch Throwable e
                  ;; Construction may already have admitted a child. Fence the

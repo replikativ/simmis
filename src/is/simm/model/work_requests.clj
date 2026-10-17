@@ -24,6 +24,7 @@
          [:work.request/budget-microdollars :db.type/long]
          [:work.request/max-dispatches :db.type/long]
          [:work.request/max-model-steps :db.type/long]
+         [:work.request/max-worker-admissions :db.type/long]
          [:work.request/timeout-ms :db.type/long]
          [:work.request/settlement :db.type/keyword]
          [:work.request/incident :db.type/uuid]]))
@@ -69,7 +70,7 @@
                          :work.request/by party :work.request/room room :work.request/kind kind
                          :work.request/intent-id digest :work.request/claim claim
                          :work.request/created-at (java.util.Date.) :work.request/state :admitting}
-                        (into {} (for [k [:budget-microdollars :max-dispatches :max-model-steps
+                        (into {} (for [k [:budget-microdollars :max-dispatches :max-model-steps :max-worker-admissions
                                           :timeout-ms :settlement]
                                        :when (contains? limits k)]
                                    [(keyword "work.request" (name k)) (get limits k)])))]

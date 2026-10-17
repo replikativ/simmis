@@ -285,6 +285,18 @@ lease retains only cancellation/physical-stop signaling, not input or output
 access. Immutable completion records a worker shutdown assertion and bounded
 files; it grants no import, Attempt certification or merge authority.
 
+The host-only `ops/worker-work.clj` adapter submits through the existing Jobs/
+Runs rather than a remote-executor registry. It requires the worker's enrolling
+human and current room read/merge authority, explicit admission allowance,
+pinned configuration/inputs and a finite wall-time limit. It consumes one
+`local-worker-admission` before publication, including a failed publication
+attempt; this is not verified subscription usage or native provider spending.
+Fresh authority is checked again after physical stop and at import effects.
+Nonzero CLI exit cannot receive positive completion reward. Generic boot
+recovery excludes these requests; local process death does not release their
+external ownership fence. Neither human worker-submission tools nor worker
+authentication are installed by application startup.
+
 Workflow authoring uses ordinary versioned Geschichte files under
 `workflows/<name>/`. `simmis_workflow-write` requires current room `:write`
 permission and accepts one atomic edit batch, limited to 100 files, 512 KiB per
