@@ -154,14 +154,16 @@
         ;; only to "same check as subscribe" — the residue 0.3.105 finishes.
         org.replikativ/kabel {:mvn/version "0.3.139"}
         ;; kontor — double-entry accounting kernel; powers is.simm.model.books
-        ;; (per-room governed double-entry) + the metering→ledger bridge. :local
-        ;; overlays ../kontor for cross-repo dev.
+        ;; (per-room governed double-entry) + the metering→ledger bridge.
+        ;; Kept direct because Simmis itself uses the accounting APIs.
         ;;
         ;; 0.1.37 retains the accounting fixes Simmis depends on and adds the
         ;; conserved resource vectors, receipts and Datahike invariants loaded
         ;; by dvergr 0.1.66. Older Kontor releases have no kontor.resource
         ;; namespace, so they cannot coexist with that dvergr release.
-        org.replikativ/kontor {:mvn/version "0.1.39"}
+        ;; 0.1.40 shares pure account identities with Dvergr's lightweight
+        ;; model clients; an older direct pin would override that requirement.
+        org.replikativ/kontor {:mvn/version "0.1.40"}
         ;; auth folded into kabel as kabel.auth.* (opt-in there); provide its
         ;; code deps here since we use it. geheimnis is kabel.auth's portable
         ;; crypto (JWT HS256, token hashing); it needs hasch >= 0.4.100 (raw
@@ -483,5 +485,8 @@
                                  binaryage/devtools {:mvn/version "1.0.7"}}}
 
            ;; Uberjar build (clojure -T:build uber) — see build.clj
-           :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.5"}}
+           ;; -T replaces project deps: pin its runtime too, instead of
+           ;; inheriting whichever Clojure ships with the installed CLI.
+           :build {:deps {org.clojure/clojure {:mvn/version "1.12.5"}
+                          io.github.clojure/tools.build {:mvn/version "0.10.5"}}
                    :ns-default build}}}
