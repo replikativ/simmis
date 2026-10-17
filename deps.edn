@@ -63,7 +63,9 @@
         ;; landed), on yggdrasil 0.3.49 (#137). A fork whose overlay is gone
         ;; now throws ::overlay-lost instead of silently doing nothing —
         ;; simmis's merge RPCs surface it through rpc-errors.
-        org.replikativ/spindel {:mvn/version "0.1.126"}
+        ;; 0.1.128 also delivers resumed track deltas once and avoids no-op
+        ;; execution-state writes on resume.
+        org.replikativ/spindel {:mvn/version "0.1.128"}
         ;; spindel 0.1.53 brings anglican 1.1.0 (its inference methods), which
         ;; brings timbre 4.10.0, whose ClojureScript no longer compiles
         ;; ("Can't redefine a constant"). A current timbre serves anglican's
