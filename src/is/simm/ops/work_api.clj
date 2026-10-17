@@ -58,7 +58,10 @@
   (when-not (m/validate schema args)
     (ops/op-error! "Invalid work arguments" ::invalid 400)))
 
-(defn- room! [host arg]
+(defn room!
+  "Resolve a canonical Simmis room and its system-db identity for host ops.
+   Caller must enforce the operation's principal and current room authority."
+  [host arg]
   (let [room (ops/resolve-room host arg)
         conn (system-db/get-conn)
         slug (some-> (:id room) store/room-id->slug)
@@ -68,7 +71,9 @@
     (when-not (and room id) (ops/op-error! "No Simmis room" ::missing 404))
     [conn id room]))
 
-(defn- guarded [host f]
+(defn guarded
+  "Run host operation code in its host context and map bounded service errors."
+  [host f]
   (try (binding [ec/*execution-context* (:execution-ctx host)] (f))
        (catch clojure.lang.ExceptionInfo e
          (if-let [status (get {:is.simm.ops.work/invalid 400 :is.simm.ops.chat/invalid 400
@@ -89,6 +94,22 @@
                                :is.simm.ops.benchmarks/conflict 409
                                :is.simm.ops.benchmarks/busy 409
                                :is.simm.ops.benchmarks/unavailable 503
+                               :is.simm.ops.worker-control/disabled 503
+                               :is.simm.ops.worker-control/invalid 400
+                               :is.simm.ops.worker-service/invalid 400
+                               :is.simm.ops.worker-service/denied 403
+                               :is.simm.ops.worker-service/missing 404
+                               :is.simm.ops.worker-work/invalid 400
+                               :is.simm.ops.worker-work/denied 403
+                               :is.simm.ops.worker-work/conflict 409
+                               :is.simm.ops.worker-files/invalid 400
+                               :is.simm.ops.worker-files/unavailable 503
+                               :is.simm.model.workers/invalid 400
+                               :is.simm.model.workers/denied 403
+                               :is.simm.model.workers/missing 404
+                               :is.simm.model.workers/conflict 409
+                               :is.simm.model.workers/busy 409
+                               :is.simm.model.workers/corrupt 503
                                :kontor.resource/insufficient 409}
                               (:type (ex-data e)))]
            (ops/op-error! (ex-message e) (:type (ex-data e)) status)

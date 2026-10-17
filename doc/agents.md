@@ -151,7 +151,28 @@ a durable stopped journal and fresh lease authority before publication.
 Recovery may stop an admitted unit or retry stopped output, never relaunch it;
 it does not require the runtime jar or native login to remain installed.
 
-This is a host library path, not yet an enabled turnkey enrollment/runner CLI.
+The application registers six separately authenticated worker transport
+operations and four human local-worker controls: enrollment, revocation,
+explicit admission allowance and selected-file task submission. Human controls
+require a separately requested `worker-control` MCP token. Neither an existing
+read token nor a work token gains them; this operator-helper session should not
+be attached as an ordinary model tool session. Worker/lease bearer prefixes
+authenticate exclusively as workers, never by falling through to human/admin
+authentication, and cannot invoke the human controls.
+
+New human enrollment, allowance and submission default to disabled. Set
+`SIMMIS_LOCAL_WORKER_ADMISSION=true` or `:mcp {:local-worker-admission? true}`
+to permit them. This flag is not cancellation: already queued assignments may
+still be claimed, and existing lease heartbeat/stop acknowledgement remains
+available. Explicit enrollment revocation removes further delegated execution.
+Enrollment validates native Codex registry metadata without requiring the
+server to have a subscription login. Admission units are not measured dollars
+or tokens, and no control automatically funds an allowance.
+
+Startup fences orphaned assignments after Dvergr hydration and before MCP
+claims are accepted, retaining unresolved world cleanup rather than faking it.
+This is not yet an enabled turnkey enrollment/runner CLI or recurring recovery
+service. Receipt handlers never wait for orphaned Run-world reconciliation.
 Protocol readiness or a guest result does not prove shutdown. JVM flags alone
 are not containment; SCI is not filesystem isolation against a JVM escape.
 

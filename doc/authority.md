@@ -482,10 +482,12 @@ before loading Dvergr to prevent accidental protocol pollution. This is NOT
 a descriptor security boundary: all guest frames can be candidate-forged and
 cannot certify readiness, execution provenance, shutdown or permission to
 merge. Broker configuration comes from one trusted-parent opening frame before
-any guest forwarding; the future owning runner must pin it to the assignment
-and guest configuration, retain broker and guest under the same accounted
-physical lifecycle, and impose total deadlines. These entrypoints themselves
-provide neither process containment nor those runner guarantees.
+any guest forwarding. The explicit local SCI controller pins the packaged
+runtime and endpoint policy identities, starts both processes in one retained
+execution unit after durable admission/GO, and independently proves whole-unit
+shutdown before publication. Neither an endpoint message nor a direct-child
+wait substitutes for that proof. These entrypoints themselves provide no
+process containment; SCI remains a soft boundary, not an OS sandbox.
 
 The host-only `ops/worker-work.clj` adapter submits through the existing Jobs/
 Runs rather than a remote-executor registry. It requires the worker's enrolling
@@ -496,8 +498,22 @@ attempt; this is not verified subscription usage or native provider spending.
 Fresh authority is checked again after physical stop and at import effects.
 Nonzero CLI exit cannot receive positive completion reward. Generic boot
 recovery excludes these requests; local process death does not release their
-external ownership fence. Neither human worker-submission tools nor worker
-authentication are installed by application startup.
+external ownership fence. Application startup registers the worker transport
+and separate human control tools. The `worker-control` token mode is a new
+versioned ceiling, never an expansion of existing read/work credentials. Its
+four controls enroll, revoke, explicitly provision admission units, and submit
+one bounded selected-file task; it grants no generic eval, ordinary task
+submission or workflow-writing capability. Use this credential only in a
+private operator helper, not an ordinary model session.
+
+New human enrollment/funding/submission require
+`SIMMIS_LOCAL_WORKER_ADMISSION=true` or `:mcp {:local-worker-admission? true}`;
+default is disabled. Existing queued work may still be claimed: disable is not
+cancellation. Revocation and existing lease heartbeat/stop remain available.
+Worker-prefixed bearers authenticate exclusively as workers even on failure;
+human credentials cannot invoke the lease family. Enrollment validates registry
+metadata, not server-side subscription authentication. No allowance is funded
+automatically, and the subscription login never enters the enrollment payload.
 
 The separate host-only recovery adapter checks frozen journal identity,
 actual Run/agent/isolation provenance and assignment linkage before closing
@@ -779,8 +795,9 @@ above. It is not a Git push endpoint or an export of historical Attempts.
 
 The selected MCP surface authors, runs and benchmarks named workflows;
 ordinary `simmis_task` remains a separate free-form task. Proposal promotion is available in
-the browser, not as a selected MCP write. Local worker enrollment/execution is
-also not installed at startup. None of those operations should be simulated
+the browser, not as a selected MCP write. Local worker controls require their
+separate explicit credential and admission setting; the turnkey local driver
+and recurring orphan reconciliation are not yet installed. None of those operations should be simulated
 by issuing an unrestricted eval or exposing an operator REPL to a client.
 
 ### Connecting a second operator

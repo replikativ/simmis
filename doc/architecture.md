@@ -84,8 +84,10 @@ promote checker trust.
 Local-worker transport lives separately in `ops/worker-service.clj` and
 `ops/worker-api.clj`, backed by typed enrollment/assignment records. Its six
 narrow operations use separate worker credentials, immutable selected-file
-inputs and bounded output receipts. Application startup does not install
-these bindings or enable worker authentication. Completion alone never
+inputs and bounded output receipts. Application startup installs these bindings
+with disjoint worker/lease authentication on the private MCP listener. Separate
+human control operations require an explicit worker-control credential and
+opt-in new admission. Completion alone never
 imports files or certifies a Run. See [data-model.md](data-model.md).
 The separate `ops/worker-frames.clj` provides bounded LF-delimited JSON for
 private process pipes: string keys preserve filenames; duplicate fields,
@@ -100,7 +102,9 @@ or a serial inference broker. It captures the protocol streams and redirects
 Java and Clojure standard I/O before loading Dvergr. The broker's opening
 configuration must come from the trusted parent before forwarding guest
 traffic. These endpoints are not installed by server startup and supply no
-physical containment or packaged runtime by themselves.
+physical containment by themselves. `build/worker` supplies the minimal pinned
+runtime; the local SCI controller retains guest and broker in one finite
+systemd unit, with physical capture and durable admission before GO.
 The host-only `ops/worker-work.clj` adapter connects these to Dvergr's existing
 Protocol/WorldSetup/Evaluator capabilities. It owns no alternative execution
 engine or result store. Separate conserved admission allowance funds local
@@ -110,7 +114,8 @@ the canonical isolated Run world with current permission checks.
 The separate host-only `ops/worker-recovery.clj` reconciles orphan exposure
 without execution or late import. Missing world disposal authority keeps
 cleanup unresolved; a terminal Run or discarded projection is not physical
-cleanup proof. It is not installed by application startup.
+cleanup proof. Startup invokes it after orphan Run reconciliation and before
+MCP claims are accepted. Recurring post-receipt recovery is not yet installed.
 Recorded Attempt evidence is distinct from mutable workspace files. See
 [authority.md](authority.md#private-mcp).
 Read-only current-workspace Git bundles use Geschichte's Git object/pack

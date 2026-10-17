@@ -9,11 +9,15 @@
             [dvergr.mcp.http :as http]
             [dvergr.substrate.config :as config]
             [is.simm.model.parties :as parties]
+            [is.simm.model.system-db :as system-db]
             [is.simm.ops.dvergr :as ops]
+            [is.simm.ops.worker-credentials :as worker-credentials]
             [is.simm.runtimes.auth-config :as auth]
+            [is.simm.runtimes.context :as context]
             [is.simm.runtimes.http-auth :as http-auth]
             [is.simm.runtimes.instance :as instance]
             [kabel.auth.jwt :as jwt]
+            [org.replikativ.spindel.engine.core :as ec]
             [taoensso.telemere :as log]))
 
 (def audience "simmis-mcp")
@@ -39,6 +43,12 @@
                      "simmis_workflow-list" "simmis_workflow-source"
                      "simmis_benchmark"}))
 
+(def worker-control-tools
+  ;; Private operator-helper session only. Never widen existing work tokens.
+  (into read-tools #{"job_cancel" "simmis_work-status"
+                     "simmis_local-worker-enroll" "simmis_local-worker-revoke"
+                     "simmis_local-worker-allowance" "simmis_local-worker-task"}))
+
 (defn- credential-tools [claims]
   (if (and (not (contains? claims :capability-version))
            (not (contains? claims :tools)))
@@ -47,6 +57,7 @@
           ceiling (case (:capability-version claims)
                     1 read-tools
                     2 (when (= "work" (:mode claims)) work-tools)
+                    3 (when (= "worker-control" (:mode claims)) worker-control-tools)
                     nil)]
       (when (and ceiling
                  (vector? tools) (seq tools) (<= (count tools) (count ceiling))
@@ -71,18 +82,19 @@
   ([party-id mode]
    (when-not (and (uuid? party-id) (human? party-id))
      (throw (ex-info "MCP credentials require an existing human party" {:type ::invalid-party})))
-   (when-not (contains? #{:read :work} mode)
+   (when-not (contains? #{:read :work :worker-control} mode)
      (throw (ex-info "Unknown MCP access mode" {:type ::invalid-mode})))
    (let [now (quot (System/currentTimeMillis) 1000)
+         [version tools] (case mode :read [1 read-tools] :work [2 work-tools]
+                               :worker-control [3 worker-control-tools])
          claims (cond-> {:iss audience :aud audience :sub (str party-id)
                          :iat now :exp (+ now 3600)
-                         :capability-version (if (= :work mode) 2 1)
-                         :tools (vec (sort (if (= :work mode) work-tools read-tools)))}
-                  (= :work mode) (assoc :mode "work"))]
+                         :capability-version version :tools (vec (sort tools))}
+                  (not= :read mode) (assoc :mode (name mode)))]
      {:token (jwt/sign-hs256 (signing-key) claims)
       :expires-in 3600 :mode (name mode)})))
 
-(defn authenticator
+(defn- human-authenticator
   "Build the transport authenticator. Ordinary web, blob, local-admin and
    Dvergr run credentials are not accepted by this initial human-read surface.
    Recheck the party each request, so deleting it revokes access."
@@ -106,6 +118,22 @@
                            ;; A hard ceiling even when a client requests admin profile.
                            :principal/tools tools)))))))
         (catch Exception _ nil)))))
+
+(defn authenticator
+  "Disjoint credential-format dispatch. A recognized worker prefix NEVER
+   falls through to human/admin auth, including expired/revoked/bad bearers.
+   Worker shutdown transport remains available when new admission is disabled."
+  []
+  (let [human (human-authenticator)]
+    (fn [{:keys [bearer] :as request}]
+      (if (and (string? bearer)
+               (or (str/starts-with? bearer "simmis-worker.")
+                   (str/starts-with? bearer "simmis-lease.")))
+        (try
+          (binding [ec/*execution-context* context/server-context]
+            (worker-credentials/authenticate (system-db/get-conn) request))
+          (catch Exception _ nil))
+        (human request)))))
 
 (defonce ^:private listener (atom nil))
 
@@ -144,7 +172,7 @@
                                            :body {:error "private MCP is disabled"}}
                  (not (and (or (nil? body) (map? body))
                            (every? #{:mode} (keys body))
-                           (contains? #{"read" "work"} mode)))
+                           (contains? #{"read" "work" "worker-control"} mode)))
                  {:status 400 :headers headers :body {:error "invalid MCP access mode"}}
                  :else {:status 200 :headers headers
                         :body (assoc (mint-token! id (keyword mode)) :token-type "Bearer")})))}}])

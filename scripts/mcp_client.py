@@ -76,7 +76,7 @@ def save(path, session):
 def exchange(path, session):
     base = origin(session["origin"])
     mode = session.get("mcp_mode", "read")
-    if mode not in ("read", "work"):
+    if mode not in ("read", "work", "worker-control"):
         raise ValueError("Unknown MCP access mode")
 
     def credential():
@@ -108,8 +108,8 @@ def main():
                         default=Path.home() / ".config/simmis/mcp-session.json")
     parser.add_argument("--origin", default="https://dev.simm.is")
     parser.add_argument("--email")
-    parser.add_argument("--access", choices=("read", "work"),
-                        help="Login only: explicitly choose work access; default read")
+    parser.add_argument("--access", choices=("read", "work", "worker-control"),
+                        help="Login only: explicitly choose work or private worker-control access; default read")
     args = parser.parse_args()
     if args.command != "login" and args.access is not None:
         raise ValueError("Choose access mode during login, not header renewal")

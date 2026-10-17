@@ -787,6 +787,15 @@
        ((requiring-resolve 'is.simm.model.system-db/get-conn)) ctx/server-context
        (requiring-resolve 'is.simm.agents.room-agents/live-room)))
 
+    ;; Fence orphaned external assignments BEFORE private worker claims are
+    ;; authenticated. Missing affine world authority remains unresolved; this
+    ;; does not invent shutdown or rerun an external task. Receipt handlers
+    ;; stay independent of the potentially blocking recovery join.
+    (ctx/with-server-context
+      ((requiring-resolve 'is.simm.ops.worker-recovery/recover!)
+       ((requiring-resolve 'is.simm.model.system-db/get-conn)) ctx/server-context
+       (requiring-resolve 'is.simm.agents.room-agents/live-room)))
+
     (ctx/with-server-context
       ((requiring-resolve 'is.simm.ops.benchmarks/recover!)
        ((requiring-resolve 'is.simm.model.system-db/get-conn)) ctx/server-context))

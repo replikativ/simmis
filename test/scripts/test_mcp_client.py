@@ -18,6 +18,16 @@ spec.loader.exec_module(client)
 
 
 class ClientTest(unittest.TestCase):
+    def test_private_worker_control_mode_is_explicit_and_preserved_on_exchange(self):
+        session = {"origin": "https://dev.simm.is", "access_token": "fixture-human-token",
+                   "mcp_mode": "worker-control"}
+        with patch.object(client, "post", return_value={"mode": "worker-control", "token": "fixture-control-token"}) as post:
+            self.assertEqual("fixture-control-token", client.exchange(None, session)["token"])
+        post.assert_called_once_with("https://dev.simm.is", "/auth/mcp-token", {"mode": "worker-control"},
+                                     token="fixture-human-token")
+        with patch.object(client, "post", return_value={"mode": "work", "token": "wrong-mode"}), self.assertRaises(ValueError):
+            client.exchange(None, session)
+
     def test_actual_headers_cli_renews_and_keeps_secrets_out_of_diagnostics(self):
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):

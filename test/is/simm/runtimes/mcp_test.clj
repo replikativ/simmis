@@ -7,7 +7,11 @@
             [dvergr.ops :as dops]
             [is.simm.ops.results :as results]
             [is.simm.ops.work-api :as work-api]
+            [is.simm.ops.worker-api :as worker-api]
+            [is.simm.ops.worker-control :as worker-control]
             [is.simm.model.parties :as parties]
+            [is.simm.model.system-db :as system-db]
+            [is.simm.ops.worker-credentials :as worker-credentials]
             [is.simm.runtimes.auth-config :as auth]
             [is.simm.runtimes.application-ops :as application-ops]
             [is.simm.runtimes.instance :as instance]
@@ -19,6 +23,10 @@
             [kabel.auth.jwt :as jwt]))
 
 (def person #uuid "33333333-3333-3333-3333-333333333333")
+
+(defn installed-ops []
+  (mapcat (comp keys deref) [#'results/specifications #'work-api/specifications
+                             #'worker-api/specifications #'worker-control/specifications]))
 
 (use-fixtures :each
   (fn [f]
@@ -36,7 +44,7 @@
               (f)
               (finally
                 (application-ops/stop!)
-                (doseq [op (concat (keys results/specifications) (keys work-api/specifications))]
+                (doseq [op (installed-ops)]
                   (if-let [spec (get previous op)]
                     (dops/register-op! op spec)
                     (dops/unregister-op! op)))
@@ -58,6 +66,42 @@
     (with-redefs [parties/get-party (constantly {:party/type :agent})]
       (is (nil? (authenticate {:bearer token}))))
     (is (thrown? clojure.lang.ExceptionInfo (mcp/mint-token! (random-uuid))))))
+
+(deftest worker-control-is-a-new-explicit-ceiling-not-a-work-token-upgrade
+  (let [authenticate (mcp/authenticator)
+        control (authenticate {:bearer (:token (mcp/mint-token! person :worker-control))})
+        read (authenticate {:bearer (:token (mcp/mint-token! person :read))})
+        work (authenticate {:bearer (:token (mcp/mint-token! person :work))})]
+    (is (= mcp/worker-control-tools (:principal/tools control)))
+    (is (contains? (:principal/tools control) "simmis_local-worker-enroll"))
+    (doseq [principal [read work]]
+      (is (not (contains? (:principal/tools principal) "simmis_local-worker-enroll"))))
+    (doseq [name ["simmis_task" "simmis_workflow-write" "clojure_eval" "simmis_worker-claim"]]
+      (is (not (contains? (:principal/tools control) name))))
+    (let [now (quot (System/currentTimeMillis) 1000)
+          base {:iss mcp/audience :aud mcp/audience :sub (str person) :iat now :exp (+ now 3600)}]
+      (doseq [claims [{:capability-version 2 :mode "work" :tools ["simmis_local-worker-enroll"]}
+                      {:capability-version 3 :mode "work" :tools ["simmis_local-worker-enroll"]}
+                      {:capability-version 3 :mode "worker-control" :tools ["simmis_task"]}]]
+        (is (nil? (authenticate {:bearer (jwt/sign-hs256 (#'mcp/signing-key) (merge base claims))})))))))
+
+(deftest worker-prefix-authentication-never-falls-through-to-human-authority
+  (let [human-calls (atom 0) worker-calls (atom [])]
+    (with-redefs-fn {#'mcp/human-authenticator (fn [] (fn [_] (swap! human-calls inc) ::human))
+                     #'system-db/get-conn (constantly ::connection)
+                     #'worker-credentials/authenticate
+                     (fn [conn request] (swap! worker-calls conj [conn request]) nil)}
+      (fn []
+        (let [authenticate (mcp/authenticator)]
+          (doseq [bearer ["simmis-worker.invalid" "simmis-lease.revoked.or.expired"]]
+            (is (nil? (authenticate {:bearer bearer}))))
+          (is (zero? @human-calls))
+          (is (= 2 (count @worker-calls)))
+          (with-redefs [worker-credentials/authenticate (fn [& _] (throw (Exception. "unavailable")))]
+            (is (nil? (authenticate {:bearer "simmis-lease.unavailable"}))))
+          (is (zero? @human-calls))
+          (is (= ::human (authenticate {:bearer "ordinary-human-format"})))
+          (is (= 1 @human-calls)))))))
 
 (deftest mcp-and-web-tokens-cannot-be-replayed-across-surfaces
   (let [key (#'mcp/signing-key)
@@ -199,7 +243,7 @@
     (application-ops/stop!)
     (is (nil? @@#'server/embedded-host))
     (is (not-any? #(contains? (dops/operations) %)
-                  (concat (keys results/specifications) (keys work-api/specifications))))))
+                  (installed-ops)))))
 
 (deftest failed-application-registration-rolls-back-and-can-retry
   (application-ops/stop!)
@@ -208,7 +252,7 @@
                           (application-ops/start!))))
   (is (nil? @@#'server/embedded-host))
   (is (not-any? #(contains? (dops/operations) %)
-                (concat (keys results/specifications) (keys work-api/specifications))))
+                (installed-ops)))
   (application-ops/start!)
   (is (contains? (dops/operations) :simmis/workflow-list)))
 
