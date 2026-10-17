@@ -135,6 +135,16 @@ Run projection says `:discarded`: that projection precedes physical substrate
 cleanup. A crash after discard but before resource return can therefore also
 remain unresolved; this adapter does not fabricate a durable cleanup receipt.
 
+`scripts/worker_inputs.py` supplies the local input boundary without starting
+an executor or authenticating a client. It checks the pinned configuration,
+closed policy, immutable chunk identities/offsets/size and full SHA256, then
+each file's size/digest/mode. Duplicate JSON fields, non-JSON constants and
+invalid UTF-8 filenames are refused. Materialization creates a fresh private
+directory and uses descriptor-relative exclusive/no-follow opens, never an
+archive or existing checkout. Runtime control paths such as `.codex/`,
+`.claude/`, `.agents/` and `.mcp.json` are not accepted as task data that a CLI
+could auto-load. No credentials or unselected files enter that directory.
+
 ## Objects, morphisms, instances
 
 The model is a category, called **S**, stored as ordinary Datahike entities.
