@@ -312,6 +312,30 @@ authority. The opt-in `SIMMIS_WORKER_NAMESPACE_TESTS=1` Python tests exercise
 real user-systemd/bubblewrap isolation without provider/model calls; default
 test runs skip those host integration cases.
 
+`scripts/worker_unit.py` is a separate explicit-lifetime physical observer.
+It launches only that fixed namespace guard in a unique capped transient user
+service, atomically retaining the unit through a private persistent D-Bus
+connection. After guard READY, capture verifies actual memory/swap, OOM-group,
+process and CPU kernel bounds, finite unit shutdown policy and process cgroup
+membership. The caller must journal the unit name before launch and persist
+the captured boot/invocation/cgroup identity before GO; this module does not
+implement that durable controller or remote acknowledgement.
+
+Shutdown observation is driven by systemd events, followed by fresh reads of
+the retained exact invocation, terminal state, absence of a pending job,
+zero main PID and an empty previously verified cgroup. It verifies the mounted
+cgroup-v2 hierarchy against the manager's public kernel membership; a wrong
+mount/namespace must not make a live group appear absent. A terminal blank
+`ControlGroup` property does not erase the captured locator. Lost manager or
+bus ownership, missing metadata, identity mismatch and deadline failure yield
+no stopped observation. Synchronous D-Bus calls have five-second bounds in
+addition to the event-wait deadline. Lost launch/reference replies preserve
+unresolved exposure, never permission to start again. Reattachment only
+reconciles an existing identity; it cannot authorize GO. Reference release is
+explicit and requires a new physical stop observation; the caller must first
+durably seal its receipt. Neither observation nor release certifies an Attempt
+or releases a server lease.
+
 The host-only `ops/worker-work.clj` adapter submits through the existing Jobs/
 Runs rather than a remote-executor registry. It requires the worker's enrolling
 human and current room read/merge authority, explicit admission allowance,
