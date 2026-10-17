@@ -103,8 +103,11 @@
                                                           (el/span {} "Execution backend")
                                                           (el/select {:value (get form :backend "hosted")
                                                                       :on-change (fn [e] (set-form :backend #?(:cljs (.. e -target -value) :clj "hosted")))}
-                                                                     (el/option {:value "hosted"} "Hosted provider")
+                                                                     (el/option {:value "hosted"} "This Simmis server")
                                                                      (el/option {:value "local"} "My enrolled local SCI worker")))
+                                                (when-not local?
+                                                  (el/p {:class "workflow-note"}
+                                                        "Runs on this Simmis instance, including when it runs on your computer. Model inference uses its configured provider."))
                                                 (if local?
                                                   (el/div {}
                                                           (el/button {:disabled (get-in state [:loading :workers])
