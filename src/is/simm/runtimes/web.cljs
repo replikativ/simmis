@@ -82,6 +82,7 @@
    `peer/start`, so `peer/stop` is not their lifecycle boundary."
   [{:keys [client supervisor] :as session}]
   (when (and session (current-session? session))
+    (binding [rtc/*execution-context* runtime] (sig/clear-captured-results!))
     (reset! current-session* nil))
   (when supervisor
     (doseq [abort-ch (:aborts supervisor)]
@@ -234,6 +235,7 @@
   (reset! authenticated-principal nil)
   ;; Set current-user signal for UI
   (binding [rtc/*execution-context* runtime]
+    (sig/clear-captured-results!)
     (reset! sig/current-user user))
   (let [session (create-client! token)]
     (show-app!)

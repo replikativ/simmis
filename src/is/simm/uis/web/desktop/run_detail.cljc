@@ -482,6 +482,11 @@
                                        :where [?r :run/id ?id]]
                                      db (vec cause-ids)))]
                {:run (normalize-run run-entity names)
+                ;; Certification is an explicit relation, not UUID equality.
+                :attempt-id (when (contains? (d/schema db) :attempt/run)
+                              (some-> (d/q '[:find ?id . :in $ ?r
+                                              :where [?a :attempt/run ?r] [?a :attempt/id ?id]]
+                                            db run-eid) str))
                 :trigger (some->> trigger-eid (d/pull db message-pull)
                                   (#(normalize-message % names)))
                 :parent (some->> parent-eid (d/pull db run-pattern)

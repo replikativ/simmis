@@ -705,6 +705,8 @@
      "dispatch-message!"       {:action W :resource (room :room-id-str)}
      "ensure-room!"            {:action W :resource (room :room-id-str)}
      "run-world-live!"         {:action R :resource (room :room-id-str)}
+     "load-attempt-files!"     {:action R :resource (room :room-id-str)}
+     "load-attempt-file!"      {:action R :resource (room :room-id-str)}
      ;; A member reaches the handler; stopping THIS Run is its starter's, the
      ;; room owner's or an admin's (`require-run-cancellable!`, §2.9.2).
      "cancel-room-run!"        {:action W :resource (room :room-id-str)}

@@ -2150,6 +2150,16 @@ body {
 
 .run-section--diagnostic { padding: var(--spacing-md); border-color: color-mix(in srgb, var(--danger) 35%, var(--mono-border)); }
 
+.run-result-identity { overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--mono-text-tertiary); }
+.run-result-files { display: flex; flex-direction: column; gap: var(--spacing-sm); margin: var(--spacing-md) 0; }
+.run-result-file { display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap; }
+.run-result-file code { flex: 1; overflow-wrap: anywhere; min-width: 120px; }
+.run-result-file > span { color: var(--mono-text-secondary); font-size: var(--text-sm); }
+.run-result-action { padding: 5px 10px; color: var(--mono-text-secondary); background: var(--mono-bg-elevated); border: 1px solid var(--mono-border); border-radius: var(--radius-sm); font: inherit; font-size: var(--text-sm); cursor: pointer; }
+.run-result-action:hover:not(:disabled), .run-result-action:focus-visible { color: var(--mono-text-primary); border-color: var(--accent); }
+.run-result-action:disabled { opacity: 0.55; cursor: wait; }
+.run-result-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; padding: var(--spacing-md); background: var(--mono-bg-surface); border: 1px solid var(--mono-border); border-radius: var(--radius-sm); }
+
 .run-inspector-empty {
   display: flex;
   min-height: 50vh;

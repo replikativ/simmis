@@ -195,6 +195,21 @@ Both reads include the Attempt's content identity;
 neither can fall back to the current workspace when a captured path is absent.
 Their schemas reject extra fields and validate direct in-process callers too.
 
+The Run inspector follows the replica's explicit `:attempt/run` relation to
+offer **Captured outputs**. It loads manifests and file bytes only on request,
+through `load-attempt-files!` and `load-attempt-file!`. Both require room read
+authority and call the same canonical Attempt service as MCP on every chunk;
+no UUID equality between a Run and its Attempt is assumed. Previews are at
+most 16 KiB of escaped UTF-8 text, never executable Markdown, HTML or SCI.
+Both preview and download refuse files larger than 8 MiB in this browser UI;
+the chunked MCP service remains available independently. Downloads accept
+only contiguous identity-matched chunks and publish no partial file after a
+failed or revoked read. They use
+an attachment download with an inert octet-stream Blob and a safe basename.
+View state belongs to Spindel's execution context, keyed by client session,
+room, Run and Attempt. Request tokens fence late replies; session teardown
+clears cached results and releases its browser download URLs.
+
 `simmis_workspace-bundle {room}` describes a synthetic, single-root-commit Git
 bundle of current workspace files. It is not the original repository history,
 a retained export or a hosted Git remote. It reads one immutable worktree and

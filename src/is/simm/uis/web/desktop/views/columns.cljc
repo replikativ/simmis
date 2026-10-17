@@ -46,6 +46,7 @@
             [is.simm.uis.web.desktop.views.attempt-board :as attempt-board-view]
             [is.simm.uis.web.desktop.views.leaderboard :as leaderboard-view]
             [is.simm.uis.web.desktop.views.run-inspector :as run-inspector]
+            #?(:cljs [is.simm.uis.web.desktop.result-actions :as result-actions])
             [is.simm.uis.web.desktop.proposal-card :as proposal-card]
             [is.simm.uis.web.desktop.signals :as sig]
             [clojure.string :as str]
@@ -954,6 +955,7 @@
              ;; what only the server can say about one (its world's capability,
              ;; whether this viewer may stop it) is asked of it, and kept here.
              run-facts (iv/get-new (track sig/run-server-facts))
+             captured-results (iv/get-new (track sig/captured-results))
              ;; Canonical Proposal review projection. Inline chat cards consume
              ;; the same rows/controllers as Tasks and the full inspector.
              proposal-data (iv/get-new (track sig/proposals-data))
@@ -1012,7 +1014,7 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs)
+                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1211,7 +1213,7 @@
   "Render content for a tab based on its type.
 
    kb-states arg removed — wiki tabs self-track their KB signal."
-  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data col-id notify-prefs]]
+  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data col-id notify-prefs captured-results]]
   (case tab-type
     :home
     ;; Newcomer landing: the obvious first action is talking to your
@@ -1270,7 +1272,7 @@
                         local-db chat-windows settings-data admin-data room-details room-states
                         syntax-pref gref video-info screen-sharing screens-results
                         recordings-results web-captures-results chat-reply-targets run-facts
-                        proposal-data col-id notify-prefs)
+                        proposal-data col-id notify-prefs captured-results)
 
     :run-history
     #?(:cljs
@@ -1420,6 +1422,12 @@
            :fallback-run (or recent-run (:run data))
            :room-name room-name
            :syntax-pref syntax-pref
+           :captured-result (when-let [attempt (:attempt-id detail)]
+                              (get captured-results (result-actions/state-key room-id run-id attempt)))
+           :on-load-results #(result-actions/manifest! room-id run-id (:attempt-id detail))
+           :on-more-results #(result-actions/manifest-page! room-id run-id (:attempt-id detail) %)
+           :on-preview-result #(result-actions/preview! room-id run-id (:attempt-id detail) %)
+           :on-download-result #(result-actions/download! room-id run-id (:attempt-id detail) %)
            :on-cancel #(run-actions/cancel! room-id %)
            :on-promote
            (fn [run]
