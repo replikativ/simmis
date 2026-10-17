@@ -117,6 +117,13 @@ engine or result store. Separate conserved admission allowance funds local
 work; remote subscription usage remains explicitly unpriced. Cancellation
 retains the native supervisor until remote stop, and output import stays in
 the canonical isolated Run world with current permission checks.
+The separate `local-worker-workflow` control uses the same provider-independent
+saved-workflow preparation as native server execution. It freezes the inspected
+bundle, literal parameters, fixture/input overlays and regular-file modes before
+admission. Only those files reach the guest. Ordinary workflow source may include
+checker/gold files, but authored checkers are not executed and this is not a
+benchmark secrecy boundary. Exact retries observe the original Job; recovery
+reconstructs its input only from the stored snapshot, not newer room content.
 The separate host-only `ops/worker-recovery.clj` reconciles orphan exposure
 without execution or late import. Missing world disposal authority keeps
 cleanup unresolved; a terminal Run or discarded projection is not physical
@@ -125,7 +132,7 @@ MCP claims are accepted. `runtimes/worker-maintenance.clj` owns one periodic
 reconciliation resource independent of fast receipt delivery. An initial hold
 or unhealthy resource prevents new claims/admission but preserves existing
 lease shutdown. `scripts/worker_driver.py` supplies private operator enrollment,
-explicit allowance/task submission and one-shot local SCI execution/recovery;
+explicit allowance/task/workflow submission and one-shot local SCI execution/recovery;
 its login binds the exact MCP destination, including explicit tunnel aliases.
 Recorded Attempt evidence is distinct from mutable workspace files. See
 [authority.md](authority.md#private-mcp).

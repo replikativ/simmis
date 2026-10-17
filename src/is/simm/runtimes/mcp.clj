@@ -47,7 +47,9 @@
   ;; Private operator-helper session only. Never widen existing work tokens.
   (into read-tools #{"job_cancel" "simmis_work-status"
                      "simmis_local-worker-enroll" "simmis_local-worker-revoke"
-                     "simmis_local-worker-allowance" "simmis_local-worker-task"}))
+                     "simmis_local-worker-allowance" "simmis_local-worker-task"
+                     "simmis_local-worker-workflow"
+                     "simmis_workflow-list" "simmis_workflow-source" "simmis_workflow-check"}))
 
 (defn- credential-tools [claims]
   (if (and (not (contains? claims :capability-version))

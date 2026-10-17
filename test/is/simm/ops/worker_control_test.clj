@@ -21,6 +21,24 @@
 (def allowance {:room "room" :request-id (str request-id) :max-worker-admissions 2})
 (def task {:room "room" :request-id (str request-id) :worker (str worker-id) :task "Do bounded work"
            :paths ["docs/input.md"] :limits {:timeout-ms 120000 :settlement "review"}})
+(def workflow (-> (dissoc task :task :paths)
+                  (assoc :name "echo" :expected-bundle (str request-id)
+                         :params {:subject "literal"} :inputs {(keyword "/docs/input.md") "text"})))
+
+(defn call [op args] ((get-in control/specifications [op :impl]) host args))
+
+(deftest workflow-control-normalizes-only-literal-map-keys
+  (let [seen (atom nil)]
+    (with-redefs [work/submit-workflow! (fn [& args] (reset! seen (last args)) {:job request-id})]
+      (is (= {:job request-id} (call :simmis/local-worker-workflow workflow)))
+      (is (= {"subject" "literal"} (:params @seen)))
+      (is (= {"/docs/input.md" "text"} (:inputs @seen)))
+      (is (= request-id (:expected-bundle @seen)))
+      (doseq [extra [{:model "forbidden"} {:task "forbidden"} {:protocol {}}]]
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (call :simmis/local-worker-workflow (merge workflow extra)))))
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (call :simmis/local-worker-workflow (assoc-in workflow [:params "subject"] "duplicate")))))))
 
 (use-fixtures :each
   (fn [f]
@@ -30,8 +48,6 @@
                   registry/get-model (constantly {:provider :codex-subscription})
                   auth/get-auth-config (constantly {:jwt {:secret "fixture-issuer-key"}})]
       (binding [ops/*principal* principal] (f)))))
-
-(defn call [op args] ((get-in control/specifications [op :impl]) host args))
 
 (deftest canonical-control-adapters-use-authenticated-principal-and-owned-room
   (let [calls (atom [])]
@@ -58,7 +74,7 @@
                   work/provision! (fn [& _] (swap! writes conj :fund))
                   work/submit! (fn [& _] (swap! writes conj :submit))]
       (doseq [[op args] [[:simmis/local-worker-enroll enroll] [:simmis/local-worker-allowance allowance]
-                         [:simmis/local-worker-task task]]]
+                         [:simmis/local-worker-task task] [:simmis/local-worker-workflow workflow]]]
         (is (thrown? clojure.lang.ExceptionInfo (call op args))))
       (is (empty? @writes))
       (is (= {:revoked true} (call :simmis/local-worker-revoke revoke)))

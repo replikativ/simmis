@@ -33,17 +33,27 @@
 
 (defn- intent! [conn row]
   (let [payload (requests/payload conn row)
-        {:keys [submission frozen policy environment team]} (:input payload)]
+        {:keys [submission frozen policy environment team snapshot workflow]} (:input payload)
+        kind (:work.request/kind row)
+        selection-ok?
+        (case kind
+          :local-worker (and (m/validate local/task-schema submission)
+                             (= (:task submission) (:task frozen))
+                             (= (set (:paths submission)) (set (keys (:files frozen)))))
+          :local-worker-workflow
+          (let [prepared (local/workflow-input snapshot submission (:config frozen))]
+            (and (= frozen (:frozen prepared)) (= workflow (:workflow prepared))
+                 (= workflow (get-in environment [:environment/metadata :workflow]))))
+          false)]
+    (files/validate-frozen! frozen)
     (when-not (and (= (:work.request/intent-id row) (hasch/uuid payload))
-                   (= :local-worker (:kind payload))
-                   (m/validate local/task-schema submission)
+                   (= kind (:kind payload)) selection-ok?
                    (= :simmis/local-worker-v1 (:policy policy))
                    (= (:worker submission) (:worker policy)) (pos-int? (:generation policy))
                    (= (:input-id frozen) (:input-id policy))
                    (= (:input-id frozen) (hasch/uuid [:simmis/worker-input-v1 (dissoc frozen :input-id)]))
-                   (= (:task submission) (:task frozen)) (= (:limits submission) (:limits frozen))
+                   (= (:limits submission) (:limits frozen))
                    (= files/policy (:policy frozen))
-                   (= (set (:paths submission)) (set (keys (:files frozen))))
                    (= {:protocol/id :simmis/local-worker :protocol/version 1 :protocol/basis policy}
                       (get-in environment [:environment/world :protocol])))
       (refuse! "Worker recovery requires the exact supported frozen request"))
@@ -143,7 +153,7 @@
   [conn host-ctx resolve-room id]
   (binding [ec/*execution-context* host-ctx]
     (when-let [row (requests/get-request conn id)]
-      (when (= :local-worker (:work.request/kind row))
+      (when (local/request-kinds (:work.request/kind row))
         (if-let [job (:work.request/job row)]
           (when (:work.request/return-pending? row)
             (when-let [room (resolve-room (:work.request/room row))]
@@ -202,4 +212,4 @@
 (defn recover! [conn host-ctx resolve-room]
   (binding [ec/*execution-context* host-ctx]
     (mapv #(recover-request! conn host-ctx resolve-room (:work.request/id %))
-          (filter #(= :local-worker (:work.request/kind %)) (requests/requests conn)))))
+          (filter #(local/request-kinds (:work.request/kind %)) (requests/requests conn)))))

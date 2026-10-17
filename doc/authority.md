@@ -501,8 +501,10 @@ recovery excludes these requests; local process death does not release their
 external ownership fence. Application startup registers the worker transport
 and separate human control tools. The `worker-control` token mode is a new
 versioned ceiling, never an expansion of existing read/work credentials. Its
-four controls enroll, revoke, explicitly provision admission units, and submit
-one bounded selected-file task; it grants no generic eval, ordinary task
+five controls enroll, revoke, explicitly provision admission units, and submit
+one bounded selected-file task or pinned saved workflow. Fresh tokens also
+include workflow list/source/check reads; previously issued literal tool lists
+remain unchanged. It grants no generic eval, ordinary task
 submission or workflow-writing capability. Use this credential only in a
 private operator helper, not an ordinary model session.
 

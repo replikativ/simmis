@@ -21,11 +21,14 @@
             [is.simm.ops.worker-files :as files]
             [is.simm.ops.worker-output :as output]
             [is.simm.ops.worker-wait :as wait]
+            [is.simm.ops.workflow-runs :as workflow-runs]
+            [is.simm.ops.workflows :as workflows]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.util Date]))
 
 (def admission-unit "local-worker-admission")
+(def request-kinds #{:local-worker :local-worker-workflow})
 (def units [{:symbol admission-unit :name "Local worker admissions" :precision 0}])
 (def allowance-schema [:map {:closed true} [:request-id :uuid]
                        [:max-worker-admissions [:int {:min 1 :max 32}]]])
@@ -34,6 +37,9 @@
    [:task [:string {:min 1 :max 16000}]]
    [:paths [:vector {:max 100} [:string {:min 1 :max 512}]]]
    [:limits files/limits-schema]])
+(def workflow-schema
+  (into workflow-runs/source-schema
+        [[:request-id :uuid] [:worker :uuid] [:limits files/limits-schema]]))
 
 (defn- refuse! [type message] (throw (ex-info message {:type type})))
 (defn- checked! [schema input]
@@ -171,55 +177,106 @@
                        :usage-measurement :unreported-local-subscription))))
           (finally (journal #(wait/close! watch))))))}))
 
-(defn- prepare [conn host-ctx room-id room by request-id input]
-  (let [pinned (binding [ec/*execution-context* host-ctx]
-                 (let [row (workers/enrollment conn (:worker input))]
-                   (when-not (and (= by (:simmis.worker/by row)) (= room-id (:simmis.worker/room row))
-                                  (credentials/permitted? @conn row))
-                     (refuse! ::denied "Worker enrollment is not delegated by this human in this room"))
-                   row))
-        config (binding [ec/*execution-context* host-ctx] (workers/payload conn pinned :simmis.worker/config-ref))
-        frozen (files/freeze room (:task input) config (:paths input) (:limits input))
+(defn- enrollment! [conn host-ctx room-id by input]
+  (binding [ec/*execution-context* host-ctx]
+    (let [row (workers/enrollment conn (:worker input))]
+      (when-not (and (= by (:simmis.worker/by row)) (= room-id (:simmis.worker/room row))
+                     (credentials/permitted? @conn row))
+        (refuse! ::denied "Worker enrollment is not delegated by this human in this room"))
+      row)))
+
+(defn workflow-input
+  "Pure reconstruction from the admitted source snapshot. Does not read the
+   current room, resolve a provider, execute source or run authored checkers."
+  [snapshot input config]
+  (checked! workflow-schema input)
+  (let [{:keys [source inputs task] :as prepared}
+        (workflow-runs/prepare-source snapshot (select-keys input workflow-runs/source-fields))
+        modes (into {} (map (juxt :path :mode)) (:manifest snapshot))
+        prefix (str "workflows/" (:name input) "/")
+        entries (merge (into {} (map (fn [[p text]] [(str prefix p) [text (get modes p)]])) source)
+                       (into {} (map (fn [[p text]] [(subs p 1) [text 0x81A4]])) inputs))
+        descriptors
+        (into (sorted-map)
+              (map (fn [[p [text mode]]]
+                     (let [bytes (.getBytes ^String text "UTF-8")]
+                       [p {:bytes (alength bytes) :mode mode :sha256 (files/sha256 bytes)
+                           :base64 (.encodeToString (java.util.Base64/getEncoder) bytes)}]))) entries)]
+    (assoc prepared :frozen (files/freeze-files task config descriptors (:limits input)))))
+
+(defn- prepare-frozen [conn host-ctx room-id room request-id input pinned frozen workflow]
+  (let [config (:config frozen)
+        paths (vec (keys (:files frozen)))
+        task (:task frozen)
         basis {:policy :simmis/local-worker-v1 :worker (:worker input)
                :generation (:simmis.worker/generation pinned) :config-id (:simmis.worker/config-id pinned)
                :input-id (:input-id frozen)}
         setup (evaluation/make-world-setup
                {:id :simmis/local-worker-inputs :version 1 :basis basis
-                :prepare (fn [{world :room}]
-                           (when-not (= frozen (files/freeze world (:task input) config (:paths input) (:limits input)))
+                :prepare (fn [{world :room run-id :run/id :as context}]
+                           (when workflow
+                             ((:prepare (:world-setup workflow)) context)
+                             ;; The shared text setup pins the subtree. Import the
+                             ;; same frozen bytes once more to preserve source modes.
+                             (output/import! world run-id frozen
+                                             {:files (:files frozen) :summary "Pin workflow inputs" :exit-code 0}
+                                             (constantly true)))
+                           (when-not (= frozen (files/freeze world task config paths (:limits input)))
                              (refuse! ::conflict "Selected room files changed before Run admission"))
                            {:input-id (:input-id frozen)})})
         protocol (make-protocol conn host-ctx room room-id request-id pinned frozen basis)
         evaluator (make-evaluator config (:limits input) basis)
         grant {admission-unit 1M}
         env (environment/make-environment
-             {:id :simmis/local-worker :task (:task input)
-              :verifier {:id :simmis/local-worker-completion :version 1 :basis basis}
-              :limits {:timeout-ms (get-in input [:limits :timeout-ms]) :cancel-timeout-ms 30000 :on-timeout :verdict}
-              :world {:isolation :ctx :settlement (keyword (get-in input [:limits :settlement]))
-                      :effects work/effects :resources grant :setup (evaluation/world-setup-ref setup)
-                      :protocol (evaluation/protocol-ref protocol)}})
+             (cond-> {:id :simmis/local-worker :task task
+                      :verifier {:id :simmis/local-worker-completion :version 1 :basis basis}
+                      :limits {:timeout-ms (get-in input [:limits :timeout-ms]) :cancel-timeout-ms 30000 :on-timeout :verdict}
+                      :world {:isolation :ctx :settlement (keyword (get-in input [:limits :settlement]))
+                              :effects work/effects :resources grant :setup (evaluation/world-setup-ref setup)
+                              :protocol (evaluation/protocol-ref protocol)}}
+               workflow (assoc :metadata {:workflow (:workflow workflow)})))
         team (roster/make-agent (roster/make-roster {:id :simmis/local-worker})
                                 {:id :local-worker :program {:kind :echo}
                                  :model-policy {:provider :local-worker
                                                 :model (str "local-worker/" (:adapter config) "/" (:model config))}
                                  :metadata {:adapter-config config :usage-measurement :unreported-local-subscription}})]
-    {:request-kind :local-worker :team team :agent :local-worker
+    {:request-kind (if workflow :local-worker-workflow :local-worker) :team team :agent :local-worker
      :resources grant :resource-units units :environment env :world-setup setup :protocol protocol :evaluator evaluator
-     :basis {:submission input :frozen frozen :environment env :team team :policy basis}}))
+     :basis (cond-> {:submission input :frozen frozen :environment env :team team :policy basis}
+              workflow (assoc :snapshot (:snapshot workflow) :workflow (:workflow workflow)))}))
 
-(defn submit! [conn host-ctx principal room-id room input]
-  (checked! task-schema input)
+(defn- prepare [conn host-ctx room-id room by request-id input]
+  (let [pinned (enrollment! conn host-ctx room-id by input)
+        config (binding [ec/*execution-context* host-ctx] (workers/payload conn pinned :simmis.worker/config-ref))]
+    (prepare-frozen conn host-ctx room-id room request-id input pinned
+                    (files/freeze room (:task input) config (:paths input) (:limits input)) nil)))
+
+(defn- prepare-workflow [conn host-ctx room-id room by request-id input]
+  (let [pinned (enrollment! conn host-ctx room-id by input)
+        config (binding [ec/*execution-context* host-ctx] (workers/payload conn pinned :simmis.worker/config-ref))
+        snapshot (workflows/snapshot room (:name input))
+        workflow (assoc (workflow-input snapshot input config) :snapshot snapshot)]
+    (prepare-frozen conn host-ctx room-id room request-id input pinned (:frozen workflow) workflow)))
+
+(defn- submit-prepared! [conn host-ctx principal room-id room input kind prepare]
   (binding [ec/*execution-context* host-ctx]
     (let [by (human! conn principal room-id) id (requests/request-id by room-id (:request-id input))]
       (if-let [row (requests/get-request conn id)]
         (do
-          (when-not (and (= :local-worker (:work.request/kind row))
+          (when-not (and (= kind (:work.request/kind row))
                          (= input (get-in (requests/payload conn row) [:input :submission])))
             (refuse! ::conflict "Request identity was used for different work"))
           (work/status conn host-ctx principal room-id id))
         (work/submit-prepared! conn host-ctx principal room-id room
-                               (assoc-in input [:limits :max-worker-admissions] 1)
-                               (assoc (prepare conn host-ctx room-id room by id input)
-                                      :execution-kind :local-worker
-                                      :submission-channel (if (:principal/mcp? principal) :mcp :host)))))))
+                              (assoc-in input [:limits :max-worker-admissions] 1)
+                              (assoc (prepare conn host-ctx room-id room by id input)
+                                     :execution-kind kind
+                                     :submission-channel (if (:principal/mcp? principal) :mcp :host)))))))
+
+(defn submit! [conn host-ctx principal room-id room input]
+  (checked! task-schema input)
+  (submit-prepared! conn host-ctx principal room-id room input :local-worker prepare))
+
+(defn submit-workflow! [conn host-ctx principal room-id room input]
+  (checked! workflow-schema input)
+  (submit-prepared! conn host-ctx principal room-id room input :local-worker-workflow prepare-workflow))

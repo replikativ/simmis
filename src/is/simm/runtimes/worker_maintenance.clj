@@ -4,6 +4,7 @@
    no execution, import, certification or inferred physical shutdown."
   (:require [is.simm.model.work-requests :as requests]
             [is.simm.ops.worker-recovery :as recovery]
+            [is.simm.ops.worker-work :as local]
             [org.replikativ.spindel.engine.core :as ec]
             [taoensso.telemere :as log])
   (:import [java.util.concurrent ScheduledThreadPoolExecutor ThreadFactory TimeUnit]))
@@ -17,7 +18,7 @@
    transitions are the existing idempotent recovery adapter's responsibility."
   [conn host-ctx resolve-room]
   (binding [ec/*execution-context* host-ctx]
-    (loop [rows (filter #(and (= :local-worker (:work.request/kind %))
+    (loop [rows (filter #(and (local/request-kinds (:work.request/kind %))
                               (:work.request/return-pending? %)) (requests/requests conn))
            counts {}]
       (if (or (empty? rows) (.isInterrupted (Thread/currentThread)))
@@ -57,7 +58,7 @@
   ;; assignments. Keep claims held until canonical room resolution succeeds.
   (binding [ec/*execution-context* host-ctx]
     (doseq [row (requests/requests conn)
-            :when (and (= :local-worker (:work.request/kind row)) (:work.request/return-pending? row))]
+            :when (and (local/request-kinds (:work.request/kind row)) (:work.request/return-pending? row))]
       (when-not (resolve-room (:work.request/room row))
         (throw (ex-info "Pending worker room has not been canonically resolved" {:type ::held}))))))
 

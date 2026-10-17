@@ -35,7 +35,7 @@
   (into source-schema [[:request-id :uuid] [:model [:string {:min 1 :max 200}]]
                        [:limits work/limits-schema]]))
 
-(def transport-schema
+(defn transport-schema-for [schema]
   ;; The HTTP JSON decoder keywordizes object keys, even paths. Normalize
   ;; ONLY map keys at this boundary, then apply the strict internal schema.
   (mapv (fn [entry]
@@ -43,11 +43,13 @@
             (update entry 2 #(assoc % 2 [:or (nth % 2) :keyword]))
             entry)) schema))
 
+(def transport-schema (transport-schema-for schema))
+
 (defn- invalid! [message]
   (throw (ex-info message {:type ::invalid})))
 
-(defn transport [input]
-  (when-not (m/validate transport-schema input) (invalid! "Invalid workflow execution"))
+(defn transport-for [schema input]
+  (when-not (m/validate (transport-schema-for schema) input) (invalid! "Invalid workflow execution"))
   (reduce (fn [input field]
             (if (contains? input field)
               (update input field
@@ -57,6 +59,8 @@
                             (when (contains? out key) (invalid! "Duplicate workflow input key"))
                             (assoc out key value))) {} %))
               input)) input [:params :inputs]))
+
+(defn transport [input] (transport-for schema input))
 
 (defn- byte-count [^String s] (alength (.getBytes s "UTF-8")))
 

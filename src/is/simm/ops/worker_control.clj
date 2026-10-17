@@ -10,6 +10,7 @@
             [is.simm.ops.work-api :as api]
             [is.simm.ops.worker-service :as service]
             [is.simm.ops.worker-work :as work]
+            [is.simm.ops.workflow-runs :as workflow-runs]
             [is.simm.runtimes.auth-config :as auth]
             [is.simm.runtimes.worker-maintenance :as maintenance]
             [malli.core :as m]))
@@ -37,6 +38,13 @@
                   [:paths [:vector {:max 100} [:string {:min 1 :max 512}]]]
                   [:limits [:map {:closed true} [:timeout-ms [:int {:min 1000 :max 600000}]]
                             [:settlement [:enum "review" "discard"]]]]])
+
+(def workflow-schema
+  (workflow-runs/transport-schema-for
+   (into [:map {:closed true} room-entry [:request-id uuid-string] [:worker uuid-string]]
+         (map (fn [entry] (if (= :expected-bundle (first entry))
+                           [:expected-bundle uuid-string] entry)))
+         (concat (drop 2 workflow-runs/source-schema) [[:limits (nth (last task-schema) 1)]]))))
 
 (defn- require-admission! []
   (when-not (and (admission-open?) (maintenance/claims-ready?))
@@ -96,7 +104,19 @@
              (invoke host task-schema args true
                      (fn [conn id room]
                        (work/submit! conn (:execution-ctx host) ops/*principal* id room
-                                     (-> (dissoc args :room) (update :request-id uuid!) (update :worker uuid!))))))}}))
+                                     (-> (dissoc args :room) (update :request-id uuid!) (update :worker uuid!))))))}
+    :simmis/local-worker-workflow
+    {:kind :write :schema workflow-schema :authz {:action :write}
+     :doc "HUMAN control only: run one inspected saved workflow revision on your enrolled local SCI worker. Pins literal parameters, source and fixture/input bytes. Uses one explicitly funded admission and existing Job/Run/Attempt flow; authored checkers are NOT executed. Exact retries observe the original Job. Review/discard only; no provider login is sent to the server."
+     :impl (fn [host args]
+             (invoke host workflow-schema args true
+                     (fn [conn id room]
+                       (work/submit-workflow!
+                        conn (:execution-ctx host) ops/*principal* id room
+                        (workflow-runs/transport-for
+                         work/workflow-schema
+                         (-> (dissoc args :room) (update :request-id uuid!)
+                             (update :worker uuid!) (update :expected-bundle uuid!)))))))}}))
 
 (defn install! []
   (doseq [[op spec] specifications] (ops/register-op! op spec))

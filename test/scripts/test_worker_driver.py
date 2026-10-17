@@ -31,6 +31,21 @@ def reply(arguments):
 
 
 class DriverTest(unittest.TestCase):
+    def test_workflow_cli_uses_exact_bundle_and_literal_string_maps(self):
+        request, bundle = str(uuid.uuid4()), str(uuid.uuid4())
+        args = ["worker_driver.py", "--state", "/private/fixture-worker", "--session", "/private/session",
+                "workflow", "--request-id", request, "--name", "echo", "--expected-bundle", bundle,
+                "--params", '{"subject":"literal {subject}"}', "--inputs", '{"/docs/input.md":"text"}']
+        with patch.object(sys, "argv", args), patch.object(driver, "state_root", return_value=Path("/private/fixture-worker")), \
+                patch.object(driver, "operate", return_value={}) as operate, patch("sys.stdout", new_callable=io.StringIO):
+            driver.main()
+            self.assertEqual("workflow", operate.call_args.args[2])
+            fields = operate.call_args.args[3]
+            self.assertEqual(bundle, fields["expected-bundle"])
+            self.assertEqual({"subject": "literal {subject}"}, fields["params"])
+            self.assertEqual({"/docs/input.md": "text"}, fields["inputs"])
+            self.assertEqual(300000, fields["limits"]["timeout-ms"])
+
     def test_cli_deadline_includes_cold_start_and_keeps_the_finite_maximum(self):
         args = ["worker_driver.py", "--state", "/private/fixture-worker", "--session", "/private/session",
                 "task", "--request-id", str(uuid.uuid4()), "--task", "Bounded task"]
@@ -103,11 +118,15 @@ class DriverTest(unittest.TestCase):
                 allowance = driver.operate(root, "private-session", "allowance",
                                            {"request-id": str(uuid.uuid4()), "max-worker-admissions": 1})
                 task = driver.operate(root, "private-session", "task", {"request-id": str(uuid.uuid4()), "task": "fixture"})
+                driver.operate(root, "private-session", "workflow",
+                               {"request-id": str(uuid.uuid4()), "name": "echo", "expected-bundle": str(uuid.uuid4())})
                 driver.operate(root, "private-session", "revoke", {})
-            self.assertEqual(["simmis_local-worker-allowance", "simmis_local-worker-task", "simmis_local-worker-revoke"],
+            self.assertEqual(["simmis_local-worker-allowance", "simmis_local-worker-task",
+                              "simmis_local-worker-workflow", "simmis_local-worker-revoke"],
                              [name for name, _ in calls])
             self.assertTrue(all(args["room"] == ROOM for _, args in calls))
             self.assertEqual(issued["worker"], calls[1][1]["worker"])
+            self.assertEqual(issued["worker"], calls[2][1]["worker"])
             self.assertNotIn("credential", allowance)
             self.assertNotIn("credential", task)
 

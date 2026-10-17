@@ -123,12 +123,13 @@ not the worker's asserted result alone. Nonzero exit fails the Run while
 retaining captured diagnostics; completion reward requires a completed Run,
 successful import and exit zero. Receipt spend is explicitly unpriced because
 remote subscription usage is unreported. Provenance distinguishes local-worker
-execution and host versus MCP submission. This host API is not enabled at
-application startup. Generic restart recovery excludes `:local-worker`: a dead
+execution and host versus MCP submission. New human admission is opt-in.
+Generic restart recovery excludes both `:local-worker` and
+`:local-worker-workflow`: a dead
 local JVM cannot certify that a remote process stopped.
 
 `ops/worker-recovery.clj` is a separate host-only reconciliation entry point,
-not installed at boot or on the transport. It validates the frozen request,
+called by startup maintenance and authenticated receipt handling. It validates the frozen request,
 complete Job/Run graph and actual Run provenance before closing publication.
 Missing/queued assignments get a same-intent withdrawal fence; leased work
 holds its resources until physical stop acknowledgement. It can discard an

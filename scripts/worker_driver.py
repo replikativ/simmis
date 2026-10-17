@@ -1,7 +1,8 @@
 """Private local SCI worker driver. Never expose this program as an agent tool.
 
 Enroll with an explicit worker-control web session. Fund only with `allowance`;
-submit selected-file tasks with `task`; `run` executes ONE queued assignment.
+submit selected-file tasks with `task` or pinned saved workflows with `workflow`;
+`run` executes ONE queued assignment.
 `reconcile` never executes, needs no runtime/login, and preserves ambiguity.
 No native/provider credential is printed, uploaded or given to the SCI guest.
 Requires Linux user systemd/cgroup-v2, python3-dbus/python3-gi and Java21+ at
@@ -182,10 +183,12 @@ def run_one(root, *, codex_home=None, run=None, reconcile=False):
 def operate(root, session, command, arguments):
     intent, issued = enrollment(root)
     fields = {**arguments, "room": issued["room"]}
-    if command in {"revoke", "task"}:
+    if command in {"revoke", "task", "workflow"}:
         fields["worker"] = intent["worker"]
-    if command in {"allowance", "task"}:
+    if command in {"allowance", "task", "workflow"}:
         inputs.canonical_uuid(fields["request-id"])
+    if command == "workflow":
+        inputs.canonical_uuid(fields["expected-bundle"])
     response = human_call(intent["endpoint"], session, "simmis_local-worker-" + command, fields)
     # Never print arbitrary server fields or worker credentials. Full execution
     # and captured-file evidence remain available through room MCP/UI surfaces.
@@ -200,7 +203,7 @@ def operate(root, session, command, arguments):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", required=True, help="Dedicated private controller directory; parent must exist")
-    parser.add_argument("--session", type=Path, help="Private human worker-control session (enroll/allowance/task/revoke only)")
+    parser.add_argument("--session", type=Path, help="Private human worker-control session (enroll/allowance/task/workflow/revoke only)")
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("enroll")
     init.add_argument("--endpoint", required=True)
@@ -219,6 +222,15 @@ def main():
     task.add_argument("--timeout-ms", type=int, default=300000,
                       help="Total task deadline including cold JVM startup; default 300000, maximum 600000")
     task.add_argument("--settlement", choices=["review", "discard"], default="review")
+    workflow = commands.add_parser("workflow")
+    workflow.add_argument("--request-id", required=True, help="Stable UUID; reuse on retry")
+    workflow.add_argument("--name", required=True)
+    workflow.add_argument("--expected-bundle", required=True, help="Exact inspected workflow bundle UUID")
+    workflow.add_argument("--case")
+    workflow.add_argument("--params", default="{}", help="JSON object of declared literal string parameters")
+    workflow.add_argument("--inputs", default="{}", help="JSON object of canonical absolute input paths and text")
+    workflow.add_argument("--timeout-ms", type=int, default=300000)
+    workflow.add_argument("--settlement", choices=["review", "discard"], default="review")
     commands.add_parser("revoke")
     run = commands.add_parser("run")
     run.add_argument("--codex-home", required=True, help="Canonical broker-only local login directory; never uploaded")
@@ -226,7 +238,7 @@ def main():
     recover = commands.add_parser("reconcile")
     recover.add_argument("--run", required=True)
     args = parser.parse_args()
-    if args.command in {"enroll", "allowance", "task", "revoke"} and args.session is None:
+    if args.command in {"enroll", "allowance", "task", "workflow", "revoke"} and args.session is None:
         parser.error("This control requires an explicitly selected private worker-control session")
     root = state_root(args.state, create=args.command == "enroll")
     if args.command == "enroll":
@@ -247,6 +259,22 @@ def main():
             inputs.path_parts(path)
         result = operate(root, args.session, "task", {"request-id": args.request_id, "task": args.task, "paths": args.path,
                                                     "limits": {"timeout-ms": args.timeout_ms, "settlement": args.settlement}})
+    elif args.command == "workflow":
+        if not 1000 <= args.timeout_ms <= 600000:
+            parser.error("Workflow exceeds finite worker bounds")
+        fields = {"request-id": args.request_id, "name": args.name, "expected-bundle": args.expected_bundle,
+                  "limits": {"timeout-ms": args.timeout_ms, "settlement": args.settlement}}
+        for key in ["params", "inputs"]:
+            raw = getattr(args, key)
+            if len(raw.encode("utf-8")) > 3000000:
+                parser.error("Workflow input JSON exceeds bounds")
+            value = json.loads(raw, object_pairs_hook=inputs._unique_object, parse_constant=inputs._invalid_constant)
+            if type(value) is not dict or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+                parser.error("Workflow parameters and inputs must be literal string maps")
+            fields[key] = value
+        if args.case is not None:
+            fields["case"] = args.case
+        result = operate(root, args.session, "workflow", fields)
     else:
         result = operate(root, args.session, "revoke", {})
     print(json.dumps(result, separators=(",", ":")))

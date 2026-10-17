@@ -17,7 +17,7 @@
 
 (deftest recovery-is-serial-pending-only-and-one-failure-does-not-starve-others
   (let [ids (repeatedly 4 random-uuid) calls (atom [])
-        rows (mapv (fn [id] {:work.request/id id :work.request/kind :local-worker
+        rows (mapv (fn [id] {:work.request/id id :work.request/kind (if (= id (last ids)) :local-worker-workflow :local-worker)
                              :work.request/return-pending? true}) ids)]
     (with-redefs [requests/requests (fn [conn] (is (= ::conn conn))
                                       (conj rows {:work.request/id (random-uuid) :work.request/kind :task

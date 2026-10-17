@@ -152,8 +152,11 @@ Recovery may stop an admitted unit or retry stopped output, never relaunch it;
 it does not require the runtime jar or native login to remain installed.
 
 The application registers six separately authenticated worker transport
-operations and four human local-worker controls: enrollment, revocation,
-explicit admission allowance and selected-file task submission. Human controls
+operations and five human local-worker controls: enrollment, revocation,
+explicit admission allowance, selected-file task submission and pinned saved
+workflow submission. The latter shares native workflow source/parameter/input
+preparation but uses the enrolled local model, not a server provider credential.
+Human controls
 require a separately requested `worker-control` MCP token. Neither an existing
 read token nor a work token gains them; this operator-helper session should not
 be attached as an ordinary model tool session. Worker/lease bearer prefixes
@@ -229,9 +232,25 @@ new intent and reuse it on a retry:
   --codex-home /absolute/local/codex-login-directory
 ```
 
+For a saved workflow, inspect its current bundle with the workflow read/check
+tools, then submit the exact UUID instead of a free-form task. This is an
+alternative submission, not an extra free admission:
+
+```bash
+/usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
+  --session /private/operator-session.json workflow --request-id REQUEST_UUID \
+  --name WORKFLOW_NAME --expected-bundle INSPECTED_BUNDLE_UUID \
+  --params '{"subject":"literal parameter"}' --timeout-ms 300000 --settlement review
+```
+
+Case-pack workflows additionally require `--case CASE_NAME`. `--inputs` accepts
+a JSON map of canonical absolute workspace paths to text. The worker sees only
+the pinned workflow source and fixture/input overlays, not all room files.
+Authored checkers are not executed by this ordinary workflow control.
+
 `run` handles one queued assignment, or accepts `--run RUN_UUID`. The task's
 total deadline includes queue time and cold JVM startup;
-`task` defaults to five minutes, with a ten-minute maximum. Start the local
+`task` and `workflow` default to five minutes, with a ten-minute maximum. Start the local
 runner promptly after submitting. Fresh interpreter/broker JVMs may spend a
 substantial part of that bound loading the stack before inference begins.
 The controller receives no human credential; the guest receives neither credential family nor

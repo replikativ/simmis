@@ -22,9 +22,9 @@
 
 (defn- orphan [conn w {:keys [room host-ctx input] :as options} child?]
   (let [id (requests/request-id (:owner w) (:room w) (:request-id input))
-        prepared (@#'local/prepare conn host-ctx (:room w) room (:owner w) id input)
+        prepared ((get options :prepare @#'local/prepare) conn host-ctx (:room w) room (:owner w) id input)
         row (:request (requests/claim! conn {:party (:owner w) :room (:room w)
-                                             :client-id (:request-id input) :kind :local-worker
+                                             :client-id (:request-id input) :kind (get options :request-kind :local-worker)
                                              :intent (:basis prepared)
                                              :limits (assoc (:limits input) :settlement :discard
                                                             :max-worker-admissions 1)}))
