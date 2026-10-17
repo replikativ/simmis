@@ -1,6 +1,6 @@
 (ns is.simm.ops.worker-work
   "Local workers run through existing Dvergr Jobs/Runs and certified Attempts.
-   Host-only until transport startup and restart recovery are connected."
+   The transport uses explicit human admission and independent recovery."
   (:require [datahike.api :as d]
             [dvergr.agent.environment :as environment]
             [dvergr.agent.evaluation :as evaluation]

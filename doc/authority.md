@@ -312,8 +312,8 @@ discard; review settlement retains an isolated world until an explicit
 permission-checked merge. Completion alone is not correctness or merge
 approval. The local-worker transport below is a separate optional backend.
 
-The separate local-worker service is not enabled by application startup.
-When explicitly installed by an embedding host, its enrollment and lease
+Application startup installs the separate local-worker service, with new human
+admission disabled unless explicitly configured. Its enrollment and lease
 credentials can invoke only their respective worker transport operations,
 never human room/eval/authoring operations. Existing HTTP sessions recheck
 current room read/merge authority on every operation. Claim and completion
@@ -489,7 +489,7 @@ shutdown before publication. Neither an endpoint message nor a direct-child
 wait substitutes for that proof. These entrypoints themselves provide no
 process containment; SCI remains a soft boundary, not an OS sandbox.
 
-The host-only `ops/worker-work.clj` adapter submits through the existing Jobs/
+The `ops/worker-work.clj` adapter submits through the existing Jobs/
 Runs rather than a remote-executor registry. It requires the worker's enrolling
 human and current room read/merge authority, explicit admission allowance,
 pinned configuration/inputs and a finite wall-time limit. It consumes one
