@@ -598,8 +598,11 @@ settlement. These limits are finite and validated at runtime. No automatic merge
 is available. Its speculative effect policy forbids room/lifecycle mutations,
 native processes, undeclared external tools and sandbox HTTP; file writes stay
 inside the fork and under a quota. The native model gateway has separate conserved
-dispatch/spend admission. Subscription providers are not accepted as having these
-native cost guarantees.
+dispatch/spend admission. Native Codex-subscription models are admitted through
+that gateway with zero incremental-dollar rates and conserved dispatch usage;
+notional list price is reported separately. CLI/DirectChat subscriptions are
+not accepted by this endpoint because they do not supply these native dispatch
+guarantees.
 
 Owners explicitly provision a finite execution allowance through
 `simmis_work-allowance`. It is NOT payment, a billing balance or an agent-accessible
@@ -625,6 +628,84 @@ tools. Its check means the Run completed, NOT that the task was correct. The cap
 bound is 100 files and two million characters; the upstream tree reader counts
 characters rather than UTF-8 bytes. Retained worlds remain reviewable through
 the existing run/proposal flow.
+
+### A bounded MCP workflow recipe
+
+Use an explicitly selected **work** login and an existing room where you have
+read/merge authority. The examples below are MCP tool arguments, not SCI code.
+Replace `ROOM_SLUG` with that room and `MODEL_ID` with an available native
+model configured by the server operator. MCP login does not configure a model
+provider. Choose fresh UUIDs for each new allowance or execution; retry an
+existing UUID only with identical arguments. These examples are opt-in model
+work, not commands to put into the ordinary test suite.
+
+First, call `simmis_work-allowance` once to provision a finite room allowance:
+
+```json
+{"room":"ROOM_SLUG","request-id":"130b6d1a-4aaf-49bf-860e-f1f27eec9538","budget-microdollars":25000,"max-dispatches":4}
+```
+
+This is at most $0.025 of incremental model spend and four model HTTP
+dispatches, shared by work consuming the allowance. It is not a billing
+payment or a whole-experiment wall-clock bound. Native subscription calls
+still consume dispatch allowance even when incremental spend is zero.
+
+For a normal one-off task, call `simmis_task`:
+
+```json
+{"room":"ROOM_SLUG","request-id":"530a1dbd-2dc1-4a85-84ad-146210af4f72","task":"Write a short project checklist to /out/checklist.md. Do not publish anything.","model":"MODEL_ID","limits":{"budget-microdollars":25000,"max-dispatches":4,"max-model-steps":4,"timeout-ms":90000,"settlement":"review"}}
+```
+
+The response is an admission record, not the completed answer. Its `job`
+points to `job_status`; `run_detail` and `attempt_list` identify the actual
+candidate and its certified Attempt. Follow the tool's advertised schema:
+Job, Run, admission and Attempt identifiers are different kinds of identity,
+even when a particular execution happens to reuse a UUID.
+In the browser, open the room's Run inspector, then the candidate Run's
+**Captured outputs** to preview/download the checklist. `review` retains the
+isolated world for the existing proposal flow; it does not merge anything.
+`discard` instead discards the world after capturing its bounded outputs.
+
+For reusable **benchmark** authoring, call `simmis_workflow-write` with a
+named bundle of ordinary files:
+
+```json
+{"room":"ROOM_SLUG","name":"echo","files":{"workflow.edn":"{:title \"Echo document\" :task \"Copy /docs/input.md exactly to /out/result.md\" :capture [\"/out\"]}","fixtures/docs/input.md":"Original document\n","gold.edn":"{:expected \"Original document\\n\"}","checker.clj":"(ns workflow.echo)\n(defn check [{:keys [files gold]}] (let [ok (= (:expected gold) (get files \"/out/result.md\"))] {:checks {:exact ok} :reward (if ok 1.0 0.0)}))"}}
+```
+
+Only room write authority is needed to author this bundle. Call
+`simmis_workflow-check {"room":"ROOM_SLUG","name":"echo"}` to inspect it.
+Neither write nor check executes the checker. Copy the successful inspection's
+`bundle` UUID into `expected-bundle` below; do not invent one.
+
+An installation operator who ALSO has the room's read/merge authority can
+then call `simmis_benchmark`:
+
+```json
+{"room":"ROOM_SLUG","request-id":"54c1d794-63e2-49a5-b817-592c8958fdb2","name":"echo","expected-bundle":"BUNDLE_UUID_FROM_INSPECTION","models":["MODEL_ID"],"repetitions":1,"limits":{"budget-microdollars":25000,"max-dispatches":4,"max-model-steps":4,"timeout-ms":90000,"settlement":"discard"}}
+```
+
+Provision a separate finite allowance if the preceding task has consumed the
+first one. Inspection is not checker admission: this benchmark executes the
+authored checker as cooperatively bounded operator code, and its verdict stays
+ad-hoc, not a promoted trusted verifier. Candidate files start from the frozen
+fixtures, not the authoring room containing gold/checker files. The submitted
+bundle revision is pinned; changing it requires inspection and a new request.
+Identical request retries observe the old Job even after bundle edits.
+
+Use `experiment_report`/`scorecard_list` or the room's Leaderboard for the
+results. Use `simmis_attempt-files` to enumerate immutable captured outputs,
+then `simmis_attempt-file` for their bounded byte chunks; do not use
+`room_read` to retrieve a discarded attempt's answer. To inspect the CURRENT
+room files locally as Git, use the verified snapshot downloader described
+above. It is not a Git push endpoint or an export of historical Attempts.
+
+The selected MCP surface currently authors and benchmarks named workflows;
+ordinary `simmis_task` remains a free-form task. It does not accept a workflow
+name, parameters or an `expected-bundle`. Proposal promotion is available in
+the browser, not as a selected MCP write. Local worker enrollment/execution is
+also not installed at startup. None of those operations should be simulated
+by issuing an unrestricted eval or exposing an operator REPL to a client.
 
 ### Connecting a second operator
 

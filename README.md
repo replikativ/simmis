@@ -190,7 +190,8 @@ Five documents, each about code that exists.
 - [`doc/data-model.md`](doc/data-model.md) — objects, morphisms, instances, and
   where a property's values actually live
 - [`doc/authority.md`](doc/authority.md) — one predicate, three enforcement
-  planes; what is an ACL, what is fork-and-review, what is a capability
+  planes; what is an ACL, what is fork-and-review, what is a capability;
+  [bounded MCP task/workflow recipe](doc/authority.md#a-bounded-mcp-workflow-recipe)
 - [`doc/proposals-and-time-travel.md`](doc/proposals-and-time-travel.md) — how
   an agent's write reaches trunk, and reading any store as of a past point
 - [`doc/agents.md`](doc/agents.md) — what an agent is, what it may do, and
