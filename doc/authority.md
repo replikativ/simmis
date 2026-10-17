@@ -434,6 +434,27 @@ does not export partial writes. Room closure precedes connection release;
 failed closure grants no cleanup proof. This API does not install credentials,
 start model transport, export physical files or launch a contained process.
 
+`ops/worker-guest.clj` and `ops/worker-broker.clj` connect these APIs through
+bounded private JSON pipes. The guest refuses an existing provider registry;
+it never clears host providers or initializes login-backed defaults. Frozen
+inputs are fully validated before provider installation or workspace allocation.
+Structural JSON fields are normalized explicitly; filename and schema-property
+keys remain strings. Tool-call arguments are decoded only for the guest's two
+pinned tools, `clojure_eval` and `write_file`. Semantic errors poison the
+channel as well as malformed frames. After its result the guest requires
+parent EOF; the broker refuses trailing messages after `close`.
+
+`ops/worker-process.clj` is a dedicated-process bootstrap, not a server
+component. Java streams and Clojure root/dynamic I/O bindings are redirected
+before loading Dvergr to prevent accidental protocol pollution. This is NOT
+a descriptor security boundary: all guest frames can be candidate-forged and
+cannot certify readiness, execution provenance, shutdown or permission to
+merge. Broker configuration comes from one trusted-parent opening frame before
+any guest forwarding; the future owning runner must pin it to the assignment
+and guest configuration, retain broker and guest under the same accounted
+physical lifecycle, and impose total deadlines. These entrypoints themselves
+provide neither process containment nor those runner guarantees.
+
 The host-only `ops/worker-work.clj` adapter submits through the existing Jobs/
 Runs rather than a remote-executor registry. It requires the worker's enrolling
 human and current room read/merge authority, explicit admission allowance,

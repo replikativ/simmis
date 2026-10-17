@@ -85,7 +85,13 @@ A malformed frame or I/O failure poisons the channel rather than retrying.
 This is framing, not authentication or executor attestation: every guest
 message (including ready/result) is candidate-controlled. Shutdown evidence
 comes only from the external controller, never a guest report. The framing
-module is not a process launcher or installed transport.
+module is not a process launcher or installed transport. The separate
+`ops/worker-process.clj` stdio entrypoint can run a single credentialless guest
+or a serial inference broker. It captures the protocol streams and redirects
+Java and Clojure standard I/O before loading Dvergr. The broker's opening
+configuration must come from the trusted parent before forwarding guest
+traffic. These endpoints are not installed by server startup and supply no
+physical containment or packaged runtime by themselves.
 The host-only `ops/worker-work.clj` adapter connects these to Dvergr's existing
 Protocol/WorldSetup/Evaluator capabilities. It owns no alternative execution
 engine or result store. Separate conserved admission allowance funds local
