@@ -730,6 +730,10 @@
      "submit-workflow-run!"    {:action M :resource (room :room-id-str)}
      "submit-workflow-benchmark!" {:action M :resource (room :room-id-str)}
      "provision-workflow-allowance!" {:action M :resource (room :room-id-str)}
+     "load-local-workflow-workers!" {:action M :resource (room :room-id-str)}
+     "submit-local-workflow-run!" {:action M :resource (room :room-id-str)}
+     "submit-local-workflow-benchmark!" {:action M :resource (room :room-id-str)}
+     "provision-local-workflow-allowance!" {:action M :resource (room :room-id-str)}
      ;; A member reaches the handler; stopping THIS Run is its starter's, the
      ;; room owner's or an admin's (`require-run-cancellable!`, §2.9.2).
      "cancel-room-run!"        {:action W :resource (room :room-id-str)}

@@ -797,8 +797,15 @@ above. It is not a Git push endpoint or an export of historical Attempts.
 
 The selected MCP surface authors, runs and benchmarks named workflows;
 ordinary `simmis_task` remains a separate free-form task. Proposal promotion is available in
-the browser, not as a selected MCP write. Local worker controls require their
-separate explicit credential and admission setting. The private local driver
+the browser, not as a selected MCP write. MCP local worker controls require their
+separate explicit credential and admission setting. The browser's fixed local
+workflow/list/benchmark/allowance RPCs use its authenticated human session,
+an outer room-merge gate and the same canonical services. They pass a canonical
+room UUID, not an unchecked slug or caller-supplied room override. Discovery
+returns only the caller's non-revoked enrollment hints, never credential material;
+it remains available when new admission is disabled. Discovery grants no execution
+authority. Benchmarks additionally require installation-operator authority.
+The browser cannot enroll workers or retrieve their credentials. The private local driver
 binds its MCP destination during login, uses canonical enrolled room identities,
 and never funds implicitly. Periodic orphan reconciliation is independent of
 receipt delivery; an unhealthy/initially held recovery resource blocks new

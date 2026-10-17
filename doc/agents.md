@@ -270,6 +270,24 @@ checks remain ad-hoc, not independently trusted, and subscription cost/usage
 is unreported rather than measured as zero. Existing operator tokens do not gain
 the new tool automatically: request a new private `worker-control` session.
 
+The private `simmis_local-worker-list` MCP control discovers your own non-revoked
+enrollments in one room, ten per page (`after` takes the previous `next-after`).
+It requires a human with current room read/merge authority, including when new
+admission is disabled. Results contain only worker identity, generation and
+allowlisted configuration hints—not credentials, verifier hashes or artifact
+references. They do not establish liveness or authorize execution; submission
+rechecks current authority and enrollment. Pagination bounds response size,
+not query work: the service sorts the matching enrollment IDs before paging.
+
+The room's Workflows source editor offers the same local execution controls
+under **Execution backend → My enrolled local SCI worker**. Refresh your workers
+and select one explicitly. Funding stays a separate confirmation in admission
+units; benchmarking reports its cell count and discards each candidate world.
+The browser uses its current authenticated human session, not a worker bearer.
+It does not enroll workers, upload local logins or start the private driver.
+Submission/funding retries preserve their original backend and immutable payload
+even if the form changes. A funded indicator applies only to its own backend.
+
 `run` handles one queued assignment, or accepts `--run RUN_UUID`. The task's
 total deadline includes queue time and cold JVM startup;
 `task` and `workflow` default to five minutes, with a ten-minute maximum. Start the local

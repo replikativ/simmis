@@ -53,6 +53,30 @@
     (workers/revoke! conn worker)
     {:worker worker :revoked true}))
 
+(defn list-own
+  "Human-only enrollment hints, not liveness or execution authority. Never
+   exposes credential verifiers, payload references or another human's workers."
+  [conn principal room after]
+  (when-not (or (nil? after) (uuid? after))
+    (refuse! ::invalid "Invalid worker listing cursor"))
+  (let [by (human! conn principal room)
+        ids (->> (d/q '[:find [?id ...] :in $ ?by ?room
+                        :where [?w :simmis.worker/by ?by]
+                        [?w :simmis.worker/room ?room]
+                        [?w :simmis.worker/id ?id]
+                        (not [?w :simmis.worker/revoked-at _])] @conn by room)
+                 (sort-by str)
+                 (filter #(or (nil? after) (pos? (compare (str %) (str after)))))
+                 (take 11) vec)
+        selected (take 10 ids)]
+    {:workers (mapv (fn [id]
+                      (let [row (workers/enrollment conn id)]
+                        {:worker id :generation (:simmis.worker/generation row)
+                         :config-id (:simmis.worker/config-id row)
+                         :config (select-keys (workers/payload conn row :simmis.worker/config-ref)
+                                              [:adapter :version :model :policy])})) selected)
+     :next-after (when (> (count ids) 10) (last selected))}))
+
 (defn- worker! [conn principal op args now]
   (when-not (:allow? (credentials/authorize conn principal {:op op :args args} now))
     (refuse! ::denied "Worker credential does not authorize this operation")))

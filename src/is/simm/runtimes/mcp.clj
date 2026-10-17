@@ -46,6 +46,7 @@
 (def worker-control-tools
   ;; Private operator-helper session only. Never widen existing work tokens.
   (into read-tools #{"job_cancel" "simmis_work-status"
+                     "simmis_local-worker-list"
                      "simmis_local-worker-enroll" "simmis_local-worker-revoke"
                      "simmis_local-worker-allowance" "simmis_local-worker-task"
                      "simmis_local-worker-workflow" "simmis_local-worker-benchmark"

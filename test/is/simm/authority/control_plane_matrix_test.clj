@@ -160,6 +160,10 @@
    "submit-workflow-run!"    [(c :room OWNER)]
    "submit-workflow-benchmark!" [(c :room OWNER)]
    "provision-workflow-allowance!" [(c :room OWNER)]
+   "load-local-workflow-workers!" [(c :room OWNER)]
+   "submit-local-workflow-run!" [(c :room OWNER)]
+   "submit-local-workflow-benchmark!" [(c :room OWNER)]
+   "provision-local-workflow-allowance!" [(c :room OWNER)]
    ;; the gate admits members; WHICH member may cancel WHICH run is the
    ;; handler's (§2.9.2) — see runs-and-jobs-test
    "cancel-room-run!"        [(c :room MEMBERS)]

@@ -18,7 +18,7 @@
              room (rooms/live-room id)]
          (when-not room (throw (ex-info "The room is not live" {:error :room-not-live})))
          (let [reply (ops/invoke context/server-context (ops/party-principal party)
-                                 operation (assoc args :room (name (:id room))))
+                                 operation (assoc args :room (str id)))
                db @(system-db/get-conn)]
            (assoc (case operation
                     :simmis/workflow-source (workflows/details room (:name args))
@@ -71,4 +71,28 @@
   [server-id room-id-str request]
   (spin-remote server-id [room-id-str request]
                #?(:clj (invoke-workflow (access/authenticated-party-id) room-id-str :simmis/work-allowance request)
+                  :cljs nil)))
+
+(defn-spin-remote load-local-workflow-workers!
+  [server-id room-id-str options]
+  (spin-remote server-id [room-id-str options]
+               #?(:clj (invoke-workflow (access/authenticated-party-id) room-id-str :simmis/local-worker-list options)
+                  :cljs nil)))
+
+(defn-spin-remote submit-local-workflow-run!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (invoke-workflow (access/authenticated-party-id) room-id-str :simmis/local-worker-workflow request)
+                  :cljs nil)))
+
+(defn-spin-remote submit-local-workflow-benchmark!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (invoke-workflow (access/authenticated-party-id) room-id-str :simmis/local-worker-benchmark request)
+                  :cljs nil)))
+
+(defn-spin-remote provision-local-workflow-allowance!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (invoke-workflow (access/authenticated-party-id) room-id-str :simmis/local-worker-allowance request)
                   :cljs nil)))

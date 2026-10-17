@@ -62,3 +62,22 @@
       (is (= ["explicit-model"] (:models benchmark)))
       (is (= "discard" (get-in benchmark [:limits :settlement])))
       (is (not (contains? benchmark :params))))))
+
+(deftest local-launches-have-only-enrollment-and-admission-bounds
+  (let [worker "99999999-9999-4999-8999-999999999999"
+        draft (-> (editor/draft source) (assoc-in [:form :backend] "local")
+                  (assoc-in [:form :worker] worker))
+        request (editor/submission draft "local")]
+    (is (= worker (:worker request)))
+    (is (= #{:request-id :name :expected-bundle :limits :params :worker} (set (keys request))))
+    (is (= {:timeout-ms 120000 :settlement "review"} (:limits request)))
+    (is (= {:request-id "fund" :max-worker-admissions 1} (editor/allowance (:form draft) "fund")))
+    (doseq [bad [(assoc-in draft [:form :worker] "")
+                 (assoc-in draft [:form :timeout-ms] "600001")
+                 (assoc-in draft [:form :backend] "unknown")]]
+      (is (thrown? clojure.lang.ExceptionInfo (editor/submission bad "bad"))))
+    (let [benchmark (editor/submission (assoc-in draft [:form :mode] "benchmark") "bench")]
+      (is (= #{:request-id :name :expected-bundle :limits :worker :repetitions} (set (keys benchmark))))
+      (is (= "discard" (get-in benchmark [:limits :settlement]))))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (editor/allowance (assoc (:form draft) :worker-admissions "33") "too-many")))))

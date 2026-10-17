@@ -76,9 +76,11 @@
     (is (contains? (:principal/tools control) "simmis_local-worker-enroll"))
     (is (contains? (:principal/tools control) "simmis_local-worker-workflow"))
     (is (contains? (:principal/tools control) "simmis_local-worker-benchmark"))
+    (is (contains? (:principal/tools control) "simmis_local-worker-list"))
     (doseq [principal [read work]]
       (is (not (contains? (:principal/tools principal) "simmis_local-worker-workflow")))
       (is (not (contains? (:principal/tools principal) "simmis_local-worker-benchmark")))
+      (is (not (contains? (:principal/tools principal) "simmis_local-worker-list")))
       (is (not (contains? (:principal/tools principal) "simmis_local-worker-enroll"))))
     (doseq [name ["simmis_task" "simmis_workflow-write" "clojure_eval" "simmis_worker-claim"]]
       (is (not (contains? (:principal/tools control) name))))
@@ -92,7 +94,8 @@
 (deftest adding-workflow-controls-never-widens-an-existing-signed-token
   (let [new-tools mcp/worker-control-tools
         old-tools (disj new-tools "simmis_local-worker-workflow" "simmis_workflow-list"
-                        "simmis_workflow-source" "simmis_workflow-check" "simmis_local-worker-benchmark")
+                        "simmis_workflow-source" "simmis_workflow-check" "simmis_local-worker-benchmark"
+                        "simmis_local-worker-list")
         token (with-redefs [mcp/worker-control-tools old-tools]
                 (:token (mcp/mint-token! person :worker-control)))
         principal ((mcp/authenticator) {:bearer token})]
@@ -107,7 +110,7 @@
                                  :params {:protocolVersion "2025-06-18" :capabilities {}
                                           :clientInfo {:name "old-ceiling-regression" :version "1"}}})
         (rpc/handle-message ctx {:jsonrpc "2.0" :method "notifications/initialized"})
-        (doseq [name ["simmis_local-worker-workflow" "simmis_local-worker-benchmark"]]
+        (doseq [name ["simmis_local-worker-workflow" "simmis_local-worker-benchmark" "simmis_local-worker-list"]]
           (is (= expected
                  (contains? (set (map :name (get-in (rpc/handle-message ctx
                                                                       {:jsonrpc "2.0" :id 2 :method "tools/list"})

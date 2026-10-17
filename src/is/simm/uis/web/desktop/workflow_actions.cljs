@@ -12,6 +12,14 @@
 
 (defn confirm! [message] (js/confirm message))
 
+(defn- submitter [backend mode]
+  (case [backend mode]
+    ["local" "benchmark"] remote/submit-local-workflow-benchmark!
+    ["local" "run"] remote/submit-local-workflow-run!
+    ["hosted" "benchmark"] remote/submit-workflow-benchmark!
+    ["hosted" "run"] remote/submit-workflow-run!
+    (throw (js/Error. "Unknown execution backend or mode"))))
+
 (defn controller
   "Capture the rendering context, rather than using a process-global loader."
   [room-data]
@@ -59,6 +67,12 @@
                           (fn [s reply]
                             (assoc s :permissions (:permissions reply)
                                    :list (cond-> reply (pos? offset) (update :names #(into (:names prior) %))))))))
+            (load-workers! [after]
+              (let [prior (:workers (state))]
+                (request! :workers nil
+                          #(remote/load-local-workflow-workers! web/server-id room (cond-> {} after (assoc :after after)))
+                          (fn [s reply]
+                            (assoc s :workers (cond-> reply after (update :workers #(into (:workers prior) %))))))))
             (select! [name reload? & [create?]]
               (update! assoc :selected name)
               (when (and (not (get-in (state) [:loading [:save name]]))
@@ -90,21 +104,27 @@
                             (and (not retry?) pending (nil? (:reply pending))))
                     (throw (js/Error. "Retry the existing unresolved request instead of creating another")))
                   (let [payload (if retry? (:payload pending) (editor/submission draft (str (random-uuid))))
-                        mode (if retry? (:mode pending) (get-in draft [:form :mode]))]
+                        mode (if retry? (:mode pending) (get-in draft [:form :mode]))
+                        backend (if retry? (get pending :backend "hosted") (get-in draft [:form :backend] "hosted"))]
                     (when-not payload (throw (js/Error. "There is no request to retry")))
                     (when-not (or retry?
                                   (confirm!
                                    (str "Submit " (:name payload) " at bundle " (:expected-bundle payload)
-                                        "?\nBudget: " (get-in payload [:limits :budget-microdollars])
-                                        " microdollars; " (get-in payload [:limits :max-dispatches]) " dispatches.\n"
+                                        "?\n" (if (= backend "local")
+                                                    (str "Local worker " (:worker payload) "; "
+                                                         (* (max 1 (count (:cases payload))) (get payload :repetitions 1))
+                                                         " cells/admissions. Usage unreported.\n")
+                                                    (str "Budget: " (get-in payload [:limits :budget-microdollars])
+                                                         " microdollars; " (get-in payload [:limits :max-dispatches]) " dispatches.\n"))
                                         (if (= mode "benchmark")
                                           "Operator benchmark: executes the saved checker, uses saved parameter defaults and discards candidate worlds."
-                                          "The Run inherits room files. Frozen workflow/source inputs appear in its proposed diff. Completion is not a correctness check; nothing auto-merges."))))
+                                          (if (= backend "local")
+                                            "Only pinned workflow/source inputs reach the local guest. Completion is not a correctness check; nothing auto-merges."
+                                            "The Run inherits room files. Frozen workflow/source inputs appear in its proposed diff. Completion is not a correctness check; nothing auto-merges.")))))
                       (throw (js/Error. "Submission cancelled")))
-                    (change! name assoc :submission (if retry? pending {:payload payload :mode mode}))
+                    (change! name assoc :submission (if retry? pending {:payload payload :mode mode :backend backend}))
                     (request! :submit name
-                              #((if (= mode "benchmark") remote/submit-workflow-benchmark! remote/submit-workflow-run!)
-                                web/server-id room payload)
+                              #((submitter backend mode) web/server-id room payload)
                               (fn [s reply] (assoc-in s [:drafts name :submission :reply] reply))))
                   (catch :default error (update! assoc-in [:errors :submit] (rem/error-text error))))))
             (fund! [name]
@@ -112,20 +132,24 @@
                 (when (get-in (state) [:loading [:fund name]])
                   (throw (js/Error. "Allowance request already in progress")))
                 (let [draft (get-in (state) [:drafts name])
-                      limits (editor/limits (:form draft))
+                      backend (if (and (not (:funded? draft)) (:fund-request draft))
+                                (get draft :fund-backend "hosted")
+                                (get-in draft [:form :backend] "hosted"))
                       payload (or (when-not (:funded? draft) (:fund-request draft))
-                                  {:request-id (str (random-uuid))
-                                   :budget-microdollars (:budget-microdollars limits)
-                                   :max-dispatches (:max-dispatches limits)})]
+                                  (editor/allowance (:form draft) (str (random-uuid))))]
                   (when (confirm! (str "Provision execution allowance (not a payment): "
-                                       (:budget-microdollars payload) " microdollars and "
-                                       (:max-dispatches payload) " dispatches?"))
-                    (change! name assoc :fund-request payload :funded? false)
-                    (request! :fund name #(remote/provision-workflow-allowance! web/server-id room payload)
+                                       (if (= backend "local")
+                                         (str (:max-worker-admissions payload) " local worker admissions (not dollars/tokens)?")
+                                         (str (:budget-microdollars payload) " microdollars and "
+                                              (:max-dispatches payload) " dispatches?"))))
+                    (change! name assoc :fund-request payload :fund-backend backend :funded? false)
+                    (request! :fund name #((if (= backend "local") remote/provision-local-workflow-allowance!
+                                              remote/provision-workflow-allowance!) web/server-id room payload)
                               (fn [s reply] (-> s (assoc-in [:drafts name :funded?] true)
                                                 (assoc-in [:drafts name :fund-reply] reply))))))
                 (catch :default error (update! assoc-in [:errors :fund] (rem/error-text error)))))]
       {:refresh #(load-list! 0) :more #(load-list! (get-in (state) [:list :next-offset]))
+       :workers #(load-workers! nil) :more-workers #(load-workers! (get-in (state) [:workers :next-after]))
        :select #(select! % false) :reload #(select! % true)
        :new-name #(update! assoc :new-name %)
        :create (fn []

@@ -132,6 +132,67 @@
             (is (= before @sig/workflow-editor-state))
             (is (= "r1" (get-in @sig/workflow-editor-state [k :drafts "a" :source :revision])))))))))
 
+(deftest local-retries-retain-backend-for-both-submission-and-funding
+  (with-state
+    (fn [ui k]
+      (let [runs (atom []) funds (atom []) hosted (atom [])]
+        (with-redefs [remote/submit-local-workflow-run! (deferred runs)
+                      remote/submit-workflow-run! (deferred hosted)
+                      remote/provision-local-workflow-allowance! (deferred funds)
+                      remote/provision-workflow-allowance! (deferred hosted)]
+          ((:change ui) "a" assoc-in [:form :backend] "local")
+          ((:change ui) "a" assoc-in [:form :worker] "99999999-9999-4999-8999-999999999999")
+          ((:submit ui) "a" false)
+          ((:fund ui) "a")
+          (is (= 1 (count @runs)))
+          (is (= 1 (count @funds)))
+          ((:error (first @runs)) :connection-lost)
+          ((:error (first @funds)) :connection-lost)
+          ((:change ui) "a" assoc-in [:form :backend] "hosted")
+          ((:change ui) "a" assoc-in [:form :model] "different")
+          ((:submit ui) "a" true)
+          ((:fund ui) "a")
+          (is (= (:args (first @runs)) (:args (second @runs))))
+          (is (= (:args (first @funds)) (:args (second @funds))))
+          (is (empty? @hosted))
+          (is (= "local" (get-in @sig/workflow-editor-state [k :drafts "a" :submission :backend])))
+          (is (= "local" (get-in @sig/workflow-editor-state [k :drafts "a" :fund-backend]))))))))
+
+(deftest hosted-retries-never-switch-to-local-and-local-benchmarks-route-separately
+  (with-state
+    (fn [ui k]
+      (let [hosted (atom []) local (atom [])]
+        (with-redefs [remote/submit-workflow-run! (deferred hosted)
+                      remote/submit-local-workflow-benchmark! (deferred local)]
+          ((:change ui) "a" assoc-in [:form :model] "fixture/model")
+          ((:submit ui) "a" false)
+          ((:error (first @hosted)) :connection-lost)
+          ((:change ui) "a" assoc-in [:form :backend] "local")
+          ((:change ui) "a" assoc-in [:form :mode] "benchmark")
+          ((:submit ui) "a" true)
+          (is (= (:args (first @hosted)) (:args (second @hosted))))
+          (is (empty? @local))
+          ((:change ui) "b" assoc-in [:form :backend] "local")
+          ((:change ui) "b" assoc-in [:form :mode] "benchmark")
+          ((:change ui) "b" assoc-in [:form :worker] "99999999-9999-4999-8999-999999999999")
+          ((:submit ui) "b" false)
+          (is (= 1 (count @local)))
+          (is (= "discard" (get-in (last (:args (first @local))) [:limits :settlement])))
+          (is (= "local" (get-in @sig/workflow-editor-state [k :drafts "b" :submission :backend]))))))))
+
+(deftest worker-discovery-replies-cannot-cross-login-sessions
+  (with-state
+    (fn [ui _]
+      (let [requests (atom [])]
+        (with-redefs [remote/load-local-workflow-workers! (deferred requests)]
+          ((:workers ui))
+          (is (= 1 (count @requests)))
+          (let [before @sig/workflow-editor-state]
+            (with-redefs [web/current-session? (constantly false)]
+              (binding [ec/*execution-context* nil]
+                ((:ok (first @requests)) {:workers [{:worker "old-session"}]})))
+            (is (= before @sig/workflow-editor-state))))))))
+
 (deftest result-navigation-keeps-the-owning-room-replica-and-column
   (with-state
     (fn [_ _]

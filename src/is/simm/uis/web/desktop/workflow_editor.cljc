@@ -9,7 +9,8 @@
    "checker.clj" "(fn [_] (throw (ex-info \"Replace this placeholder with a real checker before benchmarking\" {})))\n"})
 
 (def defaults
-  {:model "" :case "" :mode "run" :repetitions "1"
+  {:backend "hosted" :worker "" :worker-admissions "1"
+   :model "" :case "" :mode "run" :repetitions "1"
    :budget-microdollars "100000" :max-dispatches "4"
    :max-model-steps "4" :timeout-ms "120000" :settlement "review"})
 
@@ -24,7 +25,7 @@
 (defn dirty? [draft] (not= (:files draft) (get-in draft [:source :files])))
 
 (defn reloaded [old source]
-  (merge (draft source) (select-keys old [:submission :fund-request :funded? :fund-reply])))
+  (merge (draft source) (select-keys old [:submission :fund-request :fund-backend :funded? :fund-reply])))
 
 (defn saved [draft sent reply]
   (let [defaults (parameters {:definition (:definition reply)})
@@ -65,14 +66,24 @@
       (when-not (<= low n high) (invalid! (str (name key) " is outside its allowed range")))
       n)))
 
+(defn local? [form] (= "local" (:backend form)))
+
 (defn limits [form]
-  {:budget-microdollars (bounded-integer form :budget-microdollars 1 5000000)
+  (when-not (#{"hosted" "local"} (get form :backend "hosted"))
+    (invalid! "Choose an execution backend"))
+  (cond-> {:timeout-ms (bounded-integer form :timeout-ms 1000 600000)
+           :settlement (if (= "benchmark" (:mode form)) "discard"
+                           (if (#{"review" "discard"} (:settlement form)) (:settlement form)
+                               (invalid! "Choose review or discard settlement")))}
+    (not (local? form))
+    (assoc :budget-microdollars (bounded-integer form :budget-microdollars 1 5000000)
    :max-dispatches (bounded-integer form :max-dispatches 1 32)
-   :max-model-steps (bounded-integer form :max-model-steps 1 32)
-   :timeout-ms (bounded-integer form :timeout-ms 1000 600000)
-   :settlement (if (= "benchmark" (:mode form)) "discard"
-                   (if (#{"review" "discard"} (:settlement form)) (:settlement form)
-                       (invalid! "Choose review or discard settlement")))})
+           :max-model-steps (bounded-integer form :max-model-steps 1 32))))
+
+(defn allowance [form request-id]
+  (if (local? form)
+    {:request-id request-id :max-worker-admissions (bounded-integer form :worker-admissions 1 32)}
+    (assoc (select-keys (limits form) [:budget-microdollars :max-dispatches]) :request-id request-id)))
 
 (defn submission [draft request-id]
   (when (dirty? draft) (invalid! "Save and inspect these changes before running"))
@@ -82,23 +93,29 @@
         selected (:case form)
         benchmark? (= "benchmark" (:mode form))
         params (:params form)
+        local? (local? form)
         model (str/trim (:model form))]
     (when-not (:ok inspection) (invalid! "Repair this workflow before running"))
-    (when (or (str/blank? model) (> (count model) 200)) (invalid! "Enter an explicit model id"))
+    (when (and (not local?) (or (str/blank? model) (> (count model) 200))) (invalid! "Enter an explicit model id"))
+    (when (and local? (not (re-matches #"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}" (str (:worker form)))))
+      (invalid! "Select an explicitly enrolled local worker"))
     (when (and (seq selected) (not (some #{selected} cases))) (invalid! "Select a case from this revision"))
     (when (and (not benchmark?) (seq cases) (str/blank? selected)) (invalid! "Select an explicit case"))
-    (let [base {:request-id request-id :name (:name source) :expected-bundle (:bundle inspection)
-                :limits (limits form)}]
+    (let [base (cond-> {:request-id request-id :name (:name source) :expected-bundle (:bundle inspection)
+                       :limits (limits form)}
+                 local? (assoc :worker (:worker form)))]
       (if benchmark?
         (let [repetitions (bounded-integer form :repetitions 1 2)
               cell-cases (if (seq selected) [selected] cases)]
           (when (not= params (parameters source)) (invalid! "Benchmarking uses saved defaults; save parameter changes in workflow.edn first"))
           (when (or (> (count cell-cases) 4) (> (* (max 1 (count cell-cases)) repetitions) 8))
             (invalid! "Choose fewer benchmark cases (maximum eight cells)"))
-          (cond-> (assoc base :models [model] :repetitions repetitions)
+          (cond-> (assoc base :repetitions repetitions)
+            (not local?) (assoc :models [model])
             (seq cell-cases) (assoc :cases (vec cell-cases))))
         (do
           (when-not (and (<= (count params) 32) (every? string? (vals params)))
             (invalid! "Ordinary workflow parameters must be literal strings"))
-          (cond-> (assoc base :model model :params params)
+          (cond-> (assoc base :params params)
+            (not local?) (assoc :model model)
             (seq selected) (assoc :case selected)))))))

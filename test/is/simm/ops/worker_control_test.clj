@@ -31,6 +31,17 @@
 
 (defn call [op args] ((get-in control/specifications [op :impl]) host args))
 
+(deftest own-enrollment-listing-remains-available-with-admission-disabled
+  (let [seen (atom nil)]
+    (with-redefs [control/admission-open? (constantly false)
+                  maintenance/claims-ready? (constantly false)
+                  service/list-own (fn [& args] (reset! seen args) {:workers [] :next-after nil})]
+      (is (= {:workers [] :next-after nil}
+             (call :simmis/local-worker-list {:room "room" :after (str worker-id)})))
+      (is (= [::conn principal room-id worker-id] (vec @seen)))
+      (doseq [bad [{:room "room" :after "invalid"} {:room "room" :by (str worker-id)}]]
+        (is (thrown? clojure.lang.ExceptionInfo (call :simmis/local-worker-list bad)))))))
+
 (deftest benchmark-control-is-bounded-and-uses-the-authenticated-room
   (let [seen (atom [])]
     (with-redefs [benchmarks/submit! (fn [& args] (swap! seen conj args) {:job request-id})]

@@ -17,6 +17,8 @@
                         {:list (boolean (get-in state [:loading :list]))} [:source :save :submit :fund])
         write? (:write? permissions) merge? (:merge? permissions)
         benchmark? (= "benchmark" (:mode form))
+        local? (editor/local? form)
+        funded-here? (and (:funded? draft) (= (:fund-backend draft "hosted") (:backend form "hosted")))
         change #(apply (:change actions) selected %&)
         set-form (fn [key value] (change assoc-in [:form key] value))
         submission (:submission draft)
@@ -97,7 +99,29 @@
                                       (when merge?
                                         (el/div {:class "workflow-launch"}
                                                 (el/h3 {} "Launch saved revision")
-                                                (field "Model id (explicit native provider)" (:model form) #(set-form :model %))
+                                                (el/label {:class "workflow-field"}
+                                                          (el/span {} "Execution backend")
+                                                          (el/select {:value (get form :backend "hosted")
+                                                                      :on-change (fn [e] (set-form :backend #?(:cljs (.. e -target -value) :clj "hosted")))}
+                                                                     (el/option {:value "hosted"} "Hosted provider")
+                                                                     (el/option {:value "local"} "My enrolled local SCI worker")))
+                                                (if local?
+                                                  (el/div {}
+                                                          (el/button {:disabled (get-in state [:loading :workers])
+                                                                      :on-click (fn [_] ((:workers actions)))} "Refresh my workers")
+                                                          (el/label {:class "workflow-field"}
+                                                                    (el/span {} "Enrolled worker")
+                                                                    (el/select {:value (:worker form)
+                                                                                :on-change (fn [e] (set-form :worker #?(:cljs (.. e -target -value) :clj "")))}
+                                                                               (el/option {:value ""} "Choose an enrolled worker")
+                                                                               (for [{:keys [worker config]} (get-in state [:workers :workers])]
+                                                                                 (el/option {:key (str worker) :value (str worker)}
+                                                                                            (str (:model config) " · " worker)))))
+                                                          (when (get-in state [:workers :next-after])
+                                                            (el/button {:disabled (get-in state [:loading :workers])
+                                                                        :on-click (fn [_] ((:more-workers actions)))} "More workers"))
+                                                          (el/p {:class "workflow-note"} "Enrollment is not liveness. Start the private local driver separately; no login is uploaded. Allowance uses admissions, not measured dollars or tokens."))
+                                                  (field "Model id (explicit native provider)" (:model form) #(set-form :model %)))
                                                 (el/label {:class "workflow-field"}
                                                           (el/span {} "Mode")
                                                           (el/select {:value (:mode form) :on-change (fn [e] (set-form :mode #?(:cljs (.. e -target -value) :clj "run")))}
@@ -116,10 +140,13 @@
                                                   (el/div {}
                                                           (el/p {:class "workflow-note"} "Operator-only: executes the saved checker, uses saved parameter defaults, and discards candidate worlds. Save parameter changes in workflow.edn before benchmarking.")
                                                           (field "Repetitions (1–2; maximum8 cells total)" (:repetitions form) #(set-form :repetitions %))))
-                                                (for [[key label] [[:budget-microdollars "Budget · microdollars (1–5000000)"]
+                                                (for [[key label] (if local?
+                                                                   [[:worker-admissions "Allowance · local admissions (1–32)"]
+                                                                    [:timeout-ms "Wall time · milliseconds (1000–600000)"]]
+                                                                   [[:budget-microdollars "Budget · microdollars (1–5000000)"]
                                                                    [:max-dispatches "Model HTTP dispatches (1–32)"]
                                                                    [:max-model-steps "Model steps (1–32)"]
-                                                                   [:timeout-ms "Wall time · milliseconds (1000–600000)"]]]
+                                                                    [:timeout-ms "Wall time · milliseconds (1000–600000)"]])]
                                                   (field label (get form key) #(set-form key %)))
                                                 (when-not benchmark?
                                                   (el/label {:class "workflow-field"}
@@ -128,7 +155,10 @@
                                                                         :on-change (fn [e] (set-form :settlement #?(:cljs (.. e -target -value) :clj "review")))}
                                                                        (el/option {:value "review"} "Retain for review — no automatic merge")
                                                                        (el/option {:value "discard"} "Capture output and discard work"))))
-                                                (el/p {:class "workflow-note"} "Ordinary Runs inherit room files. Frozen source and input changes appear in the proposed diff. Completion does not prove correctness. Allowance is never provisioned automatically.")
+                                                (el/p {:class "workflow-note"}
+                                                      (if local?
+                                                        "Local Runs receive pinned workflow inputs only; benchmarks receive clean fixtures without checker/gold. One admission per cell. Run the local driver per queued cell and check Job completion; an empty queue is not completion. Nothing auto-merges or auto-funds."
+                                                        "Ordinary Runs inherit room files. Frozen source and input changes appear in the proposed diff. Completion does not prove correctness. Allowance is never provisioned automatically."))
                                                 (el/div {:class "workflow-toolbar"}
                                                         (el/button {:disabled (or (:submit loading) uncertain? (editor/dirty? draft) (not (get-in source [:inspection :ok])))
                                                                     :on-click (fn [_] ((:submit actions) selected false))} "Confirm and submit")
@@ -137,7 +167,7 @@
                                                                      "Retry identical request"))
                                                         (when (:fund? permissions)
                                                           (el/button {:disabled (:fund loading) :on-click (fn [_] ((:fund actions) selected))}
-                                                                     (if (:funded? draft) "Provision more allowance…" "Provision allowance…"))))
+                                                                     (if funded-here? "Provision more allowance…" "Provision allowance…"))))
                                                 (when uncertain?
                                                   (el/div {:class "workflow-note"}
                                                           (el/p {} "The submission receipt is unknown. Retry uses the original immutable payload, even if this form changed.")
@@ -152,4 +182,4 @@
                                                           (el/p {} (str "Admission: " (:state reply)))
                                                           (when-let [job (:job reply)]
                                                             (el/button {:on-click (fn [_] ((:open-run actions) job))} "Open Run and results"))))
-                                                (when (:funded? draft) (el/p {} "Execution allowance provisioned. This is not a payment or evidence of correctness.")))))))))))
+                                                (when funded-here? (el/p {} "Execution allowance provisioned for this backend. This is not a payment or evidence of correctness.")))))))))))

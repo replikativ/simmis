@@ -32,6 +32,7 @@
    [:model [:string {:min 1 :max 200}]] [:policy [:= "local-trusted-v1"]]])
 (def enroll-schema [:map {:closed true} room-entry [:worker uuid-string] [:config sci-config-schema]])
 (def revoke-schema [:map {:closed true} room-entry [:worker uuid-string]])
+(def list-schema [:map {:closed true} room-entry [:after {:optional true} uuid-string]])
 (def allowance-schema [:map {:closed true} room-entry [:request-id uuid-string]
                        [:max-worker-admissions [:int {:min 1 :max 32}]]])
 (def task-schema [:map {:closed true} room-entry [:request-id uuid-string] [:worker uuid-string]
@@ -87,7 +88,14 @@
 
 (def specifications
   (api/room-specifications
-   {:simmis/local-worker-enroll
+   {:simmis/local-worker-list
+    {:kind :read :schema list-schema :authz {:action :read}
+     :doc "HUMAN control only: list up to10 of your own non-revoked enrollments in this room; after is the previous next-after UUID. Sorts matching enrollment IDs; pagination bounds response size, not query work. Requires current room read/merge. Configuration hints are not worker liveness or execution authority. No credentials, verifier hashes or payload references are returned. Available when new admission is disabled."
+     :impl (fn [host args]
+             (invoke host list-schema args false
+                     (fn [conn id _]
+                       (service/list-own conn ops/*principal* id (some-> (:after args) uuid!)))))}
+    :simmis/local-worker-enroll
     {:kind :write :schema enroll-schema :authz {:action :write}
      :doc "HUMAN control only: explicitly enroll one native Codex SCI worker in this room. Requires current human room read/merge and enabled new admission. Stable worker UUID/config makes exact retries return the same bounded worker credential; a changed owner/room/config conflicts. No local subscription login is sent to the server. Use only a private operator helper, not an ordinary model tool session."
      :impl (fn [host args]
