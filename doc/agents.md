@@ -53,6 +53,18 @@ existing attributes only. Each use is checked again, so
 detaching a KB takes it away from a running agent. A room with no KB attached
 has no KB in its sandbox; nothing falls back to its creator's KBs.
 
+The wiki query/formatting vocabulary is shared in `agents/wiki_read.clj`.
+Each call resolves its authorized targets once as immutable DB values, so page
+blocks and both halves of a link neighborhood cannot mix database revisions
+within that call. Installed and saved functions resolve again on their next
+use; the ordinary participant adapter rechecks current grants before reading
+its known connections. Missing/refused resolution raises an error, not an
+empty wiki. `summarize!` stays a separate authorized, effectful operation rather
+than part of that read vocabulary.
+If any KB in an ordinary participant's cached selection is revoked, the read
+refuses until that participant context is rebuilt, even if another cached KB
+remains authorized; it does not silently present a partial selection as complete.
+
 A `kontor/*` posting records no author: kontor's posting API takes no
 transaction metadata. A team's Book (Accounting → the team's heading;
 `ops.book-report`) recovers it from dvergr's call record instead — the
