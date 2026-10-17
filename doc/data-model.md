@@ -144,6 +144,15 @@ directory and uses descriptor-relative exclusive/no-follow opens, never an
 archive or existing checkout. Runtime control paths such as `.codex/`,
 `.claude/`, `.agents/` and `.mcp.json` are not accepted as task data that a CLI
 could auto-load. No credentials or unselected files enter that directory.
+`scripts/worker_outputs.py` collects results only after its caller has proved
+process-tree quiescence. It reads changed/deleted selected inputs and regular
+`out/` deliverables, not a recursive snapshot of the workspace. It preserves
+binary bytes and executable mode, omits unchanged files, and enforces the same
+file/count/total limits plus a bounded directory walk. A private owned root,
+no-follow descriptor-relative reads, pre-open special-file checks and
+post-open identity checks refuse symlinks, hardlinks, devices/FIFOs and
+privileged modes. Collection itself grants no shutdown acknowledgement,
+server-side import, certification or merge authority.
 
 ## Objects, morphisms, instances
 
