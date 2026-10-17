@@ -1,9 +1,7 @@
 version: 2.1
 
-# Test gate for pull requests. Two things are checked, and the second matters
-# more than it looks: the test runner executes nothing in .cljs, so a broken
-# require or an undeclared var in the UI would otherwise reach a browser and
-# nowhere else. `release` is used so :advanced runs too.
+# Test gates for pull requests: JVM/Python suites, executed CLJS browser tests,
+# and a production frontend build (`release` checks :advanced compilation).
 #
 # `clojure -X:test` and not -M: the :test alias uses :exec-fn, and -M:test
 # silently opens a REPL, which in CI looks like a hang or, worse, a pass.
@@ -12,6 +10,8 @@ version: 2.1
 
 orbs:
   tools: replikativ/clj-tools@0
+  browser-tools: circleci/browser-tools@2.4.2
+  node: circleci/node@7.2.1
 
 jobs:
   test:
@@ -23,6 +23,9 @@ jobs:
       - run:
           name: Install audio and MCP helper dependencies
           command: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg python3
+      - browser-tools/install_chrome
+      - node/install:
+          node-version: '22'
       - restore_cache:
           keys:
             - deps-v1-{{ checksum "deps.edn" }}
@@ -34,6 +37,12 @@ jobs:
       - run:
           name: Test private MCP client helper
           command: python3 -m unittest discover -s test/scripts
+      - run:
+          name: Execute client lifecycle tests in Chromium
+          command: |
+            npm ci
+            SIMMIS_TEST_CHROME_NO_SANDBOX=1 npm run test:browser
+          no_output_timeout: 15m
       - run:
           name: Build browser release (CLJS + CSS gate)
           command: |

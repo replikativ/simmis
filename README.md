@@ -174,12 +174,22 @@ branch each sibling happens to sit on.
 ## Tests
 
 ```bash
-clojure -X:stack:test
+clojure -X:test          # released Maven dependency baseline
+clojure -X:stack:test    # optional sibling Dvergr development
+npm run test:browser    # execute CLJS tests in isolated headless Chrome
 ```
 
 Note the `-X`: the `:test` alias uses `:exec-fn`, and `-M:test` silently drops
 into a REPL instead. Engine-level reactive tests live in the spindel and
 dvergr repositories.
+
+The browser test command needs Node.js 22 or newer and Chrome/Chromium
+(`CHROME_BIN` can select the executable). It serves only compiled test assets
+on a temporary loopback port and uses a fresh, disposable browser profile; no
+Simmis server, account or model credentials are needed. An explicit completion
+event determines success, and zero tests, assertion failures, browser errors or
+a total deadline failure produce a nonzero exit. Both CI configurations run
+this gate in addition to the production frontend build.
 
 ## Documentation
 

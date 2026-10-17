@@ -62,3 +62,6 @@ jobs:
 
       - name: Build production frontend
         run: npm run release
+
+      - name: Execute client lifecycle tests in Chrome
+        run: npm run test:browser
