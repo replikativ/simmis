@@ -7,6 +7,7 @@ captured identity BEFORE GO, and durably seal a stopped observation BEFORE
 release. Missing metadata, manager replacement and deadlines grant no proof.
 No MCP calls, CLI credentials, workflow engine or automatic restart live here.
 """
+import os
 from pathlib import Path, PurePosixPath
 import re
 import time
@@ -18,8 +19,12 @@ import worker_namespace as namespace
 MANAGER = "org.freedesktop.systemd1"
 UNIT = MANAGER + ".Unit"
 SERVICE = MANAGER + ".Service"
-MEMORY_BYTES = 256 * 1024 * 1024
-MAX_TASKS = 64
+POLICY = {"version": 1, "memory-bytes": 256 * 1024 * 1024, "swap-bytes": 0,
+          "max-tasks": 64, "cpu-quota-usec": 1000000, "deadline-slack-ms": 30000,
+          "stop-timeout-ms": 2000, "type": "exec", "exit-type": "cgroup",
+          "restart": "no", "kill-mode": "control-group", "oom-policy": "kill"}
+MEMORY_BYTES = POLICY["memory-bytes"]
+MAX_TASKS = POLICY["max-tasks"]
 
 
 def verify_cgroup_view(manager_pid, manager_root):
@@ -56,7 +61,7 @@ def validate_name(name):
 
 def validate_identity(identity):
     if (type(identity) is not dict
-            or set(identity) != {"version", "unit", "boot-id", "invocation-id", "cgroup"}
+            or set(identity) != {"version", "unit", "boot-id", "invocation-id", "cgroup", "manager"}
             or type(identity["version"]) is not int or identity["version"] != 1):
         raise ValueError("Invalid execution-unit observation")
     validate_name(identity["unit"])
@@ -71,6 +76,14 @@ def validate_identity(identity):
     if (not group.startswith("/user.slice/") or str(PurePosixPath(group)) != group
             or ".." in parts or parts[-1] != identity["unit"]):
         raise ValueError("Invalid non-root execution cgroup")
+    manager = identity["manager"]
+    if (type(manager) is not dict or set(manager) != {"uid", "root", "bus-id", "owner"}
+            or type(manager["uid"]) is not int or not 0 <= manager["uid"] < 2 ** 32
+            or not isinstance(manager["bus-id"], str) or not re.fullmatch(r"[0-9a-f]{32}", manager["bus-id"])
+            or not isinstance(manager["owner"], str) or not re.fullmatch(r":[0-9]+\.[0-9]+", manager["owner"])
+            or manager["root"] != "/user.slice/user-" + str(manager["uid"]) + ".slice/user@" + str(manager["uid"]) + ".service"
+            or not group.startswith(manager["root"] + "/")):
+        raise ValueError("Invalid execution manager identity")
     return identity
 
 
@@ -117,9 +130,14 @@ class UnitBus:
                                      "org.freedesktop.DBus")
         self.owner = str(self.daemon.GetNameOwner(MANAGER, timeout=5))
         self.manager_pid = int(self.daemon.GetConnectionUnixProcessID(self.owner, timeout=5))
+        manager_uid = int(self.daemon.GetConnectionUnixUser(self.owner, timeout=5))
+        if manager_uid != os.getuid():
+            raise ValueError("Execution manager belongs to a different local user")
         manager_object = self.bus.get_object(self.owner, "/org/freedesktop/systemd1")
         self.manager_root = str(dbus.Interface(manager_object, "org.freedesktop.DBus.Properties").Get(
             MANAGER + ".Manager", "ControlGroup", timeout=5))
+        self.manager_identity = {"uid": manager_uid, "root": self.manager_root,
+                                 "bus-id": str(self.daemon.GetId(timeout=5)), "owner": self.owner}
         self.manager = dbus.Interface(manager_object, MANAGER + ".Manager")
         self.matches = [
             self.bus.add_signal_receiver(self._wake, signal_name="PropertiesChanged",
@@ -170,9 +188,9 @@ class UnitBus:
                       ("Restart", "no"), ("KillMode", "control-group"), ("SendSIGKILL", d.Boolean(True)),
                       ("OOMPolicy", "kill"), ("MemoryMax", d.UInt64(MEMORY_BYTES)),
                       ("MemorySwapMax", d.UInt64(0)), ("TasksMax", d.UInt64(MAX_TASKS)),
-                      ("CPUQuotaPerSecUSec", d.UInt64(1000000)),
-                      ("RuntimeMaxUSec", d.UInt64((timeout_ms + 30000) * 1000)),
-                      ("TimeoutStopUSec", d.UInt64(2000000)),
+                      ("CPUQuotaPerSecUSec", d.UInt64(POLICY["cpu-quota-usec"])),
+                      ("RuntimeMaxUSec", d.UInt64((timeout_ms + POLICY["deadline-slack-ms"]) * 1000)),
+                      ("TimeoutStopUSec", d.UInt64(POLICY["stop-timeout-ms"] * 1000)),
                       ("StandardInputFileDescriptor", d.types.UnixFd(stdin)),
                       ("StandardOutputFileDescriptor", d.types.UnixFd(stdout)),
                       ("StandardErrorFileDescriptor", d.types.UnixFd(stderr)),
@@ -216,6 +234,8 @@ class UnitBus:
         validate_identity(identity)
         if Path("/proc/sys/kernel/random/boot_id").read_text().strip() != identity["boot-id"]:
             raise ValueError("Execution observation belongs to another machine boot")
+        if identity["manager"] != self.manager_identity:
+            raise ValueError("Execution observation belongs to another manager")
         unit, service = self._properties(identity["unit"])
         if bytes(unit["InvocationID"]).hex() != identity["invocation-id"]:
             raise ValueError("Execution invocation changed")
@@ -233,7 +253,7 @@ class UnitBus:
         identity = validate_identity({"version": 1, "unit": name,
                                       "boot-id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
                                       "invocation-id": bytes(unit["InvocationID"]).hex(),
-                                      "cgroup": str(service["ControlGroup"])})
+                                      "cgroup": str(service["ControlGroup"]), "manager": dict(self.manager_identity)})
         if str(unit["ActiveState"]) != "active" or int(unit["Job"][0]) != 0 or int(service["MainPID"]) <= 0:
             raise ValueError("Execution guard is not in its ready running unit")
         if (str(service["Type"]) != "exec" or str(service["ExitType"]) != "cgroup"

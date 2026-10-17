@@ -15,6 +15,38 @@ import worker_inputs as inputs
 MAX_ENTRIES = 2048
 
 
+def validate(frozen, config, output):
+    """Validate portable output independently of its physical file collector.
+
+    This is a data-boundary check, never shutdown or server import authority.
+    The same check applies when recovering an immutable local completion.
+    """
+    inputs.validate(frozen, config)
+    inputs._closed(output, {"files", "summary", "exit-code"})
+    if (not isinstance(output["summary"], str) or len(output["summary"]) > 16000
+            or type(output["exit-code"]) is not int or not 0 <= output["exit-code"] <= 255
+            or type(output["files"]) is not dict or len(output["files"]) > inputs.POLICY["max-files"]):
+        raise ValueError("Invalid worker completion metadata")
+    output["summary"].encode("utf-8")
+    total, written = 0, set(frozen["files"])
+    for path, file in output["files"].items():
+        inputs.path_parts(path)
+        if path not in frozen["files"] and not (file is not None and path.startswith("out/")):
+            raise ValueError("Output is outside selected inputs and out/ deliverables")
+        if file is None:
+            written.discard(path)
+        else:
+            total += len(inputs.file_bytes(file))
+            written.add(path)
+        if total > inputs.POLICY["max-total-bytes"]:
+            raise ValueError("Worker output exceeds total byte limit")
+    for path in written:
+        parts = inputs.path_parts(path)
+        if any("/".join(parts[:n]) in written for n in range(1, len(parts))):
+            raise ValueError("Worker output contains file/directory collisions")
+    return output
+
+
 def _regular(info):
     if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
             or info.st_mode & (stat.S_ISUID | stat.S_ISGID)
@@ -130,6 +162,6 @@ def collect(root, frozen, config, summary, exit_code):
                 visit(out, "out")
             finally:
                 os.close(out)
-        return {"files": files, "summary": summary, "exit-code": exit_code}
+        return validate(frozen, config, {"files": files, "summary": summary, "exit-code": exit_code})
     finally:
         os.close(root_fd)

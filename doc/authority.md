@@ -318,8 +318,9 @@ service, atomically retaining the unit through a private persistent D-Bus
 connection. After guard READY, capture verifies actual memory/swap, OOM-group,
 process and CPU kernel bounds, finite unit shutdown policy and process cgroup
 membership. The caller must journal the unit name before launch and persist
-the captured boot/invocation/cgroup identity before GO; this module does not
-implement that durable controller or remote acknowledgement.
+the captured boot/invocation/cgroup and local-user/manager/bus identity before
+GO; this module does not implement that durable controller or remote
+acknowledgement.
 
 Shutdown observation is driven by systemd events, followed by fresh reads of
 the retained exact invocation, terminal state, absence of a pending job,
@@ -335,6 +336,29 @@ reconciles an existing identity; it cannot authorize GO. Reference release is
 explicit and requires a new physical stop observation; the caller must first
 durably seal its receipt. Neither observation nor release certifies an Attempt
 or releases a server lease.
+
+`scripts/worker_journal.py` persists four private immutable controller phases:
+launch allocation intent, verified admission identity, physical stop with
+optional bounded output, and server acknowledgment. The launch binds the
+frozen inputs, endpoint, namespace/unit policies and nonsecret claim identity;
+the proof remains solely in the separate private claim ticket. Phases use
+canonical bounded JSON, SHA256 predecessor links and no-overwrite publication
+with file/directory fsync. Reads resync existing records before adopting a
+possibly ambiguous prior write. A malformed, missing predecessor, changed
+identity/output or failed durability barrier cannot advance the chain.
+
+The caller must durably create its state directories, hold the permanent
+worker-wide lock and inspect all unresolved Run journals before claiming
+another task. Claim-only, admitted and physically stopped but unacknowledged
+Runs all remain unresolved. Restart inspection never launches, replays or
+sends GO. A completion acknowledgment is distinct from shutdown-only
+acceptance; a failed unit cannot supply exit-zero output. Portable outputs
+are revalidated against selected inputs, byte bounds and final file/directory
+collisions before publication or recovery. This journal validates and seals
+trusted controller observations; it cannot independently prove a physical
+stop, authenticate a server response or release a server lease. The opt-in
+crash fixture kills a controller after durable admission and GO, then verifies
+exact-unit reconciliation without task replay or a fabricated remote ack.
 
 The host-only `ops/worker-work.clj` adapter submits through the existing Jobs/
 Runs rather than a remote-executor registry. It requires the worker's enrolling

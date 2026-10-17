@@ -15,6 +15,8 @@ def identity():
     name = unit.unit_name()
     return {"version": 1, "unit": name, "boot-id": str(uuid.uuid4()),
             "invocation-id": uuid.uuid4().hex,
+            "manager": {"uid": 1000, "root": "/user.slice/user-1000.slice/user@1000.service",
+                        "bus-id": uuid.uuid4().hex, "owner": ":1.23"},
             "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/" + name}
 
 
@@ -32,6 +34,10 @@ class UnitTest(unittest.TestCase):
                 unit.validate_identity(changed)
         with self.assertRaises(ValueError):
             unit.validate_identity(dict(value, unknown="not accepted"))
+        for key, bad in [("uid", True), ("uid", 1001), ("root", "/"), ("bus-id", ""), ("owner", "org.freedesktop.systemd1")]:
+            changed = {**value, "manager": {**value["manager"], key: bad}}
+            with self.subTest(manager_field=key), self.assertRaises(ValueError):
+                unit.validate_identity(changed)
 
     def test_missing_events_in_an_existing_group_is_not_empty(self):
         with patch.object(unit.Path, "read_text", side_effect=FileNotFoundError()), \
@@ -213,6 +219,9 @@ class UnitIntegrationTest(unittest.TestCase):
         for field, bad in [("invocation-id", uuid.uuid4().hex), ("boot-id", str(uuid.uuid4()))]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 self.observer.wait_stopped(dict(self.identity, **{field: bad}), timeout_seconds=1)
+        wrong_manager = {**self.identity, "manager": {**self.identity["manager"], "owner": ":999.1"}}
+        with self.assertRaises(ValueError):
+            self.observer.wait_stopped(wrong_manager, timeout_seconds=1)
         self.observer.stop(self.identity)
         self.observer.wait_stopped(self.identity)
 
