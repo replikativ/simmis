@@ -61,6 +61,14 @@ reads for an explicitly authenticated human. Explicit work credentials add canon
 chat dispatch and one bounded isolated candidate, not a raw database writer or
 unrestricted eval endpoint. The typed system-DB admission journal makes request
 retries observe existing Dvergr Jobs/Runs; it is not a second workflow engine.
+Workflow bundles are versioned Geschichte files. An explicitly admitted,
+exact-revision offline benchmark reuses Dvergr's experiment runner and room
+Attempts/Scorecards; it requires both installation-operator and room merge
+authority. Its clean fixture room is provisioned outside the authoring room,
+so candidate workspaces do not inherit checker/gold files. The Job runs in
+the fixture's execution context while durable results stay in the control
+room. Synchronous SCI grading stays inside Dvergr's physically tracked scoring
+worker; it is cooperative trusted-operator execution, not hard process isolation.
 Recorded Attempt evidence is distinct from mutable workspace files. See
 [authority.md](authority.md#private-mcp).
 

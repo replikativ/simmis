@@ -229,7 +229,8 @@ same one-hour read capability by default. A closed JSON body may choose only
 or arbitrary scopes. Empty bodies retain read access. Version-two work credentials
 carry signed `mode=work` and an exact ceiling of the selected reads plus
 `simmis_post`, `simmis_task`, `simmis_work-allowance`, `simmis_work-status` and
-`job_cancel`, `simmis_workflow-write` and `simmis_workflow-check`. Old credentials
+`job_cancel`, `simmis_workflow-write`, `simmis_workflow-check` and
+`simmis_benchmark`. Old credentials
 and saved client sessions do not gain writes or newly added tool names.
 only the authenticated existing human may obtain their own credential. It
 refuses agent/deleted accounts, cookie-only requests and disabled MCP, and its
@@ -252,6 +253,52 @@ and pinned content hashes, capped at 100 regular UTF-8 files and 2 MiB.
 A successful write remains acknowledged even if the resulting bundle is
 incomplete or inspection fails. The returned bundle content ID identifies the
 inspected revision; it is not a correctness certificate or execution admission.
+
+`simmis_benchmark` requires BOTH current room read/merge permission and
+installation-operator status (`:party/role :admin`). Neither room ownership
+alone nor installation-admin status without room access admits authored
+checker execution. `expected-bundle` must match the inspected content UUID;
+the winning durable request freezes that revision and its complete experiment
+definition before execution. An identical retry observes its original Job,
+including after authoring files change; changed intent conflicts.
+
+This endpoint admits at most eight offline developer-profile cells, sequentially,
+with native-accounted providers, explicit aggregate allowance, finite integer
+per-cell shares of both microUSD and model dispatches, `/out` capture, and
+discard settlement. It refuses judges, live/frozen web configuration, arbitrary
+capture roots, custom profiles and automatic promotion. Attempts and Scorecards
+remain the existing room results; an operator admitting execution does not
+make an authored checker trusted—the evaluator tier stays `:ad-hoc`.
+Money and dispatch allowance are aggregate; `timeout-ms` is per attempt, not a
+whole-experiment deadline.
+
+The installation admits one checker benchmark at a time. The physical capacity
+permit is acquired only by the durable winner, after its Job pointer exists,
+and returned only after grouped physical cleanup and wallet return succeed.
+A checker runs synchronously on Dvergr's owned scoring worker, never a detached
+future. Its SCI context and cumulative-allocation accounting are created there;
+the 20-second deadline/interruption state is sticky through catches, verdicts
+must contain at most 100 boolean checks and finite reward, and capture is
+bounded to 100 files / two million characters. These are **cooperative** checks:
+a large or blocking allowed host operation can exceed them before the next SCI
+callback. Such a worker keeps cleanup unresolved and capacity held rather than
+being reported as physically stopped. This is explicitly a trusted-operator
+path, not safe arbitrary-user checker hosting or a hard memory/process fence.
+Checker policy and effective grading parameters are part of verifier identity.
+
+Generic bounded tasks and benchmark candidates select the versioned
+`:simmis/file-worker` sandbox extension. This is deliberately a file/code
+surface: after standard working-context installation and on every rebind, it
+denies injected `dvergr.*`/legacy room and shared-registry APIs, host environment
+access and native `intake.mail` reads (including already-open accounts).
+Spindel 0.1.126's opaque `CurrentWorld` boundary and reactive programming
+primitives remain available; candidate code receives no raw execution-context
+record. Real-context tests cover that boundary and independent interpreters.
+Otherwise a clean workspace would still leave shared task results and actor
+configuration reachable through unfiltered host helpers. The exact extension
+set and policy are pinned in candidate/submission/experiment identities.
+Ordinary room participants retain their richer programming environment; this
+endpoint restriction is not a claim that all upstream shared reads are scoped.
 
 `simmis_post` uses the same `ops/chat.clj` dispatch as the browser, authenticated
 as the human account, with the room's existing `:write` permission, recipient

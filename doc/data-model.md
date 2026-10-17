@@ -11,6 +11,12 @@ string or an exploded runtime object. Atomic insert/CAS transitions decide who
 may schedule; Dvergr's room-store Jobs, Runs, Attempts and accounting remain the
 execution and result records. Fork rollback does not duplicate the host admission
 or its conserved resource authority.
+The same journal admits `:task`, `:benchmark` and `:allowance` requests.
+Benchmark intents pin the client submission, canonical ExperimentDef, resolved
+candidate roster, grading policy and aggregate limits. Fixtures use the durable
+request UUID as their host-side locator; this is not another result store.
+Restart recovery retires settled fixtures even if the wallet-return write
+completed immediately before a process crash.
 
 ## Objects, morphisms, instances
 

@@ -784,6 +784,10 @@
        ((requiring-resolve 'is.simm.model.system-db/get-conn)) ctx/server-context
        (requiring-resolve 'is.simm.agents.room-agents/live-room)))
 
+    (ctx/with-server-context
+      ((requiring-resolve 'is.simm.ops.benchmarks/recover!)
+       ((requiring-resolve 'is.simm.model.system-db/get-conn)) ctx/server-context))
+
     ;; Complete any cross-store Proposal publication interrupted by the prior
     ;; process. This runs only after the live room registry exists; every retry
     ;; reuses the message UUID reserved with the Proposal, so a crash after the

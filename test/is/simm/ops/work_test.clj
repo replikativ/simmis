@@ -190,6 +190,78 @@
               (is (false? (:return-pending? (work/status conn host-ctx owner (:room w) (:id result))))))
             (finally (.countDown release))))))))
 
+(deftest trusted-adapter-failure-cleans-up-once-and-does-not-replay
+  (world/with-world [conn w]
+    (with-room
+      (fn [room]
+        (let [[input prepared] (fixture)
+              events (atom [])
+              owner (ops/party-principal (:owner w))
+              host-ctx ec/*execution-context*
+              grant (work/resources (:limits input))
+              prepared (assoc prepared
+                              :admit! (fn [_] (swap! events conj :admitted))
+                              :start! (fn [_] (throw (ex-info "construction failed" {})))
+                              :settled! (fn [_] (swap! events conj [:settled (resource/balance room)])))]
+          (resource/mint! room {:id (random-uuid) :resources grant})
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (work/submit-prepared! conn host-ctx owner (:room w) room input prepared)))
+          (is (= [:admitted [:settled grant]] @events))
+          (is (= :failed (:status (jobs/status (:job (work/submit-prepared! conn host-ctx owner
+                                                                            (:room w) room input prepared))))))
+          (is (= [:admitted [:settled grant]] @events)))))))
+
+(deftest unstarted-adapter-provisioning-is-abandoned-without-a-job
+  (world/with-world [conn w]
+    (with-room
+      (fn [room]
+        (let [[input prepared] (fixture)
+              abandoned (atom 0)
+              prepared (assoc prepared :job-context! (fn [_] (throw (ex-info "provision failed" {})))
+                              :abandon! (fn [_] (swap! abandoned inc)))]
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (work/submit-prepared! conn ec/*execution-context* (ops/party-principal (:owner w))
+                                              (:room w) room input prepared)))
+          (is (= 1 @abandoned))
+          (is (empty? (jobs/jobs room))))))))
+
+(deftest scoring-worker-retains-adapter-capacity-until-physical-completion
+  (world/with-world [conn w]
+    (with-room
+      (fn [room]
+        (let [[input prepared] (fixture)
+              entered (promise)
+              release (java.util.concurrent.CountDownLatch. 1)
+              retired (atom 0)
+              evaluator (evaluation/make-evaluator
+                         {:id :simmis/work-completion :version 1 :basis "simmis-work-completion-v1"
+                          :observe (fn [_] {})
+                          :verify (fn [_ _]
+                                    (deliver entered true)
+                                    (loop []
+                                      (when-not (try (.await release) true
+                                                     (catch InterruptedException _ false))
+                                        (recur)))
+                                    {:checks {:done? true} :reward 1.0})})
+              prepared (assoc prepared :evaluator evaluator :settled! (fn [_] (swap! retired inc)))
+              owner (ops/party-principal (:owner w))
+              host-ctx ec/*execution-context*
+              grant (work/resources (:limits input))]
+          (try
+            (resource/mint! room {:id (random-uuid) :resources grant})
+            (let [row (work/submit-prepared! conn host-ctx owner (:room w) room input prepared)
+                  job (:job row)]
+              (is (= true (deref entered 10000 ::timeout)))
+              (run/cancel-run! job)
+              (is (thrown? clojure.lang.ExceptionInfo (evaluation/await-cleanups-for! room job 1)))
+              (is (zero? @retired))
+              (is (:return-pending? (work/status conn host-ctx owner (:room w) (:id row))))
+              (.countDown release)
+              (is (:settled? (jobs/status job 25000)))
+              (is (= 1 @retired))
+              (is (= grant (resource/balance room))))
+            (finally (.countDown release))))))))
+
 (deftest boot-recovery-reclaims-dead-descendant-wallets-but-not-held-exposure
   (world/with-world [conn w]
     (with-room

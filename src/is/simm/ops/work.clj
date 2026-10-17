@@ -10,6 +10,7 @@
             [dvergr.resource :as resource]
             [is.simm.model.access :as access]
             [is.simm.model.work-requests :as requests]
+            [is.simm.ops.work-sandbox :as work-sandbox]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]))
 
@@ -82,6 +83,7 @@
                             {:models [model] :profile "developer"
                              :budget-dollars (/ (:budget-microdollars limits) 1000000.0)
                              :prompt "Complete the task in this isolated workspace. Put deliverables under /out. You cannot publish externally or merge into the parent room."})
+        team (work-sandbox/restrict-team team)
         id (first ids)
         agent (get-in team [:roster/agents id])
         ;; AgentDefs carry an exact model policy, not the client alias.
@@ -99,7 +101,7 @@
     (when-not (contains? #{:openai :anthropic :fireworks} provider)
       (invalid! "This model does not support this endpoint's native dispatch accounting"))
     {:team team :agent id :environment env :evaluator completion
-     :basis {:candidate agent :environment env}}))
+     :basis {:candidate agent :environment env :sandbox-policy work-sandbox/policy}}))
 
 (defn- public-request [row]
   ;; Never expose the admission ownership token or internal store reference.
@@ -156,41 +158,65 @@
   [conn host-ctx principal room-id room input prepared]
   (let [journal (fn [f] (binding [ec/*execution-context* host-ctx] (f)))
         party (journal #(owner! conn principal room-id))
+        settle! (fn [row]
+                  (return-job! conn host-ctx room row)
+                  ;; Host transport/physical-capacity cleanup is deliberately
+                  ;; AFTER the group's real completion and resource return.
+                  (when-let [settled! (:settled! prepared)]
+                    (settled! (:work.request/job row))))
         {:keys [request claimed?]}
         (journal #(requests/claim!
                    conn {:party party :room room-id :client-id (:request-id input)
-                         :kind :task :intent (:basis prepared)
+                         :kind (or (:request-kind prepared) :task) :intent (:basis prepared)
                          :limits (update (:limits input) :settlement keyword)}))
         id (:work.request/id request)]
     (when claimed?
       (try
-        (jobs/start!
-         room {:kind :workflow :ctx (:ctx room) :actor (:principal/actor principal)}
-         (fn [job-id]
-           (let [row (journal #(requests/record-job! conn id (:work.request/claim request) job-id))]
-             (try
-               (binding [ec/*execution-context* (:ctx room)]
-                 (resource/install-unit! room {:symbol resource/model-dispatches
-                                               :name "Model dispatches" :precision 0})
-                 (resource/allocate-run! room job-id nil (resources (:limits input)))
-                 (evaluation/evaluate room (:team prepared) (:agent prepared)
-                                      (:environment prepared) (:evaluator prepared)
-                                      (merge (select-keys prepared [:protocol :world-setup])
-                                             {:parent-run job-id :cleanup-group job-id
-                                              :from (:principal/actor principal)
-                                              :metrics {:requester-party party :submission-channel :mcp
-                                                        :execution-kind :workflow-candidate
-                                                        :request-id id}})))
-               (catch Throwable e
-                 ;; No Spin was handed to jobs yet, so no child is running.
-                 ;; A failed cleanup leaves its durable pending bit for recovery.
-                 (try (return-job! conn host-ctx room row)
-                      (catch Throwable cleanup (.addSuppressed e cleanup)))
-                 (throw e)))))
-         :settled (fn [_ _]
-                    (return-job! conn host-ctx room
-                                 (journal #(requests/get-request conn id)))))
+        (let [job-ctx (if-let [context! (:job-context! prepared)]
+                        (context! request) (:ctx room))]
+          (jobs/start!
+           room {:kind (if (= :benchmark (:request-kind prepared)) :experiment :workflow)
+                 :ctx job-ctx :actor (:principal/actor principal)}
+           (fn [job-id]
+             (let [row (journal #(requests/record-job! conn id (:work.request/claim request) job-id))]
+               (try
+                 (binding [ec/*execution-context* (:ctx room)]
+                   (when-let [admit! (:admit! prepared)] (admit! job-id))
+                   (resource/install-unit! room {:symbol resource/model-dispatches
+                                                 :name "Model dispatches" :precision 0})
+                   (resource/allocate-run! room job-id nil (resources (:limits input)))
+                   (if-let [start! (:start! prepared)]
+                     (start! job-id)
+                     (evaluation/evaluate room (:team prepared) (:agent prepared)
+                                          (:environment prepared) (:evaluator prepared)
+                                          (merge (select-keys prepared [:protocol :world-setup])
+                                                 {:parent-run job-id :cleanup-group job-id
+                                                  :from (:principal/actor principal)
+                                                  :metrics {:requester-party party :submission-channel :mcp
+                                                            :execution-kind :workflow-candidate
+                                                            :request-id id}}))))
+                 (catch Throwable e
+                 ;; Construction may already have admitted a child. Fence the
+                 ;; parent and cancel its own descendants before joining;
+                 ;; never infer quiescence from not having returned a Spin.
+                   (try (binding [ec/*execution-context* (:ctx room)]
+                          (run/cancel-run! job-id)
+                          (doseq [child (run/runs room {:root-run-id job-id :limit 1000})
+                                  :when (not= job-id (:run/id child))]
+                            (run/cancel-run! (:run/id child))))
+                        (settle! row)
+                        (catch Throwable cleanup (.addSuppressed e cleanup)))
+                   (throw e)))))
+           :settled (fn [_ _]
+                      (settle! (journal #(requests/get-request conn id))))))
         (catch Throwable e
+          ;; A failed host provisioning/run-pointer step has admitted no
+          ;; execution. Its physical resources can be retired without joining
+          ;; an unknown job. A published pointer retains the normal cleanup.
+          (when-not (:work.request/job (journal #(requests/get-request conn id)))
+            (when-let [abandon! (:abandon! prepared)]
+              (try (abandon! request)
+                   (catch Throwable cleanup (.addSuppressed e cleanup)))))
           (journal #(requests/interrupt! conn id (random-uuid)))
           (throw e))))
     (public-request (journal #(requests/get-request conn id)))))
@@ -215,7 +241,7 @@
   [conn host-ctx resolve-room]
   (binding [ec/*execution-context* host-ctx]
     (doseq [row (requests/requests conn)
-            :when (= :task (:work.request/kind row))]
+            :when (contains? #{:task :benchmark} (:work.request/kind row))]
       (if-let [job (:work.request/job row)]
         (when (:work.request/return-pending? row)
           (when-let [room (resolve-room (:work.request/room row))]

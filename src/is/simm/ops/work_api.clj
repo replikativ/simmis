@@ -5,6 +5,7 @@
             [dvergr.ops :as ops]
             [dvergr.room.store :as store]
             [is.simm.model.system-db :as system-db]
+            [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.chat :as chat]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflows :as workflows]
@@ -16,10 +17,12 @@
 
 (defn- external-schema [schema]
   (into [:map {:closed true} room-entry]
-        (map (fn [[k type]] [k (if (= :uuid type) uuid-string type)]))
+        (map (fn [entry]
+               (update entry (dec (count entry)) #(if (= :uuid %) uuid-string %))))
         (drop 2 schema)))
 
 (def task-schema (external-schema work/task-schema))
+(def benchmark-schema (external-schema benchmarks/schema))
 (def allowance-schema (external-schema work/allowance-schema))
 (def status-schema [:map {:closed true} room-entry [:id uuid-string]])
 (def post-schema
@@ -56,13 +59,28 @@
                                :is.simm.model.work-requests/conflict 409
                                :is.simm.ops.workflows/invalid 400
                                :is.simm.ops.workflows/unavailable 503
+                               :is.simm.ops.benchmarks/invalid 400
+                               :is.simm.ops.benchmarks/denied 403
+                               :is.simm.ops.benchmarks/conflict 409
+                               :is.simm.ops.benchmarks/busy 409
+                               :is.simm.ops.benchmarks/unavailable 503
                                :kontor.resource/insufficient 409}
                               (:type (ex-data e)))]
            (ops/op-error! (ex-message e) (:type (ex-data e)) status)
            (throw e)))))
 
 (def specifications
-  {:simmis/workflow-write
+  {:simmis/benchmark
+   {:kind :write :schema benchmark-schema :authz {:action :merge}
+    :doc "Admit an exact inspected workflow bundle as an OFFLINE benchmark. Requires installation operator AND current room merge authority: checker code is trusted-operator SCI, cooperatively bounded, NOT hard OS isolation. Maximum eight cells, one at a time, native providers only, explicit aggregate money/dispatch allowance, /out capture, discard settlement. Results use the room's existing Attempts, Scorecards and experiment reports. request-id retries observe the same job; expected-bundle pins the reviewed revision. No judge, live web, arbitrary eval or automatic checker promotion."
+    :impl (fn [host args]
+            (checked! benchmark-schema args)
+            (guarded host #(let [[conn id room] (room! host (:room args))]
+                             (benchmarks/submit! conn (:execution-ctx host) ops/*principal* id room
+                                                 (-> (dissoc args :room)
+                                                     (update :request-id uuid!)
+                                                     (update :expected-bundle uuid!))))))}
+   :simmis/workflow-write
    {:kind :write :schema workflow-write-schema :authz {:action :write}
     :doc "Atomically edit text files ONLY under workflows/<name>/ as one repository commit. Paths are relative to that bundle; null deletes. At most100 files,512KiB/file,2MiB/batch. Cannot edit the room-root AGENTS.md or paths outside this bundle. Returns commit and shape inspection of the current bundle; never executes checker.clj."
     :impl (fn [host args]

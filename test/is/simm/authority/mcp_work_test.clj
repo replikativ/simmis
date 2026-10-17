@@ -4,6 +4,8 @@
             [datahike.api :as d]
             [dvergr.jobs :as jobs]
             [dvergr.catalog.workspace :as workspace]
+            [dvergr.agent.experiment.runner :as runner]
+            [dvergr.agent.workflow :as workflow]
             [dvergr.mcp.json-rpc :as rpc]
             [dvergr.mcp.server :as server]
             [dvergr.mcp.surface :as surface]
@@ -13,10 +15,12 @@
             [is.simm.authority.world :as world]
             [is.simm.model.room-databases :as room-dbs]
             [is.simm.ops.chat :as chat]
+            [is.simm.ops.benchmarks-test :as benchmark-fixture]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.results :as results]
             [is.simm.ops.work :as work]
             [is.simm.ops.work-api :as api]
+            [is.simm.ops.workflows :as workflows]
             [is.simm.ops.work-test]
             [is.simm.ops.workflows-test :as workflow-fixture]
             [is.simm.runtimes.auth-config :as auth]
@@ -74,10 +78,50 @@
                (is (refused? (call member "simmis_workflow-write"
                                    (assoc args :files {"../../AGENTS.md" "overwrite"}))))
                (d/transact conn [[:db/retract [:room/id (:room w)] :room/parties
-                                 [:party/id (:member w)]]])
+                                  [:party/id (:member w)]]])
                (doseq [[tool input] [["simmis_workflow-write" args]
                                      ["simmis_workflow-check" (dissoc args :files)]]]
                  (is (refused? (call member tool input))))))
+           (finally (api/uninstall!) (server/set-host! nil))))))))
+
+(deftest authored-checker-execution-is-not-implied-by-room-ownership-or-membership
+  (world/with-world [conn w]
+    (@#'is.simm.ops.work-test/with-room
+     (fn [room]
+       (let [slug (store/room-id->slug (:id room))
+             files (assoc workflow-fixture/fixture "cases/tiny/gold.edn" "{:expected 1}")
+             admitted (atom [])]
+         (workspace/ensure-workspace! room)
+         (workflows/write! room {:principal/id "host-fixture"} {:name "echo" :files files})
+         (d/transact conn [{:room/id (:room w) :room/slug slug}])
+         (server/set-host! (ops/host (:ctx room)))
+         (try
+           (api/install!)
+           (with-redefs [auth/get-auth-config (constantly {:jwt {:secret "mcp-benchmark-test"}})
+                         workflow/candidates benchmark-fixture/candidates
+                         runner/runtime-identity (constantly {:libraries {}})
+                         ;; Keep real schemas, auth, immutable snapshot and
+                         ;; plan construction; stop exactly before scheduling.
+                         work/submit-prepared! (fn [_ _ principal _ _ input prepared]
+                                                 (swap! admitted conj [principal input prepared])
+                                                 {:state "submitted"})]
+             (let [owner (session (:owner w) :work)
+                   args (assoc (benchmark-fixture/input files)
+                               :room slug :request-id (str (random-uuid)) :cases ["tiny"]
+                               :expected-bundle (:bundle (workflows/inspect room "echo")))]
+               (doseq [ctx [owner (session (:member w) :work) (session (:non-member w) :work)
+                            (session (:admin w) :work) (session (:owner w) :read)]]
+                 (is (refused? (call ctx "simmis_benchmark" args))))
+               (is (empty? @admitted))
+               (d/transact conn [{:party/id (:owner w) :party/role :admin}])
+               (is (= "submitted" (:state (value (call owner "simmis_benchmark" args)))))
+               (is (= 1 (count @admitted)))
+               (is (= (str "party/" (:owner w)) (:principal/id (ffirst @admitted))))
+               (is (uuid? (:expected-bundle (second (first @admitted)))))
+               (doseq [extra [{:sender (str (:owner w))} {:eval true} {:parallelism 99}]]
+                 (is (refused? (call owner "simmis_benchmark" (merge args extra)))))
+               (is (refused? (call owner "simmis_benchmark" (assoc args :expected-bundle (str (random-uuid))))))
+               (is (= 1 (count @admitted)))))
            (finally (api/uninstall!) (server/set-host! nil))))))))
 
 (deftest explicit-work-capabilities-use-canonical-jobs-and-room-authority
