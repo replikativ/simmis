@@ -290,6 +290,28 @@ lease retains only cancellation/physical-stop signaling, not input or output
 access. Immutable completion records a worker shutdown assertion and bounded
 files; it grants no import, Attempt certification or merge authority.
 
+`scripts/worker_namespace.py` supplies a Linux execution primitive, not an MCP
+worker or coding-CLI adapter. Its fixed bubblewrap command isolates PID,
+network and mount namespaces, with read-only host runtime/code trees and
+byte-bounded private tmpfs scratch. Runtime installations must not contain
+private deployment data: `/usr`, `/bin` and library trees remain readable.
+The PID-1 guard refuses inherited capabilities, protects its descriptors and
+memory from same-UID tasks, and waits for an explicit controller GO after
+materializing verified inputs. The task inherits only a regular prompt file
+and bounded scratch-backed logs, not the controller protocol or credentials.
+Before collecting selected file changes it kills and reaps all remaining
+namespace tasks, including detached descendants. Failure or EOF before GO
+does not authorize execution; a guard failure emits no successful completion.
+
+The caller must verify finite cgroup memory, zero swap, process, CPU and wall
+limits before GO. Tmpfs byte limits are not independent inode quotas; empty
+file metadata is bounded through charged kernel memory and the cgroup limit.
+A namespace completion is still not proof that its whole containing unit
+exited, and grants no remote shutdown acknowledgement or result-import
+authority. The opt-in `SIMMIS_WORKER_NAMESPACE_TESTS=1` Python tests exercise
+real user-systemd/bubblewrap isolation without provider/model calls; default
+test runs skip those host integration cases.
+
 The host-only `ops/worker-work.clj` adapter submits through the existing Jobs/
 Runs rather than a remote-executor registry. It requires the worker's enrolling
 human and current room read/merge authority, explicit admission allowance,
