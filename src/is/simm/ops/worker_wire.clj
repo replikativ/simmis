@@ -1,7 +1,7 @@
 (ns is.simm.ops.worker-wire
   "Explicit structural conversions for the private worker JSON protocol.
    Never keywordize filenames or arbitrary schema/property maps."
-  (:require [is.simm.ops.worker-files :as files]
+  (:require [is.simm.ops.worker-contract :as contract]
             [is.simm.ops.worker-frames :as frames])
   (:import [java.util UUID]))
 
@@ -48,14 +48,17 @@
                 (update :input-id #(UUID/fromString %))
                 (update :config config!)
                 (update :limits #(object! % [:timeout-ms :settlement] [:timeout-ms :settlement]))
-                (update :policy #(object! % (keys files/policy) (keys files/policy)))
+                (update :policy #(object! % (keys contract/policy) (keys contract/policy)))
                 (update :files
                         (fn [selected]
                           (when-not (map? selected) (refuse!))
                           (into {} (map (fn [[path file]]
                                           [path (object! file [:base64 :bytes :sha256 :mode]
                                                          [:base64 :bytes :sha256 :mode])])) selected))))]
-      (files/validate-frozen! f))
+      ;; Only the guest consumes frozen files. Keep its canonical path/content
+      ;; validator, but do not load room/workspace code in the credential broker
+      ;; merely to decode configuration or model messages.
+      ((requiring-resolve 'is.simm.ops.worker-files/validate-frozen!) f))
     (catch Throwable _ (refuse!))))
 
 (defn request! [value]

@@ -9,7 +9,7 @@
             [dvergr.model.provider :as p]
             [dvergr.model.registry :as registry]
             [hato.client :as http]
-            [is.simm.ops.worker-files :as files]
+            [is.simm.ops.worker-contract :as contract]
             [is.simm.ops.worker-inference :as inference]
             [malli.core :as m])
   (:import [java.io FilterInputStream InputStream]
@@ -52,7 +52,7 @@
    an arbitrary injected Credentials implementation has its own auth behavior.
    Stream errors propagate without restarting a partially consumed response."
   [config provider]
-  (when-not (and (m/validate files/config-schema config) (= "codex" (:adapter config))
+  (when-not (and (m/validate contract/config-schema config) (= "codex" (:adapter config))
                  (= :codex-subscription (p/provider-id provider))
                  (= :openai-responses (p/api-type provider))) (refuse!))
   (let [model-def (registry/get-model! (:model config))

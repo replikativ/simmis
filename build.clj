@@ -74,7 +74,7 @@
   ;; Dependency source/resources still come from the ordinary Maven basis.
   ["worker_process" "worker_guest" "worker_broker" "worker_executor"
    "worker_subscription" "worker_inference" "worker_frames" "worker_wire"
-   "worker_files" "work_sandbox"])
+   "worker_contract" "worker_files" "work_sandbox"])
 
 (defn worker
   "Build the dedicated local SCI guest/broker runtime, without a frontend or

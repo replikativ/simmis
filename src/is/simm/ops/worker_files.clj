@@ -8,6 +8,7 @@
             [geschichte.git.object :as object]
             [geschichte.query :as query]
             [hasch.core :as hasch]
+            [is.simm.ops.worker-contract :as contract]
             [jsonista.core :as json]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec])
@@ -16,14 +17,8 @@
            [java.security MessageDigest]
            [java.util Arrays Base64]))
 
-(def policy {:version 2 :max-files 100 :max-file-bytes 1048576 :max-total-bytes 2097152
-             :max-input-json-bytes 4194304 :chunk-bytes 16384 :lease-ttl-ms 30000})
-(def config-schema
-  [:map {:closed true}
-   [:adapter [:enum "codex" "claude-code"]]
-   [:version [:string {:min 1 :max 200}]]
-   [:model [:string {:min 1 :max 200}]]
-   [:policy [:= "local-trusted-v1"]]])
+(def policy contract/policy)
+(def config-schema contract/config-schema)
 (def limits-schema
   [:map {:closed true} [:timeout-ms [:int {:min 1000 :max 600000}]]
    [:settlement [:enum "review" "discard"]]])

@@ -7,7 +7,7 @@
    Instances are single-session external I/O capabilities, not forkable state."
   (:require [dvergr.model.api.codex-subscription :as codex]
             [dvergr.model.provider :as p]
-            [is.simm.ops.worker-files :as files]
+            [is.simm.ops.worker-contract :as contract]
             [jsonista.core :as json]
             [malli.core :as m]))
 
@@ -129,7 +129,7 @@
   response)
 
 (defn- config! [config]
-  (when-not (and (m/validate files/config-schema config) (= "codex" (:adapter config))) (refuse!))
+  (when-not (and (m/validate contract/config-schema config) (= "codex" (:adapter config))) (refuse!))
   config)
 
 (defn broker

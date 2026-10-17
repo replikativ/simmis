@@ -301,6 +301,10 @@ total deadline includes queue time and cold JVM startup;
 `task` and `workflow` default to five minutes, with a ten-minute maximum. Start the local
 runner promptly after submitting. Fresh interpreter/broker JVMs may spend a
 substantial part of that bound loading the stack before inference begins.
+The broker's portable configuration lives in `worker-contract`; decoding wire
+messages must not initialize guest workspaces or database implementations. The
+packaged-runtime suite checks that boundary in a fresh JVM. Guest frozen-input
+decoding still invokes the full canonical file validator before allocation.
 Use the documented `/usr/bin/python3`: it needs the host D-Bus/GLib bindings.
 The controller initializes its physical observer under its permanent ownership
 lock before creating a Run journal or claiming work. Missing host bindings or
