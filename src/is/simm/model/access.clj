@@ -27,6 +27,7 @@
             [is.simm.distributed-scope :as ds]
             [is.simm.model.system-db :as system-db]
             [datahike.api :as d]
+            [dvergr.system.rooms :as registry-rooms]
             [taoensso.telemere :as log]))
 
 (defn authenticated-party-id
@@ -332,7 +333,8 @@
   ;; would have stayed locked — replikativ/datahike#1116.
   (keep (fn [[f p]]
           (let [fork (d/pull db [:proposal.fork/author :proposal.fork/authority-scope
-                                 :proposal.fork/scope :proposal.fork/status] f)]
+                                 :proposal.fork/scope :proposal.fork/status
+                                 :proposal.fork/system-type :proposal.fork/world-system-id] f)]
             (when (nil? (:proposal.fork/status fork))
               [fork (d/pull db [:proposal/author] p)])))
         rows))
@@ -354,6 +356,22 @@
 
 (declare can?)
 
+(defn may-merge-proposal-fork?
+  "Human target authority, evaluated against one system-DB value. An adopted
+   world stores its ROOM id as authority-scope, not a database scope. It also
+   needs merge authority on its exact current registry target. Missing or
+   ambiguous target identity denies; it never becomes a room-local fallback.
+   The settlement boundary separately rechecks the origin room's write grant."
+  [db subject fork]
+  (boolean
+   (if (= :world (:proposal.fork/system-type fork))
+     (and db (:proposal.fork/authority-scope fork) (:proposal.fork/world-system-id fork)
+          (can? db subject :merge {:room (:proposal.fork/authority-scope fork)})
+          (let [target (try (registry-rooms/registry-system-for db (:proposal.fork/world-system-id fork))
+                            (catch clojure.lang.ExceptionInfo _ nil))]
+            (and target (can? db subject :merge (:system/id target)))))
+     (can? db subject :merge (or (:proposal.fork/authority-scope fork) (:proposal.fork/scope fork))))))
+
 (defn- fork-controller?
   "Does an open proposal fork belong to `party-uuid`? Its author
    (`:proposal.fork/author`, else the filer `:proposal/author` for rows filed
@@ -363,8 +381,7 @@
   [db party-uuid [fork proposal]]
   (boolean
    (or (= party-uuid (or (:proposal.fork/author fork) (:proposal/author proposal)))
-       (can? db party-uuid :merge
-             (or (:proposal.fork/authority-scope fork) (:proposal.fork/scope fork))))))
+       (may-merge-proposal-fork? db party-uuid fork))))
 
 (defn- party-can-access-branch?
   "May `party-uuid` `action` branch `branch` of the store `scope`?

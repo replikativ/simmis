@@ -5,6 +5,8 @@
             [dvergr.discourse :as discourse]
             [dvergr.room.registry :as room-registry]
             [dvergr.rooms.forks :as room-forks]
+            [dvergr.system.db :as registry-db]
+            [dvergr.system.rooms :as registry-rooms]
             [is.simm.agents.room-agents :as room-agents]
             [is.simm.model.system-db :as sdb]
             [is.simm.ops.proposals :as proposals]
@@ -16,17 +18,16 @@
   (let [cfg {:store {:backend :memory :id (random-uuid)}
              :schema-flexibility :write :keep-history? false}]
     (d/create-database cfg)
-    (doto (d/connect cfg) (d/transact sdb/schema))))
+    (doto (d/connect cfg)
+      (d/transact registry-db/schema)
+      (d/transact sdb/schema))))
 
 (defn- live-registry []
   @(var-get #'is.simm.ops.run-world-proposals/live-adoptions))
 
 (use-fixtures :each
   (fn [f]
-    (reset! (var-get #'is.simm.ops.run-world-proposals/live-adoptions) {})
-    (try (f)
-         (finally
-           (reset! (var-get #'is.simm.ops.run-world-proposals/live-adoptions) {})))))
+    (with-redefs-fn {#'is.simm.ops.run-world-proposals/live-adoptions (atom {})} f)))
 
 (defn- fixture-world []
   (let [room-id (random-uuid)
@@ -41,7 +42,12 @@
 
 (defn- with-promotion-mocks [sys-conn fixture f]
   (let [{:keys [room-id run-id room run world]} fixture]
+    (d/transact sys-conn [{:room/id room-id :room/slug "proposal-room"}])
     (with-redefs [sdb/get-conn (constantly sys-conn)
+                  ;; These tests exercise projection/journaling mechanics with
+                  ;; symbolic handles. Real target/grant checks are exercised
+                  ;; through actual retained worlds in the authority suite.
+                  registry-rooms/assert-fork-merge-permitted! (fn [_ _])
                   room-agents/live-room #(when (= room-id %) room)
                   agent-run/run (fn [r id]
                                   (when (and (= room r) (= run-id id)) run))
