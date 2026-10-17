@@ -26,18 +26,27 @@ CHUNK = 16384
 
 
 class MCP:
-    def __init__(self, url, token):
+    def __init__(self, url, token, *, lease_proof=None):
         parsed = urllib.parse.urlsplit(url)
         credentials.origin(urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", "")))
         if parsed.path != "/mcp" or parsed.query or parsed.fragment:
             raise ValueError("Use the /mcp endpoint without query or fragment")
+        if lease_proof is not None and (not isinstance(lease_proof, str)
+                                        or not re.fullmatch(r"[A-Za-z0-9_-]{43}", lease_proof)):
+            raise ValueError("Invalid worker claim proof")
         self.url, self.token, self.session, self.sequence = url, token, None, 0
+        # Initialize the session with its proposed proof. Adding a header to
+        # an already initialized proofless session cannot upgrade authority.
+        # Keep credential material out of tool arguments and diagnostics.
+        self._lease_proof = lease_proof
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), credentials.NoRedirects())
 
     def request(self, method, params):
         self.sequence += 1
         headers = {"Authorization": "Bearer " + self.token, "Content-Type": "application/json",
                    "Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-06-18"}
+        if self._lease_proof is not None:
+            headers["Simmis-Lease-Proof"] = self._lease_proof
         if self.session:
             headers["Mcp-Session-Id"] = self.session
         body = {"jsonrpc": "2.0", "method": method, "params": params}
@@ -64,8 +73,10 @@ class MCP:
 
     def __exit__(self, *args):
         if self.session:
-            req = urllib.request.Request(self.url, method="DELETE", headers={
-                "Authorization": "Bearer " + self.token, "Mcp-Session-Id": self.session})
+            headers = {"Authorization": "Bearer " + self.token, "Mcp-Session-Id": self.session}
+            if self._lease_proof is not None:
+                headers["Simmis-Lease-Proof"] = self._lease_proof
+            req = urllib.request.Request(self.url, method="DELETE", headers=headers)
             try:
                 with self.opener.open(req, timeout=10):
                     pass

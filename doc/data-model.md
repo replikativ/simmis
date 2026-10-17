@@ -171,6 +171,12 @@ Replacement controllers must reconcile those before executing, and retain
 ambiguous claim tickets until ownership/shutdown is resolved. Crash-left private
 staging files are non-authoritative. This helper performs no network calls or
 execution and keeps no shared application state.
+The Python MCP transport accepts a proposed proof only as a session header,
+starting with initialization, never as a tool argument. Its ordinary read
+client is unchanged. The synthetic cross-language HTTP regression exercises
+ticket preparation, client-side claim, verified input download/materialization
+and bounded completion with binary data, executable modes and deletions; it
+does not start a coding CLI or call a model.
 
 ## Objects, morphisms, instances
 

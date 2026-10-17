@@ -1,5 +1,6 @@
 (ns is.simm.authority.mcp-workers-test
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is]]
             [datahike.api :as d]
             [dvergr.artifact :as artifact]
@@ -8,6 +9,7 @@
             [dvergr.mcp.http :as http]
             [dvergr.mcp.server :as server]
             [dvergr.mcp.surface :as surface]
+            [hasch.core :as hasch]
             [is.simm.authority.world :as world]
             [is.simm.model.workers :as workers]
             [is.simm.ops.dvergr :as ops]
@@ -19,7 +21,8 @@
             [is.simm.ops.workflows-test :as workspace-fixture]
             [jsonista.core :as json]
             [org.httpkit.client :as client])
-  (:import [java.util Base64 Date]))
+  (:import [java.util Base64 Date]
+           [java.util.concurrent TimeUnit]))
 
 (defn- session [principal]
   (let [ctx (server/session-context (fn [_]) (surface/selection {:profile :admin :toolsets #{:host}}) principal)]
@@ -276,6 +279,58 @@
                                                     {:name "simmis_worker-stop" :arguments {:run (str run)}})))))
                   (is (:simmis.worker.assignment/stop-ack-at (workers/assignment conn run))))
                 (is (nil? (exposed)))))
+            (finally ((:stop transport)))))))))
+
+(deftest python-client-persists-claims-downloads-and-completes-through-real-http
+  (world/with-world [conn w]
+    (with-assignment conn w
+      (fn [{:keys [enrolled frozen]}]
+        (let [binary (byte-array (map unchecked-byte (take 50000 (cycle [0 255 128 42]))))
+              frozen (-> frozen (dissoc :input-id)
+                         (assoc-in [:files "docs/资料.bin"]
+                                   {:base64 (.encodeToString (Base64/getEncoder) binary)
+                                    :bytes (alength binary) :mode 0x81A4 :sha256 (files/sha256 binary)})
+                         (assoc-in [:files "bin/run.sh"]
+                                   (assoc (file-fixture/encoded "#!/bin/sh\n") :mode 0x81ED)))
+              frozen (assoc frozen :input-id (hasch/uuid [:simmis/worker-input-v1 frozen]))
+              run (random-uuid)
+              _ (workers/enqueue! conn {:id run :worker (:worker enrolled) :generation 1 :room (:room w)
+                                        :request (random-uuid) :job (random-uuid) :input frozen})
+              transport (http/start! {:port 0 :bind "127.0.0.1" :profile :admin :toolsets #{:host}
+                                      :authenticate #(credentials/authenticate conn %)})]
+          (try
+            (let [process (.start (doto (ProcessBuilder. (into-array String ["python3" "-I" "test/scripts/worker_roundtrip_fixture.py"]))
+                                    (.redirectErrorStream true)))]
+              (try
+                (with-open [writer (io/writer (.getOutputStream process))]
+                  (.write writer (json/write-value-as-string
+                                  {:url (str "http://127.0.0.1:" (:port transport) "/mcp")
+                                   :credential (:credential enrolled) :worker (:worker enrolled)
+                                   :run run :config file-fixture/config})))
+                (when-not (.waitFor process 45 TimeUnit/SECONDS)
+                  (throw (ex-info "Synthetic worker client timed out" {})))
+                (is (zero? (.exitValue process)) "Synthetic client must finish successfully")
+                (let [result (json/read-value (slurp (.getInputStream process)) json/keyword-keys-object-mapper)]
+                  (is (= {:verified true :client-claimed true :completion-acknowledged true
+                          :files ["bin/run.sh" "docs/input.md" "docs/资料.bin"]} result)))
+                (finally
+                  (when (.isAlive process)
+                    (.destroyForcibly process)
+                    (.waitFor process)))))
+            (let [row (workers/assignment conn run)
+                  output (workers/payload conn row :simmis.worker.assignment/output-ref)]
+              (is (= :completed (:simmis.worker.assignment/state row)))
+              (is (some? (:simmis.worker.assignment/stop-ack-at row)))
+              (is (= #{"docs/input.md" "bin/run.sh" "out/report/结果.bin"} (set (keys (:files output)))))
+              (is (nil? (get-in output [:files "bin/run.sh"])))
+              (is (= 0x81ED (get-in output [:files "out/report/结果.bin" :mode])))
+              (is (= 9 (get-in output [:files "out/report/结果.bin" :bytes])))
+              (is (= (.encodeToString (Base64/getEncoder)
+                                      (byte-array (map unchecked-byte [0 255 128 114 101 115 117 108 116])))
+                     (get-in output [:files "out/report/结果.bin" :base64])))
+              (is (= (file-fixture/encoded "changed selected input") (get-in output [:files "docs/input.md"])))
+              (is (= "bounded round trip" (:summary output)))
+              (is (= 0 (:exit-code output))))
             (finally ((:stop transport)))))))))
 
 (deftest room-revocation-between-claim-precheck-and-writer-refuses-ownership

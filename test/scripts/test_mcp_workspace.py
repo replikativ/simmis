@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -95,6 +96,49 @@ class WorkspaceTest(unittest.TestCase):
                     "https://example.com/not-mcp", "http://localhost:47990/mcp?token=x"]:
             with self.subTest(url=url), self.assertRaises(ValueError):
                 workspace.MCP(url, "secret")
+
+    def test_claim_proof_is_a_session_header_never_a_tool_argument(self):
+        proof = "A" * 43
+        requests = []
+
+        class Response:
+            headers = {"Mcp-Session-Id": "synthetic-session"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self, limit):
+                request = requests[-1]
+                body = json.loads(request.data)
+                if body["method"].startswith("notifications/"):
+                    return b""
+                result = {} if body["method"] == "initialize" else {"structuredContent": {"result": {"ok": True}}}
+                return json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result}).encode()
+
+        class Opener:
+            def open(self, request, **kwargs):
+                requests.append(request)
+                return Response()
+
+        for proposed in [None, proof]:
+            with self.subTest(proposed=proposed is not None):
+                requests.clear()
+                client = workspace.MCP("http://127.0.0.1:47990/mcp", "synthetic-token", lease_proof=proposed)
+                client.opener = Opener()
+                with client:
+                    self.assertEqual(client.call("simmis_worker-claim", {"run": "synthetic"}), {"ok": True})
+                self.assertEqual(len(requests), 4)
+                for request in requests:
+                    self.assertEqual(request.get_header("Simmis-lease-proof"), proposed)
+                    if request.data:
+                        self.assertNotIn(proof, request.data.decode())
+                self.assertEqual(requests[-1].method, "DELETE")
+        for invalid in [True, "", "x" * 42, "x" * 44, "x" * 42 + "\n"]:
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                workspace.MCP("http://127.0.0.1:47990/mcp", "synthetic-token", lease_proof=invalid)
 
 
 if __name__ == "__main__":
