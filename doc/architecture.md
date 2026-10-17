@@ -135,9 +135,11 @@ publication is separate and serialized against cancellation. Recovery fences
 independently identified siblings even if another child is unbound, but holds
 all refunds and retirement until the complete graph and world cleanup are
 proven. A pre-binding crash remains an explicit held incident, not a guessed
-case or permission to rerun work. This adapter has no public MCP control or
-browser backend selector. Subscription usage remains unreported; numeric
-zero placeholders in upstream derived cost axes are not measured zero cost.
+case or permission to rerun work. Bounded MCP controls and the Workflows backend
+selector expose this adapter to authorized operators; enrollment and explicit
+admission funding remain separate. Subscription billing is unpriced, and
+unreported usage or cost dimensions remain unknown rather than measured zero.
+Certified reports preserve independently known billed and notional costs.
 The separate host-only `ops/worker-recovery.clj` reconciles orphan exposure
 without execution or late import. Missing world disposal authority keeps
 cleanup unresolved; a terminal Run or discarded projection is not physical
@@ -146,7 +148,7 @@ MCP claims are accepted. `runtimes/worker-maintenance.clj` owns one periodic
 reconciliation resource independent of fast receipt delivery. An initial hold
 or unhealthy resource prevents new claims/admission but preserves existing
 lease shutdown. `scripts/worker_driver.py` supplies private operator enrollment,
-explicit allowance/task/workflow submission and one-shot local SCI execution/recovery;
+explicit allowance/task/workflow/benchmark submission and one-shot local SCI execution/recovery;
 its login binds the exact MCP destination, including explicit tunnel aliases.
 Benchmark retirement failures retain their exact process-local cleanup callback
 and physical checker permit; reconciliation retries disposal, not execution.
