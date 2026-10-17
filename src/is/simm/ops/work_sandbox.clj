@@ -7,11 +7,12 @@
             [sci.core :as sci]))
 
 (def id :simmis/file-worker)
-(def policy {:version 1 :surface :isolated-files
-             :no-shared-registries true :no-room-discovery true :no-host-env true :no-host-mail true})
+(def policy {:version 2 :surface :isolated-files
+             :no-shared-registries true :no-room-discovery true :no-host-env true :no-host-mail true
+             :no-host-books true})
 
 (defn- denied [& _]
-  (throw (ex-info "File workers cannot access shared host registries, room APIs or host environment"
+  (throw (ex-info "File workers cannot access shared host registries, room APIs, host books or host environment"
                   {:type ::denied})))
 
 (defn install!
@@ -20,7 +21,7 @@
   [ctx _]
   (doseq [namespace (sci/eval-string* ctx "(mapv ns-name (all-ns))")
           :when (or (str/starts-with? (str namespace) "dvergr.")
-                    (contains? '#{room actors agents tasks skills scheduler env intake.mail} namespace))]
+                    (contains? '#{room actors agents tasks skills scheduler env intake.mail kontor} namespace))]
     (let [names (sci/eval-string* ctx (str "(vec (keys (ns-publics '" namespace ")))"))]
       (sci/add-namespace! ctx namespace (zipmap names (repeat denied)))))
   ctx)

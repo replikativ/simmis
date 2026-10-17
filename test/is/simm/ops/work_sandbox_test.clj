@@ -7,10 +7,14 @@
             [dvergr.catalog.workspace :as workspace]
             [dvergr.chat.context :as chat]
             [dvergr.orchestration.tasks :as tasks]
+            [dvergr.sandbox :as sandbox]
             [dvergr.sandbox.ns.intake :as intake]
             [is.simm.authority.world :as world]
+            [is.simm.model.accounting-sandbox :as accounting]
+            [is.simm.model.accounting-sandbox-test :as accounting-fixture]
             [is.simm.ops.work-sandbox :as worker]
             [is.simm.ops.work-test]
+            [kontor.governance :as governance]
             [org.replikativ.spindel.engine.core :as ec]
             [sci.core :as sci]))
 
@@ -122,3 +126,48 @@
                                           "@(org.replikativ.spindel.spin.cps/spin (+ 1 2))")))
                (finally (chat/release-sci-in! restricted (:ctx room)))))
            (finally (chat/release-sci-in! rich (:ctx room)))))))))
+
+(deftest global-accounting-injection-does-not-leak-a-trunk-book-into-file-workers
+  (world/with-world [conn w]
+    (@#'is.simm.ops.work-test/with-room
+     (fn [room]
+       (workspace/ensure-workspace! room)
+       (worker/restrict-team (roster/make-roster {:id :fixture/install}))
+       (let [book (@#'accounting-fixture/governed-book!)
+             already? (some #{accounting/add-kontor-ns!} (sandbox/registered-ns-injectors))
+             options {:execution-ctx (:ctx room) :db-conn (:conn (:store room))
+                      :room-id (:room w) :room-runtime-id (:id room)
+                      :budget-dollars 1.0 :agent-id :fixture}
+             posting "(kontor/entry! {:debit-account [:kontor.account/path \"Assets:Cash\"]
+                                     :credit-account [:kontor.account/path \"Income:Sales\"]
+                                     :amount 100 :commodity [:kontor.commodity/symbol \"EUR\"]
+                                     :journal [:kontor.journal/code \"GEN\"]
+                                     :effective-date #inst \"2026-03-15\"})"]
+         (sandbox/register-ns-injector! accounting/add-kontor-ns!)
+         (try
+           (with-redefs [accounting/room-book-conn (fn [id] (when (= id (:room w)) book))]
+             (let [rich (turn/new-working-ctx options)
+                   restricted (turn/new-working-ctx (assoc options :sandbox-extensions #{worker/id}))
+                   interpreter (chat/sci-context-in restricted (:ctx room))]
+               (try
+                 ;; The same registered host injector really exposes a populated
+                 ;; book to ordinary participants; absence is not our fixture.
+                 (is (= [{:path "Assets:Cash" :type :asset} {:path "Income:Sales" :type :income}]
+                        (sci/eval-string* (chat/sci-context-in rich (:ctx room)) "(kontor/accounts)")))
+                 (sci/eval-string* interpreter "(require '[kontor :as ledger :refer [accounts]])")
+                 (doseq [source ["(kontor/accounts)" "(ledger/accounts)" "(accounts)"
+                                 "@kontor/*book*"
+                                 "(d/q '[:find ?p :where [_ :kontor.account/path ?p]] @kontor/*book*)"
+                                 posting]]
+                   (is (thrown? Exception (sci/eval-string* interpreter source)) source))
+                 (is (zero? (@#'accounting-fixture/posting-count book)))
+                 (turn/rebind-working-ctx! restricted options)
+                 (is (thrown? Exception (sci/eval-string* interpreter "(kontor/accounts)")))
+                 (is (thrown? Exception (sci/eval-string* interpreter "(accounts)")))
+                 (is (= 2 (count (sci/eval-string* (chat/sci-context-in rich (:ctx room)) "(kontor/accounts)"))))
+                 (finally
+                   (chat/release-sci-in! restricted (:ctx room))
+                   (chat/release-sci-in! rich (:ctx room))))))
+           (finally
+             (when-not already? (sandbox/unregister-ns-injector! accounting/add-kontor-ns!))
+             (governance/ungovern! book))))))))

@@ -237,6 +237,11 @@ and resource read also passes the existing `access/dvergr-authorize` gate;
 room listings are filtered and a valid credential grants no access to another
 party's room.
 No raw database writer or unrestricted code-evaluation tool is exposed.
+The isolated file-worker sandbox also removes the globally injected `kontor`
+surface, including its raw `*book*` connection, after ordinary namespace setup
+and on every rebind. Its versioned AgentDef policy permits fork-local file
+work, not direct accounting reads/postings against a room's live book. Ordinary
+rich participants keep their existing accounting vocabulary.
 The host validates MCP argument shapes at runtime against upstream schemas
 (Dvergr's invoke does not itself validate them), and caps list limits at 1000.
 Visibility filters and already-open resource sessions recheck room authority.
