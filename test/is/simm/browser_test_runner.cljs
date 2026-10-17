@@ -1,5 +1,8 @@
 (ns is.simm.browser-test-runner
-  "Browser-native tests; completion is an explicit CDP binding event."
+  "Browser-native tests; completion is an explicit CDP binding event.
+   Rebuild the compile-time test inventory on every incremental compilation,
+   just like shadow.test.browser, so newly added tests cannot be skipped."
+  {:dev/always true}
   (:require [cljs.test :as ct]
             [shadow.test :as st]
             [shadow.test.env :as env]))

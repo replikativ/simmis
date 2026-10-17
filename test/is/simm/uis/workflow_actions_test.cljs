@@ -138,8 +138,12 @@
       (let [opened (atom [])
             data {:room-id "room" :room-name "A" :db-scope "room-scope" :col-id "column-a"}
             ui (actions/controller data)]
-        (with-redefs [sig/open-tab! (fn [& args]
-                                     (swap! opened conj {:args args :context ec/*execution-context*}))]
+        ;; Match the real function's two fixed arguments plus variadic options:
+        ;; CLJS may statically call its variadic entry point, bypassing the
+        ;; generic JS argument-packing wrapper.
+        (with-redefs [sig/open-tab! (fn [kind data & [options]]
+                                     (swap! opened conj {:args [kind data options]
+                                                        :context ec/*execution-context*}))]
           (binding [ec/*execution-context* nil] ((:open-run ui) "job"))
           (is (= [:run-inspector (assoc data :run-id "job")
                   {:title "Workflow Run" :new-tab? true :col-id "column-a"}]
