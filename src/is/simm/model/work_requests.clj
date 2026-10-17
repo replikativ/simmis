@@ -73,7 +73,16 @@
                         (into {} (for [k [:budget-microdollars :max-dispatches :max-model-steps :max-worker-admissions
                                           :timeout-ms :settlement]
                                        :when (contains? limits k)]
-                                   [(keyword "work.request" (name k)) (get limits k)])))]
+                                   ;; JSON decoders may produce Integer while
+                                   ;; Datahike's :db.type/long requires Long.
+                                   ;; Preserve the exact intent payload; only
+                                   ;; normalize these typed indexed columns.
+                                   [(keyword "work.request" (name k))
+                                    (if (= :settlement k) (get limits k)
+                                        (let [n (get limits k)]
+                                          (when-not (and (integer? n) (<= Long/MIN_VALUE n Long/MAX_VALUE))
+                                            (throw (ex-info "Invalid integral work limit" {:type ::invalid :limit k})))
+                                          (long n)))])))]
         (try
           (artifact/publish-value! (artifact/datahike-store conn) intent
                                    (fn [ref]

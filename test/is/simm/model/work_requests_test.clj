@@ -1,6 +1,7 @@
 (ns is.simm.model.work-requests-test
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
+            [jsonista.core :as json]
             [is.simm.model.work-requests :as requests]))
 
 (defn- with-store [f]
@@ -15,6 +16,22 @@
   {:party (random-uuid) :room (random-uuid) :client-id (random-uuid) :kind :attempt
    :limits {:budget-microdollars 10000 :max-dispatches 2 :timeout-ms 1000}
    :intent {:task "deterministic fixture" :candidate {:kind :echo}}})
+
+(deftest json-integer-limits-persist-as-typed-longs-without-changing-intent
+  (with-store
+    (fn [conn]
+      (let [limits (json/read-value "{\"budget-microdollars\":10000,\"max-dispatches\":2,\"max-model-steps\":4,\"max-worker-admissions\":1,\"timeout-ms\":1000}" json/keyword-keys-object-mapper)
+            input (assoc (intent) :limits (assoc limits :settlement :discard))
+            first (requests/claim! conn input)]
+        (is (:claimed? first))
+        (doseq [[k n] limits]
+          (let [stored (get (:request first) (keyword "work.request" (name k)))]
+            (is (= n stored))
+            (is (instance? Long stored))))
+        (is (= :discard (get-in first [:request :work.request/settlement])))
+        (is (= (:limits input) (:limits (requests/payload conn (:request first)))))
+        (is (false? (:claimed? (requests/claim! conn input))))
+        (is (false? (:claimed? (requests/claim! conn (update input :limits #(reduce-kv (fn [m k v] (assoc m k (if (integer? v) (long v) v))) {} %))))))))))
 
 (deftest concurrent-identical-claims-have-one-durable-winner
   (with-store
