@@ -63,6 +63,18 @@ are refused. Responses omit internal payload references and verifier hashes.
 Completion records immutable output and the worker's shutdown acknowledgement;
 it does not import files, certify an Attempt or merge into the parent room.
 
+`ops/worker-wait.clj` supplies a host-owned shutdown wait for protocol adapters.
+Its database listener and sticky Run cancellation hook register before
+assignment publication; both callbacks only offer a bounded wake token. The
+owner rereads durable state after each event. The current lease deadline may
+trigger cancellation, but quarantine, failed writes and unavailable reads
+cannot stand in for a shutdown receipt. A running Dvergr protocol worker stays
+physically owned while this wait continues, including after interruption.
+Interrupt status is restored only when the owner closes its listener/hook
+after acknowledgement and DB cleanup. Returned assignments are private host
+data, not portable Run results or import authority: an adapter must construct
+sanitized evidence and separately check current authority before importing.
+
 ## Objects, morphisms, instances
 
 The model is a category, called **S**, stored as ordinary Datahike entities.
