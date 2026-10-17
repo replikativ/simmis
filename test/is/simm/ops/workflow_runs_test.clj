@@ -48,6 +48,21 @@
     :limits {:budget-microdollars 10000 :max-dispatches 4 :max-model-steps 4
              :timeout-ms 30000 :settlement "review"}}))
 
+(deftest source-preparation-is-provider-independent-and-preserves-the-canonical-run-basis
+  (let [request (input)
+        selection (select-keys request workflow-runs/source-fields)
+        source-only (with-redefs [work/prepare (fn [& _] (throw (ex-info "Must not resolve a provider" {})))]
+                      (workflow-runs/prepare-source (snapshot source) selection))
+        ordinary (workflow-runs/prepare (snapshot source) request)]
+    (is (= "Write a literal {subject} value to /out/result.md" (:task source-only)))
+    (is (= {"/docs/input.md" "shared fixture"} (:inputs source-only)))
+    (is (= (select-keys source-only [:source :inputs :workflow])
+           (select-keys (:basis ordinary) [:source :inputs :workflow])))
+    (is (= (evaluation/world-setup-ref (:world-setup source-only))
+           (evaluation/world-setup-ref (:world-setup ordinary))))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (workflow-runs/prepare-source (snapshot source) (assoc selection :model "unexpected"))))))
+
 (deftest transport-normalizes-only-keywordized-map-keys-and-refuses-collisions
   (let [raw (assoc (input) :params {:subject "资料"} :inputs {(keyword "/docs/输入.md") "literal"})
         normalized (workflow-runs/transport raw)]

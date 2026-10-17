@@ -66,7 +66,13 @@ exact-revision `simmis_workflow-run` uses the ordinary bounded candidate and
 completion evaluator: declared literal parameters and frozen source/inputs
 are materialized in its inherited room fork, not trunk. Its source pin and
 input replacements appear in the proposed diff; it never implicitly executes
-the bundle's checker or treats completion as correctness. Room-header workflow
+the bundle's checker or treats completion as correctness. Workflow preparation
+separates `workflow-runs/prepare-source` (revision validation,
+literal rendering and input selection, without a provider) from native
+candidate construction. Portable worker input construction uses the same
+`worker-files/freeze-files` descriptor validation and content identity as
+explicit room-file selection; it does not read additional room files.
+Room-header workflow
 tabs carry the room replica scope into their Run inspectors and open results
 in the column that owns the action. Restored workflow and Run tabs resolve
 missing scopes from the authenticated room roster, like chat/thread tabs.

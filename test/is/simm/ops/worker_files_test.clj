@@ -33,12 +33,24 @@
            json (.decode (Base64/getDecoder) ^String (:base64 chunk))
            decoded (json/read-value json json/keyword-keys-object-mapper)]
        (is (= #{"docs/readme.md"} (set (keys (:files frozen)))))
+       (is (= frozen (files/freeze-files "Edit the selected file" config (:files frozen) limits)))
        (is (= (str (:input-id frozen)) (:input-id decoded)))
        (is (= (:bytes chunk) (alength json)))
        (is (= (:sha256 chunk) (files/sha256 json)))
        (room-files/write! room {"/docs/readme.md" {:text "after"}} {})
        (is (= chunk (files/input-chunk frozen 0 16384)))
        (is (not= (:input-id frozen) (:input-id (files/freeze room "Edit the selected file" config ["docs/readme.md"] limits))))))))
+
+(deftest portable-input-construction-validates-the-existing-format-before-any-execution
+  (let [descriptors {"docs/资料.md" (encoded "selected λ")}
+        frozen (files/freeze-files "task" config descriptors limits)]
+    (is (= frozen (files/validate-frozen! frozen)))
+    (is (= descriptors (:files frozen)))
+    (is (not= (:input-id frozen) (:input-id (files/freeze-files "other task" config descriptors limits))))
+    (doseq [bad [{"docs/input" nil} {"/absolute" (encoded "bad")}
+                 {".git/config" (encoded "bad")} {"a" (encoded "file") "a/b" (encoded "collision")}
+                 {"docs/forged" (assoc (encoded "large") :bytes 0)}]]
+      (is (thrown? clojure.lang.ExceptionInfo (files/freeze-files "task" config bad limits))))))
 
 (deftest selected-paths-configuration-and-missing-inputs-are-refused
   (@#'fixture/with-workspace

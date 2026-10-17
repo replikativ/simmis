@@ -21,16 +21,19 @@
 (def parameters [:map-of {:max 32} parameter-name [:string {:max 4000}]])
 (def inputs [:map-of {:max 100} [:string {:min 1 :max 512}]
              [:string {:max workflows/max-file-bytes}]])
-(def schema
+(def source-schema
   [:map {:closed true}
-   [:request-id :uuid]
    [:name workflows/name-schema]
    [:expected-bundle :uuid]
-   [:model [:string {:min 1 :max 200}]]
    [:case {:optional true} [:string {:min 1 :max 100}]]
    [:params {:optional true} parameters]
-   [:inputs {:optional true} inputs]
-   [:limits work/limits-schema]])
+   [:inputs {:optional true} inputs]])
+
+(def source-fields [:name :expected-bundle :case :params :inputs])
+
+(def schema
+  (into source-schema [[:request-id :uuid] [:model [:string {:min 1 :max 200}]]
+                       [:limits work/limits-schema]]))
 
 (def transport-schema
   ;; The HTTP JSON decoder keywordizes object keys, even paths. Normalize
@@ -129,11 +132,12 @@
         {:bundle (str (:id bundle)) :inputs digest :files (count entries)
          :checker-executed? false :source-pinned? true})})))
 
-(defn prepare
-  "Construct from ONE immutable source snapshot. The bundle is task data;
-   provider, tool/effect surface, limits and evaluator remain host policy."
-  [snapshot {:keys [name expected-bundle model case params inputs limits] :as input}]
-  (when-not (m/validate schema input) (invalid! "Invalid workflow execution"))
+(defn prepare-source
+  "Validate and render ONE immutable workflow revision without resolving a
+   model or executing checker source. Shared by execution backends; the source
+   pin, literal parameter rendering and input overlay rules are identical."
+  [snapshot {:keys [name expected-bundle case params inputs] :as input}]
+  (when-not (m/validate source-schema input) (invalid! "Invalid workflow source selection"))
   (let [inspection (workflows/inspect-snapshot name snapshot)]
     (when-not (:ok inspection) (invalid! "Workflow bundle is not structurally valid"))
     (when-not (= (str expected-bundle) (:bundle inspection))
@@ -152,22 +156,30 @@
           task (render (:task definition) params)
           prefix (str "/workflows/" name "/")
           entries (input-files prefix (merge (:fixtures bundle) (get-in bundle [:cases case :fixtures])) inputs)
-          prepared (work/prepare {:request-id (:request-id input) :task task :model model :limits limits})
-          setup (setup name bundle (:files snapshot) entries)
-          base (:environment prepared)
-          verifier (:environment/verifier base)
-          provenance {:name name :bundle (str expected-bundle) :case case :params params :policy policy}
-          env (environment/make-environment
-               {:id :simmis/saved-workflow :task task
-                :verifier {:id (:verifier/id verifier) :version (:verifier/version verifier)
-                           :basis (:verifier/basis verifier)}
-                :limits (:environment/limits base)
-                :world (assoc (:environment/world base) :setup (evaluation/world-setup-ref setup))
-                :metadata {:workflow provenance}})]
-      (assoc prepared :request-kind :workflow :execution-kind :saved-workflow
-             :environment env :world-setup setup
-             :basis (assoc (:basis prepared) :submission input :environment env
-                           :source (:files snapshot) :inputs entries :workflow provenance)))))
+          provenance {:name name :bundle (str expected-bundle) :case case :params params :policy policy}]
+      {:bundle bundle :task task :inputs entries :source (:files snapshot)
+       :world-setup (setup name bundle (:files snapshot) entries) :workflow provenance})))
+
+(defn prepare
+  "Construct from ONE immutable source snapshot. The bundle is task data;
+   provider, tool/effect surface, limits and evaluator remain host policy."
+  [snapshot {:keys [model limits] :as input}]
+  (when-not (m/validate schema input) (invalid! "Invalid workflow execution"))
+  (let [{:keys [task inputs source world-setup workflow]} (prepare-source snapshot (select-keys input source-fields))
+        prepared (work/prepare {:request-id (:request-id input) :task task :model model :limits limits})
+        base (:environment prepared)
+        verifier (:environment/verifier base)
+        env (environment/make-environment
+             {:id :simmis/saved-workflow :task task
+              :verifier {:id (:verifier/id verifier) :version (:verifier/version verifier)
+                         :basis (:verifier/basis verifier)}
+              :limits (:environment/limits base)
+              :world (assoc (:environment/world base) :setup (evaluation/world-setup-ref world-setup))
+              :metadata {:workflow workflow}})]
+    (assoc prepared :request-kind :workflow :execution-kind :saved-workflow
+           :environment env :world-setup world-setup
+           :basis (assoc (:basis prepared) :submission input :environment env
+                         :source source :inputs inputs :workflow workflow))))
 
 (defn submit! [conn host-ctx principal room-id room input]
   (when-not (m/validate schema input) (invalid! "Invalid workflow execution"))

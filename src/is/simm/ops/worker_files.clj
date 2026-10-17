@@ -83,6 +83,8 @@
     (refuse! "Worker paths must be canonical accessible relative filenames"))
   path)
 
+(declare freeze-files)
+
 (defn freeze
   "Freeze explicitly selected files from ONE immutable manifest, never a
    recursive directory or the author's entire room. Content IDs are verified
@@ -111,9 +113,8 @@
                                  (when-not (and bytes (= size (alength bytes)))
                                    (refuse! "Input content does not match pinned size"))
                                  [path {:bytes size :mode mode :sha256 (sha256 bytes)
-                                        :base64 (.encodeToString (Base64/getEncoder) bytes)}]))) selected)
-            frozen {:task task :config config :files files :limits limits :policy policy}]
-        (assoc frozen :input-id (hasch/uuid [:simmis/worker-input-v1 frozen]))))))
+                                        :base64 (.encodeToString (Base64/getEncoder) bytes)}]))) selected)]
+        (freeze-files task config files limits)))))
 
 (defn input-chunk [frozen offset length]
   (when-not (= (:input-id frozen) (hasch/uuid [:simmis/worker-input-v1 (dissoc frozen :input-id)]))
@@ -172,3 +173,20 @@
     (doseq [path written parent (butlast (reductions #(str %1 "/" %2) (str/split path #"/")))]
       (when (contains? written parent) (refuse! "Worker output contains file/directory collisions"))))
   output)
+
+(defn freeze-files
+  "Construct the SAME portable input format from already selected immutable
+   descriptors. No room read, provider resolution or execution. Workflow and
+   benchmark adapters must select inputs BEFORE calling this; never pass gold
+   or checker material from an authoring room implicitly."
+  [task config files limits]
+  (when-not (and (string? task) (<= 1 (count task) 16000)
+                 (m/validate config-schema config) (m/validate limits-schema limits)
+                 (m/validate output-schema {:files files :summary "" :exit-code 0})
+                 (not-any? nil? (vals files)))
+    (refuse! "Invalid portable worker inputs"))
+  ;; Verify actual bytes and aggregate bounds before hashing the input; a
+  ;; forged small :bytes field must not admit a large encoded allocation.
+  (validate-output! {:files files} {:files files :summary "" :exit-code 0})
+  (let [frozen {:task task :config config :files (into (sorted-map) files) :limits limits :policy policy}]
+    (validate-frozen! (assoc frozen :input-id (hasch/uuid [:simmis/worker-input-v1 frozen])))))
