@@ -297,6 +297,15 @@ recovery excludes these requests; local process death does not release their
 external ownership fence. Neither human worker-submission tools nor worker
 authentication are installed by application startup.
 
+The separate host-only recovery adapter checks frozen journal identity,
+actual Run/agent/isolation provenance and assignment linkage before closing
+publication or returning resources. A lease needs its physical stop receipt;
+an uncertified world needs its current affine discard capability. A missing
+world handle, even with a durable `:discarded` projection, holds cleanup and
+resources unresolved. Recovery does not run the interpreter, import leftover
+output, create an Attempt or release uncertified work for review. A canonical
+matching certified review world remains available to its ordinary reviewer.
+
 Workflow authoring uses ordinary versioned Geschichte files under
 `workflows/<name>/`. `simmis_workflow-write` requires current room `:write`
 permission and accepts one atomic edit batch, limited to 100 files, 512 KiB per

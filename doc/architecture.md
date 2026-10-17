@@ -84,6 +84,10 @@ engine or result store. Separate conserved admission allowance funds local
 work; remote subscription usage remains explicitly unpriced. Cancellation
 retains the native supervisor until remote stop, and output import stays in
 the canonical isolated Run world with current permission checks.
+The separate host-only `ops/worker-recovery.clj` reconciles orphan exposure
+without execution or late import. Missing world disposal authority keeps
+cleanup unresolved; a terminal Run or discarded projection is not physical
+cleanup proof. It is not installed by application startup.
 Recorded Attempt evidence is distinct from mutable workspace files. See
 [authority.md](authority.md#private-mcp).
 Read-only current-workspace Git bundles use Geschichte's Git object/pack

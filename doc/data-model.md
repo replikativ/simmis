@@ -119,6 +119,22 @@ execution and host versus MCP submission. This host API is not enabled at
 application startup. Generic restart recovery excludes `:local-worker`: a dead
 local JVM cannot certify that a remote process stopped.
 
+`ops/worker-recovery.clj` is a separate host-only reconciliation entry point,
+not installed at boot or on the transport. It validates the frozen request,
+complete Job/Run graph and actual Run provenance before closing publication.
+Missing/queued assignments get a same-intent withdrawal fence; leased work
+holds its resources until physical stop acknowledgement. It can discard an
+exact canonical uncertified deferred world through Dvergr's existing fork
+capability, or preserve an exactly matched certified review world. Only then
+does it return remaining wallets bottom-up and mark the request returned.
+Before either world decision it joins the Job's detached evaluation cleanup
+group and rereads the durable child/Attempt; terminal Runs do not stand in for
+physical completion of capture or certification workers.
+Missing runtime world handles remain `:awaiting-world-cleanup`, even when the
+Run projection says `:discarded`: that projection precedes physical substrate
+cleanup. A crash after discard but before resource return can therefore also
+remain unresolved; this adapter does not fabricate a durable cleanup receipt.
+
 ## Objects, morphisms, instances
 
 The model is a category, called **S**, stored as ordinary Datahike entities.

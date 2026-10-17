@@ -76,8 +76,8 @@
                        (every? #(nil? (get tree %)) (:removed imported)))
           (refuse! ::inconsistent "Run output changed before capture"))
         {:files (into {} (map (fn [[path file]] [(str "/" path) file])) captured)
-         :worker (dissoc imported :files)})
-      {:files {} :worker {:imported? false}})))
+         :worker (assoc (dissoc imported :files) :world (:id world))})
+      {:files {} :worker {:imported? false :world (:id world)}})))
 
 (defn- make-evaluator [config limits basis]
   (evaluation/make-evaluator
