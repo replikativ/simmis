@@ -2,6 +2,13 @@
   (:require [clojure.test :refer [deftest is testing]]
             [is.simm.uis.web.desktop.leaderboard :as lb]))
 
+(deftest experiment-labels-use-frozen-workflow-identity
+  (is (= "Saved review" (lb/experiment-label {:workflow {:name "review" :title "Saved review"}
+                                            :experiment-id "room-workflow/request-opaque"})))
+  (is (= "review" (lb/experiment-label {:workflow {:name "review" :title ""}})))
+  (is (= "legacy/experiment" (lb/experiment-label {:experiment-id "legacy/experiment"})))
+  (is (= "Experiment" (lb/experiment-label {}))))
+
 (deftest verdicts-read-as-plain-words
   (is (= "haiku-0 better" (lb/verdict-label {:a "workflow/haiku-0" :b "workflow/luna-1" :verdict "a-better"})))
   (is (= "luna-1 better" (lb/verdict-label {:a "workflow/haiku-0" :b "workflow/luna-1" :verdict "b-better"})))

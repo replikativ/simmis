@@ -15,6 +15,9 @@ The same journal admits `:task`, `:benchmark` and `:allowance` requests.
 Benchmark intents pin the client submission, canonical ExperimentDef, resolved
 candidate roster, grading policy and aggregate limits. Fixtures use the durable
 request UUID as their host-side locator; this is not another result store.
+The canonical ExperimentDef also freezes bounded workflow provenance (name,
+title and admitted bundle ID). Completed leaderboards use that frozen label,
+not current authoring files, and retain the experiment identity for inspection.
 Calibrated WorldSetup references include the original bundle-bearing fixture
 identity and execution policies. Successful setup/calibration evidence stays in
 the existing Attempt evidence, not a separate calibration database.

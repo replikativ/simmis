@@ -78,6 +78,9 @@
                     (assoc-in [:limits :max-dispatches] 8))
         result (prepared files request)
         evaluator (get-in result [:plan :capabilities :evaluator])]
+    (is (= {:name "echo" :title (get-in result [:bundle :definition :title])
+            :bundle (str (:expected-bundle request))}
+           (get-in result [:plan :experiment :experiment/metadata :simmis/workflow])))
     (is (= 8 (:cells result)))
     (is (= 1250 (get-in result [:cell-limits :budget-microdollars])))
     (is (= 1 (get-in result [:cell-limits :max-dispatches])))
@@ -87,6 +90,14 @@
       (is (= (:verifier/basis (evaluation/evaluator-ref evaluator))
              (get-in env [:environment/verifier :verifier/basis])))
       (is (= env (environment/validate-environment env))))))
+
+(deftest workflow-provenance-is-frozen-and-bounded-at-admission
+  (let [files (assoc fixture/fixture "workflow.edn"
+                     (pr-str {:title (apply str (repeat 1000 "x")) :task "Review input" :capture ["/out"]}))
+        request (input files)
+        result (prepared files request)]
+    (is (= {:name "echo" :title (apply str (repeat 256 "x")) :bundle (str (:expected-bundle request))}
+           (get-in result [:plan :experiment :experiment/metadata :simmis/workflow])))))
 
 (deftest native-subscriptions-prepare-ordinary-room-benchmark-cells
   (let [files fixture/fixture

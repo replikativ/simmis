@@ -122,6 +122,9 @@
                              :metadata (merge (runner/runtime-identity models)
                                               {:checker-policy checkers/policy
                                                :worker-sandbox work-sandbox/policy
+                                               :simmis/workflow {:name name
+                                                                 :title (some-> (:title definition) (subs 0 (min 256 (count (:title definition)))))
+                                                                 :bundle (str expected-bundle)}
                                                :operator-admitted-bundle (str expected-bundle)})))]
       {:bundle bundle :plan (assoc plan :experiment experiment)
        :cells cell-count :cell-limits cell-limits
