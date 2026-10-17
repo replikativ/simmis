@@ -20,7 +20,9 @@
   (:require [dvergr.ops :as dops]
             [dvergr.principal :as principal]
             [malli.core :as m]
-            [is.simm.model.access :as access]))
+            [is.simm.model.access :as access]
+            [is.simm.model.system-db :as system-db]
+            [is.simm.ops.worker-credentials :as worker-credentials]))
 
 (defn authorize
   "Shared authority with runtime argument validation for external MCP calls.
@@ -32,7 +34,12 @@
                      (m/validate [:map [:limit {:optional true} [:int {:min 1 :max 1000}]]]
                                  args))))
     {:allow? false :reason "Invalid operation arguments"}
-    (access/dvergr-authorize principal request)))
+    (cond
+      (= :worker (:principal/kind principal))
+      (worker-credentials/authorize (system-db/get-conn) principal request)
+      (contains? worker-credentials/worker-ops op)
+      {:allow? false :reason "Worker transport operations require their separate worker credential"}
+      :else (access/dvergr-authorize principal request))))
 
 (defn party-principal
   "The dvergr principal of the simmis party `party-id`: a human that posts as

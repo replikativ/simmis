@@ -34,6 +34,34 @@
 
 (def ^:private cases 8)
 
+(deftest completeness-flags-survive-both-leaderboard-projections
+  (let [flags {:priced? false :notional-priced? false :usage-reported? false
+               :unpriced-attempts 1 :unreported-attempts 1}]
+    (with-redefs-fn {#'experiments/op (fn [& _] {:experiment {} :leaderboard [{:candidate "local" :spend flags}]})
+                     #'experiments/frontier (fn [& _] {:resources {}})}
+      (fn []
+        (is (= flags (select-keys (first (:candidates (@#'experiments/completed nil nil "id"))) (keys flags))))))
+    (with-redefs-fn {#'experiments/op (fn [& _] {})}
+      (fn []
+        (is (= flags (select-keys (first (:candidates (@#'experiments/in-progress nil nil
+                                                                  {:candidates [(assoc flags :candidate/id :local :done 1)]})))
+                                 (keys flags))))))))
+
+(deftest workflow-provenance-is-bounded-and-never-arbitrary-metadata
+  (let [bundle "12345678-1234-1234-1234-123456789abc"
+        info {:name "review" :title (apply str (repeat 1000 "x")) :bundle bundle
+              :secret "must not be projected"}
+        project (fn [workflow]
+                  (#'experiments/workflow-info {:experiment/metadata {:simmis/workflow workflow
+                                                                      :private "not projected"}}))]
+    (is (= {:name "review" :title (apply str (repeat 256 "x")) :bundle bundle} (project info)))
+    (is (= {:name "review" :bundle bundle} (project (assoc info :title {:unexpected "shape"}))))
+    (doseq [bad [(assoc info :name "../another-workflow")
+                 (assoc info :name (apply str (repeat 65 "x")))
+                 (assoc info :bundle "not-a-bundle")
+                 (assoc info :bundle {:not "an identity"}) nil]]
+      (is (nil? (project bad))))))
+
 (defn- with-experiment-room
   "`(f room)` with a room that keeps a completed experiment of two
    candidates, `right` (echoes the task: passes) and `wrong` (fails), on
@@ -48,7 +76,9 @@
                                {:id :simmis-test/tasks
                                 :environments (mapv environment (range cases))})
                      :candidates [(roster/agent team :right) (roster/agent team :wrong)]
-                     :repetitions 1})
+                     :repetitions 1
+                     :metadata {:simmis/workflow {:name "saved-review" :title "Frozen review title"
+                                                  :bundle "12345678-1234-1234-1234-123456789abc"}}})
         room (d/make-room {:id :simmis-experiments-test :store (memory/make)})]
     (try
       (binding [ec/*execution-context* (:ctx room)]
@@ -73,6 +103,9 @@
         (testing "the Scorecard's leaderboard, in dvergr's order"
           (is (true? (:complete? e)))
           (is (= "simmis-test/exp" (:experiment-id e)))
+          (is (= {:name "saved-review" :title "Frozen review title"
+                  :bundle "12345678-1234-1234-1234-123456789abc"}
+                 (:workflow e)))
           (is (= (* 2 cases) (:cells e)))
           (is (= ["right" "wrong"] (mapv :candidate (:candidates e))))
           (let [[r w] (:candidates e)]

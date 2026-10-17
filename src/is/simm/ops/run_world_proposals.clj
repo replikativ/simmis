@@ -9,6 +9,7 @@
             [dvergr.discourse :as discourse]
             [dvergr.room.registry :as room-registry]
             [dvergr.rooms.forks :as room-forks]
+            [dvergr.system.rooms :as registry-rooms]
             [is.simm.agents.room-agents :as room-agents]
             [is.simm.model.system-db :as system-db]
             [org.replikativ.spindel.engine.core :as ec]
@@ -219,8 +220,8 @@
 (defn promote!
   "Promote one exact retained Run world into a durable Simmis Proposal.
 
-   The adoption row is committed before affine authority leaves Dvergr. Worlds
-   with multiple systems are exhaustively partitioned into independently
+   The adoption row is committed before affine authority leaves Dvergr. All
+   worlds, including singletons, are exhaustively partitioned into independently
    reviewable components; the Proposal becomes visible only after the exact
    child descriptors commit. Returns ids and status, never a live handle."
   [room-id run-id {:keys [title summary author intent]}]
@@ -254,27 +255,17 @@
                       {:adoption adoption-id :run run-id :error (:error transfer)})))
     (let [systems (keys (get-in transfer [:fork/descriptor :fork/systems]))
           result
-          (if (= 1 (count systems))
-            (try
-              (let [rows (file-adopted-proposal! params [(:fork/descriptor transfer)])]
-                (install-live! adoption-id proposal-id transfer rows)
-                {:status :open :tree transfer :rows rows})
-              (catch Throwable error
-                (record-recovery-required! adoption-id error)
-                (swap! live-adoptions assoc adoption-id
-                       {:proposal-id proposal-id :tree transfer :pending params})
-                {:status :recovery-required :error error :tree transfer}))
-            (try
-              (expose-partitioned!
-               adoption-id proposal-id params
-               (partition-and-file! transfer params systems))
-              (catch Throwable error
-                ;; Affine adoption already succeeded. Preserve the unpartitioned
-                ;; transferred root so recovery partitions it exactly once; never
-                ;; fall back to filing a multi-system component.
-                (retain-promotion-recovery!
-                 adoption-id proposal-id transfer params error
-                 {:needs-partition? true}))))]
+          ;; Partition even a singleton. A fixed leaf is the canonical scope
+          ;; for permission preflight; an original handle can outgrow its
+          ;; creation descriptor by registering child-only systems.
+          (try
+            (expose-partitioned!
+             adoption-id proposal-id params
+             (partition-and-file! transfer params systems))
+            (catch Throwable error
+              (retain-promotion-recovery!
+               adoption-id proposal-id transfer params error
+               {:needs-partition? true})))]
       (log/log! {:level (if (= :open (:status result)) :info :warn)
                  :id ::promoted
                  :data {:adoption adoption-id :proposal proposal-id :run run-id
@@ -354,6 +345,19 @@
         fork-eid (:db/id fork)
         lifecycle
         {:prepare! (fn [_]
+                     (when (= :merge operation)
+                       ;; Durable host identity, never caller descriptor
+                       ;; ancestry. This executes inside Dvergr's existing
+                       ;; handle-authority lock, BEFORE publishing intent.
+                       (let [room-id (:world-adoption/room
+                                      (d/pull @(conn) [:world-adoption/room]
+                                              [:world-adoption/id adoption-id]))
+                             slug (when room-id
+                                    (:room/slug (d/pull @(conn) [:room/slug] [:room/id room-id])))]
+                         (when-not (and slug (= room-id (:proposal.fork/authority-scope fork)))
+                           (throw (ex-info "Adopted world has no matching canonical origin room"
+                                           {:type :proposal/merge-not-permitted})))
+                         (registry-rooms/assert-fork-merge-permitted! slug (:fork/handle node))))
                      (d/transact (conn)
                                  [{:db/id fork-eid
                                    :proposal.fork/settlement-state :settling

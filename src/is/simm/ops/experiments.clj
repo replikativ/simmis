@@ -133,9 +133,21 @@
 
 (defn- uuid [s] (if (uuid? s) s (parse-uuid (str s))))
 
+(defn- workflow-info
+  "Only bounded provenance from the frozen ExperimentDef, never current files
+   or arbitrary experiment metadata. Legacy/non-workflow experiments omit it."
+  [definition]
+  (let [{:keys [name title bundle]} (get-in definition [:experiment/metadata :simmis/workflow])
+        bundle-id (cond (uuid? bundle) bundle
+                        (and (string? bundle) (= 36 (count bundle))) (parse-uuid bundle))]
+    (when (and (string? name) (<= 1 (count name) 64)
+               (re-matches #"[a-z0-9][a-z0-9-]*" name) bundle-id)
+      (cond-> {:name name :bundle (str bundle-id)}
+        (and (string? title) (seq title)) (assoc :title (subs title 0 (min 256 (count title))))))))
+
 (defn- frontier
-  "Tokens and time per candidate of the Scorecard `scorecard-id`: the report's
-   frontier rows, by candidate id."
+  "Presentation evidence from the authorized Scorecard: frozen workflow
+   identity and the report's tokens/time rows, keyed by candidate id."
   [room scorecard-id]
   (binding [rtc/*execution-context* (:ctx room)]
     (when-let [sc (experiment/scorecard room (uuid scorecard-id))]
@@ -145,21 +157,23 @@
                                   (some-> (rstore/-load-attempt st cid id) :attempt/receipt
                                           (assoc :attempt/id id)))
                                 (:scorecard/entries sc)))]
-        (into {}
-              (map (fn [r] [(id-str (:candidate r))
-                            (select-keys r [:tokens-per-attempt :input-per-attempt :output-per-attempt
-                                            :median-seconds :p90-seconds :wall-seconds])]))
-              (report/rows {:scorecard sc :receipts receipts}))))))
+        {:workflow (workflow-info (:scorecard/experiment sc))
+         :resources (into {}
+                          (map (fn [r] [(id-str (:candidate r))
+                                        (select-keys r [:tokens-per-attempt :input-per-attempt :output-per-attempt
+                                                        :median-seconds :p90-seconds :wall-seconds])]))
+                          (report/rows {:scorecard sc :receipts receipts}))}))))
 
 (defn- completed
   "An experiment with a Scorecard: `scorecard_detail`'s leaderboard and paired
    comparisons, with the frontier's tokens and time."
   [room principal scorecard-id]
   (let [detail (op room principal :scorecard/detail {:id (str scorecard-id)})
-        resources (frontier room scorecard-id)
+        {:keys [resources workflow]} (frontier room scorecard-id)
         exp (:experiment detail)]
     {:experiment (:content-id exp)
      :experiment-id (:id exp)
+     :workflow workflow
      :complete? true
      :scorecard (:id detail)
      :environments (:environments exp)
@@ -174,6 +188,8 @@
                                                   :notional-microdollars-per-pass])
                                 {:microdollars (get-in row [:spend :microdollars])
                                  :notional-microdollars (get-in row [:spend :notional-microdollars])}
+                                (select-keys (:spend row) [:priced? :notional-priced? :usage-reported?
+                                                          :unpriced-attempts :unreported-attempts])
                                 (get resources (:candidate row))))
                        (:leaderboard detail))
      :paired (:paired detail)}))
@@ -188,12 +204,14 @@
      :complete? false
      :cells (reduce + 0 (map :done candidates))
      :candidates (mapv (fn [c]
-                         {:candidate (id-str (:candidate/id c))
+                         (merge (select-keys c [:priced? :notional-priced? :usage-reported?
+                                                :unpriced-attempts :unreported-attempts])
+                          {:candidate (id-str (:candidate/id c))
                           :attempts (:done c)
                           :verdicts (:verdicts c)
                           :faults (:faults c)
                           :reward-mean (:reward-mean c)
-                          :microdollars (:microdollars c)})
+                           :microdollars (:microdollars c)}))
                        (sort-by (comp - #(or % -1) :reward-mean) candidates))
      :paired (:paired report)}))
 

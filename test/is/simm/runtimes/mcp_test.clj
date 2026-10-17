@@ -6,8 +6,14 @@
             [dvergr.mcp.surface :as surface]
             [dvergr.ops :as dops]
             [is.simm.ops.results :as results]
+            [is.simm.ops.work-api :as work-api]
+            [is.simm.ops.worker-api :as worker-api]
+            [is.simm.ops.worker-control :as worker-control]
             [is.simm.model.parties :as parties]
+            [is.simm.model.system-db :as system-db]
+            [is.simm.ops.worker-credentials :as worker-credentials]
             [is.simm.runtimes.auth-config :as auth]
+            [is.simm.runtimes.application-ops :as application-ops]
             [is.simm.runtimes.instance :as instance]
             [is.simm.runtimes.http-auth :as http-auth]
             [is.simm.runtimes.mcp :as mcp]
@@ -18,14 +24,32 @@
 
 (def person #uuid "33333333-3333-3333-3333-333333333333")
 
+(defn installed-ops []
+  (mapcat (comp keys deref) [#'results/specifications #'work-api/specifications
+                             #'worker-api/specifications #'worker-control/specifications]))
+
 (use-fixtures :each
   (fn [f]
     (with-redefs [auth/get-auth-config (constantly {:jwt {:secret "test-mcp-signing-key"}})
                   parties/get-party (fn [id] (when (= person id) {:party/id id :party/type :human}))]
-      (try
-        (results/install!)
-        (f)
-        (finally (results/uninstall!))))))
+      ;; Lifecycle tests own a listener cell. Running them in a development
+      ;; REPL must neither reuse nor stop that process's real MCP listener.
+      (with-redefs-fn {#'mcp/listener (atom nil)
+                       #'application-ops/installed? (atom false)}
+        (fn []
+          (let [previous (dops/operations)
+                previous-host @@#'server/embedded-host]
+            (try
+              (application-ops/start!)
+              (f)
+              (finally
+                (application-ops/stop!)
+                (doseq [op (installed-ops)]
+                  (if-let [spec (get previous op)]
+                    (dops/register-op! op spec)
+                    (dops/unregister-op! op)))
+                (server/sync-op-tools!)
+                (server/set-host! previous-host)))))))))
 
 (deftest only-mcp-credentials-for-an-existing-human-authenticate
   (let [authenticate (mcp/authenticator)
@@ -42,6 +66,77 @@
     (with-redefs [parties/get-party (constantly {:party/type :agent})]
       (is (nil? (authenticate {:bearer token}))))
     (is (thrown? clojure.lang.ExceptionInfo (mcp/mint-token! (random-uuid))))))
+
+(deftest worker-control-is-a-new-explicit-ceiling-not-a-work-token-upgrade
+  (let [authenticate (mcp/authenticator)
+        control (authenticate {:bearer (:token (mcp/mint-token! person :worker-control))})
+        read (authenticate {:bearer (:token (mcp/mint-token! person :read))})
+        work (authenticate {:bearer (:token (mcp/mint-token! person :work))})]
+    (is (= mcp/worker-control-tools (:principal/tools control)))
+    (is (contains? (:principal/tools control) "simmis_local-worker-enroll"))
+    (is (contains? (:principal/tools control) "simmis_local-worker-workflow"))
+    (is (contains? (:principal/tools control) "simmis_local-worker-benchmark"))
+    (is (contains? (:principal/tools control) "simmis_local-worker-list"))
+    (doseq [principal [read work]]
+      (is (not (contains? (:principal/tools principal) "simmis_local-worker-workflow")))
+      (is (not (contains? (:principal/tools principal) "simmis_local-worker-benchmark")))
+      (is (not (contains? (:principal/tools principal) "simmis_local-worker-list")))
+      (is (not (contains? (:principal/tools principal) "simmis_local-worker-enroll"))))
+    (doseq [name ["simmis_task" "simmis_workflow-write" "clojure_eval" "simmis_worker-claim"]]
+      (is (not (contains? (:principal/tools control) name))))
+    (let [now (quot (System/currentTimeMillis) 1000)
+          base {:iss mcp/audience :aud mcp/audience :sub (str person) :iat now :exp (+ now 3600)}]
+      (doseq [claims [{:capability-version 2 :mode "work" :tools ["simmis_local-worker-enroll"]}
+                      {:capability-version 3 :mode "work" :tools ["simmis_local-worker-enroll"]}
+                      {:capability-version 3 :mode "worker-control" :tools ["simmis_task"]}]]
+        (is (nil? (authenticate {:bearer (jwt/sign-hs256 (#'mcp/signing-key) (merge base claims))})))))))
+
+(deftest adding-workflow-controls-never-widens-an-existing-signed-token
+  (let [new-tools mcp/worker-control-tools
+        old-tools (disj new-tools "simmis_local-worker-workflow" "simmis_workflow-list"
+                        "simmis_workflow-source" "simmis_workflow-check" "simmis_local-worker-benchmark"
+                        "simmis_local-worker-list")
+        token (with-redefs [mcp/worker-control-tools old-tools]
+                (:token (mcp/mint-token! person :worker-control)))
+        principal ((mcp/authenticator) {:bearer token})]
+    (is (= old-tools (:principal/tools principal)))
+    (is (not (contains? (:principal/tools principal) "simmis_local-worker-workflow")))
+    (is (not (contains? (:principal/tools principal) "simmis_local-worker-benchmark")))
+    (doseq [[principal expected]
+            [[principal false]
+             [((mcp/authenticator) {:bearer (:token (mcp/mint-token! person :worker-control))}) true]]]
+      (let [ctx (server/session-context (fn [_]) (surface/selection {:profile :admin}) principal)]
+        (rpc/handle-message ctx {:jsonrpc "2.0" :id 1 :method "initialize"
+                                 :params {:protocolVersion "2025-06-18" :capabilities {}
+                                          :clientInfo {:name "old-ceiling-regression" :version "1"}}})
+        (rpc/handle-message ctx {:jsonrpc "2.0" :method "notifications/initialized"})
+        (doseq [name ["simmis_local-worker-workflow" "simmis_local-worker-benchmark" "simmis_local-worker-list"]]
+          (is (= expected
+                 (contains? (set (map :name (get-in (rpc/handle-message ctx
+                                                                      {:jsonrpc "2.0" :id 2 :method "tools/list"})
+                                                   [:result :tools]))) name)))
+          (when-not expected
+            (let [response (rpc/handle-message ctx {:jsonrpc "2.0" :id 3 :method "tools/call"
+                                                   :params {:name name :arguments {}}})]
+              (is (or (:error response) (get-in response [:result :isError]))))))))))
+
+(deftest worker-prefix-authentication-never-falls-through-to-human-authority
+  (let [human-calls (atom 0) worker-calls (atom [])]
+    (with-redefs-fn {#'mcp/human-authenticator (fn [] (fn [_] (swap! human-calls inc) ::human))
+                     #'system-db/get-conn (constantly ::connection)
+                     #'worker-credentials/authenticate
+                     (fn [conn request] (swap! worker-calls conj [conn request]) nil)}
+      (fn []
+        (let [authenticate (mcp/authenticator)]
+          (doseq [bearer ["simmis-worker.invalid" "simmis-lease.revoked.or.expired"]]
+            (is (nil? (authenticate {:bearer bearer}))))
+          (is (zero? @human-calls))
+          (is (= 2 (count @worker-calls)))
+          (with-redefs [worker-credentials/authenticate (fn [& _] (throw (Exception. "unavailable")))]
+            (is (nil? (authenticate {:bearer "simmis-lease.unavailable"}))))
+          (is (zero? @human-calls))
+          (is (= ::human (authenticate {:bearer "ordinary-human-format"})))
+          (is (= 1 @human-calls)))))))
 
 (deftest mcp-and-web-tokens-cannot-be-replayed-across-surfaces
   (let [key (#'mcp/signing-key)
@@ -103,8 +198,34 @@
       (is (not-any? #(= "room_file" (:name %)) (:templates definitions))
           "legacy tokens gain neither new tools nor file resources"))))
 
-(deftest listener-is-opt-in-private-idempotent-and-cleans-up
-  (let [events (atom [])]
+(deftest work-is-an-explicit-signed-ceiling-not-an-admin-profile-escalation
+  (let [authenticate (mcp/authenticator)
+        read (authenticate {:bearer (:token (mcp/mint-token! person))})
+        work (authenticate {:bearer (:token (mcp/mint-token! person :work))})]
+    (is (= #{:dvergr/read-only} (:principal/scopes read)))
+    (is (= #{} (:principal/scopes work)))
+    (is (= mcp/work-tools (:principal/tools work)))
+    (is (not (contains? (:principal/tools read) "simmis_task")))
+    (doseq [[p expected] [[read mcp/read-tools] [work mcp/work-tools]]]
+      (let [ctx (server/session-context (fn [_]) (surface/selection {:profile :admin}) p)]
+        (rpc/handle-message ctx {:jsonrpc "2.0" :id 1 :method "initialize"
+                                 :params {:protocolVersion "2025-06-18" :capabilities {}
+                                          :clientInfo {:name "spoofed-admin" :version "1"}
+                                          :_meta {:dvergr/profile "admin"}}})
+        (rpc/handle-message ctx {:jsonrpc "2.0" :method "notifications/initialized"})
+        (is (= expected (set (map :name (get-in (rpc/handle-message ctx
+                                                                    {:jsonrpc "2.0" :id 2 :method "tools/list"})
+                                                [:result :tools])))))
+        (doseq [tool ["room_write" "room_post" "clojure_eval" "catalog_benchmark" "attempt_export"]]
+          (let [r (rpc/handle-message ctx {:jsonrpc "2.0" :id 3 :method "tools/call"
+                                           :params {:name tool :arguments {}}})]
+            (is (or (:error r) (get-in r [:result :isError])))))))
+    (is (thrown? clojure.lang.ExceptionInfo (mcp/mint-token! person :admin)))))
+
+(deftest listener-is-opt-in-private-idempotent-and-transport-only
+  (let [events (atom [])
+        host @@#'server/embedded-host
+        operations (dops/operations)]
     (with-redefs [mcp/configured-port (constantly nil)
                   server/set-host! #(swap! events conj [:host (some? %)])
                   http/start! (fn [opts]
@@ -117,22 +238,58 @@
         (with-redefs [mcp/configured-port (constantly 17889)]
           (mcp/start!)
           (mcp/start!))
-        (is (= [[:host true] [:start {:port 17889 :bind "127.0.0.1" :profile :readonly}]] @events))
+        (is (= [[:start {:port 17889 :bind "127.0.0.1" :profile :admin}]] @events))
         (is (nil? (:token @@#'mcp/listener)))
         (mcp/stop!)
         (mcp/stop!)
-        (is (not-any? #(contains? (dops/operations) %) (keys results/specifications)))
-        (is (= [[:stop] [:host false]] (take-last 2 @events)))
+        (is (= operations (dops/operations)))
+        (is (identical? host @@#'server/embedded-host))
+        (is (= [:stop] (last @events)))
         (finally (mcp/stop!))))))
 
-(deftest failed-start-clears-the-host
-  (let [hosts (atom [])]
+(deftest failed-listener-start-preserves-application-operations-and-can-retry
+  (let [hosts (atom [])
+        host @@#'server/embedded-host
+        operations (dops/operations)]
     (with-redefs [mcp/configured-port (constantly 17889)
                   server/set-host! #(swap! hosts conj %)
                   http/start! (fn [_] (throw (ex-info "occupied" {})))]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"occupied" (mcp/start!)))
-      (is (some? (first @hosts)))
-      (is (nil? (last @hosts))))))
+      (is (empty? @hosts))
+      (is (nil? @@#'mcp/listener))
+      (is (identical? host @@#'server/embedded-host))
+      (is (= operations (dops/operations)))
+      (with-redefs [http/start! (fn [_] {:port 17889 :stop (fn [])})]
+        (try (mcp/start!)
+             (is (= 17889 (:port @@#'mcp/listener)))
+             (finally (mcp/stop!)))))))
+
+(deftest application-operations-exist-without-mcp-and-stop-only-with-application
+  (with-redefs [mcp/configured-port (constantly nil)]
+    (mcp/start!)
+    (mcp/stop!)
+    (doseq [op [:simmis/workflow-list :simmis/workflow-source :simmis/workflow-write
+                :simmis/attempt-files :simmis/attempt-file]]
+      (is (contains? (dops/operations) op)))
+    (let [host @@#'server/embedded-host]
+      (application-ops/start!)
+      (is (identical? host @@#'server/embedded-host) "application start is idempotent"))
+    (application-ops/stop!)
+    (application-ops/stop!)
+    (is (nil? @@#'server/embedded-host))
+    (is (not-any? #(contains? (dops/operations) %)
+                  (installed-ops)))))
+
+(deftest failed-application-registration-rolls-back-and-can-retry
+  (application-ops/stop!)
+  (with-redefs [work-api/install! (fn [] (throw (ex-info "registration failed" {})))]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"registration failed"
+                          (application-ops/start!))))
+  (is (nil? @@#'server/embedded-host))
+  (is (not-any? #(contains? (dops/operations) %)
+                (installed-ops)))
+  (application-ops/start!)
+  (is (contains? (dops/operations) :simmis/workflow-list)))
 
 (deftest web-login-exchanges-only-its-own-human-identity
   (let [other #uuid "44444444-4444-4444-4444-444444444444"
@@ -146,7 +303,8 @@
       (with-redefs [http-auth/party-id (constantly nil)]
         (is (= 401 (:status (handler request)))))
       (with-redefs [http-auth/party-id (constantly person)]
-        (let [response (handler request)
+        (is (= 400 (:status (handler request))) "caller identity/profile fields are not accepted")
+        (let [response (handler (assoc request :body {}))
               principal ((mcp/authenticator) {:bearer (get-in response [:body :token])})]
           (is (= 200 (:status response)))
           (is (= "no-store" (get-in response [:headers "Cache-Control"])))
@@ -174,7 +332,7 @@
         request (fn [token]
                   (handler {:request-method :post :uri "/auth/mcp-token"
                             :headers {"authorization" (str "Bearer " token)}
-                            :body {:party-id person}}))]
+                            :body {}}))]
     (with-redefs [http-auth/validator (delay validator)
                   mcp/configured-port (constantly 47889)
                   parties/get-party (fn [id] (when (#{person other} id)

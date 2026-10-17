@@ -62,6 +62,45 @@
                      :grant/system [:system/id (get w sys-key)]
                      :grant/permission permission :grant/created (java.util.Date.)}]))
 
+(deftest saved-wiki-reads-recheck-room-membership-and-kb-grants
+  (doseq [revoke [:membership :grant]]
+    (ctx/with-server-context
+      (world/with-world [conn w]
+        (let [kb (fresh-kb! (:kb-granted-scope w))]
+          (d/transact kb [{:S.Page/title "Read sentinel" :entity/uuid (random-uuid)}])
+          (when (= :grant revoke)
+            (let [other (fresh-kb! (:kb-private-scope w))]
+              (d/transact other [{:S.Page/title "Still authorized" :entity/uuid (random-uuid)}])
+              (grant! conn w :room :kb-private-sys :read)))
+          (with-redefs [kbs/connect-kb-database #(branching/get-kb-conn %)]
+            (let [sc (sci/init {})]
+              (#'ra/add-wiki-ns! sc (#'ra/get-room-kb-conns (:room w) (:member w)) (:room w) (:member w))
+              (sci/eval-string* sc "(def saved-pages wiki/pages)")
+              (let [pages (sci/eval-string* sc "(saved-pages)")]
+                (is (= (if (= :grant revoke) #{"Archive" "Handbook"} #{"Handbook"}) (set (map :kb pages))))
+                (is (some #{"Read sentinel"} (:pages (first (filter #(= "Handbook" (:kb %)) pages))))))
+              (is (= {:kb "Handbook" :title "Read sentinel" :blocks []}
+                     (sci/eval-string* sc "(wiki/read-page \"Read sentinel\")")))
+              (case revoke
+                :membership
+                (d/transact conn [[:db/retract [:room/id (:room w)] :room/parties [:party/id (:member w)]]])
+                :grant
+                (let [grant (d/q '[:find ?g . :in $ ?room ?sys
+                                   :where [?r :room/id ?room] [?s :system/id ?sys]
+                                   [?g :grant/room ?r] [?g :grant/system ?s]]
+                                 @conn (:room w) (:kb-granted-sys w))]
+                  (is (some? grant))
+                  (d/transact conn [[:db/retractEntity grant]])))
+              (when (= :grant revoke)
+                ;; An incomplete cached selection refuses as a whole, rather
+                ;; than presenting a silently filtered/partial wiki as complete.
+                (is (access/sandbox-kb-allows? @conn (:member w) (:room w) (:kb-private w) :read))
+                (is (not-authorized? #(sci/eval-string* sc "(wiki/read-page \"Still authorized\")"))))
+              (doseq [source ["(saved-pages)" "(wiki/pages)" "(wiki/read-page \"Read sentinel\")"
+                              "(wiki/search \"Read sentinel\")" "(wiki/backlinks \"Read sentinel\")"
+                              "(wiki/neighborhood \"Read sentinel\")"]]
+                (is (not-authorized? #(sci/eval-string* sc source)) (str revoke ": " source))))))))))
+
 (deftest the-sandbox-reaches-only-granted-kbs
   (ctx/with-server-context
     (world/with-world [conn w]
@@ -232,8 +271,8 @@
   (world/with-world [_ w]
     (let [posted (atom [])]
       (with-redefs [room-dbs/connect-room-database (fn [_] (schemaless-conn))
-                    is.simm.uis.web.desktop.chat-remote/ensure-room-chatroom! (fn [& _])
-                    is.simm.uis.web.desktop.chat-remote/ensure-party-projection! (fn [& _])
+                    is.simm.ops.chat/ensure-room-chatroom! (fn [& _])
+                    is.simm.ops.chat/ensure-party-projection! (fn [& _])
                     ra/post-user-message! (fn [room-uuid msg sender-id & _]
                                             (swap! posted conj [room-uuid msg sender-id]))]
         (let [send! (fn [kind sender-id text]

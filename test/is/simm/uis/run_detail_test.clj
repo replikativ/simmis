@@ -44,7 +44,13 @@
           {:settlement-status :review
            :settlement-reason :execution-waiting})))
   (is (= "Work merged"
-         (run-detail/settlement-label {:settlement-status :merged}))))
+         (run-detail/settlement-label {:settlement-status :merged})))
+  (is (= "Work needs recovery"
+         (run-detail/settlement-label {:settlement-status :recovery-required})))
+  (is (= "Settlement in progress"
+         (run-detail/settlement-label {:settlement-status :review :settlement-reason :settlement-in-progress})))
+  (is (= "Work merged — cleanup needs recovery"
+         (run-detail/settlement-label {:settlement-status :merged :settlement-reason :settlement-cleanup-failed}))))
 
 (deftest groups-routine-tool-bursts-without-losing-leaves
   (let [calls [(call "1" "read_file")

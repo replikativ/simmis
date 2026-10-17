@@ -63,7 +63,11 @@
         ;; landed), on yggdrasil 0.3.49 (#137). A fork whose overlay is gone
         ;; now throws ::overlay-lost instead of silently doing nothing —
         ;; simmis's merge RPCs surface it through rpc-errors.
-        org.replikativ/spindel {:mvn/version "0.1.126"}
+        ;; 0.1.128 also delivers resumed track deltas once and avoids no-op
+        ;; execution-state writes on resume.
+        ;; 0.1.131 includes singleton authority partitions, nil DOM attribute
+        ;; cleanup and read-only cross-catalog fork diffs (#141–143).
+        org.replikativ/spindel {:mvn/version "0.1.131"}
         ;; spindel 0.1.53 brings anglican 1.1.0 (its inference methods), which
         ;; brings timbre 4.10.0, whose ClojureScript no longer compiles
         ;; ("Can't redefine a constant"). A current timbre serves anglican's
@@ -150,14 +154,16 @@
         ;; only to "same check as subscribe" — the residue 0.3.105 finishes.
         org.replikativ/kabel {:mvn/version "0.3.139"}
         ;; kontor — double-entry accounting kernel; powers is.simm.model.books
-        ;; (per-room governed double-entry) + the metering→ledger bridge. :local
-        ;; overlays ../kontor for cross-repo dev.
+        ;; (per-room governed double-entry) + the metering→ledger bridge.
+        ;; Kept direct because Simmis itself uses the accounting APIs.
         ;;
         ;; 0.1.37 retains the accounting fixes Simmis depends on and adds the
         ;; conserved resource vectors, receipts and Datahike invariants loaded
         ;; by dvergr 0.1.66. Older Kontor releases have no kontor.resource
         ;; namespace, so they cannot coexist with that dvergr release.
-        org.replikativ/kontor {:mvn/version "0.1.39"}
+        ;; 0.1.40 shares pure account identities with Dvergr's lightweight
+        ;; model clients; an older direct pin would override that requirement.
+        org.replikativ/kontor {:mvn/version "0.1.40"}
         ;; auth folded into kabel as kabel.auth.* (opt-in there); provide its
         ;; code deps here since we use it. geheimnis is kabel.auth's portable
         ;; crypto (JWT HS256, token hashing); it needs hasch >= 0.4.100 (raw
@@ -214,7 +220,8 @@
         ;; wins, and Simmis also relies on Yggdrasil's Geschichte adapter and
         ;; its content-level merge API.
         ;; 0.1.19: datahike 0.8.1904 and org.replikativ/partial-cps only.
-        org.replikativ/geschichte {:mvn/version "0.1.19"}
+        ;; 0.1.20 includes bounded current-workspace Git bundle support (#16).
+        org.replikativ/geschichte {:mvn/version "0.1.20"}
         ;; Datahike's bundled secondary-index adapter uses
         ;; scriptum.core/warm!, introduced before this release.
         org.replikativ/scriptum {:mvn/version "0.1.32"}
@@ -353,7 +360,14 @@
         ;; explicit vision configuration, plus funded dispatch accounting.
         ;; 0.1.299: one durable message can address an explicit recipient set;
         ;; duplicate same-id per-target posts no longer stand in for multicast.
-        org.replikativ/dvergr {:mvn/version "0.1.299"}}
+        ;; 0.1.306 includes bounded evaluation cleanup, automatic workspace
+        ;; settlement, zero-priced native dispatch accounting and canonical
+        ;; fork/grant/settlement fixes (#342–348).
+        ;; 0.1.311 preserves unknown usage in typed Attempt projections and
+        ;; evaluation read models without rewriting certified Scorecards (#353).
+        ;; 0.1.312 keeps model/broker loading independent of Datahike and the
+        ;; agent runtime, preserving trusted installation boundaries (#355).
+        org.replikativ/dvergr {:mvn/version "0.1.312"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
@@ -460,6 +474,9 @@
                   :exec-fn kaocha.runner/exec-fn
                   :exec-args {:skip-meta [:integration]}}
 
+           ;; Browser-native test namespaces, without dev/user.clj.
+           :browser-tests {:extra-paths ["test"]}
+
            ;; Classpath for npx-spawned shadow-cljs JVMs (release builds).
            ;; Deliberately does NOT include the "dev" path: Clojure
            ;; auto-loads dev/user.clj from the classpath, whose top-level
@@ -470,5 +487,8 @@
                                  binaryage/devtools {:mvn/version "1.0.7"}}}
 
            ;; Uberjar build (clojure -T:build uber) — see build.clj
-           :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.5"}}
+           ;; -T replaces project deps: pin its runtime too, instead of
+           ;; inheriting whichever Clojure ships with the installed CLI.
+           :build {:deps {org.clojure/clojure {:mvn/version "1.12.5"}
+                          io.github.clojure/tools.build {:mvn/version "0.10.5"}}
                    :ns-default build}}}

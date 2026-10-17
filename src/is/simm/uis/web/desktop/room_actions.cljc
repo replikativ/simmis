@@ -57,8 +57,11 @@
    The header button fires before the enclosing column's click handler, so its
    destination must be carried from the render path rather than inferred from
    the currently active column."
-  [col-id action room-id room-name]
+  [col-id action room-id room-name & [db-scope]]
   (case action
+    :workflows [:workflows (cond-> {:room-id room-id :room-name room-name}
+                            db-scope (assoc :db-scope db-scope))
+                {:title (str room-name " Workflows") :new-tab? true :col-id col-id}]
     :screens [:screens {:room-id room-id :room-name room-name}
               {:title (str room-name " Screens") :new-tab? true :col-id col-id}]
     :video [:video {:room-id room-id :room-name room-name}

@@ -53,6 +53,18 @@ existing attributes only. Each use is checked again, so
 detaching a KB takes it away from a running agent. A room with no KB attached
 has no KB in its sandbox; nothing falls back to its creator's KBs.
 
+The wiki query/formatting vocabulary is shared in `agents/wiki_read.clj`.
+Each call resolves its authorized targets once as immutable DB values, so page
+blocks and both halves of a link neighborhood cannot mix database revisions
+within that call. Installed and saved functions resolve again on their next
+use; the ordinary participant adapter rechecks current grants before reading
+its known connections. Missing/refused resolution raises an error, not an
+empty wiki. `summarize!` stays a separate authorized, effectful operation rather
+than part of that read vocabulary.
+If any KB in an ordinary participant's cached selection is revoked, the read
+refuses until that participant context is rebuilt, even if another cached KB
+remains authorized; it does not silently present a partial selection as complete.
+
 A `kontor/*` posting records no author: kontor's posting API takes no
 transaction metadata. A team's Book (Accounting → the team's heading;
 `ops.book-report`) recovers it from dvergr's call record instead — the
@@ -105,6 +117,214 @@ run back through it.
 **The sandbox is a soft boundary.** It is a curated SCI context hardened
 against the escapes we have found, not a VM. Do not run untrusted agents
 against secrets you cannot rotate.
+
+### Packaged local SCI endpoints
+
+`clojure -T:build worker` builds a dedicated `target/simmis-*-worker.jar`,
+without the development classpath, frontend, server entrypoint or tests.
+The build rejects ambient `user.clj`/compiled user startup and manifest
+classpaths. The fixed entrypoint is `clojure.main -m
+is.simm.ops.worker-process`, with `guest`, `broker` or credential-free `check`
+mode. Check loads the real endpoint dependencies and reports the executor and
+inference policy identities; it does not construct a provider or run an agent.
+The trusted Linux installation must select a compatible Java21-or-newer JDK
+at `/usr/bin/java`; changing shell `PATH` or `JAVA_HOME` alone does not change
+this fixed bootstrap. CI explicitly aligns that path with its configured JDK.
+
+`scripts/worker_runtime.py` validates an operator-selected absolute artifact
+path and SHA256, fixes JVM arguments, and constructs a clean child environment.
+The guest gets private login locations; only an explicitly configured broker
+gets the native Codex login directory. It inherits no API keys, Java injection
+options or controller credentials. The native provider refuses login refresh
+and persistence during work. A digest pins selected bytes, not their provenance
+or safety. Runtime installation remains trusted local administration.
+
+The local controller accepts either its existing native/bwrap adapter or an
+explicit `dvergr-sci` profile. The SCI profile binds the runtime digest and
+endpoint policy identities into a versioned launch journal. Its fixed trusted
+supervisor starts both JVMs only after physical capture, durable admission and
+GO, with separate private homes and pipes inside the same retained systemd
+execution unit. The envelope is 2.5GiB memory, no swap,128 tasks, one CPU and a
+finite deadline; each JVM has a512MiB heap limit. Unsupported adapters refuse
+before claiming work. A completed result still requires whole-unit shutdown,
+a durable stopped journal and fresh lease authority before publication.
+Recovery may stop an admitted unit or retry stopped output, never relaunch it;
+it does not require the runtime jar or native login to remain installed.
+
+The application registers six separately authenticated worker transport
+operations and seven human local-worker controls: enrollment, revocation,
+own-worker listing, explicit admission allowance, selected-file task submission,
+pinned saved workflow submission and bounded benchmark submission. Workflow
+submission shares native workflow source/parameter/input
+preparation but uses the enrolled local model, not a server provider credential.
+Over MCP, human controls
+require a separately requested `worker-control` token. Neither an existing
+read token nor a work token gains them; this operator-helper session should not
+be attached as an ordinary model tool session. Worker/lease bearer prefixes
+authenticate exclusively as workers, never by falling through to human/admin
+authentication, and cannot invoke the human controls.
+
+New human enrollment, allowance and submission default to disabled. Set
+`SIMMIS_LOCAL_WORKER_ADMISSION=true` or `:mcp {:local-worker-admission? true}`
+to permit them. This flag is not cancellation: already queued assignments may
+still be claimed, and existing lease heartbeat/stop acknowledgement remains
+available. Explicit enrollment revocation removes further delegated execution.
+Enrollment validates native Codex registry metadata without requiring the
+server to have a subscription login. Admission units are not measured dollars
+or tokens, and no control automatically funds an allowance.
+
+Startup fences orphaned assignments after Dvergr hydration and before MCP
+claims are accepted, retaining unresolved world cleanup rather than faking it.
+An application-owned single-thread recovery service checks pending requests
+with a30-second fixed delay. It never executes work, imports late output or
+certifies an Attempt. Receipt handlers never wait for its cleanup joins.
+Initial fencing failure or an unhealthy service holds new human admission and
+worker claims, but never removes existing lease heartbeat/stop. Shutdown joins
+the service before releasing its handle; a failed join retains ownership.
+Protocol readiness or a guest result does not prove shutdown. JVM flags alone
+are not containment; SCI is not filesystem isolation against a JVM escape.
+
+### Local SCI worker driver
+
+Use `scripts/worker_driver.py` from the trusted local installation, not as an
+agent tool. It requires Linux user systemd/cgroup-v2 and the system Python's
+`dbus`/`gi` packages. Build the worker jar above and inspect its SHA256. Keep a
+dedicated private state directory per enrollment; its parent must already
+exist. Never copy it to another machine, delete unresolved Run journals or
+start independent controller roots for the same worker identity.
+
+First log in with a separate operator-helper session and explicitly bind the
+MCP SSH-tunnel destination. This binding is set during login, not accepted from
+tasks. Changing hosts or ports requires another explicit login; old sessions
+without a binding may only use their own origin's `/mcp` endpoint.
+
+```bash
+/usr/bin/python3 scripts/mcp_client.py login --origin https://dev.simm.is \
+  --session /private/operator-session.json --access worker-control \
+  --mcp-endpoint http://127.0.0.1:47990/mcp
+
+/usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
+  --session /private/operator-session.json enroll \
+  --endpoint http://127.0.0.1:47990/mcp --room ROOM_HANDLE \
+  --jar /absolute/simmis-worker.jar --sha256 REVIEWED_SHA256 \
+  --model REGISTERED_NATIVE_CODEX_MODEL
+```
+
+Enrollment runs a credential-free packaged preflight, durably records intent
+before the network call, and privately saves only the room-attenuated worker
+credential. An exact retry recovers the same enrollment. Local package paths
+and the subscription login are not uploaded. Subsequent human controls use the
+canonical room UUID in the receipt, never a potentially renamed/reused slug.
+
+Funding is a separate explicit action. Choose a fresh request UUID for each
+new intent and reuse it on a retry:
+
+```bash
+/usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
+  --session /private/operator-session.json allowance --request-id REQUEST_UUID \
+  --admissions 1
+
+/usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
+  --session /private/operator-session.json task --request-id ANOTHER_REQUEST_UUID \
+  --task 'Read the selected input and write a report under /out/' \
+  --path docs/input.md --timeout-ms 300000 --settlement review
+
+/usr/bin/python3 scripts/worker_driver.py --state /private/room-worker run \
+  --codex-home /absolute/local/codex-login-directory
+```
+
+For a saved workflow, inspect its current bundle with the workflow read/check
+tools, then submit the exact UUID instead of a free-form task. This is an
+alternative submission, not an extra free admission:
+
+```bash
+/usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
+  --session /private/operator-session.json workflow --request-id REQUEST_UUID \
+  --name WORKFLOW_NAME --expected-bundle INSPECTED_BUNDLE_UUID \
+  --params '{"subject":"literal parameter"}' --timeout-ms 300000 --settlement review
+```
+
+Case-pack workflows additionally require `--case CASE_NAME`. `--inputs` accepts
+a JSON map of canonical absolute workspace paths to text. The worker sees only
+the pinned workflow source and fixture/input overlays, not all room files.
+Authored checkers are not executed by this ordinary workflow control.
+
+To measure that workflow, an installation operator with current room read/merge
+authority can use the separate bounded benchmark control:
+
+```bash
+/usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
+  --session /private/operator-session.json benchmark --request-id REQUEST_UUID \
+  --name WORKFLOW_NAME --expected-bundle INSPECTED_BUNDLE_UUID \
+  --case CASE_NAME --repetitions 1 --timeout-ms 300000
+```
+
+Omit `--case` for all cases (at most four); repeat it to select cases. One or
+two repetitions allow at most eight serial cells. Fund the required admissions
+explicitly before submission; this command never funds or retries work. Run the
+local driver once per queued cell. Each cell is discarded after evaluation.
+An empty queue between serial cells is not completion: check the Job's settled
+status through `job_status` before treating the benchmark as finished.
+Only clean fixtures reach the guest: checkers, gold and calibration remain on
+the server. Results use the existing room experiment/Scorecard views; authored
+checks remain ad-hoc, not independently trusted, and subscription cost/usage
+is unreported rather than measured as zero. Existing operator tokens do not gain
+the new tool automatically: request a new private `worker-control` session.
+
+The private `simmis_local-worker-list` MCP control discovers your own non-revoked
+enrollments in one room, ten per page (`after` takes the previous `next-after`).
+It requires a human with current room read/merge authority, including when new
+admission is disabled. Results contain only worker identity, generation and
+allowlisted configuration hints—not credentials, verifier hashes or artifact
+references. They do not establish liveness or authorize execution; submission
+rechecks current authority and enrollment. Pagination bounds response size,
+not query work: the service sorts the matching enrollment IDs before paging.
+
+The room's Workflows source editor offers the same local execution controls
+under **Execution backend → My enrolled local SCI worker**. Refresh your workers
+and select one explicitly. Funding stays a separate confirmation in admission
+units; benchmarking reports its cell count and discards each candidate world.
+The browser uses its current authenticated human session, not a worker bearer.
+It does not enroll workers, upload local logins or start the private driver.
+Submission/funding retries preserve their original backend and immutable payload
+even if the form changes. A funded indicator applies only to its own backend.
+
+Attempt boards and experiment leaderboards preserve Dvergr's measurement
+completeness. Billed spend and notional inference cost are independent: a
+subscription may have known zero billed spend but unknown notional cost. A total
+or cost-per-pass is unknown unless every contributing Attempt has that dimension
+explicitly priced. Unknown values display as a dash, not zero or a partial sum;
+legacy numeric placeholders without completeness flags remain unknown. These
+read models do not rewrite certified Scorecards or infer reported token usage.
+
+`run` handles one queued assignment, or accepts `--run RUN_UUID`. The task's
+total deadline includes queue time and cold JVM startup;
+`task` and `workflow` default to five minutes, with a ten-minute maximum. Start the local
+runner promptly after submitting. Fresh interpreter/broker JVMs may spend a
+substantial part of that bound loading the stack before inference begins.
+The broker's portable configuration lives in `worker-contract`; decoding wire
+messages must not initialize guest workspaces or database implementations. The
+packaged-runtime suite checks that boundary in a fresh JVM. Guest frozen-input
+decoding still invokes the full canonical file validator before allocation.
+Use the documented `/usr/bin/python3`: it needs the host D-Bus/GLib bindings.
+The controller initializes its physical observer under its permanent ownership
+lock before creating a Run journal or claiming work. Missing host bindings or
+an unavailable observer therefore cannot strand a new lease. Unresolved prior
+Run journals still block admission before even initializing that observer.
+The controller receives no human credential; the guest receives neither credential family nor
+the native login. This uses Dvergr's native subscription provider and SCI loop,
+not the Codex CLI's tool harness. The native login is read only by the broker;
+an expired login fails without refresh or persistence. Renew it separately.
+Job/Run state and captured results appear in the existing room inspectors and
+artifact MCP reads, with subscription usage explicitly unreported.
+
+After interruption or a lost completion reply, use
+`worker_driver.py --state /private/room-worker reconcile --run RUN_UUID`.
+This never relaunches or sends GO, and does not need the artifact or login to
+remain installed. Missing physical ownership metadata stays unresolved rather
+than being treated as stopped. `revoke` uses the private human session and
+remains available with new admission disabled; it still requires the worker
+to acknowledge actual physical stop.
 
 ## Writes land on forks
 

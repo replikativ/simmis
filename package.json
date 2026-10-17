@@ -1,6 +1,7 @@
 {
   "name": "simmis",
   "scripts": {
+    "test:browser": "shadow-cljs -A:shadow:browser-tests compile browser-tests && node scripts/test_browser.mjs",
     "dev": "shadow-cljs -A:shadow watch app & npm run styles-dev",
     "release": "shadow-cljs -A:shadow release app && npm run styles-release",
     "build:css": "cp src/is/simm/core.css public/main.css && lightningcss --bundle public/main.css -o public/main.css",

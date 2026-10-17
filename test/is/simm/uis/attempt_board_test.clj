@@ -18,7 +18,9 @@
                      :attempt/reward :double :attempt/elapsed-ms :long :attempt/started-at :instant
                      :attempt/environment-id :keyword :attempt/microdollars :long
                      :attempt/experiment-content-id :uuid :attempt/experiment-candidate :keyword
-                     :attempt/notional-microdollars :long}]
+                     :attempt/notional-microdollars :long
+                     :attempt/spend-priced? :boolean :attempt/notional-priced? :boolean
+                     :attempt/usage-reported? :boolean}]
           {:db/ident k :db/valueType (keyword "db.type" (name t)) :db/cardinality :db.cardinality/one})))
 
 (defn- conn []
@@ -35,7 +37,56 @@
                          :attempt/provider :openai :attempt/status :completed
                          :attempt/elapsed-ms 1000 :attempt/started-at (java.util.Date.)
                          :attempt/environment-id :env}
-                        m)]))
+                        (cond-> m
+                          (contains? m :attempt/microdollars)
+                          (update :attempt/spend-priced? #(if (nil? %) true %))
+                          (or (contains? m :attempt/notional-microdollars) (contains? m :attempt/microdollars))
+                          (update :attempt/notional-priced? #(if (nil? %) true %))))]))
+
+(deftest incomplete-spend-never-becomes-a-partial-total-or-zero-price
+  (let [known {:priced? true :notional-priced? true :microdollars 100 :notional-microdollars 200
+               :reward 1.0 :status :completed}
+        unknown {:priced? false :notional-priced? false :microdollars 0 :notional-microdollars 0
+                 :reward 1.0 :status :completed}
+        summary (board/summary [known unknown])]
+    (doseq [field [:microdollars :notional-microdollars :microdollars-per-pass
+                   :notional-microdollars-per-attempt :notional-microdollars-per-pass]]
+      (is (nil? (get summary field))))
+    (is (false? (:priced? summary)))
+    (is (= 1 (:unpriced-attempts summary)))
+    (is (= 0 (:microdollars (board/summary [(assoc known :microdollars 0)]))))
+    (is (nil? (:microdollars (board/summary []))))
+    (is (nil? (:microdollars (board/summary [{:microdollars 123}]))))
+    (is (nil? (:notional-microdollars (board/summary [(assoc known :notional-priced? false)]))))
+    (is (= 200 (:notional-microdollars (board/summary [(assoc known :priced? false)]))))))
+
+(deftest legacy-replica-costs-without-completeness-flags-are-unknown
+  (let [c (conn) run (random-uuid)]
+    (run! c run :agent-task :completed)
+    (d/transact c [{:attempt/id (random-uuid) :attempt/run [:run/id run]
+                   :attempt/status :completed :attempt/reward 1.0 :attempt/microdollars 123}])
+    (is (nil? (get-in (board/board @c) [:total :microdollars])))
+    (is (false? (get-in (board/board @c) [:total :priced?])))))
+
+(deftest typed-price-dimensions-stay-independent-through-normalization
+  (doseq [[priced? notional? expected-bill expected-worth] [[true false 100 nil] [false true nil 200] [true true 100 200]]]
+    (let [c (conn) run (random-uuid)]
+      (run! c run :agent-task :completed)
+      (attempt! c run {:attempt/model "m" :attempt/reward 1.0
+                       :attempt/microdollars 100 :attempt/notional-microdollars 200
+                       :attempt/spend-priced? priced? :attempt/notional-priced? notional?})
+      (let [total (:total (board/board @c))]
+        (is (= expected-bill (:microdollars total)))
+        (is (= expected-worth (:notional-microdollars total)))))))
+
+(deftest known-paid-notional-projection-may-omit-the-redundant-amount
+  (let [c (conn) run (random-uuid)]
+    (run! c run :agent-task :completed)
+    (attempt! c run {:attempt/model "paid" :attempt/reward 1.0
+                     :attempt/microdollars 100 :attempt/spend-priced? true :attempt/notional-priced? true})
+    (let [total (:total (board/board @c))]
+      (is (= 100 (:microdollars total)))
+      (is (= 100 (:notional-microdollars total))))))
 
 (deftest the-board-ranks-models-and-follows-a-job-live
   (let [c (conn)

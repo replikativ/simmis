@@ -75,8 +75,13 @@
         ports (instance/ports)]
     {:instance (instance/summary)
      :ports (update-vals ports listening?)
-     :shadow (try (let [running? (requiring-resolve 'shadow.cljs.devtools.api/worker-running?)]
-                    {:app-watching? (boolean (running? :app))})
+     ;; Observation must not LOAD Shadow while the main startup thread is
+     ;; loading it. Clojure registers namespace headers before their bodies;
+     ;; a concurrent require can then compile against still-missing vars.
+     :shadow (try (let [running? (some-> (find-ns 'shadow.cljs.devtools.api)
+                                         (ns-resolve 'worker-running?))]
+                    {:app-watching? (if (and running? (bound? running?))
+                                      (boolean (running? :app)) :unknown)})
                   (catch Throwable _ {:app-watching? :unknown}))
      :bundle (bundle-state)
      :system-db (if db

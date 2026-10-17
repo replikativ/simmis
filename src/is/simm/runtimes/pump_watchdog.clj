@@ -17,7 +17,8 @@
        head that stays ahead of the fan-out cursor across consecutive
        probes means the supervised pump is not draining (its restart
        budget may be exhausted → look for the ::pump-fatal fault).
-       The mult stage is probed too ({:queue N>0 :waiters 0} = deaf).
+       The mult stage is probed too, but only after its lazy pump has
+       actually started. Undemanded history may validly queue beforehand.
 
    If an alarm here ever fires, it is a BUG REPORT with evidence — never
    a recovery path."
@@ -58,10 +59,14 @@
             lag (- (count (bus/log b)) (bus/log-cursor b))]
         {:room (:id room)
          :cursor-lag lag
+         :mult-started? (some? (mult/mult-pump (:source-mult b)))
          :mult-queued (count (:queue st))
          :mult-waiters (count (:waiters st))}))
     (catch Throwable e
       {:room (:id room) :probe-error (.getMessage e)})))
+
+(defn- mult-wedged? [{:keys [mult-started? mult-queued mult-waiters]}]
+  (and mult-started? (zero? (or mult-waiters 0)) (pos? (or mult-queued 0))))
 
 (defn- check-all! []
   (doseq [room (rreg/list-rooms)]
@@ -85,10 +90,9 @@
                              "report, not a recovery path.")
                    :data r})
 
-        ;; Mult stage deaf: messages queued into the fan-out mailbox with
-        ;; no waiter. Engine-fixed classes made this loud; if it recurs it
-        ;; is a new bug.
-        (and (zero? (or mult-waiters 0)) (pos? (or mult-queued 0)))
+        ;; Mults start on demand, not on tap creation. Queued messages with
+        ;; no waiter are normal until the first routing consumer asks.
+        (mult-wedged? r)
         (log/log! {:level :error :id ::pump-wedged
                    :msg (str "ROOM BUS MULT STAGE WEDGED: " room
                              " — " mult-queued " message(s) queued, no waiter.")

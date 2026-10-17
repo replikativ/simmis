@@ -55,9 +55,13 @@
               :execution-waiting "Partial work ready for review"
               :automatic-merge-failed "Merge needs review"
               :settlement-failed "Settlement needs attention"
+              :settlement-in-progress "Settlement in progress"
               "Ready for review")
+    :recovery-required "Work needs recovery"
     :discarded "Work discarded"
-    :merged "Work merged"
+    :merged (if (= :settlement-cleanup-failed settlement-reason)
+              "Work merged — cleanup needs recovery"
+              "Work merged")
     nil))
 
 (def ^:private authorization-source-labels
@@ -482,6 +486,11 @@
                                        :where [?r :run/id ?id]]
                                      db (vec cause-ids)))]
                {:run (normalize-run run-entity names)
+                ;; Certification is an explicit relation, not UUID equality.
+                :attempt-id (when (contains? (d/schema db) :attempt/run)
+                              (some-> (d/q '[:find ?id . :in $ ?r
+                                              :where [?a :attempt/run ?r] [?a :attempt/id ?id]]
+                                            db run-eid) str))
                 :trigger (some->> trigger-eid (d/pull db message-pull)
                                   (#(normalize-message % names)))
                 :parent (some->> parent-eid (d/pull db run-pattern)

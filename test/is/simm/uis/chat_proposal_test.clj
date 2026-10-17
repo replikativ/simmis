@@ -5,6 +5,21 @@
 (defn- model [proposal]
   (proposal-card/action-model {:status :open :proposal proposal}))
 
+(deftest adopted-world-diffs-count-their-actual-substrate
+  (let [present proposal-card/fork-diff-model]
+    (is (= {:kind :files :label "Run files" :changed 1}
+           (present {:system-type :world :files [{:path "out/result.md" :status :added}]
+                     :counts {:files-changed 1 :insertions 2 :deletions 0}})))
+    (is (= 2 (:changed (present {:system-type :world :files [{:path "a"} {:path "b"}]}))))
+    (is (= {:kind :entities :label "Run data" :changed 3}
+           (present {:system-type :world :counts {:entities-touched 3}})))
+    (is (zero? (:changed (present {:system-type :world :files [] :counts {:files-changed 0}}))))
+    (is (zero? (:changed (present {:system-type :world :counts {:entities-touched 0}}))))
+    (is (nil? (:changed (present {:system-type :world}))))
+    (is (nil? (:changed (present {:system-type :repo}))))
+    (is (= :files (:kind (present {:system-type :review-world :files []}))))
+    (is (= 1 (:changed (present {:system-type :book :entries [{:id 1}]}))))))
+
 (deftest proposal-verification-outcome-is-stable-and-truthful
   (is (= {:status :error :error "status unavailable"}
          (proposal-card/verification-outcome nil "status unavailable")))

@@ -40,6 +40,26 @@
   [proposal request-id]
   (assoc proposal :diff-request-id request-id))
 
+(defn fork-diff-model
+  "Presentation of a typed diff, independent of its settlement envelope.
+   An adopted world may contain files or datoms; :world is not a data type.
+   Missing counts are unknown, never evidence of an empty contribution."
+  [{:keys [system-type counts files entries] :as fork}]
+  (let [files? (or (#{:repo :review-world} system-type)
+                   (and (= :world system-type)
+                        (or (contains? fork :files) (contains? counts :files-changed))))
+        kind (cond files? :files (= :book system-type) :entries :else :entities)]
+    {:kind kind
+     :label (case system-type
+              :kb "Wiki" :fs "Drive" :book "Book" :repo "Code"
+              :review-world "Workflow's work"
+              :world (if files? "Run files" "Run data")
+              (str system-type))
+     :changed (case kind
+                :files (or (:files-changed counts) (when (contains? fork :files) (count files)))
+                :entries (when (contains? fork :entries) (count entries))
+                (:entities-touched counts))}))
+
 (defn apply-diff-result
   "Apply a diff result only when it belongs to the newest request.
 

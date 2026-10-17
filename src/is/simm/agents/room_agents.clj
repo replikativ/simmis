@@ -43,6 +43,7 @@
             [is.simm.agents.tool-authorization :as tool-auth]
             [is.simm.model.access :as access]
             [is.simm.agents.vocab :as vocab]
+            [is.simm.agents.wiki-read :as wiki-read]
             [is.simm.model.parties :as parties]
             [is.simm.model.system-db :as system-db]
             [is.simm.model.model-selection :as model-selection]
@@ -1158,120 +1159,31 @@
        vocab/kb-docs))))
 
 (defn- add-wiki-ns!
-  "Install the `wiki/*` read vocabulary over the room's product KBs.
-   `room-uuid` and `agent-uuid` (the acting party; optional) additionally
-   enable `wiki/summarize!` — the
-   chat→wiki summarizer as a sandbox call, so agents AND room schedules
-   can trigger it (`(wiki/summarize!)` in a :schedule/code task)."
+  "Install the ordinary participant's wiki reads plus explicit summarization.
+   Reads recheck live room/KB authority, then pin each known connection once.
+   This adapter retains ordinary participant routing; isolated Runs require a
+   different resolver selecting only their registered work-world systems."
   [sci-ctx kb-conns & [room-uuid agent-uuid]]
-  ;; `refs/strip-html`, not a fourth local copy. This one decoded three
-  ;; entities of six, so `&quot;` and `&nbsp;` reached the agent's prompt
-  ;; literally — in the verb an agent uses to READ a page before writing.
-  (let [strip-html refs/strip-html]
+  (let [reads (wiki-read/bindings
+               (fn []
+                 (mapv (fn [{:keys [name conn kb-id room-id]}]
+                         (when (and room-uuid agent-uuid)
+                           (access/require-sandbox-kb! agent-uuid (or room-id room-uuid) kb-id :read))
+                         {:name name :db @conn})
+                       kb-conns)))
+        summarize! (fn []
+                     (if-not room-uuid
+                       {:error "summarize! needs a room-bound wiki ns"}
+                       ;; This effectful path is deliberately not a pure read.
+                       (if-let [{:keys [kb-id]} (first (filter :writable? kb-conns))]
+                         (do (access/require-sandbox-kb! agent-uuid room-uuid kb-id :write)
+                             ((requiring-resolve 'is.simm.agents.summarizer/summarize-room!)
+                              room-uuid
+                              (requiring-resolve 'is.simm.agents.room-agents/live-room)
+                              :kb-id kb-id))
+                         {:skipped :no-writable-kb})))]
     (sci/add-namespace! sci-ctx 'wiki
-      (vocab/with-docs 'wiki
-       {'pages (fn []
-                (->> kb-conns
-                     (mapv (fn [{:keys [name conn]}]
-                             {:kb name
-                              :pages (->> (d-api/q '[:find ?title :where [?e :S.Page/title ?title]] @conn)
-                                          (map first) sort vec)}))))
-       'read-page (fn [title]
-                    (some (fn [{:keys [name conn]}]
-                            (let [eid (when (some? title)
-                                        (d-api/q '[:find ?e . :in $ ?t :where [?e :S.Page/title ?t]] @conn title))]
-                              (when eid
-                                (let [blocks (d-api/q '[:find ?c ?o :keys content order :in $ ?p
-                                                        :where [?b :block/parent ?p] [?b :block/content ?c] [?b :block/order ?o]]
-                                                      @conn eid)]
-                                  {:kb name :title title
-                                   :blocks (->> (sort-by :order blocks) (mapv (comp strip-html :content)))}))))
-                          kb-conns))
-       'search (fn [query]
-                 ;; Ranked fulltext over titles + block content (scriptum
-                 ;; secondary index) when built; title-regex fallback.
-                 (let [secondary (try (requiring-resolve 'dvergr.search.secondary/search)
-                                      (catch Throwable _ nil))
-                       ft (when secondary
-                            (->> kb-conns
-                                 (mapcat (fn [{:keys [name conn]}]
-                                           (let [db @conn]
-                                             (for [[eid score] (secondary db kbs/wiki-fulltext-ident query {:limit 12})
-                                                   :let [e (d-api/pull db [:S.Page/title :block/content
-                                                                           {:block/parent [:S.Page/title]}] eid)
-                                                         title (or (:S.Page/title e)
-                                                                   (get-in e [:block/parent :S.Page/title]))]
-                                                   :when title]
-                                               {:kb name :title title :score score
-                                                :snippet (when-let [c (:block/content e)]
-                                                           (subs (str/replace c #"<[^>]+>" "") 0
-                                                                 (min 140 (count (str/replace c #"<[^>]+>" "")))))}))))
-                                 (sort-by :score >)
-                                 (take 12)
-                                 vec))]
-                   (if (seq ft)
-                     ft
-                     (let [pattern (re-pattern (str "(?i)" query))]
-                       (->> kb-conns
-                            (mapcat (fn [{:keys [name conn]}]
-                                      (->> (d-api/q '[:find ?title :where [?e :S.Page/title ?title]] @conn)
-                                           (map first)
-                                           (filter #(re-find pattern %))
-                                           (map (fn [title] {:kb name :title title})))))
-                            (sort-by :title) vec)))))
-
-       'backlinks (fn [title]
-                    (->> kb-conns
-                         (mapcat (fn [{:keys [name conn]}]
-                                   (->> (d-api/q '[:find [?src-title ...] :in $ ?t :where
-                                                   [?p :S.Page/title ?t]
-                                                   [?b :block/references ?p]
-                                                   [?b :block/parent ?src]
-                                                   [?src :S.Page/title ?src-title]]
-                                                 @conn title)
-                                        (map (fn [st] {:kb name :title st})))))
-                         distinct vec))
-
-       'neighborhood (fn [title]
-                       ;; The read-before-write context: the page + its forward
-                       ;; links (block-refs rollup — the Σ view of the tree) +
-                       ;; backlinks. Load these BEFORE editing (see protocol).
-                       (let [out (->> kb-conns
-                                      (mapcat (fn [{:keys [name conn]}]
-                                                (->> (d-api/q '[:find [?tt ...] :in $ ?t :where
-                                                                [?p :S.Page/title ?t]
-                                                                [?b :block/parent ?p]
-                                                                [?b :block/references ?tp]
-                                                                [?tp :S.Page/title ?tt]]
-                                                              @conn title)
-                                                     (map (fn [tt] {:kb name :title tt})))))
-                                      distinct vec)
-                             back (->> kb-conns
-                                       (mapcat (fn [{:keys [name conn]}]
-                                                 (->> (d-api/q '[:find [?src-title ...] :in $ ?t :where
-                                                                 [?p :S.Page/title ?t]
-                                                                 [?b :block/references ?p]
-                                                                 [?b :block/parent ?src]
-                                                                 [?src :S.Page/title ?src-title]]
-                                                               @conn title)
-                                                      (map (fn [st] {:kb name :title st})))))
-                                       distinct vec)]
-                         {:page title :links-to out :linked-from back}))
-
-       'summarize!
-       (fn []
-         (if-not room-uuid
-           {:error "summarize! needs a room-bound wiki ns"}
-           ;; it WRITES a page: the first KB this sandbox may write, asked
-           ;; again now (`access/require-sandbox-kb!`)
-           (if-let [{:keys [kb-id]} (first (filter :writable? kb-conns))]
-             (do (access/require-sandbox-kb! agent-uuid room-uuid kb-id :write)
-                 ((requiring-resolve 'is.simm.agents.summarizer/summarize-room!)
-                  room-uuid
-                  (requiring-resolve 'is.simm.agents.room-agents/live-room)
-                  :kb-id kb-id))
-             {:skipped :no-writable-kb})))}
-       vocab/wiki-docs))))
+      (vocab/with-docs 'wiki (assoc reads 'summarize! summarize!) vocab/wiki-docs))))
 
 (defn- overlay-forks
   "An overlay's `{[scope agent] → branch}` map as the fork vector
@@ -3037,7 +2949,7 @@
    only the agents whose MODEL cannot run here — an expected, settings-shaped
    state; `:join-errors` names the ones whose join failed unexpectedly. The
    send itself never fails because a participant could not be joined."
-  [room-uuid user-message sender-party-id room-conn & [msg-uuid in-reply-to]]
+  [room-uuid user-message sender-party-id room-conn & [msg-uuid in-reply-to source]]
   (ensure-providers!)
   (let [room-parties (rooms/get-room-parties room-uuid)
         all-agents (filterv #(= :agent (:party/type %)) room-parties)
@@ -3083,7 +2995,10 @@
               ;; deduped BEFORE delivery, losing all but the first recipient.
               ;; Explicit multicast is not a room broadcast or a mention list.
               send-id (or msg-uuid (random-uuid))
-              metadata {:role :user :mentions mentions :audience audience}
+              metadata (cond-> {:role :user :mentions mentions :audience audience}
+                         ;; Typed, existing metadata-kind field: source is a
+                         ;; trusted adapter argument, not clientInfo or sender.
+                         (= :mcp source) (assoc :kind :mcp-user-message))
               msg (binding [rtc/*execution-context* (:ctx room)]
                     (let [message (assoc (d/message from-kw (first targets) user-message
                                                     in-reply-to metadata) :id send-id)]

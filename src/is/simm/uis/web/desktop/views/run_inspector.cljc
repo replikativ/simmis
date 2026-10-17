@@ -168,11 +168,57 @@
                           :on-click (fn [_] (on-promote run))}
                 "File as proposal"))))))))
 
+(defn captured-results-view
+  [{:keys [attempt-id captured-result on-load-results on-more-results
+           on-preview-result on-download-result]}]
+  (when attempt-id
+    (let [{:keys [manifest preview download]} captured-result
+          page (:data manifest)]
+      (el/section {:class "run-section run-captured-results"}
+        (el/div {:class "run-section-heading"}
+          (el/h3 {} "Captured outputs")
+          (el/p {} "Immutable files recorded at certification, not the current workspace."))
+        (el/p {:class "run-result-identity"} (str "Attempt · " attempt-id))
+        (el/button {:class "run-result-action" :disabled (boolean (:loading? manifest))
+                    :on-click (fn [_] (when on-load-results (on-load-results)))}
+          (if (:loading? manifest) "Loading recorded files…" (if page "Reload recorded files" "Show recorded files")))
+        (when-let [error (:error manifest)] (el/p {:role "alert"} error))
+        (when page
+          (el/div {}
+            (when (empty? (:files page)) (el/p {} "This certified Attempt captured no files."))
+            (el/div {:class "run-result-files"}
+              (map (fn [entry]
+                     (el/div {:key (:path entry) :class "run-result-file"}
+                       (el/code {} (:path entry))
+                       (el/span {} (str (:size entry) " bytes"))
+                       (el/button {:class "run-result-action"
+                                   :on-click (fn [_] (when on-preview-result (on-preview-result entry)))} "Preview")
+                       (el/button {:class "run-result-action" :disabled (boolean (:loading? download))
+                                   :on-click (fn [_] (when on-download-result (on-download-result entry)))} "Download")))
+                   (:files page)))
+            (when-let [offset (:next-offset page)]
+              (el/button {:class "run-result-action" :disabled (boolean (:loading? manifest))
+                          :on-click (fn [_] (when on-more-results (on-more-results offset)))} "More recorded files"))))
+        (when (:loading? preview) (el/p {} "Loading preview…"))
+        (when-let [error (:error preview)] (el/p {:role "alert"} error))
+        (when-let [path (:path preview)]
+          (el/div {:class "run-result-preview"}
+            (el/h4 {} path)
+            (if (some? (:text preview))
+              ;; Always escaped text: never execute HTML, Markdown or SCI here.
+              (el/pre {} (:text preview))
+              (el/p {} "Binary or invalid UTF-8 file. Download to inspect its exact bytes."))
+            (when (:truncated? preview) (el/p {} "Preview limited to the first 16 KiB. Download for the complete file."))))
+        (when (:loading? download) (el/p {:role "status"} "Downloading recorded bytes…"))
+        (when-let [error (:error download)] (el/p {:role "alert"} error))
+        (when (:complete? download) (el/p {:role "status"} (str "Download prepared · " (:path download))))))))
+
 (defn view
   "Render one Run. `live-run` wins for transient :cancelling status; durable
    detail supplies history, effects, outputs, and structural relations."
   [{:keys [detail live-run fallback-run room-name syntax-pref on-back-room
-           on-open-message on-open-run on-cancel on-promote]}]
+           on-open-message on-open-run on-cancel on-promote
+           captured-result on-load-results on-more-results on-preview-result on-download-result]}]
   (let [durable-run (:run detail)
         run (when (or fallback-run durable-run live-run)
               (merge fallback-run durable-run live-run))
@@ -238,6 +284,10 @@
                                 :input on-open-run)))
 
             (settlement-view run on-promote)
+
+            (captured-results-view {:attempt-id (:attempt-id detail) :captured-result captured-result
+                                    :on-load-results on-load-results :on-more-results on-more-results
+                                    :on-preview-result on-preview-result :on-download-result on-download-result})
 
             (el/section {:class "run-section"}
               (el/div {:class "run-section-heading"}
