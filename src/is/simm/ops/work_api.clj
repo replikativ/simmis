@@ -117,6 +117,7 @@
                                :is.simm.ops.worker-service/denied 403
                                :is.simm.ops.worker-service/missing 404
                                :is.simm.ops.worker-work/invalid 400
+                               :is.simm.ops.worker-benchmarks/invalid 400
                                :is.simm.ops.worker-work/denied 403
                                :is.simm.ops.worker-work/conflict 409
                                :is.simm.ops.worker-files/invalid 400

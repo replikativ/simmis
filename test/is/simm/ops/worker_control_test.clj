@@ -63,6 +63,15 @@
       (is (thrown? clojure.lang.ExceptionInfo
                    (call :simmis/local-worker-workflow (assoc-in workflow [:params "subject"] "duplicate")))))))
 
+(deftest invalid-benchmark-service-input-is-a-client-error
+  (with-redefs [benchmarks/submit! (fn [& _]
+                                   (throw (ex-info "Invalid pinned selection"
+                                                   {:type :is.simm.ops.worker-benchmarks/invalid})))]
+    (let [failure (try (call :simmis/local-worker-benchmark benchmark) nil
+                       (catch clojure.lang.ExceptionInfo error error))]
+      (is (some? failure))
+      (is (= 400 (ops/error-status failure))))))
+
 (use-fixtures :each
   (fn [f]
     (with-redefs [control/admission-open? (constantly true)
