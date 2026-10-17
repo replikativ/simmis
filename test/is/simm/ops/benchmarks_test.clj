@@ -84,6 +84,18 @@
              (get-in env [:environment/verifier :verifier/basis])))
       (is (= env (environment/validate-environment env))))))
 
+(deftest native-subscriptions-prepare-ordinary-room-benchmark-cells
+  (let [files fixture/fixture
+        request (assoc (input files) :models ["codex-subscription-sol"])
+        prepared (benchmarks/prepare (snapshot files) request)]
+    (is (= 1 (:cells prepared)))
+    (is (= #{:codex-subscription}
+           (set (map #(get-in % [:agent/model-policy :provider])
+                     (roster/agents (get-in prepared [:plan :team]))))))
+    (is (= 4 (get-in prepared [:cell-limits :max-dispatches])))
+    (is (every? #(= :ctx (get-in % [:environment/world :isolation]))
+                (get-in prepared [:plan :environments])))))
+
 (deftest preparation-rejects-revision-case-model-and-budget-ambiguity
   (let [files fixture/fixture
         request (input files)]

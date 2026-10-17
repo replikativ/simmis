@@ -9,10 +9,17 @@
             [dvergr.discourse :as discourse]
             [dvergr.effects :as effects]
             [dvergr.jobs :as jobs]
+            [dvergr.catalog.workspace :as workspace]
+            [dvergr.model.api.codex-subscription :as codex]
+            [dvergr.model.gateway :as gateway]
+            [dvergr.model.providers :as providers]
             [dvergr.resource :as resource]
             [dvergr.room.registry :as registry]
             [dvergr.room.store :as store]
             [dvergr.room.store.datahike :as datahike-store]
+            [dvergr.rooms.forks :as forks]
+            [dvergr.system.db :as system-db]
+            [jsonista.core :as json]
             [is.simm.authority.world :as world]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.dvergr :as ops]
@@ -119,6 +126,90 @@
                  (assoc-in input [:limits :settlement] "merge")
                  (assoc input :extra true)]]
       (is (thrown? clojure.lang.ExceptionInfo (work/prepare bad))))))
+
+(deftest native-subscriptions-use-normal-interpreter-worlds-with-dispatch-limits
+  (let [[input _] (fixture)
+        prepared (work/prepare (assoc input :model "codex-subscription-sol"))
+        agent (get-in prepared [:team :roster/agents (:agent prepared)])]
+    (is (= :codex-subscription (get-in agent [:agent/model-policy :provider])))
+    (is (= :llm (get-in agent [:agent/program :kind])))
+    (is (= :ctx (get-in prepared [:environment :environment/world :isolation])))
+    (is (= (work/resources (:limits input)) (get-in prepared [:environment :environment/world :resources])))
+    (is (= 2 (get-in prepared [:environment :environment/limits :max-model-steps])))
+    (doseq [model ["claude-code-sonnet" "codex-subscription-cli"]]
+      (is (thrown? clojure.lang.ExceptionInfo (work/prepare (assoc input :model model)))))))
+
+(deftest native-subscription-work-captures-results-and-keeps-review-merge-explicit
+  (doseq [settlement ["discard" "review"]]
+    (world/with-world [conn w]
+      (with-room
+        (fn [room]
+          (workspace/ensure-workspace! room)
+          ;; The predicate-only authority fixture omits persistent locators.
+          ;; Actual Dvergr merge checks need the same room slug and canonical
+          ;; registry scopes that real Simmis provisioning records.
+          (dh/transact conn [{:room/id (:room w) :room/slug (store/room-id->slug (:id room))}])
+          (dh/transact conn (mapv (fn [system]
+                                    {:system/id (:system/id system)
+                                     :system/scope (str "/fixture/systems/" (:system/id system))})
+                                  (filter #(contains? #{:kb :repo} (:system/type %)) (system-db/all-systems))))
+          (let [[base _] (fixture)
+                input (-> base (assoc :model "codex-subscription-sol")
+                          (assoc-in [:limits :timeout-ms] 30000)
+                          (assoc-in [:limits :settlement] settlement))
+                principal (ops/party-principal (:owner w))
+                host-ctx ec/*execution-context*
+                calls (atom 0)
+                retained (volatile! nil)
+                provider (codex/create {:credentials (gateway/static-credentials :fixture {} #{"https://chatgpt.com"})})
+                response (fn [n]
+                           (let [events (concat
+                                         (when (= n 1)
+                                           [{:type "response.output_item.done"
+                                             :item {:type "function_call" :call_id "write-result" :name "clojure_eval"
+                                                    :arguments (json/write-value-as-string
+                                                                {:code "(do (babashka.fs/create-dirs \"/out\") (spit \"/out/result.md\" \"interpreter output\"))"})}}])
+                                         (when (= n 2) [{:type "response.output_text.delta" :delta "Prepared the result."}])
+                                         [{:type "response.completed" :response {:id (str "fixture-" n) :model "gpt-5.6-sol"
+                                                                                 :usage {:input_tokens 100 :output_tokens 20}}}])]
+                             {:status 200 :body (java.io.ByteArrayInputStream.
+                                                 (.getBytes (apply str (map #(str "data: " (json/write-value-as-string %) "\n\n") events)) "UTF-8"))}))]
+            (try
+              (resource/mint! room {:id (random-uuid) :resources (work/resources (:limits input))})
+              ;; Room continuations need not inherit the submitter's dynamic
+              ;; bindings. Intercept actual gateway egress on every worker,
+              ;; not just the REPL/test thread. Never use real credentials.
+              (with-redefs [gateway/*request-fn* (fn [_] (response (swap! calls inc)))]
+                (with-redefs [providers/providers (atom {:codex-subscription provider})]
+                  (let [request (work/submit! conn host-ctx principal (:room w) room input)
+                        status (jobs/status (:job request) 40000)
+                        attempts (store/-list-attempts (:store room) (store/conversation-id room) {})
+                        attempt (first attempts)
+                        child (first (remove #(= (:job request) (:run/id %))
+                                             (run/runs room {:root-run-id (:job request) :limit 10})))]
+                    (vreset! retained (registry/lookup (:run/world child)))
+                    (is (= :completed (:status status)) (pr-str (select-keys status [:status :error])))
+                    (is (:settled? status))
+                    (is (= 2 @calls))
+                    (is (= 1 (count attempts)))
+                    (is (= {"/out/result.md" "interpreter output"} (get-in attempt [:attempt/evidence :files])))
+                    (is (empty? (workspace/read-tree room "/out")) "Execution never writes trunk directly")
+                    (is (= {resource/microdollars 10000M} (resource/balance room)))
+                    (is (= (:job request) (:job (work/submit! conn host-ctx principal (:room w) room input))))
+                    (is (= 2 @calls) "Request replay never runs the model again")
+                    (if (= settlement "review")
+                      (do
+                        (is (some? @retained))
+                        (is (= :review (:run/settlement-status child)))
+                        (let [review (forks/review @retained)
+                              merged (forks/merge! @retained :expect-state (:state review))]
+                          (is (:ok? merged) (pr-str merged))
+                          (is (= {"/out/result.md" "interpreter output"} (workspace/read-tree room "/out")))
+                          (is (= :merged (:run/settlement-status (run/run room (:run/id child)))))))
+                      (is (= :discarded (:run/settlement-status child)))))))
+              (finally
+                (when (and @retained (nil? (discourse/settlement @retained)))
+                  (forks/discard! @retained))))))))))
 
 (deftest allowance-provisioning-is-explicit-authorized-and-idempotent
   (world/with-world [conn w]

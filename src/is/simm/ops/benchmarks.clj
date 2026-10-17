@@ -94,7 +94,7 @@
                                          :budget-dollars (/ dollars 1000000.0)
                                          :timeout-ms (:timeout-ms limits)})
           plan (update plan :team work-sandbox/restrict-team)
-          _ (when-not (every? #(contains? #{:openai :anthropic :fireworks}
+          _ (when-not (every? #(contains? work/dispatch-accounted-providers
                                           (get-in % [:agent/model-policy :provider]))
                               (roster/agents (:team plan)))
               (invalid! "Benchmark models must use accounted native providers"))

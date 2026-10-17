@@ -138,7 +138,7 @@
                                            (-> (dissoc args :room) (update :request-id uuid!))))))}
    :simmis/work-allowance
    {:kind :write :schema allowance-schema :authz {:action :merge}
-    :doc "Explicitly provision a finite room execution allowance (microUSD and native model dispatches). Owner-level; NOT payment, billing balance or a sandbox mint capability. Stable request-id prevents repeat provisioning; changing its vector conflicts."
+    :doc "Explicitly provision a finite room execution allowance (incremental microUSD and native model dispatches, including native subscriptions). Zero-dollar models still consume dispatch allowance; notional list price is reported separately. Owner-level; NOT payment, billing balance or a sandbox mint capability. Stable request-id prevents repeat provisioning; changing its vector conflicts."
     :impl (fn [host args]
             (checked! allowance-schema args)
             (guarded host #(let [[conn id room] (room! host (:room args))]

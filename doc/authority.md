@@ -280,6 +280,20 @@ exchange, not acceptance of web tokens by MCP.
 
 ### Conversation and bounded work
 
+Bounded tasks and workflow benchmark candidates use Dvergr's existing SCI
+tool loop, Spindel execution contexts and Geschichte forks in the running
+server. They do not require a VM, bubblewrap or a separate worker JVM.
+Native OpenAI/Anthropic/Fireworks and native Codex-subscription model
+transports use the same gateway dispatch-admission checks. Subscription
+models have zero incremental-dollar rates, not unlimited usage: model HTTP
+attempts (including retries), model steps and wall time remain bounded.
+Notional list-price reporting is separate from incremental spend. CLI/
+DirectChat subscriptions are not admitted by these bounded endpoints.
+Captured `/out` files remain available through certified Attempts after
+discard; review settlement retains an isolated world until an explicit
+permission-checked merge. Completion alone is not correctness or merge
+approval. The local-worker transport below is a separate optional backend.
+
 The separate local-worker service is not enabled by application startup.
 When explicitly installed by an embedding host, its enrollment and lease
 credentials can invoke only their respective worker transport operations,

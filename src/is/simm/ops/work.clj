@@ -41,6 +41,12 @@
   {:admit #{:read :write :network :spend}
    :speculative true :allow-hosts #{} :quota-bytes 10000000})
 
+(def dispatch-accounted-providers
+  "Native transports whose individual model HTTP attempts use Dvergr's
+   admission gateway. Subscription dollars are zero incremental spend, not
+   zero usage; dispatch, model-step and wall limits still apply. No CLI."
+  #{:openai :anthropic :fireworks :codex-subscription})
+
 (def completion
   (evaluation/make-evaluator
    {:id :simmis/work-completion :version 1 :basis "simmis-work-completion-v1"
@@ -75,8 +81,9 @@
    resource/model-dispatches (bigdec (:max-dispatches limits))})
 
 (defn prepare
-  "Resolve and pin one generic native-API candidate before admission. CLI
-   subscriptions are not represented as having verified dollar accounting."
+  "Resolve and pin one generic native-API candidate before admission. Native
+   subscriptions consume dispatch allowance without a fictional dollar charge;
+   CLI subscriptions cannot supply this endpoint's dispatch accounting."
   [{:keys [task model limits] :as input}]
   (when-not (m/validate task-schema input) (invalid! "Invalid bounded task"))
   (let [{:keys [team ids]} (workflow/candidates
@@ -98,7 +105,7 @@
                        :on-timeout :verdict
                        :max-model-steps (:max-model-steps limits)
                        :budget-dollars (/ (:budget-microdollars limits) 1000000.0)}})]
-    (when-not (contains? #{:openai :anthropic :fireworks} provider)
+    (when-not (contains? dispatch-accounted-providers provider)
       (invalid! "This model does not support this endpoint's native dispatch accounting"))
     {:team team :agent id :environment env :evaluator completion
      :basis {:candidate agent :environment env :sandbox-policy work-sandbox/policy}}))
