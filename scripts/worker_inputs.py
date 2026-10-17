@@ -17,8 +17,9 @@ import unicodedata
 import uuid
 
 
-POLICY = {"version": 1, "max-files": 100, "max-file-bytes": 1048576,
-          "max-total-bytes": 2097152, "max-input-json-bytes": 4194304, "chunk-bytes": 16384}
+POLICY = {"version": 2, "max-files": 100, "max-file-bytes": 1048576,
+          "max-total-bytes": 2097152, "max-input-json-bytes": 4194304, "chunk-bytes": 16384,
+          "lease-ttl-ms": 30000}
 MODES = {0o100644: 0o600, 0o100755: 0o700}
 # Runtime configuration is not task data. A selected config must never become
 # an automatic CLI hook/plugin/MCP server, even before the first model call.

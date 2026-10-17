@@ -16,8 +16,8 @@
            [java.security MessageDigest]
            [java.util Arrays Base64]))
 
-(def policy {:version 1 :max-files 100 :max-file-bytes 1048576 :max-total-bytes 2097152
-             :max-input-json-bytes 4194304 :chunk-bytes 16384})
+(def policy {:version 2 :max-files 100 :max-file-bytes 1048576 :max-total-bytes 2097152
+             :max-input-json-bytes 4194304 :chunk-bytes 16384 :lease-ttl-ms 30000})
 (def config-schema
   [:map {:closed true}
    [:adapter [:enum "codex" "claude-code"]]

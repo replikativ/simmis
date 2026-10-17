@@ -192,6 +192,19 @@ class UnitIntegrationTest(unittest.TestCase):
         observed = self.observer.wait_stopped(self.identity)
         self.assertEqual(observed["identity"], self.identity)
 
+    def test_physical_wait_services_protocol_liveness_without_a_second_poll_loop(self):
+        self.launch()
+        count = []
+
+        def service():
+            count.append(True)
+            if len(count) == 2:
+                self.observer.stop(self.identity)
+
+        observed = self.observer.wait_stopped(self.identity, timeout_seconds=5, on_tick=service)
+        self.assertEqual(observed["identity"], self.identity)
+        self.assertGreaterEqual(len(count), 2)
+
     def test_outer_unit_stops_a_go_launched_resistant_session_even_without_guard_cleanup(self):
         # Deliberately omit the production guard's own reaper in this trusted
         # physical fixture: the outer unit must provide independent containment.

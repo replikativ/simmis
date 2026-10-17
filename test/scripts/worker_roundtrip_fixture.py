@@ -1,7 +1,8 @@
-"""Synthetic MCP integration fixture; credentials arrive only on stdin.
+"""No-model MCP integration fixture; credentials arrive only on stdin.
 
-Launched by mcp-workers-test, not a CLI worker or a model benchmark. No task
-code/process is executed: file changes are this fixture's fixed test data.
+Launched by mcp-workers-test, not a coding-CLI worker or a model benchmark.
+Default CI mode makes fixed file changes without task execution. The explicit
+--physical host mode runs that fixed program through the isolated controller.
 """
 import json
 import os
@@ -16,6 +17,38 @@ import worker_inputs
 import worker_outputs
 
 
+def physical(private, parent):
+    """Explicit no-model host integration, never the default CI path."""
+    import worker_controller
+    import worker_journal
+    program = """
+from pathlib import Path
+assert {str(p) for p in Path('.').rglob('*') if p.is_file()} == {'docs/input.md','docs/资料.bin','bin/run.sh'}
+assert Path('docs/资料.bin').read_bytes() == (bytes([0,255,128,42]) * 12500)
+assert Path('bin/run.sh').stat().st_mode & 0o777 == 0o700
+Path('docs/input.md').write_bytes(b'changed selected input')
+Path('bin/run.sh').unlink()
+Path('out/report').mkdir(parents=True)
+Path('out/report/结果.bin').write_bytes(b'\\x00\\xff\\x80result')
+Path('out/report/结果.bin').chmod(0o700)
+print('bounded round trip',end='')
+"""
+    client = worker_controller.Controller(parent, private["worker"], private["url"], private["config"], heartbeat_seconds=0.05)
+    try:
+        acknowledged = client.run(private["run"], private["credential"], ["/usr/bin/python3", "-I", "-c", program])
+        assert acknowledged["outcome"] == "completed"
+        chain = worker_journal.load(Path(parent) / "runs" / private["run"])
+        assert all(chain[phase] is not None for phase in worker_journal.PHASES)
+        assert worker_journal.unresolved(client.runs, private["worker"]) == []
+        assert chain["stopped"]["output"]["summary"] == 'bounded round trip'
+        assert chain["stopped"]["output"]["exit-code"] == 0
+        print(json.dumps({"verified": True, "client-claimed": True, "completion-acknowledged": True,
+                          "files": ['bin/run.sh','docs/input.md','docs/资料.bin'],
+                          "physically-stopped": True, "journal-acknowledged": True}))
+    finally:
+        client.close()
+
+
 def main():
     private = json.load(sys.stdin)
     with tempfile.TemporaryDirectory(prefix="simmis-worker-roundtrip-") as parent:
@@ -25,6 +58,10 @@ def main():
             os.fsync(fd)
         finally:
             os.close(fd)
+        if sys.argv[1:] == ["--physical"]:
+            return physical(private, parent)
+        if sys.argv[1:]:
+            raise ValueError("Unknown synthetic fixture mode")
         with worker_claim.controller_lock(parent, private["worker"]):
             path = Path(parent) / "claim.json"
             ticket = worker_claim.prepare(path, private["worker"], private["run"])

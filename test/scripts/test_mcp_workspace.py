@@ -93,7 +93,8 @@ class WorkspaceTest(unittest.TestCase):
 
     def test_mcp_rejects_unsafe_endpoints_without_connecting(self):
         for url in ["http://public.example/mcp", "https://user:pass@example.com/mcp",
-                    "https://example.com/not-mcp", "http://localhost:47990/mcp?token=x"]:
+                    "https://example.com/not-mcp", "http://localhost:47990/mcp?token=x",
+                    "http://localhost:47990/mcp\n", " http://localhost:47990/mcp", None]:
             with self.subTest(url=url), self.assertRaises(ValueError):
                 workspace.MCP(url, "secret")
 

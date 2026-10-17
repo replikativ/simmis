@@ -9,7 +9,7 @@
             [malli.core :as m])
   (:import [java.util Date]))
 
-(def ttl-ms 30000)
+(def ttl-ms (:lease-ttl-ms files/policy))
 (defn- clock [] (Date.))
 (def ^:private uuid-string [:string {:min 36 :max 36}])
 (def pending-schema [:map {:closed true}])

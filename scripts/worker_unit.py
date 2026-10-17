@@ -282,7 +282,19 @@ class UnitBus:
         self._snapshot(identity)
         self.manager.StopUnit(identity["unit"], "fail", timeout=5)
 
-    def wait_stopped(self, identity, *, timeout_seconds=35):
+    def abort_launch(self, name):
+        """Request stop of this connection's fresh launch; grants NO receipt.
+
+        Used when guard startup/capture fails. Without a persisted verified
+        identity the exposure remains unknown, even if StopUnit returns.
+        """
+        validate_name(name)
+        if name not in self.launched:
+            raise ValueError("Cannot abort an unknown or reattached launch")
+        self._properties(name)
+        self.manager.StopUnit(name, "fail", timeout=5)
+
+    def wait_stopped(self, identity, *, timeout_seconds=35, on_tick=None):
         """Event-driven retained observation; deadline/error never means stopped.
 
         The returned local observation must be durably sealed before release.
@@ -292,8 +304,12 @@ class UnitBus:
         """
         if type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 660:
             raise ValueError("Invalid finite observation deadline")
+        if on_tick is not None and not callable(on_tick):
+            raise ValueError("Physical observation service must be callable")
         deadline = time.monotonic() + timeout_seconds
         expired = False
+        service_error = None
+        service_active = False
 
         def expire():
             nonlocal expired
@@ -302,8 +318,29 @@ class UnitBus:
             return False
 
         timer = self.GLib.timeout_add(max(1, int(timeout_seconds * 1000)), expire)
+        service_timer = None
+
+        def service():
+            nonlocal service_error, service_active
+            try:
+                on_tick()
+                return True
+            except BaseException as error:
+                service_error = error
+                service_active = False
+                self.loop.quit()
+                return False
+
         try:
+            if on_tick is not None:
+                on_tick()
+                service_active = True
+                # A real protocol-liveness timer, not a synchronization delay.
+                # The callback decides whether a heartbeat is actually due.
+                service_timer = self.GLib.timeout_add(1000, service)
             while True:
+                if service_error is not None:
+                    raise service_error
                 generation = self.generation
                 unit, service = self._snapshot(identity)
                 if (str(unit["ActiveState"]) in {"inactive", "failed"} and int(unit["Job"][0]) == 0
@@ -320,6 +357,8 @@ class UnitBus:
                 if generation == self.generation:
                     self.loop.run()
         finally:
+            if service_timer is not None and service_active:
+                self.GLib.source_remove(service_timer)
             if not expired:
                 self.GLib.source_remove(timer)
 

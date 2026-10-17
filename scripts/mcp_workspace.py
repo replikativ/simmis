@@ -26,14 +26,22 @@ CHUNK = 16384
 
 
 class MCP:
-    def __init__(self, url, token, *, lease_proof=None):
+    def __init__(self, url, token, *, lease_proof=None, timeout=30):
+        if (not isinstance(url, str) or not 1 <= len(url) <= 2048
+                or any(ord(char) < 32 or ord(char) == 127 for char in url)):
+            raise ValueError("Use a canonical MCP endpoint")
         parsed = urllib.parse.urlsplit(url)
+        if urllib.parse.urlunsplit(parsed) != url:
+            raise ValueError("Use a canonical MCP endpoint")
         credentials.origin(urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", "")))
         if parsed.path != "/mcp" or parsed.query or parsed.fragment:
             raise ValueError("Use the /mcp endpoint without query or fragment")
         if lease_proof is not None and (not isinstance(lease_proof, str)
                                         or not re.fullmatch(r"[A-Za-z0-9_-]{43}", lease_proof)):
             raise ValueError("Invalid worker claim proof")
+        if type(timeout) not in {int, float} or not 0 < timeout <= 30:
+            raise ValueError("Invalid MCP socket inactivity timeout")
+        self.timeout = timeout
         self.url, self.token, self.session, self.sequence = url, token, None, 0
         # Initialize the session with its proposed proof. Adding a header to
         # an already initialized proofless session cannot upgrade authority.
@@ -53,7 +61,7 @@ class MCP:
         if not method.startswith("notifications/"):
             body["id"] = self.sequence
         req = urllib.request.Request(self.url, json.dumps(body).encode(), headers)
-        with self.opener.open(req, timeout=30) as response:
+        with self.opener.open(req, timeout=self.timeout) as response:
             self.session = response.headers.get("Mcp-Session-Id", self.session)
             data = response.read(131073)
             if len(data) > 131072:
@@ -71,17 +79,22 @@ class MCP:
         self.request("notifications/initialized", {})
         return self
 
-    def __exit__(self, *args):
+    def close(self):
         if self.session:
             headers = {"Authorization": "Bearer " + self.token, "Mcp-Session-Id": self.session}
             if self._lease_proof is not None:
                 headers["Simmis-Lease-Proof"] = self._lease_proof
             req = urllib.request.Request(self.url, method="DELETE", headers=headers)
             try:
-                with self.opener.open(req, timeout=10):
+                with self.opener.open(req, timeout=min(10, self.timeout)):
                     pass
             except OSError:
                 pass
+            finally:
+                self.session = None
+
+    def __exit__(self, *args):
+        self.close()
 
     def call(self, name, arguments):
         result = self.request("tools/call", {"name": name, "arguments": arguments})

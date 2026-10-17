@@ -281,7 +281,7 @@
                 (is (nil? (exposed)))))
             (finally ((:stop transport)))))))))
 
-(deftest python-client-persists-claims-downloads-and-completes-through-real-http
+(defn- python-client-roundtrip! [command physical?]
   (world/with-world [conn w]
     (with-assignment conn w
       (fn [{:keys [enrolled frozen]}]
@@ -299,7 +299,7 @@
               transport (http/start! {:port 0 :bind "127.0.0.1" :profile :admin :toolsets #{:host}
                                       :authenticate #(credentials/authenticate conn %)})]
           (try
-            (let [process (.start (doto (ProcessBuilder. (into-array String ["python3" "-I" "test/scripts/worker_roundtrip_fixture.py"]))
+            (let [process (.start (doto (ProcessBuilder. (into-array String command))
                                     (.redirectErrorStream true)))]
               (try
                 (with-open [writer (io/writer (.getOutputStream process))]
@@ -311,8 +311,9 @@
                   (throw (ex-info "Synthetic worker client timed out" {})))
                 (is (zero? (.exitValue process)) "Synthetic client must finish successfully")
                 (let [result (json/read-value (slurp (.getInputStream process)) json/keyword-keys-object-mapper)]
-                  (is (= {:verified true :client-claimed true :completion-acknowledged true
-                          :files ["bin/run.sh" "docs/input.md" "docs/资料.bin"]} result)))
+                  (is (= (cond-> {:verified true :client-claimed true :completion-acknowledged true
+                                  :files ["bin/run.sh" "docs/input.md" "docs/资料.bin"]}
+                           physical? (assoc :physically-stopped true :journal-acknowledged true)) result)))
                 (finally
                   (when (.isAlive process)
                     (.destroyForcibly process)
@@ -332,6 +333,15 @@
               (is (= "bounded round trip" (:summary output)))
               (is (= 0 (:exit-code output))))
             (finally ((:stop transport)))))))))
+
+(deftest python-client-persists-claims-downloads-and-completes-through-real-http
+  (python-client-roundtrip! ["python3" "-I" "test/scripts/worker_roundtrip_fixture.py"] false))
+
+(defn physical-python-client-roundtrip!
+  "Explicit Linux host integration, not a standard CI test or model benchmark.
+   Requires user systemd, bubblewrap and host python3-dbus/python3-gi."
+  []
+  (python-client-roundtrip! ["/usr/bin/python3" "-I" "test/scripts/worker_roundtrip_fixture.py" "--physical"] true))
 
 (deftest room-revocation-between-claim-precheck-and-writer-refuses-ownership
   (world/with-world [conn w]

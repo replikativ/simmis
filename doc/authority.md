@@ -360,6 +360,39 @@ stop, authenticate a server response or release a server lease. The opt-in
 crash fixture kills a controller after durable admission and GO, then verifies
 exact-unit reconciliation without task replay or a fabricated remote ack.
 
+`scripts/worker_controller.py` assembles those primitives as a single-use
+trusted local host API. It accepts a locally pinned argv/config, not a room
+command, and is not a coding-CLI adapter. One canonical private state location
+per origin/enrollment and its permanent worker lock cover claim through
+reconciliation. A fresh successful live claim precedes input fetch and launch;
+all unresolved Run journals block new claims. Selected inputs and guard frames
+are verified before use, admission is fsynced before GO, and the whole-unit
+stop/output record is durable before completion is sent. Startup ambiguity
+without an admitted identity stays unresolved for operator reconciliation;
+it is never guessed into a shutdown receipt.
+
+Heartbeats cover paginated input reads, guard protocol I/O and event-driven
+physical shutdown observation. Frozen file policy version two pins the server's
+30-second lease TTL; server renewal derives from that same policy. Receipt age
+has a conservative wall-expiry check and a monotonic bound before GO. The
+worker-only `worker_transport.py` HTTP helper receives credentials on private
+pipes, has a clean environment, cannot invoke arbitrary tools or spawn task
+code, and is killed on controller death. The parent enforces a five-second
+total request deadline, not merely a socket-inactivity timeout. On failure it
+requests candidate stop before killing and joining the helper. The shared
+`worker_io.py` bounds pipe frames and uses absolute monotonic deadlines.
+
+A lost completion reply preserves the exact sealed output and never triggers
+a generic fallback to shutdown-only acknowledgment. Reconciliation of an
+admitted/stopped Run cannot launch or send GO: it observes explicit server
+acceptance, retries that same output if the lease is still live, or reports
+shutdown-only when no publishable output survived or the server signals
+cancellation. No client receipt
+certifies or merges a Run; the ordinary server-side evaluator/import authority
+still decides those. The explicit `physical-python-client-roundtrip!` REPL
+fixture exercises real HTTP claim/download/execution/stop/completion without
+model calls; standard CI retains the non-executing synthetic client fixture.
+
 The host-only `ops/worker-work.clj` adapter submits through the existing Jobs/
 Runs rather than a remote-executor registry. It requires the worker's enrolling
 human and current room read/merge authority, explicit admission allowance,
