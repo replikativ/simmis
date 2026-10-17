@@ -13,6 +13,9 @@
             [dvergr.catalog.workspace :as workspace]
             [dvergr.discourse :as discourse]
             [dvergr.jobs :as jobs]
+            [dvergr.model.api.codex-subscription :as codex]
+            [dvergr.model.gateway :as gateway]
+            [dvergr.model.providers :as providers]
             [dvergr.resource :as resource]
             [dvergr.agent.run :as run]
             [dvergr.room.store :as store]
@@ -26,6 +29,7 @@
             [is.simm.ops.work-test]
             [is.simm.ops.workflows :as workflows]
             [is.simm.ops.workflows-test :as fixture]
+            [jsonista.core :as json]
             [org.replikativ.spindel.engine.core :as ec]))
 
 (use-fixtures :each
@@ -95,6 +99,92 @@
     (is (= 4 (get-in prepared [:cell-limits :max-dispatches])))
     (is (every? #(= :ctx (get-in % [:environment/world :isolation]))
                 (get-in prepared [:plan :environments])))))
+
+(deftest native-subscription-benchmark-cells-conserve-dispatches-and-certify-results
+  (doseq [dispatches [4 2]]
+    (world/with-world [conn w]
+      (@#'is.simm.ops.work-test/with-room
+       (fn [control]
+         (let [host-ctx ec/*execution-context*
+               clean (discourse/make-room {:id (keyword (str "native-fixture-" (random-uuid))) :store (memory/make)})
+               files (-> fixture/fixture
+                         (assoc "workflow.edn" "{:title \"Interpreter workflow\" :task \"Write interpreter output to /out/result.md\" :capture [\"/out\"]}"
+                                "checker.clj" "(ns checker) (defn check [{:keys [files gold]}] (let [ok (= (:expected gold) (get files \"/out/result.md\"))] {:checks {:output-correct? ok} :reward (if ok 1 0)}))"
+                                "cases/a/gold.edn" "{:expected \"interpreter output\" :private \"PRIVATE-CHECKER-GOLD\"}"
+                                "cases/b/gold.edn" "{:expected \"interpreter output\" :private \"PRIVATE-CHECKER-GOLD\"}"))
+               request (-> (input files) (assoc :models ["codex-subscription-sol"])
+                           (assoc-in [:limits :max-dispatches] dispatches)
+                           (assoc-in [:limits :timeout-ms] 30000))
+               calls (atom []) retired (atom 0)
+               provider (codex/create {:credentials (gateway/static-credentials :fixture {} #{"https://chatgpt.com"})})
+               infer (fn [http]
+                       (let [body (json/read-value (:body http) json/keyword-keys-object-mapper)
+                             second-turn? (some #(= "function_call_output" (:type %)) (:input body))
+                             events (concat
+                                     (if second-turn?
+                                       [{:type "response.output_text.delta" :delta "Result prepared."}]
+                                       [{:type "response.output_item.done"
+                                         :item {:type "function_call" :call_id "write-result" :name "clojure_eval"
+                                                :arguments (json/write-value-as-string
+                                                            {:code "(do (babashka.fs/create-dirs \"/out\") (spit \"/out/result.md\" \"interpreter output\"))"})}}])
+                                     [{:type "response.completed" :response {:id (str "fixture-" (count @calls)) :model "gpt-5.6-sol"
+                                                                             :usage {:input_tokens 100 :output_tokens 20}}}])]
+                         (swap! calls conj body)
+                         {:status 200 :body (java.io.ByteArrayInputStream.
+                                             (.getBytes (apply str (map #(str "data: " (json/write-value-as-string %) "\n\n") events)) "UTF-8"))}))]
+           (try
+             (workspace/ensure-workspace! control)
+             ;; Match real fixture-room provisioning: input prediction must
+             ;; see this fixture's virtual workspace, not the shared physical
+             ;; fallback which carries a different AGENTS.md guide.
+             (binding [ec/*execution-context* (:ctx clean)] (workspace/ensure-workspace! clean))
+             (workspace/seed! control {"/private-control.md" "PRIVATE-CONTROL-DATA"})
+             (workflows/write! control (ops/party-principal (:owner w)) {:name "echo" :files files})
+             (d/transact conn [{:party/id (:owner w) :party/role :admin}])
+             (resource/mint! control {:id (random-uuid) :resources (work/resources (:limits request))})
+             ;; Root stub covers every asynchronous room worker; no login or
+             ;; actual HTTP implementation can be reached in this fixture.
+             (with-redefs-fn {#'providers/providers (atom {:codex-subscription provider})
+                              #'gateway/*request-fn* infer
+                              #'benchmarks/fixture-room! (fn [& _] clean)
+                              #'benchmarks/retire-fixture! (fn [& _] (swap! retired inc))}
+               (fn []
+                 (let [submission (benchmarks/submit! conn host-ctx (ops/party-principal (:owner w)) (:room w) control request)
+                       status (jobs/status (:job submission) 60000)
+                       attempts (store/-list-attempts (:store control) (store/conversation-id control) {})
+                       scorecards (store/-list-scorecards (:store control) (store/conversation-id control) {})
+                       scorecard (first scorecards)]
+                   (is (= :completed (:status status)) (pr-str (select-keys status [:status :error])))
+                   (is (:settled? status))
+                   (is (= dispatches (count @calls)) "Each cell is bounded by its conserved share, even when a second model turn is attempted")
+                   (is (= 2 (count attempts)))
+                   (if (= dispatches 4)
+                     (do
+                       (is (= 1 (count scorecards)))
+                       (is (= 2 (count (:scorecard/entries scorecard))))
+                       (is (= 2 (get-in scorecard [:scorecard/summary 0 :passed-count])))
+                       (is (every? experiment/verdict? attempts)))
+                     (do
+                       ;; A gateway quota refusal is an infrastructure fault,
+                       ;; not evidence of model quality. Keep the certified
+                       ;; Attempts, but do not manufacture a complete board.
+                       (is (empty? scorecards))
+                       (is (not-any? experiment/verdict? attempts))
+                       (is (every? #(= :infrastructure (get-in % [:attempt/receipt :attempt/metrics :failure :kind])) attempts))))
+                   (is (every? #(= (if (= dispatches 4) 1.0 0.0) (get-in % [:attempt/receipt :attempt/reward])) attempts))
+                   (is (every? #(= {"/out/result.md" "interpreter output"} (get-in % [:attempt/evidence :files])) attempts)
+                       "Captured outputs remain inspectable after both successful and interrupted worlds are discarded")
+                   (is (every? #(zero? (get-in % [:attempt/receipt :attempt/metrics :spend :microdollars])) attempts))
+                   (is (every? #(pos? (get-in % [:attempt/receipt :attempt/metrics :spend :notional-microdollars])) attempts)
+                       "Subscription comparisons retain list-price cost despite zero incremental spend")
+                   (is (= {resource/microdollars 10000M} (resource/balance control)))
+                   (is (= 1 @retired))
+                   (is (empty? (workspace/read-tree control "/out")))
+                   (is (empty? (workspace/read-tree clean "/")))
+                   (is (not-any? #(re-find #"PRIVATE-CHECKER-GOLD|PRIVATE-CONTROL-DATA" (json/write-value-as-string %)) @calls))
+                   (is (= (:job submission) (:job (benchmarks/submit! conn host-ctx (ops/party-principal (:owner w)) (:room w) control request))))
+                   (is (= dispatches (count @calls)) "Request replay never creates more model HTTP attempts"))))
+             (finally (discourse/close-room! clean)))))))))
 
 (deftest preparation-rejects-revision-case-model-and-budget-ambiguity
   (let [files fixture/fixture
