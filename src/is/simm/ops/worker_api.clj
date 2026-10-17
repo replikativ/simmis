@@ -37,7 +37,7 @@
         [[:simmis/worker-pending :read service/pending-schema service/pending
           "List at most ten queued Run UUIDs for this enrollment only. No tasks, files, other workers or room discovery. Persist the selected Run, nonce and lease secret locally BEFORE claim."]
          [:simmis/worker-claim :write service/claim-schema service/claim!
-          "Claim one selected Run for this enrolled worker. Client nonce retries are exact; lease proof comes from the authentication header, NEVER arguments. One physical slot per enrollment; expiry does not release it. Check returned cancellation/stop state before executing."]
+          "Claim one selected Run for this enrolled worker. Persist Run, nonce and proof first: the nonce is also the lease UUID, allowing shutdown after a lost reply/revocation. Lease proof comes from the authentication header, NEVER arguments. One physical slot per enrollment; expiry does not release it. Check a successful claim's cancellation/stop state before executing; an ambiguous reply never authorizes execution."]
          [:simmis/worker-input :read service/input-schema service/input
           "Read <=16384 bytes of this lease's immutable selected-file input JSON as base64. Validate input id, full SHA256, size, offsets and individual file digests before materialization. No current-room or host-file read."]
          [:simmis/worker-heartbeat :write service/run-schema service/heartbeat!

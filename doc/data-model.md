@@ -29,6 +29,11 @@ UUIDs and link to the request, Job, selected worker and frozen input artifact.
 Writer-serialized claims bind one client nonce and lease proof hash; the same
 Run is never reassigned after expiry or cancellation. Plaintext credential and
 lease proofs never enter database transaction arguments.
+The client nonce UUID is also the lease UUID. Persisting Run, nonce and proof
+before claiming therefore retains shutdown authority even if the claim reply
+is lost and enrollment is subsequently revoked. Before commitment that proposed
+bearer authenticates nobody; after revocation it grants shutdown operations
+only. A lost reply never authorizes execution.
 Each enrollment represents one physical worker slot: another assignment cannot
 be claimed while a previous lease lacks its shutdown acknowledgement, even
 after expiry or quarantine.
@@ -153,6 +158,19 @@ no-follow descriptor-relative reads, pre-open special-file checks and
 post-open identity checks refuse symlinks, hardlinks, devices/FIFOs and
 privileged modes. Collection itself grants no shutdown acknowledgement,
 server-side import, certification or merge authority.
+
+`scripts/worker_claim.py` persists the private client claim identity before any
+network claim. Atomic no-overwrite publication and file/directory fsync preserve
+one Run/nonce/proof across retries; corrupt or mismatched tickets are never
+replaced. Its caller must first durably create the private state directory,
+including its parent entry. Inspection alone is not the durability barrier.
+A per-enrollment OS lock spans admission, process lifetime and cleanup; lock
+files must not be removed/recreated while another controller could own them.
+Process death releases the lock, not an orphaned process tree or server lease.
+Replacement controllers must reconcile those before executing, and retain
+ambiguous claim tickets until ownership/shutdown is resolved. Crash-left private
+staging files are non-authoritative. This helper performs no network calls or
+execution and keeps no shared application state.
 
 ## Objects, morphisms, instances
 

@@ -223,6 +223,61 @@
                 (is (= output (workers/payload conn (workers/assignment conn run) :simmis.worker.assignment/output-ref)))))
             (finally ((:stop transport)))))))))
 
+(deftest lost-claim-reply-then-revocation-retains-precomputed-shutdown-authority
+  (world/with-world [conn w]
+    (with-assignment conn w
+      (fn [{:keys [enrolled run proof]}]
+        (let [nonce (random-uuid)
+              ;; This is all the client has durably saved BEFORE claim.
+              token (credentials/lease-token run nonce proof)
+              claim workers/claim-hashed!
+              transport (http/start! {:port 0 :bind "127.0.0.1" :profile :admin :toolsets #{:host}
+                                      :authenticate #(credentials/authenticate conn %)})
+              port (:port transport)
+              initialize {:protocolVersion "2025-06-18" :capabilities {}
+                          :clientInfo {:name "lost-claim-fixture" :version "1"}}]
+          (try
+            (is (nil? (credentials/authenticate conn {:bearer token})))
+            (let [sid (:sid (http-message port (:credential enrolled) proof nil 1 "initialize" initialize))]
+              (http-message port (:credential enrolled) proof sid nil "notifications/initialized" {})
+              (with-redefs [workers/claim-hashed! (fn [& args]
+                                                    (apply claim args)
+                                                   ;; The transport never receives the receipt.
+                                                    (throw (ex-info "Claim reply lost after commit" {})))]
+                (is (refused? (:rpc (http-message port (:credential enrolled) proof sid 2 "tools/call"
+                                                  {:name "simmis_worker-claim"
+                                                   :arguments {:run (str run) :nonce (str nonce)}})))))
+              (workers/revoke! conn (:worker enrolled))
+              (is (nil? (:simmis.worker.assignment/stop-ack-at (workers/assignment conn run))))
+              (is (= nonce (:simmis.worker.assignment/lease (workers/assignment conn run))))
+              (is (nil? (credentials/authenticate conn {:bearer (credentials/lease-token run (random-uuid) proof)})))
+              (is (nil? (credentials/authenticate conn {:bearer (credentials/lease-token run nonce (workers/new-secret))})))
+              (let [exposed (fn [] (d/q '[:find ?id . :in $ ?worker
+                                          :where [?e :simmis.worker.assignment/worker ?worker]
+                                          [?e :simmis.worker.assignment/lease _]
+                                          [?e :simmis.worker.assignment/id ?id]
+                                          (not [?e :simmis.worker.assignment/stop-ack-at _])]
+                                        @conn (:worker enrolled)))]
+                (is (= run (exposed)))
+                (let [shutdown (:sid (http-message port token nil nil 1 "initialize" initialize))]
+                  (is (some? shutdown))
+                  (http-message port token nil shutdown nil "notifications/initialized" {})
+                  (doseq [[name args] [["simmis_worker-input" {:run (str run)}]
+                                       ["simmis_worker-complete" {:run (str run) :output {:files {} :summary "no" :exit-code 0}}]
+                                       ["simmis_worker-claim" {:run (str run) :nonce (str nonce)}]
+                                       ["room_list" {}]]]
+                    (is (refused? (:rpc (http-message port token nil shutdown 2 "tools/call" {:name name :arguments args})))))
+                  (let [beat (value (:rpc (http-message port token nil shutdown 3 "tools/call"
+                                                        {:name "simmis_worker-heartbeat" :arguments {:run (str run)}})))]
+                    (is (:cancel-requested? beat))
+                    (is (false? (:stop-ack? beat))))
+                  (is (= {:run (str run) :stop-ack? true}
+                         (value (:rpc (http-message port token nil shutdown 4 "tools/call"
+                                                    {:name "simmis_worker-stop" :arguments {:run (str run)}})))))
+                  (is (:simmis.worker.assignment/stop-ack-at (workers/assignment conn run))))
+                (is (nil? (exposed)))))
+            (finally ((:stop transport)))))))))
+
 (deftest room-revocation-between-claim-precheck-and-writer-refuses-ownership
   (world/with-world [conn w]
     (with-assignment conn w

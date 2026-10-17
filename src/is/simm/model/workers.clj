@@ -225,13 +225,16 @@
 
 (defn claim-hashed!
   "An exclusive writer-serialized claim. Client nonce+secret are persisted
-   locally first. Retries observe this owner, never extend an expired lease."
+   locally first. The nonce IS the lease UUID, so an ambiguous committed claim
+   can still acknowledge shutdown after enrollment revocation. A proposed
+   bearer grants nothing until this exact proof/lease is durably owned.
+   Retries observe this owner, never extend an expired lease."
   [conn id worker generation nonce hash now ttl-ms & [permitted?]]
   (when-not (and (every? uuid? [id worker nonce]) (pos-int? generation)
                  (or (instance? Date now) (fn? now)) (integer? ttl-ms) (<= 1000 ttl-ms 60000)
                  (string? hash) (re-matches #"[A-Za-z0-9_-]{43}=" hash))
     (refuse! ::invalid "Invalid claim"))
-  (let [lease (hasch/uuid [:simmis/worker-lease-v1 id worker generation nonce])]
+  (let [lease nonce]
     (try
       (d/transact conn [[:db.fn/call claim-tx id worker generation nonce hash lease now ttl-ms permitted?]])
       (catch Exception error
