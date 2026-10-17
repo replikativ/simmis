@@ -79,7 +79,7 @@
           (finish!)
           (let [retired (atom 0)
                 lookup registry/lookup
-                worlds (set (map #(get (run/run room (:id %)) :run/world) children))]
+                worlds (set (map (fn [child] (:run/world (run/run room (:id child)))) children))]
             ;; Make registry-context divergence observable even though this
             ;; fixture shares the real daemon root. Every lookup of a work
             ;; world must use its fixture's context, including revalidation.
