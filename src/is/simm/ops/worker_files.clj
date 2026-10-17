@@ -59,6 +59,19 @@
 (defn sha256 [^bytes bytes]
   (object/bytes->hex (.digest (MessageDigest/getInstance "SHA-256") bytes)))
 
+(defn file-bytes!
+  "Decode one bounded immutable regular-file descriptor, verifying its bytes.
+   Used both at worker intake and when reading captured Attempt evidence."
+  [file]
+  (when-not (m/validate file-schema file) (refuse! "Invalid bounded file descriptor"))
+  (let [bytes (try (.decode (Base64/getDecoder) ^String (:base64 file))
+                   (catch IllegalArgumentException _ (refuse! "File base64 is invalid")))
+        size (alength bytes)]
+    (when-not (and (= size (:bytes file)) (= (:sha256 file) (sha256 bytes))
+                   (<= size (:max-file-bytes policy)))
+      (refuse! "File does not match its byte limit, size or digest"))
+    bytes))
+
 (defn path!
   "Canonical relative file names only. Sensitive paths use the same policy as
    ordinary room file access; control characters are never local filenames."
@@ -128,11 +141,9 @@
      (when-not (or (contains? (:files frozen) path) (and file (str/starts-with? path "out/")))
        (refuse! "Worker output is outside selected input files and out/ deliverables"))
      (if-not file total
-             (let [bytes (try (.decode (Base64/getDecoder) ^String (:base64 file))
-                              (catch IllegalArgumentException _ (refuse! "Worker output base64 is invalid")))
+             (let [bytes (file-bytes! file)
                    size (alength bytes) total (+ total size)]
-               (when-not (and (= size (:bytes file)) (= (:sha256 file) (sha256 bytes))
-                              (<= size (:max-file-bytes policy)) (<= total (:max-total-bytes policy)))
+               (when-not (<= total (:max-total-bytes policy))
                  (refuse! "Worker output exceeds limits or does not match its size/digest"))
                total))) 0 (:files output))
   ;; Refuse file/directory collisions before any later import operation.

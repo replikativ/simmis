@@ -5,6 +5,7 @@
             [dvergr.mcp.server :as mcp-server]
             [dvergr.ops :as dops]
             [is.simm.ops.dvergr :as ops]
+            [is.simm.ops.worker-files :as worker-files]
             [jsonista.core :as json]
             [malli.core :as m])
   (:import [java.nio.charset StandardCharsets]
@@ -35,10 +36,12 @@
   (or (ops/invoke ctx principal :attempt/detail {:room room :id id})
       (dops/op-error! "No such Attempt in this room" ::not-found 404)))
 
-(defn- text-bytes [text]
-  (when-not (string? text)
-    (dops/op-error! "This captured value is not a text-file artifact" ::unsupported 422))
-  (.getBytes ^String text StandardCharsets/UTF_8))
+(defn- file-bytes [value]
+  (if (string? value)
+    (.getBytes ^String value StandardCharsets/UTF_8)
+    (try (worker-files/file-bytes! value)
+         (catch clojure.lang.ExceptionInfo _
+           (dops/op-error! "Captured file descriptor is unsupported or corrupt" ::unsupported 422)))))
 
 (defn- identity-fields [attempt]
   (select-keys attempt [:id :content-id :run-id]))
@@ -54,9 +57,11 @@
                        (when-not (and (string? path) (<= 1 (count path) 2048))
                          (dops/op-error! "Captured file path is outside the supported bounds"
                                          ::unsupported 422))
-                       (let [bytes (text-bytes (get files path))
-                             entry {:path path :size (alength ^bytes bytes)
-                                    :content-id (str (blob/blob-id bytes))}
+                       (let [value (get files path)
+                             bytes (file-bytes value)
+                             entry (cond-> {:path path :size (alength ^bytes bytes)
+                                            :content-id (str (blob/blob-id bytes))}
+                                     (map? value) (assoc :mode (:mode value)))
                              n (count (json/write-value-as-string entry))]
                          (if (> (+ chars n) 24000)
                            (reduced page)
@@ -69,25 +74,28 @@
       (< next-offset (count paths)) (assoc :next-offset next-offset))))
 
 (defn attempt-file
-  "Read exact captured UTF-8 bytes as a bounded base64 chunk. Byte offsets,
-   not character offsets; concatenate decoded bytes before decoding UTF-8."
+  "Read exact captured bytes as a bounded base64 chunk. Legacy text remains
+   UTF-8; validated regular-file descriptors also preserve arbitrary binary."
   [ctx principal {:keys [path offset length] :or {offset 0 length max-chunk-bytes} :as args}]
   (checked! file-schema args)
   (let [attempt (attempt! ctx principal args)
         files (get-in attempt [:evidence :files] {})]
     (when-not (contains? files path)
       (dops/op-error! "No such file in this Attempt's captured evidence" ::not-found 404))
-    (let [^bytes bytes (text-bytes (get files path))
+    (let [value (get files path)
+          ^bytes bytes (file-bytes value)
           size (alength bytes)]
       (when (> offset size)
         (dops/op-error! "Offset is outside the captured file" ::invalid 400))
       (let [end (+ offset (min length (- size offset)))]
         (cond-> {:attempt (identity-fields attempt) :path path
                  :content-id (str (blob/blob-id bytes))
-                 :encoding "base64" :media-type "text/plain; charset=utf-8"
+                 :encoding "base64" :media-type (if (string? value) "text/plain; charset=utf-8"
+                                                    "application/octet-stream")
                  :size size :offset offset :length (- end offset)
                  :base64 (.encodeToString (Base64/getEncoder)
                                           (Arrays/copyOfRange bytes (int offset) (int end)))}
+          (map? value) (assoc :mode (:mode value))
           (< end size) (assoc :next-offset end))))))
 
 (def specifications
@@ -96,7 +104,7 @@
     :kind :read :schema files-schema
     :impl (fn [host args] (attempt-files (:execution-ctx host) dops/*principal* args))}
    :simmis/attempt-file
-   {:doc "Read a captured Attempt file as at most 16384 bytes of base64. Follow next-offset; concatenate decoded bytes before UTF-8 decoding. Immutable even after workspace changes/world discard."
+   {:doc "Read a captured Attempt file as at most 16384 bytes of base64. Follow next-offset and concatenate decoded bytes. media-type distinguishes UTF-8 text from regular binary file artifacts. Immutable even after workspace changes/world discard."
     :kind :read :schema file-schema
     :impl (fn [host args] (attempt-file (:execution-ctx host) dops/*principal* args))}})
 

@@ -186,9 +186,12 @@ artifacts do not require reading the full evidence response:
 `simmis_attempt-files {room, id, offset?}` lists up to 100 paths with sizes and
 content identities, and `simmis_attempt-file {room, id, path, offset?, length?}`
 returns at most 16384 bytes as base64. Follow `next-offset`, concatenate the
-decoded bytes, then decode UTF-8; individual chunks can split a character.
-These are the text-file outputs the upstream evaluator captures, not a binary
-artifact ingestion API. Both reads include the Attempt's content identity;
+decoded bytes. Text outputs use UTF-8 (individual chunks can split a character).
+Closed regular-file descriptors also preserve binary bytes and executable mode;
+reads verify their base64, size, SHA256 and mode, capped at 1 MiB per descriptor.
+The chunk's media type distinguishes text from binary. These operations only
+read existing captured evidence; they are not an artifact ingestion API.
+Both reads include the Attempt's content identity;
 neither can fall back to the current workspace when a captured path is absent.
 Their schemas reject extra fields and validate direct in-process callers too.
 
