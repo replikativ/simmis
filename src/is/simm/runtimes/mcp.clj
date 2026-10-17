@@ -7,14 +7,10 @@
   (:require [clojure.set :as set]
             [clojure.string :as str]
             [dvergr.mcp.http :as http]
-            [dvergr.mcp.server :as server]
             [dvergr.substrate.config :as config]
             [is.simm.model.parties :as parties]
             [is.simm.ops.dvergr :as ops]
-            [is.simm.ops.results :as results]
-            [is.simm.ops.work-api :as work-api]
             [is.simm.runtimes.auth-config :as auth]
-            [is.simm.runtimes.context :as context]
             [is.simm.runtimes.http-auth :as http-auth]
             [is.simm.runtimes.instance :as instance]
             [kabel.auth.jwt :as jwt]
@@ -155,34 +151,23 @@
 
 (defn start!
   "Start the configured listener once. The bind is not configurable: SSH
-   forwarding is the supported access path for this private first surface."
+   forwarding is the supported access path for this private first surface.
+   Application operation registrations are owned by web application startup."
   []
   (locking listener
     (when-not @listener
       (when-let [port (configured-port)]
-        (let [authenticate (authenticator)]
-          (server/set-host! (ops/host context/server-context))
-          (try
-            (results/install!)
-            (work-api/install!)
-            (let [started (http/start! {:bind "127.0.0.1" :port port
-                                        :profile :admin :toolsets #{:host}
-                                        :authenticate authenticate})]
-              ;; Never retain/log the transport's unused local-admin token.
-              (reset! listener (select-keys started [:port :stop]))
-              (log/log! {:level :info :id ::started
-                         :data {:bind "127.0.0.1" :port port :default-access :read}}))
-            (catch Exception e
-              (results/uninstall!)
-              (work-api/uninstall!)
-              (server/set-host! nil)
-              (throw e))))))))
+        (let [authenticate (authenticator)
+              started (http/start! {:bind "127.0.0.1" :port port
+                                    :profile :admin :toolsets #{:host}
+                                    :authenticate authenticate})]
+          ;; Never retain/log the transport's unused local-admin token.
+          (reset! listener (select-keys started [:port :stop]))
+          (log/log! {:level :info :id ::started
+                     :data {:bind "127.0.0.1" :port port :default-access :read}}))))))
 
 (defn stop! []
   (locking listener
     (when-let [{:keys [stop]} @listener]
       (stop)
-      (reset! listener nil)
-      (results/uninstall!)
-      (work-api/uninstall!)
-      (server/set-host! nil))))
+      (reset! listener nil))))

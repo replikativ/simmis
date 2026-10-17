@@ -263,7 +263,10 @@ Visibility filters and already-open resource sessions recheck room authority.
 Checker execution/calibration and workflow export (which calibrates on export),
 paid starts and host-path trajectory exports are not on this read surface.
 The Simmis artifact and work ops register through Dvergr's authorized host-op seam,
-not dynamic unguarded tools, and are removed when the listener stops.
+not dynamic unguarded tools. The web application installs these shared
+operations before accepting requests, including when MCP is disabled, and
+removes them at full application shutdown. Starting, stopping or failing to
+start the optional MCP listener does not remove browser operation access.
 
 An operator can call `is.simm.runtimes.mcp/mint-token!` for an existing human
 party UUID. Its result contains a credential and must be saved privately, not

@@ -9,6 +9,7 @@
             [is.simm.ops.work-api :as work-api]
             [is.simm.model.parties :as parties]
             [is.simm.runtimes.auth-config :as auth]
+            [is.simm.runtimes.application-ops :as application-ops]
             [is.simm.runtimes.instance :as instance]
             [is.simm.runtimes.http-auth :as http-auth]
             [is.simm.runtimes.mcp :as mcp]
@@ -25,13 +26,22 @@
                   parties/get-party (fn [id] (when (= person id) {:party/id id :party/type :human}))]
       ;; Lifecycle tests own a listener cell. Running them in a development
       ;; REPL must neither reuse nor stop that process's real MCP listener.
-      (with-redefs-fn {#'mcp/listener (atom nil)}
+      (with-redefs-fn {#'mcp/listener (atom nil)
+                       #'application-ops/installed? (atom false)}
         (fn []
-          (try
-            (results/install!)
-            (work-api/install!)
-            (f)
-            (finally (work-api/uninstall!) (results/uninstall!))))))))
+          (let [previous (dops/operations)
+                previous-host @@#'server/embedded-host]
+            (try
+              (application-ops/start!)
+              (f)
+              (finally
+                (application-ops/stop!)
+                (doseq [op (concat (keys results/specifications) (keys work-api/specifications))]
+                  (if-let [spec (get previous op)]
+                    (dops/register-op! op spec)
+                    (dops/unregister-op! op)))
+                (server/sync-op-tools!)
+                (server/set-host! previous-host)))))))))
 
 (deftest only-mcp-credentials-for-an-existing-human-authenticate
   (let [authenticate (mcp/authenticator)
@@ -133,8 +143,10 @@
             (is (or (:error r) (get-in r [:result :isError])))))))
     (is (thrown? clojure.lang.ExceptionInfo (mcp/mint-token! person :admin)))))
 
-(deftest listener-is-opt-in-private-idempotent-and-cleans-up
-  (let [events (atom [])]
+(deftest listener-is-opt-in-private-idempotent-and-transport-only
+  (let [events (atom [])
+        host @@#'server/embedded-host
+        operations (dops/operations)]
     (with-redefs [mcp/configured-port (constantly nil)
                   server/set-host! #(swap! events conj [:host (some? %)])
                   http/start! (fn [opts]
@@ -147,22 +159,58 @@
         (with-redefs [mcp/configured-port (constantly 17889)]
           (mcp/start!)
           (mcp/start!))
-        (is (= [[:host true] [:start {:port 17889 :bind "127.0.0.1" :profile :admin}]] @events))
+        (is (= [[:start {:port 17889 :bind "127.0.0.1" :profile :admin}]] @events))
         (is (nil? (:token @@#'mcp/listener)))
         (mcp/stop!)
         (mcp/stop!)
-        (is (not-any? #(contains? (dops/operations) %) (keys results/specifications)))
-        (is (= [[:stop] [:host false]] (take-last 2 @events)))
+        (is (= operations (dops/operations)))
+        (is (identical? host @@#'server/embedded-host))
+        (is (= [:stop] (last @events)))
         (finally (mcp/stop!))))))
 
-(deftest failed-start-clears-the-host
-  (let [hosts (atom [])]
+(deftest failed-listener-start-preserves-application-operations-and-can-retry
+  (let [hosts (atom [])
+        host @@#'server/embedded-host
+        operations (dops/operations)]
     (with-redefs [mcp/configured-port (constantly 17889)
                   server/set-host! #(swap! hosts conj %)
                   http/start! (fn [_] (throw (ex-info "occupied" {})))]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"occupied" (mcp/start!)))
-      (is (some? (first @hosts)))
-      (is (nil? (last @hosts))))))
+      (is (empty? @hosts))
+      (is (nil? @@#'mcp/listener))
+      (is (identical? host @@#'server/embedded-host))
+      (is (= operations (dops/operations)))
+      (with-redefs [http/start! (fn [_] {:port 17889 :stop (fn [])})]
+        (try (mcp/start!)
+             (is (= 17889 (:port @@#'mcp/listener)))
+             (finally (mcp/stop!)))))))
+
+(deftest application-operations-exist-without-mcp-and-stop-only-with-application
+  (with-redefs [mcp/configured-port (constantly nil)]
+    (mcp/start!)
+    (mcp/stop!)
+    (doseq [op [:simmis/workflow-list :simmis/workflow-source :simmis/workflow-write
+                :simmis/attempt-files :simmis/attempt-file]]
+      (is (contains? (dops/operations) op)))
+    (let [host @@#'server/embedded-host]
+      (application-ops/start!)
+      (is (identical? host @@#'server/embedded-host) "application start is idempotent"))
+    (application-ops/stop!)
+    (application-ops/stop!)
+    (is (nil? @@#'server/embedded-host))
+    (is (not-any? #(contains? (dops/operations) %)
+                  (concat (keys results/specifications) (keys work-api/specifications))))))
+
+(deftest failed-application-registration-rolls-back-and-can-retry
+  (application-ops/stop!)
+  (with-redefs [work-api/install! (fn [] (throw (ex-info "registration failed" {})))]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"registration failed"
+                          (application-ops/start!))))
+  (is (nil? @@#'server/embedded-host))
+  (is (not-any? #(contains? (dops/operations) %)
+                (concat (keys results/specifications) (keys work-api/specifications))))
+  (application-ops/start!)
+  (is (contains? (dops/operations) :simmis/workflow-list)))
 
 (deftest web-login-exchanges-only-its-own-human-identity
   (let [other #uuid "44444444-4444-4444-4444-444444444444"

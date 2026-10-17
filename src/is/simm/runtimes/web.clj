@@ -15,6 +15,7 @@
             [taoensso.telemere :as log]
             ;; Server execution context
             [is.simm.runtimes.context :as ctx]
+            [is.simm.runtimes.application-ops :as application-ops]
             ;; System DB (must init before auth)
             [is.simm.model.system-db :as system-db]
             [is.simm.model.access :as access]
@@ -937,7 +938,14 @@
             (log/log! {:level :warn :id ::room-subsystems-failed
                        :data {:error (str e)}})))
 
-        (<? S (peer/start server))
+        ;; Browser RPC uses the same canonical operations as optional MCP.
+        ;; Install before accepting requests, even when MCP is disabled.
+        (application-ops/start!)
+        (try
+          (<? S (peer/start server))
+          (catch Throwable e
+            (application-ops/stop!)
+            (throw e)))
         (swap! server-state assoc :started? true)
         (log/log! {:level :info
                    :id ::server-started
@@ -986,7 +994,10 @@
 
         ;; Private MCP uses this process's rooms, identity and authority.
         ;; Disabled unless explicitly configured; never bound publicly.
-        ((requiring-resolve 'is.simm.runtimes.mcp/start!))
+        (try ((requiring-resolve 'is.simm.runtimes.mcp/start!))
+             (catch Exception e
+               (log/log! {:level :error :id ::mcp-start-failed
+                          :data {:error (str e)}})))
 
         ;; Bus pump watchdog — loud detection of the source-pump
         ;; waiter-loss wedge until its root cause is fixed.
@@ -1023,7 +1034,8 @@
   "Stop the web server. Idempotent - does nothing if not started."
   []
   (when (:started? @server-state)
-    ((requiring-resolve 'is.simm.runtimes.mcp/stop!))
+    (try ((requiring-resolve 'is.simm.runtimes.mcp/stop!))
+         (finally (application-ops/stop!)))
     (mail-accounts/close-all!)
     ;; Revokes deleting GC for this home along with the loop.
     (try
