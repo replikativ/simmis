@@ -408,6 +408,19 @@ dispatch accounting. The embedding runner owns transport framing, deadlines,
 provider retry policy and physical containment. This primitive does not mount
 credentials, launch a subscription provider or establish those runner guarantees.
 
+`ops/worker-subscription.clj` builds a trusted inference function from an
+existing native Codex-subscription provider. It reuses Dvergr's gateway and
+SSE accumulation, confines dispatch to the exact subscription endpoint, and
+forces redirects off. Each invocation allows one guarded model POST:
+HTTP/authentication errors fail without retry, and a broken or incomplete
+stream is never restarted. Raw response bytes are bounded before line/JSON
+parsing, and a terminal provider event is required. This is subscription model
+inference, not the native Codex CLI harness; no tools execute in this function.
+Its production provider constructor disables token refresh and auth-file writes
+during work: an expiring login must be renewed outside the Run. Arbitrarily
+injected credential implementations retain their own authentication behavior.
+It does not launch a broker process or supply the runner's total deadline.
+
 The host-only `ops/worker-work.clj` adapter submits through the existing Jobs/
 Runs rather than a remote-executor registry. It requires the worker's enrolling
 human and current room read/merge authority, explicit admission allowance,
