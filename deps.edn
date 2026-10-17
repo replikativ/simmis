@@ -361,7 +361,9 @@
         ;; 0.1.306 includes bounded evaluation cleanup, automatic workspace
         ;; settlement, zero-priced native dispatch accounting and canonical
         ;; fork/grant/settlement fixes (#342–348).
-        org.replikativ/dvergr {:mvn/version "0.1.306"}}
+        ;; 0.1.311 preserves unknown usage in typed Attempt projections and
+        ;; evaluation read models without rewriting certified Scorecards (#353).
+        org.replikativ/dvergr {:mvn/version "0.1.311"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead

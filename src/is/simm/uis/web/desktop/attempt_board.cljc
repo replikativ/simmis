@@ -7,6 +7,7 @@
    each candidate with its best one, with dvergr's own statistics
    (`dvergr.agent.experiment.stats`), so board and Scorecard agree."
   (:require [datahike.api :as d]
+            [dvergr.agent.measurements :as measurements]
             [dvergr.agent.experiment.stats :as stats]))
 
 (def job-kinds
@@ -21,6 +22,7 @@
 (def ^:private attempt-optional
   ;; Typed by dvergr since #143; older replicas lack them.
   '[:attempt/microdollars :attempt/notional-microdollars :attempt/experiment-content-id
+    :attempt/spend-priced? :attempt/notional-priced? :attempt/usage-reported?
     :attempt/experiment-candidate :attempt/environment-content-id
     {:attempt/checks [:attempt.check/key :attempt.check/passed?]}])
 
@@ -62,11 +64,14 @@
              :reward (:attempt/reward a)
              :elapsed-ms (:attempt/elapsed-ms a)
              :started-at (some-> (:attempt/started-at a) .getTime)
-             :environment (:attempt/environment-id a)}
-      (contains? a :attempt/microdollars) (assoc :microdollars (:attempt/microdollars a))
-      ;; what a subscription run's tokens are worth at list price (dvergr 0.1.150+)
-      (contains? a :attempt/notional-microdollars)
-      (assoc :notional-microdollars (:attempt/notional-microdollars a))
+             :environment (:attempt/environment-id a)
+             ;; Legacy numeric placeholders alone cannot establish completeness.
+             :priced? (true? (:attempt/spend-priced? a))
+             :notional-priced? (true? (:attempt/notional-priced? a))
+             :usage-reported? (:attempt/usage-reported? a)
+             :microdollars (when (true? (:attempt/spend-priced? a)) (:attempt/microdollars a))
+             :notional-microdollars (when (true? (:attempt/notional-priced? a))
+                                     (get a :attempt/notional-microdollars (:attempt/microdollars a)))}
       (:attempt/experiment-content-id a)
       (assoc :experiment (str (:attempt/experiment-content-id a)))
       (:attempt/experiment-candidate a)
@@ -103,12 +108,20 @@
 (defn summary
   "Attempts, passes, failures, mean reward, spend and median time of `xs`,
    with the 95% ranges of the pass rate and the mean reward.
-   `:microdollars` is nil when no Attempt records its spend."
+   Costs are nil unless EVERY Attempt explicitly records that dimension as
+   priced. Empty boards and legacy rows without completeness flags stay unknown."
   [xs]
   (let [rewards (keep :reward xs)
-        spends (keep :microdollars xs)
-        ;; at list price: a subscription run's worth, else what it cost
-        worth (keep #(or (:notional-microdollars %) (:microdollars %)) xs)
+        measured (when (seq xs)
+                   (measurements/summarize
+                    (map (fn [a]
+                           ;; Explicit nil prevents notional fallback to billed
+                           ;; when that independently typed dimension is unknown.
+                           {:microdollars (when (true? (:priced? a)) (:microdollars a))
+                            :notional-microdollars (when (true? (:notional-priced? a))
+                                                    (:notional-microdollars a))}) xs)))
+        spend (:microdollars measured)
+        worth (:notional-microdollars measured)
         passed (count (filter passed? xs))]
     {:attempts (count xs)
      :passed passed
@@ -117,13 +130,14 @@
      :pass-rate-interval (stats/pass-rate-interval passed (count xs))
      :mean-reward (when (seq rewards) (/ (reduce + rewards) (count rewards)))
      :reward-interval (stats/mean-interval rewards)
-     :microdollars (when (seq spends) (reduce + spends))
-     :microdollars-per-pass (when (and (seq spends) (pos? passed))
-                              (quot (reduce + spends) passed))
-     :notional-microdollars (when (seq worth) (reduce + worth))
-     :notional-microdollars-per-attempt (when (seq worth) (quot (reduce + worth) (count worth)))
-     :notional-microdollars-per-pass (when (and (seq worth) (pos? passed))
-                                       (quot (reduce + worth) passed))
+     :priced? (:priced? measured)
+     :notional-priced? (:notional-priced? measured)
+     :unpriced-attempts (:unpriced-attempts measured)
+     :microdollars spend
+     :microdollars-per-pass (when (and (some? spend) (pos? passed)) (quot spend passed))
+     :notional-microdollars worth
+     :notional-microdollars-per-attempt (when (some? worth) (quot worth (count xs)))
+     :notional-microdollars-per-pass (when (and (some? worth) (pos? passed)) (quot worth passed))
      :median-elapsed-ms (median (keep :elapsed-ms xs))}))
 
 (defn- ranked

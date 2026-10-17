@@ -288,6 +288,14 @@ It does not enroll workers, upload local logins or start the private driver.
 Submission/funding retries preserve their original backend and immutable payload
 even if the form changes. A funded indicator applies only to its own backend.
 
+Attempt boards and experiment leaderboards preserve Dvergr's measurement
+completeness. Billed spend and notional inference cost are independent: a
+subscription may have known zero billed spend but unknown notional cost. A total
+or cost-per-pass is unknown unless every contributing Attempt has that dimension
+explicitly priced. Unknown values display as a dash, not zero or a partial sum;
+legacy numeric placeholders without completeness flags remain unknown. These
+read models do not rewrite certified Scorecards or infer reported token usage.
+
 `run` handles one queued assignment, or accepts `--run RUN_UUID`. The task's
 total deadline includes queue time and cold JVM startup;
 `task` and `workflow` default to five minutes, with a ten-minute maximum. Start the local

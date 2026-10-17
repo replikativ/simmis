@@ -188,6 +188,8 @@
                                                   :notional-microdollars-per-pass])
                                 {:microdollars (get-in row [:spend :microdollars])
                                  :notional-microdollars (get-in row [:spend :notional-microdollars])}
+                                (select-keys (:spend row) [:priced? :notional-priced? :usage-reported?
+                                                          :unpriced-attempts :unreported-attempts])
                                 (get resources (:candidate row))))
                        (:leaderboard detail))
      :paired (:paired detail)}))
@@ -202,12 +204,14 @@
      :complete? false
      :cells (reduce + 0 (map :done candidates))
      :candidates (mapv (fn [c]
-                         {:candidate (id-str (:candidate/id c))
+                         (merge (select-keys c [:priced? :notional-priced? :usage-reported?
+                                                :unpriced-attempts :unreported-attempts])
+                          {:candidate (id-str (:candidate/id c))
                           :attempts (:done c)
                           :verdicts (:verdicts c)
                           :faults (:faults c)
                           :reward-mean (:reward-mean c)
-                          :microdollars (:microdollars c)})
+                           :microdollars (:microdollars c)}))
                        (sort-by (comp - #(or % -1) :reward-mean) candidates))
      :paired (:paired report)}))
 

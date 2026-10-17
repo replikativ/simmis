@@ -34,6 +34,19 @@
 
 (def ^:private cases 8)
 
+(deftest completeness-flags-survive-both-leaderboard-projections
+  (let [flags {:priced? false :notional-priced? false :usage-reported? false
+               :unpriced-attempts 1 :unreported-attempts 1}]
+    (with-redefs-fn {#'experiments/op (fn [& _] {:experiment {} :leaderboard [{:candidate "local" :spend flags}]})
+                     #'experiments/frontier (fn [& _] {:resources {}})}
+      (fn []
+        (is (= flags (select-keys (first (:candidates (@#'experiments/completed nil nil "id"))) (keys flags))))))
+    (with-redefs-fn {#'experiments/op (fn [& _] {})}
+      (fn []
+        (is (= flags (select-keys (first (:candidates (@#'experiments/in-progress nil nil
+                                                                  {:candidates [(assoc flags :candidate/id :local :done 1)]})))
+                                 (keys flags))))))))
+
 (deftest workflow-provenance-is-bounded-and-never-arbitrary-metadata
   (let [bundle "12345678-1234-1234-1234-123456789abc"
         info {:name "review" :title (apply str (repeat 1000 "x")) :bundle bundle
