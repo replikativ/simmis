@@ -129,6 +129,25 @@
              :base64 (.encodeToString (Base64/getEncoder) (Arrays/copyOfRange bytes offset end))}
       (< end size) (assoc :next-offset end))))
 
+(declare validate-output!)
+
+(defn validate-frozen!
+  "Validate an executor's portable input BEFORE creating a guest workspace.
+   This does not authorize a server claim or current room access. The owning
+   controller must already have verified its assignment, configuration and lease."
+  [frozen]
+  (when-not (and (map? frozen)
+                 (= #{:input-id :task :config :files :limits :policy} (set (keys frozen)))
+                 (uuid? (:input-id frozen)) (string? (:task frozen)) (<= 1 (count (:task frozen)) 16000)
+                 (m/validate config-schema (:config frozen)) (m/validate limits-schema (:limits frozen))
+                 (= policy (:policy frozen)))
+    (refuse! "Invalid frozen worker inputs"))
+  (validate-output! frozen {:files (:files frozen) :summary "" :exit-code 0})
+  (when (some nil? (vals (:files frozen))) (refuse! "Frozen input files must exist"))
+  (when-not (= (:input-id frozen) (hasch/uuid [:simmis/worker-input-v1 (dissoc frozen :input-id)]))
+    (refuse! "Frozen worker input identity differs"))
+  frozen)
+
 (defn validate-output!
   "Check all output before publication. Only selected inputs may be edited or
    deleted; additional deliverables must live under out/. No other room file

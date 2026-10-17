@@ -421,6 +421,19 @@ during work: an expiring login must be renewed outside the Run. Arbitrarily
 injected credential implementations retain their own authentication behavior.
 It does not launch a broker process or supply the runner's total deadline.
 
+`ops/worker-executor.clj` is the credential-free guest execution API. It
+validates the complete immutable input before allocating a fresh memory room
+and Geschichte workspace. Only selected binary files and their regular-file
+modes are seeded. Dvergr's existing bounded model/tool loop runs under the
+file-worker sandbox policy; automatic settlement targets only this disposable
+guest parent, not a server room. Export requires both completed execution and
+merged settlement. It returns changed/deleted selected files and new `out/`
+deliverables through the same bounded output validator. Unselected scratch
+files are omitted; an oversized deliverable refuses the result. A failed Run
+does not export partial writes. Room closure precedes connection release;
+failed closure grants no cleanup proof. This API does not install credentials,
+start model transport, export physical files or launch a contained process.
+
 The host-only `ops/worker-work.clj` adapter submits through the existing Jobs/
 Runs rather than a remote-executor registry. It requires the worker's enrolling
 human and current room read/merge authority, explicit admission allowance,
