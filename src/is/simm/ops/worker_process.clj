@@ -55,8 +55,14 @@
                       serve! (requiring-resolve 'is.simm.ops.worker-broker/serve!)]
                   (serve! ch config (inference! config (provider!))))))))
         (shutdown-agents)
-        (catch Throwable _
+        (catch Throwable failure
           ;; No raw provider exception, parser content or credential in stderr.
           (.write ^PrintWriter *err* "Local worker process failed\n")
+          (when (= ["check"] (vec args))
+            ;; Check mode has no task input or provider. Class names alone
+            ;; distinguish unsupported JVMs/missing runtime dependencies; no
+            ;; exception messages, input, paths or credentials are emitted.
+            (doseq [cause (take 8 (take-while some? (iterate ex-cause failure)))]
+              (.write ^PrintWriter *err* (str (.getName (class cause)) "\n"))))
           (.flush ^PrintWriter *err*)
           (System/exit 1))))))

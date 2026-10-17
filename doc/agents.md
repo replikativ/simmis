@@ -127,6 +127,9 @@ classpaths. The fixed entrypoint is `clojure.main -m
 is.simm.ops.worker-process`, with `guest`, `broker` or credential-free `check`
 mode. Check loads the real endpoint dependencies and reports the executor and
 inference policy identities; it does not construct a provider or run an agent.
+The trusted Linux installation must select a compatible Java21-or-newer JDK
+at `/usr/bin/java`; changing shell `PATH` or `JAVA_HOME` alone does not change
+this fixed bootstrap. CI explicitly aligns that path with its configured JDK.
 
 `scripts/worker_runtime.py` validates an operator-selected absolute artifact
 path and SHA256, fixes JVM arguments, and constructs a clean child environment.

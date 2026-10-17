@@ -24,7 +24,11 @@ class PackagedRuntimeTest(unittest.TestCase):
             result = subprocess.run(runtime.argv(descriptor, "check", home),
                                     cwd=home, env=runtime.environment(home),
                                     stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
-            self.assertEqual(0, result.returncode, "Packaged runtime preflight failed")
+            # Check mode emits no task/provider data, only bounded startup
+            # diagnostics. Make clean-CI failures actionable without native
+            # auth or a privileged arbitrary-eval debug escape in the runner.
+            self.assertEqual(0, result.returncode,
+                             "Packaged runtime preflight failed: " + result.stderr[-2048:].decode("utf-8", errors="replace"))
             self.assertLess(len(result.stdout), 4096)
             value = json.loads(result.stdout)
             self.assertEqual({"version", "kind", "executor-policy-id", "inference-policy-id"}, set(value))

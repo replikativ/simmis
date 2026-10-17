@@ -70,6 +70,13 @@ jobs:
           cli: latest
       - name: Build dedicated local SCI runtime
         run: clojure -J-Xmx1g -T:build worker
+      - name: Select the configured JDK for the fixed local bootstrap
+        run: |
+          /usr/bin/java -version
+          java -version
+          sudo update-alternatives --install /usr/bin/java java "$JAVA_HOME/bin/java" 100
+          sudo update-alternatives --set java "$JAVA_HOME/bin/java"
+          /usr/bin/java -version
       - name: Cold credential-free runtime preflight
         run: SIMMIS_WORKER_JAR="$(realpath target/simmis-*-worker.jar)" python3 -m unittest discover -s test/scripts -p test_worker_runtime_smoke.py
 
