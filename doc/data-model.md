@@ -29,6 +29,9 @@ UUIDs and link to the request, Job, selected worker and frozen input artifact.
 Writer-serialized claims bind one client nonce and lease proof hash; the same
 Run is never reassigned after expiry or cancellation. Plaintext credential and
 lease proofs never enter database transaction arguments.
+Each enrollment represents one physical worker slot: another assignment cannot
+be claimed while a previous lease lacks its shutdown acknowledgement, even
+after expiry or quarantine.
 
 These assignment states are transport receipts, not another execution model.
 Expiry/revocation quarantines ownership without inventing physical shutdown;
@@ -37,6 +40,12 @@ shutdown acknowledgement, records that boundary. Completed output binds one
 immutable digest and the worker's shutdown assertion. This is an enrolled
 worker's assertion, not independent proof about a remote process. This model is
 host-only: it exposes no worker network endpoint or new sandbox capability.
+`ops/worker_credentials.clj` supplies separate enrollment/lease credential
+validation and a worker-only authority predicate. It intersects the fixed room
+with the enroller's current permissions, keeps only verifier hashes in process
+principals, and retains narrowly scoped shutdown signaling after revocation.
+These helpers do not themselves enable worker authentication on the MCP
+listener or expose worker operations.
 
 ## Objects, morphisms, instances
 

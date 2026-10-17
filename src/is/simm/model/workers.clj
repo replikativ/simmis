@@ -171,9 +171,18 @@
                    (= generation (:simmis.worker.assignment/generation row)))
       (refuse! ::denied "Assignment belongs to another worker"))
     (if (= :queued (:simmis.worker.assignment/state row))
-      (updates row {:simmis.worker.assignment/state :claimed :simmis.worker.assignment/nonce nonce
-                    :simmis.worker.assignment/secret-hash hash :simmis.worker.assignment/lease lease
-                    :simmis.worker.assignment/heartbeat-at now :simmis.worker.assignment/expires-at expires})
+      (do
+        ;; A worker is one physical capacity slot. Expiry/quarantine cannot
+        ;; free it: another Run needs the preceding owner's shutdown receipt.
+        (when (d/q '[:find ?other . :in $ ?worker
+                     :where [?other :simmis.worker.assignment/worker ?worker]
+                     [?other :simmis.worker.assignment/lease _]
+                     (not [?other :simmis.worker.assignment/stop-ack-at _])]
+                   db worker)
+          (refuse! ::busy "Worker still owns an unresolved process; confirm shutdown before another claim"))
+        (updates row {:simmis.worker.assignment/state :claimed :simmis.worker.assignment/nonce nonce
+                      :simmis.worker.assignment/secret-hash hash :simmis.worker.assignment/lease lease
+                      :simmis.worker.assignment/heartbeat-at now :simmis.worker.assignment/expires-at expires}))
       (if (and (= nonce (:simmis.worker.assignment/nonce row))
                (= hash (:simmis.worker.assignment/secret-hash row)))
         (if (and (= :claimed (:simmis.worker.assignment/state row)) (expired? row now))
@@ -193,7 +202,7 @@
       (d/transact conn [[:db.fn/call claim-tx id worker generation nonce hash lease now
                          (Date. (+ (.getTime ^Date now) ttl-ms))]])
       (catch Exception error
-        (when (or (contains? #{::denied ::conflict ::missing ::invalid} (:type (ex-data error)))
+        (when (or (contains? #{::denied ::conflict ::missing ::invalid ::busy} (:type (ex-data error)))
                   (not (and (= nonce (:simmis.worker.assignment/nonce (assignment conn id)))
                             (= hash (:simmis.worker.assignment/secret-hash (assignment conn id))))))
           (throw error))))

@@ -232,3 +232,36 @@
                     (is (:simmis.worker.assignment/stop-ack-at row)))
                 (do (is (nil? (:simmis.worker.assignment/output-id row)))
                     (is (nil? (:simmis.worker.assignment/stop-ack-at row))))))))))))
+
+(deftest worker-capacity-is-not-returned-by-lease-expiration
+  (with-store
+    (fn [conn]
+      (let [{:keys [assignment enrollment secret lease]} (claimed conn)
+            other (assoc assignment :id (random-uuid))
+            other-secret (workers/new-secret) nonce (random-uuid)
+            claim-other #(workers/claim! conn (:id other) (:id enrollment) 1 nonce other-secret % 10000)]
+        (workers/enqueue! conn other)
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"unresolved process" (claim-other (Date. 11000))))
+        (workers/heartbeat! conn (:id assignment) lease secret (Date. 20000) 10000)
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"unresolved process" (claim-other (Date. 21000))))
+        (workers/acknowledge-stop! conn (:id assignment) lease secret (Date. 22000))
+        (is (= :claimed (:simmis.worker.assignment/state (claim-other (Date. 23000)))))))))
+
+(deftest concurrent-different-assignments-share-one-physical-worker-slot
+  (with-store
+    (fn [conn]
+      (let [{:keys [assignment enrollment]} (fixture conn)
+            other (assoc assignment :id (random-uuid))
+            ready (promise)]
+        (workers/enqueue! conn other)
+        (let [claims (mapv (fn [task]
+                             (future @ready
+                                     (try (workers/claim! conn (:id task) (:id enrollment) 1
+                                                          (random-uuid) (workers/new-secret) (Date. 10000) 10000)
+                                          (catch Exception e {:error (:type (ex-data e))}))))
+                           [assignment other])]
+          (deliver ready true)
+          (let [results (mapv #(deref % 10000 ::timeout) claims)]
+            (is (not-any? #{::timeout} results))
+            (is (= 1 (count (filter #(= :claimed (:simmis.worker.assignment/state %)) results))))
+            (is (= 1 (count (filter #(= :is.simm.model.workers/busy (:error %)) results))))))))))
