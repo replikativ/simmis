@@ -8,7 +8,9 @@ import {once} from 'node:events';
 import {fileURLToPath} from 'node:url';
 
 const root = fileURLToPath(new URL('../target/browser-tests/', import.meta.url));
-let browser, socket, profile;
+let browser, browserClosed, socket, profile;
+let browserKillSent = false;
+let browserReceipt = '';
 let failure;
 let nextId = 0;
 const pending = new Map();
@@ -54,7 +56,13 @@ async function run() {
   // Only needed in CI containers without usable kernel sandboxing. Never
   // implied for desktop use; the tests load only this loopback static server.
   if (process.env.SIMMIS_TEST_CHROME_NO_SANDBOX === '1') args.unshift('--no-sandbox');
-  browser = spawn(await chromeBinary(), args, {stdio: ['ignore', 'ignore', 'pipe']});
+  // The Linux subreaper joins all descendants, including profile writers
+  // which close stdio or leave the main browser's process group.
+  browser = spawn('/usr/bin/python3', ['-I', fileURLToPath(new URL('./browser_guard.py', import.meta.url)),
+                                      await chromeBinary(), ...args], {stdio: ['ignore', 'pipe', 'pipe']});
+  browser.stdout.on('data', chunk => { browserReceipt = (browserReceipt + chunk.toString()).slice(-128); });
+  // A spawn error rejects readiness, but must not skip the remaining cleanup.
+  browserClosed = new Promise(resolve => browser.once('close', resolve));
   const debuggerUrl = await new Promise((resolve, reject) => {
     let stderr = '';
     abort.signal.addEventListener('abort', () => reject(abort.signal.reason), {once: true});
@@ -109,8 +117,15 @@ const deadline = setTimeout(() => {
   abort.abort(error);
   failure?.(error);
   for (const p of pending.values()) p.reject(error);
-  browser?.kill('SIGKILL');
+  killBrowser();
 }, 120000);
+
+function killBrowser() {
+  if (browser?.pid && !browserKillSent) {
+    browser.kill('SIGTERM');
+    browserKillSent = true;
+  }
+}
 
 try {
   await run();
@@ -120,11 +135,12 @@ try {
 } finally {
   clearTimeout(deadline);
   socket?.close();
-  if (browser?.pid && browser.exitCode === null && browser.signalCode === null) {
-    const stopped = once(browser, 'exit');
-    browser.kill('SIGKILL');
-    await stopped;
-  }
+  killBrowser();
+  if (browserClosed) await browserClosed;
   await new Promise(resolve => server.close(resolve));
-  if (profile) await rm(profile, {recursive: true, force: true});
+  if (profile) {
+    if (browser?.pid && browserReceipt !== 'browser-tree-reaped-v1\n')
+      throw Error(`Browser cleanup unproven; temporary profile retained at ${profile}`);
+    await rm(profile, {recursive: true, force: true});
+  }
 }
