@@ -17,6 +17,7 @@
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.experiments-test]
             [is.simm.ops.results :as results]
+            [is.simm.ops.work-api :as work-api]
             [is.simm.runtimes.auth-config :as auth]
             [is.simm.runtimes.mcp :as mcp]
             [kabel.auth.jwt :as jwt]
@@ -70,6 +71,7 @@
           (server/set-host! (ops/host (:ctx room)))
           (try
             (results/install!)
+            (work-api/install!)
             (with-redefs [auth/get-auth-config (constantly {:jwt {:secret "mcp-results-test-key"}})]
               (let [member (session (:member w))
                     stranger (session (:non-member w))
@@ -143,7 +145,7 @@
                   (is (:error (rpc/handle-message member
                                                   {:jsonrpc "2.0" :id 4 :method "resources/read"
                                                    :params {:uri (str "room://" slug "/files/out/result.md")}}))))))
-            (finally (results/uninstall!) (server/set-host! nil))))))))
+            (finally (work-api/uninstall!) (results/uninstall!) (server/set-host! nil))))))))
 
 (deftest job-discovery-and-known-job-ids-are-room-authorized
   (world/with-world [conn w]

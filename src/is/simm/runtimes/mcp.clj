@@ -1,18 +1,16 @@
 (ns is.simm.runtimes.mcp
-  "Opt-in, loopback-only MCP over the existing Simmis rooms. This first
-   surface is read-only; it does not expose the raw database writer or eval.
+  "Opt-in, loopback-only MCP over the existing Simmis rooms. Credentials
+   default to read-only; bounded work requires an explicit work credential.
+   Neither exposes the raw database writer or eval.
    Credentials are short-lived, MCP-only capabilities for an existing human.
    The listener is a host resource, not forkable application state."
   (:require [clojure.set :as set]
             [clojure.string :as str]
             [dvergr.mcp.http :as http]
-            [dvergr.mcp.server :as server]
             [dvergr.substrate.config :as config]
             [is.simm.model.parties :as parties]
             [is.simm.ops.dvergr :as ops]
-            [is.simm.ops.results :as results]
             [is.simm.runtimes.auth-config :as auth]
-            [is.simm.runtimes.context :as context]
             [is.simm.runtimes.http-auth :as http-auth]
             [is.simm.runtimes.instance :as instance]
             [kabel.auth.jwt :as jwt]
@@ -31,16 +29,28 @@
         #{"room_files" "room_read" "room_diff" "room_review" "room_wallet"
           "job_list" "job_status" "attempt_list" "attempt_detail" "review_list"
           "scorecard_list" "scorecard_detail" "experiment_progress" "experiment_report"
-          "catalog_list" "simmis_attempt-files" "simmis_attempt-file"}))
+          "catalog_list" "simmis_attempt-files" "simmis_attempt-file"
+          "simmis_workspace-bundle" "simmis_workspace-bundle-chunk"}))
+
+(def work-tools
+  (into read-tools #{"simmis_post" "simmis_task" "simmis_work-allowance"
+                     "simmis_work-status" "job_cancel"
+                     "simmis_workflow-write" "simmis_workflow-check" "simmis_workflow-run"
+                     "simmis_workflow-list" "simmis_workflow-source"
+                     "simmis_benchmark"}))
 
 (defn- credential-tools [claims]
   (if (and (not (contains? claims :capability-version))
            (not (contains? claims :tools)))
     legacy-read-tools
-    (let [tools (:tools claims)]
-      (when (and (= 1 (:capability-version claims))
-                 (vector? tools) (seq tools) (<= (count tools) (count read-tools))
-                 (every? string? tools) (set/subset? (set tools) read-tools))
+    (let [tools (:tools claims)
+          ceiling (case (:capability-version claims)
+                    1 read-tools
+                    2 (when (= "work" (:mode claims)) work-tools)
+                    nil)]
+      (when (and ceiling
+                 (vector? tools) (seq tools) (<= (count tools) (count ceiling))
+                 (every? string? tools) (set/subset? (set tools) ceiling))
         (set tools)))))
 
 (defn- signing-key []
@@ -57,15 +67,20 @@
   "Trusted issuer: a one-hour MCP credential for an existing human party.
    Used by the operator REPL and the authenticated self-exchange route, never
    a tool. Returns {:token :expires-in}; never log it. Creates no grant."
-  [party-id]
-  (when-not (and (uuid? party-id) (human? party-id))
-    (throw (ex-info "MCP credentials require an existing human party" {:type ::invalid-party})))
-  (let [now (quot (System/currentTimeMillis) 1000)]
-    {:token (jwt/sign-hs256 (signing-key)
-                            {:iss audience :aud audience :sub (str party-id)
-                             :iat now :exp (+ now 3600)
-                             :capability-version 1 :tools (vec (sort read-tools))})
-     :expires-in 3600}))
+  ([party-id] (mint-token! party-id :read))
+  ([party-id mode]
+   (when-not (and (uuid? party-id) (human? party-id))
+     (throw (ex-info "MCP credentials require an existing human party" {:type ::invalid-party})))
+   (when-not (contains? #{:read :work} mode)
+     (throw (ex-info "Unknown MCP access mode" {:type ::invalid-mode})))
+   (let [now (quot (System/currentTimeMillis) 1000)
+         claims (cond-> {:iss audience :aud audience :sub (str party-id)
+                         :iat now :exp (+ now 3600)
+                         :capability-version (if (= :work mode) 2 1)
+                         :tools (vec (sort (if (= :work mode) work-tools read-tools)))}
+                  (= :work mode) (assoc :mode "work"))]
+     {:token (jwt/sign-hs256 (signing-key) claims)
+      :expires-in 3600 :mode (name mode)})))
 
 (defn authenticator
   "Build the transport authenticator. Ordinary web, blob, local-admin and
@@ -86,7 +101,8 @@
                   (when (human? id)
                     (assoc (ops/party-principal id)
                            :principal/mcp? true
-                           :principal/scopes #{:dvergr/read-only}
+                           :principal/scopes (if (set/subset? tools read-tools)
+                                               #{:dvergr/read-only} #{})
                            ;; A hard ceiling even when a client requests admin profile.
                            :principal/tools tools)))))))
         (catch Exception _ nil)))))
@@ -104,7 +120,9 @@
       port)))
 
 (defn token-route
-  "Exchange a validated web bearer for a one-hour, read-only MCP token.
+  "Exchange a validated web bearer for a one-hour MCP token (read by default).
+   JSON {\"mode\":\"work\"} explicitly opts into bounded work; old sessions
+   and credentials do not silently gain writes.
    Identity comes only from authentication, never from the request body.
    This issues credentials; the MCP transport itself remains loopback-only."
   []
@@ -113,6 +131,8 @@
            :handler
            (fn [req]
              (let [id (http-auth/party-id req)
+                   body (:body req)
+                   mode (get body :mode "read")
                    headers {"Content-Type" "application/json"
                             "Cache-Control" "no-store"}]
                (cond
@@ -122,36 +142,32 @@
                                     :body {:error "an existing human account is required"}}
                  (nil? (configured-port)) {:status 404 :headers headers
                                            :body {:error "private MCP is disabled"}}
+                 (not (and (or (nil? body) (map? body))
+                           (every? #{:mode} (keys body))
+                           (contains? #{"read" "work"} mode)))
+                 {:status 400 :headers headers :body {:error "invalid MCP access mode"}}
                  :else {:status 200 :headers headers
-                        :body (assoc (mint-token! id) :token-type "Bearer")})))}}])
+                        :body (assoc (mint-token! id (keyword mode)) :token-type "Bearer")})))}}])
 
 (defn start!
   "Start the configured listener once. The bind is not configurable: SSH
-   forwarding is the supported access path for this private first surface."
+   forwarding is the supported access path for this private first surface.
+   Application operation registrations are owned by web application startup."
   []
   (locking listener
     (when-not @listener
       (when-let [port (configured-port)]
-        (let [authenticate (authenticator)]
-          (server/set-host! (ops/host context/server-context))
-          (try
-            (results/install!)
-            (let [started (http/start! {:bind "127.0.0.1" :port port
-                                        :profile :readonly :toolsets #{:host}
-                                        :authenticate authenticate})]
-              ;; Never retain/log the transport's unused local-admin token.
-              (reset! listener (select-keys started [:port :stop]))
-              (log/log! {:level :info :id ::started
-                         :data {:bind "127.0.0.1" :port port :read-only? true}}))
-            (catch Exception e
-              (results/uninstall!)
-              (server/set-host! nil)
-              (throw e))))))))
+        (let [authenticate (authenticator)
+              started (http/start! {:bind "127.0.0.1" :port port
+                                    :profile :admin :toolsets #{:host}
+                                    :authenticate authenticate})]
+          ;; Never retain/log the transport's unused local-admin token.
+          (reset! listener (select-keys started [:port :stop]))
+          (log/log! {:level :info :id ::started
+                     :data {:bind "127.0.0.1" :port port :default-access :read}}))))))
 
 (defn stop! []
   (locking listener
     (when-let [{:keys [stop]} @listener]
       (stop)
-      (reset! listener nil)
-      (results/uninstall!)
-      (server/set-host! nil))))
+      (reset! listener nil))))

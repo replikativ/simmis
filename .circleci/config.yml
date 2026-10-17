@@ -1,9 +1,7 @@
 version: 2.1
 
-# Test gate for pull requests. Two things are checked, and the second matters
-# more than it looks: the test runner executes nothing in .cljs, so a broken
-# require or an undeclared var in the UI would otherwise reach a browser and
-# nowhere else. `release` is used so :advanced runs too.
+# Test gates for pull requests: JVM/Python suites, executed CLJS browser tests,
+# and a production frontend build (`release` checks :advanced compilation).
 #
 # `clojure -X:test` and not -M: the :test alias uses :exec-fn, and -M:test
 # silently opens a REPL, which in CI looks like a hang or, worse, a pass.
@@ -12,6 +10,8 @@ version: 2.1
 
 orbs:
   tools: replikativ/clj-tools@0
+  browser-tools: circleci/browser-tools@2.4.2
+  node: circleci/node@7.2.1
 
 jobs:
   test:
@@ -31,17 +31,47 @@ jobs:
           name: Run JVM tests (Maven baseline)
           command: clojure -X:test
           no_output_timeout: 15m
-      - run:
-          name: Test private MCP client helper
-          command: python3 -m unittest discover -s test/scripts
-      - run:
-          name: Build browser release (CLJS + CSS gate)
-          command: |
-            npm ci
-            npm run release
-          no_output_timeout: 20m
       - save_cache:
           key: deps-v1-{{ checksum "deps.edn" }}
+          paths:
+            - ~/.m2
+            - ~/.gitlibs
+
+  helpers:
+    docker:
+      - image: cimg/python:3.12
+    steps:
+      - checkout
+      - run:
+          name: Test private MCP and worker helpers
+          command: python3 -m unittest discover -s test/scripts
+
+  frontend:
+    docker:
+      - image: cimg/clojure:1.12.1-openjdk-21.0-node
+    resource_class: large
+    steps:
+      - checkout
+      - browser-tools/install_chrome
+      - node/install:
+          node-version: '22'
+      - restore_cache:
+          keys:
+            - frontend-deps-v1-{{ checksum "deps.edn" }}
+            - deps-v1-
+      - run:
+          name: Install frontend dependencies
+          command: npm ci
+      - run:
+          name: Build production frontend
+          command: npm run release
+          no_output_timeout: 20m
+      - run:
+          name: Execute client lifecycle tests in Chrome
+          command: SIMMIS_TEST_CHROME_NO_SANDBOX=1 npm run test:browser
+          no_output_timeout: 15m
+      - save_cache:
+          key: frontend-deps-v1-{{ checksum "deps.edn" }}
           paths:
             - ~/.m2
             - ~/.gitlibs
@@ -71,9 +101,13 @@ workflows:
   build-and-test:
     jobs:
       - test
+      - helpers
+      - frontend
       - uberjar:
           requires:
             - test
+            - helpers
+            - frontend
           filters:
             branches:
               only: main

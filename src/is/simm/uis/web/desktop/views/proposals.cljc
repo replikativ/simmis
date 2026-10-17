@@ -744,26 +744,22 @@
          ;; `:entities-touched`, so the datom path would report every code fork
          ;; as "no changes" — the one thing the head line must never say about a
          ;; fork that has some.
-         changed (case system-type
-                   :book (count entries)
-                   (:repo :review-world) (or (:files-changed counts) (count files) 0)
-                   (or (:entities-touched counts) 0))]
+         {:keys [changed kind label]} (card-model/fork-diff-model fk)]
      (el/div {:class (str "proposal-fork"
                           (when status (str " proposal-fork--" (name status))))
               :style (when resolved? resolved-style)}
        (el/div {:class "proposal-fork-head"}
-         (str (case system-type :kb "Wiki" :fs "Drive" :book "Book" :repo "Code"
-                    :review-world "Workflow's work"
-                    (str system-type))
+         (str label
               (when author-name (str " · " author-name))
               ;; entries, not datoms, for a book: "3 changed" over a double-entry
               ;; fork counts postings and reads as noise
               (cond
                 resolved? nil
+                (nil? changed) " · change count unavailable"
                 (zero? changed) " · no changes"
                 (= :book system-type)
                 (str " · " changed (if (= 1 changed) " entry" " entries"))
-                (#{:repo :review-world} system-type)
+                (= :files kind)
                 (str " · " changed (if (= 1 changed) " file" " files"))
                 :else (str " · " changed " changed"))
               (case status
@@ -790,7 +786,7 @@
                                (el/div {:key (str i)} (file-op-view f)))
          (= :book system-type) (for [[i e] (map-indexed vector entries)]
                                  (el/div {:key (str i)} (book-entry-view e)))
-         (= :repo system-type)
+         (or (= :repo system-type) (and (= :world system-type) (= :files kind)))
          ;; Files first, then the patch: the path list is the shape of the
          ;; change and fits on a screen, the patch is the detail behind it.
          ;; The check sits above both — whether it runs is the first thing a

@@ -33,16 +33,20 @@
    cold-boot deep link to `/room/<id>/thread/<id>` fails in exactly the way a
    `:chat` tab does without this. Its `:thread-root-id` is NOT a room id and is
    never read or written here — thread identity does not collapse into room
-   identity, and a thread tab is never rewritten into a chat tab."
-  #{:chat :chat-thread})
+   identity, and a thread tab is never rewritten into a chat tab. Workflow
+   and Run inspector tabs also need the room replica; restored tabs resolve
+   its scope from the same roster rather than waiting on an unrequested DB."
+  #{:chat :chat-thread :workflows :run-inspector})
 
 (defn- roster-title
   "The label a tab adopts from the roster. A thread tab says which room the
    thread is in, matching what `open-tab!` writes when a thread is opened from
    the timeline."
   [tab room]
-  (if (= :chat-thread (:type tab))
-    (str "Thread · " (:room/name room))
+  (case (:type tab)
+    :chat-thread (str "Thread · " (:room/name room))
+    :workflows (str (:room/name room) " Workflows")
+    :run-inspector (or (:title tab) "Workflow Run")
     (:room/name room)))
 
 (defn heal-chat-tab

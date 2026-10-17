@@ -174,12 +174,22 @@ branch each sibling happens to sit on.
 ## Tests
 
 ```bash
-clojure -X:stack:test
+clojure -X:test          # released Maven dependency baseline
+clojure -X:stack:test    # optional sibling Dvergr development
+npm run test:browser    # execute CLJS tests in isolated headless Chrome
 ```
 
 Note the `-X`: the `:test` alias uses `:exec-fn`, and `-M:test` silently drops
 into a REPL instead. Engine-level reactive tests live in the spindel and
 dvergr repositories.
+
+The browser test command needs Node.js 22 or newer and Chrome/Chromium
+(`CHROME_BIN` can select the executable). It serves only compiled test assets
+on a temporary loopback port and uses a fresh, disposable browser profile; no
+Simmis server, account or model credentials are needed. An explicit completion
+event determines success, and zero tests, assertion failures, browser errors or
+a total deadline failure produce a nonzero exit. Both CI configurations run
+this gate in addition to the production frontend build.
 
 ## Documentation
 
@@ -190,7 +200,8 @@ Five documents, each about code that exists.
 - [`doc/data-model.md`](doc/data-model.md) — objects, morphisms, instances, and
   where a property's values actually live
 - [`doc/authority.md`](doc/authority.md) — one predicate, three enforcement
-  planes; what is an ACL, what is fork-and-review, what is a capability
+  planes; what is an ACL, what is fork-and-review, what is a capability;
+  [bounded MCP task/workflow recipe](doc/authority.md#a-bounded-mcp-workflow-recipe)
 - [`doc/proposals-and-time-travel.md`](doc/proposals-and-time-travel.md) — how
   an agent's write reaches trunk, and reading any store as of a past point
 - [`doc/agents.md`](doc/agents.md) — what an agent is, what it may do, and

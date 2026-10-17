@@ -27,6 +27,12 @@
    {:id col-b :tabs [{:id "b-chat" :type :chat :data {:room-id "room-b"}}]
     :active-tab "b-chat"}])
 
+(deftest workflow-tabs-carry-the-room-replica-scope-to-result-navigation
+  (let [[kind data opts] (room-actions/room-header-tab col-a :workflows room-a "A" "room-scope")]
+    (is (= :workflows kind))
+    (is (= {:room-id room-a :room-name "A" :db-scope "room-scope"} data))
+    (is (= col-a (:col-id opts)))))
+
 (deftest explicit-target-adds-the-new-tab-only-to-the-inactive-owner-column
   (let [tab {:id "a-settings" :type :room-settings :data {:room-id room-a}}
         layout (room-actions/add-tab-to-column initial-layout col-a tab)]

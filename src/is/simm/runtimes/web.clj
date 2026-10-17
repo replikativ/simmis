@@ -15,6 +15,7 @@
             [taoensso.telemere :as log]
             ;; Server execution context
             [is.simm.runtimes.context :as ctx]
+            [is.simm.runtimes.application-ops :as application-ops]
             ;; System DB (must init before auth)
             [is.simm.model.system-db :as system-db]
             [is.simm.model.access :as access]
@@ -59,6 +60,8 @@
             [is.simm.uis.web.desktop.tasks-remote]
             [is.simm.uis.web.desktop.accounting-remote]
             [is.simm.uis.web.desktop.experiments-remote]
+            [is.simm.uis.web.desktop.results-remote]
+            [is.simm.uis.web.desktop.workflows-remote]
             [is.simm.uis.web.desktop.feed-remote]
             [org.replikativ.spindel.distributed.core :as dist])
   (:import [java.io File]
@@ -777,6 +780,17 @@
                    :msg "dvergr room hydration failed"
                    :data {:error (str e)}})))
 
+    ;; Host admission is not speculative state. Recover only after Dvergr has
+    ;; reconciled orphan Runs, and before any new MCP work can be accepted.
+    (ctx/with-server-context
+      ((requiring-resolve 'is.simm.ops.work/recover!)
+       ((requiring-resolve 'is.simm.model.system-db/get-conn)) ctx/server-context
+       (requiring-resolve 'is.simm.agents.room-agents/live-room)))
+
+    (ctx/with-server-context
+      ((requiring-resolve 'is.simm.ops.benchmarks/recover!)
+       ((requiring-resolve 'is.simm.model.system-db/get-conn)) ctx/server-context))
+
     ;; Complete any cross-store Proposal publication interrupted by the prior
     ;; process. This runs only after the live room registry exists; every retry
     ;; reuses the message UUID reserved with the Proposal, so a crash after the
@@ -924,7 +938,14 @@
             (log/log! {:level :warn :id ::room-subsystems-failed
                        :data {:error (str e)}})))
 
-        (<? S (peer/start server))
+        ;; Browser RPC uses the same canonical operations as optional MCP.
+        ;; Install before accepting requests, even when MCP is disabled.
+        (application-ops/start!)
+        (try
+          (<? S (peer/start server))
+          (catch Throwable e
+            (application-ops/stop!)
+            (throw e)))
         (swap! server-state assoc :started? true)
         (log/log! {:level :info
                    :id ::server-started
@@ -973,7 +994,10 @@
 
         ;; Private MCP uses this process's rooms, identity and authority.
         ;; Disabled unless explicitly configured; never bound publicly.
-        ((requiring-resolve 'is.simm.runtimes.mcp/start!))
+        (try ((requiring-resolve 'is.simm.runtimes.mcp/start!))
+             (catch Exception e
+               (log/log! {:level :error :id ::mcp-start-failed
+                          :data {:error (str e)}})))
 
         ;; Bus pump watchdog — loud detection of the source-pump
         ;; waiter-loss wedge until its root cause is fixed.
@@ -1010,7 +1034,8 @@
   "Stop the web server. Idempotent - does nothing if not started."
   []
   (when (:started? @server-state)
-    ((requiring-resolve 'is.simm.runtimes.mcp/stop!))
+    (try ((requiring-resolve 'is.simm.runtimes.mcp/stop!))
+         (finally (application-ops/stop!)))
     (mail-accounts/close-all!)
     ;; Revokes deleting GC for this home along with the loop.
     (try

@@ -24,13 +24,15 @@
             [dvergr.chat.schema :as chat-schema]
             [dvergr.substrate.paths :as paths]
             [dvergr.system.db :as sdb]
+            [is.simm.model.work-requests :as work-requests]
+            [is.simm.model.workers :as workers]
             [taoensso.telemere :as log]))
 
 ;; =============================================================================
 ;; Schema (simmis-only extension attributes)
 ;; =============================================================================
 
-(def schema
+(def ^:private core-schema
   "Simmis extension schema. The actor identity core (:actor/*), ledger
    (:ledger/*), and budget (:budget/*) come from dvergr — see `init!`."
   [;; --- Party extension (same entity as the dvergr actor row) ---
@@ -705,6 +707,10 @@
     :db/valueType :db.type/keyword
     :db/cardinality :db.cardinality/one
     :db/doc "Preferred code syntax view: :clojure or :superficie"}])
+
+(def schema
+  "Simmis control-plane extension attributes, including host work admission."
+  (into core-schema (concat work-requests/schema workers/schema)))
 
 ;; =============================================================================
 ;; Migration: lift legacy :party/* rows onto the dvergr actor core

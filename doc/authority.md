@@ -186,29 +186,87 @@ artifacts do not require reading the full evidence response:
 `simmis_attempt-files {room, id, offset?}` lists up to 100 paths with sizes and
 content identities, and `simmis_attempt-file {room, id, path, offset?, length?}`
 returns at most 16384 bytes as base64. Follow `next-offset`, concatenate the
-decoded bytes, then decode UTF-8; individual chunks can split a character.
-These are the text-file outputs the upstream evaluator captures, not a binary
-artifact ingestion API. Both reads include the Attempt's content identity;
+decoded bytes. Text outputs use UTF-8 (individual chunks can split a character).
+Closed regular-file descriptors also preserve binary bytes and executable mode;
+reads verify their base64, size, SHA256 and mode, capped at 1 MiB per descriptor.
+The chunk's media type distinguishes text from binary. These operations only
+read existing captured evidence; they are not an artifact ingestion API.
+Both reads include the Attempt's content identity;
 neither can fall back to the current workspace when a captured path is absent.
 Their schemas reject extra fields and validate direct in-process callers too.
+
+The Run inspector follows the replica's explicit `:attempt/run` relation to
+offer **Captured outputs**. It loads manifests and file bytes only on request,
+through `load-attempt-files!` and `load-attempt-file!`. Both require room read
+authority and call the same canonical Attempt service as MCP on every chunk;
+no UUID equality between a Run and its Attempt is assumed. Previews are at
+most 16 KiB of escaped UTF-8 text, never executable Markdown, HTML or SCI.
+Both preview and download refuse files larger than 8 MiB in this browser UI;
+the chunked MCP service remains available independently. Downloads accept
+only contiguous identity-matched chunks and publish no partial file after a
+failed or revoked read. They use
+an attachment download with an inert octet-stream Blob and a safe basename.
+View state belongs to Spindel's execution context, keyed by client session,
+room, Run and Attempt. Request tokens fence late replies; session teardown
+clears cached results and releases its browser download URLs.
+
+`simmis_workspace-bundle {room}` describes a synthetic, single-root-commit Git
+bundle of current workspace files. It is not the original repository history,
+a retained export or a hosted Git remote. It reads one immutable worktree and
+verifies content by pinned hashes without committing or writing on the server.
+The complete export refuses sensitive/noncanonical paths, symlinks and other
+non-regular modes rather than silently dropping files. Bounds are 512 files,
+1MiB/file, 8MiB source content and 9MiB encoded bundle. Executable modes and
+binary content are preserved.
+
+`simmis_workspace-bundle-chunk {room, expected-snapshot, offset, length?}`
+returns at most 16384 bytes as base64. Every chunk rechecks room read authority
+and the current worktree identity. If editing changes the snapshot, the client
+must restart; bytes from different snapshots are never combined. This initial
+transport recomputes the bounded bundle for each chunk, not a high-throughput
+Git transport or persistent export cache.
+
+The local downloader reuses the private login session from `mcp_client.py`,
+disables proxies/redirects, verifies snapshot/offset/length and full SHA256, and
+publishes a mode-600 file only after verification. Existing destinations,
+including symlinks, are never replaced. With the private SSH tunnel running:
+
+```sh
+python3 scripts/mcp_workspace.py --room ROOM_SLUG --output room.bundle
+git clone -b simmis-snapshot ./room.bundle room-checkout
+```
+
+The default MCP URL is `http://127.0.0.1:47990/mcp`; `--mcp-url` and `--session`
+select another tunnel/private login. The downloader does not execute Git or
+room code. Clone/inspection is a separate local action. Newly issued read
+credentials include these two reads; an existing credential's signed tool
+ceiling remains unchanged.
 
 Each authenticated principal carries a signed exact tool ceiling, independent
 of the profile a client requests. Tokens with no capability claims retain only
 the original five conversation/run tools, including through MCP resources.
-Versioned claims must name a nonempty subset of the server's selected reads;
+Version-one claims must name a nonempty subset of the server's selected reads;
 malformed/unknown versions are refused. Adding a tool on the server does not
 widen an already-issued credential. Every operation
 and resource read also passes the existing `access/dvergr-authorize` gate;
 room listings are filtered and a valid credential grants no access to another
 party's room.
-No raw database write, code evaluation or chat post is exposed.
+No raw database writer or unrestricted code-evaluation tool is exposed.
+The isolated file-worker sandbox also removes the globally injected `kontor`
+surface, including its raw `*book*` connection, after ordinary namespace setup
+and on every rebind. Its versioned AgentDef policy permits fork-local file
+work, not direct accounting reads/postings against a room's live book. Ordinary
+rich participants keep their existing accounting vocabulary.
 The host validates MCP argument shapes at runtime against upstream schemas
 (Dvergr's invoke does not itself validate them), and caps list limits at 1000.
 Visibility filters and already-open resource sessions recheck room authority.
 Checker execution/calibration and workflow export (which calibrates on export),
 paid starts and host-path trajectory exports are not on this read surface.
-The two Simmis artifact ops register through Dvergr's authorized host-op seam,
-not dynamic unguarded tools, and are removed when the listener stops.
+The Simmis artifact and work ops register through Dvergr's authorized host-op seam,
+not dynamic unguarded tools. The web application installs these shared
+operations before accepting requests, including when MCP is disabled, and
+removes them at full application shutdown. Starting, stopping or failing to
+start the optional MCP listener does not remove browser operation access.
 
 An operator can call `is.simm.runtimes.mcp/mint-token!` for an existing human
 party UUID. Its result contains a credential and must be saved privately, not
@@ -220,16 +278,510 @@ There is no individual-token revocation registry in this first surface.
 MCP tokens use issuer/audience `simmis-mcp` and an HMAC-derived signing key
 distinct from the web and blob keys. Web tokens, blob capabilities, the
 Dvergr local-admin token and Dvergr agent-run tokens are not accepted here;
-MCP tokens do not authenticate to the web. This human-read surface is not yet
+MCP tokens do not authenticate to the web. This human-account surface is not yet
 an OAuth flow or an agent-delegation API.
 
 `POST /auth/mcp-token` exchanges a validated web Authorization bearer for the
-same one-hour read capability. It takes no identity or scope from its body;
+same one-hour read capability by default. A closed JSON body may choose only
+`{"mode":"read"}` or explicitly `{"mode":"work"}`; it cannot choose an identity
+or arbitrary scopes. Empty bodies retain read access. Version-two work credentials
+carry signed `mode=work` and an exact ceiling of the selected reads plus
+`simmis_post`, `simmis_task`, `simmis_work-allowance`, `simmis_work-status` and
+`job_cancel`, `simmis_workflow-write`, `simmis_workflow-check`, `simmis_workflow-run` and
+`simmis_benchmark`. Old credentials
+and saved client sessions do not gain writes or newly added tool names.
 only the authenticated existing human may obtain their own credential. It
 refuses agent/deleted accounts, cookie-only requests and disabled MCP, and its
 response is `Cache-Control: no-store`. The exchange is on the web server;
 the MCP protocol listener remains private. This is an explicit credential
 exchange, not acceptance of web tokens by MCP.
+
+### Conversation and bounded work
+
+Bounded tasks and workflow benchmark candidates use Dvergr's existing SCI
+tool loop, Spindel execution contexts and Geschichte forks in the running
+server. They do not require a VM, bubblewrap or a separate worker JVM.
+Native OpenAI/Anthropic/Fireworks and native Codex-subscription model
+transports use the same gateway dispatch-admission checks. Subscription
+models have zero incremental-dollar rates, not unlimited usage: model HTTP
+attempts (including retries), model steps and wall time remain bounded.
+Notional list-price reporting is separate from incremental spend. CLI/
+DirectChat subscriptions are not admitted by these bounded endpoints.
+Captured `/out` files remain available through certified Attempts after
+discard; review settlement retains an isolated world until an explicit
+permission-checked merge. Completion alone is not correctness or merge
+approval. The local-worker transport below is a separate optional backend.
+
+The separate local-worker service is not enabled by application startup.
+When explicitly installed by an embedding host, its enrollment and lease
+credentials can invoke only their respective worker transport operations,
+never human room/eval/authoring operations. Existing HTTP sessions recheck
+current room read/merge authority on every operation. Claim and completion
+also recheck it in the serialized writer transaction. A revoked or expired
+lease retains only cancellation/physical-stop signaling, not input or output
+access. Immutable completion records a worker shutdown assertion and bounded
+files; it grants no import, Attempt certification or merge authority.
+
+`scripts/worker_namespace.py` supplies a Linux execution primitive, not an MCP
+worker or coding-CLI adapter. Its fixed bubblewrap command isolates PID,
+network and mount namespaces, with read-only host runtime/code trees and
+byte-bounded private tmpfs scratch. Runtime installations must not contain
+private deployment data: `/usr`, `/bin` and library trees remain readable.
+The PID-1 guard refuses inherited capabilities, protects its descriptors and
+memory from same-UID tasks, and waits for an explicit controller GO after
+materializing verified inputs. The task inherits only a regular prompt file
+and bounded scratch-backed logs, not the controller protocol or credentials.
+Before collecting selected file changes it kills and reaps all remaining
+namespace tasks, including detached descendants. Failure or EOF before GO
+does not authorize execution; a guard failure emits no successful completion.
+
+The caller must verify finite cgroup memory, zero swap, process, CPU and wall
+limits before GO. Tmpfs byte limits are not independent inode quotas; empty
+file metadata is bounded through charged kernel memory and the cgroup limit.
+A namespace completion is still not proof that its whole containing unit
+exited, and grants no remote shutdown acknowledgement or result-import
+authority. The opt-in `SIMMIS_WORKER_NAMESPACE_TESTS=1` Python tests exercise
+real user-systemd/bubblewrap isolation without provider/model calls; default
+test runs skip those host integration cases.
+
+`scripts/worker_unit.py` is a separate explicit-lifetime physical observer.
+It launches only that fixed namespace guard in a unique capped transient user
+service, atomically retaining the unit through a private persistent D-Bus
+connection. After guard READY, capture verifies actual memory/swap, OOM-group,
+process and CPU kernel bounds, finite unit shutdown policy and process cgroup
+membership. The caller must journal the unit name before launch and persist
+the captured boot/invocation/cgroup and local-user/manager/bus identity before
+GO; this module does not implement that durable controller or remote
+acknowledgement.
+
+Shutdown observation is driven by systemd events, followed by fresh reads of
+the retained exact invocation, terminal state, absence of a pending job,
+zero main PID and an empty previously verified cgroup. It verifies the mounted
+cgroup-v2 hierarchy against the manager's public kernel membership; a wrong
+mount/namespace must not make a live group appear absent. A terminal blank
+`ControlGroup` property does not erase the captured locator. Lost manager or
+bus ownership, missing metadata, identity mismatch and deadline failure yield
+no stopped observation. Synchronous D-Bus calls have five-second bounds in
+addition to the event-wait deadline. Lost launch/reference replies preserve
+unresolved exposure, never permission to start again. Reattachment only
+reconciles an existing identity; it cannot authorize GO. Reference release is
+explicit and requires a new physical stop observation; the caller must first
+durably seal its receipt. Neither observation nor release certifies an Attempt
+or releases a server lease.
+
+`scripts/worker_journal.py` persists four private immutable controller phases:
+launch allocation intent, verified admission identity, physical stop with
+optional bounded output, and server acknowledgment. The launch binds the
+frozen inputs, endpoint, namespace/unit policies and nonsecret claim identity;
+the proof remains solely in the separate private claim ticket. Phases use
+canonical bounded JSON, SHA256 predecessor links and no-overwrite publication
+with file/directory fsync. Reads resync existing records before adopting a
+possibly ambiguous prior write. A malformed, missing predecessor, changed
+identity/output or failed durability barrier cannot advance the chain.
+
+The caller must durably create its state directories, hold the permanent
+worker-wide lock and inspect all unresolved Run journals before claiming
+another task. Claim-only, admitted and physically stopped but unacknowledged
+Runs all remain unresolved. Restart inspection never launches, replays or
+sends GO. A completion acknowledgment is distinct from shutdown-only
+acceptance; a failed unit cannot supply exit-zero output. Portable outputs
+are revalidated against selected inputs, byte bounds and final file/directory
+collisions before publication or recovery. This journal validates and seals
+trusted controller observations; it cannot independently prove a physical
+stop, authenticate a server response or release a server lease. The opt-in
+crash fixture kills a controller after durable admission and GO, then verifies
+exact-unit reconciliation without task replay or a fabricated remote ack.
+
+`scripts/worker_controller.py` assembles those primitives as a single-use
+trusted local host API. It accepts a locally pinned argv/config, not a room
+command, and is not a coding-CLI adapter. One canonical private state location
+per origin/enrollment and its permanent worker lock cover claim through
+reconciliation. A fresh successful live claim precedes input fetch and launch;
+all unresolved Run journals block new claims. Selected inputs and guard frames
+are verified before use, admission is fsynced before GO, and the whole-unit
+stop/output record is durable before completion is sent. Startup ambiguity
+without an admitted identity stays unresolved for operator reconciliation;
+it is never guessed into a shutdown receipt.
+
+Heartbeats cover paginated input reads, guard protocol I/O and event-driven
+physical shutdown observation. Frozen file policy version two pins the server's
+30-second lease TTL; server renewal derives from that same policy. Receipt age
+has a conservative wall-expiry check and a monotonic bound before GO. The
+worker-only `worker_transport.py` HTTP helper receives credentials on private
+pipes, has a clean environment, cannot invoke arbitrary tools or spawn task
+code, and is killed on controller death. The parent enforces a five-second
+total request deadline, not merely a socket-inactivity timeout. On failure it
+requests candidate stop before killing and joining the helper. The shared
+`worker_io.py` bounds pipe frames and uses absolute monotonic deadlines.
+
+A lost completion reply preserves the exact sealed output and never triggers
+a generic fallback to shutdown-only acknowledgment. Reconciliation of an
+admitted/stopped Run cannot launch or send GO: it observes explicit server
+acceptance, retries that same output if the lease is still live, or reports
+shutdown-only when no publishable output survived or the server signals
+cancellation. No client receipt
+certifies or merges a Run; the ordinary server-side evaluator/import authority
+still decides those. The explicit `physical-python-client-roundtrip!` REPL
+fixture exercises real HTTP claim/download/execution/stop/completion without
+model calls; standard CI retains the non-executing synthetic client fixture.
+
+`ops/worker-inference.clj` supplies a host-only inference boundary, not a
+network listener or launched worker. Its credentialless `DirectChat` provider
+reuses Dvergr's native message formatting and existing Run/tool loop. Only
+bounded text conversations and tool-schema data cross an explicitly supplied
+exchange function; model selection stays with local configuration. Credentials,
+provider URLs, room/native-MCP routing and callbacks do not cross it. Tool calls
+returned by inference remain data for the executor, never broker-side actions.
+The serial broker reserves each sequence before invoking its local inference
+function and closes the session after any ambiguous or invalid exchange. Caps
+cover 32 inference exchanges and aggregate serialized data, with conservative
+allocation checks before JSON encoding; they are not token or exact upstream
+dispatch accounting. The embedding runner owns transport framing, deadlines,
+provider retry policy and physical containment. This primitive does not mount
+credentials, launch a subscription provider or establish those runner guarantees.
+
+`ops/worker-subscription.clj` builds a trusted inference function from an
+existing native Codex-subscription provider. It reuses Dvergr's gateway and
+SSE accumulation, confines dispatch to the exact subscription endpoint, and
+forces redirects off. Each invocation allows one guarded model POST:
+HTTP/authentication errors fail without retry, and a broken or incomplete
+stream is never restarted. Raw response bytes are bounded before line/JSON
+parsing, and a terminal provider event is required. This is subscription model
+inference, not the native Codex CLI harness; no tools execute in this function.
+Its production provider constructor disables token refresh and auth-file writes
+during work: an expiring login must be renewed outside the Run. Arbitrarily
+injected credential implementations retain their own authentication behavior.
+It does not launch a broker process or supply the runner's total deadline.
+
+`ops/worker-executor.clj` is the credential-free guest execution API. It
+validates the complete immutable input before allocating a fresh memory room
+and Geschichte workspace. Only selected binary files and their regular-file
+modes are seeded. Dvergr's existing bounded model/tool loop runs under the
+file-worker sandbox policy; automatic settlement targets only this disposable
+guest parent, not a server room. Export requires both completed execution and
+merged settlement. It returns changed/deleted selected files and new `out/`
+deliverables through the same bounded output validator. Unselected scratch
+files are omitted; an oversized deliverable refuses the result. A failed Run
+does not export partial writes. Room closure precedes connection release;
+failed closure grants no cleanup proof. This API does not install credentials,
+start model transport, export physical files or launch a contained process.
+
+`ops/worker-guest.clj` and `ops/worker-broker.clj` connect these APIs through
+bounded private JSON pipes. The guest refuses an existing provider registry;
+it never clears host providers or initializes login-backed defaults. Frozen
+inputs are fully validated before provider installation or workspace allocation.
+Structural JSON fields are normalized explicitly; filename and schema-property
+keys remain strings. Tool-call arguments are decoded only for the guest's two
+pinned tools, `clojure_eval` and `write_file`. Semantic errors poison the
+channel as well as malformed frames. After its result the guest requires
+parent EOF; the broker refuses trailing messages after `close`.
+
+`ops/worker-process.clj` is a dedicated-process bootstrap, not a server
+component. Java streams and Clojure root/dynamic I/O bindings are redirected
+before loading Dvergr to prevent accidental protocol pollution. This is NOT
+a descriptor security boundary: all guest frames can be candidate-forged and
+cannot certify readiness, execution provenance, shutdown or permission to
+merge. Broker configuration comes from one trusted-parent opening frame before
+any guest forwarding; the future owning runner must pin it to the assignment
+and guest configuration, retain broker and guest under the same accounted
+physical lifecycle, and impose total deadlines. These entrypoints themselves
+provide neither process containment nor those runner guarantees.
+
+The host-only `ops/worker-work.clj` adapter submits through the existing Jobs/
+Runs rather than a remote-executor registry. It requires the worker's enrolling
+human and current room read/merge authority, explicit admission allowance,
+pinned configuration/inputs and a finite wall-time limit. It consumes one
+`local-worker-admission` before publication, including a failed publication
+attempt; this is not verified subscription usage or native provider spending.
+Fresh authority is checked again after physical stop and at import effects.
+Nonzero CLI exit cannot receive positive completion reward. Generic boot
+recovery excludes these requests; local process death does not release their
+external ownership fence. Neither human worker-submission tools nor worker
+authentication are installed by application startup.
+
+The separate host-only recovery adapter checks frozen journal identity,
+actual Run/agent/isolation provenance and assignment linkage before closing
+publication or returning resources. A lease needs its physical stop receipt;
+an uncertified world needs its current affine discard capability. A missing
+world handle, even with a durable `:discarded` projection, holds cleanup and
+resources unresolved. Recovery does not run the interpreter, import leftover
+output, create an Attempt or release uncertified work for review. A canonical
+matching certified review world remains available to its ordinary reviewer.
+
+Workflow authoring uses ordinary versioned Geschichte files under
+`workflows/<name>/`. `simmis_workflow-write` requires current room `:write`
+permission and accepts one atomic edit batch, limited to 100 files, 512 KiB per
+file and 2 MiB per batch. It cannot edit the room-root `AGENTS.md` or paths
+outside that bundle. The HTTP boundary normalizes keywordized filename keys
+without losing directory components, rejects duplicate normalized names, then
+uses the same strict internal write validation. A workflow may include its own fixture instructions.
+`simmis_workflow-check` requires room `:read` permission but is deliberately
+available only through an explicitly selected work credential, not the existing
+read-only tool ceiling. Both return structural inspection without evaluating
+checker source or calibration. Inspection reads one immutable worktree manifest
+and pinned content hashes, capped at 100 regular UTF-8 files and 2 MiB.
+A successful write remains acknowledged even if the resulting bundle is
+incomplete or inspection fails. The returned bundle content ID identifies the
+inspected revision; it is not a correctness certificate or execution admission.
+MCP save acknowledgements return the commit and written/removed counts, not
+file contents or path lists. Public inspections bound titles to 256 characters,
+diagnostics to ten messages of 256 characters, and case names to eight entries;
+total problem/case counts distinguish these bounded previews from complete
+lists. The source metadata pages expose all bounded file names.
+Inspection also returns an opaque source `revision`, including for bounded
+empty or invalid drafts. This is distinct from a valid bundle's execution ID.
+Pass it as `expected-revision` to `simmis_workflow-write` to refuse a stale save
+before any file changes. The check and repository commit hold the existing
+workspace write lock; omitted means an explicit unconditional write. This
+serializes cooperating workspace writers, not raw direct DB transactions that
+bypass the workspace API. A conflict leaves every file unchanged.
+
+`simmis_workflow-list` discovers names from the room's path index without
+loading blobs: 25 names per page, capped at 20,000 matching path entries.
+Later pages can pin the returned nameset revision. `simmis_workflow-source`
+returns ten source-file descriptors per metadata page, or up to 8 KiB of one
+file as base64. Later metadata pages and every byte chunk require the source
+`expected-revision`; clients concatenate decoded bytes before decoding UTF-8.
+Both operations require current room read permission and explicit selection in
+the work credential. Existing signed tool ceilings do not gain these tools.
+
+The room header's **Workflows** tab uses fixed authenticated browser adapters
+over the same operations. It loads bounded source for an editable local draft,
+saves with its source revision, and launches only a saved valid bundle. Its
+ordinary Run and operator-only benchmark forms require an explicit model and
+finite resource limits. Funding and submission are separate confirmations;
+neither runs automatically. Failed submission receipts can be retried with the
+same immutable request ID and payload, including after source reload or form
+changes. The UI retains an already received admission receipt during a failed
+retry. Browser permission hints only control presentation: current server-side
+room authorization still applies to every request.
+
+`simmis_workflow-run` reuses an inspected named workflow as one ordinary
+bounded task, not a benchmark or authored verifier. It requires current room
+read AND merge authority, the same as `simmis_task`. Its closed arguments pin
+`expected-bundle`, an explicit model and finite limits; a case pack also
+requires an explicit existing `case`. It accepts overrides for declared,
+unqualified literal string `params` only (32 parameters, 4000 characters each,
+64 KiB total), expanded once into a task bounded to 16 KiB UTF-8. Values are
+never evaluated or recursively substituted, and paths are not interpolated.
+Optional `inputs` map canonical absolute file paths to text. Shared fixtures,
+selected-case fixtures, then explicit inputs overlay in that order, bounded
+together to 100 files, 512 KiB/file and 2 MiB. Inputs cannot overlap the pinned
+bundle subtree or its ancestors. Profiles other than developer, capture roots
+other than `/out`, and web/judge policies are refused rather than inherited.
+
+Source and inputs come from one immutable bundle snapshot. The WorldSetup
+materializes that exact named bundle subtree in the inherited Run fork,
+including removing newer helper files, before seeding its input files. Bundle
+files are data: the host never evaluates checker/calibration or arbitrary setup
+hooks. Other inherited room files remain available; unlike benchmarking, this
+is not a gold-secret isolation boundary. Source pinning and fixture/input
+replacements are fork-local changes visible in the proposed diff, not writes
+to trunk. Review/discard settlement and the ordinary completion-only evaluator
+are unchanged; completion is not correctness. The journal pins the original
+submission, effective parameters, rendered environment, source and input data.
+Identical retries return the original Job before rereading files or resolving a
+model; changed intent conflicts, and current authority is checked on every
+retry. Boot recovery includes this request kind and never restarts it.
+
+`simmis_benchmark` requires BOTH current room read/merge permission and
+installation-operator status (`:party/role :admin`). Neither room ownership
+alone nor installation-admin status without room access admits authored
+checker execution. `expected-bundle` must match the inspected content UUID;
+the winning durable request freezes that revision and its complete experiment
+definition before execution. An identical retry observes its original Job,
+including after authoring files change; changed intent conflicts.
+
+This endpoint admits at most eight offline developer-profile cells, sequentially,
+with native-accounted providers, explicit aggregate allowance, finite integer
+per-cell shares of both microUSD and model dispatches, `/out` capture, and
+discard settlement. It refuses judges, live/frozen web configuration, arbitrary
+capture roots, custom profiles and automatic promotion. Attempts and Scorecards
+remain the existing room results; an operator admitting execution does not
+make an authored checker trusted—the evaluator tier stays `:ad-hoc`.
+Money and dispatch allowance are aggregate; `timeout-ms` is per attempt, not a
+whole-experiment deadline.
+
+The installation admits one checker benchmark at a time. The physical capacity
+permit is acquired only by the durable winner, after its Job pointer exists,
+and returned only after grouped physical cleanup and wallet return succeed.
+A checker runs synchronously on Dvergr's owned scoring worker, never a detached
+future. Its SCI context and cumulative-allocation accounting are created there;
+the 20-second deadline/interruption state is sticky through catches, verdicts
+must contain at most 100 boolean checks and finite reward, and capture is
+bounded to 100 files / two million characters. These are **cooperative** checks:
+a large or blocking allowed host operation can exceed them before the next SCI
+callback. Such a worker keeps cleanup unresolved and capacity held rather than
+being reported as physically stopped. This is explicitly a trusted-operator
+path, not safe arbitrary-user checker hosting or a hard memory/process fence.
+Checker policy and effective grading parameters are part of verifier identity.
+
+An optional `calibration.edn` is validated without execution when preparing the
+benchmark. It contains one `:reference` answer map and one to four `:damaged`
+variants (`{:files {"/out/path" "text"} :loses [:check]}`). A dataset bundle
+must name an existing calibration `:case` to select its gold. The complete set
+is bounded to 100 files / 2MiB.
+Before each candidate starts, its owned world-setup worker runs all these
+answers with one shared 20-second deadline and allocation account. The reference
+must pass every check; every damaged answer must return actual `false` for its
+declared lost checks and score below the reference. Failure prevents candidate
+execution. This bound is per attempt, not once for the whole benchmark.
+Calibration answers and gold stay in trusted checker inputs, never candidate
+files. Setup/calibration evidence is retained with the Attempt; missing
+calibration is explicitly `:not-provided`. Neither successful calibration nor
+execution promotes checker trust. Cancellation retains physical ownership and
+the installation permit until the setup worker actually exits.
+
+Generic bounded tasks and benchmark candidates select the versioned
+`:simmis/file-worker` sandbox extension. This is deliberately a file/code
+surface: after standard working-context installation and on every rebind, it
+denies injected `dvergr.*`/legacy room and shared-registry APIs, host environment
+access and native `intake.mail` reads (including already-open accounts).
+Spindel 0.1.126's opaque `CurrentWorld` boundary and reactive programming
+primitives remain available; candidate code receives no raw execution-context
+record. Real-context tests cover that boundary and independent interpreters.
+Otherwise a clean workspace would still leave shared task results and actor
+configuration reachable through unfiltered host helpers. The exact extension
+set and policy are pinned in candidate/submission/experiment identities.
+Ordinary room participants retain their richer programming environment; this
+endpoint restriction is not a claim that all upstream shared reads are scoped.
+
+`simmis_post` uses the same `ops/chat.clj` dispatch as the browser, authenticated
+as the human account, with the room's existing `:write` permission, recipient
+selection and threading. It can wake assigned agents on their ongoing ROOM
+budgets. It is not a bounded isolated task. The durable message's typed kind
+`:mcp-user-message` records its trusted transport source; clientInfo is not a
+verified Codex/Claude agent identity, and tool arguments cannot override the author.
+
+`simmis_task` requires current room read AND `:merge` authority, the same
+privileged boundary as generic code in the UI. It starts one generic code/file
+candidate, not an existing Simmis party, with an explicit model, microdollar cap,
+native dispatch count, model-step limit, timeout, and `review` or `discard`
+settlement. These limits are finite and validated at runtime. No automatic merge
+is available. Its speculative effect policy forbids room/lifecycle mutations,
+native processes, undeclared external tools and sandbox HTTP; file writes stay
+inside the fork and under a quota. The native model gateway has separate conserved
+dispatch/spend admission. Native Codex-subscription models are admitted through
+that gateway with zero incremental-dollar rates and conserved dispatch usage;
+notional list price is reported separately. CLI/DirectChat subscriptions are
+not accepted by this endpoint because they do not supply these native dispatch
+guarantees.
+
+Owners explicitly provision a finite execution allowance through
+`simmis_work-allowance`. It is NOT payment, a billing balance or an agent-accessible
+mint capability. Both microUSD and model-dispatch units are conserved: room → job
+→ candidate Run. Unused resources return only after the job's evaluation cleanup
+group confirms physical completion, not merely cancellation of its Spin. Unresolved
+provider reservation wallets are never refunded as unused Run balances.
+
+`model/work_requests.clj` stores a typed host-system admission journal, keyed by
+authenticated party, room and caller request UUID. Its immutable content-addressed
+intent pins the candidate/environment and limits. Only the atomic insert winner
+may start a job; same-intent retries observe it, changed intent conflicts. The job
+pointer commits before evaluation starts. An interrupted pointerless admission is
+reported, never silently re-executed. This is at-most-once admission, not a promise
+of exactly-once completion. Boot recovery runs after orphan-Run reconciliation;
+terminal descendant wallets return bottom-up, while unresolved/live work remains
+pending. `simmis_work-status` projects safe admission metadata (not its ownership
+token); execution state remains in Dvergr Jobs/Runs.
+
+The completion evaluator captures bounded text deliverables under `/out` before
+world discard into the certified Attempt, readable through the existing artifact
+tools. Its check means the Run completed, NOT that the task was correct. The capture
+bound is 100 files and two million characters; the upstream tree reader counts
+characters rather than UTF-8 bytes. Retained worlds remain reviewable through
+the existing run/proposal flow.
+
+### A bounded MCP workflow recipe
+
+Use an explicitly selected **work** login and an existing room where you have
+read/merge authority. The examples below are MCP tool arguments, not SCI code.
+Replace `ROOM_SLUG` with that room and `MODEL_ID` with an available native
+model configured by the server operator. MCP login does not configure a model
+provider. Choose fresh UUIDs for each new allowance or execution; retry an
+existing UUID only with identical arguments. These examples are opt-in model
+work, not commands to put into the ordinary test suite.
+
+First, call `simmis_work-allowance` once to provision a finite room allowance:
+
+```json
+{"room":"ROOM_SLUG","request-id":"130b6d1a-4aaf-49bf-860e-f1f27eec9538","budget-microdollars":25000,"max-dispatches":4}
+```
+
+This is at most $0.025 of incremental model spend and four model HTTP
+dispatches, shared by work consuming the allowance. It is not a billing
+payment or a whole-experiment wall-clock bound. Native subscription calls
+still consume dispatch allowance even when incremental spend is zero.
+
+For a normal one-off task, call `simmis_task`:
+
+```json
+{"room":"ROOM_SLUG","request-id":"530a1dbd-2dc1-4a85-84ad-146210af4f72","task":"Write a short project checklist to /out/checklist.md. Do not publish anything.","model":"MODEL_ID","limits":{"budget-microdollars":25000,"max-dispatches":4,"max-model-steps":4,"timeout-ms":90000,"settlement":"review"}}
+```
+
+The response is an admission record, not the completed answer. Its `job`
+points to `job_status`; `run_detail` and `attempt_list` identify the actual
+candidate and its certified Attempt. Follow the tool's advertised schema:
+Job, Run, admission and Attempt identifiers are different kinds of identity,
+even when a particular execution happens to reuse a UUID.
+In the browser, open the room's Run inspector, then the candidate Run's
+**Captured outputs** to preview/download the checklist. `review` retains the
+isolated world for the existing proposal flow; it does not merge anything.
+`discard` instead discards the world after capturing its bounded outputs.
+
+For reusable **benchmark** authoring, call `simmis_workflow-write` with a
+named bundle of ordinary files:
+
+```json
+{"room":"ROOM_SLUG","name":"echo","files":{"workflow.edn":"{:title \"Echo document\" :task \"Copy /docs/input.md exactly to /out/result.md\" :capture [\"/out\"]}","fixtures/docs/input.md":"Original document\n","gold.edn":"{:expected \"Original document\\n\"}","checker.clj":"(ns workflow.echo)\n(defn check [{:keys [files gold]}] (let [ok (= (:expected gold) (get files \"/out/result.md\"))] {:checks {:exact ok} :reward (if ok 1.0 0.0)}))"}}
+```
+
+Only room write authority is needed to author this bundle. Call
+`simmis_workflow-check {"room":"ROOM_SLUG","name":"echo"}` to inspect it.
+Neither write nor check executes the checker. Copy the successful inspection's
+`bundle` UUID into `expected-bundle` below; do not invent one.
+
+To use the saved workflow normally, call `simmis_workflow-run` (room merge
+authority is sufficient; no installation-operator role is required):
+
+```json
+{"room":"ROOM_SLUG","request-id":"fc5609b0-a2d2-46ed-b7ef-ef5bb60ee5e8","name":"echo","expected-bundle":"BUNDLE_UUID_FROM_INSPECTION","model":"MODEL_ID","inputs":{"/docs/input.md":"An explicit input document\n"},"limits":{"budget-microdollars":25000,"max-dispatches":4,"max-model-steps":4,"timeout-ms":90000,"settlement":"review"}}
+```
+
+This runs the saved task and captures its output without invoking `checker.clj`.
+The source pin and explicit input replacement are part of the proposed changes.
+For a parameterized bundle, add a `params` object containing only names declared
+by `workflow.edn`. Provision additional finite allowance if earlier work has
+consumed the example allowance; these are alternative examples, not four free
+dispatches for every submission.
+
+An installation operator who ALSO has the room's read/merge authority can
+then call `simmis_benchmark`:
+
+```json
+{"room":"ROOM_SLUG","request-id":"54c1d794-63e2-49a5-b817-592c8958fdb2","name":"echo","expected-bundle":"BUNDLE_UUID_FROM_INSPECTION","models":["MODEL_ID"],"repetitions":1,"limits":{"budget-microdollars":25000,"max-dispatches":4,"max-model-steps":4,"timeout-ms":90000,"settlement":"discard"}}
+```
+
+Provision a separate finite allowance if the preceding task has consumed the
+first one. Inspection is not checker admission: this benchmark executes the
+authored checker as cooperatively bounded operator code, and its verdict stays
+ad-hoc, not a promoted trusted verifier. Candidate files start from the frozen
+fixtures, not the authoring room containing gold/checker files. The submitted
+bundle revision is pinned; changing it requires inspection and a new request.
+Identical request retries observe the old Job even after bundle edits.
+
+Use `experiment_report`/`scorecard_list` or the room's Leaderboard for the
+results. Use `simmis_attempt-files` to enumerate immutable captured outputs,
+then `simmis_attempt-file` for their bounded byte chunks; do not use
+`room_read` to retrieve a discarded attempt's answer. To inspect the CURRENT
+room files locally as Git, use the verified snapshot downloader described
+above. It is not a Git push endpoint or an export of historical Attempts.
+
+The selected MCP surface authors, runs and benchmarks named workflows;
+ordinary `simmis_task` remains a separate free-form task. Proposal promotion is available in
+the browser, not as a selected MCP write. Local worker enrollment/execution is
+also not installed at startup. None of those operations should be simulated
+by issuing an unrestricted eval or exposing an operator REPL to a client.
 
 ### Connecting a second operator
 
@@ -246,11 +798,15 @@ python3 /absolute/path/to/simmis/scripts/mcp_client.py login --origin https://de
 The helper prompts for the person's email and password and saves a web session
 in `~/.config/simmis/mcp-session.json` (mode 600), not the password. Treat this
 file as a full web-login credential: it is broader than the MCP read token.
-`headers` exchanges it for the read-only MCP bearer, renewing the web access
+`headers` exchanges it for the chosen MCP bearer, renewing the web access
 token through `/auth/refresh` when needed. Once the refresh session expires or
 is revoked, run `login` again. Never paste the output of `headers` into logs.
 Authentication requests require HTTPS except on loopback, refuse redirects and
 ignore environment proxies; the session's origin is retained with the login.
+To opt into work, rerun `login --access work`. The saved choice is used by
+credential renewal; an existing session without that choice stays read-only.
+`headers` cannot change it. Work login requires the server to confirm work
+mode, and it still creates no room permission or execution allowance.
 
 For Codex, add the following to the person's user `config.toml`
 ([HTTP MCP configuration](https://learn.chatgpt.com/docs/extend/mcp)):
@@ -265,7 +821,8 @@ enabled_tools = ["room_list", "room_detail", "room_messages", "run_list", "run_d
 ```
 
 The optional `enabled_tools` line above intentionally narrows this client to
-the original five tools; omit it to discover the full selected read surface.
+the original five tools; omit it to discover the credential's full selected
+surface (reads by default, bounded work only after explicit work login).
 New tools also require a freshly exchanged credential and client reconnect.
 
 Claude Code's HTTP MCP entry uses the same URL and command under

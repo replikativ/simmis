@@ -466,7 +466,7 @@
           (dotimes [_ 2]
             (is (= [var-vor sol]
                    (:recipients (room-agents/post-user-message!
-                                  room-uuid "shared work" sender nil send-id parent-id)))))))
+                                  room-uuid "shared work" sender nil send-id parent-id :mcp)))))))
       ;; FIFO inbox barriers establish that prior sends and retries were consumed.
       ;; No sleeping or assumed delivery interval, and no model/provider involved.
       (doseq [actor labels]
@@ -477,6 +477,7 @@
             envelope (first stored)]
         (is (= 1 (count stored)))
         (is (= parent-id (:in-reply-to envelope)))
+        (is (= :mcp-user-message (get-in envelope [:metadata :kind])))
         (is (= (if threaded? (:id root) send-id) (d/thread-root-id envelope))
             "published root and nested replies retain the canonical thread on retry")
         (is (= (set selected) (get-in envelope [:metadata :dvergr/recipients])))

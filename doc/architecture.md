@@ -56,10 +56,68 @@ An optional private MCP listener (`runtimes/mcp.clj`) starts in the same JVM
 when `SIMMIS_MCP_PORT` or `:mcp {:port ...}` is configured. Its bind is always
 loopback, its base port receives the instance offset, and it serves the
 existing rooms through Dvergr's embedding host hook. It owns no databases.
-The surface is selected room/message/run, workspace, Attempt, job and experiment
-reads for an explicitly authenticated human, not a raw database or code execution
-endpoint. Recorded Attempt evidence is distinct from mutable workspace files. See
+The default surface is selected room/message/run, workspace, Attempt, job and experiment
+reads for an explicitly authenticated human. Explicit work credentials add canonical
+chat dispatch and one bounded isolated candidate, not a raw database writer or
+unrestricted eval endpoint. The typed system-DB admission journal makes request
+retries observe existing Dvergr Jobs/Runs; it is not a second workflow engine.
+Workflow bundles are versioned Geschichte files. An explicitly admitted,
+exact-revision `simmis_workflow-run` uses the ordinary bounded candidate and
+completion evaluator: declared literal parameters and frozen source/inputs
+are materialized in its inherited room fork, not trunk. Its source pin and
+input replacements appear in the proposed diff; it never implicitly executes
+the bundle's checker or treats completion as correctness. Room-header workflow
+tabs carry the room replica scope into their Run inspectors and open results
+in the column that owns the action. Restored workflow and Run tabs resolve
+missing scopes from the authenticated room roster, like chat/thread tabs.
+Separately, an
+exact-revision offline benchmark reuses Dvergr's experiment runner and room
+Attempts/Scorecards; it requires both installation-operator and room merge
+authority. Its clean fixture room is provisioned outside the authoring room,
+so candidate workspaces do not inherit checker/gold files. The Job runs in
+the fixture's execution context while durable results stay in the control
+room. Synchronous SCI grading stays inside Dvergr's physically tracked scoring
+worker; it is cooperative trusted-operator execution, not hard process isolation.
+Optional reference/damaged-answer calibration runs on the owned world-setup
+worker before each candidate; answers remain outside its workspace and do not
+promote checker trust.
+Local-worker transport lives separately in `ops/worker-service.clj` and
+`ops/worker-api.clj`, backed by typed enrollment/assignment records. Its six
+narrow operations use separate worker credentials, immutable selected-file
+inputs and bounded output receipts. Application startup does not install
+these bindings or enable worker authentication. Completion alone never
+imports files or certifies a Run. See [data-model.md](data-model.md).
+The separate `ops/worker-frames.clj` provides bounded LF-delimited JSON for
+private process pipes: string keys preserve filenames; duplicate fields,
+trailing values, invalid Unicode and oversized/deep frames are refused.
+A malformed frame or I/O failure poisons the channel rather than retrying.
+This is framing, not authentication or executor attestation: every guest
+message (including ready/result) is candidate-controlled. Shutdown evidence
+comes only from the external controller, never a guest report. The framing
+module is not a process launcher or installed transport. The separate
+`ops/worker-process.clj` stdio entrypoint can run a single credentialless guest
+or a serial inference broker. It captures the protocol streams and redirects
+Java and Clojure standard I/O before loading Dvergr. The broker's opening
+configuration must come from the trusted parent before forwarding guest
+traffic. These endpoints are not installed by server startup and supply no
+physical containment or packaged runtime by themselves.
+The host-only `ops/worker-work.clj` adapter connects these to Dvergr's existing
+Protocol/WorldSetup/Evaluator capabilities. It owns no alternative execution
+engine or result store. Separate conserved admission allowance funds local
+work; remote subscription usage remains explicitly unpriced. Cancellation
+retains the native supervisor until remote stop, and output import stays in
+the canonical isolated Run world with current permission checks.
+The separate host-only `ops/worker-recovery.clj` reconciles orphan exposure
+without execution or late import. Missing world disposal authority keeps
+cleanup unresolved; a terminal Run or discarded projection is not physical
+cleanup proof. It is not installed by application startup.
+Recorded Attempt evidence is distinct from mutable workspace files. See
 [authority.md](authority.md#private-mcp).
+Read-only current-workspace Git bundles use Geschichte's Git object/pack
+implementation and a synthetic root commit, with no ancestry traversal or
+server checkout/export writes. Bounded optimistic downloads reject intervening
+workspace changes; they introduce neither a result database nor a retained
+export store.
 
 ## Stores: one owns each concept
 

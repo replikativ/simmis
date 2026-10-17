@@ -9,7 +9,15 @@
  ;; app server serves everything).
  :dev-http {8080 {:root "public"
                   :proxy-url "http://localhost:47295"}}
- :builds {;; Main app - Spindel-based wiki with delta rendering
+ :builds {:browser-tests
+          {:target :browser-test
+           :test-dir "target/browser-tests"
+           :ns-regexp "^is\\.simm\\..*-test$"
+           :runner-ns is.simm.browser-test-runner
+           :devtools {:enabled false :console-support false}
+           :compiler-options {:parallel-build false}}
+
+          ;; Main app - Spindel-based wiki with delta rendering
           :app
           {:target :browser
            :output-dir "public/js"

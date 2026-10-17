@@ -20,7 +20,11 @@
    - Config is runtime-only: env vars (SIMMIS_WS_URL, SIMMIS_JWT_SECRET,
      SIMMIS_NREPL_PORT) + config.local.edn in the working directory.
      Nothing secret is baked into the artifact."
-  (:require [clojure.tools.build.api :as b]))
+  (:require [clojure.java.io :as io]
+            [clojure.tools.build.api :as b])
+  (:import [java.nio.file Files]
+           [java.nio.file.attribute PosixFilePermissions]
+           [java.util.jar JarFile]))
 
 (def lib 'is.simm/simmis)
 (def version (format "0.1.%s" (b/git-count-revs nil)))
@@ -64,3 +68,37 @@
            ;; (systemd unit + README document this canonical invocation).
            :exclude [#"META-INF/license/.*" #"license/.*"]})
   (println "Done:" uber-file))
+
+(def worker-sources
+  ;; Deliberately exclude web boot, dev/user.clj, room credentials and tests.
+  ;; Dependency source/resources still come from the ordinary Maven basis.
+  ["worker_process" "worker_guest" "worker_broker" "worker_executor"
+   "worker_subscription" "worker_inference" "worker_frames" "worker_wire"
+   "worker_files" "work_sandbox"])
+
+(defn worker
+  "Build the dedicated local SCI guest/broker runtime, without a frontend or
+   development classpath. Invocation is fixed: java -cp <jar> clojure.main
+   -m is.simm.ops.worker-process guest|broker. Does not enroll or run work."
+  [_]
+  (let [classes "target/worker-classes"
+        artifact (format "target/simmis-%s-worker.jar" version)]
+    (b/delete {:path classes})
+    (doseq [source worker-sources]
+      (let [relative (str "is/simm/ops/" source ".clj")
+            target (io/file classes relative)]
+        (io/make-parents target)
+        (io/copy (io/file "src" relative) target)))
+    (b/uber {:class-dir classes :uber-file artifact :basis (basis)
+             :exclude [#"META-INF/license/.*" #"license/.*"]})
+    (Files/setPosixFilePermissions (.toPath (io/file artifact))
+                                   (PosixFilePermissions/fromString "rw-r--r--"))
+    ;; clojure.main loads user.clj BEFORE -m. Refuse any such dependency
+    ;; resource instead of trusting a source-only inventory or filtering it
+    ;; silently after building. Also refuse ambient manifest classpaths.
+    (with-open [jar (JarFile. artifact)]
+      (when (or (some #(.getEntry jar %) ["user.clj" "user.cljc" "user__init.class"])
+                (some-> (.getManifest jar) .getMainAttributes (.getValue "Class-Path")))
+        (b/delete {:path artifact})
+        (throw (ex-info "Worker artifact contains an ambient startup entrypoint" {}))))
+    (println "Done:" artifact)))

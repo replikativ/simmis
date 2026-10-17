@@ -319,6 +319,26 @@
             Used to show 'Thinking...' indicator in the chat."
            (signal runtime false)))
 
+#?(:cljs (def captured-results
+           "On-demand immutable result views, keyed by account/room/Run/Attempt.
+            Request tokens fence late responses; bytes for downloads are local
+            to the operation, not a second result store."
+           (signal runtime {})))
+
+#?(:cljs (def workflow-editor-state
+           "Session/room keyed source drafts, request fences and immutable admissions."
+           (signal runtime {})))
+
+#?(:cljs
+   (defn clear-captured-results!
+     "Release browser download URLs with their owning authenticated session."
+     []
+     (doseq [entry (vals @captured-results)
+             :let [url (get-in entry [:download :url])]
+             :when url]
+       (js/URL.revokeObjectURL url))
+     (reset! captured-results {})))
+
 #?(:cljs (def run-server-facts
            "Run id -> what only the server can say about a Run, asked per Run:
             `:world-live?`, whether this server still holds the Run world's

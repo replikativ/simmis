@@ -63,7 +63,11 @@
         ;; landed), on yggdrasil 0.3.49 (#137). A fork whose overlay is gone
         ;; now throws ::overlay-lost instead of silently doing nothing —
         ;; simmis's merge RPCs surface it through rpc-errors.
-        org.replikativ/spindel {:mvn/version "0.1.126"}
+        ;; 0.1.128 also delivers resumed track deltas once and avoids no-op
+        ;; execution-state writes on resume.
+        ;; 0.1.131 includes singleton authority partitions, nil DOM attribute
+        ;; cleanup and read-only cross-catalog fork diffs (#141–143).
+        org.replikativ/spindel {:mvn/version "0.1.131"}
         ;; spindel 0.1.53 brings anglican 1.1.0 (its inference methods), which
         ;; brings timbre 4.10.0, whose ClojureScript no longer compiles
         ;; ("Can't redefine a constant"). A current timbre serves anglican's
@@ -214,7 +218,8 @@
         ;; wins, and Simmis also relies on Yggdrasil's Geschichte adapter and
         ;; its content-level merge API.
         ;; 0.1.19: datahike 0.8.1904 and org.replikativ/partial-cps only.
-        org.replikativ/geschichte {:mvn/version "0.1.19"}
+        ;; 0.1.20 includes bounded current-workspace Git bundle support (#16).
+        org.replikativ/geschichte {:mvn/version "0.1.20"}
         ;; Datahike's bundled secondary-index adapter uses
         ;; scriptum.core/warm!, introduced before this release.
         org.replikativ/scriptum {:mvn/version "0.1.32"}
@@ -353,7 +358,10 @@
         ;; explicit vision configuration, plus funded dispatch accounting.
         ;; 0.1.299: one durable message can address an explicit recipient set;
         ;; duplicate same-id per-target posts no longer stand in for multicast.
-        org.replikativ/dvergr {:mvn/version "0.1.299"}}
+        ;; 0.1.306 includes bounded evaluation cleanup, automatic workspace
+        ;; settlement, zero-priced native dispatch accounting and canonical
+        ;; fork/grant/settlement fixes (#342–348).
+        org.replikativ/dvergr {:mvn/version "0.1.306"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
@@ -459,6 +467,9 @@
                   :extra-deps {lambdaisland/kaocha {:mvn/version "1.91.1392"}}
                   :exec-fn kaocha.runner/exec-fn
                   :exec-args {:skip-meta [:integration]}}
+
+           ;; Browser-native test namespaces, without dev/user.clj.
+           :browser-tests {:extra-paths ["test"]}
 
            ;; Classpath for npx-spawned shadow-cljs JVMs (release builds).
            ;; Deliberately does NOT include the "dev" path: Clojure

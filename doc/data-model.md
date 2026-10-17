@@ -3,6 +3,184 @@
 Everything stored in a KB or a room store is described by one small vocabulary.
 You cannot read the wiki, type or property code without it.
 
+Host-side work admission is control-plane data in the system DB, separate from
+the speculative KB/room worlds. `model/work_requests.clj` declares typed
+`:work.request/*` identities, ownership, limits, lifecycle and job-pointer
+attributes. The complete immutable intent uses a Datahike `store-ref`, not an EDN
+string or an exploded runtime object. Atomic insert/CAS transitions decide who
+may schedule; Dvergr's room-store Jobs, Runs, Attempts and accounting remain the
+execution and result records. Fork rollback does not duplicate the host admission
+or its conserved resource authority.
+The same journal admits `:task`, `:benchmark` and `:allowance` requests.
+Benchmark intents pin the client submission, canonical ExperimentDef, resolved
+candidate roster, grading policy and aggregate limits. Fixtures use the durable
+request UUID as their host-side locator; this is not another result store.
+The canonical ExperimentDef also freezes bounded workflow provenance (name,
+title and admitted bundle ID). Completed leaderboards use that frozen label,
+not current authoring files, and retain the experiment identity for inspection.
+Calibrated WorldSetup references include the original bundle-bearing fixture
+identity and execution policies. Successful setup/calibration evidence stays in
+the existing Attempt evidence, not a separate calibration database.
+Restart recovery retires settled fixtures even if the wallet-return write
+completed immediately before a process crash.
+
+`model/workers.clj` declares the host control-plane vocabulary for separately
+enrolled local workers and external assignment ownership. Enrollment records
+hold the enrolling party/room, generation, credential verifier hash and a
+GC-tracked immutable configuration. Assignment identities are the existing Run
+UUIDs and link to the request, Job, selected worker and frozen input artifact.
+Writer-serialized claims bind one client nonce and lease proof hash; the same
+Run is never reassigned after expiry or cancellation. Plaintext credential and
+lease proofs never enter database transaction arguments.
+The client nonce UUID is also the lease UUID. Persisting Run, nonce and proof
+before claiming therefore retains shutdown authority even if the claim reply
+is lost and enrollment is subsequently revoked. Before commitment that proposed
+bearer authenticates nobody; after revocation it grants shutdown operations
+only. A lost reply never authorizes execution.
+Each enrollment represents one physical worker slot: another assignment cannot
+be claimed while a previous lease lacks its shutdown acknowledgement, even
+after expiry or quarantine.
+Host publication withdrawal can install a same-intent withdrawn tombstone
+even if enqueue's result was ambiguous. A late enqueue cannot revive it. If
+a worker already claimed, the same transaction quarantines that lease without
+acknowledging shutdown. Closing-state reconciliation checks the transition,
+not merely the existence of a matching intent.
+
+These assignment states are transport receipts, not another execution model.
+Expiry/revocation quarantines ownership without inventing physical shutdown;
+only withdrawal before a successful claim, or an existing lease's explicit
+shutdown acknowledgement, records that boundary. Completed output binds one
+immutable digest and the worker's shutdown assertion. This is an enrolled
+worker's assertion, not independent proof about a remote process. Immutable
+configuration, input and output reads verify their original logical digest;
+corrupt payloads are refused rather than substituted from the current workspace.
+`ops/worker_credentials.clj` supplies separate enrollment/lease credential
+validation and a worker-only authority predicate. It intersects the fixed room
+with the enroller's current permissions, keeps only verifier hashes in process
+principals, and retains narrowly scoped shutdown signaling after revocation.
+`ops/worker-service.clj` implements closed, bounded pending/claim/input/heartbeat/
+completion/stop operations; `ops/worker-api.clj` supplies their worker-only MCP
+bindings. Neither is installed by application startup: the ordinary listener
+does not yet authenticate worker credentials. They add no sandbox capability.
+Claim, heartbeat and completion check current permission and the host clock
+inside the serialized writer transaction, including after output publication.
+
+Frozen input contains only explicitly selected regular files (at most 100,
+1 MiB each, 2 MiB total), task, pinned adapter configuration and execution
+limits. The input JSON is delivered in 16 KiB chunks with a full digest; no
+live room file read is substituted. Output carries validated base64, byte
+length, SHA256 and regular-file mode. It may change selected inputs or create
+`out/` deliverables, but cannot change other room files. HTTP filename keys are
+normalized without dropping path components and duplicate normalized names
+are refused. Responses omit internal payload references and verifier hashes.
+Completion records immutable output and the worker's shutdown acknowledgement;
+it does not import files, certify an Attempt or merge into the parent room.
+
+`ops/worker-wait.clj` supplies a host-owned shutdown wait for protocol adapters.
+Its database listener and sticky Run cancellation hook register before
+assignment publication; both callbacks only offer a bounded wake token. The
+owner rereads durable state after each event. The current lease deadline may
+trigger cancellation, but quarantine, failed writes and unavailable reads
+cannot stand in for a shutdown receipt. A running Dvergr protocol worker stays
+physically owned while this wait continues, including after interruption.
+Interrupt status is restored only when the owner closes its listener/hook
+after acknowledgement and DB cleanup. Returned assignments are private host
+data, not portable Run results or import authority: an adapter must construct
+sanitized evidence and separately check current authority before importing.
+
+`ops/worker-output.clj` is the trusted import primitive for that isolated Run
+world. It refuses parent rooms, validates output against the frozen selected
+inputs, and checks an adapter-supplied current-authority predicate at every
+file/commit effect and before returning. Content reuses Dvergr's atomic batch;
+executable mode changes use a second gated commit under the same workspace
+lock. These two commits are not one atomic transaction. Final repository
+read-back checks bytes, modes and deletions, including effects intercepted by
+world handlers. A failure may leave partial changes in the isolated world,
+never trunk, and must fail the Run. The adapter supplies the verified immutable
+assignment payload and current canonical Run world; this helper neither
+certifies successful task execution nor interprets a nonzero CLI exit code.
+
+`ops/worker-work.clj` connects these host primitives to existing Dvergr Jobs,
+isolated Runs and certified Attempts. Only the enrolling human, with current
+room read/merge authority, may submit. The immutable request pins worker
+generation/configuration, selected files, task and limits. Exact retries return
+the original Job even after parent files change or enrollment is revoked;
+changed intent conflicts. World setup refuses input drift before publication.
+
+Local execution uses a separate conserved `local-worker-admission` coordinate,
+explicitly provisioned by a human room owner. One admission is consumed before
+remote publication; a failed publication attempt still consumes it. This is
+neither a provider-call count, USD measurement nor proof of CLI startup.
+Native money/dispatch balances cannot fund it. Typed
+`:work.request/max-worker-admissions` metadata records the allowance/limit.
+The shared work adapter accepts trusted prepared resource vectors; external
+request schemas cannot inject them.
+
+The Run waits for physical stop, then checks current enrollment/grants,
+cancellation, exact live Run/Job and canonical world before each import effect.
+Capture uses a fork-local Spindel context marker and rereads actual files/modes,
+not the worker's asserted result alone. Nonzero exit fails the Run while
+retaining captured diagnostics; completion reward requires a completed Run,
+successful import and exit zero. Receipt spend is explicitly unpriced because
+remote subscription usage is unreported. Provenance distinguishes local-worker
+execution and host versus MCP submission. This host API is not enabled at
+application startup. Generic restart recovery excludes `:local-worker`: a dead
+local JVM cannot certify that a remote process stopped.
+
+`ops/worker-recovery.clj` is a separate host-only reconciliation entry point,
+not installed at boot or on the transport. It validates the frozen request,
+complete Job/Run graph and actual Run provenance before closing publication.
+Missing/queued assignments get a same-intent withdrawal fence; leased work
+holds its resources until physical stop acknowledgement. It can discard an
+exact canonical uncertified deferred world through Dvergr's existing fork
+capability, or preserve an exactly matched certified review world. Only then
+does it return remaining wallets bottom-up and mark the request returned.
+Before either world decision it joins the Job's detached evaluation cleanup
+group and rereads the durable child/Attempt; terminal Runs do not stand in for
+physical completion of capture or certification workers.
+Missing runtime world handles remain `:awaiting-world-cleanup`, even when the
+Run projection says `:discarded`: that projection precedes physical substrate
+cleanup. A crash after discard but before resource return can therefore also
+remain unresolved; this adapter does not fabricate a durable cleanup receipt.
+
+`scripts/worker_inputs.py` supplies the local input boundary without starting
+an executor or authenticating a client. It checks the pinned configuration,
+closed policy, immutable chunk identities/offsets/size and full SHA256, then
+each file's size/digest/mode. Duplicate JSON fields, non-JSON constants and
+invalid UTF-8 filenames are refused. Materialization creates a fresh private
+directory and uses descriptor-relative exclusive/no-follow opens, never an
+archive or existing checkout. Runtime control paths such as `.codex/`,
+`.claude/`, `.agents/` and `.mcp.json` are not accepted as task data that a CLI
+could auto-load. No credentials or unselected files enter that directory.
+`scripts/worker_outputs.py` collects results only after its caller has proved
+process-tree quiescence. It reads changed/deleted selected inputs and regular
+`out/` deliverables, not a recursive snapshot of the workspace. It preserves
+binary bytes and executable mode, omits unchanged files, and enforces the same
+file/count/total limits plus a bounded directory walk. A private owned root,
+no-follow descriptor-relative reads, pre-open special-file checks and
+post-open identity checks refuse symlinks, hardlinks, devices/FIFOs and
+privileged modes. Collection itself grants no shutdown acknowledgement,
+server-side import, certification or merge authority.
+
+`scripts/worker_claim.py` persists the private client claim identity before any
+network claim. Atomic no-overwrite publication and file/directory fsync preserve
+one Run/nonce/proof across retries; corrupt or mismatched tickets are never
+replaced. Its caller must first durably create the private state directory,
+including its parent entry. Inspection alone is not the durability barrier.
+A per-enrollment OS lock spans admission, process lifetime and cleanup; lock
+files must not be removed/recreated while another controller could own them.
+Process death releases the lock, not an orphaned process tree or server lease.
+Replacement controllers must reconcile those before executing, and retain
+ambiguous claim tickets until ownership/shutdown is resolved. Crash-left private
+staging files are non-authoritative. This helper performs no network calls or
+execution and keeps no shared application state.
+The Python MCP transport accepts a proposed proof only as a session header,
+starting with initialization, never as a tool argument. Its ordinary read
+client is unchanged. The synthetic cross-language HTTP regression exercises
+ticket preparation, client-side claim, verified input download/materialization
+and bounded completion with binary data, executable modes and deletions; it
+does not start a coding CLI or call a model.
+
 ## Objects, morphisms, instances
 
 The model is a category, called **S**, stored as ordinary Datahike entities.

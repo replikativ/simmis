@@ -53,6 +53,18 @@ existing attributes only. Each use is checked again, so
 detaching a KB takes it away from a running agent. A room with no KB attached
 has no KB in its sandbox; nothing falls back to its creator's KBs.
 
+The wiki query/formatting vocabulary is shared in `agents/wiki_read.clj`.
+Each call resolves its authorized targets once as immutable DB values, so page
+blocks and both halves of a link neighborhood cannot mix database revisions
+within that call. Installed and saved functions resolve again on their next
+use; the ordinary participant adapter rechecks current grants before reading
+its known connections. Missing/refused resolution raises an error, not an
+empty wiki. `summarize!` stays a separate authorized, effectful operation rather
+than part of that read vocabulary.
+If any KB in an ordinary participant's cached selection is revoked, the read
+refuses until that participant context is rebuilt, even if another cached KB
+remains authorized; it does not silently present a partial selection as complete.
+
 A `kontor/*` posting records no author: kontor's posting API takes no
 transaction metadata. A team's Book (Accounting → the team's heading;
 `ops.book-report`) recovers it from dvergr's call record instead — the
@@ -105,6 +117,43 @@ run back through it.
 **The sandbox is a soft boundary.** It is a curated SCI context hardened
 against the escapes we have found, not a VM. Do not run untrusted agents
 against secrets you cannot rotate.
+
+### Packaged local SCI endpoints
+
+`clojure -T:build worker` builds a dedicated `target/simmis-*-worker.jar`,
+without the development classpath, frontend, server entrypoint or tests.
+The build rejects ambient `user.clj`/compiled user startup and manifest
+classpaths. The fixed entrypoint is `clojure.main -m
+is.simm.ops.worker-process`, with `guest`, `broker` or credential-free `check`
+mode. Check loads the real endpoint dependencies and reports the executor and
+inference policy identities; it does not construct a provider or run an agent.
+The trusted Linux installation must select a compatible Java21-or-newer JDK
+at `/usr/bin/java`; changing shell `PATH` or `JAVA_HOME` alone does not change
+this fixed bootstrap. CI explicitly aligns that path with its configured JDK.
+
+`scripts/worker_runtime.py` validates an operator-selected absolute artifact
+path and SHA256, fixes JVM arguments, and constructs a clean child environment.
+The guest gets private login locations; only an explicitly configured broker
+gets the native Codex login directory. It inherits no API keys, Java injection
+options or controller credentials. The native provider refuses login refresh
+and persistence during work. A digest pins selected bytes, not their provenance
+or safety. Runtime installation remains trusted local administration.
+
+The local controller accepts either its existing native/bwrap adapter or an
+explicit `dvergr-sci` profile. The SCI profile binds the runtime digest and
+endpoint policy identities into a versioned launch journal. Its fixed trusted
+supervisor starts both JVMs only after physical capture, durable admission and
+GO, with separate private homes and pipes inside the same retained systemd
+execution unit. The envelope is 2.5GiB memory, no swap,128 tasks, one CPU and a
+finite deadline; each JVM has a512MiB heap limit. Unsupported adapters refuse
+before claiming work. A completed result still requires whole-unit shutdown,
+a durable stopped journal and fresh lease authority before publication.
+Recovery may stop an admitted unit or retry stopped output, never relaunch it;
+it does not require the runtime jar or native login to remain installed.
+
+This is a host library path, not yet an enabled turnkey enrollment/runner CLI.
+Protocol readiness or a guest result does not prove shutdown. JVM flags alone
+are not containment; SCI is not filesystem isolation against a JVM escape.
 
 ## Writes land on forks
 

@@ -167,13 +167,26 @@ existing ForkSet model:
 Run world --adopt--> world adoption --partition by system--> Proposal forks
 ```
 
-The adoption row is durable before authority leaves Dvergr. A multi-system
-world is exhaustively partitioned so each Proposal component governs exactly
-one system and can be accepted or dismissed independently. The stored
+The adoption row is durable before authority leaves Dvergr. Every world,
+including a singleton, is exhaustively partitioned so each Proposal component
+governs exactly one system and can be accepted or dismissed independently.
+Partitioning seals the scope and consumes the original settlement authority.
+The stored
 descriptors, Run/room linkage, status and settlement decisions are durable;
 the actual fork handles remain process-local capabilities. Accept and Dismiss
 therefore use the ordinary Proposal authorization and status machinery but
 dispatch `:world` components through Dvergr's governed settlement frontier.
+
+Landing requires both the deciding human's room merge authority and their
+merge authority on the exact registry target; room ownership alone does not
+authorize another person's KB. Runtime target identities use Dvergr's canonical
+registry mapping, with unknown or ambiguous targets refused. Immediately before
+journaling a merge, the durable originating room's current write grant is
+checked against the actual fixed leaf and its delta. This preflight is not
+atomic with independent grant updates. This origin-room write-grant preflight
+does not gate discard or commit-only recovery; ordinary human Proposal-control
+authorization still applies. Previously adopted unpartitioned singleton handles cannot
+pass the fixed-leaf merge check; this is a fail-closed change, not a migration.
 
 Failures preserve the last valid affine capability. A failed Proposal commit
 retains the adopted world for `retry-promotion!`; failure while constructing

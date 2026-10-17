@@ -264,9 +264,7 @@
                             (assoc f :proposal.fork/may-merge?
                                    (boolean
                                     (and party
-                                         (access/can? db party :merge
-                                                      (or (:proposal.fork/authority-scope f)
-                                                          (:proposal.fork/scope f)))))))
+                                         (access/may-merge-proposal-fork? db party f)))))
                           forks))
              p))
          proposals)))
@@ -555,7 +553,7 @@
         refused (vec (for [f forks
                            :let [scope (or (:proposal.fork/authority-scope f)
                                            (:proposal.fork/scope f))]
-                           :when (not (access/can? db by :merge scope))]
+                           :when (not (access/may-merge-proposal-fork? db by f))]
                        (str scope)))]
     (when (seq refused)
       (throw (ex-info "not authorized to write every fork's trunk"

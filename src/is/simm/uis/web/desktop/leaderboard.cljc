@@ -5,6 +5,11 @@
    in the words dvergr's report uses, so the board and `report.md` read the
    same.")
 
+(defn experiment-label
+  "Prefer the workflow title frozen at admission, not mutable authoring files."
+  [{:keys [workflow experiment-id]}]
+  (or (not-empty (:title workflow)) (not-empty (:name workflow)) experiment-id "Experiment"))
+
 (defn candidate-label
   "A candidate's name without its namespace (`workflow/haiku-0` → `haiku-0`)."
   [c]
