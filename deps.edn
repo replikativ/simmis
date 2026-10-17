@@ -65,7 +65,9 @@
         ;; simmis's merge RPCs surface it through rpc-errors.
         ;; 0.1.128 also delivers resumed track deltas once and avoids no-op
         ;; execution-state writes on resume.
-        org.replikativ/spindel {:mvn/version "0.1.128"}
+        ;; 0.1.131 includes singleton authority partitions, nil DOM attribute
+        ;; cleanup and read-only cross-catalog fork diffs (#141–143).
+        org.replikativ/spindel {:mvn/version "0.1.131"}
         ;; spindel 0.1.53 brings anglican 1.1.0 (its inference methods), which
         ;; brings timbre 4.10.0, whose ClojureScript no longer compiles
         ;; ("Can't redefine a constant"). A current timbre serves anglican's
@@ -216,7 +218,8 @@
         ;; wins, and Simmis also relies on Yggdrasil's Geschichte adapter and
         ;; its content-level merge API.
         ;; 0.1.19: datahike 0.8.1904 and org.replikativ/partial-cps only.
-        org.replikativ/geschichte {:mvn/version "0.1.19"}
+        ;; 0.1.20 includes bounded current-workspace Git bundle support (#16).
+        org.replikativ/geschichte {:mvn/version "0.1.20"}
         ;; Datahike's bundled secondary-index adapter uses
         ;; scriptum.core/warm!, introduced before this release.
         org.replikativ/scriptum {:mvn/version "0.1.32"}
