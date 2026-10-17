@@ -38,14 +38,30 @@ Expiry/revocation quarantines ownership without inventing physical shutdown;
 only withdrawal before a successful claim, or an existing lease's explicit
 shutdown acknowledgement, records that boundary. Completed output binds one
 immutable digest and the worker's shutdown assertion. This is an enrolled
-worker's assertion, not independent proof about a remote process. This model is
-host-only: it exposes no worker network endpoint or new sandbox capability.
+worker's assertion, not independent proof about a remote process. Immutable
+configuration, input and output reads verify their original logical digest;
+corrupt payloads are refused rather than substituted from the current workspace.
 `ops/worker_credentials.clj` supplies separate enrollment/lease credential
 validation and a worker-only authority predicate. It intersects the fixed room
 with the enroller's current permissions, keeps only verifier hashes in process
 principals, and retains narrowly scoped shutdown signaling after revocation.
-These helpers do not themselves enable worker authentication on the MCP
-listener or expose worker operations.
+`ops/worker-service.clj` implements closed, bounded pending/claim/input/heartbeat/
+completion/stop operations; `ops/worker-api.clj` supplies their worker-only MCP
+bindings. Neither is installed by application startup: the ordinary listener
+does not yet authenticate worker credentials. They add no sandbox capability.
+Claim, heartbeat and completion check current permission and the host clock
+inside the serialized writer transaction, including after output publication.
+
+Frozen input contains only explicitly selected regular files (at most 100,
+1 MiB each, 2 MiB total), task, pinned adapter configuration and execution
+limits. The input JSON is delivered in 16 KiB chunks with a full digest; no
+live room file read is substituted. Output carries validated base64, byte
+length, SHA256 and regular-file mode. It may change selected inputs or create
+`out/` deliverables, but cannot change other room files. HTTP filename keys are
+normalized without dropping path components and duplicate normalized names
+are refused. Responses omit internal payload references and verifier hashes.
+Completion records immutable output and the worker's shutdown acknowledgement;
+it does not import files, certify an Attempt or merge into the parent room.
 
 ## Objects, morphisms, instances
 

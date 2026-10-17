@@ -69,6 +69,11 @@
     (matches-hash? hash (secret-hash secret))
     (catch Exception _ false)))
 
+(defn- checked-hash! [hash]
+  (when-not (and (string? hash) (re-matches #"[A-Za-z0-9_-]{43}=" hash))
+    (refuse! ::invalid "Expected a worker proof verifier, not a bearer secret"))
+  hash)
+
 (defn- entity [db attr id]
   (when-let [eid (d/q '[:find ?e . :in $ ?attr ?id :where [?e ?attr ?id]] db attr id)]
     (d/pull db '[*] eid)))
@@ -76,30 +81,31 @@
 (defn enrollment [conn id] (entity @conn :simmis.worker/id id))
 (defn assignment [conn id] (entity @conn :simmis.worker.assignment/id id))
 
-(defn- active-enrollment! [db id generation room]
+(defn- active-enrollment! [db id generation room permitted?]
   (let [worker (entity db :simmis.worker/id id)]
     (when-not (and worker (nil? (:simmis.worker/revoked-at worker))
                    (= generation (:simmis.worker/generation worker))
-                   (= room (:simmis.worker/room worker)))
+                   (= room (:simmis.worker/room worker))
+                   (or (nil? permitted?) (permitted? db worker)))
       (refuse! ::denied "Worker enrollment is unavailable or revoked"))
     worker))
 
-(defn- insert-tx [db row attr id digest-attr]
+(defn- insert-tx [db row attr id digest-attr permitted?]
   (if-let [old (entity db attr id)]
     (do (when-not (= (get row digest-attr) (get old digest-attr))
           (refuse! ::conflict "Identity already belongs to another immutable intent")) [])
     (do
       (when (= attr :simmis.worker.assignment/id)
         (active-enrollment! db (:simmis.worker.assignment/worker row)
-                            (:simmis.worker.assignment/generation row) (:simmis.worker.assignment/room row)))
+                            (:simmis.worker.assignment/generation row) (:simmis.worker.assignment/room row) permitted?))
       [row])))
 
-(defn- publish-row! [conn row attr id digest-attr ref-attr value]
+(defn- publish-row! [conn row attr id digest-attr ref-attr value & [permitted?]]
   (try
     (artifact/publish-value! (artifact/datahike-store conn) value
                              (fn [ref]
                                (d/transact conn [[:db.fn/call insert-tx (assoc row ref-attr ref)
-                                                  attr id digest-attr]])))
+                                                  attr id digest-attr permitted?]])))
     (catch Exception error
       (when-not (= (get row digest-attr) (get (entity @conn attr id) digest-attr)) (throw error))))
   (entity @conn attr id))
@@ -129,11 +135,11 @@
 (defn enqueue!
   "Freeze one selected worker's inputs against the existing request/Job/Run.
    Queuing does not grant the worker ownership or permission to execute."
-  [conn {:keys [id worker generation room request job input]}]
+  [conn {:keys [id worker generation room request job input permitted?]}]
   (when-not (and (every? uuid? [id worker room request job])
                  (pos-int? generation) (map? input) (roster/data-value? input))
     (refuse! ::invalid "Invalid worker assignment"))
-  (active-enrollment! @conn worker generation room)
+  (active-enrollment! @conn worker generation room permitted?)
   (let [digest (hasch/uuid [:simmis/worker-assignment-v1 worker generation room request job input])]
     (publish-row! conn {:db/id -1 :simmis.worker.assignment/id id
                         :simmis.worker.assignment/worker worker :simmis.worker.assignment/generation generation
@@ -141,10 +147,30 @@
                         :simmis.worker.assignment/job job :simmis.worker.assignment/intent-id digest
                         :simmis.worker.assignment/state :queued :simmis.worker.assignment/queued-at (Date.)}
                   :simmis.worker.assignment/id id :simmis.worker.assignment/intent-id
-                  :simmis.worker.assignment/input-ref input)))
+                  :simmis.worker.assignment/input-ref input permitted?)))
 
 (defn payload [conn row field]
-  (when-let [ref (get row field)] (artifact/get-value (artifact/datahike-store conn) ref)))
+  (when-not (contains? #{:simmis.worker/config-ref :simmis.worker.assignment/input-ref
+                         :simmis.worker.assignment/output-ref} field)
+    (refuse! ::invalid "Unknown worker payload field"))
+  (when-let [ref (get row field)]
+    (let [value (artifact/get-value (artifact/datahike-store conn) ref)
+          [expected basis]
+          (case field
+            :simmis.worker/config-ref
+            [(:simmis.worker/config-id row)
+             [:simmis/worker-v1 (:simmis.worker/by row) (:simmis.worker/room row)
+              (:simmis.worker/credential-hash row) value]]
+            :simmis.worker.assignment/input-ref
+            [(:simmis.worker.assignment/intent-id row)
+             [:simmis/worker-assignment-v1 (:simmis.worker.assignment/worker row)
+              (:simmis.worker.assignment/generation row) (:simmis.worker.assignment/room row)
+              (:simmis.worker.assignment/request row) (:simmis.worker.assignment/job row) value]]
+            :simmis.worker.assignment/output-ref
+            [(:simmis.worker.assignment/output-id row) [:simmis/worker-output-v1 value]])]
+      (when-not (and (map? value) (= expected (hasch/uuid basis)))
+        (refuse! ::corrupt "Worker payload is unavailable or does not match its immutable identity"))
+      value)))
 
 (defn- owned! [db id lease hash]
   (let [row (entity db :simmis.worker.assignment/id id)]
@@ -164,9 +190,17 @@
   (updates row {:simmis.worker.assignment/state :quarantined
                 :simmis.worker.assignment/cancel-at (or (:simmis.worker.assignment/cancel-at row) now)}))
 
-(defn- claim-tx [db id worker generation nonce hash lease now expires]
-  (let [row (or (entity db :simmis.worker.assignment/id id) (refuse! ::missing "No such assignment"))]
-    (active-enrollment! db worker generation (:simmis.worker.assignment/room row))
+(defn- instant [source]
+  ;; Production supplies a host clock evaluated IN the serialized transaction,
+  ;; not a request timestamp that could grow stale during artifact publication.
+  (let [now (if (fn? source) (source) source)]
+    (when-not (instance? Date now) (refuse! ::invalid "Invalid host clock"))
+    now))
+
+(defn- claim-tx [db id worker generation nonce hash lease clock ttl-ms permitted?]
+  (let [now (instant clock) expires (Date. (+ (.getTime ^Date now) ttl-ms))
+        row (or (entity db :simmis.worker.assignment/id id) (refuse! ::missing "No such assignment"))]
+    (active-enrollment! db worker generation (:simmis.worker.assignment/room row) permitted?)
     (when-not (and (= worker (:simmis.worker.assignment/worker row))
                    (= generation (:simmis.worker.assignment/generation row)))
       (refuse! ::denied "Assignment belongs to another worker"))
@@ -189,24 +223,26 @@
           (quarantine row now) [])
         (refuse! ::conflict "Assignment already claimed or withdrawn; never reassign this Run")))))
 
-(defn claim!
+(defn claim-hashed!
   "An exclusive writer-serialized claim. Client nonce+secret are persisted
    locally first. Retries observe this owner, never extend an expired lease."
-  [conn id worker generation nonce secret now ttl-ms]
+  [conn id worker generation nonce hash now ttl-ms & [permitted?]]
   (when-not (and (every? uuid? [id worker nonce]) (pos-int? generation)
-                 (instance? Date now) (integer? ttl-ms) (<= 1000 ttl-ms 60000))
+                 (or (instance? Date now) (fn? now)) (integer? ttl-ms) (<= 1000 ttl-ms 60000)
+                 (string? hash) (re-matches #"[A-Za-z0-9_-]{43}=" hash))
     (refuse! ::invalid "Invalid claim"))
-  (let [hash (secret-hash secret)
-        lease (hasch/uuid [:simmis/worker-lease-v1 id worker generation nonce])]
+  (let [lease (hasch/uuid [:simmis/worker-lease-v1 id worker generation nonce])]
     (try
-      (d/transact conn [[:db.fn/call claim-tx id worker generation nonce hash lease now
-                         (Date. (+ (.getTime ^Date now) ttl-ms))]])
+      (d/transact conn [[:db.fn/call claim-tx id worker generation nonce hash lease now ttl-ms permitted?]])
       (catch Exception error
         (when (or (contains? #{::denied ::conflict ::missing ::invalid ::busy} (:type (ex-data error)))
                   (not (and (= nonce (:simmis.worker.assignment/nonce (assignment conn id)))
                             (= hash (:simmis.worker.assignment/secret-hash (assignment conn id))))))
           (throw error))))
     (assignment conn id)))
+
+(defn claim! [conn id worker generation nonce secret now ttl-ms]
+  (claim-hashed! conn id worker generation nonce (secret-hash secret) now ttl-ms))
 
 (defn- cancel-tx [db id now]
   (let [row (or (entity db :simmis.worker.assignment/id id) (refuse! ::missing "No such assignment"))]
@@ -226,47 +262,56 @@
   (d/transact conn [[:db.fn/call cancel-tx id now]])
   (assignment conn id))
 
-(defn- heartbeat-tx [db id lease hash now ttl-ms]
-  (let [row (owned! db id lease hash)
+(defn- heartbeat-tx [db id lease hash clock ttl-ms permitted?]
+  (let [now (instant clock) row (owned! db id lease hash)
         worker (entity db :simmis.worker/id (:simmis.worker.assignment/worker row))]
     (cond
       (:simmis.worker.assignment/stop-ack-at row) []
       (or (:simmis.worker.assignment/cancel-at row) (expired? row now)
           (:simmis.worker/revoked-at worker)
+          (and permitted? (not (permitted? db worker)))
           (not= (:simmis.worker/generation worker) (:simmis.worker.assignment/generation row)))
       (quarantine row now)
       :else (updates row {:simmis.worker.assignment/heartbeat-at now
                           :simmis.worker.assignment/expires-at (Date. (+ (.getTime ^Date now) ttl-ms))}))))
 
-(defn heartbeat!
+(defn heartbeat-hashed!
   "Authority layer must turn lost room permission into cancel!, not renewal.
    Expiry/revocation signals shutdown but never fabricates a stop ack."
-  [conn id lease secret now ttl-ms]
-  (when-not (and (instance? Date now) (integer? ttl-ms) (<= 1000 ttl-ms 60000))
+  [conn id lease hash now ttl-ms & [permitted?]]
+  (checked-hash! hash)
+  (when-not (and (or (instance? Date now) (fn? now)) (integer? ttl-ms) (<= 1000 ttl-ms 60000))
     (refuse! ::invalid "Invalid heartbeat"))
-  (d/transact conn [[:db.fn/call heartbeat-tx id lease (secret-hash secret) now ttl-ms]])
+  (d/transact conn [[:db.fn/call heartbeat-tx id lease hash now ttl-ms permitted?]])
   (assignment conn id))
+
+(defn heartbeat! [conn id lease secret now ttl-ms]
+  (heartbeat-hashed! conn id lease (secret-hash secret) now ttl-ms))
 
 (defn- stopped-tx [db id lease hash now]
   (let [row (owned! db id lease hash)]
     (if (:simmis.worker.assignment/stop-ack-at row) []
         (updates row {:simmis.worker.assignment/state :stopped :simmis.worker.assignment/stop-ack-at now}))))
 
-(defn acknowledge-stop!
+(defn acknowledge-stop-hashed!
   "Only the existing lease proof may report process-tree shutdown, even after
    enrollment revocation or expiry. This grants NO new input/output access."
-  [conn id lease secret now]
+  [conn id lease hash now]
+  (checked-hash! hash)
   (when-not (instance? Date now) (refuse! ::invalid "Invalid shutdown acknowledgement time"))
-  (d/transact conn [[:db.fn/call stopped-tx id lease (secret-hash secret) now]])
+  (d/transact conn [[:db.fn/call stopped-tx id lease hash now]])
   (assignment conn id))
 
-(defn- complete-tx [db id lease hash digest ref now]
-  (let [row (owned! db id lease hash)]
+(defn acknowledge-stop! [conn id lease secret now]
+  (acknowledge-stop-hashed! conn id lease (secret-hash secret) now))
+
+(defn- complete-tx [db id lease hash digest ref clock permitted?]
+  (let [now (instant clock) row (owned! db id lease hash)]
     (if-let [old (:simmis.worker.assignment/output-id row)]
       (do (when-not (= old digest) (refuse! ::conflict "Lease already published a different result")) [])
       (do
         (active-enrollment! db (:simmis.worker.assignment/worker row)
-                            (:simmis.worker.assignment/generation row) (:simmis.worker.assignment/room row))
+                            (:simmis.worker.assignment/generation row) (:simmis.worker.assignment/room row) permitted?)
         (when-not (and (= :claimed (:simmis.worker.assignment/state row))
                        (nil? (:simmis.worker.assignment/cancel-at row)) (not (expired? row now)))
           (refuse! ::denied "Lease is cancelled, expired or stopped; output cannot be admitted"))
@@ -275,21 +320,24 @@
         (updates row {:simmis.worker.assignment/state :completed :simmis.worker.assignment/output-id digest
                       :simmis.worker.assignment/output-ref ref :simmis.worker.assignment/stop-ack-at now})))))
 
-(defn complete!
+(defn complete-hashed!
   "Publish validated output only after the worker reports physical shutdown.
    Authority and file/byte limits belong to the host service; this transaction
    fences ownership/revocation/expiry and binds an immutable result digest."
-  [conn id lease secret output now]
-  (when-not (and (map? output) (roster/data-value? output) (instance? Date now))
+  [conn id lease hash output now & [permitted?]]
+  (checked-hash! hash)
+  (when-not (and (map? output) (roster/data-value? output) (or (instance? Date now) (fn? now)))
     (refuse! ::invalid "Invalid worker result"))
-  (let [digest (hasch/uuid [:simmis/worker-output-v1 output])
-        hash (secret-hash secret)]
+  (let [digest (hasch/uuid [:simmis/worker-output-v1 output])]
     (try
       (artifact/publish-value! (artifact/datahike-store conn) output
-                               (fn [ref] (d/transact conn [[:db.fn/call complete-tx id lease hash digest ref now]])))
+                               (fn [ref] (d/transact conn [[:db.fn/call complete-tx id lease hash digest ref now permitted?]])))
       (catch Exception error
-        (when-not (and (matches-secret? (:simmis.worker.assignment/secret-hash (assignment conn id)) secret)
+        (when-not (and (matches-hash? (:simmis.worker.assignment/secret-hash (assignment conn id)) hash)
                        (= lease (:simmis.worker.assignment/lease (assignment conn id)))
                        (= digest (:simmis.worker.assignment/output-id (assignment conn id))))
           (throw error))))
     (assignment conn id)))
+
+(defn complete! [conn id lease secret output now]
+  (complete-hashed! conn id lease (secret-hash secret) output now))

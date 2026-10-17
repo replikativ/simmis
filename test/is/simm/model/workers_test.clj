@@ -265,3 +265,40 @@
             (is (not-any? #{::timeout} results))
             (is (= 1 (count (filter #(= :claimed (:simmis.worker.assignment/state %)) results))))
             (is (= 1 (count (filter #(= :is.simm.model.workers/busy (:error %)) results))))))))))
+
+(deftest hashed-host-apis-refuse-plaintext-before-transaction-or-artifact-publication
+  (let [id (random-uuid) lease (random-uuid) raw (workers/new-secret)]
+    (with-redefs [d/transact (fn [& _] (throw (AssertionError. "must refuse before database")))
+                  artifact/publish-value! (fn [& _] (throw (AssertionError. "must refuse before artifact")))]
+      (doseq [operation [#(workers/claim-hashed! nil id (random-uuid) 1 (random-uuid) raw (Date.) 10000)
+                         #(workers/heartbeat-hashed! nil id lease raw (Date.) 10000)
+                         #(workers/acknowledge-stop-hashed! nil id lease raw (Date.))
+                         #(workers/complete-hashed! nil id lease raw {} (Date.))]]
+        (is (thrown? clojure.lang.ExceptionInfo (operation)))))))
+
+(deftest deadline-is-read-inside-the-serialized-writer-not-before-publication
+  (with-store
+    (fn [conn]
+      (let [{:keys [assignment secret lease]} (claimed conn)
+            inside (atom false) calls (atom 0) transact d/transact
+            clock (fn [] (is @inside) (swap! calls inc) (Date. 21000))]
+        (with-redefs [d/transact (fn [c tx]
+                                   (reset! inside true)
+                                   (try (transact c tx) (finally (reset! inside false))))]
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (workers/complete-hashed! conn (:id assignment) lease (workers/secret-hash secret)
+                                                 {:files {}} clock))))
+        (is (= 1 @calls))
+        (is (nil? (:simmis.worker.assignment/output-id (workers/assignment conn (:id assignment)))))))))
+
+(deftest worker-payload-reads-verify-identity-instead-of-falling-back-to-live-data
+  (with-store
+    (fn [conn]
+      (let [{:keys [assignment enrollment row secret lease]} (claimed conn)]
+        (workers/complete! conn (:id assignment) lease secret {:files {}} (Date. 11000))
+        (with-redefs [artifact/get-value (fn [& _] {:substituted true})]
+          (doseq [[row field] [[(workers/enrollment conn (:id enrollment)) :simmis.worker/config-ref]
+                               [row :simmis.worker.assignment/input-ref]
+                               [(workers/assignment conn (:id assignment)) :simmis.worker.assignment/output-ref]]]
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo #"immutable identity"
+                                  (workers/payload conn row field)))))))))

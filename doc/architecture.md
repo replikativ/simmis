@@ -72,6 +72,12 @@ worker; it is cooperative trusted-operator execution, not hard process isolation
 Optional reference/damaged-answer calibration runs on the owned world-setup
 worker before each candidate; answers remain outside its workspace and do not
 promote checker trust.
+Local-worker transport lives separately in `ops/worker-service.clj` and
+`ops/worker-api.clj`, backed by typed enrollment/assignment records. Its six
+narrow operations use separate worker credentials, immutable selected-file
+inputs and bounded output receipts. Application startup does not install
+these bindings or enable worker authentication. Completion alone never
+imports files or certifies a Run. See [data-model.md](data-model.md).
 Recorded Attempt evidence is distinct from mutable workspace files. See
 [authority.md](authority.md#private-mcp).
 Read-only current-workspace Git bundles use Geschichte's Git object/pack

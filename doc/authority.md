@@ -272,6 +272,16 @@ exchange, not acceptance of web tokens by MCP.
 
 ### Conversation and bounded work
 
+The separate local-worker service is not enabled by application startup.
+When explicitly installed by an embedding host, its enrollment and lease
+credentials can invoke only their respective worker transport operations,
+never human room/eval/authoring operations. Existing HTTP sessions recheck
+current room read/merge authority on every operation. Claim and completion
+also recheck it in the serialized writer transaction. A revoked or expired
+lease retains only cancellation/physical-stop signaling, not input or output
+access. Immutable completion records a worker shutdown assertion and bounded
+files; it grants no import, Attempt certification or merge authority.
+
 Workflow authoring uses ordinary versioned Geschichte files under
 `workflows/<name>/`. `simmis_workflow-write` requires current room `:write`
 permission and accepts one atomic edit batch, limited to 100 files, 512 KiB per
