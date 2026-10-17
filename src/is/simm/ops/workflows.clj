@@ -22,9 +22,27 @@
    [:files [:map-of {:min 1 :max max-files}
             [:string {:min 1 :max 512}]
             [:maybe [:string {:max max-file-bytes}]]]]])
+(def transport-write-schema
+  [:map {:closed true}
+   [:name name-schema]
+   [:files [:map-of {:min 1 :max max-files}
+            [:or [:string {:min 1 :max 512}] :keyword]
+            [:maybe [:string {:max max-file-bytes}]]]]])
 
 (defn- invalid! [message]
   (throw (ex-info message {:type ::invalid})))
+
+(defn transport-write
+  "Dvergr HTTP keywordizes JSON object keys, including filenames. Normalize
+   only those keys; the internal write path still applies its strict schema."
+  [input]
+  (when-not (m/validate transport-write-schema input) (invalid! "Invalid workflow edits"))
+  (update input :files
+          (fn [files]
+            (reduce-kv (fn [out key value]
+                         (let [path (if (keyword? key) (subs (str key) 1) key)]
+                           (when (contains? out path) (invalid! "Duplicate workflow filename"))
+                           (assoc out path value))) {} files))))
 
 (defn- prefix! [name]
   ;; re-matches also rejects a trailing newline (Java's $ alone need not).

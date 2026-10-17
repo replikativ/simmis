@@ -9,6 +9,15 @@
             [org.replikativ.spindel.engine.core :as ec]))
 
 (def principal {:principal/id "party/fixture-author"})
+
+(deftest transport-preserves-directory-and-unicode-filenames-and-refuses-duplicates
+  (let [path "fixtures/资料/输入.md"
+        input {:name "echo" :files {(keyword path) "input"}}]
+    (is (= {path "input"} (:files (workflows/transport-write input))))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (workflows/transport-write (assoc-in input [:files path] "duplicate")))))
+  (is (thrown? clojure.lang.ExceptionInfo
+               (workflows/transport-write {:name "echo" :files {"workflow.edn" "{}"} :eval true}))))
 (def fixture
   {"workflow.edn" "{:title \"Echo document\" :task \"Read /docs/input.md and write /out/result.md\" :capture [\"/out\"]}"
    "checker.clj" "(throw (ex-info \"This must NOT execute during shape validation\" {}))"
@@ -114,16 +123,16 @@
             (is (thrown? clojure.lang.ExceptionInfo (workflows/snapshot room "echo"))))))
       (with-redefs [content/read-by-id (fn [& _] (byte-array [(unchecked-byte 0xC3)]))
                     query/worktree (fn [_] {"workflows/echo/invalid.txt"
-                                           {:mode 0x81A4 :size 1 :content (random-uuid)}})]
+                                            {:mode 0x81A4 :size 1 :content (random-uuid)}})]
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"valid UTF-8"
-                     (workflows/snapshot room "echo")))))))
+                              (workflows/snapshot room "echo")))))))
 
 (deftest snapshot-bounds-are-checked-before-reading-content
   (with-workspace
     (fn [room]
       (doseq [entries [(into {} (for [i (range (inc workflows/max-files))]
-                                 [(str "workflows/echo/" i)
-                                  {:mode 0x81A4 :size 0 :content (random-uuid)}]))
+                                  [(str "workflows/echo/" i)
+                                   {:mode 0x81A4 :size 0 :content (random-uuid)}]))
                        (into {} (for [i (range 5)]
                                   [(str "workflows/echo/" i)
                                    {:mode 0x81A4 :size workflows/max-file-bytes :content (random-uuid)}]))]]

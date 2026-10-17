@@ -31,7 +31,7 @@
    [:content [:string {:min 1 :max 16000}]]
    [:in-reply-to {:optional true} uuid-string]])
 
-(def workflow-write-schema (external-schema workflows/write-schema))
+(def workflow-write-schema (external-schema workflows/transport-write-schema))
 (def workflow-check-schema [:map {:closed true} room-entry [:name workflows/name-schema]])
 (def bundle-schema [:map {:closed true} room-entry])
 (def bundle-chunk-schema
@@ -110,7 +110,7 @@
     :impl (fn [host args]
             (checked! workflow-write-schema args)
             (guarded host #(let [[_ _ room] (room! host (:room args))]
-                             (workflows/write! room ops/*principal* (dissoc args :room)))))}
+                             (workflows/write! room ops/*principal* (workflows/transport-write (dissoc args :room))))))}
    :simmis/workflow-check
    {:kind :read :schema workflow-check-schema :authz {:action :read}
     :doc "Inspect one pinned current workflow bundle (max100 files/2MiB). Returns its content id and structural problems. This NEVER executes checker.clj or calibration; no answer/eval argument is accepted. Use this bundle id when launching a benchmark."

@@ -7,6 +7,7 @@
             [dvergr.agent.experiment.runner :as runner]
             [dvergr.agent.workflow :as workflow]
             [dvergr.mcp.json-rpc :as rpc]
+            [dvergr.mcp.http :as http]
             [dvergr.mcp.server :as server]
             [dvergr.mcp.surface :as surface]
             [dvergr.resource :as resource]
@@ -25,7 +26,8 @@
             [is.simm.ops.workflows-test :as workflow-fixture]
             [is.simm.runtimes.auth-config :as auth]
             [is.simm.runtimes.mcp :as mcp]
-            [jsonista.core :as json]))
+            [jsonista.core :as json]
+            [org.httpkit.client :as client]))
 
 (defn- session [party mode]
   (let [principal ((mcp/authenticator) {:bearer (:token (mcp/mint-token! party mode))})
@@ -46,6 +48,59 @@
 (defn- value [response]
   (is (not (refused? response)))
   (json/read-value (get-in response [:result :content 0 :text]) json/keyword-keys-object-mapper))
+
+(defn- http-message [port token sid id method params]
+  (let [response @(client/post (str "http://127.0.0.1:" port "/mcp")
+                               {:timeout 10000
+                                :headers (cond-> {"Authorization" (str "Bearer " token)
+                                                  "Content-Type" "application/json"
+                                                  "MCP-Protocol-Version" "2025-06-18"}
+                                           sid (assoc "Mcp-Session-Id" sid))
+                                :body (json/write-value-as-string
+                                       (cond-> {:jsonrpc "2.0" :method method :params params}
+                                         id (assoc :id id)))})]
+    (is (nil? (:error response)))
+    {:status (:status response) :sid (get-in response [:headers :mcp-session-id])
+     :rpc (when (seq (:body response)) (json/read-value (:body response) json/keyword-keys-object-mapper))}))
+
+(deftest actual-http-workflow-authoring-preserves-paths-and-live-room-authority
+  (world/with-world [conn w]
+    (@#'is.simm.ops.work-test/with-room
+     (fn [room]
+       (let [slug (store/room-id->slug (:id room)) path "fixtures/资料/输入.md"
+             input {:room slug :name "echo" :files (assoc workflow-fixture/fixture path "Unicode input")}]
+         (workspace/ensure-workspace! room)
+         (d/transact conn [{:room/id (:room w) :room/slug slug}])
+         (server/set-host! (ops/host (:ctx room)))
+         (try
+           (api/install!)
+           (with-redefs [auth/get-auth-config (constantly {:jwt {:secret "mcp-http-workflow-test"}})]
+             (let [transport (http/start! {:port 0 :bind "127.0.0.1" :profile :admin :toolsets #{:host}
+                                           :authenticate (mcp/authenticator)})
+                   port (:port transport) token (:token (mcp/mint-token! (:owner w) :work))]
+               (try
+                 (let [opened (http-message port token nil 1 "initialize"
+                                            {:protocolVersion "2025-06-18" :capabilities {}
+                                             :clientInfo {:name "workflow-http-fixture" :version "1"}})
+                       sid (:sid opened)]
+                   (is sid)
+                   (http-message port token sid nil "notifications/initialized" {})
+                   (let [written (value (:rpc (http-message port token sid 2 "tools/call"
+                                                            {:name "simmis_workflow-write" :arguments input})))]
+                     (is (get-in written [:write :commit]))
+                     (is (true? (get-in written [:workflow :ok])))
+                     (is (false? (get-in written [:workflow :checker-executed?]))))
+                   (is (= "Unicode input" (get (:files (workflows/snapshot room "echo")) path)))
+                   (value (:rpc (http-message port token sid 3 "tools/call"
+                                              {:name "simmis_workflow-write" :arguments (assoc input :files {path nil})})))
+                   (is (not (contains? (:files (workflows/snapshot room "echo")) path)))
+                   (d/transact conn [[:db/retract [:room/id (:room w)] :room/parties [:party/id (:owner w)]]
+                                     [:db/add [:room/id (:room w)] :room/owner [:party/id (:non-member w)]]])
+                   (is (refused? (:rpc (http-message port token sid 4 "tools/call"
+                                                     {:name "simmis_workflow-write" :arguments input}))))
+                   (is (not (contains? (:files (workflows/snapshot room "echo")) path))))
+                 (finally ((:stop transport))))))
+           (finally (api/uninstall!) (server/set-host! nil))))))))
 
 (deftest workspace-bundles-recheck-read-authority-and-credential-ceilings
   (world/with-world [conn w]

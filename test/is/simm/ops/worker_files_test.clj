@@ -17,6 +17,10 @@
 (deftest transport-filenames-preserve-namespaces-and-refuse-duplicate-normalization
   (let [output {:files {:out/result.md (encoded "answer")} :summary "done" :exit-code 0}]
     (is (= {"out/result.md" (encoded "answer")} (:files (files/transport-output output))))
+    (let [path "out/资料/输入.md"
+          normalized (files/transport-output (assoc output :files {(keyword path) (encoded "Unicode")}))]
+      (is (= #{path} (set (keys (:files normalized)))))
+      (is (= normalized (files/validate-output! {:files {}} normalized))))
     (is (thrown? clojure.lang.ExceptionInfo
                  (files/transport-output (assoc-in output [:files "out/result.md"] (encoded "other")))))))
 
