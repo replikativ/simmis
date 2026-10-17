@@ -23,11 +23,15 @@
   (fn [f]
     (with-redefs [auth/get-auth-config (constantly {:jwt {:secret "test-mcp-signing-key"}})
                   parties/get-party (fn [id] (when (= person id) {:party/id id :party/type :human}))]
-      (try
-        (results/install!)
-        (work-api/install!)
-        (f)
-        (finally (work-api/uninstall!) (results/uninstall!))))))
+      ;; Lifecycle tests own a listener cell. Running them in a development
+      ;; REPL must neither reuse nor stop that process's real MCP listener.
+      (with-redefs-fn {#'mcp/listener (atom nil)}
+        (fn []
+          (try
+            (results/install!)
+            (work-api/install!)
+            (f)
+            (finally (work-api/uninstall!) (results/uninstall!))))))))
 
 (deftest only-mcp-credentials-for-an-existing-human-authenticate
   (let [authenticate (mcp/authenticator)

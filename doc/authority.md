@@ -229,7 +229,8 @@ same one-hour read capability by default. A closed JSON body may choose only
 or arbitrary scopes. Empty bodies retain read access. Version-two work credentials
 carry signed `mode=work` and an exact ceiling of the selected reads plus
 `simmis_post`, `simmis_task`, `simmis_work-allowance`, `simmis_work-status` and
-`job_cancel`. Old credentials and saved client sessions do not gain writes.
+`job_cancel`, `simmis_workflow-write` and `simmis_workflow-check`. Old credentials
+and saved client sessions do not gain writes or newly added tool names.
 only the authenticated existing human may obtain their own credential. It
 refuses agent/deleted accounts, cookie-only requests and disabled MCP, and its
 response is `Cache-Control: no-store`. The exchange is on the web server;
@@ -237,6 +238,20 @@ the MCP protocol listener remains private. This is an explicit credential
 exchange, not acceptance of web tokens by MCP.
 
 ### Conversation and bounded work
+
+Workflow authoring uses ordinary versioned Geschichte files under
+`workflows/<name>/`. `simmis_workflow-write` requires current room `:write`
+permission and accepts one atomic edit batch, limited to 100 files, 512 KiB per
+file and 2 MiB per batch. It cannot edit the room-root `AGENTS.md` or paths
+outside that bundle. A workflow may include its own fixture instructions.
+`simmis_workflow-check` requires room `:read` permission but is deliberately
+available only through an explicitly selected work credential, not the existing
+read-only tool ceiling. Both return structural inspection without evaluating
+checker source or calibration. Inspection reads one immutable worktree manifest
+and pinned content hashes, capped at 100 regular UTF-8 files and 2 MiB.
+A successful write remains acknowledged even if the resulting bundle is
+incomplete or inspection fails. The returned bundle content ID identifies the
+inspected revision; it is not a correctness certificate or execution admission.
 
 `simmis_post` uses the same `ops/chat.clj` dispatch as the browser, authenticated
 as the human account, with the room's existing `:write` permission, recipient
