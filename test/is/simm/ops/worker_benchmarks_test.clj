@@ -35,6 +35,21 @@
    :expected-bundle (:id (catalog/bundle "echo" source)) :repetitions 1
    :limits (assoc file-fixture/limits :settlement "discard")})
 
+(deftest local-worker-benchmarks-cannot-bypass-evaluation-splits
+  (let [source (assoc source "benchmark.edn"
+                     "{:version 1 :splits {:development [\"a\"] :held-out [\"b\"]}}")
+        request (assoc (input (random-uuid)) :expected-bundle (:id (catalog/bundle "echo" source)))
+        prepare #(local-benchmarks/prepare {:files source} % file-fixture/config
+                                           {:simmis.worker/generation 1 :simmis.worker/config-id (random-uuid)})]
+    (is (thrown? clojure.lang.ExceptionInfo (prepare request)))
+    (is (thrown? clojure.lang.ExceptionInfo (prepare (assoc request :split "development" :cases ["b"]))))
+    (let [result (prepare (assoc request :split "development"))]
+      (is (= {:adapter :local-sci-worker :program :protocol :model (:model file-fixture/config)}
+             (get-in result [:plan :experiment :experiment/metadata :simmis/execution])))
+      (is (= #{"a"} (set (map :case (vals (get-in result [:basis :frozen]))))))
+      (is (= ["a"] (get-in result [:plan :experiment :experiment/metadata :simmis/evaluation :cases])))
+      (is (= "development" (get-in result [:plan :experiment :experiment/metadata :simmis/evaluation :split]))))))
+
 (deftest preparation-keeps-private-benchmark-material-out-of-all-worker-inputs
   (let [request (input (random-uuid))
         snapshot {:files source}

@@ -31,6 +31,16 @@ def reply(arguments):
 
 
 class DriverTest(unittest.TestCase):
+    def test_benchmark_cli_preserves_explicit_evaluation_split(self):
+        args = ["worker_driver.py", "--state", "/private/fixture-worker", "--session", "/private/session",
+                "benchmark", "--request-id", str(uuid.uuid4()), "--name", "echo",
+                "--expected-bundle", str(uuid.uuid4()), "--split", "development"]
+        with patch.object(sys, "argv", args), \
+                patch.object(driver, "state_root", return_value=Path("/private/fixture-worker")), \
+                patch.object(driver, "operate", return_value={}) as operate, patch("sys.stdout", new_callable=io.StringIO):
+            driver.main()
+            self.assertEqual("development", operate.call_args.args[3]["split"])
+
     def test_benchmark_cli_is_explicit_serial_discard_only_and_finite(self):
         request, bundle = str(uuid.uuid4()), str(uuid.uuid4())
         args = ["worker_driver.py", "--state", "/private/fixture-worker", "--session", "/private/session",

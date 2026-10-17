@@ -119,6 +119,9 @@
                                         (if (= mode "benchmark") "Wall time per cell: " "Wall time: ")
                                         (get-in payload [:limits :timeout-ms]) " ms"
                                         (when (= backend "local") " (includes cold startup)") ".\n"
+                                        (when-let [split (:split payload)]
+                                          (str "Evaluation split: " split
+                                               (when (= split "held-out") " — acceptance evaluation, not prompt tuning") ".\n"))
                                         (if (= mode "benchmark")
                                           "Operator benchmark: executes the saved checker, uses saved parameter defaults and discards candidate worlds."
                                           (if (= backend "local")

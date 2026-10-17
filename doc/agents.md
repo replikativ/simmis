@@ -250,7 +250,26 @@ the pinned workflow source and fixture/input overlays, not all room files.
 Authored checkers are not executed by this ordinary workflow control.
 
 To measure that workflow, an installation operator with current room read/merge
-authority can use the separate bounded benchmark control:
+authority can use the separate bounded benchmark control.
+
+A workflow may declare `benchmark.edn` with a versioned case partition, for
+example `{:version 1 :splits {:development ["example"] :held-out ["acceptance"]}}`.
+Every named case must occur exactly once; development is required. Such bundles
+require an explicit `split` in benchmark requests (`--split` in the local driver).
+Omitted cases expand only within that split; cross-split selections fail before
+provider preparation. The editor defaults to development, clears the case when
+switching splits, and identifies held-out submissions in confirmation. Legacy
+bundles without this file keep their original behavior. This is an experiment
+protocol, not an access-control barrier against the workflow's human author.
+Experiment metadata records the split, selected cases and a dataset identity
+covering the partition, fixtures and gold. Workflow and evaluator identities
+remain separately pinned. The example in `examples/workflows/market-discovery-eval`
+includes real vendor-documentation excerpts, a source-disjoint held-out group,
+negative calibration examples and a human review rubric. Its automated score
+does not measure market viability; correlated cases are not independent samples.
+The completed leaderboard shows the frozen split and dataset identity alongside
+the workflow bundle; its tooltip lists the selected cases. No split is invented
+for older experiments.
 
 ```bash
 /usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
@@ -259,7 +278,7 @@ authority can use the separate bounded benchmark control:
   --case CASE_NAME --repetitions 1 --timeout-ms 300000
 ```
 
-Omit `--case` for all cases (at most four); repeat it to select cases. One or
+Omit `--case` for all cases in the selected split (at most four); repeat it to select cases. One or
 two repetitions allow at most eight serial cells. Fund the required admissions
 explicitly before submission; this command never funds or retries work. Run the
 local driver once per queued cell. Each cell is discarded after evaluation.

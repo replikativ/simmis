@@ -17,6 +17,8 @@
                         {:list (boolean (get-in state [:loading :list]))} [:source :save :submit :fund])
         write? (:write? permissions) merge? (:merge? permissions)
         benchmark? (= "benchmark" (:mode form))
+        display-cases (if benchmark? (editor/benchmark-cases (:inspection source) form)
+                          (get-in source [:inspection :cases]))
         local? (editor/local? form)
         funded-here? (and (:funded? draft) (= (:fund-backend draft "hosted") (:backend form "hosted")))
         change #(apply (:change actions) selected %&)
@@ -130,12 +132,20 @@
                                                           (el/select {:value (:mode form) :on-change (fn [e] (set-form :mode #?(:cljs (.. e -target -value) :clj "run")))}
                                                                      (el/option {:value "run"} "Ordinary Run")
                                                                      (when (:operator? permissions) (el/option {:value "benchmark"} "Operator benchmark"))))
-                                                (when (seq (get-in source [:inspection :cases]))
+                                                (when (and benchmark? (get-in source [:inspection :evaluation]))
+                                                  (el/label {:class "workflow-field"}
+                                                            (el/span {} "Evaluation split")
+                                                            (el/select {:value (get form :split "development")
+                                                                        :on-change (fn [e] (set-form :split #?(:cljs (.. e -target -value) :clj "development")))}
+                                                                       (for [split ["development" "validation" "held-out"]
+                                                                             :when (get-in source [:inspection :evaluation :splits (keyword split)])]
+                                                                         (el/option {:key split :value split} split)))))
+                                                (when (seq display-cases)
                                                   (el/label {:class "workflow-field"}
                                                             (el/span {} "Case")
                                                             (el/select {:value (:case form) :on-change (fn [e] (set-form :case #?(:cljs (.. e -target -value) :clj "")))}
-                                                                       (el/option {:value ""} (if benchmark? "All cases (up to4)" "Choose a case"))
-                                                                       (for [case (get-in source [:inspection :cases])]
+                                                                       (el/option {:value ""} (if benchmark? "All selected-split cases (up to4)" "Choose a case"))
+                                                                       (for [case display-cases]
                                                                          (el/option {:key case :value case} case)))))
                                                 (for [[name value] (:params form)]
                                                   (field (str "Parameter · " name) (str value) #(change assoc-in [:form :params name] %)))

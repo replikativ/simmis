@@ -34,6 +34,16 @@
 
 (def ^:private cases 8)
 
+(deftest evaluation-projection-only-exposes-bounded-frozen-provenance
+  (let [info {:id (str (random-uuid)) :version 1 :split "development" :cases ["a" "b"]}
+        project #(@#'experiments/evaluation-info {:experiment/metadata {:simmis/evaluation %}})]
+    (is (= info (project (assoc info :private "not public"))))
+    (doseq [bad [nil (assoc info :id "not-a-uuid") (assoc info :split "secret")
+                 (assoc info :cases ["a" "a"]) (assoc info :cases [])
+                 (assoc info :cases [(apply str (repeat 101 "x"))])
+                 (assoc info :version 2)]]
+      (is (nil? (project bad))))))
+
 (deftest completeness-flags-survive-both-leaderboard-projections
   (let [flags {:priced? false :notional-priced? false :usage-reported? false
                :unpriced-attempts 1 :unreported-attempts 1}]
@@ -78,7 +88,9 @@
                      :candidates [(roster/agent team :right) (roster/agent team :wrong)]
                      :repetitions 1
                      :metadata {:simmis/workflow {:name "saved-review" :title "Frozen review title"
-                                                  :bundle "12345678-1234-1234-1234-123456789abc"}}})
+                                                  :bundle "12345678-1234-1234-1234-123456789abc"}
+                                :simmis/evaluation {:id "87654321-4321-4321-4321-cba987654321"
+                                                    :version 1 :split "held-out" :cases ["acceptance"]}}})
         room (d/make-room {:id :simmis-experiments-test :store (memory/make)})]
     (try
       (binding [ec/*execution-context* (:ctx room)]
@@ -100,6 +112,9 @@
             [e :as es] experiments]
         (is (= 1 (count es)))
         (is (= 0 running))
+        (is (= {:id "87654321-4321-4321-4321-cba987654321"
+                :version 1 :split "held-out" :cases ["acceptance"]}
+               (:evaluation e)))
         (testing "the Scorecard's leaderboard, in dvergr's order"
           (is (true? (:complete? e)))
           (is (= "simmis-test/exp" (:experiment-id e)))

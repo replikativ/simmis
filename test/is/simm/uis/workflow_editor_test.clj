@@ -6,6 +6,18 @@
              :definition {:params {:goal "old default"}}
              :inspection {:ok true :bundle "bundle" :cases []}})
 
+(deftest benchmark-split-selection-does-not-implicitly-include-held-out-cases
+  (let [source (assoc source :inspection {:ok true :bundle "bundle" :cases ["a" "b"]
+                                         :evaluation {:splits {:development ["a"] :held-out ["b"]}}})
+        draft (-> (editor/draft source) (assoc-in [:form :mode] "benchmark")
+                  (assoc-in [:form :model] "explicit-model"))]
+    (is (= ["a"] (:cases (editor/submission draft "dev"))))
+    (is (= "development" (:split (editor/submission draft "dev"))))
+    (is (= ["b"] (:cases (editor/submission (assoc-in draft [:form :split] "held-out") "held"))))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (editor/submission (assoc-in draft [:form :case] "b") "wrong")))
+    (is (= "" (:case (editor/set-form-field (assoc (:form draft) :case "a") :split "held-out"))))))
+
 (deftest backend-default-timeouts-never-replace-explicit-or-legacy-values
   (let [hosted editor/defaults
         local (editor/set-form-field hosted :backend "local")]

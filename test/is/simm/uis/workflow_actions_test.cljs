@@ -35,6 +35,29 @@
             (f (actions/controller {:room-id "room"}) k))))
       (finally (context/close-context! ctx)))))
 
+(deftest benchmark-confirmation-and-retry-retain-the-selected-evaluation-split
+  (with-state
+    (fn [ui k]
+      (let [requests (atom []) confirmations (atom [])]
+        (with-redefs [remote/submit-workflow-benchmark! (deferred requests)
+                      actions/confirm! (fn [text] (swap! confirmations conj text) true)]
+          ((:change ui) "a" assoc-in [:source :inspection :cases] ["dev" "held"])
+          ((:change ui) "a" assoc-in [:source :inspection :evaluation]
+           {:splits {:development ["dev"] :held-out ["held"]}})
+          ((:change ui) "a" assoc-in [:form :model] "fixture/model")
+          ((:change ui) "a" assoc-in [:form :mode] "benchmark")
+          ((:change ui) "a" assoc-in [:form :split] "held-out")
+          ((:submit ui) "a" false)
+          (let [payload (last (:args (first @requests)))]
+            (is (= "held-out" (:split payload)))
+            (is (= ["held"] (:cases payload)))
+            (is (.includes (first @confirmations) "Evaluation split: held-out"))
+            ((:error (first @requests)) :connection-lost)
+            ((:change ui) "a" assoc-in [:form :split] "development")
+            ((:submit ui) "a" true)
+            (is (= payload (last (:args (second @requests)))))
+            (is (= 1 (count @confirmations)))))))))
+
 (deftest source-reload-completes-its-own-cache-after-selection-changes
   (with-state
     (fn [ui k]

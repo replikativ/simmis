@@ -57,6 +57,27 @@
   (with-redefs [workflow/candidates candidates runner/runtime-identity (constantly {:libraries {}})]
     (benchmarks/prepare (snapshot files) request)))
 
+(deftest declared-dataset-splits-are-enforced-and-frozen-in-experiment-metadata
+  (let [files (assoc fixture/fixture
+                     "cases/a/gold.edn" "{:expected 1}"
+                     "cases/b/gold.edn" "{:expected 2}"
+                     "benchmark.edn" "{:version 1 :splits {:development [\"a\"] :held-out [\"b\"]}}")
+        request (input files)]
+    (doseq [bad [request (assoc request :split "development" :cases ["b"])
+                 (assoc request :split "held-out" :cases ["a"])]]
+      (with-redefs [workflow/candidates (fn [& _] (throw (AssertionError. "No provider preparation before split validation")))]
+        (is (thrown? clojure.lang.ExceptionInfo (benchmarks/prepare (snapshot files) bad)))))
+    (let [result (prepared files (assoc request :split "development"))
+          data (get-in result [:plan :experiment :experiment/metadata :simmis/evaluation])]
+      (is (= 1 (:cells result)))
+      (is (= "development" (:split data)))
+      (is (= ["a"] (:cases data)))
+      (is (= {:adapter :native-provider :program :llm}
+             (get-in result [:plan :experiment :experiment/metadata :simmis/execution])))
+      (is (string? (:id data)))
+      (is (= ["a"] (mapv #(get-in % [:environment/metadata :case])
+                          (get-in result [:plan :environments])))))))
+
 (defn echo-prepared [files request]
   (let [base (prepared files request)
         [_ echo] (@#'is.simm.ops.work-test/fixture)

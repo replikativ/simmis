@@ -236,6 +236,8 @@ def main():
     benchmark.add_argument("--name", required=True)
     benchmark.add_argument("--expected-bundle", required=True, help="Exact inspected workflow bundle UUID")
     benchmark.add_argument("--case", action="append", default=[], help="Select up to four distinct case names")
+    benchmark.add_argument("--split", choices=["development", "validation", "held-out"],
+                           help="Required for workflows declaring benchmark.edn evaluation splits")
     benchmark.add_argument("--repetitions", type=int, default=1, help="One or two repetitions; at most eight cells total")
     benchmark.add_argument("--timeout-ms", type=int, default=300000)
     commands.add_parser("revoke")
@@ -292,6 +294,8 @@ def main():
                   "limits": {"timeout-ms": args.timeout_ms, "settlement": "discard"}}
         if args.case:
             fields["cases"] = args.case
+        if args.split:
+            fields["split"] = args.split
         result = operate(root, args.session, "benchmark", fields)
     else:
         result = operate(root, args.session, "revoke", {})

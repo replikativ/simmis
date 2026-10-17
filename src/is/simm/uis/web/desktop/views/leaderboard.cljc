@@ -193,13 +193,20 @@
         "\"No detectable difference\" is not \"equal\": more cases, or cases where the candidates differ, can still separate them."))))
 
 (defn- experiment-section
-  [{:keys [experiment experiment-id workflow complete? candidates paired cells environments repetitions verifier-trust] :as result}]
+  [{:keys [experiment experiment-id workflow evaluation complete? candidates paired cells environments repetitions verifier-trust] :as result}]
   (el/section {:key (str experiment) :class "attempt-board-experiment" :data-experiment experiment}
     (el/div {:class "attempt-board-experiment-title"}
       (el/span {:class "leaderboard-experiment-name" :title experiment-id} (lb/experiment-label result))
       (when workflow
         (el/span {:class "run-history-id" :title (str "Frozen workflow " (:name workflow) "; bundle " (:bundle workflow))}
           (str (:name workflow) " · bundle " (short-id (:bundle workflow)))))
+      (when evaluation
+        (el/span {:class "run-history-id"
+                  :title (str "Frozen dataset " (:id evaluation) "; cases: "
+                              (str/join ", " (:cases evaluation))
+                              (when (= "held-out" (:split evaluation))
+                                "; acceptance evaluation, not prompt tuning"))}
+          (str (:split evaluation) " · dataset " (short-id (:id evaluation)))))
       (el/span {:class "run-history-id" :title (str "ExperimentDef " experiment)} (short-id experiment))
       (el/span {} (str cells " cells"
                        (when environments (str " · " environments " cases"))

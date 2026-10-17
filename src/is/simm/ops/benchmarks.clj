@@ -13,6 +13,7 @@
             [is.simm.model.access :as access]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.checkers :as checkers]
+            [is.simm.ops.benchmark-dataset :as dataset]
             [is.simm.ops.work :as work]
             [is.simm.ops.work-sandbox :as work-sandbox]
             [is.simm.ops.workflows :as workflows]
@@ -37,6 +38,7 @@
    [:expected-bundle :uuid]
    [:models [:vector {:min 1 :max 3} [:string {:min 1 :max 200}]]]
    [:repetitions [:int {:min 1 :max 2}]]
+   [:split {:optional true} dataset/split-schema]
    [:cases {:optional true} [:vector {:min 1 :max 4} [:string {:min 1 :max 100}]]]
    [:limits work/limits-schema]])
 
@@ -71,7 +73,8 @@
   (let [bundle (catalog/bundle name (:files snapshot))
         definition (:definition bundle)
         all-cases (set (keys (:cases bundle)))
-        selected (or cases (vec (sort all-cases)))
+        selection (dataset/select-cases (:files snapshot) all-cases input)
+        selected (:cases selection)
         cell-count (* (count models) repetitions (max 1 (count selected)))
         dollars (quot (:budget-microdollars limits) cell-count)
         dispatches (quot (:max-dispatches limits) cell-count)]
@@ -124,7 +127,10 @@
                       (assoc plan :id (keyword (str "request-" (:request-id input)))
                              :repetitions repetitions
                              :metadata (merge (runner/runtime-identity models)
+                                              (when-let [data (:metadata selection)]
+                                                {:simmis/evaluation data})
                                               {:checker-policy checkers/policy
+                                               :simmis/execution {:adapter :native-provider :program :llm}
                                                :worker-sandbox work-sandbox/policy
                                                :simmis/workflow {:name name
                                                                  :title (some-> (:title definition) (subs 0 (min 256 (count (:title definition)))))
