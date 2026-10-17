@@ -21,6 +21,23 @@ the existing Attempt evidence, not a separate calibration database.
 Restart recovery retires settled fixtures even if the wallet-return write
 completed immediately before a process crash.
 
+`model/workers.clj` declares the host control-plane vocabulary for separately
+enrolled local workers and external assignment ownership. Enrollment records
+hold the enrolling party/room, generation, credential verifier hash and a
+GC-tracked immutable configuration. Assignment identities are the existing Run
+UUIDs and link to the request, Job, selected worker and frozen input artifact.
+Writer-serialized claims bind one client nonce and lease proof hash; the same
+Run is never reassigned after expiry or cancellation. Plaintext credential and
+lease proofs never enter database transaction arguments.
+
+These assignment states are transport receipts, not another execution model.
+Expiry/revocation quarantines ownership without inventing physical shutdown;
+only withdrawal before a successful claim, or an existing lease's explicit
+shutdown acknowledgement, records that boundary. Completed output binds one
+immutable digest and the worker's shutdown assertion. This is an enrolled
+worker's assertion, not independent proof about a remote process. This model is
+host-only: it exposes no worker network endpoint or new sandbox capability.
+
 ## Objects, morphisms, instances
 
 The model is a category, called **S**, stored as ordinary Datahike entities.

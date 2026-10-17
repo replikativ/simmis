@@ -25,6 +25,7 @@
             [dvergr.substrate.paths :as paths]
             [dvergr.system.db :as sdb]
             [is.simm.model.work-requests :as work-requests]
+            [is.simm.model.workers :as workers]
             [taoensso.telemere :as log]))
 
 ;; =============================================================================
@@ -709,7 +710,7 @@
 
 (def schema
   "Simmis control-plane extension attributes, including host work admission."
-  (into core-schema work-requests/schema))
+  (into core-schema (concat work-requests/schema workers/schema)))
 
 ;; =============================================================================
 ;; Migration: lift legacy :party/* rows onto the dvergr actor core
