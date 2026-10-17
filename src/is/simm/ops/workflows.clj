@@ -7,6 +7,7 @@
             [dvergr.substrate.geschichte :as workspace]
             [geschichte.content :as content]
             [geschichte.query :as query]
+            [hasch.core :as hasch]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.nio ByteBuffer]
@@ -19,12 +20,14 @@
 (def write-schema
   [:map {:closed true}
    [:name name-schema]
+   [:expected-revision {:optional true} :uuid]
    [:files [:map-of {:min 1 :max max-files}
             [:string {:min 1 :max 512}]
             [:maybe [:string {:max max-file-bytes}]]]]])
 (def transport-write-schema
   [:map {:closed true}
    [:name name-schema]
+   [:expected-revision {:optional true} [:string {:min 36 :max 36}]]
    [:files [:map-of {:min 1 :max max-files}
             [:or [:string {:min 1 :max 512}] :keyword]
             [:maybe [:string {:max max-file-bytes}]]]]])
@@ -37,12 +40,15 @@
    only those keys; the internal write path still applies its strict schema."
   [input]
   (when-not (m/validate transport-write-schema input) (invalid! "Invalid workflow edits"))
-  (update input :files
-          (fn [files]
-            (reduce-kv (fn [out key value]
-                         (let [path (if (keyword? key) (subs (str key) 1) key)]
-                           (when (contains? out path) (invalid! "Duplicate workflow filename"))
-                           (assoc out path value))) {} files))))
+  (cond-> (update input :files
+                  (fn [files]
+                    (reduce-kv (fn [out key value]
+                                 (let [path (if (keyword? key) (subs (str key) 1) key)]
+                                   (when (contains? out path) (invalid! "Duplicate workflow filename"))
+                                   (assoc out path value))) {} files)))
+    (:expected-revision input)
+    (assoc :expected-revision (or (parse-uuid (:expected-revision input))
+                                  (invalid! "Invalid workflow source revision")))))
 
 (defn- prefix! [name]
   ;; re-matches also rejects a trailing newline (Java's $ alone need not).
@@ -90,6 +96,12 @@
          :manifest (mapv (fn [[p entry]]
                            (assoc entry :path (subs (str "/" p) (count prefix)))) entries)}))))
 
+(defn source-revision
+  "Opaque source identity, also valid for empty or structurally invalid drafts.
+   Separate from the validated bundle's execution identity."
+  [name snapshot]
+  (hasch/uuid {:name name :manifest (:manifest snapshot)}))
+
 (defn inspect-snapshot [name snapshot]
   (let [problems (catalog/check-files (:files snapshot))]
     (if (seq problems)
@@ -107,14 +119,24 @@
         (catch Exception e
           {:ok false :name name :checker-executed? false :problems [(ex-message e)]})))))
 
+(defn details
+  "One bounded editable source revision and its non-executing inspection.
+   A malformed draft still has an identity and can be repaired safely."
+  [room name]
+  (let [source (snapshot room name)
+        revision (str (source-revision name source))
+        inspection (assoc (inspect-snapshot name source) :revision revision)]
+    {:name name :revision revision
+     :files (:files source) :inspection inspection}))
+
 (defn inspect [room name]
-  (inspect-snapshot name (snapshot room name)))
+  (:inspection (details room name)))
 
 (defn write!
   "One bounded atomic repository commit, restricted to this bundle's subtree.
    Nil removes a path. Other room files (including AGENTS.md) are not writable
    through this capability. Author identity is supplied by the host."
-  [room principal {:keys [name] edits :files :as input}]
+  [room principal {:keys [name expected-revision] edits :files :as input}]
   (when-not (m/validate write-schema input) (invalid! "Invalid workflow edits"))
   (let [prefix (prefix! name)
         entries (reduce-kv
@@ -130,11 +152,19 @@
                  {} edits)
         size (reduce + 0 (keep (fn [[_ v]] (some-> (:text v) (.getBytes StandardCharsets/UTF_8) alength)) entries))]
     (when (> size max-bundle-bytes) (invalid! "Workflow edit batch exceeds the byte limit"))
-    (let [written (files/write! room entries {:message (str "Update workflow " name " by " (:principal/id principal))})]
+    (binding [ec/*execution-context* (:ctx room)]
+      (let [conn (or (:conn (workspace/current-workspace))
+                     (throw (ex-info "Room has no workspace" {:type ::unavailable})))]
+        (locking (workspace/workspace-lock conn)
+          (when (and expected-revision
+                     (not= expected-revision (source-revision name (snapshot room name))))
+            (throw (ex-info "Workflow source changed; reload before saving"
+                            {:type ::conflict :name name})))
+          (let [written (files/write! room entries {:message (str "Update workflow " name " by " (:principal/id principal))})]
       ;; A committed edit is acknowledged even when the resulting bundle is
       ;; incomplete/oversized/invalid. Inspection is of the CURRENT snapshot;
       ;; benchmark submission pins and validates its content identity again.
-      {:write written :workflow (try (inspect room name)
-                                     (catch Exception e
-                                       {:ok false :name name :checker-executed? false
-                                        :problems [(ex-message e)]}))})))
+            {:write written :workflow (try (inspect room name)
+                                           (catch Exception e
+                                             {:ok false :name name :checker-executed? false
+                                              :problems [(ex-message e)]}))}))))))

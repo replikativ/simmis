@@ -67,6 +67,7 @@
                                :is.simm.model.work-requests/conflict 409
                                :is.simm.ops.workflows/invalid 400
                                :is.simm.ops.workflows/unavailable 503
+                               :is.simm.ops.workflows/conflict 409
                                :is.simm.ops.workflow-runs/invalid 400
                                :is.simm.ops.workflow-runs/conflict 409
                                :is.simm.ops.benchmarks/invalid 400
@@ -121,14 +122,14 @@
                                                          (update :expected-bundle uuid!)))))))}
    :simmis/workflow-write
    {:kind :write :schema workflow-write-schema :authz {:action :write}
-    :doc "Atomically edit text files ONLY under workflows/<name>/ as one repository commit. Paths are relative to that bundle; null deletes. At most100 files,512KiB/file,2MiB/batch. Cannot edit the room-root AGENTS.md or paths outside this bundle. Returns commit and shape inspection of the current bundle; never executes checker.clj."
+    :doc "Atomically edit text files ONLY under workflows/<name>/ as one repository commit. Paths are relative to that bundle; null deletes. At most100 files,512KiB/file,2MiB/batch. Optional expected-revision from workflow-check prevents stale saves under the workspace write lock; omitted means unconditional write. Cannot edit the room-root AGENTS.md or paths outside this bundle. Returns commit and shape inspection of the current bundle; never executes checker.clj."
     :impl (fn [host args]
             (checked! workflow-write-schema args)
             (guarded host #(let [[_ _ room] (room! host (:room args))]
                              (workflows/write! room ops/*principal* (workflows/transport-write (dissoc args :room))))))}
    :simmis/workflow-check
    {:kind :read :schema workflow-check-schema :authz {:action :read}
-    :doc "Inspect one pinned current workflow bundle (max100 files/2MiB). Returns its content id and structural problems. This NEVER executes checker.clj or calibration; no answer/eval argument is accepted. Use this bundle id when launching a saved workflow or benchmark."
+    :doc "Inspect one pinned current workflow bundle (max100 files/2MiB). Returns source revision even for invalid drafts, plus validated bundle id or structural problems. Source revision guards workflow-write; bundle id pins workflow-run or benchmark. This NEVER executes checker.clj or calibration; no answer/eval argument is accepted."
     :impl (fn [host args]
             (checked! workflow-check-schema args)
             (guarded host #(let [[_ _ room] (room! host (:room args))]

@@ -520,6 +520,13 @@ and pinned content hashes, capped at 100 regular UTF-8 files and 2 MiB.
 A successful write remains acknowledged even if the resulting bundle is
 incomplete or inspection fails. The returned bundle content ID identifies the
 inspected revision; it is not a correctness certificate or execution admission.
+Inspection also returns an opaque source `revision`, including for bounded
+empty or invalid drafts. This is distinct from a valid bundle's execution ID.
+Pass it as `expected-revision` to `simmis_workflow-write` to refuse a stale save
+before any file changes. The check and repository commit hold the existing
+workspace write lock; omitted means an explicit unconditional write. This
+serializes cooperating workspace writers, not raw direct DB transactions that
+bypass the workspace API. A conflict leaves every file unchanged.
 
 `simmis_workflow-run` reuses an inspected named workflow as one ordinary
 bounded task, not a benchmark or authored verifier. It requires current room

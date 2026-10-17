@@ -177,6 +177,14 @@
                  (is (true? (get-in written [:workflow :ok]))))
                (is (true? (:ok (value (call member "simmis_workflow-check" (dissoc args :files))))))
                (is (false? (:checker-executed? (value (call owner "simmis_workflow-check" (dissoc args :files))))))
+               (let [checked (value (call owner "simmis_workflow-check" (dissoc args :files)))
+                     revision (:revision checked)
+                     edit (assoc args :expected-revision revision :files {"notes.md" "newer edit"})]
+                 (is (uuid? (parse-uuid revision)))
+                 (is (some? (get-in (value (call owner "simmis_workflow-write" edit)) [:write :commit])))
+                 (is (refused? (call member "simmis_workflow-write"
+                                     (assoc edit :files {"notes.md" "stale edit"}))))
+                 (is (= "newer edit" (get-in (workflows/details room "echo") [:files "notes.md"]))))
                (doseq [extra [{:sender (str (:owner w))} {:principal "admin"} {:answer "run"} {:eval true}]]
                  (is (refused? (call member "simmis_workflow-check" (merge (dissoc args :files) extra)))))
                (is (refused? (call member "simmis_workflow-write"

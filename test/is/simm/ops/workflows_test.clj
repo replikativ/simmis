@@ -33,6 +33,67 @@
         (f room))
       (finally (discourse/close-room! room)))))
 
+(deftest editable-drafts-have-source-identities-even-before-they-are-valid
+  (with-workspace
+    (fn [room]
+      (let [empty (workflows/details room "draft")
+            initial (parse-uuid (:revision empty))]
+        (is (uuid? initial))
+        (is (false? (get-in empty [:inspection :ok])))
+        (is (= (:revision empty) (get-in empty [:inspection :revision])))
+        (workflows/write! room principal {:name "draft" :expected-revision initial
+                                          :files {"workflow.edn" "{:unclosed"}})
+        (let [draft (workflows/details room "draft")]
+          (is (not= (:revision empty) (:revision draft)))
+          (is (= {"workflow.edn" "{:unclosed"} (:files draft)))
+          (is (false? (get-in draft [:inspection :ok])))
+          (is (false? (get-in draft [:inspection :checker-executed?])))
+          (is (= draft (workflows/details room "draft"))))))))
+
+(deftest stale-saves-refuse-the-whole-batch-without-changing-files
+  (with-workspace
+    (fn [room]
+      (workflows/write! room principal {:name "echo" :files fixture})
+      (let [before (workflows/details room "echo")]
+        (workflows/write! room principal {:name "echo" :files {"helper.clj" "newer helper"}})
+        (let [newer (workflows/details room "echo")
+              error (try
+                      (workflows/write! room principal
+                                        {:name "echo" :expected-revision (parse-uuid (:revision before))
+                                         :files {"helper.clj" "stale helper" "workflow.edn" "stale task"}})
+                      nil (catch clojure.lang.ExceptionInfo e e))]
+          (is (= :is.simm.ops.workflows/conflict (:type (ex-data error))))
+          (is (= newer (workflows/details room "echo")))
+          (is (= "newer helper" (get-in newer [:files "helper.clj"]))))))))
+
+(deftest concurrent-creators-with-one-source-revision-cannot-overwrite-each-other
+  (with-workspace
+    (fn [room]
+      (let [revision (parse-uuid (:revision (workflows/details room "race")))
+            start (promise)
+            save (fn [text]
+                   (future @start
+                           (try (workflows/write! room principal
+                                                  {:name "race" :expected-revision revision
+                                                   :files {"draft.md" text}})
+                                :written
+                                (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
+            a (save "one") b (save "two")]
+        (deliver start true)
+        (is (= {:written 1 :is.simm.ops.workflows/conflict 1} (frequencies [@a @b])))
+        (is (contains? #{"one" "two"} (get-in (workflows/details room "race") [:files "draft.md"])))))))
+
+(deftest source-revision-transport-is-explicit-and-name-and-mode-sensitive
+  (let [revision (random-uuid)
+        input {:name "echo" :expected-revision (str revision) :files {:draft.md "draft"}}
+        snapshot {:manifest [{:path "draft.md" :mode 0x81A4 :size 0 :content (random-uuid)}]}]
+    (is (= revision (:expected-revision (workflows/transport-write input))))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (workflows/transport-write (assoc input :expected-revision (apply str (repeat 36 "x"))))))
+    (is (not= (workflows/source-revision "one" snapshot) (workflows/source-revision "two" snapshot)))
+    (is (not= (workflows/source-revision "one" snapshot)
+              (workflows/source-revision "one" (assoc-in snapshot [:manifest 0 :mode] 0x81ED))))))
+
 (deftest workflow-authoring-reuses-one-repository-commit-and-never-runs-checker
   (with-workspace
     (fn [room]
