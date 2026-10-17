@@ -3,6 +3,7 @@
             [dvergr.catalog.workspace :as workspace]
             [dvergr.discourse :as discourse]
             [dvergr.room.store.memory :as memory]
+            [datahike.api :as d]
             [geschichte.content :as content]
             [geschichte.query :as query]
             [is.simm.ops.workflows :as workflows]
@@ -32,6 +33,73 @@
         (workspace/ensure-workspace! room)
         (f room))
       (finally (discourse/close-room! room)))))
+
+(deftest listing-is-room-local-pinned-and-never-loads-source-blobs
+  (with-workspace
+    (fn [room]
+      (workspace/seed! room (into {"/outside/ignored.md" "outside"}
+                                  (for [n (range 28)]
+                                    [(format "/workflows/draft-%02d/broken.edn" n) "{:unclosed"])))
+      (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Listing must not read blobs")))]
+        (let [first (workflows/list-page room {})
+              next (workflows/list-page room {:offset (:next-offset first)
+                                              :expected-revision (parse-uuid (:revision first))})]
+          (is (= 28 (:total first)))
+          (is (= 25 (count (:names first))))
+          (is (= ["draft-25" "draft-26" "draft-27"] (:names next)))
+          (is (nil? (:next-offset next)))
+          (is (= (:revision first) (:revision next)))
+          (workspace/seed! room {"/workflows/another/draft.md" "new"})
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (workflows/list-page room {:offset 25 :expected-revision (parse-uuid (:revision first))}))))))))
+
+(deftest listing-refuses-an-oversized-path-index-without-an-unbounded-scan
+  (with-workspace
+    (fn [room]
+      (let [seen (atom 0)]
+        (with-redefs [d/index-range (fn [& _]
+                                      (map (fn [n] (swap! seen inc) {:v (str "workflows/draft/file-" n)})
+                                           (range)))]
+          (is (thrown? clojure.lang.ExceptionInfo (workflows/list-page room {})))
+          ;; The lazy source may chunk; this input maps over an unchunked range.
+          (is (= (inc workflows/max-list-entries) @seen)))))))
+
+(deftest source-pages-are-bounded-revision-pinned-and-reassemble-utf8-bytes
+  (with-workspace
+    (fn [room]
+      (let [text (apply str (repeat 5000 "a🦋世"))
+            files (into (assoc fixture "large.md" text)
+                        (for [n (range 12)] [(format "extra/%02d.md" n) (str n)]))]
+        (workflows/write! room principal {:name "echo" :files files})
+        (let [first (workflows/source-page room {:name "echo"})
+              revision (:revision first)
+              second (workflows/source-page room {:name "echo" :file-offset (:next-file-offset first)
+                                                   :expected-revision revision})
+              entries (concat (:files first) (:files second))
+              output (java.io.ByteArrayOutputStream.)]
+          (is (= 10 (count (:files first))))
+          (is (= (sort (keys files)) (map :path entries)))
+          (is (nil? (:next-file-offset second)))
+          (is (= (count files) (:file-count first)))
+          (is (false? (get-in first [:inspection :checker-executed?])))
+          (is (not (contains? first :definition)))
+          (loop [offset 0]
+            (let [part (workflows/source-page room {:name "echo" :path "large.md" :offset offset
+                                                     :expected-revision revision})
+                  bytes (.decode (java.util.Base64/getDecoder) ^String (:base64 part))]
+              (is (<= (alength bytes) 8192))
+              (is (= offset (:offset part)))
+              (.write output bytes 0 (alength bytes))
+              (when-let [next (:next-offset part)] (recur next))))
+          (is (= text (.toString output "UTF-8")))
+          (doseq [args [{:path "large.md"} {:file-offset 10}
+                       {:path "missing.md" :expected-revision revision}
+                       {:path "large.md" :offset 100000 :expected-revision revision}]]
+            (is (thrown? clojure.lang.ExceptionInfo (workflows/source-page room (assoc args :name "echo")))))
+          (workflows/write! room principal {:name "echo" :files {"extra/00.md" "changed"}})
+          (doseq [args [{:file-offset 10} {:path "large.md" :offset 8192}]]
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo #"source changed"
+                                  (workflows/source-page room (assoc args :name "echo" :expected-revision revision))))))))))
 
 (deftest editable-drafts-have-source-identities-even-before-they-are-valid
   (with-workspace
@@ -165,7 +233,7 @@
 (deftest committed-writes-remain-acknowledged-if-inspection-fails
   (with-workspace
     (fn [room]
-      (let [result (with-redefs [workflows/inspect (fn [& _] (throw (ex-info "inspection unavailable" {})))]
+      (let [result (with-redefs [workflows/details (fn [& _] (throw (ex-info "inspection unavailable" {})))]
                      (workflows/write! room principal {:name "echo" :files fixture}))]
         (is (some? (get-in result [:write :commit])))
         (is (false? (get-in result [:workflow :ok])))

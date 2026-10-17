@@ -82,7 +82,9 @@
    `peer/start`, so `peer/stop` is not their lifecycle boundary."
   [{:keys [client supervisor] :as session}]
   (when (and session (current-session? session))
-    (binding [rtc/*execution-context* runtime] (sig/clear-captured-results!))
+    (binding [rtc/*execution-context* runtime]
+      (sig/clear-captured-results!)
+      (reset! sig/workflow-editor-state {}))
     (reset! current-session* nil))
   (when supervisor
     (doseq [abort-ch (:aborts supervisor)]
@@ -236,6 +238,7 @@
   ;; Set current-user signal for UI
   (binding [rtc/*execution-context* runtime]
     (sig/clear-captured-results!)
+    (reset! sig/workflow-editor-state {})
     (reset! sig/current-user user))
   (let [session (create-client! token)]
     (show-app!)
@@ -273,7 +276,7 @@
   ;;     (taoensso.trove.console/get-log-fn {:min-level :trace}))
   (trove/set-log-fn! (trove-console/get-log-fn {:min-level :info}))
   ;; Suppress Timbre debug logs to avoid stack overflow in datahike kabel code
-  (timbre/set-level! :warn)
+  (timbre/set-min-level! :warn)
 
   (js/console.log "[Auth] Checking for existing authentication...")
 

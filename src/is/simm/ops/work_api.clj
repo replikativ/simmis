@@ -35,6 +35,16 @@
 (def workflow-write-schema (external-schema workflows/transport-write-schema))
 (def workflow-run-schema (external-schema workflow-runs/transport-schema))
 (def workflow-check-schema [:map {:closed true} room-entry [:name workflows/name-schema]])
+(def workflow-source-schema
+  [:map {:closed true} room-entry [:name workflows/name-schema]
+   [:file-offset {:optional true} [:int {:min 0 :max 100}]]
+   [:path {:optional true} [:string {:min 1 :max 512}]]
+   [:offset {:optional true} [:int {:min 0 :max workflows/max-file-bytes}]]
+   [:expected-revision {:optional true} uuid-string]])
+(def workflow-list-schema
+  [:map {:closed true} room-entry
+   [:offset {:optional true} [:int {:min 0 :max workflows/max-list-entries}]]
+   [:expected-revision {:optional true} uuid-string]])
 (def bundle-schema [:map {:closed true} room-entry])
 (def bundle-chunk-schema
   [:map {:closed true} room-entry [:expected-snapshot uuid-string]
@@ -85,7 +95,23 @@
            (throw e)))))
 
 (def specifications
-  {:simmis/workspace-bundle
+  {:simmis/workflow-list
+   {:kind :read :schema workflow-list-schema :authz {:action :read}
+    :doc "List25 room-local workflow names, including invalid drafts, without loading file contents. Scans at most20000 workflow path entries; refuses larger indices. expected-revision pins the sorted name set across pages. Never executes checker source."
+    :impl (fn [host args]
+            (checked! workflow-list-schema args)
+            (guarded host #(let [[_ _ room] (room! host (:room args))]
+                             (workflows/list-page room (cond-> (dissoc args :room)
+                                                         (:expected-revision args)
+                                                         (update :expected-revision uuid!))))))}
+   :simmis/workflow-source
+   {:kind :read :schema workflow-source-schema :authz {:action :read}
+    :doc "Read source metadata in10-file pages, or <=8192 bytes of one file as base64 with path/offset/expected-revision. Source snapshots are bounded100 regular UTF8 files,512KiB/file,2MiB total. Chunks REQUIRE the inspected source revision; any source change refuses. Invalid drafts remain readable; no checker/calibration execution. Use revision for guarded writes and validated bundle id for execution."
+    :impl (fn [host args]
+            (checked! workflow-source-schema args)
+            (guarded host #(let [[_ _ room] (room! host (:room args))]
+                             (workflows/source-page room (dissoc args :room)))))}
+   :simmis/workspace-bundle
    {:kind :read :schema bundle-schema :authz {:action :read}
     :doc "Describe a cloneable synthetic Git bundle of CURRENT workspace files (NOT original history or hosted Git). Bounded to512 regular files,1MiB/file,8MiB total; sensitive paths/symlinks refuse the whole export. Does not commit or write anything. Use snapshot and chunk tool to download; changes between chunks require a restart."
     :impl (fn [host args]
@@ -126,14 +152,15 @@
     :impl (fn [host args]
             (checked! workflow-write-schema args)
             (guarded host #(let [[_ _ room] (room! host (:room args))]
-                             (workflows/write! room ops/*principal* (workflows/transport-write (dissoc args :room))))))}
+                             (workflows/public-write
+                              (workflows/write! room ops/*principal* (workflows/transport-write (dissoc args :room)))))))}
    :simmis/workflow-check
    {:kind :read :schema workflow-check-schema :authz {:action :read}
     :doc "Inspect one pinned current workflow bundle (max100 files/2MiB). Returns source revision even for invalid drafts, plus validated bundle id or structural problems. Source revision guards workflow-write; bundle id pins workflow-run or benchmark. This NEVER executes checker.clj or calibration; no answer/eval argument is accepted."
     :impl (fn [host args]
             (checked! workflow-check-schema args)
             (guarded host #(let [[_ _ room] (room! host (:room args))]
-                             (workflows/inspect room (:name args)))))}
+                             (workflows/public-inspection (workflows/inspect room (:name args))))))}
    :simmis/post
    {:kind :write :schema post-schema :authz {:action :write}
     :doc "Post as your authenticated Simmis account through canonical room dispatch. May wake assigned agents on the ROOM's ongoing budgets. This is conversation, NOT a bounded isolated task. Stable message id deduplicates retries."

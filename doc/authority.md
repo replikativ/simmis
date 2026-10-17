@@ -520,6 +520,11 @@ and pinned content hashes, capped at 100 regular UTF-8 files and 2 MiB.
 A successful write remains acknowledged even if the resulting bundle is
 incomplete or inspection fails. The returned bundle content ID identifies the
 inspected revision; it is not a correctness certificate or execution admission.
+MCP save acknowledgements return the commit and written/removed counts, not
+file contents or path lists. Public inspections bound titles to 256 characters,
+diagnostics to ten messages of 256 characters, and case names to eight entries;
+total problem/case counts distinguish these bounded previews from complete
+lists. The source metadata pages expose all bounded file names.
 Inspection also returns an opaque source `revision`, including for bounded
 empty or invalid drafts. This is distinct from a valid bundle's execution ID.
 Pass it as `expected-revision` to `simmis_workflow-write` to refuse a stale save
@@ -527,6 +532,26 @@ before any file changes. The check and repository commit hold the existing
 workspace write lock; omitted means an explicit unconditional write. This
 serializes cooperating workspace writers, not raw direct DB transactions that
 bypass the workspace API. A conflict leaves every file unchanged.
+
+`simmis_workflow-list` discovers names from the room's path index without
+loading blobs: 25 names per page, capped at 20,000 matching path entries.
+Later pages can pin the returned nameset revision. `simmis_workflow-source`
+returns ten source-file descriptors per metadata page, or up to 8 KiB of one
+file as base64. Later metadata pages and every byte chunk require the source
+`expected-revision`; clients concatenate decoded bytes before decoding UTF-8.
+Both operations require current room read permission and explicit selection in
+the work credential. Existing signed tool ceilings do not gain these tools.
+
+The room header's **Workflows** tab uses fixed authenticated browser adapters
+over the same operations. It loads bounded source for an editable local draft,
+saves with its source revision, and launches only a saved valid bundle. Its
+ordinary Run and operator-only benchmark forms require an explicit model and
+finite resource limits. Funding and submission are separate confirmations;
+neither runs automatically. Failed submission receipts can be retried with the
+same immutable request ID and payload, including after source reload or form
+changes. The UI retains an already received admission receipt during a failed
+retry. Browser permission hints only control presentation: current server-side
+room authorization still applies to every request.
 
 `simmis_workflow-run` reuses an inspected named workflow as one ordinary
 bounded task, not a benchmark or authored verifier. It requires current room

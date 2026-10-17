@@ -42,6 +42,8 @@
             #?(:cljs [is.simm.uis.web.desktop.views.history-subway :as subway])
             #?(:cljs [is.simm.uis.web.desktop.views.agent-inspector :as agent-inspector])
             [is.simm.uis.web.desktop.views.run-history :as run-history]
+            [is.simm.uis.web.desktop.views.workflows :as workflows-view]
+            #?(:cljs [is.simm.uis.web.desktop.workflow-actions :as workflow-actions])
             [is.simm.uis.web.desktop.attempt-board :as attempt-board]
             [is.simm.uis.web.desktop.views.attempt-board :as attempt-board-view]
             [is.simm.uis.web.desktop.views.leaderboard :as leaderboard-view]
@@ -956,6 +958,7 @@
              ;; whether this viewer may stop it) is asked of it, and kept here.
              run-facts (iv/get-new (track sig/run-server-facts))
              captured-results (iv/get-new (track sig/captured-results))
+             workflow-state (iv/get-new (track sig/workflow-editor-state))
              ;; Canonical Proposal review projection. Inline chat cards consume
              ;; the same rows/controllers as Tasks and the full inspector.
              proposal-data (iv/get-new (track sig/proposals-data))
@@ -1014,7 +1017,7 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results)
+                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1213,7 +1216,7 @@
   "Render content for a tab based on its type.
 
    kb-states arg removed — wiki tabs self-track their KB signal."
-  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data col-id notify-prefs captured-results]]
+  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data col-id notify-prefs captured-results workflow-state]]
   (case tab-type
     :home
     ;; Newcomer landing: the obvious first action is talking to your
@@ -1272,7 +1275,13 @@
                         local-db chat-windows settings-data admin-data room-details room-states
                         syntax-pref gref video-info screen-sharing screens-results
                         recordings-results web-captures-results chat-reply-targets run-facts
-                        proposal-data col-id notify-prefs captured-results)
+                        proposal-data col-id notify-prefs captured-results workflow-state)
+
+    :workflows
+    #?(:cljs (workflows-view/view (or (:room-name data) "Room")
+                                  (get workflow-state (workflow-actions/state-key (:room-id data)))
+                                  (workflow-actions/controller data))
+       :clj (el/p {} "Workflows"))
 
     :run-history
     #?(:cljs
@@ -1902,6 +1911,12 @@
                                           (sig/open-tab! tab-type tab-data opts))
                                         :clj nil))}
                (vc/icon "folder" {:class "chat-settings-icon"}))
+             (el/button {:class "chat-settings-btn" :title "Workflows"
+                         :on-click (fn [_]
+                                     #?(:cljs
+                                        (let [[type data opts] (room-actions/room-header-tab col-id :workflows room-id room-name)]
+                                          (sig/open-tab! type data opts)) :clj nil))}
+               (vc/icon "workflow" {:class "chat-settings-icon"}))
              (el/button {:class "chat-settings-btn"
                          :title "Room settings"
                          :on-click (fn [_]

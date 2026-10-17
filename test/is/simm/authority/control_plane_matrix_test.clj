@@ -152,6 +152,14 @@
    "dispatch-message!"       [(c :room MEMBERS)]
    "ensure-room!"            [(c :room MEMBERS)]
    "run-world-live!"         [(c :room MEMBERS)]
+   "load-attempt-files!"     [(c :room MEMBERS)]
+   "load-attempt-file!"      [(c :room MEMBERS)]
+   "load-workflow-list!"     [(c :room MEMBERS)]
+   "load-workflow-source!"   [(c :room MEMBERS)]
+   "save-workflow-source!"   [(c :room MEMBERS)]
+   "submit-workflow-run!"    [(c :room OWNER)]
+   "submit-workflow-benchmark!" [(c :room OWNER)]
+   "provision-workflow-allowance!" [(c :room OWNER)]
    ;; the gate admits members; WHICH member may cancel WHICH run is the
    ;; handler's (§2.9.2) — see runs-and-jobs-test
    "cancel-room-run!"        [(c :room MEMBERS)]

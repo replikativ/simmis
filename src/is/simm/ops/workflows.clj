@@ -2,6 +2,7 @@
   "Workflow bundles are ordinary versioned Geschichte files, not a new
    definition store. Shape inspection never executes their checker source."
   (:require [clojure.string :as str]
+            [datahike.api :as d]
             [dvergr.catalog.room :as catalog]
             [dvergr.rooms.files :as files]
             [dvergr.substrate.geschichte :as workspace]
@@ -16,6 +17,8 @@
 (def max-files 100)
 (def max-file-bytes 524288)
 (def max-bundle-bytes 2097152)
+(def list-page-size 25)
+(def max-list-entries 20000)
 (def name-schema [:re #"^[a-z0-9][a-z0-9-]{0,63}$"])
 (def write-schema
   [:map {:closed true}
@@ -79,6 +82,8 @@
                           (filter (fn [[p _]] (str/starts-with? (str "/" p) prefix)))
                           (query/worktree db))]
         (when (> (count entries) max-files) (invalid! "Workflow has too many files"))
+        (when (some #(> (- (count (key %)) (dec (count prefix))) 512) entries)
+          (invalid! "Workflow source paths exceed the 512-character limit"))
         (when (> (reduce + 0 (map (comp :size val) entries)) max-bundle-bytes)
           (invalid! "Workflow exceeds the byte limit"))
         {:files
@@ -126,11 +131,96 @@
   (let [source (snapshot room name)
         revision (str (source-revision name source))
         inspection (assoc (inspect-snapshot name source) :revision revision)]
-    {:name name :revision revision
-     :files (:files source) :inspection inspection}))
+    (cond-> {:name name :revision revision
+             :files (:files source) :inspection inspection}
+      (:ok inspection)
+      (assoc :definition (select-keys (:definition (catalog/bundle name (:files source)))
+                                      [:title :task :params :capture])))))
+
+(defn list-page
+  "Room-local names, including drafts, from a bounded immutable path-index scan.
+   No file contents are loaded. Revision pins the sorted name set across pages."
+  [room {:keys [offset expected-revision] :or {offset 0}}]
+  (when-not (and (integer? offset) (<= 0 offset max-list-entries)
+                 (or (nil? expected-revision) (uuid? expected-revision)))
+    (invalid! "Invalid workflow list page"))
+  (binding [ec/*execution-context* (:ctx room)]
+    (let [conn (or (:conn (workspace/current-workspace))
+                   (throw (ex-info "Room has no workspace" {:type ::unavailable})))
+          entries (vec (take (inc max-list-entries)
+                             (d/index-range @conn {:attrid :geschichte.work/path
+                                                   :start "workflows/" :end "workflows0"})))]
+      (when (> (count entries) max-list-entries) (invalid! "Workflow path index exceeds the listing limit"))
+      (let [names (vec (sort (into #{}
+                                   (keep (fn [datom]
+                                           (let [parts (str/split (:v datom) #"/" 3)
+                                                 name (second parts)]
+                                             (when (and (= 3 (count parts))
+                                                        (re-matches #"[a-z0-9][a-z0-9-]{0,63}" name)) name))))
+                                   entries)))
+            revision (hasch/uuid [:workflow-names names])
+            end (min (count names) (+ offset list-page-size))]
+        (when (and expected-revision (not= expected-revision revision))
+          (throw (ex-info "Workflow names changed; reload the list" {:type ::conflict})))
+        (when (> offset (count names)) (invalid! "Workflow list offset is outside this revision"))
+        (cond-> {:names (subvec names offset end) :offset offset :total (count names)
+                 :revision (str revision) :checker-executed? false}
+          (< end (count names)) (assoc :next-offset end))))))
 
 (defn inspect [room name]
   (:inspection (details room name)))
+
+(defn public-inspection
+  "Bound diagnostics and metadata for MCP's finite JSON result envelope.
+   Full source and case filenames remain available through source pages."
+  [inspection]
+  (cond-> (select-keys inspection [:ok :name :bundle :revision :files :bytes :checker-executed?])
+    (:title inspection) (assoc :title (subs (:title inspection) 0 (min 256 (count (:title inspection)))))
+    (contains? inspection :problems)
+    (assoc :problems (mapv #(subs % 0 (min 256 (count %))) (take 10 (:problems inspection)))
+           :problem-count (count (:problems inspection)))
+    (contains? inspection :cases)
+    (assoc :cases (vec (take 8 (:cases inspection))) :case-count (count (:cases inspection)))))
+
+(defn public-write [result]
+  {:write (assoc (select-keys (:write result) [:commit])
+                 :written-count (count (get-in result [:write :written]))
+                 :removed-count (count (get-in result [:write :removed])))
+   :workflow (public-inspection (:workflow result))})
+
+(defn source-page
+  "MCP-sized source metadata or bytes of one exact source revision.
+   Browser editors can use details directly after the same canonical read gate."
+  [room {:keys [name path offset file-offset expected-revision] :or {offset 0 file-offset 0}}]
+  (when (and (pos? file-offset) (nil? expected-revision))
+    (invalid! "Later source metadata pages require expected-revision"))
+  (let [source (details room name)]
+    (when (and expected-revision (not= expected-revision (:revision source)))
+      (throw (ex-info "Workflow source changed; reload metadata" {:type ::conflict})))
+    (if path
+      (do
+        (when-not expected-revision (invalid! "Source chunks require expected-revision"))
+        (let [text (get-in source [:files path])]
+          (when-not text (invalid! "No file in this workflow source revision"))
+          (let [bytes (.getBytes ^String text StandardCharsets/UTF_8)
+                size (alength bytes)
+                end (min size (+ offset 8192))]
+            (when-not (<= 0 offset size) (invalid! "Source offset is outside this file"))
+            (cond-> {:name name :revision (:revision source) :path path :offset offset :size size
+                     :base64 (.encodeToString (java.util.Base64/getEncoder)
+                                              (java.util.Arrays/copyOfRange bytes (int offset) (int end)))}
+              (< end size) (assoc :next-offset end)))))
+      (let [entries (vec (sort-by key (:files source)))
+            end (min (count entries) (+ file-offset 10))
+            inspection (:inspection source)]
+        (when-not (<= 0 file-offset (count entries)) (invalid! "Source file page is outside this revision"))
+        (cond-> {:name name :revision (:revision source) :file-offset file-offset :file-count (count entries)
+                 :files (mapv (fn [[path text]] {:path path :bytes (alength (.getBytes ^String text StandardCharsets/UTF_8))})
+                              (subvec entries file-offset end))
+                 :inspection (-> (select-keys inspection [:ok :name :bundle :checker-executed?])
+                                 (assoc :problems (mapv #(subs % 0 (min 256 (count %))) (take 10 (:problems inspection)))
+                                        :problem-count (count (:problems inspection))))}
+          (< end (count entries)) (assoc :next-file-offset end))))))
 
 (defn write!
   "One bounded atomic repository commit, restricted to this bundle's subtree.
@@ -164,7 +254,9 @@
       ;; A committed edit is acknowledged even when the resulting bundle is
       ;; incomplete/oversized/invalid. Inspection is of the CURRENT snapshot;
       ;; benchmark submission pins and validates its content identity again.
-            {:write written :workflow (try (inspect room name)
-                                           (catch Exception e
-                                             {:ok false :name name :checker-executed? false
-                                              :problems [(ex-message e)]}))}))))))
+            (try
+              (let [source (details room name)]
+                {:write written :workflow (:inspection source) :definition (:definition source)})
+              (catch Exception e
+                {:write written :workflow {:ok false :name name :checker-executed? false
+                                           :problems [(ex-message e)]}}))))))))

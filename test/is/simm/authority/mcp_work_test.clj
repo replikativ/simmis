@@ -10,6 +10,7 @@
             [dvergr.mcp.http :as http]
             [dvergr.mcp.server :as server]
             [dvergr.mcp.surface :as surface]
+            [dvergr.ops :as dops]
             [dvergr.resource :as resource]
             [dvergr.room.store :as store]
             [is.simm.agents.room-agents :as agents]
@@ -51,6 +52,13 @@
   (is (not (refused? response)))
   (json/read-value (get-in response [:result :content 0 :text]) json/keyword-keys-object-mapper))
 
+(defn- restore-work-api! [previous]
+  (doseq [op (keys api/specifications)]
+    (if-let [spec (get previous op)]
+      (dops/register-op! op spec)
+      (dops/unregister-op! op)))
+  (server/sync-op-tools!))
+
 (defn- http-message [port token sid id method params]
   (let [response @(client/post (str "http://127.0.0.1:" port "/mcp")
                                {:timeout 10000
@@ -64,6 +72,164 @@
     (is (nil? (:error response)))
     {:status (:status response) :sid (get-in response [:headers :mcp-session-id])
      :rpc (when (seq (:body response)) (json/read-value (:body response) json/keyword-keys-object-mapper))}))
+
+(deftest workflow-source-http-pages-preserve-large-unicode-files-and-live-authority
+  (world/with-world [conn w]
+    (@#'is.simm.ops.work-test/with-room
+     (fn [room]
+       (let [slug (store/room-id->slug (:id room))
+             path "fixtures/资料/输入.md"
+             text (apply str (repeat 12000 "雪\"\\\n"))
+             source (assoc workflow-fixture/fixture path text)
+             previous-host (deref (var-get #'server/embedded-host))
+             previous-api (dops/operations)]
+         (workspace/ensure-workspace! room)
+         (workflows/write! room {:principal/id "fixture"} {:name "large" :files source})
+         (d/transact conn [{:room/id (:room w) :room/slug slug}])
+         (server/set-host! (ops/host (:ctx room)))
+         (try
+           (api/install!)
+           (with-redefs [auth/get-auth-config (constantly {:jwt {:secret "mcp-source-pages-fixture"}})]
+             (let [transport (http/start! {:port 0 :bind "127.0.0.1" :profile :admin :toolsets #{:host}
+                                           :authenticate (mcp/authenticator)})
+                   port (:port transport)
+                   token (:token (mcp/mint-token! (:member w) :work))]
+               (try
+                 (let [opened (http-message port token nil 1 "initialize"
+                                            {:protocolVersion "2025-06-18" :capabilities {}
+                                             :clientInfo {:name "source-pages-fixture" :version "1"}})
+                       sid (:sid opened)
+                       tool! (fn [tool args]
+                               (:rpc (http-message port token sid 2 "tools/call"
+                                                   {:name tool :arguments (assoc args :room slug)})))
+                       read! (fn [args]
+                               (let [response (tool! "simmis_workflow-source" args)]
+                                 (is (map? (get-in response [:result :structuredContent])))
+                                 (is (<= (count (get-in response [:result :content 0 :text])) surface/max-text-chars))
+                                 (value response)))]
+                   (http-message port token sid nil "notifications/initialized" {})
+                   (is (= ["large"] (:names (value (tool! "simmis_workflow-list" {})))))
+                   (let [metadata (read! {:name "large"})
+                         revision (:revision metadata)
+                         file (first (filter #(= path (:path %)) (:files metadata)))
+                         bytes (java.io.ByteArrayOutputStream.)]
+                     (is file)
+                     (is (= (alength (.getBytes text "UTF-8")) (:bytes file)))
+                     (loop [offset 0]
+                       (let [chunk (read! {:name "large" :path path :offset offset :expected-revision revision})
+                             decoded (.decode (java.util.Base64/getDecoder) ^String (:base64 chunk))]
+                         (is (= offset (:offset chunk)))
+                         (is (= revision (:revision chunk)))
+                         (is (= path (:path chunk)))
+                         (is (<= (alength decoded) 8192))
+                         (.write bytes ^bytes decoded)
+                         (when-let [next (:next-offset chunk)]
+                           (when-not (< offset next (inc (:bytes file)))
+                             (throw (ex-info "Invalid source chunk progress" {})))
+                           (recur next))))
+                     (is (= text (.toString bytes "UTF-8")))
+                     (is (refused? (tool! "simmis_workflow-source" {:name "large" :path path})))
+                     (workflows/write! room {:principal/id "fixture"} {:name "large" :files {path "changed"}})
+                     (is (refused? (tool! "simmis_workflow-source"
+                                          {:name "large" :path path :offset 0 :expected-revision revision})))
+                     (let [current (:revision (read! {:name "large"}))]
+                       (d/transact conn [[:db/retract [:room/id (:room w)] :room/parties [:party/id (:member w)]]])
+                       (is (refused? (tool! "simmis_workflow-list" {})))
+                       (is (refused? (tool! "simmis_workflow-source"
+                                            {:name "large" :path path :expected-revision current}))))))
+                 (finally ((:stop transport))))))
+           (finally (restore-work-api! previous-api) (server/set-host! previous-host))))))))
+
+(deftest workflow-discovery-does-not-upgrade-existing-signed-tool-ceilings
+  (world/with-world [conn w]
+    (@#'is.simm.ops.work-test/with-room
+     (fn [room]
+       (let [slug (store/room-id->slug (:id room))
+             previous-host (deref (var-get #'server/embedded-host))
+             previous-api (dops/operations)]
+         (workspace/ensure-workspace! room)
+         (workflows/write! room {:principal/id "fixture"} {:name "echo" :files workflow-fixture/fixture})
+         (d/transact conn [{:room/id (:room w) :room/slug slug}])
+         (server/set-host! (ops/host (:ctx room)))
+         (try
+           (api/install!)
+           (with-redefs [auth/get-auth-config (constantly {:jwt {:secret "mcp-discovery-ceiling-fixture"}})]
+             (let [old (with-redefs [mcp/work-tools (disj mcp/work-tools "simmis_workflow-list" "simmis_workflow-source")]
+                         (session (:member w) :work))
+                   current (session (:member w) :work)]
+               (doseq [[tool args] [["simmis_workflow-list" {:room slug}]
+                                    ["simmis_workflow-source" {:room slug :name "echo"}]]]
+                 (doseq [ctx [old (session (:member w) :read) (session (:non-member w) :work)
+                              (session (:admin w) :work)]]
+                   (is (refused? (call ctx tool args))))
+                 (is (not (refused? (call current tool args)))))
+               (is (refused? (call current "simmis_workflow-source" {:room slug :name "echo" :eval true})))
+               (is (refused? (call current "simmis_workflow-list" {:room slug :limit 100000})))))
+           (finally (restore-work-api! previous-api) (server/set-host! previous-host))))))))
+
+(deftest workflow-write-and-check-http-acks-bound-authored-metadata-and-paths
+  (world/with-world [conn w]
+    (@#'is.simm.ops.work-test/with-room
+     (fn [room]
+       (let [slug (store/room-id->slug (:id room))
+             huge (apply str (repeat 16000 "\u0000\"\\"))
+             definition {:title huge :task huge :params {:literal huge} :capture ["/out"]}
+             source (into {"workflow.edn" (pr-str definition)
+                           "checker.clj" "(throw (ex-info \"Must never run\" {}))"
+                           "fixtures/input.md" "input"}
+                          (for [n (range 97)
+                                :let [prefix (str "cases/" (format "case%03d" n) "/fixtures/")]]
+                            [(str prefix (apply str (repeat (- 512 (count prefix)) "\""))) "case input"]))
+             previous-host (deref (var-get #'server/embedded-host))
+             previous-api (dops/operations)]
+         (workspace/ensure-workspace! room)
+         (d/transact conn [{:room/id (:room w) :room/slug slug}])
+         (server/set-host! (ops/host (:ctx room)))
+         (try
+           (api/install!)
+           (with-redefs [auth/get-auth-config (constantly {:jwt {:secret "mcp-ack-bounds-fixture"}})]
+             (let [transport (http/start! {:port 0 :bind "127.0.0.1" :profile :admin :toolsets #{:host}
+                                           :authenticate (mcp/authenticator)})
+                   port (:port transport)
+                   token (:token (mcp/mint-token! (:owner w) :work))]
+               (try
+                 (let [opened (http-message port token nil 1 "initialize"
+                                            {:protocolVersion "2025-06-18" :capabilities {}
+                                             :clientInfo {:name "ack-bounds-fixture" :version "1"}})
+                       sid (:sid opened)
+                       tool! (fn [tool args]
+                               (let [response (:rpc (http-message port token sid 2 "tools/call"
+                                                                  {:name tool :arguments (assoc args :room slug :name "bounds")}))]
+                                 (is (map? (get-in response [:result :structuredContent])))
+                                 (is (<= (count (get-in response [:result :content 0 :text])) surface/max-text-chars))
+                                 (value response)))]
+                   (http-message port token sid nil "notifications/initialized" {})
+                   (let [written (tool! "simmis_workflow-write" {:files source})
+                         checked (tool! "simmis_workflow-check" {})]
+                     (is (some? (get-in written [:write :commit])))
+                     (is (= 100 (get-in written [:write :written-count])))
+                     (is (= 0 (get-in written [:write :removed-count])))
+                     (is (= #{:commit :written-count :removed-count} (set (keys (:write written)))))
+                     (is (not (contains? written :definition)))
+                     (is (true? (:ok checked)))
+                     (is (= 256 (count (:title checked))))
+                     (is (= 97 (:case-count checked)))
+                     (is (= 8 (count (:cases checked))))
+                     (is (= (:revision checked) (get-in written [:workflow :revision])))
+                     (is (= (:revision checked) (:revision (workflows/details room "bounds")))))
+                   (let [malformed (pr-str {:title huge :task 42 :params {"not-a-keyword" huge}
+                                            :profile [] :capture [42] :timeout-ms 0 :fetched "bad"})
+                         written (tool! "simmis_workflow-write" {:files {"workflow.edn" malformed}})
+                         checked (tool! "simmis_workflow-check" {})]
+                     (is (some? (get-in written [:write :commit])))
+                     (is (false? (:ok checked)))
+                     (is (pos? (:problem-count checked)))
+                     (is (<= (count (:problems checked)) 10))
+                     (is (every? #(<= (count %) 256) (:problems checked)))
+                     (is (not (contains? written :definition)))
+                     (is (= (:revision checked) (get-in written [:workflow :revision])))))
+                 (finally ((:stop transport))))))
+           (finally (restore-work-api! previous-api) (server/set-host! previous-host))))))))
 
 (deftest actual-http-workflow-authoring-preserves-paths-and-live-room-authority
   (world/with-world [conn w]
