@@ -3,6 +3,7 @@
    This timer is a host I/O resource, never forkable room state. It performs
    no execution, import, certification or inferred physical shutdown."
   (:require [is.simm.model.work-requests :as requests]
+            [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.worker-recovery :as recovery]
             [is.simm.ops.worker-work :as local]
             [org.replikativ.spindel.engine.core :as ec]
@@ -19,7 +20,10 @@
   [conn host-ctx resolve-room]
   (binding [ec/*execution-context* host-ctx]
     (loop [rows (filter #(and (local/request-kinds (:work.request/kind %))
-                              (:work.request/return-pending? %)) (requests/requests conn))
+                              (or (:work.request/return-pending? %)
+                                  (and (= :local-worker-benchmark (:work.request/kind %))
+                                       (benchmarks/retirement-pending? host-ctx (:work.request/id %)))))
+                       (requests/requests conn))
            counts {}]
       (if (or (empty? rows) (.isInterrupted (Thread/currentThread)))
         counts

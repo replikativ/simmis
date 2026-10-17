@@ -28,7 +28,7 @@
   (:import [java.util Date]))
 
 (def admission-unit "local-worker-admission")
-(def request-kinds #{:local-worker :local-worker-workflow})
+(def request-kinds #{:local-worker :local-worker-workflow :local-worker-benchmark})
 (def units [{:symbol admission-unit :name "Local worker admissions" :precision 0}])
 (def allowance-schema [:map {:closed true} [:request-id :uuid]
                        [:max-worker-admissions [:int {:min 1 :max 32}]]])
@@ -72,7 +72,7 @@
 (defn- metadata-files [descriptors]
   (update-vals descriptors #(select-keys % [:bytes :sha256 :mode])))
 
-(defn- capture [world id config limits]
+(defn capture [world id config limits]
   (binding [ec/*execution-context* (:ctx world)]
     (if-let [imported (ec/get-state (marker id))]
       (let [captured (:files (files/freeze world "Capture local worker output" config
@@ -103,7 +103,21 @@
                  :reward (if ok? 1.0 0.0)
                  :metrics {:usage-measurement :unreported-local-subscription}}))}))
 
-(defn- make-protocol [conn host-ctx control room-id request-id pinned frozen basis]
+(defn assignment-input
+  "Trusted host binding to the exact durable child/root before publication."
+  [conn host-ctx control room-id request-id pinned frozen cell id]
+  (let [durable (binding [ec/*execution-context* (:ctx control)]
+                  (store/-load-run (:store control) (store/conversation-id control) id))
+        job (:run/parent durable)]
+    (when-not (and (uuid? job)
+                   (binding [ec/*execution-context* host-ctx]
+                     (= job (:work.request/job (requests/get-request conn request-id)))))
+      (refuse! ::inconsistent "Local worker Run is not owned by its submitted Job"))
+    (cond-> {:id id :worker (:simmis.worker/id pinned) :generation (:simmis.worker/generation pinned)
+             :room room-id :request request-id :job job :input frozen :permitted? credentials/permitted?}
+      cell (assoc :cell cell))))
+
+(defn make-protocol [conn host-ctx control room-id request-id pinned frozen basis & [cell world-parent]]
   (evaluation/make-protocol
    {:id :simmis/local-worker :version 1 :basis basis
     :inputs (fn [_] {:input-id (:input-id frozen) :config (:config frozen)
@@ -111,17 +125,15 @@
     :run
     (fn [{world :room id :run/id :keys [cancelled?]}]
       (let [journal (fn [f] (binding [ec/*execution-context* host-ctx] (f)))
-            durable (binding [ec/*execution-context* (:ctx control)]
-                      (store/-load-run (:store control) (store/conversation-id control) id))
-            job (:run/parent durable)
-            assignment {:id id :worker (:simmis.worker/id pinned) :generation (:simmis.worker/generation pinned)
-                        :room room-id :request request-id :job job :input frozen :permitted? credentials/permitted?}
+            assignment (assignment-input conn host-ctx control room-id request-id pinned frozen cell id)
+            job (:job assignment)
             failed? (volatile! false)
             stopped? (fn [] (or @failed? (cancelled?)
                                 (not (journal (fn [] (current-enrollment? conn pinned))))))
             watch (journal #(wait/watch! conn id {:cancelled? stopped?
                                                   :cancel! (fn [] (workers/withdraw! conn assignment (fn [] (Date.))))}))]
         (try
+          (when cell (journal #(workers/prepare! conn assignment)))
           (when-not (and (uuid? job)
                          (journal #(= job (:work.request/job (requests/get-request conn request-id)))))
             (refuse! ::inconsistent "Local worker Run is not owned by its submitted Job"))
@@ -141,11 +153,12 @@
                 receipt assignment
                 allowed? (fn []
                            (and (not @failed?) (not (stopped?))
+                                (binding [ec/*execution-context* (:ctx (or world-parent control))]
+                                  (identical? world (registry/lookup (:id world))))
                                 (binding [ec/*execution-context* (:ctx control)]
-                                  (and (identical? world (registry/lookup (:id world)))
-                                       (some #(and (= id (:run/id %)) (= job (:run/parent %))
+                                  (some #(and (= id (:run/id %)) (= job (:run/parent %))
                                                    (= :running (:run/status %)))
-                                             (run/active-runs (:id control)))))
+                                             (run/active-runs (:id control))))
                                 (journal
                                  #(let [current (workers/assignment conn id)]
                                     (and (= (:simmis.worker.assignment/intent-id receipt)
@@ -177,7 +190,7 @@
                        :usage-measurement :unreported-local-subscription))))
           (finally (journal #(wait/close! watch))))))}))
 
-(defn- enrollment! [conn host-ctx room-id by input]
+(defn enrollment! [conn host-ctx room-id by input]
   (binding [ec/*execution-context* host-ctx]
     (let [row (workers/enrollment conn (:worker input))]
       (when-not (and (= by (:simmis.worker/by row)) (= room-id (:simmis.worker/room row))
@@ -198,11 +211,15 @@
                        (into {} (map (fn [[p text]] [(subs p 1) [text 0x81A4]])) inputs))
         descriptors
         (into (sorted-map)
-              (map (fn [[p [text mode]]]
-                     (let [bytes (.getBytes ^String text "UTF-8")]
-                       [p {:bytes (alength bytes) :mode mode :sha256 (files/sha256 bytes)
-                           :base64 (.encodeToString (java.util.Base64/getEncoder) bytes)}]))) entries)]
+              (map (fn [[p [text mode]]] [p (files/text-file text mode)])) entries)]
     (assoc prepared :frozen (files/freeze-files task config descriptors (:limits input)))))
+
+(defn worker-team [config]
+  (roster/make-agent (roster/make-roster {:id :simmis/local-worker})
+                     {:id :local-worker :program {:kind :echo}
+                      :model-policy {:provider :local-worker
+                                     :model (str "local-worker/" (:adapter config) "/" (:model config))}
+                      :metadata {:adapter-config config :usage-measurement :unreported-local-subscription}}))
 
 (defn- prepare-frozen [conn host-ctx room-id room request-id input pinned frozen workflow]
   (let [config (:config frozen)
@@ -235,11 +252,7 @@
                               :effects work/effects :resources grant :setup (evaluation/world-setup-ref setup)
                               :protocol (evaluation/protocol-ref protocol)}}
                workflow (assoc :metadata {:workflow (:workflow workflow)})))
-        team (roster/make-agent (roster/make-roster {:id :simmis/local-worker})
-                                {:id :local-worker :program {:kind :echo}
-                                 :model-policy {:provider :local-worker
-                                                :model (str "local-worker/" (:adapter config) "/" (:model config))}
-                                 :metadata {:adapter-config config :usage-measurement :unreported-local-subscription}})]
+        team (worker-team config)]
     {:request-kind (if workflow :local-worker-workflow :local-worker) :team team :agent :local-worker
      :resources grant :resource-units units :environment env :world-setup setup :protocol protocol :evaluator evaluator
      :basis (cond-> {:submission input :frozen frozen :environment env :team team :policy basis}

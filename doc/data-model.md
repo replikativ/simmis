@@ -125,8 +125,16 @@ successful import and exit zero. Receipt spend is explicitly unpriced because
 remote subscription usage is unreported. Provenance distinguishes local-worker
 execution and host versus MCP submission. New human admission is opt-in.
 Generic restart recovery excludes both `:local-worker` and
-`:local-worker-workflow`: a dead
+`:local-worker-workflow` and `:local-worker-benchmark`: a dead
 local JVM cannot certify that a remote process stopped.
+
+Benchmark assignments optionally add an immutable `:simmis.worker.assignment/cell`
+UUID. Their v2 intent digest includes this binding; ordinary v1 digests are
+unchanged. The host-only `:prepared` state pins a Run/case/input before server
+calibration but is neither pending nor claimable. Only a separate serialized
+transition can queue it after admission consumption. Cancellation withdraws
+prepared/queued rows with a no-lease acknowledgement; it never invents shutdown
+of a leased process or resurrects a withdrawn intent.
 
 `ops/worker-recovery.clj` is a separate host-only reconciliation entry point,
 called by startup maintenance and authenticated receipt handling. It validates the frozen request,

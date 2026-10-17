@@ -124,6 +124,20 @@ admission. Only those files reach the guest. Ordinary workflow source may includ
 checker/gold files, but authored checkers are not executed and this is not a
 benchmark secrecy boundary. Exact retries observe the original Job; recovery
 reconstructs its input only from the stored snapshot, not newer room content.
+`ops/worker-benchmarks.clj` is a host-only local-worker adapter for the same
+experiment runner: one enrolled candidate, up to eight case/repetition cells,
+serial execution and discard settlement. It uses the existing clean fixture
+parent and trusted server-side calibration/checker. Guests receive only pinned
+fixture inputs, never authoring-room files, checker, gold or calibration data.
+Each cell consumes one explicitly funded admission. Before calibration, a
+nonclaimable prepared assignment binds its Run to an immutable case/input;
+publication is separate and serialized against cancellation. Recovery fences
+independently identified siblings even if another child is unbound, but holds
+all refunds and retirement until the complete graph and world cleanup are
+proven. A pre-binding crash remains an explicit held incident, not a guessed
+case or permission to rerun work. This adapter has no public MCP control or
+browser backend selector. Subscription usage remains unreported; numeric
+zero placeholders in upstream derived cost axes are not measured zero cost.
 The separate host-only `ops/worker-recovery.clj` reconciles orphan exposure
 without execution or late import. Missing world disposal authority keeps
 cleanup unresolved; a terminal Run or discarded projection is not physical
@@ -134,6 +148,8 @@ or unhealthy resource prevents new claims/admission but preserves existing
 lease shutdown. `scripts/worker_driver.py` supplies private operator enrollment,
 explicit allowance/task/workflow submission and one-shot local SCI execution/recovery;
 its login binds the exact MCP destination, including explicit tunnel aliases.
+Benchmark retirement failures retain their exact process-local cleanup callback
+and physical checker permit; reconciliation retries disposal, not execution.
 Recorded Attempt evidence is distinct from mutable workspace files. See
 [authority.md](authority.md#private-mcp).
 Read-only current-workspace Git bundles use Geschichte's Git object/pack

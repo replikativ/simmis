@@ -29,6 +29,40 @@
         row (workers/claim! conn (:id assignment) (:id enrollment) 1 nonce secret (Date. 10000) 10000)]
     (assoc f :row row :secret secret :nonce nonce :lease (:simmis.worker.assignment/lease row))))
 
+(deftest prepared-benchmark-bindings-are-immutable-and-unclaimable-until-publication
+  (with-store
+    (fn [conn]
+      (let [{:keys [assignment enrollment]} (fixture conn)
+            bound (assoc assignment :id (random-uuid) :cell (random-uuid))
+            prepared (workers/prepare! conn bound)]
+        (is (= :prepared (:simmis.worker.assignment/state prepared)))
+        (is (= (:cell bound) (:simmis.worker.assignment/cell prepared)))
+        (is (= (:input bound) (workers/payload conn prepared :simmis.worker.assignment/input-ref)))
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (workers/claim! conn (:id bound) (:id enrollment) 1 (random-uuid)
+                                     (workers/new-secret) (Date.) 10000)))
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (workers/enqueue! conn (assoc bound :cell (random-uuid)))))
+        (is (= prepared (workers/prepare! conn bound)))
+        (let [queued (workers/enqueue! conn bound)]
+          (is (= :queued (:simmis.worker.assignment/state queued)))
+          (is (= (:simmis.worker.assignment/intent-id prepared) (:simmis.worker.assignment/intent-id queued)))
+          (is (= queued (workers/prepare! conn bound))))))))
+
+(deftest cancelling-prepared-work-fences-delayed-publication-without-a-lease
+  (with-store
+    (fn [conn]
+      (let [{:keys [assignment]} (fixture conn)
+            bound (assoc assignment :id (random-uuid) :cell (random-uuid))]
+        (workers/prepare! conn bound)
+        (let [closed (workers/withdraw! conn bound (Date.))]
+          (is (= :withdrawn (:simmis.worker.assignment/state closed)))
+          (is (:simmis.worker.assignment/stop-ack-at closed))
+          (is (= closed (workers/enqueue! conn bound)))
+          (is (= closed (workers/prepare! conn bound)))
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (workers/withdraw! conn (dissoc bound :cell) (Date.)))))))))
+
 (deftest a-publication-tombstone-prevents-a-delayed-enqueue-from-reviving-the-run
   (with-store
     (fn [conn]

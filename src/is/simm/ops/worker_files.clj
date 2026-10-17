@@ -59,6 +59,12 @@
 (defn sha256 [^bytes bytes]
   (object/bytes->hex (.digest (MessageDigest/getInstance "SHA-256") bytes)))
 
+(defn text-file [text mode]
+  (when-not (string? text) (refuse! "Expected literal text input"))
+  (let [bytes (.getBytes ^String text StandardCharsets/UTF_8)]
+    {:bytes (alength bytes) :mode mode :sha256 (sha256 bytes)
+     :base64 (.encodeToString (Base64/getEncoder) bytes)}))
+
 (defn file-bytes!
   "Decode one bounded immutable regular-file descriptor, verifying its bytes.
    Used both at worker intake and when reading captured Attempt evidence."

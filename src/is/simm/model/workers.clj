@@ -31,6 +31,7 @@
          [:simmis.worker.assignment/room :db.type/uuid]
          [:simmis.worker.assignment/request :db.type/uuid]
          [:simmis.worker.assignment/job :db.type/uuid]
+         [:simmis.worker.assignment/cell :db.type/uuid]
          [:simmis.worker.assignment/intent-id :db.type/uuid]
          [:simmis.worker.assignment/input-ref :db.type/store-ref]
          [:simmis.worker.assignment/state :db.type/keyword]
@@ -132,22 +133,60 @@
              (when-not (:simmis.worker/revoked-at (enrollment conn id)) (throw error)))))
     (enrollment conn id)))
 
-(defn enqueue!
-  "Freeze one selected worker's inputs against the existing request/Job/Run.
-   Queuing does not grant the worker ownership or permission to execute."
-  [conn {:keys [id worker generation room request job input permitted?]}]
+(defn assignment-digest
+  "Exact publication identity. Optional benchmark cell binding is immutable
+   and is never supplied by a worker credential. Ordinary v1 intents retain
+   their existing identities."
+  [{:keys [worker generation room request job input cell]}]
+  (if cell
+    (hasch/uuid [:simmis/worker-assignment-v2 worker generation room request job cell input])
+    (hasch/uuid [:simmis/worker-assignment-v1 worker generation room request job input])))
+
+(defn- queue-prepared-tx [db id digest permitted?]
+  (let [row (entity db :simmis.worker.assignment/id id)]
+    (when-not (= digest (:simmis.worker.assignment/intent-id row))
+      (refuse! ::conflict "Cannot queue a different prepared assignment"))
+    (if (= :prepared (:simmis.worker.assignment/state row))
+      (do
+        (active-enrollment! db (:simmis.worker.assignment/worker row)
+                            (:simmis.worker.assignment/generation row) (:simmis.worker.assignment/room row) permitted?)
+        [[:db/add (:db/id row) :simmis.worker.assignment/state :queued]
+         [:db/add (:db/id row) :simmis.worker.assignment/queued-at (Date.)]])
+      [])))
+
+(defn- publish-assignment! [conn {:keys [id worker generation room request job input permitted? cell] :as intent} state]
   (when-not (and (every? uuid? [id worker room request job])
+                 (or (nil? cell) (uuid? cell))
                  (pos-int? generation) (map? input) (roster/data-value? input))
     (refuse! ::invalid "Invalid worker assignment"))
   (active-enrollment! @conn worker generation room permitted?)
-  (let [digest (hasch/uuid [:simmis/worker-assignment-v1 worker generation room request job input])]
-    (publish-row! conn {:db/id -1 :simmis.worker.assignment/id id
-                        :simmis.worker.assignment/worker worker :simmis.worker.assignment/generation generation
-                        :simmis.worker.assignment/room room :simmis.worker.assignment/request request
-                        :simmis.worker.assignment/job job :simmis.worker.assignment/intent-id digest
-                        :simmis.worker.assignment/state :queued :simmis.worker.assignment/queued-at (Date.)}
+  (let [digest (assignment-digest intent)]
+    (publish-row! conn (cond-> {:db/id -1 :simmis.worker.assignment/id id
+                               :simmis.worker.assignment/worker worker :simmis.worker.assignment/generation generation
+                               :simmis.worker.assignment/room room :simmis.worker.assignment/request request
+                               :simmis.worker.assignment/job job :simmis.worker.assignment/intent-id digest
+                               :simmis.worker.assignment/state state}
+                        cell (assoc :simmis.worker.assignment/cell cell)
+                        (= :queued state) (assoc :simmis.worker.assignment/queued-at (Date.)))
                   :simmis.worker.assignment/id id :simmis.worker.assignment/intent-id
-                  :simmis.worker.assignment/input-ref input permitted?)))
+                  :simmis.worker.assignment/input-ref input permitted?)
+    (when (= :queued state)
+      (d/transact conn [[:db.fn/call queue-prepared-tx id digest permitted?]]))
+    (assignment conn id)))
+
+(defn prepare!
+  "Host-only immutable Run-to-cell/input binding. NOT visible as pending work
+   and never claimable. Publication requires a separate enqueue after funding;
+   cancellation serializes against that transition and cannot be resurrected."
+  [conn assignment]
+  (when-not (uuid? (:cell assignment)) (refuse! ::invalid "Prepared work requires an exact benchmark cell"))
+  (publish-assignment! conn assignment :prepared))
+
+(defn enqueue!
+  "Freeze one selected worker's inputs against the existing request/Job/Run.
+   Queuing does not grant the worker ownership or permission to execute."
+  [conn assignment]
+  (publish-assignment! conn assignment :queued))
 
 (defn payload [conn row field]
   (when-not (contains? #{:simmis.worker/config-ref :simmis.worker.assignment/input-ref
@@ -163,9 +202,14 @@
               (:simmis.worker/credential-hash row) value]]
             :simmis.worker.assignment/input-ref
             [(:simmis.worker.assignment/intent-id row)
-             [:simmis/worker-assignment-v1 (:simmis.worker.assignment/worker row)
-              (:simmis.worker.assignment/generation row) (:simmis.worker.assignment/room row)
-              (:simmis.worker.assignment/request row) (:simmis.worker.assignment/job row) value]]
+             (cond-> [:simmis/worker-assignment-v1 (:simmis.worker.assignment/worker row)
+                      (:simmis.worker.assignment/generation row) (:simmis.worker.assignment/room row)
+                      (:simmis.worker.assignment/request row) (:simmis.worker.assignment/job row)]
+               (:simmis.worker.assignment/cell row)
+               (assoc 0 :simmis/worker-assignment-v2)
+               (:simmis.worker.assignment/cell row)
+               (conj (:simmis.worker.assignment/cell row))
+               true (conj value))]
             :simmis.worker.assignment/output-ref
             [(:simmis.worker.assignment/output-id row) [:simmis/worker-output-v1 value]])]
       (when-not (and (map? value) (= expected (hasch/uuid basis)))
@@ -251,7 +295,7 @@
   (let [row (or (entity db :simmis.worker.assignment/id id) (refuse! ::missing "No such assignment"))]
     (cond
       (:simmis.worker.assignment/cancel-at row) []
-      (= :queued (:simmis.worker.assignment/state row))
+      (contains? #{:prepared :queued} (:simmis.worker.assignment/state row))
       ;; The same serialized writer decides claim vs withdraw. A never-claimed
       ;; assignment cannot have launched a conforming worker.
       (updates row {:simmis.worker.assignment/state :withdrawn :simmis.worker.assignment/cancel-at now
@@ -294,17 +338,19 @@
    Missing/queued intent becomes withdrawn+ack; an existing lease is quarantined
    without inventing shutdown. A late enqueue cannot revive this Run. Failed
    responses are reconciled by the actual closing state, not digest alone."
-  [conn {:keys [id worker generation room request job input]} clock]
+  [conn {:keys [id worker generation room request job input cell] :as intent} clock]
   (when-not (and (every? uuid? [id worker room request job]) (pos-int? generation)
+                 (or (nil? cell) (uuid? cell))
                  (map? input) (roster/data-value? input)
                  (or (instance? Date clock) (fn? clock)))
     (refuse! ::invalid "Invalid worker publication closure"))
-  (let [digest (hasch/uuid [:simmis/worker-assignment-v1 worker generation room request job input])
-        row {:db/id -1 :simmis.worker.assignment/id id
+  (let [digest (assignment-digest intent)
+        row (cond-> {:db/id -1 :simmis.worker.assignment/id id
              :simmis.worker.assignment/worker worker :simmis.worker.assignment/generation generation
              :simmis.worker.assignment/room room :simmis.worker.assignment/request request
              :simmis.worker.assignment/job job :simmis.worker.assignment/intent-id digest
-             :simmis.worker.assignment/queued-at (Date.)}]
+                     :simmis.worker.assignment/queued-at (Date.)}
+              cell (assoc :simmis.worker.assignment/cell cell))]
     (try
       (artifact/publish-value! (artifact/datahike-store conn) input
                                (fn [ref] (d/transact conn [[:db.fn/call withdraw-tx row digest ref clock]])))

@@ -13,6 +13,8 @@
             [hasch.core :as hasch]
             [is.simm.model.work-requests :as requests]
             [is.simm.model.workers :as workers]
+            [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.worker-benchmarks :as worker-benchmarks]
             [is.simm.ops.worker-files :as files]
             [is.simm.ops.worker-work :as local]
             [malli.core :as m]
@@ -60,7 +62,7 @@
     {:assignment {:worker (:worker policy) :generation (:generation policy) :input frozen}
      :environment environment :agent (get-in team [:roster/agents :local-worker])}))
 
-(defn- settle-world! [room child {:keys [environment agent]}]
+(defn- settle-world! [room child {:keys [environment agent world-parent registry-context]}]
   (let [id (:run/id child)
         certified (store/-load-attempt (:store room) (store/conversation-id room) id)
         settled (:run/settlement-status child)]
@@ -84,17 +86,20 @@
       (contains? #{:merged :adopted} settled)
       (refuse! "Uncertified worker world was promoted outside its recovery policy")
       :else
-      (if-let [fork (registry/lookup (:run/world child))]
-        (let [metadata @(:meta fork)]
-          (when-not (and (identical? fork (registry/lookup (:id fork)))
-                         (= (:run/world child) (:id fork)) (= (:id room) (:parent-id fork))
-                         (forks/fork? fork) (forks/ctx-fork? fork)
-                         (:run-world? metadata) (= id (:run-id metadata))
-                         (= (:id room) (:record-room-id metadata))
-                         (= :deferred (:settlement-policy metadata)))
-            (refuse! "Orphaned worker world does not match its canonical Run"))
-          (true? (:ok? ((if (forks/deferred? fork) forks/discard-deferred! forks/discard!)
-                        fork :local-worker-recovery))))
+      (if-let [fork (when (or (nil? world-parent) registry-context)
+                     (binding [ec/*execution-context* (or registry-context (:ctx room))]
+                       (registry/lookup (:run/world child))))]
+        (binding [ec/*execution-context* (or registry-context (:ctx room))]
+          (let [metadata @(:meta fork)]
+            (when-not (and (identical? fork (registry/lookup (:id fork)))
+                           (= (:run/world child) (:id fork)) (= (or world-parent (:id room)) (:parent-id fork))
+                           (forks/fork? fork) (forks/ctx-fork? fork)
+                           (:run-world? metadata) (= id (:run-id metadata))
+                           (= (:id room) (:record-room-id metadata))
+                           (= :deferred (:settlement-policy metadata)))
+              (refuse! "Orphaned worker world does not match its canonical Run"))
+            (true? (:ok? ((if (forks/deferred? fork) forks/discard-deferred! forks/discard!)
+                          fork :local-worker-recovery)))))
         ;; The process-local registry disappearing is not substrate cleanup.
         false))))
 
@@ -110,6 +115,7 @@
        (= (:room expected) (:simmis.worker.assignment/room row))
        (= (:request expected) (:simmis.worker.assignment/request row))
        (= (:job expected) (:simmis.worker.assignment/job row))
+       (= (:cell expected) (:simmis.worker.assignment/cell row))
        (= digest (:simmis.worker.assignment/intent-id row))
        (= (:input expected) (workers/payload conn row :simmis.worker.assignment/input-ref))))
 
@@ -144,6 +150,115 @@
       (do (requests/mark-returned! conn (:work.request/id row)) {:state :returned})
       {:state :awaiting-world-cleanup :run id})))
 
+(defn- benchmark-intent! [conn row]
+  (let [payload (requests/payload conn row)
+        {:keys [submission snapshot frozen policy] :as basis} (:input payload)
+        config (get-in (val (first frozen)) [:frozen :config])
+        prepared (worker-benchmarks/prepare snapshot submission config
+                                           {:simmis.worker/generation (:generation policy)
+                                            :simmis.worker/config-id (:config-id policy)})]
+    (when-not (and (= :local-worker-benchmark (:kind payload))
+                   (= (:work.request/intent-id row) (hasch/uuid payload))
+                   (= basis (:basis prepared)))
+      (refuse! "Benchmark recovery requires the exact pinned experiment and inputs"))
+    prepared))
+
+(defn- benchmark-children! [conn host-ctx row room children prepared]
+  (let [{:keys [submission frozen policy team]} (:basis prepared)
+        envs (into {} (map (fn [env] [(get-in env [:environment/metadata :worker-cell]) env]))
+                   (get-in prepared [:plan :environments]))
+        counts (frequencies (map #(get (workers/assignment conn (:run/id %)) :simmis.worker.assignment/cell) children))
+        parent-id (benchmarks/fixture-room-id (:work.request/id row))
+        parent (binding [ec/*execution-context* host-ctx] (registry/lookup parent-id))]
+    (when-not (and (every? #(contains? frozen %) (keys counts))
+                   (every? #(<= % (:repetitions submission)) (vals counts)))
+      ;; A missing prepared binding is NOT permission to guess a case from
+      ;; task text (different cases can deliberately have identical tasks).
+      (refuse! "Benchmark child lacks a unique bounded prepared case binding"))
+    (mapv (fn [child]
+            (let [own (workers/assignment conn (:run/id child))
+                  cell (:simmis.worker.assignment/cell own)
+                  expected {:id (:run/id child) :worker (:worker policy) :generation (:generation policy)
+                            :room (:work.request/room row) :request (:work.request/id row)
+                            :job (:work.request/job row) :cell cell :input (get-in frozen [cell :frozen])}
+                  agent (get-in team [:roster/agents :local-worker])]
+              (when-not (and (= :agent-task (:run/kind child)) (= (:id room) (:run/room child))
+                             (= :local-worker (:run/actor child)) (= (hasch/uuid agent) (:run/agent-def-hash child))
+                             (= :ctx (:run/isolation child)) (= :deferred (:run/settlement-policy child))
+                             (some? (:run/world child))
+                             (assignment-matches? conn own expected (workers/assignment-digest expected)))
+                (refuse! "Benchmark child differs from its immutable experiment binding"))
+              {:child child :own own :expected expected
+               :pinned {:environment (get envs cell) :agent agent
+                        :world-parent parent-id :registry-context (:ctx parent)}})) children)))
+
+(defn- recover-benchmark! [conn host-ctx row room]
+  (let [id (:work.request/id row) job (:work.request/job row)
+        status (jobs/status job)
+        graph (binding [ec/*execution-context* (:ctx room)] (run/runs room {:root-run-id job :limit 10}))
+        root (first (filter #(= job (:run/id %)) graph))
+        children (vec (remove #(= job (:run/id %)) graph))
+        active (set (map :run/id (run/active-runs)))
+        prepared (benchmark-intent! conn row)
+        maximum (long (get (:resources prepared) local/admission-unit))]
+    (when-not (and root (= :experiment (:run/kind root))
+                   (= (:id room) (:run/room root) (:room status))
+                   (= (keyword "party" (str (:work.request/by row))) (:run/actor root))
+                   (<= (count children) maximum) (< (count graph) 10)
+                   (= (count graph) (count (set (map :run/id graph))))
+                   (every? #(= job (:run/parent %)) children))
+      (refuse! "Benchmark recovery requires the complete bounded experiment graph"))
+    (if (or (not (:settled? status)) (some #(active (:run/id %)) graph)
+            (not-every? #(contains? #{:completed :failed :cancelled} (:run/status %)) graph))
+      {:state :live}
+      (let [fenced
+            ;; Prove/fence siblings independently. One pre-binding crash must
+            ;; not leave another, fully identified external lease running.
+            ;; Any unresolved child still prevents ALL refunds/retirement.
+            (mapv (fn [child]
+                    (try
+                      (let [{:keys [own expected]}
+                            (first (benchmark-children! conn host-ctx row room [child] prepared))]
+                        (when-not (:simmis.worker.assignment/stop-ack-at own)
+                          (workers/withdraw! conn expected #(Date.)))
+                        {:bound? true})
+                      (catch clojure.lang.ExceptionInfo error {:error error}))) children)
+            _ (when-let [errors (seq (keep :error fenced))]
+                (let [error (ex-info "Benchmark graph remains unresolved after fencing known children" {:type ::inconsistent})]
+                  (doseq [cause errors] (.addSuppressed error cause))
+                  (throw error)))
+            bindings (benchmark-children! conn host-ctx row room children prepared)
+            ids (set (map :run/id children))
+            assignments (associated conn id job)]
+        (when-not (= ids (set (map :simmis.worker.assignment/id assignments)))
+          (refuse! "Benchmark assignments do not match its complete child graph"))
+        (let [closed (mapv (fn [{:keys [own expected]}]
+                             (if (:simmis.worker.assignment/stop-ack-at own) own
+                                 (workers/withdraw! conn expected #(Date.)))) bindings)]
+          (if-not (every? :simmis.worker.assignment/stop-ack-at closed)
+            {:state :awaiting-stop :runs (mapv :simmis.worker.assignment/id
+                                              (remove :simmis.worker.assignment/stop-ack-at closed))}
+            (let [clean?
+                  (binding [ec/*execution-context* (:ctx room)]
+                    (evaluation/await-cleanups-for! room job 30000)
+                    (let [current (run/runs room {:root-run-id job :limit 10})]
+                      (when-not (and (= (set (map #(select-keys % store/immutable-run-keys) graph))
+                                                       (set (map #(select-keys % store/immutable-run-keys) current)))
+                                     (= (count graph) (count current))
+                                     (every? #(contains? #{:completed :failed :cancelled} (:run/status %)) current)
+                                     (= ids (set (map :simmis.worker.assignment/id (associated conn id job)))))
+                        (refuse! "Benchmark graph changed during physical cleanup"))
+                      (let [settled (mapv (fn [{:keys [child pinned]}]
+                                            (settle-world! room (run/run room (:run/id child)) pinned)) bindings)]
+                        (when (every? true? settled)
+                          (doseq [child children] (return-wallet! room (:run/id child) job))
+                          (return-wallet! room job nil)
+                          true))))]
+              (if clean?
+                (do (benchmarks/retire-request! host-ctx id)
+                    (requests/mark-returned! conn id) {:state :returned})
+                {:state :awaiting-world-cleanup}))))))))
+
 (defn recover-request!
   "Host only. Resolve the canonical durable room; call after orphan Run
    reconciliation, or an authenticated assignment's completion/stop receipt.
@@ -154,10 +269,14 @@
   (binding [ec/*execution-context* host-ctx]
     (when-let [row (requests/get-request conn id)]
       (when (local/request-kinds (:work.request/kind row))
+        (when (= :local-worker-benchmark (:work.request/kind row))
+          (benchmarks/recover-request! host-ctx row))
         (if-let [job (:work.request/job row)]
           (when (:work.request/return-pending? row)
             (when-let [room (resolve-room (:work.request/room row))]
-              (let [status (jobs/status job)
+              (if (= :local-worker-benchmark (:work.request/kind row))
+                (recover-benchmark! conn host-ctx row room)
+                (let [status (jobs/status job)
                     graph (binding [ec/*execution-context* (:ctx room)]
                             (run/runs room {:root-run-id job :limit 3}))
                     root (first (filter #(= job (:run/id %)) graph))
@@ -205,7 +324,7 @@
                                        (workers/withdraw! conn expected #(Date.))))]
                       (if (and child (nil? (:simmis.worker.assignment/stop-ack-at closed)))
                         {:state :awaiting-stop :run run-id}
-                        (finish-recovery! conn row room child pinned))))))))
+                        (finish-recovery! conn row room child pinned)))))))))
           ;; Evaluation cannot publish before the request owns its Job.
           (do (requests/interrupt! conn id (random-uuid)) {:state :interrupted}))))))
 

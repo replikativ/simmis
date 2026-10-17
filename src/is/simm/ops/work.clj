@@ -195,7 +195,7 @@
         (let [job-ctx (if-let [context! (:job-context! prepared)]
                         (context! request) (:ctx room))]
           (jobs/start!
-           room {:kind (if (= :benchmark (:request-kind prepared)) :experiment :workflow)
+           room {:kind (if (#{:benchmark :local-worker-benchmark} (:request-kind prepared)) :experiment :workflow)
                  :ctx job-ctx :actor (:principal/actor principal)}
            (fn [job-id]
              (let [row (journal #(requests/record-job! conn id (:work.request/claim request) job-id))]

@@ -1,6 +1,7 @@
 (ns is.simm.runtimes.worker-maintenance-test
   (:require [clojure.test :refer [deftest is use-fixtures]]
             [is.simm.model.work-requests :as requests]
+            [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.worker-recovery :as recovery]
             [is.simm.ops.worker-api :as api]
             [is.simm.model.system-db :as system-db]
@@ -14,6 +15,19 @@
     ;; Never stop or reuse the real development application's host resource.
     (with-redefs-fn {#'maintenance/service (atom nil)}
       #(try (f) (finally (maintenance/stop!))))))
+
+(deftest periodic-maintenance-retries-returned-local-benchmark-retirement
+  (let [id (random-uuid) called (atom [])]
+    (with-redefs [requests/requests (fn [_] [{:work.request/id id :work.request/kind :local-worker-benchmark
+                                            :work.request/return-pending? false}])
+                  benchmarks/retirement-pending? (fn [ctx request]
+                                                   (is (= context/server-context ctx))
+                                                   (is (= id request)) true)
+                  recovery/recover-request! (fn [_ _ _ request] (swap! called conj request) {:state :retired})]
+      (is (= {:retired 1} (maintenance/reconcile! ::conn context/server-context ::resolver)))
+      (is (= [id] @called))
+      (with-redefs [benchmarks/retirement-pending? (constantly false)]
+        (is (= {} (maintenance/reconcile! ::conn context/server-context ::resolver)))))))
 
 (deftest recovery-is-serial-pending-only-and-one-failure-does-not-starve-others
   (let [ids (repeatedly 4 random-uuid) calls (atom [])

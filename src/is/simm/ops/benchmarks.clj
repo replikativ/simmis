@@ -25,6 +25,10 @@
 ;; inside a fork. An unresolved scoring worker keeps this permit until restart
 ;; or actual completion; no timeout pretends that the worker has disappeared.
 (defonce ^:private checker-slot (Semaphore. 1))
+(defonce ^:private pending-retirements
+  ;; Host I/O capabilities retaining a physical permit after a failed close.
+  ;; Durable requests remain authoritative; these callbacks never run work.
+  (atom {}))
 
 (def schema
   [:map {:closed true}
@@ -134,6 +138,7 @@
                :limits limits :policy checkers/policy}})))
 
 (defn- fixture-slug [request-id] (str "simmis-benchmark-" request-id))
+(defn fixture-room-id [request-id] (keyword (fixture-slug request-id)))
 
 (defn- fixture-room! [host-ctx request-id]
   (binding [ec/*execution-context* host-ctx]
@@ -144,7 +149,7 @@
       (or (registry/lookup id)
           (throw (ex-info "Benchmark fixture was not provisioned" {:type ::unavailable}))))))
 
-(defn- retire-fixture! [host-ctx request-id]
+(defn retire-fixture! [host-ctx request-id]
   (binding [ec/*execution-context* host-ctx]
     (let [slug (fixture-slug request-id)]
       (if-let [room (registry/lookup (keyword slug))]
@@ -155,6 +160,20 @@
         (when-let [row (system-db/room-by-slug slug)]
           (system-db/archive-room! (:room/id row)))))))
 
+(defn retire-request! [host-ctx id]
+  (if-let [close! (get @pending-retirements id)]
+    (close!)
+    (retire-fixture! host-ctx id)))
+
+(defn retirement-pending?
+  "Bounded host-resource/locator check, not an execution or refund decision."
+  [host-ctx id]
+  (binding [ec/*execution-context* host-ctx]
+    (boolean (or (contains? @pending-retirements id)
+                 (registry/lookup (fixture-room-id id))
+                 (when-let [row (system-db/room-by-slug (fixture-slug id))]
+                   (nil? (:room/archived-at row)))))))
+
 (defn adapter
   "One host-owned transport/capacity adapter per submission. A losing retry
    never acquires its permit. Dvergr remains the only experiment executor."
@@ -163,15 +182,23 @@
         held (AtomicBoolean. false)
         fixture (AtomicReference.)
         locator (AtomicReference.)
-        retire! (fn []
-                  (when-let [id (.get locator)] (retire-fixture! host-ctx id))
-                  (when (.compareAndSet held true false) (.release ^Semaphore slot)))]
+        retire! (fn retire! []
+                  (locking held
+                    (let [id (.get locator)]
+                      (try
+                        (when id (retire-fixture! host-ctx id))
+                        (when (.compareAndSet held true false) (.release ^Semaphore slot))
+                        (when id (swap! pending-retirements dissoc id))
+                        (catch Throwable error
+                          (when id (swap! pending-retirements assoc id retire!))
+                          (throw error))))))]
     (assoc prepared
-           :request-kind :benchmark
+           :request-kind (or (:request-kind prepared) :benchmark)
            :job-context! (fn [request]
                            (let [id (:work.request/id request)]
                              (.set locator id)
                              (.set fixture (fixture-room! host-ctx id))
+                             (when-let [ready! (:world-parent-ready! prepared)] (ready! (.get fixture)))
                              (:ctx (.get fixture))))
            :admit! (fn [_]
                      (when-not (.tryAcquire ^Semaphore slot)
@@ -201,18 +228,23 @@
           (work/submit-prepared! conn host-ctx principal room-id room input
                                  (adapter host-ctx room prepared principal)))))))
 
+(defn recover-request!
+  "Retry only retirement of an already physically/resource-settled request.
+   An in-process failed close retains its exact permit-owning callback."
+  [host-ctx row]
+  (let [job (:work.request/job row)
+        status (when job (jobs/status job))]
+    (when (and (#{:benchmark :local-worker-benchmark} (:work.request/kind row))
+               (if job
+                 (and (false? (:work.request/return-pending? row)) (:settled? status)
+                      (contains? #{:completed :failed :cancelled} (:status status)))
+                 (= :interrupted (:work.request/state row))))
+      (retire-request! host-ctx (:work.request/id row)))))
+
 (defn recover!
   "After work/recover!, retire request-addressed fixtures even if a crash fell
    between the wallet-return write and adapter cleanup. Never retire a live
    job's fixture or one whose physical/resource cleanup is unresolved."
   [conn host-ctx]
   (binding [ec/*execution-context* host-ctx]
-    (doseq [row (requests/requests conn)
-            :when (= :benchmark (:work.request/kind row))
-            :let [job (:work.request/job row)
-                  status (when job (jobs/status job))]
-            :when (if job
-                    (and (false? (:work.request/return-pending? row)) (:settled? status)
-                         (contains? #{:completed :failed :cancelled} (:status status)))
-                    (= :interrupted (:work.request/state row)))]
-      (retire-fixture! host-ctx (:work.request/id row)))))
+    (doseq [row (requests/requests conn)] (recover-request! host-ctx row))))
