@@ -1,6 +1,7 @@
 (ns is.simm.ops.checkers-test
   (:require [clojure.test :refer [deftest is]]
             [dvergr.agent.evaluation :as evaluation]
+            [dvergr.catalog.room :as catalog]
             [is.simm.ops.checkers :as checkers]))
 
 (deftest checker-executes-synchronously-and-returns-only-validated-evidence
@@ -43,5 +44,73 @@
                                         :execution/evidence {:files {"/out/result" "answer"}}})]
     (is (= "answer" (:result evidence)))
     (is (= {:runs []} (:trace evidence)))
+    (is (= {:status :not-provided} (:calibration evidence)))
     (is (contains? evidence :resources))
     (is (false? (get-in ((:verify evaluator) {} evidence) [:checks :completed?])))))
+
+(def calibrated-bundle
+  {:name "calibrated" :id (random-uuid) :definition {:params {:threshold 1}}
+   :gold "answer"
+   :checker "(ns checker) (defn check [{:keys [files gold]}] (let [ok (= gold (get files \"/out/answer\"))] {:checks {:correct? ok} :reward (if ok 1 0)}))"
+   :calibration {:reference {"/out/answer" "answer"}
+                 :damaged {:wrong {:files {"/out/answer" "wrong"} :loses [:correct?]}}}})
+
+(deftest calibration-uses-reference-and-real-false-damaged-checks
+  (is (:ok? (checkers/calibrate calibrated-bundle)))
+  (is (:ok? (checkers/calibrate (-> calibrated-bundle
+                                   (assoc :gold "wrong" :cases {"case-a" {:gold "answer"}})
+                                   (assoc-in [:calibration :case] "case-a")))))
+  (is (false? (:ok? (checkers/calibrate (assoc-in calibrated-bundle [:calibration :reference "/out/answer"] "wrong")))))
+  (is (false? (:ok? (checkers/calibrate (assoc-in calibrated-bundle [:calibration :damaged :wrong :loses] [:absent?])))))
+  (is (false? (:ok? (checkers/calibrate (assoc-in calibrated-bundle [:calibration :damaged :wrong :files "/out/answer"] "answer")))))
+  (is (nil? (checkers/calibrate (dissoc calibrated-bundle :calibration)))))
+
+(deftest calibration-validates-all-inputs-before-executing-code
+  (doseq [bad [false {}
+               {:reference {} :damaged {}}
+               {:reference {"/private/answer" "answer"} :damaged (get-in calibrated-bundle [:calibration :damaged])}
+               (assoc-in (:calibration calibrated-bundle) [:reference] {"/out/../answer" "answer"})
+               (assoc-in (:calibration calibrated-bundle) [:damaged :wrong :loses] [])
+               (assoc-in (:calibration calibrated-bundle) [:damaged :wrong :loses] [:x :x])
+               (assoc (:calibration calibrated-bundle) :fetched {"https://example.com" "page"})
+               (assoc (:calibration calibrated-bundle) :case "missing")
+               (assoc-in (:calibration calibrated-bundle) [:reference]
+                         (into {} (map (fn [n] [(str "/out/" n) "x"]) (range 100))))]]
+    (with-redefs [checkers/run-checker (fn [& _] (throw (AssertionError. "pure validation only")))]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (checkers/calibrate (assoc calibrated-bundle :calibration bad)))))))
+
+(deftest calibration-has-one-deadline-and-allocation-account-for-all-invocations
+  (let [seen (atom [])]
+    (with-redefs [checkers/run-checker
+                  (fn [_ {:keys [files]} limits]
+                    (swap! seen conj limits)
+                    {:checks {:correct? (= "answer" (get files "/out/answer"))}
+                     :reward (if (= "answer" (get files "/out/answer")) 1.0 0.0)})]
+      (is (:ok? (checkers/calibrate calibrated-bundle))))
+    (is (= 2 (count @seen)))
+    (is (apply = (map :deadline-nanos @seen)))
+    (is (apply identical? (map :allocation-check @seen))))
+  (is (thrown? Exception
+               (checkers/calibrate (assoc calibrated-bundle :checker "(ns checker) (defn check [_] (loop [] (recur)))")
+                                   (assoc checkers/calibration-policy :timeout-ms 20)))))
+
+(deftest calibrated-setup-does-not-seed-answers-and-keeps-policy-in-identity
+  (let [contexts (atom [])]
+    (with-redefs [catalog/world-setup
+                  (fn [_] (evaluation/make-world-setup
+                           {:id :fixture/setup :prepare (fn [ctx] (swap! contexts conj ctx) {:fixtures "digest"})}))]
+      (let [setup (checkers/world-setup calibrated-bundle)
+            context {:room :fake-world}
+            evidence ((:prepare setup) context)
+            observed ((:observe (checkers/evaluator calibrated-bundle))
+                      {:default {} :result {:run/status :completed} :setup/evidence evidence})]
+        (is (= [context] @contexts) "the fixture preparer receives no answer files")
+        (is (:ok? (:calibration evidence)))
+        (is (= evidence (:setup observed)))
+        (is (= (:calibration evidence) (:calibration observed)))
+        (is (= checkers/calibration-policy (get-in (evaluation/world-setup-ref setup) [:setup/basis :calibration-policy]))))
+      (reset! contexts [])
+      (let [setup (checkers/world-setup (assoc-in calibrated-bundle [:calibration :reference "/out/answer"] "wrong"))]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"reference checks" ((:prepare setup) {})))
+        (is (empty? @contexts) "failed calibration cannot proceed to candidate fixture setup")))))

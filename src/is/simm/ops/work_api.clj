@@ -7,6 +7,7 @@
             [is.simm.model.system-db :as system-db]
             [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.chat :as chat]
+            [is.simm.ops.git-snapshot :as git-snapshot]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m]
@@ -32,6 +33,11 @@
 
 (def workflow-write-schema (external-schema workflows/write-schema))
 (def workflow-check-schema [:map {:closed true} room-entry [:name workflows/name-schema]])
+(def bundle-schema [:map {:closed true} room-entry])
+(def bundle-chunk-schema
+  [:map {:closed true} room-entry [:expected-snapshot uuid-string]
+   [:offset [:int {:min 0 :max (:max-bundle-bytes git-snapshot/policy)}]]
+   [:length {:optional true} [:int {:min 1 :max (:chunk-bytes git-snapshot/policy)}]]])
 
 (defn- uuid! [s]
   (or (parse-uuid s) (ops/op-error! "Invalid UUID" ::invalid 400)))
@@ -60,6 +66,10 @@
                                :is.simm.ops.workflows/invalid 400
                                :is.simm.ops.workflows/unavailable 503
                                :is.simm.ops.benchmarks/invalid 400
+                               :is.simm.ops.checkers/invalid 400
+                               :is.simm.ops.git-snapshot/invalid 400
+                               :is.simm.ops.git-snapshot/conflict 409
+                               :is.simm.ops.git-snapshot/unavailable 503
                                :is.simm.ops.benchmarks/denied 403
                                :is.simm.ops.benchmarks/conflict 409
                                :is.simm.ops.benchmarks/busy 409
@@ -70,9 +80,23 @@
            (throw e)))))
 
 (def specifications
-  {:simmis/benchmark
+  {:simmis/workspace-bundle
+   {:kind :read :schema bundle-schema :authz {:action :read}
+    :doc "Describe a cloneable synthetic Git bundle of CURRENT workspace files (NOT original history or hosted Git). Bounded to512 regular files,1MiB/file,8MiB total; sensitive paths/symlinks refuse the whole export. Does not commit or write anything. Use snapshot and chunk tool to download; changes between chunks require a restart."
+    :impl (fn [host args]
+            (checked! bundle-schema args)
+            (guarded host #(let [[_ _ room] (room! host (:room args))] (git-snapshot/describe room))))}
+   :simmis/workspace-bundle-chunk
+   {:kind :read :schema bundle-chunk-schema :authz {:action :read}
+    :doc "Read <=16384 bytes of the exact current synthetic workspace Git bundle as base64. expected-snapshot pins the inspected manifest; workspace changes return conflict, never mixed bytes. Verify offsets, size and full SHA256 before cloning the completed bundle. No retained exports, ancestry or server paths."
+    :impl (fn [host args]
+            (checked! bundle-chunk-schema args)
+            (guarded host #(let [[_ _ room] (room! host (:room args))]
+                             (git-snapshot/chunk room (uuid! (:expected-snapshot args)) (:offset args)
+                                                 (get args :length (:chunk-bytes git-snapshot/policy))))))}
+   :simmis/benchmark
    {:kind :write :schema benchmark-schema :authz {:action :merge}
-    :doc "Admit an exact inspected workflow bundle as an OFFLINE benchmark. Requires installation operator AND current room merge authority: checker code is trusted-operator SCI, cooperatively bounded, NOT hard OS isolation. Maximum eight cells, one at a time, native providers only, explicit aggregate money/dispatch allowance, /out capture, discard settlement. Results use the room's existing Attempts, Scorecards and experiment reports. request-id retries observe the same job; expected-bundle pins the reviewed revision. No judge, live web, arbitrary eval or automatic checker promotion."
+    :doc "Admit an exact inspected workflow bundle as an OFFLINE benchmark. Requires installation operator AND current room merge authority: checker code is trusted-operator SCI, cooperatively bounded, NOT hard OS isolation. Maximum eight cells, one at a time, native providers only, explicit aggregate money/dispatch allowance, /out capture, discard settlement. Optional calibration.edn runs reference/damaged answers before each candidate without exposing them to it. Results use the room's existing Attempts, Scorecards and experiment reports. request-id retries observe the same job; expected-bundle pins the reviewed revision. No judge, live web, arbitrary eval or automatic checker promotion."
     :impl (fn [host args]
             (checked! benchmark-schema args)
             (guarded host #(let [[conn id room] (room! host (:room args))]

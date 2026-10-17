@@ -47,6 +47,39 @@
   (is (not (refused? response)))
   (json/read-value (get-in response [:result :content 0 :text]) json/keyword-keys-object-mapper))
 
+(deftest workspace-bundles-recheck-read-authority-and-credential-ceilings
+  (world/with-world [conn w]
+    (@#'is.simm.ops.work-test/with-room
+     (fn [room]
+       (let [slug (store/room-id->slug (:id room))
+             args {:room slug}]
+         (workspace/ensure-workspace! room)
+         (workspace/seed! room {"/readme.md" "snapshot input"})
+         (d/transact conn [{:room/id (:room w) :room/slug slug}])
+         (server/set-host! (ops/host (:ctx room)))
+         (try
+           (api/install!)
+           (with-redefs [auth/get-auth-config (constantly {:jwt {:secret "mcp-bundle-test"}})]
+             (let [member (session (:member w) :read)
+                   stranger (session (:non-member w) :read)
+                   admin (session (:admin w) :read)
+                   descriptor (value (call member "simmis_workspace-bundle" args))
+                   chunk-args (assoc args :expected-snapshot (:snapshot descriptor) :offset 0 :length 16)
+                   old-principal (update (:principal member) :principal/tools disj
+                                         "simmis_workspace-bundle" "simmis_workspace-bundle-chunk")
+                   old (server/session-context (fn [_]) (surface/selection {:profile :admin}) old-principal)]
+               (is (false? (:history descriptor)))
+               (is (= (:snapshot descriptor) (:snapshot (value (call member "simmis_workspace-bundle-chunk" chunk-args)))))
+               (doseq [ctx [stranger admin old]
+                       [tool input] [["simmis_workspace-bundle" args] ["simmis_workspace-bundle-chunk" chunk-args]]]
+                 (is (refused? (call ctx tool input))))
+               (doseq [bad [(assoc chunk-args :eval true) (assoc chunk-args :length 16385)
+                            (assoc chunk-args :offset -1) (assoc chunk-args :expected-snapshot "invalid")]]
+                 (is (refused? (call member "simmis_workspace-bundle-chunk" bad))))
+               (d/transact conn [[:db/retract [:room/id (:room w)] :room/parties [:party/id (:member w)]]])
+               (is (refused? (call member "simmis_workspace-bundle-chunk" chunk-args)))))
+           (finally (api/uninstall!) (server/set-host! nil))))))))
+
 (deftest workflow-authoring-is-scoped-to-current-room-write-permission
   (world/with-world [conn w]
     (@#'is.simm.ops.work-test/with-room

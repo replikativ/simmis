@@ -7,16 +7,19 @@
             [dvergr.agent.roster :as roster]
             [dvergr.agent.trajectory :as trajectory]
             [dvergr.agent.workflow :as workflow]
+            [dvergr.agent.program :as program]
             [dvergr.catalog.room :as catalog]
             [dvergr.catalog.workspace :as workspace]
             [dvergr.discourse :as discourse]
             [dvergr.jobs :as jobs]
             [dvergr.resource :as resource]
+            [dvergr.agent.run :as run]
             [dvergr.room.store :as store]
             [dvergr.room.store.memory :as memory]
             [is.simm.authority.world :as world]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.checkers :as checkers]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.work :as work]
             [is.simm.ops.work-test]
@@ -48,6 +51,19 @@
 (defn prepared [files request]
   (with-redefs [workflow/candidates candidates runner/runtime-identity (constantly {:libraries {}})]
     (benchmarks/prepare (snapshot files) request)))
+
+(defn echo-prepared [files request]
+  (let [base (prepared files request)
+        [_ echo] (@#'is.simm.ops.work-test/fixture)
+        env (first (get-in base [:plan :environments]))
+        ref (:environment/verifier env)
+        env (environment/make-environment
+             {:id :fixture/calibration :task "Deterministic echo"
+              :verifier {:id (:verifier/id ref) :version (:verifier/version ref) :basis (:verifier/basis ref)}
+              :world (:environment/world env) :limits {:timeout-ms 60000 :cancel-timeout-ms 1000}})
+        plan (assoc (:plan base) :team (:team echo) :environments [env])]
+    (assoc base :plan (assoc plan :experiment (runner/experiment-def
+                                               (assoc plan :id :fixture/calibration :repetitions 1))))))
 
 (deftest benchmark-pins-existing-experiment-definitions-and-conserved-cell-limits
   (let [files (merge fixture/fixture {"cases/a/gold.edn" "{:expected 1}"
@@ -108,7 +124,9 @@
              clean (discourse/make-room {:id (keyword (str "fixture-" (random-uuid)))
                                          :store (memory/make)})
              files (assoc fixture/fixture "checker.clj"
-                          "(ns checker) (defn check [{:keys [files]}] {:checks {:empty-output? (empty? files)} :reward 1})")
+                          "(ns checker) (defn check [{:keys [files]}] {:checks {:empty-output? (empty? files)} :reward (if (empty? files) 1 0)})")
+             files (assoc files "calibration.edn"
+                          "{:reference {} :damaged {:unexpected {:files {\"/out/private-damaged-answer\" \"must not reach candidate\"} :loses [:empty-output?]}}}")
              request (input files)
              base (prepared files request)
              [_ echo] (@#'is.simm.ops.work-test/fixture)
@@ -161,6 +179,8 @@
                      (is (contains? evidence key) (str "trusted evidence retained: " key)))
                    (is (= (:resources evidence) (get-in attempt [:attempt/receipt :attempt/resources])))
                    (is (seq (get-in evidence [:trace :runs])))
+                   (is (true? (get-in evidence [:calibration :ok?])))
+                   (is (= {} (:files evidence)) "calibration answers were never installed in the world")
                    (is (= (str (:attempt/id attempt)) (:attempt exported)))
                    (is (vector? (:messages exported))))
                  (workflows/write! control (ops/party-principal (:owner w))
@@ -203,3 +223,81 @@
                      #'benchmarks/retire-fixture! (fn [_ id] (swap! retired conj id))}
       #(benchmarks/recover! nil nil))
     (is (= [(:work.request/id interrupted) (:work.request/id completed)] @retired))))
+
+(deftest failed-calibration-prevents-candidate-execution
+  (world/with-world [conn w]
+    (@#'is.simm.ops.work-test/with-room
+     (fn [control]
+       (let [clean (discourse/make-room {:id (keyword (str "fixture-" (random-uuid))) :store (memory/make)})
+             files (assoc fixture/fixture
+                          "checker.clj" "(ns checker) (defn check [_] {:checks {:correct? false} :reward 0})"
+                          "calibration.edn"
+                          "{:reference {} :damaged {:wrong {:files {} :loses [:missing-check]}}}")
+             request (input files)
+             prepared (echo-prepared files request)
+             invoked (atom 0)
+             retired (atom 0)]
+         (try
+           (resource/mint! control {:id (random-uuid) :resources (work/resources (:limits request))})
+           (with-redefs-fn {#'benchmarks/fixture-room! (fn [& _] clean)
+                            #'benchmarks/retire-fixture! (fn [& _] (swap! retired inc))
+                            #'program/execute-agent-program (fn [& _] (swap! invoked inc)
+                                                              (throw (AssertionError. "candidate must never start")))}
+             (fn []
+               (let [submitted (work/submit-prepared! conn ec/*execution-context* (ops/party-principal (:owner w))
+                                                      (:room w) control request
+                                                      (benchmarks/adapter ec/*execution-context* control prepared
+                                                                          (ops/party-principal (:owner w))))
+                     status (jobs/status (:job submitted) 25000)
+                     attempts (store/-list-attempts (:store control) (store/conversation-id control) {})]
+                 (is (:settled? status))
+                 (is (zero? @invoked))
+                 (is (= 1 @retired))
+                 (is (= (work/resources (:limits request)) (resource/balance control)))
+                 (doseq [entry attempts]
+                   (is (zero? (:attempt/reward (store/-load-attempt (:store control) (store/conversation-id control) (:attempt/id entry)))))))))
+           (finally (discourse/close-room! clean))))))))
+
+(deftest cancelled-calibration-retains-capacity-until-physical-exit
+  (world/with-world [conn w]
+    (@#'is.simm.ops.work-test/with-room
+     (fn [control]
+       (let [clean (discourse/make-room {:id (keyword (str "fixture-" (random-uuid))) :store (memory/make)})
+             entered (promise)
+             release (java.util.concurrent.CountDownLatch. 1)
+             files (assoc fixture/fixture "calibration.edn"
+                          "{:reference {} :damaged {:wrong {:files {} :loses [:missing-check]}}}")
+             request (input files)
+             prepared (echo-prepared files request)
+             host-ctx ec/*execution-context*
+             owner (ops/party-principal (:owner w))
+             grant (work/resources (:limits request))
+             retired (atom 0)]
+         (try
+           (resource/mint! control {:id (random-uuid) :resources grant})
+           (with-redefs-fn {#'benchmarks/fixture-room! (fn [& _] clean)
+                            #'benchmarks/retire-fixture! (fn [& _] (swap! retired inc))
+                            #'checkers/calibrate (fn [_]
+                                                   (deliver entered true)
+                                                   (loop []
+                                                     (when-not (try (.await release) true
+                                                                    (catch InterruptedException _ false))
+                                                       (recur)))
+                                                   {:ok? true})}
+             (fn []
+               (let [submitted (work/submit-prepared! conn host-ctx owner (:room w) control request
+                                                      (benchmarks/adapter host-ctx control prepared owner))
+                     job (:job submitted)]
+                 (is (= true (deref entered 10000 ::timeout)))
+                 (run/cancel-run! job)
+                 (is (thrown? clojure.lang.ExceptionInfo (evaluation/await-cleanups-for! control job 1)))
+                 (is (zero? (.availablePermits @#'benchmarks/checker-slot)))
+                 (is (zero? @retired))
+                 (is (every? zero? (vals (resource/balance control))))
+                 (is (:return-pending? (work/status conn host-ctx owner (:room w) (:id submitted))))
+                 (.countDown release)
+                 (is (:settled? (jobs/status job 25000)))
+                 (is (= grant (resource/balance control)))
+                 (is (= 1 @retired))
+                 (is (= 1 (.availablePermits @#'benchmarks/checker-slot))))))
+           (finally (.countDown release) (discourse/close-room! clean))))))))

@@ -85,7 +85,8 @@
                    (not-any? #(contains? definition %)
                              [:judge :web :fetched :allowed-sources :blocked-sources]))
       (invalid! "Initial benchmarks require offline developer workflows, /out capture and discard settlement; no judge or web effects"))
-    (let [evaluator (checkers/evaluator bundle)
+    (let [setup (checkers/world-setup bundle)
+          evaluator (checkers/evaluator bundle)
           verifier (evaluation/evaluator-ref evaluator)
           cell-limits (assoc limits :budget-microdollars dollars :max-dispatches dispatches)
           plan (catalog/experiment-plan bundle
@@ -108,11 +109,13 @@
                                    {:max-model-steps (:max-model-steps limits)
                                     :budget-dollars (/ dollars 1000000.0)})
                     :world (assoc (:environment/world env)
-                                  :effects work/effects :resources (work/resources cell-limits))
+                                  :effects work/effects :resources (work/resources cell-limits)
+                                  :setup (evaluation/world-setup-ref setup))
                     :metadata (:environment/metadata env)}))
                 (:environments plan))
           plan (-> plan (assoc :environments environments :parallelism 1)
-                   (assoc-in [:capabilities :evaluator] evaluator))
+                   (assoc-in [:capabilities :evaluator] evaluator)
+                   (assoc-in [:capabilities :world-setup] setup))
           experiment (runner/experiment-def
                       (assoc plan :id (keyword (str "request-" (:request-id input)))
                              :repetitions repetitions

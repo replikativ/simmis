@@ -69,8 +69,16 @@ so candidate workspaces do not inherit checker/gold files. The Job runs in
 the fixture's execution context while durable results stay in the control
 room. Synchronous SCI grading stays inside Dvergr's physically tracked scoring
 worker; it is cooperative trusted-operator execution, not hard process isolation.
+Optional reference/damaged-answer calibration runs on the owned world-setup
+worker before each candidate; answers remain outside its workspace and do not
+promote checker trust.
 Recorded Attempt evidence is distinct from mutable workspace files. See
 [authority.md](authority.md#private-mcp).
+Read-only current-workspace Git bundles use Geschichte's Git object/pack
+implementation and a synthetic root commit, with no ancestry traversal or
+server checkout/export writes. Bounded optimistic downloads reject intervening
+workspace changes; they introduce neither a result database nor a retained
+export store.
 
 ## Stores: one owns each concept
 

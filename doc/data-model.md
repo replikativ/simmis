@@ -15,6 +15,9 @@ The same journal admits `:task`, `:benchmark` and `:allowance` requests.
 Benchmark intents pin the client submission, canonical ExperimentDef, resolved
 candidate roster, grading policy and aggregate limits. Fixtures use the durable
 request UUID as their host-side locator; this is not another result store.
+Calibrated WorldSetup references include the original bundle-bearing fixture
+identity and execution policies. Successful setup/calibration evidence stays in
+the existing Attempt evidence, not a separate calibration database.
 Restart recovery retires settled fixtures even if the wallet-return write
 completed immediately before a process crash.
 

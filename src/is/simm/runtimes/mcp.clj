@@ -33,7 +33,8 @@
         #{"room_files" "room_read" "room_diff" "room_review" "room_wallet"
           "job_list" "job_status" "attempt_list" "attempt_detail" "review_list"
           "scorecard_list" "scorecard_detail" "experiment_progress" "experiment_report"
-          "catalog_list" "simmis_attempt-files" "simmis_attempt-file"}))
+          "catalog_list" "simmis_attempt-files" "simmis_attempt-file"
+          "simmis_workspace-bundle" "simmis_workspace-bundle-chunk"}))
 
 (def work-tools
   (into read-tools #{"simmis_post" "simmis_task" "simmis_work-allowance"

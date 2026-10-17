@@ -192,6 +192,38 @@ artifact ingestion API. Both reads include the Attempt's content identity;
 neither can fall back to the current workspace when a captured path is absent.
 Their schemas reject extra fields and validate direct in-process callers too.
 
+`simmis_workspace-bundle {room}` describes a synthetic, single-root-commit Git
+bundle of current workspace files. It is not the original repository history,
+a retained export or a hosted Git remote. It reads one immutable worktree and
+verifies content by pinned hashes without committing or writing on the server.
+The complete export refuses sensitive/noncanonical paths, symlinks and other
+non-regular modes rather than silently dropping files. Bounds are 512 files,
+1MiB/file, 8MiB source content and 9MiB encoded bundle. Executable modes and
+binary content are preserved.
+
+`simmis_workspace-bundle-chunk {room, expected-snapshot, offset, length?}`
+returns at most 16384 bytes as base64. Every chunk rechecks room read authority
+and the current worktree identity. If editing changes the snapshot, the client
+must restart; bytes from different snapshots are never combined. This initial
+transport recomputes the bounded bundle for each chunk, not a high-throughput
+Git transport or persistent export cache.
+
+The local downloader reuses the private login session from `mcp_client.py`,
+disables proxies/redirects, verifies snapshot/offset/length and full SHA256, and
+publishes a mode-600 file only after verification. Existing destinations,
+including symlinks, are never replaced. With the private SSH tunnel running:
+
+```sh
+python3 scripts/mcp_workspace.py --room ROOM_SLUG --output room.bundle
+git clone -b simmis-snapshot ./room.bundle room-checkout
+```
+
+The default MCP URL is `http://127.0.0.1:47990/mcp`; `--mcp-url` and `--session`
+select another tunnel/private login. The downloader does not execute Git or
+room code. Clone/inspection is a separate local action. Newly issued read
+credentials include these two reads; an existing credential's signed tool
+ceiling remains unchanged.
+
 Each authenticated principal carries a signed exact tool ceiling, independent
 of the profile a client requests. Tokens with no capability claims retain only
 the original five conversation/run tools, including through MCP resources.
@@ -285,6 +317,22 @@ callback. Such a worker keeps cleanup unresolved and capacity held rather than
 being reported as physically stopped. This is explicitly a trusted-operator
 path, not safe arbitrary-user checker hosting or a hard memory/process fence.
 Checker policy and effective grading parameters are part of verifier identity.
+
+An optional `calibration.edn` is validated without execution when preparing the
+benchmark. It contains one `:reference` answer map and one to four `:damaged`
+variants (`{:files {"/out/path" "text"} :loses [:check]}`). A dataset bundle
+must name an existing calibration `:case` to select its gold. The complete set
+is bounded to 100 files / 2MiB.
+Before each candidate starts, its owned world-setup worker runs all these
+answers with one shared 20-second deadline and allocation account. The reference
+must pass every check; every damaged answer must return actual `false` for its
+declared lost checks and score below the reference. Failure prevents candidate
+execution. This bound is per attempt, not once for the whole benchmark.
+Calibration answers and gold stay in trusted checker inputs, never candidate
+files. Setup/calibration evidence is retained with the Attempt; missing
+calibration is explicitly `:not-provided`. Neither successful calibration nor
+execution promotes checker trust. Cancellation retains physical ownership and
+the installation permit until the setup worker actually exits.
 
 Generic bounded tasks and benchmark candidates select the versioned
 `:simmis/file-worker` sandbox extension. This is deliberately a file/code
