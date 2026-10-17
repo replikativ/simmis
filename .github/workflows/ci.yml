@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test-and-build:
+  backend-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -42,26 +42,68 @@ jobs:
           restore-keys: |
             clojure-${{ runner.os }}-
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: npm
-
-      - name: Install frontend dependencies
-        run: npm ci
-
       - name: Install audio and MCP helper dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg python3
 
       - name: Run backend tests
         run: clojure -X:test
 
-      - name: Test private MCP client helper
+  helper-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test private MCP and worker helpers
         run: python3 -m unittest discover -s test/scripts
+
+  frontend-tests-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Set up Clojure CLI
+        uses: DeLaGuardo/setup-clojure@13.6.1
+        with:
+          cli: latest
+      - name: Cache Clojure dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+            .cpcache
+          key: frontend-clojure-${{ runner.os }}-${{ hashFiles('deps.edn') }}
+          restore-keys: |
+            frontend-clojure-${{ runner.os }}-
+            clojure-${{ runner.os }}-
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install frontend dependencies
+        run: npm ci
 
       - name: Build production frontend
         run: npm run release
 
       - name: Execute client lifecycle tests in Chrome
         run: npm run test:browser
+
+  # Preserve the original required-check name while independent jobs still
+  # report their results when another gate fails.
+  test-and-build:
+    needs: [backend-tests, helper-tests, frontend-tests-and-build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every gate
+        run: |
+          test '${{ needs.backend-tests.result }}' = success
+          test '${{ needs.helper-tests.result }}' = success
+          test '${{ needs.frontend-tests-and-build.result }}' = success
