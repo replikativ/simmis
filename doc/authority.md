@@ -393,6 +393,21 @@ still decides those. The explicit `physical-python-client-roundtrip!` REPL
 fixture exercises real HTTP claim/download/execution/stop/completion without
 model calls; standard CI retains the non-executing synthetic client fixture.
 
+`ops/worker-inference.clj` supplies a host-only inference boundary, not a
+network listener or launched worker. Its credentialless `DirectChat` provider
+reuses Dvergr's native message formatting and existing Run/tool loop. Only
+bounded text conversations and tool-schema data cross an explicitly supplied
+exchange function; model selection stays with local configuration. Credentials,
+provider URLs, room/native-MCP routing and callbacks do not cross it. Tool calls
+returned by inference remain data for the executor, never broker-side actions.
+The serial broker reserves each sequence before invoking its local inference
+function and closes the session after any ambiguous or invalid exchange. Caps
+cover 32 inference exchanges and aggregate serialized data, with conservative
+allocation checks before JSON encoding; they are not token or exact upstream
+dispatch accounting. The embedding runner owns transport framing, deadlines,
+provider retry policy and physical containment. This primitive does not mount
+credentials, launch a subscription provider or establish those runner guarantees.
+
 The host-only `ops/worker-work.clj` adapter submits through the existing Jobs/
 Runs rather than a remote-executor registry. It requires the worker's enrolling
 human and current room read/merge authority, explicit admission allowance,
