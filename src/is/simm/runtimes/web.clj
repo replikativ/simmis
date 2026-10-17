@@ -791,10 +791,15 @@
     ;; authenticated. Missing affine world authority remains unresolved; this
     ;; does not invent shutdown or rerun an external task. Receipt handlers
     ;; stay independent of the potentially blocking recovery join.
-    (ctx/with-server-context
-      ((requiring-resolve 'is.simm.ops.worker-recovery/recover!)
-       ((requiring-resolve 'is.simm.model.system-db/get-conn)) ctx/server-context
-       (requiring-resolve 'is.simm.agents.room-agents/live-room)))
+    (try
+      (ctx/with-server-context
+        ((requiring-resolve 'is.simm.runtimes.worker-maintenance/prepare!)
+         ((requiring-resolve 'is.simm.model.system-db/get-conn)) ctx/server-context
+         (requiring-resolve 'is.simm.agents.room-agents/live-room)))
+      (catch Exception e
+        (log/log! {:level :error :id ::worker-recovery-prepare-failed
+                   :msg "Worker startup recovery held; shutdown transport remains available"
+                   :data {:exception-class (.getName (class e))}})))
 
     (ctx/with-server-context
       ((requiring-resolve 'is.simm.ops.benchmarks/recover!)
@@ -1001,6 +1006,20 @@
                        :msg "Telegram channel failed to start"
                        :data {:error (str e)}})))
 
+        ;; Reconcile acknowledged external leases independently of their fast
+        ;; receipt handlers. New worker admission refuses an unhealthy loop;
+        ;; stopping admission does not remove existing shutdown/recovery.
+        (try
+          ((requiring-resolve 'is.simm.runtimes.worker-maintenance/start!)
+           (system-db/get-conn) ctx/server-context
+           (requiring-resolve 'is.simm.agents.room-agents/live-room))
+          (catch Exception e
+            ;; Existing leases must still be able to acknowledge shutdown.
+            ;; New admission/claims independently fail the readiness gate.
+            (log/log! {:level :error :id ::worker-recovery-start-failed
+                       :msg "Worker recovery unavailable; new claims are held"
+                       :data {:exception-class (.getName (class e))}})))
+
         ;; Private MCP uses this process's rooms, identity and authority.
         ;; Disabled unless explicitly configured; never bound publicly.
         (try ((requiring-resolve 'is.simm.runtimes.mcp/start!))
@@ -1044,7 +1063,9 @@
   []
   (when (:started? @server-state)
     (try ((requiring-resolve 'is.simm.runtimes.mcp/stop!))
-         (finally (application-ops/stop!)))
+         (finally
+           (try ((requiring-resolve 'is.simm.runtimes.worker-maintenance/stop!))
+                (finally (application-ops/stop!)))))
     (mail-accounts/close-all!)
     ;; Revokes deleting GC for this home along with the loop.
     (try

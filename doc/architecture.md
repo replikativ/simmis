@@ -115,7 +115,12 @@ The separate host-only `ops/worker-recovery.clj` reconciles orphan exposure
 without execution or late import. Missing world disposal authority keeps
 cleanup unresolved; a terminal Run or discarded projection is not physical
 cleanup proof. Startup invokes it after orphan Run reconciliation and before
-MCP claims are accepted. Recurring post-receipt recovery is not yet installed.
+MCP claims are accepted. `runtimes/worker-maintenance.clj` owns one periodic
+reconciliation resource independent of fast receipt delivery. An initial hold
+or unhealthy resource prevents new claims/admission but preserves existing
+lease shutdown. `scripts/worker_driver.py` supplies private operator enrollment,
+explicit allowance/task submission and one-shot local SCI execution/recovery;
+its login binds the exact MCP destination, including explicit tunnel aliases.
 Recorded Attempt evidence is distinct from mutable workspace files. See
 [authority.md](authority.md#private-mcp).
 Read-only current-workspace Git bundles use Geschichte's Git object/pack

@@ -7,7 +7,8 @@
             [is.simm.ops.worker-service :as service]
             [is.simm.ops.worker-work :as work]
             [is.simm.runtimes.auth-config :as auth]
-            [is.simm.runtimes.context :as context]))
+            [is.simm.runtimes.context :as context]
+            [is.simm.runtimes.worker-maintenance :as maintenance]))
 
 (def room-id #uuid "88888888-8888-4888-8888-888888888888")
 (def worker-id #uuid "99999999-9999-4999-8999-999999999999")
@@ -24,6 +25,7 @@
 (use-fixtures :each
   (fn [f]
     (with-redefs [control/admission-open? (constantly true)
+                  maintenance/claims-ready? (constantly true)
                   api/room! (fn [_ arg] (is (= "room" arg)) [::conn room-id ::room])
                   registry/get-model (constantly {:provider :codex-subscription})
                   auth/get-auth-config (constantly {:jwt {:secret "fixture-issuer-key"}})]
@@ -60,6 +62,16 @@
         (is (thrown? clojure.lang.ExceptionInfo (call op args))))
       (is (empty? @writes))
       (is (= {:revoked true} (call :simmis/local-worker-revoke revoke)))
+      (is (= [:revoke] @writes)))))
+
+(deftest missing-recovery-service-refuses-new-admission-without-removing-revoke
+  (let [writes (atom [])]
+    (with-redefs [maintenance/claims-ready? (constantly false)
+                  service/enroll! (fn [& _] (swap! writes conj :enroll))
+                  service/revoke! (fn [& _] (swap! writes conj :revoke))]
+      (is (thrown? clojure.lang.ExceptionInfo (call :simmis/local-worker-enroll enroll)))
+      (is (empty? @writes))
+      (call :simmis/local-worker-revoke revoke)
       (is (= [:revoke] @writes)))))
 
 (deftest closed-config-and-registry-validation-do-not-open-native-provider-auth

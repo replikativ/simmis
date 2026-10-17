@@ -796,8 +796,11 @@ above. It is not a Git push endpoint or an export of historical Attempts.
 The selected MCP surface authors, runs and benchmarks named workflows;
 ordinary `simmis_task` remains a separate free-form task. Proposal promotion is available in
 the browser, not as a selected MCP write. Local worker controls require their
-separate explicit credential and admission setting; the turnkey local driver
-and recurring orphan reconciliation are not yet installed. None of those operations should be simulated
+separate explicit credential and admission setting. The private local driver
+binds its MCP destination during login, uses canonical enrolled room identities,
+and never funds implicitly. Periodic orphan reconciliation is independent of
+receipt delivery; an unhealthy/initially held recovery resource blocks new
+claims, not existing lease shutdown. None of those operations should be simulated
 by issuing an unrestricted eval or exposing an operator REPL to a client.
 
 ### Connecting a second operator

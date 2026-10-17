@@ -11,6 +11,7 @@
             [is.simm.ops.worker-service :as service]
             [is.simm.ops.worker-work :as work]
             [is.simm.runtimes.auth-config :as auth]
+            [is.simm.runtimes.worker-maintenance :as maintenance]
             [malli.core :as m]))
 
 (defn admission-open?
@@ -38,8 +39,8 @@
                             [:settlement [:enum "review" "discard"]]]]])
 
 (defn- require-admission! []
-  (when-not (admission-open?)
-    (ops/op-error! "New local worker admission is disabled" ::disabled 503)))
+  (when-not (and (admission-open?) (maintenance/claims-ready?))
+    (ops/op-error! "New local worker admission is disabled or recovery is unavailable" ::disabled 503)))
 
 (defn- uuid! [value]
   (or (parse-uuid value) (ops/op-error! "Invalid local worker identity" ::invalid 400)))

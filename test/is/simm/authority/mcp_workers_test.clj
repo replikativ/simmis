@@ -1,7 +1,7 @@
 (ns is.simm.authority.mcp-workers-test
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
-            [clojure.test :refer [deftest is]]
+            [clojure.test :refer [deftest is use-fixtures]]
             [datahike.api :as d]
             [dvergr.artifact :as artifact]
             [dvergr.catalog.workspace :as workspace]
@@ -19,10 +19,14 @@
             [is.simm.ops.worker-files-test :as file-fixture]
             [is.simm.ops.worker-service :as service]
             [is.simm.ops.workflows-test :as workspace-fixture]
+            [is.simm.runtimes.worker-maintenance :as maintenance]
             [jsonista.core :as json]
             [org.httpkit.client :as client])
   (:import [java.util Base64 Date]
            [java.util.concurrent TimeUnit]))
+
+;; These tests build their ownership graphs explicitly without web startup.
+(use-fixtures :each (fn [f] (with-redefs [maintenance/claims-ready? (constantly true)] (f))))
 
 (defn- session [principal]
   (let [ctx (server/session-context (fn [_]) (surface/selection {:profile :admin :toolsets #{:host}}) principal)]

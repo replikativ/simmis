@@ -171,10 +171,79 @@ or tokens, and no control automatically funds an allowance.
 
 Startup fences orphaned assignments after Dvergr hydration and before MCP
 claims are accepted, retaining unresolved world cleanup rather than faking it.
-This is not yet an enabled turnkey enrollment/runner CLI or recurring recovery
-service. Receipt handlers never wait for orphaned Run-world reconciliation.
+An application-owned single-thread recovery service checks pending requests
+with a30-second fixed delay. It never executes work, imports late output or
+certifies an Attempt. Receipt handlers never wait for its cleanup joins.
+Initial fencing failure or an unhealthy service holds new human admission and
+worker claims, but never removes existing lease heartbeat/stop. Shutdown joins
+the service before releasing its handle; a failed join retains ownership.
 Protocol readiness or a guest result does not prove shutdown. JVM flags alone
 are not containment; SCI is not filesystem isolation against a JVM escape.
+
+### Local SCI worker driver
+
+Use `scripts/worker_driver.py` from the trusted local installation, not as an
+agent tool. It requires Linux user systemd/cgroup-v2 and the system Python's
+`dbus`/`gi` packages. Build the worker jar above and inspect its SHA256. Keep a
+dedicated private state directory per enrollment; its parent must already
+exist. Never copy it to another machine, delete unresolved Run journals or
+start independent controller roots for the same worker identity.
+
+First log in with a separate operator-helper session and explicitly bind the
+MCP SSH-tunnel destination. This binding is set during login, not accepted from
+tasks. Changing hosts or ports requires another explicit login; old sessions
+without a binding may only use their own origin's `/mcp` endpoint.
+
+```bash
+/usr/bin/python3 scripts/mcp_client.py login --origin https://dev.simm.is \
+  --session /private/operator-session.json --access worker-control \
+  --mcp-endpoint http://127.0.0.1:47990/mcp
+
+/usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
+  --session /private/operator-session.json enroll \
+  --endpoint http://127.0.0.1:47990/mcp --room ROOM_HANDLE \
+  --jar /absolute/simmis-worker.jar --sha256 REVIEWED_SHA256 \
+  --model REGISTERED_NATIVE_CODEX_MODEL
+```
+
+Enrollment runs a credential-free packaged preflight, durably records intent
+before the network call, and privately saves only the room-attenuated worker
+credential. An exact retry recovers the same enrollment. Local package paths
+and the subscription login are not uploaded. Subsequent human controls use the
+canonical room UUID in the receipt, never a potentially renamed/reused slug.
+
+Funding is a separate explicit action. Choose a fresh request UUID for each
+new intent and reuse it on a retry:
+
+```bash
+/usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
+  --session /private/operator-session.json allowance --request-id REQUEST_UUID \
+  --admissions 1
+
+/usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
+  --session /private/operator-session.json task --request-id ANOTHER_REQUEST_UUID \
+  --task 'Read the selected input and write a report under /out/' \
+  --path docs/input.md --timeout-ms 180000 --settlement review
+
+/usr/bin/python3 scripts/worker_driver.py --state /private/room-worker run \
+  --codex-home /absolute/local/codex-login-directory
+```
+
+`run` handles one queued assignment, or accepts `--run RUN_UUID`. The controller
+receives no human credential; the guest receives neither credential family nor
+the native login. This uses Dvergr's native subscription provider and SCI loop,
+not the Codex CLI's tool harness. The native login is read only by the broker;
+an expired login fails without refresh or persistence. Renew it separately.
+Job/Run state and captured results appear in the existing room inspectors and
+artifact MCP reads, with subscription usage explicitly unreported.
+
+After interruption or a lost completion reply, use
+`worker_driver.py --state /private/room-worker reconcile --run RUN_UUID`.
+This never relaunches or sends GO, and does not need the artifact or login to
+remain installed. Missing physical ownership metadata stays unresolved rather
+than being treated as stopped. `revoke` uses the private human session and
+remains available with new admission disabled; it still requires the worker
+to acknowledge actual physical stop.
 
 ## Writes land on forks
 

@@ -2,7 +2,8 @@
 
 Login keeps a private web session locally, never the password. Only a short-lived
 MCP credential is passed to the coding client (read-only unless login explicitly
-uses --access work). No SSH/operator REPL
+uses --access work). The separate worker-control mode is only for the private
+operator driver, with an explicitly bound MCP destination. No SSH/operator REPL
 credentials are needed by this program. Requires Python 3 on Linux/macOS.
 """
 import argparse
@@ -32,6 +33,18 @@ def origin(value):
                     (url.scheme == "http" and url.hostname in ("127.0.0.1", "::1", "localhost")))):
         raise ValueError("Use an HTTPS origin, or HTTP on loopback only")
     return urllib.parse.urlunsplit((url.scheme, url.netloc, "", "", ""))
+
+
+def mcp_endpoint(value):
+    if (not isinstance(value, str) or not 1 <= len(value) <= 2048
+            or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+        raise ValueError("Expected a canonical MCP destination")
+    parsed = urllib.parse.urlsplit(value)
+    origin(urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", "")))
+    if (urllib.parse.urlunsplit(parsed) != value or parsed.path != "/mcp"
+            or parsed.query or parsed.fragment):
+        raise ValueError("Expected a canonical /mcp destination")
+    return value
 
 
 def post(base, route, body=None, token=None):
@@ -101,6 +114,37 @@ def exchange(path, session):
     return credential()
 
 
+def session_credential(path, *, expected_mode, expected_endpoint):
+    """Private operator-helper API. Never upgrades a stored session's mode.
+
+    The returned token is credential material, not a tool argument or log.
+    Serialize refresh rotation with the same permanent lock as `headers`.
+    """
+    path = Path(path).expanduser().absolute()
+    lock_fd = private_file(str(path) + ".lock", os.O_CREAT | os.O_RDWR)
+    with os.fdopen(lock_fd, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with os.fdopen(private_file(path, os.O_RDONLY)) as stream:
+            encoded = stream.read(1048577)
+        if len(encoded) > 1048576:
+            raise ValueError("Private MCP session exceeds its bound")
+        session = json.loads(encoded)
+        if session.get("mcp_mode", "read") != expected_mode:
+            raise ValueError("Explicit matching MCP login mode is required")
+        # A tunnel alias is an explicit LOGIN choice, never a room/task or
+        # per-operation destination. Old sessions default only to their own
+        # HTTPS origin's /mcp; they do not silently trust new hosts/ports.
+        destination = mcp_endpoint(expected_endpoint)
+        bound = mcp_endpoint(session.get("mcp_endpoint", origin(session["origin"]) + "/mcp"))
+        if destination != bound:
+            raise ValueError("MCP destination differs from the private login binding")
+        result = exchange(path, session)
+        token = result.get("token")
+        if not isinstance(token, str) or not token:
+            raise ValueError("No MCP credential returned")
+        return token
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("login", "headers"))
@@ -110,9 +154,10 @@ def main():
     parser.add_argument("--email")
     parser.add_argument("--access", choices=("read", "work", "worker-control"),
                         help="Login only: explicitly choose work or private worker-control access; default read")
+    parser.add_argument("--mcp-endpoint", help="Login only: explicitly bind an SSH-tunnel /mcp destination")
     args = parser.parse_args()
-    if args.command != "login" and args.access is not None:
-        raise ValueError("Choose access mode during login, not header renewal")
+    if args.command != "login" and (args.access is not None or args.mcp_endpoint is not None):
+        raise ValueError("Choose access mode and destination during login, not header renewal")
     path = args.session.expanduser().absolute()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock_fd = private_file(str(path) + ".lock", os.O_CREAT | os.O_RDWR)
@@ -121,11 +166,12 @@ def main():
         if args.command == "login":
             # Validate the destination before asking for the password.
             base = origin(args.origin)
+            endpoint = mcp_endpoint(args.mcp_endpoint or base + "/mcp")
             email = args.email or input("Simmis email: ")
             result = post(base, "/auth/login", {"email": email, "password": getpass.getpass()})
             session = {"origin": base, "access_token": result["access_token"],
                        "refresh_token": result["refresh_token"],
-                       "mcp_mode": args.access or "read"}
+                       "mcp_mode": args.access or "read", "mcp_endpoint": endpoint}
             # Check MCP availability before replacing an existing session.
             credential = post(base, "/auth/mcp-token", {"mode": session["mcp_mode"]},
                               token=session["access_token"])

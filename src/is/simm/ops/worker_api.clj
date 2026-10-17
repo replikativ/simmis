@@ -5,11 +5,15 @@
             [dvergr.ops :as ops]
             [is.simm.model.system-db :as system-db]
             [is.simm.ops.worker-service :as service]
+            [is.simm.runtimes.worker-maintenance :as maintenance]
             [org.replikativ.spindel.engine.core :as ec]))
 
-(defn- invoke [host operation args]
+(defn- invoke [host op operation args]
   (binding [ec/*execution-context* (:execution-ctx host)]
     (try
+      (when (and (contains? #{:simmis/worker-pending :simmis/worker-claim} op)
+                 (not (maintenance/claims-ready?)))
+        (ops/op-error! "Worker claims await server recovery" ::recovery-unavailable 503))
       (operation (system-db/get-conn) ops/*principal* args)
       (catch clojure.lang.ExceptionInfo error
         (if-let [status (get {:is.simm.ops.worker-service/invalid 400
@@ -33,7 +37,7 @@
                     ;; Worker-only authorization resolves the durable enrollment
                     ;; and exact Run, never a caller-supplied room handle.
                     :authz {:action (if (= :read kind) :read :write) :resource (constantly [:global])}
-                    :doc description :impl (fn [host args] (invoke host operation args))}]))
+                    :doc description :impl (fn [host args] (invoke host op operation args))}]))
         [[:simmis/worker-pending :read service/pending-schema service/pending
           "List at most ten queued Run UUIDs for this enrollment only. No tasks, files, other workers or room discovery. Persist the selected Run, nonce and lease secret locally BEFORE claim."]
          [:simmis/worker-claim :write service/claim-schema service/claim!
