@@ -501,8 +501,9 @@ recovery excludes these requests; local process death does not release their
 external ownership fence. Application startup registers the worker transport
 and separate human control tools. The `worker-control` token mode is a new
 versioned ceiling, never an expansion of existing read/work credentials. Its
-five controls enroll, revoke, explicitly provision admission units, and submit
-one bounded selected-file task or pinned saved workflow. Fresh tokens also
+seven controls enroll, revoke, list one's own enrollments, explicitly provision
+admission units, and submit a bounded selected-file task, pinned saved workflow
+or bounded benchmark. Fresh tokens also
 include workflow list/source/check reads; previously issued literal tool lists
 remain unchanged. It grants no generic eval, ordinary task
 submission or workflow-writing capability. Use this credential only in a
@@ -566,8 +567,9 @@ the work credential. Existing signed tool ceilings do not gain these tools.
 The room header's **Workflows** tab uses fixed authenticated browser adapters
 over the same operations. It loads bounded source for an editable local draft,
 saves with its source revision, and launches only a saved valid bundle. Its
-ordinary Run and operator-only benchmark forms require an explicit model and
-finite resource limits. Funding and submission are separate confirmations;
+ordinary Run and operator-only benchmark forms require finite resource limits.
+Hosted execution requires an explicit model; local SCI execution uses the model
+pinned by the explicitly selected enrollment. Funding and submission are separate confirmations;
 neither runs automatically. Failed submission receipts can be retried with the
 same immutable request ID and payload, including after source reload or form
 changes. The UI retains an already received admission receipt during a failed

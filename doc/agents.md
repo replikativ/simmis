@@ -152,12 +152,13 @@ Recovery may stop an admitted unit or retry stopped output, never relaunch it;
 it does not require the runtime jar or native login to remain installed.
 
 The application registers six separately authenticated worker transport
-operations and five human local-worker controls: enrollment, revocation,
-explicit admission allowance, selected-file task submission and pinned saved
-workflow submission. The latter shares native workflow source/parameter/input
+operations and seven human local-worker controls: enrollment, revocation,
+own-worker listing, explicit admission allowance, selected-file task submission,
+pinned saved workflow submission and bounded benchmark submission. Workflow
+submission shares native workflow source/parameter/input
 preparation but uses the enrolled local model, not a server provider credential.
-Human controls
-require a separately requested `worker-control` MCP token. Neither an existing
+Over MCP, human controls
+require a separately requested `worker-control` token. Neither an existing
 read token nor a work token gains them; this operator-helper session should not
 be attached as an ordinary model tool session. Worker/lease bearer prefixes
 authenticate exclusively as workers, never by falling through to human/admin
