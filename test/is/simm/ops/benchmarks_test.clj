@@ -4,6 +4,7 @@
             [dvergr.agent.environment :as environment]
             [dvergr.agent.evaluation :as evaluation]
             [dvergr.agent.experiment.runner :as runner]
+            [dvergr.agent.experiment :as experiment]
             [dvergr.agent.roster :as roster]
             [dvergr.agent.trajectory :as trajectory]
             [dvergr.agent.workflow :as workflow]
@@ -254,8 +255,16 @@
                  (is (zero? @invoked))
                  (is (= 1 @retired))
                  (is (= (work/resources (:limits request)) (resource/balance control)))
-                 (doseq [entry attempts]
-                   (is (zero? (:attempt/reward (store/-load-attempt (:store control) (store/conversation-id control) (:attempt/id entry)))))))))
+                 ;; Setup failure precedes certification, not a fabricated
+                 ;; zero-reward Attempt. An empty loop previously hid this.
+                 (is (empty? attempts))
+                 (let [children (->> (run/runs control {:root-run-id (:job submitted) :limit 1000})
+                                     (remove #(= (:job submitted) (:run/id %))) vec)]
+                   (is (= 1 (count children)))
+                   (is (= :failed (:run/status (first children))))
+                   (is (= :world-setup-failed (:run/reason (first children))))
+                   (is (re-find #"Checker calibration failed" (:run/error (first children)))))
+                 (is (empty? (experiment/scorecards control {}))))))
            (finally (discourse/close-room! clean))))))))
 
 (deftest cancelled-calibration-retains-capacity-until-physical-exit

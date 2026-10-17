@@ -75,6 +75,18 @@ after acknowledgement and DB cleanup. Returned assignments are private host
 data, not portable Run results or import authority: an adapter must construct
 sanitized evidence and separately check current authority before importing.
 
+`ops/worker-output.clj` is the trusted import primitive for that isolated Run
+world. It refuses parent rooms, validates output against the frozen selected
+inputs, and checks an adapter-supplied current-authority predicate at every
+file/commit effect and before returning. Content reuses Dvergr's atomic batch;
+executable mode changes use a second gated commit under the same workspace
+lock. These two commits are not one atomic transaction. Final repository
+read-back checks bytes, modes and deletions, including effects intercepted by
+world handlers. A failure may leave partial changes in the isolated world,
+never trunk, and must fail the Run. The adapter supplies the verified immutable
+assignment payload and current canonical Run world; this helper neither
+certifies successful task execution nor interprets a nonzero CLI exit code.
+
 ## Objects, morphisms, instances
 
 The model is a category, called **S**, stored as ordinary Datahike entities.
