@@ -66,36 +66,37 @@
                   (operation conn room-id room))))
 
 (def specifications
-  {:simmis/local-worker-enroll
-   {:kind :write :schema enroll-schema :authz {:action :write}
-    :doc "HUMAN control only: explicitly enroll one native Codex SCI worker in this room. Requires current human room read/merge and enabled new admission. Stable worker UUID/config makes exact retries return the same bounded worker credential; a changed owner/room/config conflicts. No local subscription login is sent to the server. Use only a private operator helper, not an ordinary model tool session."
-    :impl (fn [host args]
-            (invoke host enroll-schema args true
-                    (fn [conn id _]
-                      (model! (:config args))
-                      (service/enroll! conn ops/*principal* id (secret!) (uuid! (:worker args)) (:config args)))))}
-   :simmis/local-worker-revoke
-   {:kind :write :schema revoke-schema :authz {:action :write}
-    :doc "HUMAN control only: revoke this room's delegated worker. Works while new admission is disabled. Existing leases retain heartbeat/stop acknowledgement only; revocation never fabricates physical shutdown."
-    :impl (fn [host args]
-            (invoke host revoke-schema args false
-                    (fn [conn id _] (service/revoke! conn ops/*principal* id (uuid! (:worker args))))))}
-   :simmis/local-worker-allowance
-   {:kind :write :schema allowance-schema :authz {:action :write}
-    :doc "HUMAN control only: explicitly provision 1..32 local-worker-admission units for this room. These units are NOT measured dollars or tokens. Never funds automatically; exact request-id retries are idempotent. Requires current room read/merge and enabled new admission."
-    :impl (fn [host args]
-            (invoke host allowance-schema args true
-                    (fn [conn id room]
-                      (work/provision! conn (:execution-ctx host) ops/*principal* id room
-                                       (-> (dissoc args :room) (update :request-id uuid!))))))}
-   :simmis/local-worker-task
-   {:kind :write :schema task-schema :authz {:action :write}
-    :doc "HUMAN control only: submit one finite selected-file task to your enrolled room worker using the existing Job/Run/Attempt flow. Consumes an explicitly funded admission, not verified provider usage. Frozen files only, review/discard settlement; worker cannot certify or merge. Exact request-id retries observe one Job. Requires current room read/merge and enabled new admission."
-    :impl (fn [host args]
-            (invoke host task-schema args true
-                    (fn [conn id room]
-                      (work/submit! conn (:execution-ctx host) ops/*principal* id room
-                                    (-> (dissoc args :room) (update :request-id uuid!) (update :worker uuid!))))))}})
+  (api/room-specifications
+   {:simmis/local-worker-enroll
+    {:kind :write :schema enroll-schema :authz {:action :write}
+     :doc "HUMAN control only: explicitly enroll one native Codex SCI worker in this room. Requires current human room read/merge and enabled new admission. Stable worker UUID/config makes exact retries return the same bounded worker credential; a changed owner/room/config conflicts. No local subscription login is sent to the server. Use only a private operator helper, not an ordinary model tool session."
+     :impl (fn [host args]
+             (invoke host enroll-schema args true
+                     (fn [conn id _]
+                       (model! (:config args))
+                       (service/enroll! conn ops/*principal* id (secret!) (uuid! (:worker args)) (:config args)))))}
+    :simmis/local-worker-revoke
+    {:kind :write :schema revoke-schema :authz {:action :write}
+     :doc "HUMAN control only: revoke this room's delegated worker. Works while new admission is disabled. Existing leases retain heartbeat/stop acknowledgement only; revocation never fabricates physical shutdown."
+     :impl (fn [host args]
+             (invoke host revoke-schema args false
+                     (fn [conn id _] (service/revoke! conn ops/*principal* id (uuid! (:worker args))))))}
+    :simmis/local-worker-allowance
+    {:kind :write :schema allowance-schema :authz {:action :write}
+     :doc "HUMAN control only: explicitly provision 1..32 local-worker-admission units for this room. These units are NOT measured dollars or tokens. Never funds automatically; exact request-id retries are idempotent. Requires current room read/merge and enabled new admission."
+     :impl (fn [host args]
+             (invoke host allowance-schema args true
+                     (fn [conn id room]
+                       (work/provision! conn (:execution-ctx host) ops/*principal* id room
+                                        (-> (dissoc args :room) (update :request-id uuid!))))))}
+    :simmis/local-worker-task
+    {:kind :write :schema task-schema :authz {:action :write}
+     :doc "HUMAN control only: submit one finite selected-file task to your enrolled room worker using the existing Job/Run/Attempt flow. Consumes an explicitly funded admission, not verified provider usage. Frozen files only, review/discard settlement; worker cannot certify or merge. Exact request-id retries observe one Job. Requires current room read/merge and enabled new admission."
+     :impl (fn [host args]
+             (invoke host task-schema args true
+                     (fn [conn id room]
+                       (work/submit! conn (:execution-ctx host) ops/*principal* id room
+                                     (-> (dissoc args :room) (update :request-id uuid!) (update :worker uuid!))))))}}))
 
 (defn install! []
   (doseq [[op spec] specifications] (ops/register-op! op spec))
