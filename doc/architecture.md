@@ -62,6 +62,11 @@ chat dispatch and one bounded isolated candidate, not a raw database writer or
 unrestricted eval endpoint. The typed system-DB admission journal makes request
 retries observe existing Dvergr Jobs/Runs; it is not a second workflow engine.
 Workflow bundles are versioned Geschichte files. An explicitly admitted,
+exact-revision `simmis_workflow-run` uses the ordinary bounded candidate and
+completion evaluator: declared literal parameters and frozen source/inputs
+are materialized in its inherited room fork, not trunk. Its source pin and
+input replacements appear in the proposed diff; it never implicitly executes
+the bundle's checker or treats completion as correctness. Separately, an
 exact-revision offline benchmark reuses Dvergr's experiment runner and room
 Attempts/Scorecards; it requires both installation-operator and room merge
 authority. Its clean fixture room is provisioned outside the authoring room,

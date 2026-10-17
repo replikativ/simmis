@@ -284,7 +284,7 @@ same one-hour read capability by default. A closed JSON body may choose only
 or arbitrary scopes. Empty bodies retain read access. Version-two work credentials
 carry signed `mode=work` and an exact ceiling of the selected reads plus
 `simmis_post`, `simmis_task`, `simmis_work-allowance`, `simmis_work-status` and
-`job_cancel`, `simmis_workflow-write`, `simmis_workflow-check` and
+`job_cancel`, `simmis_workflow-write`, `simmis_workflow-check`, `simmis_workflow-run` and
 `simmis_benchmark`. Old credentials
 and saved client sessions do not gain writes or newly added tool names.
 only the authenticated existing human may obtain their own credential. It
@@ -521,6 +521,34 @@ A successful write remains acknowledged even if the resulting bundle is
 incomplete or inspection fails. The returned bundle content ID identifies the
 inspected revision; it is not a correctness certificate or execution admission.
 
+`simmis_workflow-run` reuses an inspected named workflow as one ordinary
+bounded task, not a benchmark or authored verifier. It requires current room
+read AND merge authority, the same as `simmis_task`. Its closed arguments pin
+`expected-bundle`, an explicit model and finite limits; a case pack also
+requires an explicit existing `case`. It accepts overrides for declared,
+unqualified literal string `params` only (32 parameters, 4000 characters each,
+64 KiB total), expanded once into a task bounded to 16 KiB UTF-8. Values are
+never evaluated or recursively substituted, and paths are not interpolated.
+Optional `inputs` map canonical absolute file paths to text. Shared fixtures,
+selected-case fixtures, then explicit inputs overlay in that order, bounded
+together to 100 files, 512 KiB/file and 2 MiB. Inputs cannot overlap the pinned
+bundle subtree or its ancestors. Profiles other than developer, capture roots
+other than `/out`, and web/judge policies are refused rather than inherited.
+
+Source and inputs come from one immutable bundle snapshot. The WorldSetup
+materializes that exact named bundle subtree in the inherited Run fork,
+including removing newer helper files, before seeding its input files. Bundle
+files are data: the host never evaluates checker/calibration or arbitrary setup
+hooks. Other inherited room files remain available; unlike benchmarking, this
+is not a gold-secret isolation boundary. Source pinning and fixture/input
+replacements are fork-local changes visible in the proposed diff, not writes
+to trunk. Review/discard settlement and the ordinary completion-only evaluator
+are unchanged; completion is not correctness. The journal pins the original
+submission, effective parameters, rendered environment, source and input data.
+Identical retries return the original Job before rereading files or resolving a
+model; changed intent conflicts, and current authority is checked on every
+retry. Boot recovery includes this request kind and never restarts it.
+
 `simmis_benchmark` requires BOTH current room read/merge permission and
 installation-operator status (`:party/role :admin`). Neither room ownership
 alone nor installation-admin status without room access admits authored
@@ -678,6 +706,20 @@ Only room write authority is needed to author this bundle. Call
 Neither write nor check executes the checker. Copy the successful inspection's
 `bundle` UUID into `expected-bundle` below; do not invent one.
 
+To use the saved workflow normally, call `simmis_workflow-run` (room merge
+authority is sufficient; no installation-operator role is required):
+
+```json
+{"room":"ROOM_SLUG","request-id":"fc5609b0-a2d2-46ed-b7ef-ef5bb60ee5e8","name":"echo","expected-bundle":"BUNDLE_UUID_FROM_INSPECTION","model":"MODEL_ID","inputs":{"/docs/input.md":"An explicit input document\n"},"limits":{"budget-microdollars":25000,"max-dispatches":4,"max-model-steps":4,"timeout-ms":90000,"settlement":"review"}}
+```
+
+This runs the saved task and captures its output without invoking `checker.clj`.
+The source pin and explicit input replacement are part of the proposed changes.
+For a parameterized bundle, add a `params` object containing only names declared
+by `workflow.edn`. Provision additional finite allowance if earlier work has
+consumed the example allowance; these are alternative examples, not four free
+dispatches for every submission.
+
 An installation operator who ALSO has the room's read/merge authority can
 then call `simmis_benchmark`:
 
@@ -700,9 +742,8 @@ then `simmis_attempt-file` for their bounded byte chunks; do not use
 room files locally as Git, use the verified snapshot downloader described
 above. It is not a Git push endpoint or an export of historical Attempts.
 
-The selected MCP surface currently authors and benchmarks named workflows;
-ordinary `simmis_task` remains a free-form task. It does not accept a workflow
-name, parameters or an `expected-bundle`. Proposal promotion is available in
+The selected MCP surface authors, runs and benchmarks named workflows;
+ordinary `simmis_task` remains a separate free-form task. Proposal promotion is available in
 the browser, not as a selected MCP write. Local worker enrollment/execution is
 also not installed at startup. None of those operations should be simulated
 by issuing an unrestricted eval or exposing an operator REPL to a client.

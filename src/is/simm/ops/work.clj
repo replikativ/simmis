@@ -65,7 +65,11 @@
 (defn- invalid! [message]
   (throw (ex-info message {:type ::invalid})))
 
-(defn- owner! [conn principal room-id]
+(defn authorize!
+  "Current room membership AND merge authority, including for named work.
+   Adapters call this before reading source or resolving a model, and the
+   canonical admission repeats it before publishing a request."
+  [conn principal room-id]
   (let [party (access/actor->party-uuid (:principal/id principal))
         db @conn]
     ;; Generic code is the same privileged boundary as the existing eval UI.
@@ -127,7 +131,7 @@
    Explicit room-owner allowance, never automatic minting or agent authority."
   [conn host-ctx principal room-id room input {:keys [limits resources units]}]
   (let [journal (fn [f] (binding [ec/*execution-context* host-ctx] (f)))
-        party (journal #(owner! conn principal room-id))
+        party (journal #(authorize! conn principal room-id))
         row (:request (journal #(requests/claim!
                                  conn {:party party :room room-id :client-id (:request-id input)
                                        :kind :allowance :limits limits
@@ -173,7 +177,7 @@
    Jobs own status. The job wallet exists before the evaluation's child grant."
   [conn host-ctx principal room-id room input prepared]
   (let [journal (fn [f] (binding [ec/*execution-context* host-ctx] (f)))
-        party (journal #(owner! conn principal room-id))
+        party (journal #(authorize! conn principal room-id))
         settle! (fn [row]
                   (return-job! conn host-ctx room row)
                   ;; Host transport/physical-capacity cleanup is deliberately
@@ -242,12 +246,12 @@
 (defn submit! [conn host-ctx principal room-id room input]
   ;; Validate identity and authority before resolving models/provider setup.
   (when-not (m/validate task-schema input) (invalid! "Invalid bounded task"))
-  (binding [ec/*execution-context* host-ctx] (owner! conn principal room-id))
+  (binding [ec/*execution-context* host-ctx] (authorize! conn principal room-id))
   (submit-prepared! conn host-ctx principal room-id room input (prepare input)))
 
 (defn status [conn host-ctx principal room-id id]
   (binding [ec/*execution-context* host-ctx]
-    (owner! conn principal room-id)
+    (authorize! conn principal room-id)
     (let [row (requests/get-request conn id)]
       (when-not (= room-id (:work.request/room row))
         (throw (ex-info "No such request in this room" {:type ::missing})))
@@ -259,7 +263,7 @@
   [conn host-ctx resolve-room]
   (binding [ec/*execution-context* host-ctx]
     (doseq [row (requests/requests conn)
-            :when (contains? #{:task :benchmark} (:work.request/kind row))]
+            :when (contains? #{:task :workflow :benchmark} (:work.request/kind row))]
       (if-let [job (:work.request/job row)]
         (when (:work.request/return-pending? row)
           (when-let [room (resolve-room (:work.request/room row))]

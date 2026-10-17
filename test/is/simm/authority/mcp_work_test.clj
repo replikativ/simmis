@@ -21,6 +21,8 @@
             [is.simm.ops.results :as results]
             [is.simm.ops.work :as work]
             [is.simm.ops.work-api :as api]
+            [is.simm.ops.workflow-runs :as workflow-runs]
+            [is.simm.ops.workflow-runs-test :as workflow-run-fixture]
             [is.simm.ops.workflows :as workflows]
             [is.simm.ops.work-test]
             [is.simm.ops.workflows-test :as workflow-fixture]
@@ -94,6 +96,20 @@
                    (value (:rpc (http-message port token sid 3 "tools/call"
                                               {:name "simmis_workflow-write" :arguments (assoc input :files {path nil})})))
                    (is (not (contains? (:files (workflows/snapshot room "echo")) path)))
+                   (let [admitted (atom [])
+                         args (-> (workflow-run-fixture/input workflow-fixture/fixture)
+                                  (dissoc :params)
+                                  (assoc :room slug :request-id (str (random-uuid))
+                                         :expected-bundle (:bundle (workflows/inspect room "echo"))
+                                         :inputs {"/docs/资料.md" "actual JSON HTTP input"}))]
+                     (with-redefs [work/submit-prepared! (fn [_ _ _ _ _ normalized prepared]
+                                                         (swap! admitted conj [normalized prepared])
+                                                         {:state "submitted"})]
+                       (let [submitted (value (:rpc (http-message port token sid 5 "tools/call"
+                                                                 {:name "simmis_workflow-run" :arguments args})))]
+                         (is (= "submitted" (:state submitted)))))
+                     (is (= {"/docs/资料.md" "actual JSON HTTP input"} (:inputs (ffirst @admitted))))
+                     (is (= :workflow (:request-kind (second (first @admitted))))))
                    (d/transact conn [[:db/retract [:room/id (:room w)] :room/parties [:party/id (:owner w)]]
                                      [:db/add [:room/id (:room w)] :room/owner [:party/id (:non-member w)]]])
                    (is (refused? (:rpc (http-message port token sid 4 "tools/call"
@@ -209,6 +225,49 @@
                (doseq [extra [{:sender (str (:owner w))} {:eval true} {:parallelism 99}]]
                  (is (refused? (call owner "simmis_benchmark" (merge args extra)))))
                (is (refused? (call owner "simmis_benchmark" (assoc args :expected-bundle (str (random-uuid))))))
+               (is (= 1 (count @admitted)))))
+           (finally (api/uninstall!) (server/set-host! nil))))))))
+
+(deftest saved-workflow-execution-has-an-exact-tool-ceiling-and-current-merge-authority
+  (world/with-world [conn w]
+    (@#'is.simm.ops.work-test/with-room
+     (fn [room]
+       (let [slug (store/room-id->slug (:id room)) admitted (atom [])]
+         (workspace/ensure-workspace! room)
+         (workflows/write! room {:principal/id "fixture"} {:name "echo" :files workflow-run-fixture/source})
+         (d/transact conn [{:room/id (:room w) :room/slug slug}])
+         (server/set-host! (ops/host (:ctx room)))
+         (try
+           (api/install!)
+           (with-redefs [auth/get-auth-config (constantly {:jwt {:secret "mcp-workflow-run-test"}})
+                         work/submit-prepared! (fn [_ _ principal _ _ input prepared]
+                                                 (swap! admitted conj {:principal principal :input input :prepared prepared})
+                                                 {:state "submitted"})]
+             (let [owner (session (:owner w) :work)
+                   old (with-redefs [mcp/work-tools (disj mcp/work-tools "simmis_workflow-run")]
+                         (session (:owner w) :work))
+                   input (-> (workflow-run-fixture/input)
+                             (assoc :room slug :request-id (str (random-uuid))
+                                    :expected-bundle (:bundle (workflows/inspect room "echo"))
+                                    :params {:subject "literal {subject}"}
+                                    :inputs {(keyword "/docs/输入.md") "explicit UTF-8 input"}))]
+               (doseq [ctx [old (session (:owner w) :read) (session (:member w) :work)
+                            (session (:non-member w) :work) (session (:admin w) :work)]]
+                 (is (refused? (call ctx "simmis_workflow-run" input))))
+               (is (empty? @admitted))
+               (is (= "submitted" (:state (value (call owner "simmis_workflow-run" input)))))
+               (is (= 1 (count @admitted)))
+               (is (= (str "party/" (:owner w)) (get-in @admitted [0 :principal :principal/id])))
+               (is (= {"/docs/输入.md" "explicit UTF-8 input"} (get-in @admitted [0 :input :inputs])))
+               (is (= {"subject" "literal {subject}"} (get-in @admitted [0 :input :params])))
+               (is (= :workflow (get-in @admitted [0 :prepared :request-kind])))
+               (doseq [extra [{:sender (str (:owner w))} {:eval true} {:tools ["shell"]}
+                              {:limits (assoc (:limits input) :settlement "merge")}]]
+                 (is (refused? (call owner "simmis_workflow-run" (merge input extra)))))
+               (is (refused? (call owner "simmis_workflow-run" (assoc input :expected-bundle (str (random-uuid))))))
+               (d/transact conn [[:db/retract [:room/id (:room w)] :room/parties [:party/id (:owner w)]]
+                                 [:db/add [:room/id (:room w)] :room/owner [:party/id (:non-member w)]]])
+               (is (refused? (call owner "simmis_workflow-run" input)))
                (is (= 1 (count @admitted)))))
            (finally (api/uninstall!) (server/set-host! nil))))))))
 

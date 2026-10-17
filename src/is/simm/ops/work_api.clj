@@ -9,6 +9,7 @@
             [is.simm.ops.chat :as chat]
             [is.simm.ops.git-snapshot :as git-snapshot]
             [is.simm.ops.work :as work]
+            [is.simm.ops.workflow-runs :as workflow-runs]
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]))
@@ -32,6 +33,7 @@
    [:in-reply-to {:optional true} uuid-string]])
 
 (def workflow-write-schema (external-schema workflows/transport-write-schema))
+(def workflow-run-schema (external-schema workflow-runs/transport-schema))
 (def workflow-check-schema [:map {:closed true} room-entry [:name workflows/name-schema]])
 (def bundle-schema [:map {:closed true} room-entry])
 (def bundle-chunk-schema
@@ -65,6 +67,8 @@
                                :is.simm.model.work-requests/conflict 409
                                :is.simm.ops.workflows/invalid 400
                                :is.simm.ops.workflows/unavailable 503
+                               :is.simm.ops.workflow-runs/invalid 400
+                               :is.simm.ops.workflow-runs/conflict 409
                                :is.simm.ops.benchmarks/invalid 400
                                :is.simm.ops.checkers/invalid 400
                                :is.simm.ops.git-snapshot/invalid 400
@@ -104,6 +108,17 @@
                                                  (-> (dissoc args :room)
                                                      (update :request-id uuid!)
                                                      (update :expected-bundle uuid!))))))}
+   :simmis/workflow-run
+   {:kind :write :schema workflow-run-schema :authz {:action :merge}
+    :doc "Run ONE exact inspected saved workflow in an inherited room fork, with explicit case, literal declared string params, optional bounded canonical file inputs and finite limits. Same read/merge authority and file-worker policy as simmis_task. Pinned bundle source and selected inputs are materialized ONLY inside the fork and appear in its proposed diff. Never executes checker/calibration or claims correctness; uses ordinary completion capture under /out. review/discard only, no automatic merge. Identical request-id retries observe the old Job even after source edits; changed intent conflicts. Not benchmark isolation: other inherited room files remain visible."
+    :impl (fn [host args]
+            (checked! workflow-run-schema args)
+            (guarded host #(let [[conn id room] (room! host (:room args))]
+                             (workflow-runs/submit! conn (:execution-ctx host) ops/*principal* id room
+                                                    (workflow-runs/transport
+                                                     (-> (dissoc args :room)
+                                                         (update :request-id uuid!)
+                                                         (update :expected-bundle uuid!)))))))}
    :simmis/workflow-write
    {:kind :write :schema workflow-write-schema :authz {:action :write}
     :doc "Atomically edit text files ONLY under workflows/<name>/ as one repository commit. Paths are relative to that bundle; null deletes. At most100 files,512KiB/file,2MiB/batch. Cannot edit the room-root AGENTS.md or paths outside this bundle. Returns commit and shape inspection of the current bundle; never executes checker.clj."
@@ -113,7 +128,7 @@
                              (workflows/write! room ops/*principal* (workflows/transport-write (dissoc args :room))))))}
    :simmis/workflow-check
    {:kind :read :schema workflow-check-schema :authz {:action :read}
-    :doc "Inspect one pinned current workflow bundle (max100 files/2MiB). Returns its content id and structural problems. This NEVER executes checker.clj or calibration; no answer/eval argument is accepted. Use this bundle id when launching a benchmark."
+    :doc "Inspect one pinned current workflow bundle (max100 files/2MiB). Returns its content id and structural problems. This NEVER executes checker.clj or calibration; no answer/eval argument is accepted. Use this bundle id when launching a saved workflow or benchmark."
     :impl (fn [host args]
             (checked! workflow-check-schema args)
             (guarded host #(let [[_ _ room] (room! host (:room args))]

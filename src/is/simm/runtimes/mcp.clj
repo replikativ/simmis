@@ -39,7 +39,8 @@
 (def work-tools
   (into read-tools #{"simmis_post" "simmis_task" "simmis_work-allowance"
                      "simmis_work-status" "job_cancel"
-                     "simmis_workflow-write" "simmis_workflow-check" "simmis_benchmark"}))
+                     "simmis_workflow-write" "simmis_workflow-check" "simmis_workflow-run"
+                     "simmis_benchmark"}))
 
 (defn- credential-tools [claims]
   (if (and (not (contains? claims :capability-version))
