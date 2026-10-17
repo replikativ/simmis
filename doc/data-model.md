@@ -60,8 +60,12 @@ with the enroller's current permissions, keeps only verifier hashes in process
 principals, and retains narrowly scoped shutdown signaling after revocation.
 `ops/worker-service.clj` implements closed, bounded pending/claim/input/heartbeat/
 completion/stop operations; `ops/worker-api.clj` supplies their worker-only MCP
-bindings. Neither is installed by application startup: the ordinary listener
-does not yet authenticate worker credentials. They add no sandbox capability.
+bindings. Application startup registers them through `runtimes/application-ops`
+before browser requests are accepted. The separately configured loopback MCP
+listener dispatches recognized worker/lease credential prefixes only to the
+worker authenticator, never to human/admin authentication. Disabling new
+admission does not remove an existing lease's shutdown path. These operations
+add no agent sandbox capability.
 Claim, heartbeat and completion check current permission and the host clock
 inside the serialized writer transaction, including after output publication.
 
