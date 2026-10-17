@@ -365,7 +365,9 @@
         ;; fork/grant/settlement fixes (#342–348).
         ;; 0.1.311 preserves unknown usage in typed Attempt projections and
         ;; evaluation read models without rewriting certified Scorecards (#353).
-        org.replikativ/dvergr {:mvn/version "0.1.311"}}
+        ;; 0.1.312 keeps model/broker loading independent of Datahike and the
+        ;; agent runtime, preserving trusted installation boundaries (#355).
+        org.replikativ/dvergr {:mvn/version "0.1.312"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead

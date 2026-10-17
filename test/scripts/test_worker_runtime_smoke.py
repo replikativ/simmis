@@ -15,6 +15,30 @@ import worker_runtime as runtime
 
 @unittest.skipUnless(os.environ.get("SIMMIS_WORKER_JAR"), "Requires explicitly built worker artifact")
 class PackagedRuntimeTest(unittest.TestCase):
+    def test_subscription_broker_loading_does_not_initialize_guest_or_database(self):
+        jar = Path(os.environ["SIMMIS_WORKER_JAR"]).resolve(strict=True)
+        descriptor = {"jar": str(jar), "sha256": hashlib.sha256(jar.read_bytes()).hexdigest()}
+        with tempfile.TemporaryDirectory(prefix="simmis-worker-broker-smoke-") as home:
+            # Requiring the real broker graph must not construct a provider,
+            # read a login, or initialize the guest/database. This expression
+            # is fixed test code, never a production task/eval interface.
+            expression = """(do
+              (require 'is.simm.ops.worker-broker 'is.simm.ops.worker-subscription)
+              (doseq [n '[is.simm.ops.worker-files is.simm.ops.worker-guest
+                          is.simm.ops.worker-executor datahike.api kontor.resource
+                          dvergr.resource.datahike dvergr.agent.attempt.governance
+                          dvergr.chat.tool-schema.datahike sci.core dvergr.rooms.files
+                          org.replikativ.spindel.engine.impl.simple]]
+                (assert (nil? (find-ns n)) (str "Unexpected broker dependency: " n)))
+              (println "broker-ready") (shutdown-agents))"""
+            argv = runtime.argv(descriptor, "check", home)
+            self.assertEqual(["-m", runtime.ENTRYPOINT, "check"], argv[-3:])
+            result = subprocess.run(argv[:-3] + ["-e", expression],
+                                    cwd=home, env=runtime.environment(home),
+                                    stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+            self.assertEqual(0, result.returncode, result.stderr[-2048:].decode("utf-8", errors="replace"))
+            self.assertEqual(b"broker-ready\n", result.stdout)
+
     def test_wire_loading_does_not_initialize_guest_or_database(self):
         jar = Path(os.environ["SIMMIS_WORKER_JAR"]).resolve(strict=True)
         descriptor = {"jar": str(jar), "sha256": hashlib.sha256(jar.read_bytes()).hexdigest()}
