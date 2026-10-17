@@ -56,6 +56,23 @@ jobs:
       - name: Test private MCP and worker helpers
         run: python3 -m unittest discover -s test/scripts
 
+  worker-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: DeLaGuardo/setup-clojure@13.6.1
+        with:
+          cli: latest
+      - name: Build dedicated local SCI runtime
+        run: clojure -J-Xmx1g -T:build worker
+      - name: Cold credential-free runtime preflight
+        run: SIMMIS_WORKER_JAR="$(realpath target/simmis-*-worker.jar)" python3 -m unittest discover -s test/scripts -p test_worker_runtime_smoke.py
+
   frontend-tests-and-build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -98,7 +115,7 @@ jobs:
   # Preserve the original required-check name while independent jobs still
   # report their results when another gate fails.
   test-and-build:
-    needs: [backend-tests, helper-tests, frontend-tests-and-build]
+    needs: [backend-tests, helper-tests, worker-package, frontend-tests-and-build]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -106,4 +123,5 @@ jobs:
         run: |
           test '${{ needs.backend-tests.result }}' = success
           test '${{ needs.helper-tests.result }}' = success
+          test '${{ needs.worker-package.result }}' = success
           test '${{ needs.frontend-tests-and-build.result }}' = success

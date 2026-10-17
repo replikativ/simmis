@@ -118,6 +118,30 @@ run back through it.
 against the escapes we have found, not a VM. Do not run untrusted agents
 against secrets you cannot rotate.
 
+### Packaged local SCI endpoints
+
+`clojure -T:build worker` builds a dedicated `target/simmis-*-worker.jar`,
+without the development classpath, frontend, server entrypoint or tests.
+The build rejects ambient `user.clj`/compiled user startup and manifest
+classpaths. The fixed entrypoint is `clojure.main -m
+is.simm.ops.worker-process`, with `guest`, `broker` or credential-free `check`
+mode. Check loads the real endpoint dependencies and reports the executor and
+inference policy identities; it does not construct a provider or run an agent.
+
+`scripts/worker_runtime.py` validates an operator-selected absolute artifact
+path and SHA256, fixes JVM arguments, and constructs a clean child environment.
+The guest gets private login locations; only an explicitly configured broker
+gets the native Codex login directory. It inherits no API keys, Java injection
+options or controller credentials. The native provider refuses login refresh
+and persistence during work. A digest pins selected bytes, not their provenance
+or safety. Runtime installation remains trusted local administration.
+
+These are packaging and endpoint primitives, not an enabled turnkey runner.
+The owning launcher must provide actual private directories and retain both
+processes in one physically observed execution unit. Protocol readiness or a
+guest result does not prove shutdown. JVM flags alone are not process, memory
+or deadline containment; SCI is not filesystem isolation against a JVM escape.
+
 ## Writes land on forks
 
 A governed write from an agent does not go to trunk. It goes to a **fork** — a

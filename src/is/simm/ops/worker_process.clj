@@ -18,11 +18,25 @@
     (alter-var-root #'*err* (constantly (PrintWriter. err true)))
     (binding [*in* (BufferedReader. (StringReader. "")) *out* (PrintWriter. err true) *err* (PrintWriter. err true)]
       (try
-        (when-not (and (= 1 (count args)) (contains? #{"guest" "broker"} (first args)))
+        (when-not (and (= 1 (count args)) (contains? #{"check" "guest" "broker"} (first args)))
           (throw (Exception.)))
         (require 'is.simm.ops.worker-frames)
         (let [ch ((requiring-resolve 'is.simm.ops.worker-frames/channel) in out)]
           (case (first args)
+            "check"
+            (do
+              ;; Load the actual endpoint closure without constructing a
+              ;; login-backed provider, room, scheduler or agent. A packaged
+              ;; runtime must prove this before it is offered for enrollment.
+              (require 'is.simm.ops.worker-guest 'is.simm.ops.worker-broker
+                       'is.simm.ops.worker-subscription 'hasch.core)
+              (let [identify (requiring-resolve 'hasch.core/uuid)
+                    write! (requiring-resolve 'is.simm.ops.worker-frames/write!)
+                    executor @(requiring-resolve 'is.simm.ops.worker-executor/policy)
+                    inference @(requiring-resolve 'is.simm.ops.worker-inference/policy)]
+                (write! ch {"version" 1 "kind" "runtime-ready"
+                            "executor-policy-id" (str (identify executor))
+                            "inference-policy-id" (str (identify inference))} 4096)))
             "guest" ((requiring-resolve 'is.simm.ops.worker-guest/serve!) ch)
             "broker"
             (let [_ (require 'is.simm.ops.worker-wire)
