@@ -21,6 +21,7 @@ import worker_inputs as inputs
 import worker_namespace as namespace
 import worker_outputs as outputs
 import worker_unit as unit
+import worker_runtime as runtime
 
 
 PHASES = ("launch", "admitted", "stopped", "acknowledged")
@@ -73,9 +74,9 @@ def _read(directory, phase):
         os.close(fd)
 
 
-def _common(value, phase, previous, fields):
+def _common(value, phase, previous, fields, *, version=1):
     _closed(value, {"version", "phase", "previous", *fields})
-    if (type(value["version"]) is not int or value["version"] != 1 or value["phase"] != phase
+    if (type(value["version"]) is not int or value["version"] != version or value["phase"] != phase
             or value["previous"] != (digest(previous) if previous is not None else None)):
         raise ValueError("Private journal phase linkage differs")
 
@@ -86,7 +87,10 @@ def _owner(ticket):
 
 
 def _validate_launch(value):
-    _common(value, "launch", None, {"owner", "endpoint", "unit", "frozen", "namespace-policy", "unit-policy"})
+    sci = value.get("version") == 2
+    policy_field = "execution-profile" if sci else "namespace-policy"
+    _common(value, "launch", None, {"owner", "endpoint", "unit", "frozen", policy_field, "unit-policy"},
+            version=2 if sci else 1)
     _closed(value["owner"], {"worker", "run", "nonce"})
     for key in ["worker", "run", "nonce"]:
         inputs.canonical_uuid(value["owner"][key])
@@ -101,7 +105,10 @@ def _validate_launch(value):
     unit.validate_name(value["unit"])
     frozen = value["frozen"]
     inputs.validate(frozen, frozen["config"])
-    if encode(value["namespace-policy"]) != encode(namespace.POLICY) or encode(value["unit-policy"]) != encode(unit.POLICY):
+    if sci:
+        runtime.validate_profile(value["execution-profile"])
+    if ((not sci and encode(value["namespace-policy"]) != encode(namespace.POLICY))
+            or encode(value["unit-policy"]) != encode(unit.SCI_POLICY if sci else unit.POLICY)):
         raise ValueError("Unsupported private execution policy")
 
 
@@ -215,7 +222,7 @@ def _publish(directory, phase, value):
             os.unlink(staged, dir_fd=directory)
 
 
-def prepare(folder, ticket, endpoint, frozen, config):
+def prepare(folder, ticket, endpoint, frozen, config, *, execution_profile=None):
     """Persist allocation intent BEFORE StartTransientUnit; require live claim.
 
     The caller, not a persisted ticket, establishes successful live admission.
@@ -227,9 +234,14 @@ def prepare(folder, ticket, endpoint, frozen, config):
     try:
         chain = _chain(directory)
         previous = chain["launch"]
-        value = {"version": 1, "phase": "launch", "previous": None, "owner": owner,
+        value = {"version": 2 if execution_profile is not None else 1,
+                 "phase": "launch", "previous": None, "owner": owner,
                  "endpoint": endpoint, "unit": previous["unit"] if previous else unit.unit_name(),
                  "frozen": frozen, "namespace-policy": namespace.POLICY, "unit-policy": unit.POLICY}
+        if execution_profile is not None:
+            del value["namespace-policy"]
+            value["execution-profile"] = execution_profile
+            value["unit-policy"] = unit.SCI_POLICY
         _validate_launch(value)
         return _publish(directory, "launch", value)
     finally:

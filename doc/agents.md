@@ -136,11 +136,21 @@ options or controller credentials. The native provider refuses login refresh
 and persistence during work. A digest pins selected bytes, not their provenance
 or safety. Runtime installation remains trusted local administration.
 
-These are packaging and endpoint primitives, not an enabled turnkey runner.
-The owning launcher must provide actual private directories and retain both
-processes in one physically observed execution unit. Protocol readiness or a
-guest result does not prove shutdown. JVM flags alone are not process, memory
-or deadline containment; SCI is not filesystem isolation against a JVM escape.
+The local controller accepts either its existing native/bwrap adapter or an
+explicit `dvergr-sci` profile. The SCI profile binds the runtime digest and
+endpoint policy identities into a versioned launch journal. Its fixed trusted
+supervisor starts both JVMs only after physical capture, durable admission and
+GO, with separate private homes and pipes inside the same retained systemd
+execution unit. The envelope is 2.5GiB memory, no swap,128 tasks, one CPU and a
+finite deadline; each JVM has a512MiB heap limit. Unsupported adapters refuse
+before claiming work. A completed result still requires whole-unit shutdown,
+a durable stopped journal and fresh lease authority before publication.
+Recovery may stop an admitted unit or retry stopped output, never relaunch it;
+it does not require the runtime jar or native login to remain installed.
+
+This is a host library path, not yet an enabled turnkey enrollment/runner CLI.
+Protocol readiness or a guest result does not prove shutdown. JVM flags alone
+are not containment; SCI is not filesystem isolation against a JVM escape.
 
 ## Writes land on forks
 

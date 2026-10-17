@@ -5,11 +5,13 @@ pins the selected bytes, not their safety or provenance. This is not an OS
 sandbox, a physical-stop certificate, or permission to read a native login.
 """
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import stat
 import zipfile
+import uuid
 
 
 POLICY = {"version": 1, "profile": "dvergr-sci", "max-jar-bytes": 536870912,
@@ -18,6 +20,44 @@ ENTRYPOINT = "is.simm.ops.worker-process"
 REQUIRED = {"clojure/main.class", "is/simm/ops/worker_process.clj",
             "is/simm/ops/worker_guest.clj", "is/simm/ops/worker_broker.clj",
             "is/simm/ops/worker_executor.clj", "is/simm/ops/worker_subscription.clj"}
+
+
+def profile(descriptor, executor_policy_id, inference_policy_id):
+    value = {"version": 1, "kind": "dvergr-sci", "runtime": dict(descriptor),
+             "bootstrap": ENTRYPOINT, "runtime-policy": dict(POLICY),
+             "executor-policy-id": executor_policy_id, "inference-policy-id": inference_policy_id}
+    return validate_profile(value)
+
+
+def validate_profile(value):
+    """Pure journal validation: recovery must not need an installed artifact."""
+    if (type(value) is not dict
+            or set(value) != {"version", "kind", "runtime", "bootstrap", "runtime-policy",
+                              "executor-policy-id", "inference-policy-id"}
+            or type(value["version"]) is not int or value["version"] != 1
+            or value["kind"] != "dvergr-sci" or value["bootstrap"] != ENTRYPOINT
+            or json.dumps(value["runtime-policy"], sort_keys=True) != json.dumps(POLICY, sort_keys=True)):
+        raise ValueError("Unsupported local SCI execution profile")
+    descriptor = value["runtime"]
+    if (type(descriptor) is not dict or set(descriptor) != {"jar", "sha256"}
+            or not isinstance(descriptor["jar"], str) or not Path(descriptor["jar"]).is_absolute()
+            or str(Path(descriptor["jar"])) != descriptor["jar"] or ".." in Path(descriptor["jar"]).parts
+            or not isinstance(descriptor["sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", descriptor["sha256"])):
+        raise ValueError("Invalid journaled SCI runtime descriptor")
+    for field in ["executor-policy-id", "inference-policy-id"]:
+        if not isinstance(value[field], str) or str(uuid.UUID(value[field])) != value[field]:
+            raise ValueError("Invalid SCI endpoint policy identity")
+    return value
+
+
+def supervisor_argv(selected, codex_home):
+    """Only trusted LOCAL code selects this fixed supervisor, never a task."""
+    validate_profile(selected)
+    verify(selected["runtime"])
+    environment("/unused-private-home", codex_home=codex_home)
+    return ["/usr/bin/python3", "-I", str(Path(__file__).resolve().with_name("worker_sci.py")),
+            json.dumps(selected, sort_keys=True, separators=(",", ":")), codex_home]
 
 
 def verify(descriptor):

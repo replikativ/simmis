@@ -24,6 +24,8 @@ import worker_journal as journal
 import worker_namespace as namespace
 import worker_outputs as outputs
 import worker_unit as unit
+import worker_runtime as runtime
+import worker_sci as sci_supervisor
 
 
 class Cancelled(Exception):
@@ -175,9 +177,18 @@ class Controller:
         elif self.launch and self.launch["unit"] in self.observer.launched:
             self.observer.abort_launch(self.launch["unit"])
 
-    def run(self, run, enrollment_credential, argv):
-        """Fresh successful claim only; argv is chosen by trusted LOCAL code."""
+    def run(self, run, enrollment_credential, argv=None, *, sci=None):
+        """Fresh claim only; native argv OR SCI profile is trusted LOCAL config."""
         inputs.canonical_uuid(run)
+        if sci is not None:
+            # Local profile selection and unsupported-adapter rejection happen
+            # BEFORE a ticket, network admission or physical allocation.
+            if (argv is not None or type(sci) is not dict or set(sci) != {"profile", "codex-home"}
+                    or self.config.get("adapter") != "codex"):
+                raise ValueError("SCI profile requires the supported native Codex broker")
+            runtime.validate_profile(sci["profile"])
+            runtime.verify(sci["profile"]["runtime"])
+            runtime.environment("/unused-private-home", codex_home=sci["codex-home"])
         if self.used:
             raise ValueError("Controller instances are single use")
         self.used = True
@@ -196,35 +207,45 @@ class Controller:
                 lease.tick(force=True)
                 try:
                     frozen = inputs.fetch(lease.input_call, run, self.config)
-                    encoded = json.dumps({"frozen": frozen, "config": self.config, "argv": argv},
-                                         separators=(",", ":")).encode() + b"\n"
-                    namespace.read_request(io.BytesIO(encoded))  # all validation precedes allocation
+                    if sci is None:
+                        encoded = json.dumps({"frozen": frozen, "config": self.config, "argv": argv},
+                                             separators=(",", ":")).encode() + b"\n"
+                        namespace.read_request(io.BytesIO(encoded))
+                    else:
+                        encoded = sci_supervisor.encoded({"frozen": frozen, "config": self.config,
+                                                          "execution-profile": sci["profile"]})
+                        sci_supervisor.request(io.BytesIO(encoded), sci["profile"])
                     lease.tick(force=True)
-                    self.launch = journal.prepare(folder, ticket, self.endpoint, frozen, self.config)
-                    self.observer = unit.UnitBus()
+                    profile_options = {} if sci is None else {"execution_profile": sci["profile"]}
+                    self.launch = journal.prepare(folder, ticket, self.endpoint, frozen, self.config, **profile_options)
+                    self.observer = unit.UnitBus(**({} if sci is None else {"sci": True}))
                     input_read, input_write = os.pipe()
                     output_read, output_write = os.pipe()
                     self.frames = Frames(input_write, output_read, lease.tick)
                     try:
                         with open(os.devnull, "wb") as errors:
                             self.observer.launch(self.launch["unit"], input_read, output_write, errors.fileno(),
-                                                 timeout_ms=frozen["limits"]["timeout-ms"])
+                                                 timeout_ms=frozen["limits"]["timeout-ms"],
+                                                 **({} if sci is None else {"sci": sci}))
                     finally:
                         os.close(input_read)
                         os.close(output_write)
                     startup = time.monotonic() + 25
                     self.frames.write(encoded, startup)
                     ready = self.frames.read(startup)
-                    if ready != {"kind": "ready", "policy": namespace.POLICY, "input-id": frozen["input-id"]}:
+                    expected = {"kind": "ready", "input-id": frozen["input-id"]}
+                    expected.update({"policy": namespace.POLICY} if sci is None else {"execution-profile": sci["profile"]})
+                    if ready != expected:
                         raise ValueError("Worker guard ready identity differs")
                     self.identity = self.observer.capture(self.launch["unit"])
                     journal.admit(folder, self.identity)
                     lease.tick(force=True)  # current permission/cancellation before GO
                     self.frames.write(b"GO\n", time.monotonic() + 5)
                     complete = self.frames.read(time.monotonic() + frozen["limits"]["timeout-ms"] / 1000 + 10)
-                    inputs._closed(complete, {"kind", "input-id", "output", "reaped-descendants"})
+                    inputs._closed(complete, {"kind", "input-id", "output"} | ({"reaped-descendants"} if sci is None else set()))
                     if (complete["kind"] != "complete" or complete["input-id"] != frozen["input-id"]
-                            or type(complete["reaped-descendants"]) is not int or complete["reaped-descendants"] < 0):
+                            or (sci is None and (type(complete["reaped-descendants"]) is not int
+                                                 or complete["reaped-descendants"] < 0))):
                         raise ValueError("Worker guard completion identity differs")
                     output = outputs.validate(frozen, self.config, complete["output"])
                     self._seal(folder, output, tick=lease.tick)
@@ -265,7 +286,7 @@ class Controller:
                 return chain["acknowledged"]
             self.launch, self.identity = launch, chain["admitted"]["identity"]
             if chain["stopped"] is None:
-                self.observer = unit.UnitBus()
+                self.observer = unit.UnitBus(**({"sci": True} if launch["version"] == 2 else {}))
                 self.observer.retain(self.identity)
                 self.observer.stop(self.identity)
                 self._seal(folder)  # never import surviving/lost task output

@@ -14,6 +14,7 @@ import time
 import uuid
 
 import worker_namespace as namespace
+import worker_runtime as runtime
 
 
 MANAGER = "org.freedesktop.systemd1"
@@ -25,6 +26,8 @@ POLICY = {"version": 1, "memory-bytes": 256 * 1024 * 1024, "swap-bytes": 0,
           "restart": "no", "kill-mode": "control-group", "oom-policy": "kill"}
 MEMORY_BYTES = POLICY["memory-bytes"]
 MAX_TASKS = POLICY["max-tasks"]
+SCI_POLICY = {**POLICY, "version": 2, "profile": "dvergr-sci",
+              "memory-bytes": 2560 * 1024 * 1024, "max-tasks": 128}
 
 
 def verify_cgroup_view(manager_pid, manager_root):
@@ -111,11 +114,12 @@ class UnitBus:
     to release the retained metadata or acknowledge a server lease.
     """
 
-    def __init__(self):
+    def __init__(self, *, sci=False):
         import dbus
         from dbus.mainloop.glib import DBusGMainLoop
         from gi.repository import GLib
         self.dbus, self.GLib = dbus, GLib
+        self.policy = SCI_POLICY if sci else POLICY
         self.bus = dbus.SessionBus(private=True, mainloop=DBusGMainLoop())
         # libdbus otherwise terminates the controller when an old disconnected
         # connection's event is later dispatched by the shared GLib context.
@@ -168,8 +172,8 @@ class UnitBus:
             raise ValueError("Execution manager ownership is unknown")
         verify_cgroup_view(self.manager_pid, self.manager_root)
 
-    def launch(self, name, stdin, stdout, stderr, *, timeout_ms):
-        """Start only the fixed namespace guard, with atomic bus-reference hold.
+    def launch(self, name, stdin, stdout, stderr, *, timeout_ms, sci=None):
+        """Start the fixed native guard or SCI supervisor with bus-reference hold.
 
         The name must already be journaled. Successful return does not permit
         GO: the caller must receive READY, capture/verify and persist identity.
@@ -182,15 +186,23 @@ class UnitBus:
             raise ValueError("Invalid finite task deadline")
         self._check()
         d = self.dbus
-        command = namespace.namespace_argv()
-        command[0] = "/usr/bin/bwrap"
+        policy = self.policy
+        if sci is None:
+            if policy != POLICY:
+                raise ValueError("SCI observer cannot launch a native namespace")
+            command = namespace.namespace_argv()
+            command[0] = "/usr/bin/bwrap"
+        else:
+            if policy != SCI_POLICY or type(sci) is not dict or set(sci) != {"profile", "codex-home"}:
+                raise ValueError("SCI launch needs its explicit resource policy")
+            command = runtime.supervisor_argv(sci["profile"], sci["codex-home"])
         properties = [("AddRef", d.Boolean(True)), ("Type", "exec"), ("ExitType", "cgroup"),
                       ("Restart", "no"), ("KillMode", "control-group"), ("SendSIGKILL", d.Boolean(True)),
-                      ("OOMPolicy", "kill"), ("MemoryMax", d.UInt64(MEMORY_BYTES)),
-                      ("MemorySwapMax", d.UInt64(0)), ("TasksMax", d.UInt64(MAX_TASKS)),
-                      ("CPUQuotaPerSecUSec", d.UInt64(POLICY["cpu-quota-usec"])),
-                      ("RuntimeMaxUSec", d.UInt64((timeout_ms + POLICY["deadline-slack-ms"]) * 1000)),
-                      ("TimeoutStopUSec", d.UInt64(POLICY["stop-timeout-ms"] * 1000)),
+                      ("OOMPolicy", "kill"), ("MemoryMax", d.UInt64(policy["memory-bytes"])),
+                      ("MemorySwapMax", d.UInt64(0)), ("TasksMax", d.UInt64(policy["max-tasks"])),
+                      ("CPUQuotaPerSecUSec", d.UInt64(policy["cpu-quota-usec"])),
+                      ("RuntimeMaxUSec", d.UInt64((timeout_ms + policy["deadline-slack-ms"]) * 1000)),
+                      ("TimeoutStopUSec", d.UInt64(policy["stop-timeout-ms"] * 1000)),
                       ("StandardInputFileDescriptor", d.types.UnixFd(stdin)),
                       ("StandardOutputFileDescriptor", d.types.UnixFd(stdout)),
                       ("StandardErrorFileDescriptor", d.types.UnixFd(stderr)),
@@ -263,9 +275,10 @@ class UnitBus:
                 or not 0 < int(service["TimeoutStopUSec"]) <= 2000000):
             raise ValueError("Execution unit shutdown policy differs from its envelope")
         group = Path("/sys/fs/cgroup") / identity["cgroup"].lstrip("/")
-        if (not 0 < int((group / "memory.max").read_text()) <= MEMORY_BYTES
+        policy = self.policy
+        if (not 0 < int((group / "memory.max").read_text()) <= policy["memory-bytes"]
                 or (group / "memory.swap.max").read_text().strip() != "0"
-                or not 0 < int((group / "pids.max").read_text()) <= MAX_TASKS
+                or not 0 < int((group / "pids.max").read_text()) <= policy["max-tasks"]
                 or (group / "memory.oom.group").read_text().strip() != "1"):
             raise ValueError("Effective execution memory/process bounds differ")
         quota, period = map(int, (group / "cpu.max").read_text().split())
