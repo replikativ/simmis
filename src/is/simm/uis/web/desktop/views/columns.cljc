@@ -1914,7 +1914,7 @@
              (el/button {:class "chat-settings-btn" :title "Workflows"
                          :on-click (fn [_]
                                      #?(:cljs
-                                        (let [[type data opts] (room-actions/room-header-tab col-id :workflows room-id room-name)]
+                                        (let [[type data opts] (room-actions/room-header-tab col-id :workflows room-id room-name room-db-scope)]
                                           (sig/open-tab! type data opts)) :clj nil))}
                (vc/icon "workflow" {:class "chat-settings-icon"}))
              (el/button {:class "chat-settings-btn"

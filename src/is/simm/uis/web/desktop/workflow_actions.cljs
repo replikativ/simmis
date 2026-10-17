@@ -138,4 +138,5 @@
                    (binding [ec/*execution-context* ctx]
                      (when (web/current-session? session)
                        (sig/open-tab! :run-inspector (assoc room-data :run-id (str job))
-                                      {:title "Workflow Run" :new-tab? true}))))})))
+                                      {:title "Workflow Run" :new-tab? true
+                                       :col-id (:col-id room-data)}))))})))

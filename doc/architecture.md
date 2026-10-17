@@ -66,7 +66,11 @@ exact-revision `simmis_workflow-run` uses the ordinary bounded candidate and
 completion evaluator: declared literal parameters and frozen source/inputs
 are materialized in its inherited room fork, not trunk. Its source pin and
 input replacements appear in the proposed diff; it never implicitly executes
-the bundle's checker or treats completion as correctness. Separately, an
+the bundle's checker or treats completion as correctness. Room-header workflow
+tabs carry the room replica scope into their Run inspectors and open results
+in the column that owns the action. Restored workflow and Run tabs resolve
+missing scopes from the authenticated room roster, like chat/thread tabs.
+Separately, an
 exact-revision offline benchmark reuses Dvergr's experiment runner and room
 Attempts/Scorecards; it requires both installation-operator and room merge
 authority. Its clean fixture room is provisioned outside the authoring room,

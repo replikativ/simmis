@@ -28,6 +28,15 @@
 
 (defn- thread-tab [data] {:id "t2" :type :chat-thread :title "Thread" :data data})
 
+(deftest restored-workflow-and-result-tabs-resolve-their-room-replica
+  (doseq [kind [:workflows :run-inspector]]
+    (let [tab {:id "restored" :type kind :title "Saved title"
+               :data {:room-id (str room-id) :room-name "Existing room label" :run-id "job"}}
+          healed (tab-heal/heal-chat-tab tab rooms personal)]
+      (is (= (str scope-id) (get-in healed [:data :db-scope])))
+      (is (= "Saved title" (:title healed)))
+      (is (= "job" (get-in healed [:data :run-id]))))))
+
 (deftest a-deep-link-tab-learns-its-scope-and-name
   (testing "the cold-boot deep link: room-id only, because the URL carries
             nothing else and the roster did not exist yet"
