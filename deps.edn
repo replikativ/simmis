@@ -371,7 +371,7 @@
         ;; Temporary immutable upstream pin for explicit text/single-use Runs
         ;; (dvergr#357); switch back to Maven after its release.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "884f43bc99e5f9aa809804879f42e4a7a8a56f21"}}
+                               :git/sha "09735172ba989fa325ec18dafb7ba1f1b1af3d24"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
