@@ -156,6 +156,14 @@
                (= (count cases) (count (set cases))))
       {:id (str dataset-id) :version version :split split :cases cases})))
 
+(defn- execution-info [definition]
+  (let [execution (get-in definition [:experiment/metadata :simmis/execution])]
+    (when (and (= :claude-cli (:adapter execution)) (= :text (:mode execution))
+               (= :cli-run-admission (:accounting execution)))
+      {:adapter :claude-cli :mode :text :accounting :cli-run-admission
+       :cli-version (let [v (get-in execution [:provider-policy :cli-version])]
+                      (when (and (string? v) (<= 1 (count v) 100)) v))})))
+
 (defn- frontier
   "Presentation evidence from the authorized Scorecard: frozen workflow
    identity and the report's tokens/time rows, keyed by candidate id."
@@ -170,6 +178,7 @@
                                 (:scorecard/entries sc)))]
         {:workflow (workflow-info (:scorecard/experiment sc))
          :evaluation (evaluation-info (:scorecard/experiment sc))
+         :execution (execution-info (:scorecard/experiment sc))
          :resources (into {}
                           (map (fn [r] [(id-str (:candidate r))
                                         (select-keys r [:tokens-per-attempt :input-per-attempt :output-per-attempt
@@ -181,12 +190,13 @@
    comparisons, with the frontier's tokens and time."
   [room principal scorecard-id]
   (let [detail (op room principal :scorecard/detail {:id (str scorecard-id)})
-        {:keys [resources workflow evaluation]} (frontier room scorecard-id)
+        {:keys [resources workflow evaluation execution]} (frontier room scorecard-id)
         exp (:experiment detail)]
     {:experiment (:content-id exp)
      :experiment-id (:id exp)
      :workflow workflow
      :evaluation evaluation
+     :execution execution
      :complete? true
      :scorecard (:id detail)
      :environments (:environments exp)

@@ -271,6 +271,34 @@ The completed leaderboard shows the frozen split and dataset identity alongside
 the workflow bundle; its tooltip lists the selected cases. No split is invented
 for older experiments.
 
+Claude Code text benchmarks use the separate `simmis_cli-allowance` and
+`simmis_cli-benchmark` controls. They retain Dvergr's SCI tool loop and the same
+clean fixture/checker/result machinery. An operator explicitly provisions
+`max-cli-runs` (1–8), then submits an inspected bundle with models, repetitions,
+split/cases and limits `{:max-cli-runs N :max-model-steps S :timeout-ms T
+:settlement "discard"}`. Each cell consumes one conserved CLI Run admission,
+with at most 32 model steps and 600000 ms per cell. Automatic compaction,
+Run resume, delegation and automatic resubmission are disabled. These are not
+HTTP-dispatch or dollar-spend caps. The ordinary native benchmark contract
+continues to enforce its existing HTTP-dispatch accounting unchanged.
+
+The workflow editor exposes this as “This server · Claude Code text benchmark”.
+It uses the server's trusted, existing Claude login—not an uploaded credential.
+This experimental backend is disabled by default. A trusted operator enables it
+with JVM properties `simmis.cli-benchmarks.enabled=true`,
+`simmis.cli-benchmarks.unit=YOUR.service` and (optionally)
+`simmis.cli-benchmarks.manager=user` (`system` for a system service). Admission
+requires Linux cgroup v2 and verifies that the JVM is the service's main process, belongs to its cgroup,
+and has bounded whole-cgroup termination enabled. One service must exclusively
+own its runtime data directory. This is trusted CLI inference, not a sandbox
+for hostile native code. Abrupt crashes leave CLI requests pending for manual
+reconciliation: no automatic resumption, allowance return or cross-invocation
+recovery is claimed. Ordinary native benchmarks are unaffected.
+
+Initial text CLI execution also requires Linux process-session ownership. The results
+retain CLI/model/mode provenance and distinguish unknown usage from measured
+zero; subscription incremental and notional list-price costs remain separate.
+
 ```bash
 /usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
   --session /private/operator-session.json benchmark --request-id REQUEST_UUID \

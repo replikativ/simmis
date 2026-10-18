@@ -222,6 +222,16 @@
             (is (or (:error r) (get-in r [:result :isError])))))))
     (is (thrown? clojure.lang.ExceptionInfo (mcp/mint-token! person :admin)))))
 
+(deftest cli-controls-do-not-upgrade-an-existing-work-token
+  (let [old-tools (disj mcp/work-tools "simmis_cli-benchmark" "simmis_cli-allowance")
+        token (with-redefs [mcp/work-tools old-tools] (:token (mcp/mint-token! person :work)))
+        old ((mcp/authenticator) {:bearer token})
+        fresh ((mcp/authenticator) {:bearer (:token (mcp/mint-token! person :work))})]
+    (is (= old-tools (:principal/tools old)))
+    (doseq [tool ["simmis_cli-benchmark" "simmis_cli-allowance"]]
+      (is (not (contains? (:principal/tools old) tool)))
+      (is (contains? (:principal/tools fresh) tool)))))
+
 (deftest listener-is-opt-in-private-idempotent-and-transport-only
   (let [events (atom [])
         host @@#'server/embedded-host

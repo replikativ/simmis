@@ -6,6 +6,17 @@
              :definition {:params {:goal "old default"}}
              :inspection {:ok true :bundle "bundle" :cases []}})
 
+(deftest cli-text-submission-and-allowance-never-claim-http-or-money-bounds
+  (let [draft (-> (editor/draft source)
+                  (update :form editor/set-form-field :backend "cli")
+                  (assoc-in [:form :model] "claude-code-haiku"))
+        request (editor/submission draft "request")]
+    (is (= "benchmark" (get-in draft [:form :mode])))
+    (is (= {:request-id "allowance" :max-cli-runs 2} (editor/allowance (:form draft) "allowance")))
+    (is (= {:max-cli-runs 2 :max-model-steps 4 :timeout-ms 120000 :settlement "discard"} (:limits request)))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (editor/submission (assoc-in draft [:form :mode] "run") "bad")))))
+
 (deftest benchmark-split-selection-does-not-implicitly-include-held-out-cases
   (let [source (assoc source :inspection {:ok true :bundle "bundle" :cases ["a" "b"]
                                          :evaluation {:splits {:development ["a"] :held-out ["b"]}}})

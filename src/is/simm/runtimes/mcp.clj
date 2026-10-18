@@ -41,7 +41,7 @@
                      "simmis_work-status" "job_cancel"
                      "simmis_workflow-write" "simmis_workflow-check" "simmis_workflow-run"
                      "simmis_workflow-list" "simmis_workflow-source"
-                     "simmis_benchmark"}))
+                     "simmis_benchmark" "simmis_cli-benchmark" "simmis_cli-allowance"}))
 
 (def worker-control-tools
   ;; Private operator-helper session only. Never widen existing work tokens.

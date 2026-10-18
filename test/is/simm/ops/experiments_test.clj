@@ -15,6 +15,16 @@
             [is.simm.ops.experiments :as experiments]
             [org.replikativ.spindel.engine.core :as ec]))
 
+(deftest cli-label-uses-the-admitted-policy-not-an-independent-runtime-probe
+  (let [execution {:adapter :claude-cli :mode :text :accounting :cli-run-admission
+                   :provider-policy {:cli-version "pinned-version"}}
+        definition {:experiment/metadata {:claude-cli "different-probe" :simmis/execution execution}}]
+    (is (= "pinned-version" (:cli-version (#'experiments/execution-info definition))))
+    (is (nil? (#'experiments/execution-info (assoc-in definition [:experiment/metadata :simmis/execution :mode] :agent))))
+    (is (nil? (:cli-version (#'experiments/execution-info
+                             (assoc-in definition [:experiment/metadata :simmis/execution :provider-policy :cli-version]
+                                       (apply str (repeat 101 "x")))))))))
+
 (def ^:private exact-evaluator
   (evaluation/make-evaluator
    {:id :simmis-test/exact :version 1 :basis "simmis-experiments-test:v1"

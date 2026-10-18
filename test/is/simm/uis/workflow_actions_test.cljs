@@ -58,6 +58,25 @@
             (is (= payload (last (:args (second @requests)))))
             (is (= 1 (count @confirmations)))))))))
 
+(deftest cli-benchmarks-use-their-own-admission-and-immutable-retry
+  (with-state
+    (fn [ui _]
+      (let [requests (atom []) confirmations (atom [])]
+        (with-redefs [remote/submit-cli-workflow-benchmark! (deferred requests)
+                      actions/confirm! (fn [text] (swap! confirmations conj text) true)]
+          ((:change ui) "a" update :form editor/set-form-field :backend "cli")
+          ((:change ui) "a" assoc-in [:form :model] "claude-code-haiku")
+          ((:submit ui) "a" false)
+          (let [payload (last (:args (first @requests)))]
+            (is (= 2 (get-in payload [:limits :max-cli-runs])))
+            (is (nil? (get-in payload [:limits :max-dispatches])))
+            (is (.includes (first @confirmations) "Not an HTTP or dollar cap"))
+            ((:error (first @requests)) :connection-lost)
+            ((:change ui) "a" assoc-in [:form :backend] "hosted")
+            ((:submit ui) "a" true)
+            (is (= payload (last (:args (second @requests)))))
+            (is (= 1 (count @confirmations)))))))))
+
 (deftest source-reload-completes-its-own-cache-after-selection-changes
   (with-state
     (fn [ui k]

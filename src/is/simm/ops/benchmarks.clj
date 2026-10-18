@@ -7,12 +7,15 @@
             [dvergr.agent.roster :as roster]
             [dvergr.catalog.room :as catalog]
             [dvergr.jobs :as jobs]
+            [dvergr.model.api.claude-code :as claude-code]
+            [dvergr.resource :as resource]
             [dvergr.room.registry :as registry]
             [dvergr.rooms :as rooms]
             [dvergr.system.db :as system-db]
             [is.simm.model.access :as access]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.checkers :as checkers]
+            [is.simm.ops.cli-owner :as cli-owner]
             [is.simm.ops.benchmark-dataset :as dataset]
             [is.simm.ops.work :as work]
             [is.simm.ops.work-sandbox :as work-sandbox]
@@ -45,6 +48,27 @@
 (defn- invalid! [message]
   (throw (ex-info message {:type ::invalid})))
 
+(def cli-limits-schema
+  [:map {:closed true}
+   [:max-cli-runs [:int {:min 1 :max 8}]]
+   [:max-model-steps [:int {:min 1 :max 32}]]
+   [:timeout-ms [:int {:min 1000 :max 600000}]]
+   [:settlement [:= "discard"]]])
+(def cli-schema (assoc schema (dec (count schema)) [:limits cli-limits-schema]))
+(def cli-allowance-schema
+  [:map {:closed true} [:request-id :uuid] [:max-cli-runs [:int {:min 1 :max 8}]]])
+(def cli-units [{:symbol "cli-run-admission" :name "CLI Run admissions" :precision 0}])
+(declare authorize!)
+
+(defn provision-cli! [conn host-ctx principal room-id room input]
+  (when-not (m/validate cli-allowance-schema input) (invalid! "Invalid CLI allowance"))
+  (binding [ec/*execution-context* host-ctx] (authorize! conn principal room-id))
+  (cli-owner/ownership!)
+  (work/provision-prepared! conn host-ctx principal room-id room input
+                           {:limits (select-keys input [:max-cli-runs])
+                            :resources {"cli-run-admission" (bigdec (:max-cli-runs input))}
+                            :units cli-units}))
+
 (defn authorize!
   "Operator status alone never grants access to someone else's room."
   [conn principal room-id]
@@ -59,12 +83,12 @@
                       {:type ::denied})))
     party))
 
-(defn prepare
+(defn- prepare*
   "Pure construction after one pinned file read. No checker/provider execution
    or room creation. All candidate/case/repetition cells share a finite parent
    allowance; each gets at most its integer share."
-  [snapshot {:keys [name expected-bundle models repetitions cases limits] :as input}]
-  (when-not (m/validate schema input) (invalid! "Invalid benchmark request"))
+  [execution snapshot {:keys [name expected-bundle models repetitions cases limits] :as input}]
+  (when-not (m/validate (if (= execution :cli-text) cli-schema schema) input) (invalid! "Invalid benchmark request"))
   (let [inspection (workflows/inspect-snapshot name snapshot)]
     (when-not (:ok inspection) (invalid! "Workflow bundle is not structurally valid"))
     (when-not (= (str expected-bundle) (:bundle inspection))
@@ -76,8 +100,9 @@
         selection (dataset/select-cases (:files snapshot) all-cases input)
         selected (:cases selection)
         cell-count (* (count models) repetitions (max 1 (count selected)))
-        dollars (quot (:budget-microdollars limits) cell-count)
-        dispatches (quot (:max-dispatches limits) cell-count)]
+        cli? (= execution :cli-text)
+        dollars (if cli? 1000000 (quot (:budget-microdollars limits) cell-count))
+        dispatches (if cli? 1 (quot (:max-dispatches limits) cell-count))]
     (when-not (= (count models) (count (set models))) (invalid! "Duplicate models"))
     (when-not (and (= (count selected) (count (set selected)))
                    (every? all-cases selected)
@@ -85,6 +110,8 @@
       (invalid! "Unknown or duplicate workflow cases"))
     (when-not (and (<= 1 cell-count 8) (pos? dollars) (pos? dispatches))
       (invalid! "At most eight cells, each with positive money and dispatch allowance, are required"))
+    (when (and cli? (< (:max-cli-runs limits) cell-count))
+      (invalid! "Each benchmark cell needs one explicit CLI Run admission"))
     (when-not (and (= "discard" (:settlement limits))
                    (<= 1 (count (catalog/task bundle {})) 16000)
                    (contains? #{nil "developer"} (:profile definition))
@@ -101,10 +128,26 @@
                                          :budget-dollars (/ dollars 1000000.0)
                                          :timeout-ms (:timeout-ms limits)})
           plan (update plan :team work-sandbox/restrict-team)
-          _ (when-not (every? #(contains? work/dispatch-accounted-providers
-                                          (get-in % [:agent/model-policy :provider]))
+          _ (when-not (every? #(contains? (if cli? #{:claude-code} work/dispatch-accounted-providers)
+                                         (get-in % [:agent/model-policy :provider]))
                               (roster/agents (:team plan)))
               (invalid! "Benchmark models must use accounted native providers"))
+          owner (when cli? (cli-owner/ownership!))
+          provider-policy (when cli? (claude-code/execution-policy))
+          _ (when (and cli? (nil? (:cli-version provider-policy)))
+              (invalid! "Claude Code CLI is unavailable"))
+          plan (if cli?
+                 (update plan :team
+                         (fn [team]
+                           (reduce (fn [team agent]
+                                     (roster/revise-agent team (:agent/id agent)
+                                                          {:program (merge (:agent/program agent)
+                                                                           {:execution-mode :text :single-use? true
+                                                                            :provider-policy provider-policy
+                                                                            :auto-compact? false
+                                                                            :max-model-steps (:max-model-steps limits)})}))
+                                   team (roster/agents team))))
+                 plan)
           environments
           (mapv (fn [env]
                   (environment/make-environment
@@ -116,11 +159,12 @@
                                    {:max-model-steps (:max-model-steps limits)
                                     :budget-dollars (/ dollars 1000000.0)})
                     :world (assoc (:environment/world env)
-                                  :effects work/effects :resources (work/resources cell-limits)
+                                  :effects work/effects :resources (if cli? {"cli-run-admission" 1M}
+                                                                     (work/resources cell-limits))
                                   :setup (evaluation/world-setup-ref setup))
                     :metadata (:environment/metadata env)}))
                 (:environments plan))
-          plan (-> plan (assoc :environments environments :parallelism 1)
+          plan (-> plan (assoc :environments environments :parallelism 1 :resume? (not cli?))
                    (assoc-in [:capabilities :evaluator] evaluator)
                    (assoc-in [:capabilities :world-setup] setup))
           experiment (runner/experiment-def
@@ -130,18 +174,28 @@
                                               (when-let [data (:metadata selection)]
                                                 {:simmis/evaluation data})
                                               {:checker-policy checkers/policy
-                                               :simmis/execution {:adapter :native-provider :program :llm}
+                                               :simmis/execution (if cli?
+                                                                   {:adapter :claude-cli :program :llm :mode :text
+                                                                    :accounting :cli-run-admission :provider-policy provider-policy :owner owner
+                                                                    :limits limits}
+                                                                   {:adapter :native-provider :program :llm})
                                                :worker-sandbox work-sandbox/policy
                                                :simmis/workflow {:name name
                                                                  :title (some-> (:title definition) (subs 0 (min 256 (count (:title definition)))))
                                                                  :bundle (str expected-bundle)}
                                                :operator-admitted-bundle (str expected-bundle)})))]
-      {:bundle bundle :plan (assoc plan :experiment experiment)
+      (cond-> {:bundle bundle :plan (assoc plan :experiment experiment)
        :cells cell-count :cell-limits cell-limits
        ;; Canonical definitions only; no functions, room handles or checker
        ;; runtime state in the durable admission intent.
        :basis {:submission input :experiment experiment :team (:team plan)
-               :limits limits :policy checkers/policy}})))
+               :limits limits :policy checkers/policy}
+       :execution-owner owner}
+        cli? (assoc :request-kind :cli-benchmark :resources {"cli-run-admission" (bigdec cell-count)}
+                    :resource-units cli-units)))))
+
+(defn prepare [snapshot input] (prepare* :native snapshot input))
+(defn prepare-cli [snapshot input] (prepare* :cli-text snapshot input))
 
 (defn- fixture-slug [request-id] (str "simmis-benchmark-" request-id))
 (defn fixture-room-id [request-id] (keyword (fixture-slug request-id)))
@@ -218,21 +272,24 @@
            :settled! (fn [_] (retire!))
            :abandon! (fn [_] (retire!)))))
 
-(defn submit! [conn host-ctx principal room-id room input]
-  (when-not (m/validate schema input) (invalid! "Invalid benchmark request"))
+(defn- submit-kind! [kind prepare-fn input-schema conn host-ctx principal room-id room input]
+  (when-not (m/validate input-schema input) (invalid! "Invalid benchmark request"))
   (binding [ec/*execution-context* host-ctx]
     (let [party (authorize! conn principal room-id)
           id (requests/request-id party room-id (:request-id input))]
       (if-let [row (requests/get-request conn id)]
         ;; A client can observe its exact old submission even after the room's
         ;; authoring files change. It cannot silently schedule the new revision.
-        (do (when-not (and (= :benchmark (:work.request/kind row))
+        (do (when-not (and (= kind (:work.request/kind row))
                            (= input (get-in (requests/payload conn row) [:input :submission])))
               (throw (ex-info "Request identity was used for different work" {:type ::conflict})))
             (work/status conn host-ctx principal room-id id))
-        (let [prepared (prepare (workflows/snapshot room (:name input)) input)]
+        (let [prepared (prepare-fn (workflows/snapshot room (:name input)) input)]
           (work/submit-prepared! conn host-ctx principal room-id room input
                                  (adapter host-ctx room prepared principal)))))))
+
+(defn submit! [& args] (apply submit-kind! :benchmark prepare schema args))
+(defn submit-cli! [& args] (apply submit-kind! :cli-benchmark prepare-cli cli-schema args))
 
 (defn recover-request!
   "Retry only retirement of an already physically/resource-settled request.
@@ -240,7 +297,7 @@
   [host-ctx row]
   (let [job (:work.request/job row)
         status (when job (jobs/status job))]
-    (when (and (#{:benchmark :local-worker-benchmark} (:work.request/kind row))
+    (when (and (#{:benchmark :cli-benchmark :local-worker-benchmark} (:work.request/kind row))
                (if job
                  (and (false? (:work.request/return-pending? row)) (:settled? status)
                       (contains? #{:completed :failed :cancelled} (:status status)))

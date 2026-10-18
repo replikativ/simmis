@@ -193,7 +193,7 @@
         "\"No detectable difference\" is not \"equal\": more cases, or cases where the candidates differ, can still separate them."))))
 
 (defn- experiment-section
-  [{:keys [experiment experiment-id workflow evaluation complete? candidates paired cells environments repetitions verifier-trust] :as result}]
+  [{:keys [experiment experiment-id workflow evaluation execution complete? candidates paired cells environments repetitions verifier-trust] :as result}]
   (el/section {:key (str experiment) :class "attempt-board-experiment" :data-experiment experiment}
     (el/div {:class "attempt-board-experiment-title"}
       (el/span {:class "leaderboard-experiment-name" :title experiment-id} (lb/experiment-label result))
@@ -208,6 +208,9 @@
                                 "; acceptance evaluation, not prompt tuning"))}
           (str (:split evaluation) " · dataset " (short-id (:id evaluation)))))
       (el/span {:class "run-history-id" :title (str "ExperimentDef " experiment)} (short-id experiment))
+      (when (= :claude-cli (:adapter execution))
+        (el/span {:class "run-history-id" :title "One admission per bounded CLI Run; not internal HTTP-dispatch accounting"}
+          (str "Claude Code text · CLI " (or (:cli-version execution) "unknown") " · Run admissions")))
       (el/span {} (str cells " cells"
                        (when environments (str " · " environments " cases"))
                        (when (and repetitions (< 1 repetitions)) (str " × " repetitions))))

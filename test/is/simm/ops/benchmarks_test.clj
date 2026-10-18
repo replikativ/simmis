@@ -14,6 +14,8 @@
             [dvergr.discourse :as discourse]
             [dvergr.jobs :as jobs]
             [dvergr.model.api.codex-subscription :as codex]
+            [dvergr.model.api.claude-code :as claude-code]
+            [dvergr.model.chat :as model-chat]
             [dvergr.model.gateway :as gateway]
             [dvergr.model.providers :as providers]
             [dvergr.resource :as resource]
@@ -24,6 +26,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.checkers :as checkers]
+            [is.simm.ops.cli-owner :as cli-owner]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.work :as work]
             [is.simm.ops.work-test]
@@ -35,7 +38,8 @@
 (use-fixtures :each
   (fn [f]
     ;; Tests may run inside a live dev server; own the physical capacity cell.
-    (with-redefs-fn {#'benchmarks/checker-slot (java.util.concurrent.Semaphore. 1)} f)))
+    (with-redefs-fn {#'benchmarks/checker-slot (java.util.concurrent.Semaphore. 1)
+                    #'cli-owner/ownership! (constantly {:version 1 :unit "fixture.service" :boot "fixture" :invocation "fixture"})} f)))
 
 (defn snapshot [files]
   {:files files :manifest (mapv (fn [[path text]] {:path path :size (count (.getBytes text "UTF-8"))}) files)})
@@ -77,6 +81,113 @@
       (is (string? (:id data)))
       (is (= ["a"] (mapv #(get-in % [:environment/metadata :case])
                           (get-in result [:plan :environments])))))))
+
+(deftest cli-text-benchmarks-have-a-distinct-single-use-admission-contract
+  (let [files fixture/fixture
+        request (assoc (input files) :models ["claude-code-haiku"]
+                       :limits {:max-cli-runs 1 :max-model-steps 3 :timeout-ms 30000 :settlement "discard"})
+        policy {:version 1 :mode :text :cli-version "fixture"}]
+    (with-redefs [claude-code/execution-policy (constantly policy)
+                  runner/runtime-identity (constantly {:claude-cli "fixture"})]
+      (let [prepared (benchmarks/prepare-cli (snapshot files) request)
+            candidate (first (roster/agents (get-in prepared [:plan :team])))]
+        (is (= :cli-benchmark (:request-kind prepared)))
+        (is (= {"cli-run-admission" 1M} (:resources prepared)))
+        (is (= :text (get-in candidate [:agent/program :execution-mode])))
+        (is (true? (get-in candidate [:agent/program :single-use?])))
+        (is (false? (get-in candidate [:agent/program :auto-compact?])))
+        (is (= policy (get-in candidate [:agent/program :provider-policy])))
+        (is (= {"cli-run-admission" 1M}
+               (get-in prepared [:plan :environments 0 :environment/world :resources]))))
+      (doseq [bad [(assoc request :models ["codex-subscription-luna"])
+                   (assoc-in request [:limits :max-dispatches] 1)
+                   (assoc-in request [:limits :settlement] "review")]]
+        (is (thrown? clojure.lang.ExceptionInfo (benchmarks/prepare-cli (snapshot files) bad))))
+      (is (thrown? clojure.lang.ExceptionInfo (benchmarks/prepare (snapshot files) request))))))
+
+(defn cli-fixture! [failure-mode]
+  (world/with-world [conn w]
+    (@#'is.simm.ops.work-test/with-room
+     (fn [control]
+       (let [host-ctx ec/*execution-context*
+             clean (discourse/make-room {:id (keyword (str "cli-fixture-" (random-uuid))) :store (memory/make)})
+             files (assoc fixture/fixture
+                          "workflow.edn" "{:title \"CLI fixture\" :task \"Write /out/result.md\" :capture [\"/out\"]}"
+                          "checker.clj" "(ns checker) (defn check [{:keys [files gold]}] (let [ok (= (:expected gold) (get files \"/out/result.md\"))] {:checks {:correct? ok} :reward (if ok 1 0)}))"
+                          "gold.edn" "{:expected \"interpreter output\" :private \"PRIVATE-CHECKER-GOLD\"}")
+             request (assoc (input files) :models ["claude-code-haiku"]
+                            :limits {:max-cli-runs 1 :max-model-steps 3 :timeout-ms 30000 :settlement "discard"})
+             calls (atom []) retired (atom 0)
+             provider (claude-code/create {})]
+         (try
+           (workspace/ensure-workspace! control)
+           (binding [ec/*execution-context* (:ctx clean)] (workspace/ensure-workspace! clean))
+           (workspace/seed! control {"/private-control.md" "PRIVATE-CONTROL-DATA"})
+           (workflows/write! control (ops/party-principal (:owner w)) {:name "echo" :files files})
+           (d/transact conn [{:party/id (:owner w) :party/role :admin}])
+           (resource/install-unit! control {:symbol "cli-run-admission" :name "CLI Run admissions" :precision 0})
+           (resource/mint! control {:id (random-uuid) :resources {"cli-run-admission" 1M}})
+           (with-redefs-fn {#'providers/providers (atom {:claude-code provider})
+                           #'claude-code/execution-policy (constantly {:version 1 :mode :text :cli-version "fixture"})
+                           #'runner/runtime-identity (constantly {:claude-cli "fixture"})
+                           #'benchmarks/fixture-room! (fn [& _] clean)
+                           #'benchmarks/retire-fixture! (fn [& _] (swap! retired inc))
+                           #'model-chat/chat
+                           (fn [messages opts]
+                             (swap! calls conj {:messages messages :opts opts})
+                             (if (= 1 (count @calls))
+                               {:content "" :stop-reason :tool-use :usage {:input-tokens 20 :output-tokens 5}
+                                :tool-calls [{:id "write" :name "clojure_eval"
+                                              :input {:code "(do (babashka.fs/create-dirs \"/out\") (spit \"/out/result.md\" \"interpreter output\"))"}}]}
+                               ;; A later missing usage report must invalidate
+                               ;; completeness, not retain the first turn's sum.
+                               (case failure-mode
+                                 :provider-error (throw (ex-info "Fixture provider timed out" {:status 504}))
+                                 :cancel (throw (java.util.concurrent.CancellationException. "Fixture cancellation"))
+                                 :malformed-usage {:content "Finished" :stop-reason :end-turn
+                                                   :usage {:input-tokens "invalid" :output-tokens 0}}
+                                 {:content "Finished" :stop-reason :end-turn :usage nil})))}
+             (fn []
+               (let [principal (ops/party-principal (:owner w))
+                     submission (benchmarks/submit-cli! conn host-ctx principal (:room w) control request)
+                     status (jobs/status (:job submission) 60000)
+                     retry (benchmarks/submit-cli! conn host-ctx principal (:room w) control request)
+                     scorecard (first (store/-list-scorecards (:store control) (store/conversation-id control) {}))
+                     attempts (store/-list-attempts (:store control) (store/conversation-id control) {})
+                     attempt (first attempts)]
+                 (is (= :completed (:status status)) (pr-str (select-keys status [:status :error])))
+                 (is (:settled? status))
+                 (is (= (:job submission) (:job retry)))
+                 (is (= 2 (count @calls)))
+                 (is (every? #(= :text (get-in % [:opts :execution-mode])) @calls))
+                 (is (not (re-find #"PRIVATE-CHECKER-GOLD|PRIVATE-CONTROL-DATA" (pr-str @calls))))
+                 (is (= 1 (count attempts)))
+                 (if failure-mode
+                   ;; Infrastructure/cancellation evidence is retained as an
+                   ;; Attempt, never promoted into a model-quality board.
+                   (is (nil? scorecard))
+                   (do (is (= 1 (get-in scorecard [:scorecard/summary 0 :passed-count])))
+                       (is (= :cli-run-admission (get-in scorecard [:scorecard/experiment :experiment/metadata :simmis/execution :accounting])))))
+                 (let [spend (get-in attempt [:attempt/receipt :attempt/metrics :spend])]
+                   (is (false? (:priced? spend)))
+                   (is (nil? (:notional-microdollars spend)))
+                   (is (not (contains? (:tokens spend) :input))))
+                 (is (= 1 @retired)))))
+           (finally (discourse/close-room! clean))))))))
+
+(deftest cli-benchmark-reuses-clean-fixtures-certification-and-at-most-once-requests
+  (doseq [failure-mode [nil :provider-error :cancel :malformed-usage]] (cli-fixture! failure-mode)))
+
+(deftest cli-allowance-needs-both-operator-and-room-authority-before-host-access
+  (world/with-world [conn w]
+    (let [called (atom 0)]
+      (with-redefs [cli-owner/ownership! (fn [] (swap! called inc))]
+        (doseq [party [(:owner w) (:member w) (:non-member w) (:admin w)]]
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (benchmarks/provision-cli! conn ec/*execution-context*
+                                                  (ops/party-principal party) (:room w) nil
+                                                  {:request-id (random-uuid) :max-cli-runs 1}))))
+        (is (zero? @called))))))
 
 (defn echo-prepared [files request]
   (let [base (prepared files request)
@@ -207,8 +318,13 @@
                    (is (every? #(= {"/out/result.md" "interpreter output"} (get-in % [:attempt/evidence :files])) attempts)
                        "Captured outputs remain inspectable after both successful and interrupted worlds are discarded")
                    (is (every? #(zero? (get-in % [:attempt/receipt :attempt/metrics :spend :microdollars])) attempts))
-                   (is (every? #(pos? (get-in % [:attempt/receipt :attempt/metrics :spend :notional-microdollars])) attempts)
-                       "Subscription comparisons retain list-price cost despite zero incremental spend")
+                   (if (= dispatches 4)
+                     (is (every? #(pos? (get-in % [:attempt/receipt :attempt/metrics :spend :notional-microdollars])) attempts)
+                         "Completed subscription comparisons retain list-price cost despite zero incremental spend")
+                     (do
+                       (is (every? #(false? (get-in % [:attempt/receipt :attempt/metrics :spend :priced?])) attempts))
+                       (is (every? #(nil? (get-in % [:attempt/receipt :attempt/metrics :spend :notional-microdollars])) attempts)
+                           "An interrupted model step must not certify a complete list-price cost")))
                    (is (= {resource/microdollars 10000M} (resource/balance control)))
                    (is (= 1 @retired))
                    (is (empty? (workspace/read-tree control "/out")))

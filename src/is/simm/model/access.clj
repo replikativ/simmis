@@ -729,6 +729,8 @@
      "save-workflow-source!"   {:action W :resource (room :room-id-str)}
      "submit-workflow-run!"    {:action M :resource (room :room-id-str)}
      "submit-workflow-benchmark!" {:action M :resource (room :room-id-str)}
+     "submit-cli-workflow-benchmark!" {:action M :resource (room :room-id-str)}
+     "provision-cli-workflow-allowance!" {:action M :resource (room :room-id-str)}
      "provision-workflow-allowance!" {:action M :resource (room :room-id-str)}
      "load-local-workflow-workers!" {:action M :resource (room :room-id-str)}
      "submit-local-workflow-run!" {:action M :resource (room :room-id-str)}
