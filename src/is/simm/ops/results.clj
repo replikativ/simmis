@@ -38,7 +38,7 @@
     (dops/op-error! "Invalid recorded-result arguments" ::invalid 400)))
 
 (defn- attempt! [ctx principal {:keys [room id]}]
-  (or (ops/invoke ctx principal :attempt/detail {:room room :id id})
+  (or (ops/invoke ctx principal :attempt/detail {:room (ops/room-handle room) :id id})
       (dops/op-error! "No such Attempt in this room" ::not-found 404)))
 
 (defn- file-bytes [value]
@@ -115,14 +115,18 @@
   (checked! file-schema args)
   (captured-file (attempt! ctx principal args) (select-keys args [:path :offset :length])))
 
+(defn- room-resource [{:keys [room]}] [:room (ops/room-handle room)])
+
 (def specifications
   {:simmis/attempt-files
    {:doc "List immutable output files captured by one certified Attempt, not today's workspace. Returns at most 100 paths; offset pages."
     :kind :read :schema files-schema
+    :authz {:action :read :resource room-resource}
     :impl (fn [host args] (attempt-files (:execution-ctx host) dops/*principal* args))}
    :simmis/attempt-file
    {:doc "Read a captured Attempt file as at most 16384 bytes of base64. Follow next-offset and concatenate decoded bytes. media-type distinguishes UTF-8 text from regular binary file artifacts. Immutable even after workspace changes/world discard."
     :kind :read :schema file-schema
+    :authz {:action :read :resource room-resource}
     :impl (fn [host args] (attempt-file (:execution-ctx host) dops/*principal* args))}})
 
 (defn install! []

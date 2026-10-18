@@ -8,6 +8,7 @@
             [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.chat :as chat]
             [is.simm.ops.coordinator :as coordinator]
+            [is.simm.ops.dvergr :as simmis-ops]
             [is.simm.ops.git-snapshot :as git-snapshot]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflow-runs]
@@ -65,11 +66,7 @@
   "Translate a canonical Simmis UUID through its current system-db row.
    UUID-shaped handles never fall back to a slug with the same spelling."
   [arg]
-  (if-let [id (when (string? arg) (parse-uuid arg))]
-    (when-let [conn (system-db/get-conn)]
-      (d/q '[:find ?slug . :in $ ?id
-             :where [?r :room/id ?id] [?r :room/slug ?slug]] @conn id))
-    arg))
+  (simmis-ops/room-handle arg))
 
 (defn room-resource [{:keys [room]}] [:room (room-handle room)])
 

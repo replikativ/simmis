@@ -796,6 +796,9 @@ then `simmis_attempt-file` for their bounded byte chunks; do not use
 `room_read` to retrieve a discarded attempt's answer. To inspect the CURRENT
 room files locally as Git, use the verified snapshot downloader described
 above. It is not a Git push endpoint or an export of historical Attempts.
+Both captured-result operations accept a room slug or canonical Simmis room
+UUID. UUIDs resolve through the current system database before authorization
+and Attempt lookup; an unknown UUID never falls back to a same-spelled slug.
 
 The selected MCP surface authors, runs and benchmarks named workflows;
 ordinary `simmis_task` remains a separate free-form task. Proposal promotion is available in
