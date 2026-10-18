@@ -7,6 +7,7 @@
             [is.simm.model.system-db :as system-db]
             [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.chat :as chat]
+            [is.simm.ops.coordinator :as coordinator]
             [is.simm.ops.git-snapshot :as git-snapshot]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflow-runs]
@@ -185,7 +186,7 @@
              (checked! cli-allowance-schema args)
              (guarded host #(let [[conn id room] (room! host (:room args))]
                               (benchmarks/provision-cli! conn (:execution-ctx host) ops/*principal* id room
-                                                        (-> (dissoc args :room) (update :request-id uuid!))))))}
+                                                         (-> (dissoc args :room) (update :request-id uuid!))))))}
     :simmis/benchmark
     {:kind :write :schema benchmark-schema :authz {:action :merge}
      :doc "Admit an exact inspected workflow bundle as an OFFLINE benchmark. Requires installation operator AND current room merge authority: checker code is trusted-operator SCI, cooperatively bounded, NOT hard OS isolation. Maximum eight cells, one at a time, native providers only, explicit aggregate money/dispatch allowance, /out capture, discard settlement. Optional calibration.edn runs reference/damaged answers before each candidate without exposing them to it. Results use the room's existing Attempts, Scorecards and experiment reports. request-id retries observe the same job; expected-bundle pins the reviewed revision. No judge, live web, arbitrary eval or automatic checker promotion."
@@ -232,6 +233,14 @@
                                           (cond-> {:room id :id (uuid! (:id args)) :content (:content args)}
                                             (:in-reply-to args) (assoc :in-reply-to (uuid! (:in-reply-to args))))
                                           :mcp))))}
+    :simmis/coordinator
+    {:kind :write :schema task-schema :authz {:action :merge}
+     :doc "Opt-in bounded recursive coordinator in an inherited room fork. Same room merge authority and existing native money/dispatch allowance as simmis_task; never auto-funds or merges trunk. Can hire only file-worker/coordinator profiles with bounded tools/providers, and run up to eight completion-only experiment cells with parallelism two. Children split the conserved parent grant. Scoped immutable file results are available inside SCI. Completion is not task correctness. request-id retries observe identical intent."
+     :impl (fn [host args]
+             (checked! task-schema args)
+             (guarded host #(let [[conn id room] (room! host (:room args))]
+                              (coordinator/submit! conn (:execution-ctx host) ops/*principal* id room
+                                                   (-> (dissoc args :room) (update :request-id uuid!))))))}
     :simmis/task
     {:kind :write :schema task-schema :authz {:action :merge}
      :doc "Submit ONE generic code/file candidate in an isolated fork with explicit limits. Requires room membership and merge authority, and existing work allowance. review/discard only; never auto-merges. Deliverables under /out are captured. Completion is NOT a correctness verifier. Reuse request-id only for identical intent; retries observe the same job, never re-execute."

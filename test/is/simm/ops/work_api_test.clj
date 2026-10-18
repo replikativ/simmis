@@ -8,11 +8,40 @@
             [dvergr.room.store :as store]
             [is.simm.authority.world :as world]
             [is.simm.ops.dvergr :as ops]
+            [is.simm.ops.coordinator :as coordinator]
             [is.simm.ops.work-api :as api]
             [is.simm.ops.work-test]
             [is.simm.ops.worker-control :as control]
             [is.simm.runtimes.auth-config :as auth]
             [is.simm.runtimes.worker-maintenance :as maintenance]))
+
+(deftest coordinator-op-preserves-room-authorization-and-canonical-request-identity
+  (world/with-world [conn w]
+    (@#'is.simm.ops.work-test/with-room
+     (fn [room]
+       (let [previous (dops/operations)
+             calls (atom [])
+             request-id (random-uuid)
+             [input _] (@#'is.simm.ops.work-test/fixture)
+             args (assoc input :room (str (:room w)) :request-id (str request-id))
+             host (ops/host (:ctx room))]
+         (d/transact conn [{:room/id (:room w) :room/slug (store/room-id->slug (:id room))}])
+         (try
+           (api/install!)
+           (with-redefs [coordinator/submit! (fn [_ _ principal room-id target input]
+                                               (swap! calls conj [principal room-id (:id target) input])
+                                               {:accepted true})]
+             (is (= {:accepted true}
+                    (dops/invoke host (ops/party-principal (:owner w)) :simmis/coordinator args)))
+             (is (= [(:room w) (:id room) (assoc input :request-id request-id)] (subvec (first @calls) 1)))
+             (doseq [party [(:member w) (:non-member w)]]
+               (is (thrown? clojure.lang.ExceptionInfo
+                            (dops/invoke host (ops/party-principal party) :simmis/coordinator args))))
+             (is (= 1 (count @calls))))
+           (finally
+             (doseq [op (keys api/specifications)]
+               (if-let [spec (get previous op)] (dops/register-op! op spec) (dops/unregister-op! op)))
+             (server/sync-op-tools!))))))))
 
 (deftest canonical-uuid-crosses-the-real-op-authorizer-and-worker-service
   (world/with-world [conn w]

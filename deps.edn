@@ -68,7 +68,10 @@
         ;; execution-state writes on resume.
         ;; 0.1.131 includes singleton authority partitions, nil DOM attribute
         ;; cleanup and read-only cross-catalog fork diffs (#141–143).
-        org.replikativ/spindel {:mvn/version "0.1.131"}
+        ;; Keep the direct UI/runtime pin aligned with Dvergr's reviewed
+        ;; independent-session and funding-recovery foundation (spindel#146).
+        org.replikativ/spindel {:git/url "https://github.com/replikativ/spindel.git"
+                               :git/sha "5a348107cf06f02944a4b084f5bda3d62f586113"}
         ;; spindel 0.1.53 brings anglican 1.1.0 (its inference methods), which
         ;; brings timbre 4.10.0, whose ClojureScript no longer compiles
         ;; ("Can't redefine a constant"). A current timbre serves anglican's
@@ -368,10 +371,11 @@
         ;; evaluation read models without rewriting certified Scorecards (#353).
         ;; 0.1.312 keeps model/broker loading independent of Datahike and the
         ;; agent runtime, preserving trusted installation boundaries (#355).
-        ;; Temporary immutable upstream pin for explicit text/single-use Runs
-        ;; (dvergr#357); switch back to Maven after its release.
+        ;; Temporary immutable upstream pin for scoped coordinators, owned Run
+        ;; sessions and world-spend attribution (dvergr#357–361). Alpha stores
+        ;; must use the classified wallet schema; no legacy migration is implied.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "09735172ba989fa325ec18dafb7ba1f1b1af3d24"}}
+                               :git/sha "769bf2a011d9fcbc2c3fa2e0b2d7e9482283df7f"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead

@@ -61,6 +61,12 @@ reads for an explicitly authenticated human. Explicit work credentials add canon
 chat dispatch and one bounded isolated candidate, not a raw database writer or
 unrestricted eval endpoint. The typed system-DB admission journal makes request
 retries observe existing Dvergr Jobs/Runs; it is not a second workflow engine.
+The opt-in `simmis_coordinator` profile composes scoped child Runs and experiments
+within an existing allowance. Ordinary file workers retain their narrower
+surface; see [coordinator-work.md](coordinator-work.md). The current alpha
+runtime pins classified resource wallets and independent Run sessions. Existing
+unclassified financial stores are not migrated automatically; use a separate
+fresh alpha home when testing this dependency pin, not a copied or reset home.
 Workflow bundles are versioned Geschichte files. An explicitly admitted,
 exact-revision `simmis_workflow-run` uses the ordinary bounded candidate and
 completion evaluator: declared literal parameters and frozen source/inputs

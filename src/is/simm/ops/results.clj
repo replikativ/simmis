@@ -18,15 +18,20 @@
   [[:room [:string {:min 1 :max 200}]]
    [:id [:string {:min 1 :max 36}]]])
 
+(def files-options-schema
+  [:map {:closed true} [:offset {:optional true} [:int {:min 0 :max Long/MAX_VALUE}]]])
+
+(def file-options-schema
+  [:map {:closed true}
+   [:path [:string {:min 1 :max 2048}]]
+   [:offset {:optional true} [:int {:min 0 :max Long/MAX_VALUE}]]
+   [:length {:optional true} [:int {:min 1 :max max-chunk-bytes}]]])
+
 (def files-schema
-  (into [:map {:closed true}] (conj attempt-args
-                                    [:offset {:optional true} [:int {:min 0 :max Long/MAX_VALUE}]])))
+  (into [:map {:closed true}] (concat attempt-args (drop 2 files-options-schema))))
 
 (def file-schema
-  (into [:map {:closed true}] (into attempt-args
-                                    [[:path [:string {:min 1 :max 2048}]]
-                                     [:offset {:optional true} [:int {:min 0 :max Long/MAX_VALUE}]]
-                                     [:length {:optional true} [:int {:min 1 :max max-chunk-bytes}]]])))
+  (into [:map {:closed true}] (concat attempt-args (drop 2 file-options-schema))))
 
 (defn- checked! [schema args]
   (when-not (and (m/validate schema args) (parse-uuid (:id args)))
@@ -46,12 +51,13 @@
 (defn- identity-fields [attempt]
   (select-keys attempt [:id :content-id :run-id]))
 
-(defn attempt-files
-  "List recorded file paths, paged, without returning their contents."
-  [ctx principal {:keys [offset] :or {offset 0} :as args}]
-  (checked! files-schema args)
-  (let [attempt (attempt! ctx principal args)
-        files (get-in attempt [:evidence :files] {})
+(defn captured-files
+  "Pure projection of an ALREADY AUTHORIZED Attempt detail. Adapters must
+   establish room or Run-subtree authority before calling; this does no lookup."
+  [attempt {:keys [offset] :or {offset 0} :as opts}]
+  (when-not (m/validate files-options-schema opts)
+    (dops/op-error! "Invalid captured-file paging options" ::invalid 400))
+  (let [files (get-in attempt [:evidence :files] {})
         paths (vec (sort (keys files)))
         page (reduce (fn [{:keys [entries chars] :as page} path]
                        (when-not (and (string? path) (<= 1 (count path) 2048))
@@ -73,13 +79,12 @@
              :files (:entries page)}
       (< next-offset (count paths)) (assoc :next-offset next-offset))))
 
-(defn attempt-file
-  "Read exact captured bytes as a bounded base64 chunk. Legacy text remains
-   UTF-8; validated regular-file descriptors also preserve arbitrary binary."
-  [ctx principal {:keys [path offset length] :or {offset 0 length max-chunk-bytes} :as args}]
-  (checked! file-schema args)
-  (let [attempt (attempt! ctx principal args)
-        files (get-in attempt [:evidence :files] {})]
+(defn captured-file
+  "Bounded bytes from an ALREADY AUTHORIZED Attempt detail, never a live world."
+  [attempt {:keys [path offset length] :or {offset 0 length max-chunk-bytes} :as opts}]
+  (when-not (m/validate file-options-schema opts)
+    (dops/op-error! "Invalid captured-file read options" ::invalid 400))
+  (let [files (get-in attempt [:evidence :files] {})]
     (when-not (contains? files path)
       (dops/op-error! "No such file in this Attempt's captured evidence" ::not-found 404))
     (let [value (get files path)
@@ -97,6 +102,18 @@
                                           (Arrays/copyOfRange bytes (int offset) (int end)))}
           (map? value) (assoc :mode (:mode value))
           (< end size) (assoc :next-offset end))))))
+
+(defn attempt-files
+  "List recorded file paths after current human room authorization."
+  [ctx principal args]
+  (checked! files-schema args)
+  (captured-files (attempt! ctx principal args) (select-keys args [:offset])))
+
+(defn attempt-file
+  "Read exact captured bytes after current human room authorization."
+  [ctx principal args]
+  (checked! file-schema args)
+  (captured-file (attempt! ctx principal args) (select-keys args [:path :offset :length])))
 
 (def specifications
   {:simmis/attempt-files

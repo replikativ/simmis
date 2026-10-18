@@ -113,11 +113,11 @@
         (doseq [name ["simmis_local-worker-workflow" "simmis_local-worker-benchmark" "simmis_local-worker-list"]]
           (is (= expected
                  (contains? (set (map :name (get-in (rpc/handle-message ctx
-                                                                      {:jsonrpc "2.0" :id 2 :method "tools/list"})
-                                                   [:result :tools]))) name)))
+                                                                        {:jsonrpc "2.0" :id 2 :method "tools/list"})
+                                                    [:result :tools]))) name)))
           (when-not expected
             (let [response (rpc/handle-message ctx {:jsonrpc "2.0" :id 3 :method "tools/call"
-                                                   :params {:name name :arguments {}}})]
+                                                    :params {:name name :arguments {}}})]
               (is (or (:error response) (get-in response [:result :isError]))))))))))
 
 (deftest worker-prefix-authentication-never-falls-through-to-human-authority
@@ -206,6 +206,7 @@
     (is (= #{} (:principal/scopes work)))
     (is (= mcp/work-tools (:principal/tools work)))
     (is (not (contains? (:principal/tools read) "simmis_task")))
+    (is (not (contains? (:principal/tools read) "simmis_coordinator")))
     (doseq [[p expected] [[read mcp/read-tools] [work mcp/work-tools]]]
       (let [ctx (server/session-context (fn [_]) (surface/selection {:profile :admin}) p)]
         (rpc/handle-message ctx {:jsonrpc "2.0" :id 1 :method "initialize"
@@ -222,13 +223,13 @@
             (is (or (:error r) (get-in r [:result :isError])))))))
     (is (thrown? clojure.lang.ExceptionInfo (mcp/mint-token! person :admin)))))
 
-(deftest cli-controls-do-not-upgrade-an-existing-work-token
-  (let [old-tools (disj mcp/work-tools "simmis_cli-benchmark" "simmis_cli-allowance")
+(deftest new-controls-do-not-upgrade-an-existing-work-token
+  (let [old-tools (disj mcp/work-tools "simmis_cli-benchmark" "simmis_cli-allowance" "simmis_coordinator")
         token (with-redefs [mcp/work-tools old-tools] (:token (mcp/mint-token! person :work)))
         old ((mcp/authenticator) {:bearer token})
         fresh ((mcp/authenticator) {:bearer (:token (mcp/mint-token! person :work))})]
     (is (= old-tools (:principal/tools old)))
-    (doseq [tool ["simmis_cli-benchmark" "simmis_cli-allowance"]]
+    (doseq [tool ["simmis_cli-benchmark" "simmis_cli-allowance" "simmis_coordinator"]]
       (is (not (contains? (:principal/tools old) tool)))
       (is (contains? (:principal/tools fresh) tool)))))
 
