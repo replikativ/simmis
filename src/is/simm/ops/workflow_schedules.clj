@@ -43,6 +43,9 @@
   {:version 1 :libraries (runner/library-versions) :effects work/effects
    :workflow workflows-run/policy :models :explicit-registry-id
    :input-selection {:version 1 :capture :occurrence :unchanged :skip :failed :hold
+                     ;; Alpha policy change intentionally requires redeploying
+                     ;; old activations (including generic/benchmark ones).
+                     :publication-target :owned-default-v1
                      :cursor :processed-not-adopted}
    :overlap :skip :missed :latest :allowance :shared-room})
 
@@ -260,20 +263,20 @@
                           {:type :is.simm.model.workflow-schedules/corrupt})))
         (submit retained))
       (workflows-run/with-admission-selection
-       room (:snapshot target) (select-keys (:execution target) workflows-run/source-fields)
-       (fn [selection capture]
-         (if-not selection
-           (submit nil)
-           (let [input-id (hasch/uuid [:simmis/scheduled-input-v1 (:schedule.activation/revision row)
-                                     (:trigger-id selection)])]
-             (when (= :capture (schedules/select-input! conn oid claim input-id (:empty? selection)))
-               (schedules/retain-input!
-                conn oid claim (merge (capture) {:version 1 :input-id input-id
-                                :target-revision (:schedule.activation/revision row)
-                                :selection selection}))
+        (:schedule.activation/room row) room (:snapshot target) (select-keys (:execution target) workflows-run/source-fields)
+        (fn [selection capture]
+          (if-not selection
+            (submit nil)
+            (let [input-id (hasch/uuid [:simmis/scheduled-input-v1 (:schedule.activation/revision row)
+                                        (:trigger-id selection)])]
+              (when (= :capture (schedules/select-input! conn oid claim input-id (:empty? selection)))
+                (schedules/retain-input!
+                 conn oid claim (merge (capture) {:version 1 :input-id input-id
+                                                  :target-revision (:schedule.activation/revision row)
+                                                  :selection selection}))
                ;; Read the durable artifact, not a transient recapture, even on
                ;; the first submission. Restart uncertainty remains held.
-               (submit (schedules/retained-input conn (schedules/occurrence conn oid)))))))))))
+                (submit (schedules/retained-input conn (schedules/occurrence conn oid)))))))))))
 
 (defn- dispatch! [conn ctx resolve-room row o]
   (when-let [claim (schedules/admit! conn (:schedule.occurrence/id o))]

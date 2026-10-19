@@ -31,15 +31,16 @@
       (when (> (count entries) 100)
         (throw (ex-info "Retained manifest exceeds its entry bound" {:type ::corrupt})))
       (assoc (d/pull db '[:file-output/id :file-output/version :file-output/request :file-output/room
-                         :file-output/attempt :file-output/environment :file-output/workflow
-                         :file-output/basis :file-output/output :file-output/repository :file-output/store
-                         :file-output/backend :file-output/branch :file-output/ref] eid)
+                          :file-output/attempt :file-output/environment :file-output/workflow
+                          :file-output/basis :file-output/output :file-output/repository :file-output/store
+                          :file-output/backend :file-output/branch :file-output/ref
+                          :file-output/registry-system :file-output/runtime-system] eid)
              :file-output/entries
              (mapv #(d/pull db '[:file-output.entry/path :file-output.entry/before-state
-                                :file-output.entry/before-content :file-output.entry/before-bytes
-                                :file-output.entry/before-mode :file-output.entry/after-content
-                                :file-output.entry/after-bytes :file-output.entry/after-mode
-                                :file-output.entry/body-ref] (:v %)) entries)))))
+                                 :file-output.entry/before-content :file-output.entry/before-bytes
+                                 :file-output.entry/before-mode :file-output.entry/after-content
+                                 :file-output.entry/after-bytes :file-output.entry/after-mode
+                                 :file-output.entry/body-ref] (:v %)) entries)))))
 
 (defn- checked-metadata [row]
   (let [manifest (manifests/metadata row)]

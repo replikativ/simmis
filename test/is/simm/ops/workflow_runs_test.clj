@@ -17,12 +17,14 @@
             [dvergr.rooms.forks :as forks]
             [dvergr.rooms.files :as room-files]
             [dvergr.system.db :as system-db]
+            [dvergr.substrate.geschichte :as geschichte]
             [is.simm.authority.world :as world]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.checkers :as checkers]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.work :as work]
             [is.simm.ops.knowledge-outputs :as knowledge-outputs]
+            [is.simm.ops.knowledge-admission :as knowledge-admission]
             [is.simm.ops.work-test]
             [is.simm.ops.workflow-runs :as workflow-runs]
             [is.simm.ops.workflows :as workflows]
@@ -188,6 +190,14 @@
                             :system/scope (str "/fixture/systems/" (:system/id system))})
                          (filter #(contains? #{:kb :repo} (:system/type %)) (system-db/all-systems)))))
 
+(defn fixture-default-target
+  "Memory-backed test rooms are deliberately not provisioned file repositories.
+   Exercise selection/Run behavior with a pinned host descriptor; canonical
+   registry and runtime rejection is tested separately in knowledge-admission."
+  [room-id room]
+  {:conn (binding [ec/*execution-context* (:ctx room)] (:conn (geschichte/current-workspace)))
+   :identity {:registry-system room-id :runtime-system "fixture-runtime"}})
+
 (defn- response [n]
   (let [events (concat
                 (when (= n 1)
@@ -219,7 +229,8 @@
              provider (codex/create {:credentials (gateway/static-credentials :fixture {} #{"https://chatgpt.com"})})]
          (try
            (resource/mint! room {:id (random-uuid) :resources (work/resources (:limits request))})
-           (with-redefs [gateway/*request-fn* (fn [_] (response (swap! calls inc)))
+           (with-redefs [knowledge-admission/default-target fixture-default-target
+                         gateway/*request-fn* (fn [_] (response (swap! calls inc)))
                          providers/providers (atom {:codex-subscription provider})
                          checkers/run-checker (fn [& _] (throw (ex-info "Never grade ordinary work" {})))
                          workflows/snapshot (fn [r name]

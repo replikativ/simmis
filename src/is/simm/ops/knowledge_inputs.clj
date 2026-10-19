@@ -71,52 +71,57 @@
    excluded/non-Markdown files and directories. It reads no content bodies and
    confers no authority by itself. Capture from the SAME authorized immutable DB
    as knowledge inputs; never reconstruct it from a model-authored manifest."
-  [db]
-  (let [target {:repository (:geschichte.repo/id (query/repository db))
-                :store (get-in db [:config :store :id])
-                :backend (get-in db [:config :store :backend])
-                :branch (get-in db [:config :branch])
-                :ref (query/current-ref db)}
-        rows (fn [attr]
-               (concat (d/datoms db :avet attr "wiki")
-                       (d/index-range db {:attrid attr :start "wiki/" :end "wiki0"})))
-        occupancy (vec (take (inc files/max-index-entries)
-                             (concat (rows :geschichte.work/path)
-                                     (rows :geschichte.work-dir/path))))]
-    (when-not (and (every? uuid? ((juxt :repository :store) target))
-                   (keyword? (:backend target)) (keyword? (:branch target))
-                   (string? (:ref target)) (not (str/blank? (:ref target))))
-      (refuse! :missing-publication-target))
-    (when (> (count occupancy) files/max-index-entries)
-      (refuse! :too-many-publication-entries))
-    (let [entries
-          (into (sorted-map)
-                (keep (fn [datom]
-                        (when (= :geschichte.work/path (:a datom))
-                          (let [path (files/path! (:v datom)) metadata (files/entry db path)]
-                            (when-not (and (uuid? (:content metadata))
-                                           (integer? (:size metadata)) (<= 0 (:size metadata))
-                                           (integer? (:mode metadata)))
-                              (refuse! :invalid-publication-entry))
-                            [path metadata])))) occupancy)
-          explicit-dirs (mapv (comp files/path! :v)
-                              (filter #(= :geschichte.work-dir/path (:a %)) occupancy))
-          directories
-          (reduce (fn [dirs path]
-                    (let [dirs (conj dirs path)]
+  ([db] (publication-basis db nil))
+  ([db identity]
+   (when (and (some? identity)
+              (not (and (= #{:registry-system :runtime-system} (set (keys identity)))
+                        (publication/host-target? identity))))
+     (refuse! :invalid-default-target))
+   (let [target (merge {:repository (:geschichte.repo/id (query/repository db))
+                        :store (get-in db [:config :store :id])
+                        :backend (get-in db [:config :store :backend])
+                        :branch (get-in db [:config :branch])
+                        :ref (query/current-ref db)} identity)
+         rows (fn [attr]
+                (concat (d/datoms db :avet attr "wiki")
+                        (d/index-range db {:attrid attr :start "wiki/" :end "wiki0"})))
+         occupancy (vec (take (inc files/max-index-entries)
+                              (concat (rows :geschichte.work/path)
+                                      (rows :geschichte.work-dir/path))))]
+     (when-not (and (every? uuid? ((juxt :repository :store) target))
+                    (keyword? (:backend target)) (keyword? (:branch target))
+                    (string? (:ref target)) (not (str/blank? (:ref target))))
+       (refuse! :missing-publication-target))
+     (when (> (count occupancy) files/max-index-entries)
+       (refuse! :too-many-publication-entries))
+     (let [entries
+           (into (sorted-map)
+                 (keep (fn [datom]
+                         (when (= :geschichte.work/path (:a datom))
+                           (let [path (files/path! (:v datom)) metadata (files/entry db path)]
+                             (when-not (and (uuid? (:content metadata))
+                                            (integer? (:size metadata)) (<= 0 (:size metadata))
+                                            (integer? (:mode metadata)))
+                               (refuse! :invalid-publication-entry))
+                             [path metadata])))) occupancy)
+           explicit-dirs (mapv (comp files/path! :v)
+                               (filter #(= :geschichte.work-dir/path (:a %)) occupancy))
+           directories
+           (reduce (fn [dirs path]
+                     (let [dirs (conj dirs path)]
                       ;; Deep paths must not expand a bounded worktree scan into
                       ;; an unbounded retained directory inventory.
-                      (when (> (+ (count entries) (count dirs)) files/max-index-entries)
-                        (refuse! :too-many-publication-entries))
-                      dirs))
-                  (sorted-set)
-                  (concat explicit-dirs (mapcat path-parents (concat (keys entries) explicit-dirs))))
-          basis {:version 1 :root "wiki" :target target
-                 :files entries :directories (vec directories)}]
-      (when (> (byte-count (pr-str basis)) max-publication-basis-bytes)
-        (refuse! :publication-basis-too-large))
-      (publication/validate!
-       (assoc basis :id (hasch/uuid [:simmis/knowledge-publication-basis-v1 basis]))))))
+                       (when (> (+ (count entries) (count dirs)) files/max-index-entries)
+                         (refuse! :too-many-publication-entries))
+                       dirs))
+                   (sorted-set)
+                   (concat explicit-dirs (mapcat path-parents (concat (keys entries) explicit-dirs))))
+           basis {:version 1 :root "wiki" :target target
+                  :files entries :directories (vec directories)}]
+       (when (> (byte-count (pr-str basis)) max-publication-basis-bytes)
+         (refuse! :publication-basis-too-large))
+       (publication/validate!
+        (assoc basis :id (hasch/uuid [:simmis/knowledge-publication-basis-v1 basis])))))))
 
 (defn publication-before
   "Expected state for one exact repository-relative output target, from the

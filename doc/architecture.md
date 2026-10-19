@@ -70,6 +70,17 @@ completion alone does not. Failed or uncertified work holds the activation for
 explicit resumption. This cursor records processing/proposal, not adoption of
 any generated knowledge.
 
+Fresh host knowledge admission resolves the logical room's explicitly owned
+default repository, not an attachment-order or current-workspace fallback.
+Input selection and complete wiki occupancy use the same immutable database
+value. Retained target metadata includes the registry system and runtime
+system identities alongside the physical repository/store/branch/ref identity.
+These are historical evidence, not permission or a lease over the live target.
+Older unmarked captures remain readable but do not gain publication authority
+by matching today's workspace. Benchmark and supplied frozen inputs remain
+unmarked. A changed host target policy requires explicit schedule redeployment;
+the server does not silently upgrade an existing activation.
+
 Room source and execution state have different lifetimes. A daemon room's
 repository is initially seeded from the sandbox library (or its configured
 import source); participants load source into their own SCI interpreters,

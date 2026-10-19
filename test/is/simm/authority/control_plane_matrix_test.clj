@@ -233,7 +233,11 @@
    "comment-on-proposal!"    [(c :proposal MEMBERS)]
    "request-changes!"        [(c :proposal MEMBERS)]
    "proposal-status!"        [(c :none AUTH)]
+   ;; The audit helper returns nil for invisible or absent proposals, then
+   ;; rechecks room access and exact retained ownership before reading data.
+   "proposal-retained-audit!" [(c :none AUTH)]
    "proposal-diff!"          [(c :proposal MEMBERS)]
+   "proposal-file!"          [(c :proposal MEMBERS)]
    "proposal-checks!"        [(c :proposal MEMBERS)]
    "list-proposals!"         [(c :none AUTH)]
    ;; labels: what the room's people decided on reviewed work — a room read

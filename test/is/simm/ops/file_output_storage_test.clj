@@ -14,6 +14,7 @@
             [is.simm.ops.file-output-plan-test :as fixture]
             [is.simm.ops.file-output-storage :as storage]
             [is.simm.ops.knowledge-outputs :as outputs]
+            [is.simm.ops.knowledge-inputs :as inputs]
             [superv.async :refer [<?? S]]))
 
 (deftest canonical-proposal-retains-manifest-atomically-and-recovers-a-lost-ack
@@ -27,7 +28,11 @@
       (d/transact conn system-db/schema)
       (@#'fixture/with-input
        (fn [source base]
-         (reset! saved (plans/plan (assoc base :output (@#'fixture/output! source {"wiki/new.md" "New"}))))))
+         (reset! saved (plans/plan (assoc base
+                                        :publication-basis (inputs/publication-basis
+                                                            @source {:registry-system (random-uuid)
+                                                                     :runtime-system "owned-runtime"})
+                                        :output (@#'fixture/output! source {"wiki/new.md" "New"}))))))
       (let [{:keys [manifest proposal] :as plan} @saved
             publications (atom 0)
             lost? (atom false)

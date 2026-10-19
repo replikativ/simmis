@@ -69,10 +69,12 @@
         ;; 0.1.131 includes singleton authority partitions, nil DOM attribute
         ;; cleanup and read-only cross-catalog fork diffs (#141–143).
         ;; Keep the direct UI/runtime pin aligned with Dvergr's reviewed
-        ;; independent-session and funding-recovery foundation (spindel#146).
-        ;; Public squash has the identical source tree as retired 5a34810.
+        ;; independent-session and funding-recovery foundation (spindel#146),
+        ;; plus the reviewed stable-reference SCI replacement API (#147).
+        ;; Use the public squash commit, not a local-only development commit:
+        ;; the worker package resolves this same basis on clean machines.
         org.replikativ/spindel {:git/url "https://github.com/replikativ/spindel.git"
-                                :git/sha "f123bd80073ba6b5a6fe9cf0f04e65c968dbfb0b"}
+                               :git/sha "0cda03449d853f32c13d4087b1f9abbc19400db5"}
         ;; spindel 0.1.53 brings anglican 1.1.0 (its inference methods), which
         ;; brings timbre 4.10.0, whose ClojureScript no longer compiles
         ;; ("Can't redefine a constant"). A current timbre serves anglican's
@@ -391,12 +393,14 @@
         ;; 0.1.312 keeps model/broker loading independent of Datahike and the
         ;; agent runtime, preserving trusted installation boundaries (#355).
         ;; Temporary immutable upstream pin for scoped coordinators, owned Run
-        ;; sessions, world-spend attribution and subscription image input
-        ;; (dvergr#357–361, #363). Alpha stores
+        ;; sessions, world-spend attribution, subscription image input and
+        ;; explicit default workspace identity, plus the independently reviewed
+        ;; main-based editor receipt/one-shot batch fixes (#365).
+        ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         ;; Use the merged #363 commit: the earlier feature SHA is retired.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "bddad4113d9fa448a2bb0b5215c24cd88b1ff2c6"
+                               :git/sha "239ab6f78b99b34fdfc5a5df81448139196e09ad"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.

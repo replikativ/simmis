@@ -14,10 +14,24 @@
        (every? #(and (not (str/blank? %)) (not (#{"." ".."} %)))
                (str/split path #"/" -1))))
 
+(defn host-target?
+  "Explicit admission identity, not current permission or adoption authority."
+  [target]
+  (and (uuid? (:registry-system target)) (string? (:runtime-system target))
+       (<= 1 (count (:runtime-system target)) 4096)
+       (not (str/blank? (:runtime-system target)))))
+
 (def target-schema
-  [:map {:closed true}
-   [:repository :uuid] [:store :uuid] [:backend :keyword] [:branch :keyword]
-   [:ref [:string {:min 1 :max 4096}]]])
+  [:and
+   [:map {:closed true}
+    [:repository :uuid] [:store :uuid] [:backend :keyword] [:branch :keyword]
+    [:ref [:string {:min 1 :max 4096}]]
+    [:registry-system {:optional true} :uuid]
+    [:runtime-system {:optional true} [:string {:min 1 :max 4096}]]]
+   [:fn (fn [target]
+          (or (and (not (contains? target :registry-system))
+                   (not (contains? target :runtime-system)))
+              (host-target? target)))]])
 
 (def schema
   [:map {:closed true}

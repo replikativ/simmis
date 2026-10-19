@@ -13,6 +13,7 @@
             [is.simm.model.workers :as workers]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.work :as work]
+            [is.simm.ops.knowledge-admission :as knowledge-admission]
             [is.simm.ops.work-test :as work-fixture]
             [is.simm.ops.worker-credentials :as credentials]
             [is.simm.ops.worker-files-test :as file-fixture]
@@ -68,7 +69,8 @@
         (let [request (merge (select-keys input [:request-id :worker :limits])
                              (select-keys (workflow-fixture/input workflow-fixture/knowledge-source)
                                           [:name :expected-bundle]))]
-          (with-redefs [work/submit-prepared!
+          (with-redefs [knowledge-admission/default-target workflow-fixture/fixture-default-target
+                        work/submit-prepared!
                         (fn [_ _ _ _ _ admitted prepared]
                           (:request (requests/claim!
                                      conn {:party (:owner w) :room (:room w)

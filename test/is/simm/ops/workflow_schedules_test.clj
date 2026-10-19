@@ -19,6 +19,8 @@
             [geschichte.repo :as repo]
             [hasch.core :as hasch]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
+            [is.simm.ops.knowledge-admission :as knowledge-admission]
+            [is.simm.ops.workflow-runs-test :as workflow-fixture]
             [is.simm.model.work-requests :as requests]
             [is.simm.model.workflow-schedules :as model]
             [is.simm.ops.dvergr :as principals]
@@ -82,7 +84,7 @@
   (let [{:keys [request]} (requests/claim!
                            conn {:party owner :room room-id :client-id (:schedule.occurrence/id occurrence)
                                  :kind :workflow :intent (cond-> {:submission (:execution target)}
-                                                          environment (assoc :environment environment))
+                                                           environment (assoc :environment environment))
                                  :limits (update (get-in target [:execution :limits]) :settlement keyword)})]
     (if submitted?
       (requests/record-job! conn (:work.request/id request) (:work.request/claim request) (random-uuid))
@@ -96,7 +98,7 @@
     (fn [{:keys [conn ctx owner room-id row target] :as fixture}]
       (model/set-enabled! conn (:schedule.activation/id row) false)
       (let [room (discourse/make-room {:id (keyword (str "scheduled-inputs-" (random-uuid)))
-                                     :ctx ctx :store (memory-store/make)})
+                                       :ctx ctx :store (memory-store/make)})
             source (assoc source "input-selection.edn"
                           (pr-str {:kind :knowledge :policy knowledge-inputs/default-policy}))
             target (-> target (assoc :snapshot {:files source :manifest []})
@@ -105,10 +107,11 @@
                                      :now (java.util.Date. 0) :next-fire (java.util.Date. 60000)})]
         (try
           (workspace/ensure-workspace! room)
-          (f (assoc fixture :room room :target target :row row
-                    :environment (environment/make-environment
-                                  {:id :scheduled-fixture :task "Process evidence"
-                                   :verifier {:id :completed :version 1}})))
+          (with-redefs [knowledge-admission/default-target workflow-fixture/fixture-default-target]
+            (f (assoc fixture :room room :target target :row row
+                      :environment (environment/make-environment
+                                    {:id :scheduled-fixture :task "Process evidence"
+                                     :verifier {:id :completed :version 1}}))))
           (finally (discourse/close-room! room)))))))
 
 (defn- write-source! [{:keys [room]} path text]
@@ -119,7 +122,7 @@
   (let [request (requests/get-request conn (:schedule.occurrence/request occurrence))
         job-id (:work.request/job request)
         agent (roster/agent (roster/make-agent (roster/make-roster {:id :fixture})
-                                             {:id :candidate :program {:kind :echo}}) :candidate)
+                                               {:id :candidate :program {:kind :echo}}) :candidate)
         metrics {:agent-def-hash (hasch/uuid agent) :agent-version (:agent/version agent)
                  :program-kind :echo :interpreter-version 1}]
     (binding [ec/*execution-context* (:ctx room)]
@@ -236,6 +239,26 @@
             (is (false? (:schedule.activation/enabled? a)))
             (is (= :execution-failed (:schedule.activation/reason a)))
             (is (nil? (:schedule.activation/last-processed-input a)))))))))
+
+(deftest an-activation-without-the-default-target-policy-refuses-before-capture
+  (let [current (schedules/host-policy)
+        old (update current :input-selection dissoc :publication-target)]
+    (is (= :owned-default-v1 (get-in current [:input-selection :publication-target])))
+    (with-fixture
+      (fn [{:keys [conn ctx row target] :as fixture}]
+        (model/set-enabled! conn (:schedule.activation/id row) false)
+        (let [target (assoc target :host-policy old)
+              activation (model/create! conn {:id (random-uuid) :room (:room-id fixture) :by (:owner fixture)
+                                              :target target :now (java.util.Date. 0)
+                                              :next-fire (java.util.Date. 60000)})]
+          (with-redefs [schedules/host-policy (constantly current)
+                        workflow-runs/with-admission-selection (fn [& _] (throw (AssertionError. "Obsolete activation captured inputs")))
+                        workflow-runs/submit! (fn [& _] (throw (AssertionError. "Obsolete activation submitted a Run")))]
+            (tick! fixture 60000))
+          (let [after (model/activation conn (:schedule.activation/id activation))]
+            (is (false? (:schedule.activation/enabled? after)))
+            (is (= :is.simm.ops.workflow-schedules/policy-changed (:schedule.activation/reason after)))
+            (is (empty? (requests/requests conn)))))))))
 
 (deftest deployment-pins-live-input-policy-without-collecting-or-preparing-a-provider
   (with-input-fixture

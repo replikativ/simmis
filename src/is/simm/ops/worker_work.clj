@@ -158,8 +158,8 @@
                                   (identical? world (registry/lookup (:id world))))
                                 (binding [ec/*execution-context* (:ctx control)]
                                   (some #(and (= id (:run/id %)) (= job (:run/parent %))
-                                                   (= :running (:run/status %)))
-                                             (run/active-runs (:id control))))
+                                              (= :running (:run/status %)))
+                                        (run/active-runs (:id control))))
                                 (journal
                                  #(let [current (workers/assignment conn id)]
                                     (and (= (:simmis.worker.assignment/intent-id receipt)
@@ -272,7 +272,7 @@
   (let [pinned (enrollment! conn host-ctx room-id by input)
         config (binding [ec/*execution-context* host-ctx] (workers/payload conn pinned :simmis.worker/config-ref))
         snapshot (workflows/snapshot room (:name input))
-        resolution (workflow-runs/resolve-admission room snapshot (select-keys input workflow-runs/source-fields))
+        resolution (workflow-runs/resolve-admission room-id room snapshot (select-keys input workflow-runs/source-fields))
         captured (:captured resolution)
         workflow (assoc (workflow-input snapshot input config captured) :snapshot snapshot)]
     (workflow-runs/bind-publication
@@ -289,10 +289,10 @@
             (refuse! ::conflict "Request identity was used for different work"))
           (work/status conn host-ctx principal room-id id))
         (work/submit-prepared! conn host-ctx principal room-id room
-                              (assoc-in input [:limits :max-worker-admissions] 1)
-                              (assoc (prepare conn host-ctx room-id room by id input)
-                                     :execution-kind kind
-                                     :submission-channel (if (:principal/mcp? principal) :mcp :host)))))))
+                               (assoc-in input [:limits :max-worker-admissions] 1)
+                               (assoc (prepare conn host-ctx room-id room by id input)
+                                      :execution-kind kind
+                                      :submission-channel (if (:principal/mcp? principal) :mcp :host)))))))
 
 (defn submit! [conn host-ctx principal room-id room input]
   (checked! task-schema input)

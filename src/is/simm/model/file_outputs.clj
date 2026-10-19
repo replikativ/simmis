@@ -51,6 +51,7 @@
           [:file-output/output :db.type/uuid] [:file-output/repository :db.type/uuid]
           [:file-output/store :db.type/uuid] [:file-output/backend :db.type/keyword]
           [:file-output/branch :db.type/keyword] [:file-output/ref :db.type/string]
+          [:file-output/registry-system :db.type/uuid] [:file-output/runtime-system :db.type/string]
           [:file-output.entry/path :db.type/string] [:file-output.entry/before-state :db.type/keyword]
           [:file-output.entry/before-content :db.type/uuid] [:file-output.entry/before-bytes :db.type/long]
           [:file-output.entry/before-mode :db.type/long] [:file-output.entry/after-content :db.type/uuid]
@@ -84,7 +85,9 @@
   (merge
    (into {} (for [k [:id :version :request :room :attempt :environment :workflow :basis :output]]
               [k (get row (keyword "file-output" (name k)))]))
-   {:target (into {} (for [k [:repository :store :backend :branch :ref]]
+   {:target (into {} (for [k [:repository :store :backend :branch :ref :registry-system :runtime-system]
+                           :when (or (not (#{:registry-system :runtime-system} k))
+                                     (contains? row (keyword "file-output" (name k))))]
                        [k (get row (keyword "file-output" (name k)))]))
     :entries (into (sorted-map)
                    (map (fn [entry]

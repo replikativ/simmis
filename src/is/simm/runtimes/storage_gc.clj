@@ -68,8 +68,9 @@
 
    It is the FIRST datahike release containing commit 51cf69d3 (the merged
    #1117): 0.8.1906, verified in its tag. 0.8.1905 does not contain it. simmis
-   pins 0.8.1906, so an enabled loop on the Maven set does not warn; a
-   `:local` source checkout reports no version and still does."
+   tracks a reviewed source pin for later fixes; source pins and `:local`
+   checkouts need not report Maven metadata and still warn. Loaded-library
+   behavior is separately covered by the isolated incomplete-mark regression."
   "0.8.1906")
 
 (defn- parse-version
@@ -107,9 +108,9 @@
     (when-not (version-at-least? v datahike-fail-closed-gc-version)
       (log/log! {:level :warn :id ::datahike-gc-not-fail-closed
                  :msg (str "Storage GC is ON with datahike " (or v "<source checkout, version unknown>")
-                           ", which predates the fail-closed mark (datahike#1117; this check wants >= "
-                           datahike-fail-closed-gc-version "). An Error inside a branch walk "
-                           "empties the mark and the sweep deletes the store.")
+                           "; release metadata does not establish the fail-closed mark fix "
+                           "(datahike#1117; this check wants >= " datahike-fail-closed-gc-version "). "
+                           "Without that fix an Error in the mark can make the sweep delete live data.")
                  :data {:datahike-version v
                         :required datahike-fail-closed-gc-version}}))))
 
@@ -170,8 +171,8 @@
                      :data {:home (paths/home)}
                      :error e})
           (log/log! {:level :error :id ::sweep-failed
-                   :msg "Storage GC sweep failed"
-                   :error e}))
+                     :msg "Storage GC sweep failed"
+                     :error e}))
         {:error (.getMessage e)}))))
 
 (defn start!
