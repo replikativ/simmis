@@ -21,9 +21,9 @@
                 (publish (manifests/entity (:manifest plan) refs))))]
       (step (seq (:bodies plan)) {}))))
 
-(defn- row! [conn id]
+(defn- row-in! [db id]
   (when-not (uuid? id) (throw (ex-info "Exact manifest UUID required" {:type ::invalid})))
-  (let [db @conn eid (:e (first (d/datoms db :avet :file-output/id id)))]
+  (let [eid (:e (first (d/datoms db :avet :file-output/id id)))]
     (when-not eid (throw (ex-info "Retained file manifest is unavailable" {:type ::missing})))
     ;; Bound component expansion before pull allocates child rows. Don't use
     ;; wildcard pull here: component attrs recursively expand automatically.
@@ -48,16 +48,25 @@
       (throw (ex-info "Retained file paths are not unique" {:type ::corrupt})))
     (plans/validate-manifest! manifest)))
 
+(defn manifest-in
+  "Bounded validated metadata from ONE immutable DB, including a writer's
+   serialized snapshot. No artifact/connection reads or authorization."
+  [db id]
+  (let [row (row-in! db id)]
+    (when-not (every? #(uuid? (:file-output.entry/body-ref %)) (:file-output/entries row))
+      (throw (ex-info "Retained file body reference is missing" {:type ::corrupt})))
+    (checked-metadata row)))
+
 (defn manifest
   "Bounded metadata only; no file body fetch. Caller authorizes the request."
   [conn id]
-  (checked-metadata (row! conn id)))
+  (manifest-in @conn id))
 
 (defn read-file
   "Fetch just one retained file pair, validating it against typed metadata.
    No reads from the source room, live world or original Attempt store."
   [conn id path]
-  (let [row (row! conn id) metadata (checked-metadata row)
+  (let [row (row-in! @conn id) metadata (checked-metadata row)
         entry (get-in metadata [:entries path])]
     (when-not entry (throw (ex-info "File is not in this manifest" {:type ::missing})))
     (let [stored (first (filter #(= path (:file-output.entry/path %)) (:file-output/entries row)))

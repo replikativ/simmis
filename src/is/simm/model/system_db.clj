@@ -25,6 +25,7 @@
             [dvergr.substrate.paths :as paths]
             [dvergr.system.db :as sdb]
             [is.simm.model.work-requests :as work-requests]
+            [is.simm.model.knowledge-dispositions :as knowledge-dispositions]
             [is.simm.model.file-outputs :as file-outputs]
             [is.simm.model.workflow-schedules :as workflow-schedules]
             [is.simm.model.workers :as workers]
@@ -712,7 +713,8 @@
 
 (def schema
   "Simmis control-plane extension attributes, including host work admission."
-  (into core-schema (concat work-requests/schema workers/schema workflow-schedules/schema file-outputs/schema)))
+  (into core-schema (concat work-requests/schema workers/schema workflow-schedules/schema
+                            file-outputs/schema knowledge-dispositions/schema)))
 
 ;; =============================================================================
 ;; Migration: lift legacy :party/* rows onto the dvergr actor core
