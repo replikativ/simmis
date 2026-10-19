@@ -1,6 +1,27 @@
 (ns is.simm.model.file-outputs
   "Typed Proposal-owned file manifests. Exact bodies live behind store refs."
-  (:require [is.simm.model.knowledge-publication :as publication]))
+  (:require [datahike.api :as d]
+            [is.simm.model.knowledge-publication :as publication]))
+
+(defn owner
+  "Unique canonical Proposal/component owner, or nil. Metadata identity only,
+   NOT authorization. A manifest is not an independent room or store scope."
+  [db scope]
+  (when (uuid? scope)
+    (let [rows (vec (take 2 (d/q '[:find ?proposal ?room ?authority ?manifest-room ?fork ?p ?manifest
+                                   :in $ ?scope
+                                   :where [?fork :proposal.fork/scope ?scope]
+                                   [?fork :proposal.fork/system-type :file-output]
+                                   [?fork :proposal.fork/authority-scope ?authority]
+                                   [?fork :proposal.fork/file-output ?manifest]
+                                   [?manifest :file-output/id ?scope]
+                                   [?manifest :file-output/room ?manifest-room]
+                                   [?p :proposal/forks ?fork]
+                                   [?p :proposal/id ?proposal] [?p :proposal/room ?room]] db scope)))
+          [proposal room authority manifest-room fork proposal-eid manifest-eid] (first rows)]
+      (when (and (= 1 (count rows)) (uuid? proposal) (uuid? room) (= room authority manifest-room))
+        {:proposal proposal :room room :fork-eid fork
+         :proposal-eid proposal-eid :manifest-eid manifest-eid}))))
 
 (def content-schema
   [:map {:closed true} [:content :uuid] [:bytes [:int {:min 0 :max 1048576}]] [:mode [:= 33188]]])
@@ -64,7 +85,7 @@
    (into {} (for [k [:id :version :request :room :attempt :environment :workflow :basis :output]]
               [k (get row (keyword "file-output" (name k)))]))
    {:target (into {} (for [k [:repository :store :backend :branch :ref]]
-                      [k (get row (keyword "file-output" (name k)))]))
+                       [k (get row (keyword "file-output" (name k)))]))
     :entries (into (sorted-map)
                    (map (fn [entry]
                           [(:file-output.entry/path entry)

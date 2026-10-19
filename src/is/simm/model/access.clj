@@ -26,6 +26,7 @@
   (:require [clojure.string :as str]
             [is.simm.distributed-scope :as ds]
             [is.simm.model.system-db :as system-db]
+            [is.simm.model.file-outputs :as file-outputs]
             [datahike.api :as d]
             [dvergr.system.rooms :as registry-rooms]
             [taoensso.telemere :as log]))
@@ -332,9 +333,10 @@
   ;; a fork that had it (position-dependent, not a cache), so a decided fork
   ;; would have stayed locked — replikativ/datahike#1116.
   (keep (fn [[f p]]
-          (let [fork (d/pull db [:proposal.fork/author :proposal.fork/authority-scope
+          (let [fork (d/pull db [:db/id :proposal.fork/author :proposal.fork/authority-scope
                                  :proposal.fork/scope :proposal.fork/status
-                                 :proposal.fork/system-type :proposal.fork/world-system-id] f)]
+                                 :proposal.fork/system-type :proposal.fork/world-system-id
+                                 {:proposal.fork/file-output [:file-output/id :file-output/room]}] f)]
             (when (nil? (:proposal.fork/status fork))
               [fork (d/pull db [:proposal/author] p)])))
         rows))
@@ -364,13 +366,27 @@
    The settlement boundary separately rechecks the origin room's write grant."
   [db subject fork]
   (boolean
-   (if (= :world (:proposal.fork/system-type fork))
+   (cond
+     (= :file-output (:proposal.fork/system-type fork))
+     ;; Room governance controls this retained contribution, not a store named
+     ;; by the manifest UUID. This grants no publication capability: the
+     ;; settlement gate independently refuses adoption until it is implemented.
+     (when db
+       (let [scope (:proposal.fork/scope fork)
+             {:keys [room fork-eid] :as owner} (file-outputs/owner db scope)]
+         (and owner (= fork-eid (:db/id fork))
+              (= scope (get-in fork [:proposal.fork/file-output :file-output/id]))
+              (= room (:proposal.fork/authority-scope fork)
+                 (get-in fork [:proposal.fork/file-output :file-output/room]))
+              (can? db subject :read {:room room})
+              (can? db subject :merge {:room room}))))
+     (= :world (:proposal.fork/system-type fork))
      (and db (:proposal.fork/authority-scope fork) (:proposal.fork/world-system-id fork)
           (can? db subject :merge {:room (:proposal.fork/authority-scope fork)})
           (let [target (try (registry-rooms/registry-system-for db (:proposal.fork/world-system-id fork))
                             (catch clojure.lang.ExceptionInfo _ nil))]
             (and target (can? db subject :merge (:system/id target)))))
-     (can? db subject :merge (or (:proposal.fork/authority-scope fork) (:proposal.fork/scope fork))))))
+     :else (can? db subject :merge (or (:proposal.fork/authority-scope fork) (:proposal.fork/scope fork))))))
 
 (defn- fork-controller?
   "Does an open proposal fork belong to `party-uuid`? Its author
