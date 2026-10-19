@@ -192,7 +192,7 @@
                    (if (and (string? name) (re-matches #"[a-z0-9][a-z0-9-]{0,63}" name))
                      (select! name (nil? (get-in (state) [:drafts name])) true)
                      (update! assoc-in [:errors :source] "Use a lowercase workflow name with letters, digits and dashes (max64)."))))
-       :change change! :save save! :submit submit! :fund fund! :schedule schedule!
+       :owner k :change change! :save save! :submit submit! :fund fund! :schedule schedule!
        :open-run (fn [job]
                    (binding [ec/*execution-context* ctx]
                      (when (web/current-session? session)

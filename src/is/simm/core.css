@@ -9046,6 +9046,13 @@ body.tab-dragging .column-drop-zone {
 .workflow-source { display: grid; grid-template-columns: minmax(130px, 25%) minmax(0, 1fr); gap: 12px; }
 .workflow-files button { overflow-wrap: anywhere; }
 .workflow-text textarea { width: 100%; min-height: 280px; box-sizing: border-box; resize: vertical; font-family: monospace; line-height: 1.5; padding: 12px; color: inherit; background: var(--mono-bg-surface); border: 1px solid var(--mono-border); border-radius: 8px; }
+.source-editor { display: block; min-width: 0; border: 1px solid var(--mono-border); border-radius: 8px; overflow: hidden; background: var(--mono-bg-surface); color: inherit; }
+.source-editor .cm-editor { min-height: 280px; max-height: 65vh; font-size: 13px; }
+.source-editor .cm-scroller { overflow: auto; font-family: monospace; line-height: 1.6; }
+.source-editor .cm-content { padding: 12px 0; }
+.source-editor .cm-gutters { background: transparent; color: var(--mono-text-muted); border-right: 1px solid var(--mono-border); }
+.source-editor .cm-cursor { border-left-color: currentColor; }
+.source-editor .cm-focused { outline: 2px solid var(--mono-border); outline-offset: -2px; }
 .workflow-field { display: flex; flex-direction: column; gap: 4px; margin: 9px 0; font-size: var(--text-sm); }
 .workflow-field input, .workflow-field select { min-width: 0; padding: 7px; border: 1px solid var(--mono-border); border-radius: 6px; color: inherit; background: var(--mono-bg-surface); }
 .workflow-inspection { margin: 16px 0; font-size: var(--text-sm); overflow-wrap: anywhere; }

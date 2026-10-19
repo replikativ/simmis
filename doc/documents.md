@@ -68,3 +68,19 @@ and are not stable wiki-block identities. Legacy block migration, portable
 schema/widget declarations and existing KB property integration are not
 implemented here. There is no new independent authorization boundary: callers
 must own/authorize the connection, and no remote caller can invoke this API.
+
+## Generic source editor
+
+The Workflows panel uses `uis/web/desktop/source_editor.cljs`, a controlled
+CodeMirror view with Markdown, Clojure/EDN, JSON and plain-text modes. Saving
+still uses the existing workflow source/revision APIs; opening a source file
+does not execute it. This is not yet a rich editor for Markdown-backed wikis.
+
+Draft text and selection belong to the caller's Spindel signal state. A native
+custom element owns its editor handle and releases it on disconnect; there is
+no global editor registry. The controlled owner includes session/room/file and
+execution-context fork identity. Owner changes recreate the native view, and
+authoritative source replacements reset native undo history. Local edits that
+are echoed back through controlled props keep their history. Undo history is
+ephemeral device state, not serialized simulation state; draft source/selection
+can be restored without sharing a native handle or another context's history.
