@@ -49,6 +49,7 @@
             ["@tiptap/extension-link" :default TiptapLink]
             ["@tiptap/extension-code-block" :default CodeBlock]
             [is.simm.uis.web.desktop.markdown :as md]
+            [is.simm.uis.web.desktop.sanitize :as sanitize]
             [is.simm.uis.web.desktop.sandbox-remote :as sandbox-remote]
             [is.simm.uis.web.desktop.branching.naming :as bn]
             [datahike.writing :as dw]
@@ -1544,10 +1545,7 @@
 (defn- extract-code-text
   "Extract plain text from a code block's HTML content."
   [html]
-  (when html
-    (let [tmp (js/document.createElement "div")]
-      (set! (.-innerHTML tmp) html)
-      (some-> (.querySelector tmp "code") (.-textContent)))))
+  (sanitize/code-text html))
 
 (defn- render-widget-block
   "Render a block whose :widget-code is a Clojure expression evaluated in

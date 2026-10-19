@@ -3,7 +3,31 @@
             ["dompurify" :as DOMPurify]
             [is.simm.uis.web.desktop.markdown :as markdown]
             [is.simm.uis.web.desktop.sanitize :as sanitize]
+            [is.simm.uis.web.desktop.views.core :as views]
             [is.simm.uis.web.desktop.views.mermaid :as mermaid]))
+
+(deftest unaccepted-proposal-blocks-are-sanitized-at-the-render-boundary
+  (let [vnode (views/static-block
+               "<p>Proposed text</p><img src='data:,' onerror='void 0'><a href='javascript:void(0)'>Link</a>"
+               "diff-add")
+        ^js el (js/document.createElement "div")]
+    (set! (.-innerHTML el) (:innerHTML (:attrs vnode)))
+    (is (= "proposal-block diff-add" (:class (:attrs vnode))))
+    (is (= "Proposed text" (.-textContent (.querySelector el "p"))))
+    (is (nil? (.querySelector el "[onerror], a[href]"))))
+  (is (= "" (:innerHTML (:attrs (views/static-block nil "diff-remove"))))))
+
+(deftest legacy-code-extraction-sanitizes-before-parsing
+  (is (= "(str \"<safe>\")"
+         (sanitize/code-text
+          "<img src='data:,' onerror='void 0'><pre><code>(str &quot;&lt;safe&gt;&quot;)</code></pre>")))
+  (is (nil? (sanitize/code-text nil)))
+  (is (nil? (sanitize/code-text "<p>No code</p>")))
+  (let [supported (.-isSupported ^js DOMPurify)]
+    (try
+      (set! (.-isSupported ^js DOMPurify) false)
+      (is (thrown? js/Error (sanitize/code-text "<code>refuse unsafe parsing</code>")))
+      (finally (set! (.-isSupported ^js DOMPurify) supported)))))
 
 (deftest untrusted-markdown-cannot-insert-event-handlers-or-active-html
   (let [^js el (markdown/create-markdown-element
