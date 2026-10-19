@@ -1,13 +1,15 @@
 (ns is.simm.model.workflow-schedules-test
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
+            [is.simm.model.knowledge-dispositions :as dispositions]
+            [is.simm.model.work-requests :as requests]
             [is.simm.model.workflow-schedules :as schedules]))
 
 (defn- with-db [f]
   (let [cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write :keep-history? false}]
     (d/create-database cfg)
     (let [conn (d/connect cfg)]
-      (try (d/transact conn schedules/schema) (f conn)
+      (try (d/transact conn (concat schedules/schema requests/schema dispositions/schema)) (f conn)
            (finally (d/release conn))))))
 
 (defn- create [conn]
@@ -15,6 +17,89 @@
                            :now (java.util.Date. 0) :next-fire (java.util.Date. 60000)
                            :target {:kind :workflow :cadence {:interval-ms 60000 :tz "UTC"}
                                     :snapshot {:files {"task.md" "pinned"}}}}))
+
+(defn- with-filed-input [f]
+  (with-db
+    (fn [conn]
+      (let [a (create conn) aid (:schedule.activation/id a) input-id (random-uuid)]
+        (schedules/claim-due! conn a {:interval-ms 60000} (java.util.Date. 60000))
+        (let [o (first (schedules/occurrences conn aid)) oid (:schedule.occurrence/id o)
+              claim (schedules/admit! conn oid)
+              party (:schedule.activation/by a) room (:schedule.activation/room a)
+              rid (requests/request-id party room oid)
+              request {:work.request/id rid :work.request/client-id oid
+                       :work.request/by party :work.request/room room
+                       :work.request/kind :workflow :work.request/state :submitted
+                       :work.request/intent-id (random-uuid) :work.request/payload-ref (random-uuid)
+                       :work.request/publication-basis-id (random-uuid)
+                       :work.request/job (random-uuid) :work.request/return-pending? false}
+              receipt (dispositions/make
+                       {:request rid :intent (:work.request/intent-id request)
+                        :job (:work.request/job request) :basis (:work.request/publication-basis-id request)
+                        :candidate (random-uuid) :attempt-content (random-uuid)
+                        :output (random-uuid) :kind :no-op})]
+          (schedules/select-input! conn oid claim input-id false)
+          (schedules/retain-input! conn oid claim {:version 1 :input-id input-id})
+          (d/transact conn [request])
+          (schedules/finish-admission! conn oid :linked rid nil)
+          ;; Storage-boundary fixture only: this does not certify an Attempt
+          ;; or establish host filing authority. Host writer tests cover that.
+          (f {:conn conn :activation a :oid oid :request request :receipt receipt
+              :input-id input-id
+              :file! #(d/transact conn [[:db.fn/call dispositions/tx-data request receipt]])}))))))
+
+(deftest knowledge-cursor-requires-the-already-durable-filing
+  (with-filed-input
+    (fn [{:keys [conn activation oid file! input-id]}]
+      (is (nil? (schedules/processing-proof conn oid)))
+      (is (thrown? Exception (schedules/mark-input-processed! conn oid)))
+      (is (thrown? Exception (schedules/mark-input-processed! conn oid {})))
+      (is (nil? (:schedule.activation/last-processed-input
+                 (schedules/activation conn (:schedule.activation/id activation)))))
+      (file!)
+      (let [proof (schedules/processing-proof conn oid)]
+        ;; Disabled activations must still finish already owned work.
+        (schedules/set-enabled! conn (:schedule.activation/id activation) false)
+        (schedules/mark-input-processed! conn oid proof)
+        (schedules/mark-input-processed! conn oid proof)
+        (is (= input-id (:schedule.activation/last-processed-input
+                         (schedules/activation conn (:schedule.activation/id activation)))))))))
+
+(deftest knowledge-cursor-refuses-stale-requests-captures-and-receipts
+  (doseq [field [:schedule.occurrence/input-id :schedule.occurrence/input-revision
+                 :schedule.occurrence/input-ref :schedule.occurrence/request
+                 :schedule.occurrence/revision :work.request/intent-id
+                 :work.request/publication-basis-id :work.request/job
+                 :knowledge.disposition/id]]
+    (with-filed-input
+      (fn [{:keys [conn activation oid request file!]}]
+        (file!)
+        (let [proof (schedules/processing-proof conn oid)
+              entity (if (= "schedule.occurrence" (namespace field))
+                       [:schedule.occurrence/id oid] [:work.request/id (:work.request/id request)])]
+          (d/transact conn [[:db/add entity field (random-uuid)]])
+          (is (thrown? Exception (schedules/mark-input-processed! conn oid proof)) (str field))
+          (is (nil? (:schedule.activation/last-processed-input
+                     (schedules/activation conn (:schedule.activation/id activation))))))))))
+
+(deftest absent-or-foreign-requests-never-downgrade-to-unbound-processing
+  (doseq [change [:missing :owner :room :client :return-pending :basis-retracted]]
+    (with-filed-input
+      (fn [{:keys [conn activation oid request file!]}]
+        (file!)
+        (let [lookup [:work.request/id (:work.request/id request)]]
+          (d/transact conn
+                      (case change
+                        :missing [[:db/retractEntity lookup]]
+                        :owner [[:db/add lookup :work.request/by (random-uuid)]]
+                        :room [[:db/add lookup :work.request/room (random-uuid)]]
+                        :client [[:db/add lookup :work.request/client-id (random-uuid)]]
+                        :return-pending [[:db/add lookup :work.request/return-pending? true]]
+                        :basis-retracted [[:db/retract lookup :work.request/publication-basis-id
+                                           (:work.request/publication-basis-id request)]]))
+          (is (thrown? Exception (schedules/mark-input-processed! conn oid)) (str change))
+          (is (nil? (:schedule.activation/last-processed-input
+                     (schedules/activation conn (:schedule.activation/id activation))))))))))
 
 (deftest source-selection-retention-and-processed-cursor-are-claim-fenced
   (with-db
@@ -38,7 +123,13 @@
                        (schedules/retain-input! conn oid claim (assoc-in value [:captured :inputs "/in/evidence.md"] "Later"))))
           (schedules/mark-input-processed! conn oid)
           (is (nil? (:schedule.activation/last-processed-input (schedules/activation conn aid))))
-          (schedules/finish-admission! conn oid :linked (random-uuid) nil)
+          (let [party (:schedule.activation/by a) room (:schedule.activation/room a)
+                rid (requests/request-id party room oid)]
+            (d/transact conn [{:work.request/id rid :work.request/client-id oid
+                               :work.request/by party :work.request/room room
+                               :work.request/kind :workflow :work.request/state :submitted
+                               :work.request/return-pending? false}])
+            (schedules/finish-admission! conn oid :linked rid nil))
           (schedules/mark-input-processed! conn oid)
           (is (= input-id (:schedule.activation/last-processed-input (schedules/activation conn aid))))
           (schedules/clear-active! conn a oid))

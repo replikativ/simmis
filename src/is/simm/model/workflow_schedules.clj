@@ -4,7 +4,9 @@
   (:require [datahike.api :as d]
             [dvergr.artifact :as artifact]
             [dvergr.scheduler.cron :as cron]
-            [hasch.core :as hasch]))
+            [hasch.core :as hasch]
+            [is.simm.model.knowledge-dispositions :as dispositions]
+            [is.simm.model.work-requests :as requests]))
 
 (def schema
   (mapv (fn [[ident type]]
@@ -244,22 +246,73 @@
         (throw (ex-info "Scheduled inputs failed their content identity" {:type ::corrupt})))
       value)))
 
-(defn- processed-input-tx [db oid]
+(def ^:private processing-occurrence-keys
+  [:schedule.occurrence/id :schedule.occurrence/activation
+   :schedule.occurrence/revision :schedule.occurrence/request
+   :schedule.occurrence/input-id :schedule.occurrence/input-revision
+   :schedule.occurrence/input-ref])
+
+(defn- processing-proof-in [db o]
+  (when-let [request (pull-row db :work.request/id (:schedule.occurrence/request o))]
+    (when-let [receipt (dispositions/disposition request)]
+      (let [activation (pull-row db :schedule.activation/id (:schedule.occurrence/activation o))]
+        (when-not (and (= (:schedule.occurrence/id o) (:work.request/client-id request))
+                       (= (:schedule.activation/by activation) (:work.request/by request))
+                       (= (:schedule.activation/room activation) (:work.request/room request)))
+          (throw (ex-info "Scheduled filing belongs to another occurrence" {:type ::conflict})))
+        {:occurrence (select-keys o processing-occurrence-keys)
+         :request (dispositions/request-binding request)
+         :disposition receipt}))))
+
+(defn processing-proof
+  "Freeze the already durable filing's storage identity, not an authorization
+   or Attempt certificate. The cursor writer compares it to its OWN snapshot."
+  [conn oid]
+  (let [db @conn]
+    (when-let [o (pull-row db :schedule.occurrence/id oid)]
+      (processing-proof-in db o))))
+
+(defn- processed-input-tx [db oid expected]
   (let [o (pull-row db :schedule.occurrence/id oid)
-        a (when o (pull-row db :schedule.activation/id (:schedule.occurrence/activation o)))]
-    (when (and (= :linked (:schedule.occurrence/state o))
-               (= oid (:schedule.activation/active-occurrence a))
-               (= (:schedule.occurrence/revision o) (:schedule.activation/revision a))
-               (uuid? (:schedule.occurrence/request o))
-               (:schedule.occurrence/input-ref o) (:schedule.occurrence/input-id o))
+        a (when o (pull-row db :schedule.activation/id (:schedule.occurrence/activation o)))
+        request (when (uuid? (:schedule.occurrence/request o))
+                  (pull-row db :work.request/id (:schedule.occurrence/request o)))
+        eligible? (and (= :linked (:schedule.occurrence/state o))
+                       (= oid (:schedule.activation/active-occurrence a))
+                       (= (:schedule.occurrence/revision o) (:schedule.activation/revision a))
+                       (uuid? (:schedule.occurrence/request o))
+                       (:schedule.occurrence/input-ref o) (:schedule.occurrence/input-id o))]
+    (when (and eligible?
+               (not (and request
+                         (= (:work.request/id request)
+                            (requests/request-id (:schedule.activation/by a) (:schedule.activation/room a) oid))
+                         (= oid (:work.request/client-id request))
+                         (= (:schedule.activation/by a) (:work.request/by request))
+                         (= (:schedule.activation/room a) (:work.request/room request))
+                         (= :workflow (:work.request/kind request))
+                         (= :submitted (:work.request/state request))
+                         (false? (:work.request/return-pending? request)))))
+      (throw (ex-info "Scheduled processing has no matching settled request" {:type ::conflict})))
+    (when (and (nil? expected)
+               (or (contains? request :work.request/publication-basis-id)
+                   (some #(contains? request (:db/ident %)) dispositions/schema)))
+      (throw (ex-info "Knowledge processing requires its durable filing" {:type ::conflict})))
+    (when expected
+      (when-not (and eligible? (= expected (processing-proof-in db o)))
+        (throw (ex-info "Scheduled filing changed before processing" {:type ::conflict}))))
+    (when eligible?
       [{:db/id (:db/id a) :schedule.activation/last-processed-input (:schedule.occurrence/input-id o)}])))
 
 (defn mark-input-processed!
-  "Host calls only after the linked Job settled and its candidate Attempt
-   was certified successful against the request's exact environment.
-   Successful processing/proposal is not knowledge adoption."
-  [conn oid]
-  (d/transact conn [[:db.fn/call processed-input-tx oid]]))
+  "Unbound work retains the certified-Attempt host contract. Knowledge-bound
+   work additionally requires the exact durable filing proof, compared inside
+   the serialized writer. Neither form means the proposal was adopted."
+  ([conn oid]
+   (d/transact conn [[:db.fn/call processed-input-tx oid nil]]))
+  ([conn oid expected]
+   (when-not (and (map? expected) (seq expected))
+     (throw (ex-info "Scheduled filing proof is required" {:type ::conflict})))
+   (d/transact conn [[:db.fn/call processed-input-tx oid expected]])))
 
 (defn finish-admission! [conn oid state request reason]
   (d/transact conn [(cond-> {:db/id [:schedule.occurrence/id oid] :schedule.occurrence/state state}
