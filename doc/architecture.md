@@ -51,6 +51,15 @@ staging and output folders cannot be selected as inputs. Capture copies exact
 UTF-8 sources plus a content-addressed manifest into the normal workflow input
 map (100 files/2 MiB total, including the manifest). This collector does not
 submit work, spend funds, advance maintenance cursors or install a schedule.
+An inert `input-selection.edn` sidecar pins the declared knowledge policy with
+the ordinary workflow bundle. Server and local-worker submission capture it
+after authorization and request retry lookup; the original submission remains
+the retry identity. Captured bytes and collector provenance are retained with
+the work request. Pure preparation and benchmarks require verified frozen
+inputs instead of resolving a live policy. Setup replaces the collector-owned
+`/in/knowledge/` subtree so inherited stale staging cannot augment the manifest;
+unrelated room files remain. Recurring deployment does not yet admit unresolved
+live-source declarations.
 
 Room source and execution state have different lifetimes. A daemon room's
 repository is initially seeded from the sandbox library (or its configured

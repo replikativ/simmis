@@ -16,6 +16,12 @@
             [is.simm.runtimes.worker-maintenance :as maintenance]
             [malli.core :as m]))
 
+(deftest knowledge-selection-refusals-are-client-errors-not-server-failures
+  (doseq [type [:is.simm.ops.knowledge-inputs/refused
+                :is.simm.documents.view/refused :is.simm.documents.files/invalid]]
+    (is (= 400 (try (api/guarded {:execution-ctx nil} #(throw (ex-info "Invalid selection" {:type type})))
+                    (catch clojure.lang.ExceptionInfo e (dops/error-status e)))))))
+
 (deftest schedule-execution-transport-is-closed-and-kind-specific
   (let [[input _] (@#'is.simm.ops.work-test/fixture)
         request (str (random-uuid)) bundle (str (random-uuid))

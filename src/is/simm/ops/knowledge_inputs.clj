@@ -2,16 +2,20 @@
   "Deterministic, frozen text inputs for ordinary knowledge workflows.
    Capturing does not authorize a caller, submit work, spend, update a cursor
    or retain source blobs. Persist the returned inputs through work admission."
-  (:require [clojure.string :as str]
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [datahike.api :as d]
+            [datahike.blob :as blob]
             [geschichte.content :as content]
+            [geschichte.repo :as repo]
             [hasch.core :as hasch]
             [is.simm.documents.files :as files]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.view :as view]
             [is.simm.ops.workflow-policy :as workflow-policy]
             [is.simm.ops.workflows :as workflows]
-            [malli.core :as m]))
+            [malli.core :as m])
+  (:import [java.io PushbackReader StringReader]))
 
 (def default-policy
   {:version 1 :trigger-roots ["inbox" "transcripts"]
@@ -52,6 +56,27 @@
      :exclude-prefixes (mapv #(subs % 0 (dec (count %))) excluded)}))
 
 (defn- byte-count [^String text] (alength (.getBytes text "UTF-8")))
+
+(defn declaration
+  "Optional inert input-selection.edn sidecar. Its exact bytes belong to the
+   ordinary bundle identity. No source forms, custom tags or trailing values
+   execute; only the closed versioned knowledge selection format is admitted."
+  [source]
+  (when-let [text (get source "input-selection.edn")]
+    (when-not (and (string? text) (<= (count text) 4096))
+      (refuse! :invalid-declaration))
+    (let [value
+          (try
+            (with-open [reader (PushbackReader. (StringReader. text))]
+              (let [options {:eof ::eof :readers {} :default (fn [& _] (refuse! :invalid-declaration))}
+                    value (edn/read options reader)]
+                (when-not (= ::eof (edn/read options reader)) (refuse! :invalid-declaration))
+                value))
+            (catch StackOverflowError _ (refuse! :invalid-declaration))
+            (catch Exception _ (refuse! :invalid-declaration)))]
+      (when-not (m/validate [:map {:closed true} [:kind [:= :knowledge]] [:policy policy-schema]] value)
+        (refuse! :invalid-declaration))
+      (normalize-policy (:policy value)))))
 
 (defn selection
   "Metadata-only plan from ONE authorized immutable DB. Trigger identity excludes wiki
@@ -113,3 +138,77 @@
                                 (refuse! :source-unavailable))
                               [input (markdown/decode bytes)])))
                      (:files manifest))))))
+
+(defn verify-capture
+  "Verify retained frozen evidence without looking up the live room. Content
+   hashes check copied bytes, not the truth of an authored claim or authority
+   to the original repository. Benchmark fixtures may use the same contract."
+  [policy {:keys [manifest inputs trigger-id execution-id empty?] :as captured}]
+  (let [policy (normalize-policy policy)
+        entry-schema [:map {:closed true}
+                      [:path [:string {:min 1 :max 512}]] [:input [:string {:min 1 :max 512}]]
+                      [:role [:enum :trigger :context]] [:content :uuid]
+                      [:size [:int {:min 0 :max workflows/max-file-bytes}]] [:mode [:= repo/default-mode]]]
+        manifest-schema [:map {:closed true} [:version [:= 1]] [:repository :uuid]
+                         [:policy policy-schema] [:trigger-id :uuid] [:execution-id :uuid]
+                         [:files [:vector {:max 99} entry-schema]]]]
+    (when-not (and (map? inputs) (<= (count inputs) (:max-input-files workflow-policy/policy))
+                   (every? string? (keys inputs)) (every? string? (vals inputs))
+                   (every? #(<= (byte-count %) workflows/max-file-bytes) (vals inputs))
+                   (<= (reduce + 0 (map byte-count (vals inputs)))
+                       (:max-input-bytes workflow-policy/policy))
+                   (m/validate manifest-schema manifest)
+                   (= policy (:policy manifest))
+                   (= trigger-id (:trigger-id manifest)) (= execution-id (:execution-id manifest))
+                   (= (pr-str manifest) (get inputs "/in/knowledge/manifest.edn")))
+      (refuse! :invalid-frozen-inputs))
+    (let [entries (:files manifest)
+          by-role (fn [role]
+                    (into (sorted-map)
+                          (keep (fn [{:keys [path] :as entry}]
+                                  (when (= role (:role entry))
+                                    [path (select-keys entry [:content :size :mode])]))) entries))
+          trigger (by-role :trigger) context (by-role :context)
+          expected-trigger (hasch/uuid {:version 1 :repository (:repository manifest)
+                                       :policy policy :files trigger})]
+      (when-not (and (= (count entries) (count (set (map :path entries))))
+                     (= (set (keys inputs))
+                        (conj (set (map :input entries)) "/in/knowledge/manifest.edn"))
+                     (= trigger-id expected-trigger)
+                     (= execution-id (hasch/uuid {:trigger trigger-id :context context}))
+                     (= empty? (clojure.core/empty? trigger)))
+        (refuse! :invalid-frozen-identity))
+      (doseq [{:keys [path input content size role]} entries]
+        (files/path! path)
+        (let [prefixes (prefixes! (get policy (if (= role :trigger) :trigger-roots :context-roots)))
+              excluded (prefixes! (:exclude-prefixes policy))
+              text (get inputs input)
+              bytes (.getBytes ^String text "UTF-8")]
+          (when-not (and (= input (str "/in/knowledge/sources/" path))
+                         (some #(str/starts-with? path %) prefixes)
+                         (not-any? #(str/starts-with? path %) excluded)
+                         (= size (alength bytes)) (= content (blob/blob-id bytes)))
+            (refuse! :invalid-frozen-source))))
+      captured)))
+
+(defn from-inputs
+  "Reconstruct retained evidence from ordinary workflow/case inputs. This
+   never resolves a live repository. Only collector-owned paths are selected;
+   the same byte/hash/identity validation applies as to host captures."
+  [policy input-files]
+  (let [owned (into (sorted-map) (filter #(str/starts-with? (key %) "/in/knowledge/")) input-files)
+        text (get owned "/in/knowledge/manifest.edn")]
+    (when-not (and (string? text) (<= (byte-count text) workflows/max-file-bytes))
+      (refuse! :missing-frozen-manifest))
+    (let [manifest
+          (try
+            (with-open [reader (PushbackReader. (StringReader. text))]
+              (let [options {:eof ::eof :readers {} :default (fn [& _] (refuse! :invalid-frozen-manifest))}
+                    value (edn/read options reader)]
+                (when-not (= ::eof (edn/read options reader)) (refuse! :invalid-frozen-manifest))
+                value))
+            (catch StackOverflowError _ (refuse! :invalid-frozen-manifest))
+            (catch Exception _ (refuse! :invalid-frozen-manifest)))]
+      (verify-capture policy {:manifest manifest :inputs owned
+                              :trigger-id (:trigger-id manifest) :execution-id (:execution-id manifest)
+                              :empty? (not-any? #(= :trigger (:role %)) (:files manifest))}))))

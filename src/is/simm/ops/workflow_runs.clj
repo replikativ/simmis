@@ -10,6 +10,8 @@
             [hasch.core :as hasch]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.work :as work]
+            [is.simm.ops.knowledge-inputs :as knowledge-inputs]
+            [is.simm.ops.knowledge-workspace :as knowledge-workspace]
             [is.simm.ops.workflow-policy :as source-policy]
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m]
@@ -115,7 +117,7 @@
       (invalid! "Workflow input files exceed the total byte limit"))
     entries))
 
-(defn- setup [name bundle source entries]
+(defn- setup [name bundle source entries collector?]
   (let [prefix (str "/workflows/" name "/")
         digest (str (hasch/uuid entries))]
     (evaluation/make-world-setup
@@ -128,17 +130,17 @@
         ;; must not leak into the pinned execution. No source is evaluated.
         (workspace/ensure-workspace! world)
         (let [inherited (:files (workflows/snapshot world name))
-              edits (merge (zipmap (map #(str prefix %) (keys inherited)) (repeat nil))
+              staged (when collector? (knowledge-workspace/staging-removals world))
+              edits (merge staged (zipmap (map #(str prefix %) (keys inherited)) (repeat nil))
                            (into {} (map (fn [[p text]] [(str prefix p) {:text text}])) source))]
           (files/write! world edits {:message (str "Pin workflow " name " at " (:id bundle))}))
         (when (seq entries) (workspace/seed! world entries))
         {:bundle (str (:id bundle)) :inputs digest :files (count entries)
          :checker-executed? false :source-pinned? true})})))
 
-(defn prepare-source
-  "Validate and render ONE immutable workflow revision without resolving a
-   model or executing checker source. Shared by execution backends; the source
-   pin, literal parameter rendering and input overlay rules are identical."
+(defn plan-source
+  "Provider-independent source validation/rendering. A declared live input
+   policy is returned as data here; execution must resolve it before setup."
   [snapshot {:keys [name expected-bundle case params inputs] :as input}]
   (when-not (m/validate source-schema input) (invalid! "Invalid workflow source selection"))
   (let [inspection (workflows/inspect-snapshot name snapshot)]
@@ -161,14 +163,52 @@
           entries (input-files prefix (merge (:fixtures bundle) (get-in bundle [:cases case :fixtures])) inputs)
           provenance {:name name :bundle (str expected-bundle) :case case :params params :policy policy}]
       {:bundle bundle :task task :inputs entries :source (:files snapshot)
-       :world-setup (setup name bundle (:files snapshot) entries) :workflow provenance})))
+       :selection-policy (knowledge-inputs/declaration (:files snapshot)) :workflow provenance})))
+
+(defn prepare-source
+  "Prepare one immutable source revision, never a live selector. Host callers
+   supply captured inputs explicitly; retained benchmark fixtures use the same
+   verified frozen manifest. Unresolved declarations refuse, not empty runs."
+  [snapshot input & [captured]]
+  (let [{:keys [bundle inputs source selection-policy] :as planned} (plan-source snapshot input)
+        resolved (when selection-policy
+                   (if captured
+                     (do
+                       (when (some #(str/starts-with? % "/in/knowledge/") (keys inputs))
+                         (invalid! "Workflow inputs collide with the collector-owned namespace"))
+                       (knowledge-inputs/verify-capture selection-policy captured))
+                     (knowledge-inputs/from-inputs selection-policy inputs)))
+        _ (when (and captured (nil? selection-policy))
+            (invalid! "Workflow does not declare a knowledge input selection"))
+        entries (if resolved
+                  (input-files (str "/workflows/" (:name input) "/") inputs (:inputs resolved)) inputs)
+        provenance (when resolved
+                     {:kind :knowledge :policy selection-policy
+                      :trigger-id (:trigger-id resolved) :execution-id (:execution-id resolved)
+                      :manifest-id (hasch/uuid (:manifest resolved))})]
+    (cond-> (assoc planned :inputs entries :world-setup (setup (:name input) bundle source entries (some? resolved)))
+      provenance (assoc-in [:workflow :input-selection] provenance))))
+
+(defn resolve-source
+  "Host admission only, after room authorization and before provider/spend.
+   Explicit retained inputs stay frozen; otherwise capture the declared policy
+   from ONE immutable room snapshot. No submission or adoption occurs here."
+  [room snapshot input]
+  (let [{:keys [selection-policy inputs]} (plan-source snapshot input)]
+    (when selection-policy
+      (if (contains? inputs "/in/knowledge/manifest.edn")
+        (do (knowledge-inputs/from-inputs selection-policy inputs) nil)
+        (binding [ec/*execution-context* (:ctx room)]
+          (let [conn (:conn ((requiring-resolve 'dvergr.substrate.geschichte/current-workspace)))]
+            (when-not conn (invalid! "Room has no knowledge source workspace"))
+            (knowledge-inputs/capture @conn selection-policy)))))))
 
 (defn prepare
   "Construct from ONE immutable source snapshot. The bundle is task data;
    provider, tool/effect surface, limits and evaluator remain host policy."
-  [snapshot {:keys [model limits] :as input}]
+  [snapshot {:keys [model limits] :as input} & [captured]]
   (when-not (m/validate schema input) (invalid! "Invalid workflow execution"))
-  (let [{:keys [task inputs source world-setup workflow]} (prepare-source snapshot (select-keys input source-fields))
+  (let [{:keys [task inputs source world-setup workflow]} (prepare-source snapshot (select-keys input source-fields) captured)
         prepared (work/prepare {:request-id (:request-id input) :task task :model model :limits limits})
         base (:environment prepared)
         verifier (:environment/verifier base)
@@ -198,5 +238,8 @@
                          (= input (get-in (requests/payload conn row) [:input :submission])))
             (throw (ex-info "Request identity was used for different work" {:type ::conflict})))
           (work/status conn host-ctx principal room-id id))
-        (work/submit-prepared! conn host-ctx principal room-id room input
-                               (prepare (or snapshot (workflows/snapshot room (:name input))) input))))))
+        (let [snapshot (or snapshot (workflows/snapshot room (:name input)))
+              selected (select-keys input source-fields)
+              captured (resolve-source room snapshot selected)]
+          (work/submit-prepared! conn host-ctx principal room-id room input
+                                (prepare snapshot input captured)))))))

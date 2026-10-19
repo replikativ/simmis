@@ -167,6 +167,12 @@ own-worker listing, explicit admission allowance, selected-file task submission,
 pinned saved workflow submission and bounded benchmark submission. Workflow
 submission shares native workflow source/parameter/input
 preparation but uses the enrolled local model, not a server provider credential.
+An optional versioned `input-selection.edn` bundle file declares incoming
+evidence and supporting knowledge folders. Ordinary manual server/local-worker
+admission captures these as normal frozen files under `/in/knowledge/`; no live
+room knowledge capability is injected into the isolated worker. Run provenance
+records trigger, execution and manifest identities. Benchmarks must supply
+retained evidence in their case fixtures and never collect from the live room.
 Over MCP, human controls
 require a separately requested `worker-control` token. Neither an existing
 read token nor a work token gains them; this operator-helper session should not

@@ -145,6 +145,9 @@
                                :is.simm.ops.workflows/unavailable 503
                                :is.simm.ops.workflows/conflict 409
                                :is.simm.ops.workflow-runs/invalid 400
+                               :is.simm.ops.knowledge-inputs/refused 400
+                               :is.simm.documents.view/refused 400
+                               :is.simm.documents.files/invalid 400
                                :is.simm.ops.workflow-runs/conflict 409
                                :is.simm.ops.workflow-schedules/invalid 400
                                :is.simm.ops.workflow-schedules/denied 403

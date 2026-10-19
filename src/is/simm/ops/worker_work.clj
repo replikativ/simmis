@@ -201,10 +201,10 @@
 (defn workflow-input
   "Pure reconstruction from the admitted source snapshot. Does not read the
    current room, resolve a provider, execute source or run authored checkers."
-  [snapshot input config]
+  [snapshot input config & [captured]]
   (checked! workflow-schema input)
   (let [{:keys [source inputs task] :as prepared}
-        (workflow-runs/prepare-source snapshot (select-keys input workflow-runs/source-fields))
+        (workflow-runs/prepare-source snapshot (select-keys input workflow-runs/source-fields) captured)
         modes (into {} (map (juxt :path :mode)) (:manifest snapshot))
         prefix (str "workflows/" (:name input) "/")
         entries (merge (into {} (map (fn [[p text]] [(str prefix p) [text (get modes p)]])) source)
@@ -268,7 +268,8 @@
   (let [pinned (enrollment! conn host-ctx room-id by input)
         config (binding [ec/*execution-context* host-ctx] (workers/payload conn pinned :simmis.worker/config-ref))
         snapshot (workflows/snapshot room (:name input))
-        workflow (assoc (workflow-input snapshot input config) :snapshot snapshot)]
+        captured (workflow-runs/resolve-source room snapshot (select-keys input workflow-runs/source-fields))
+        workflow (assoc (workflow-input snapshot input config captured) :snapshot snapshot)]
     (prepare-frozen conn host-ctx room-id room request-id input pinned (:frozen workflow) workflow)))
 
 (defn- submit-prepared! [conn host-ctx principal room-id room input kind prepare]

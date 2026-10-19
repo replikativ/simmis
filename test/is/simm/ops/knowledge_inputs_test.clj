@@ -2,12 +2,19 @@
   (:require [clojure.edn :as edn]
             [clojure.test :refer [deftest is]]
             [datahike.api :as d]
+            [dvergr.catalog.workspace :as workspace]
+            [dvergr.discourse :as discourse]
+            [dvergr.room.store.memory :as store]
+            [dvergr.substrate.geschichte :as geschichte]
             [geschichte.content :as content]
             [geschichte.repo :as repo]
             [is.simm.documents.markdown :as markdown]
+            [is.simm.documents.files :as document-files]
             [is.simm.ops.knowledge-inputs :as inputs]
+            [is.simm.ops.checkers :as checkers]
             [is.simm.ops.workflow-runs :as workflow-runs]
-            [is.simm.ops.workflow-runs-test :as workflow-fixture]))
+            [is.simm.ops.workflow-runs-test :as workflow-fixture]
+            [org.replikativ.spindel.engine.core :as ec]))
 
 (defn- with-repository [f]
   (let [cfg {:store {:backend :memory :id (random-uuid)}
@@ -35,6 +42,11 @@
                              :inputs entries)
             prepared (workflow-runs/prepare-source (workflow-fixture/snapshot workflow-fixture/source) selection)]
         (is (= before (:max-tx @conn)))
+        (is (= frozen (inputs/verify-capture inputs/default-policy frozen)))
+        (is (= frozen (inputs/from-inputs inputs/default-policy entries)))
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (inputs/verify-capture inputs/default-policy
+                                            (assoc-in frozen [:inputs "/in/knowledge/sources/inbox/meeting.md"] "Forged"))))
         (is (= #{:trigger :context} (set (map :role (:files manifest)))))
         (is (= 3 (count entries)))
         (is (= "# Meeting\nDecision: ship." (get entries "/in/knowledge/sources/inbox/meeting.md")))
@@ -44,6 +56,50 @@
         (is (not= (:trigger-id frozen) (:trigger-id (inputs/capture @conn inputs/default-policy))))
         (is (= "# Meeting\nDecision: ship."
                (get-in prepared [:inputs "/in/knowledge/sources/inbox/meeting.md"])))))))
+
+(deftest declared-workflows-require-explicit-frozen-evidence-before-pure-preparation
+  (with-repository
+    (fn [conn]
+      (write! conn "inbox/a.md" "Frozen evidence")
+      (let [captured (inputs/capture @conn inputs/default-policy)
+            source (assoc workflow-fixture/source "input-selection.edn"
+                          (pr-str {:kind :knowledge :policy inputs/default-policy}))
+            bundle (dvergr.catalog.room/bundle "reusable" source)
+            request {:name "reusable" :expected-bundle (:id bundle)
+                     :params {"subject" "test"}}
+            snapshot (workflow-fixture/snapshot source)]
+        (is (thrown? clojure.lang.ExceptionInfo (workflow-runs/prepare-source snapshot request)))
+        (let [prepared (workflow-runs/prepare-source snapshot request captured)]
+          (is (= (:trigger-id captured) (get-in prepared [:workflow :input-selection :trigger-id])))
+          (is (= "Frozen evidence" (get-in prepared [:inputs "/in/knowledge/sources/inbox/a.md"]))))
+        (let [frozen-request (assoc request :inputs (:inputs captured))
+              prepared (workflow-runs/prepare-source snapshot frozen-request)]
+          (is (= (:execution-id captured) (get-in prepared [:workflow :input-selection :execution-id])))
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (workflow-runs/prepare-source snapshot frozen-request captured))))))))
+
+(deftest host-resolution-freezes-once-and-setup-replaces-owned-staging-only
+  (let [room (discourse/make-room {:id (keyword (str "knowledge-staging-" (random-uuid))) :store (store/make)})]
+    (try
+      (workspace/ensure-workspace! room)
+      (workspace/seed! room {"/inbox/a.md" "Evidence at admission"
+                            "/in/knowledge/sources/stale.md" "Not admitted"
+                            "/unrelated.txt" "Keep this"})
+      (let [source (assoc workflow-fixture/source "input-selection.edn"
+                          (pr-str {:kind :knowledge :policy inputs/default-policy}))
+            snapshot (workflow-fixture/snapshot source)
+            request {:name "reusable" :expected-bundle (:id (dvergr.catalog.room/bundle "reusable" source))}
+            captured (workflow-runs/resolve-source room snapshot request)
+            prepared (workflow-runs/prepare-source snapshot request captured)]
+        (binding [ec/*execution-context* (:ctx room)]
+          (repo/write! (:conn (geschichte/current-workspace)) "inbox/a.md" (.getBytes "Later change" "UTF-8")))
+        ((:prepare (:world-setup prepared)) {:room room})
+        (is (= "Evidence at admission"
+               (:text (document-files/read-file room "in/knowledge/sources/inbox/a.md"))))
+        (is (nil? (get-in (document-files/metadata room {:folders [] :paths ["in/knowledge/sources/stale.md"]})
+                          [:entries "in/knowledge/sources/stale.md"])))
+        (is (= "Keep this" (:text (document-files/read-file room "unrelated.txt")))))
+      (finally (discourse/close-room! room)))))
 
 (deftest knowledge-output-and-staging-edits-do-not-retrigger-maintenance
   (with-repository
@@ -61,6 +117,35 @@
           (write! conn "in/knowledge/sources/example.md" "Staging")
           (is (= before (inputs/capture @conn inputs/default-policy)))))))
   (with-repository #(is (:empty? (inputs/capture @% inputs/default-policy)))))
+
+(deftest benchmark-fixture-setup-also-replaces-the-owned-input-namespace
+  (with-repository
+    (fn [conn]
+      (write! conn "inbox/a.md" "Case evidence")
+      (let [capture (inputs/capture @conn inputs/default-policy)
+            source (merge (dissoc workflow-fixture/source "calibration.edn")
+                          {"input-selection.edn" (pr-str {:kind :knowledge :policy inputs/default-policy})}
+                          (into {} (map (fn [[path text]] [(str "fixtures" path) text])) (:inputs capture)))
+            bundle (dvergr.catalog.room/bundle "knowledge-case" source)
+            ;; The next upstream catalog shape omits :files; policy must come
+            ;; from the actual pinned source snapshot, not this derived map.
+            setup (checkers/world-setup (dissoc bundle :files) (inputs/declaration source))
+            room (discourse/make-room {:id (keyword (str "knowledge-case-" (random-uuid))) :store (store/make)})
+            fresh (discourse/make-room {:id (keyword (str "knowledge-fresh-case-" (random-uuid))) :store (store/make)})]
+        (try
+          (workspace/ensure-workspace! room)
+          (workspace/seed! room {"/in/knowledge/sources/not-in-case.md" "Stale"
+                                "/unrelated.txt" "Keep"})
+          ((:prepare setup) {:room room :environment {}})
+          (is (= "Case evidence" (:text (document-files/read-file room "in/knowledge/sources/inbox/a.md"))))
+          (is (nil? (get-in (document-files/metadata room {:folders [] :paths ["in/knowledge/sources/not-in-case.md"]})
+                            [:entries "in/knowledge/sources/not-in-case.md"])))
+          (is (= "Keep" (:text (document-files/read-file room "unrelated.txt"))))
+          ((:prepare setup) {:room fresh :environment {}})
+          (is (= "Case evidence" (:text (document-files/read-file fresh "in/knowledge/sources/inbox/a.md"))))
+          (finally
+            (try (discourse/close-room! fresh)
+                 (finally (discourse/close-room! room)))))))))
 
 (deftest exact-exclusions-and-normalized-policy-are-deterministic
   (with-repository
@@ -90,6 +175,19 @@
                   (assoc inputs/default-policy :context-roots ["workflows/custom"])
                   (assoc inputs/default-policy :eval "forged")]]
     (is (thrown? clojure.lang.ExceptionInfo (inputs/normalize-policy policy)))))
+
+(deftest selection-sidecar-is-inert-closed-and-part-of-the-ordinary-bundle
+  (let [text (pr-str {:kind :knowledge :policy inputs/default-policy})
+        source (assoc workflow-fixture/source "input-selection.edn" text)]
+    (is (nil? (inputs/declaration workflow-fixture/source)))
+    (is (= (inputs/normalize-policy inputs/default-policy) (inputs/declaration source)))
+    (is (not= (:expected-bundle (workflow-fixture/input))
+              (:id (dvergr.catalog.room/bundle "reusable" source))))
+    (doseq [bad [(str text " {}") "#=(System/exit 0)" "#custom/tag {}"
+                 "{:kind :knowledge :policy {}}"
+                 (pr-str {:kind :knowledge :policy inputs/default-policy :eval true})]]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (inputs/declaration {"input-selection.edn" bad}))))))
 
 (deftest admission-resource-limits-refuse-before-reading-source-bodies
   (with-repository
