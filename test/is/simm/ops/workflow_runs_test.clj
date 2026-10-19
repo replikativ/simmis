@@ -29,6 +29,11 @@
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]))
 
+(deftest unsupported-adoption-declarations-are-not-silently-accepted
+  (is (#'workflow-runs/supported-definition? {:task "Maintain wiki"}))
+  (doseq [key [:review :workflow/writes] value [nil false {} []]]
+    (is (false? (#'workflow-runs/supported-definition? {key value})))))
+
 (def source
   {"workflow.edn" "{:title \"Reusable document\" :task \"Write {subject} to /out/result.md\" :params {:subject \"default\"} :capture [\"/out\"]}"
    "checker.clj" "(throw (ex-info \"Checker MUST NOT execute\" {}))"

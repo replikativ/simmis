@@ -138,6 +138,15 @@
         {:bundle (str (:id bundle)) :inputs digest :files (count entries)
          :checker-executed? false :source-pinned? true})})))
 
+(defn- supported-definition? [definition]
+  (and (contains? #{nil "developer"} (:profile definition))
+       (contains? #{nil ["/out"]} (:capture definition))
+       (not-any? #(contains? definition %)
+                 [:judge :web :fetched :allowed-sources :blocked-sources
+                  ;; Saved workflows do not yet propagate retained-world
+                  ;; adoption policy. Never silently accept these declarations.
+                  :review :workflow/writes])))
+
 (defn plan-source
   "Provider-independent source validation/rendering. A declared live input
    policy is returned as data here; execution must resolve it before setup."
@@ -150,11 +159,8 @@
                       {:type ::conflict}))))
   (let [bundle (catalog/bundle name (:files snapshot))
         definition (:definition bundle)]
-    (when-not (and (contains? #{nil "developer"} (:profile definition))
-                   (contains? #{nil ["/out"]} (:capture definition))
-                   (not-any? #(contains? definition %)
-                             [:judge :web :fetched :allowed-sources :blocked-sources]))
-      (invalid! "Ordinary workflows require the developer profile, /out capture and no web/judge policy"))
+    (when-not (supported-definition? definition)
+      (invalid! "Ordinary workflows require developer /out capture and no web, judge or adoption policy"))
     (when-not (if (seq (:cases bundle)) (contains? (:cases bundle) case) (nil? case))
       (invalid! "Select an explicit existing case for a case-pack workflow, and no case otherwise"))
     (let [params (effective-parameters definition params)
