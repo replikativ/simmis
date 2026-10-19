@@ -400,14 +400,14 @@
         ;; scoped file publication receipts (#366), and writer-snapshot default
         ;; resolution (#368). The public #368 head also repairs the transitive
         ;; Datahike source pin; a root override cannot skip resolving a retired
-        ;; transitive Git SHA. The reviewed #369 head additionally binds workspace
-        ;; selection to fork-local execution state, never attachment order. Its
-        ;; main-based source passed the exact 21-test selector regression suite.
+        ;; transitive Git SHA. The merged #369 fix additionally binds workspace
+        ;; selection to fork-local execution state, never attachment order. Pin
+        ;; its permanent main squash (tree-identical to the reviewed PR head).
         ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         ;; Use the merged #363 commit: the earlier feature SHA is retired.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "bf8dbcaba8f4d2ddd00f8048878fec2b65094d19"
+                               :git/sha "e8b4501c01d6bd9b212d9e8f6a9c616873fc8d4a"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.
