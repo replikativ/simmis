@@ -14,12 +14,15 @@
        (every? #(and (not (str/blank? %)) (not (#{"." ".."} %)))
                (str/split path #"/" -1))))
 
+(def target-schema
+  [:map {:closed true}
+   [:repository :uuid] [:store :uuid] [:backend :keyword] [:branch :keyword]
+   [:ref [:string {:min 1 :max 4096}]]])
+
 (def schema
   [:map {:closed true}
    [:id :uuid] [:version [:= 1]] [:root [:= "wiki"]]
-   [:target [:map {:closed true}
-             [:repository :uuid] [:store :uuid] [:backend :keyword] [:branch :keyword]
-             [:ref [:string {:min 1 :max 4096}]]]]
+   [:target target-schema]
    [:files [:map-of {:max max-entries} [:fn wiki-path?]
             [:map {:closed true} [:content :uuid]
              [:size [:int {:min 0 :max Long/MAX_VALUE}]]
