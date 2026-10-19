@@ -27,6 +27,7 @@
 ;; =============================================================================
 
 #?(:cljs (defonce ^:private gate (agg/gate)))
+#?(:cljs (defn refresh-loaded! [] (agg/refresh! gate)))
 
 #?(:cljs
    (defn load-tasks!

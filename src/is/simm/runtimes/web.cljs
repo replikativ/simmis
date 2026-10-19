@@ -16,6 +16,7 @@
             [is.simm.uis.web.desktop.login :as login]
             ;; Signals for current user
             [is.simm.uis.web.desktop.signals :as sig]
+            [is.simm.uis.web.desktop.db-signal :as db-signal]
             [org.replikativ.spindel.engine.core :as rtc]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.runtimes.web-url :as web-url]
@@ -87,13 +88,13 @@
    `peer/start`, so `peer/stop` is not their lifecycle boundary."
   [{:keys [client supervisor] :as session}]
   (when (and session (current-session? session))
+    ;; Fence callbacks BEFORE clearing old projections. A replaced peer cannot
+    ;; reuse its old writer-bound replicas, even for the same principal.
+    (reset! current-session* nil)
     (binding [rtc/*execution-context* runtime]
-      (sig/clear-captured-results!)
-      (reset! sig/schedules-data nil)
-      (reset! sig/workflow-editor-state {}))
-    (binding [rtc/*execution-context* runtime]
-      (clear-memory-editor-state!))
-    (reset! current-session* nil))
+      (clear-memory-editor-state!)
+      (sig/clear-account-state!)
+      (db-signal/clear-session!)))
   (when supervisor
     (doseq [abort-ch (:aborts supervisor)]
       (put! abort-ch :abort)
@@ -177,9 +178,8 @@
    Must be called after successful login."
   [token]
   (when-let [old-session @current-session*]
-    ;; Invalidate the generation before stopping it. An already queued callback
-    ;; from the old socket can no longer complete the replacement session.
-    (reset! current-session* nil)
+    ;; Retirement itself invalidates first. Clearing this before stop-session!
+    ;; used to skip its current-owner guard and leak old account projections.
     (stop-session! old-session))
   (let [session-id (random-uuid)
         session-supervisor (simple-supervisor)
@@ -247,14 +247,14 @@
    Called by main.cljs init function."
   [token user]
   (reset! authenticated-principal nil)
-  ;; Set current-user signal for UI
-  (binding [rtc/*execution-context* runtime]
+  (let [session (create-client! token)]
+   ;; Publish the new user AFTER retiring the previous peer's state.
+   (binding [rtc/*execution-context* runtime]
     (sig/clear-captured-results!)
     (reset! sig/schedules-data nil)
     (reset! sig/workflow-editor-state {})
     (clear-memory-editor-state!)
     (reset! sig/current-user user))
-  (let [session (create-client! token)]
     (show-app!)
     session))
 

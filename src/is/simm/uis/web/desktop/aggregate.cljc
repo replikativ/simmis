@@ -43,8 +43,8 @@
            busy? (and (= epoch (:epoch old)) (:token old))
            token (when-not busy? (random-uuid))
            next (if busy?
-                  (assoc old :pending [epoch valid? fetch!])
-                  {:epoch epoch :token token :pending nil})]
+                  (assoc old :pending [epoch valid? fetch!] :latest fetch!)
+                  {:epoch epoch :token token :pending nil :latest fetch!})]
        (if-not (compare-and-set! g old next)
          (recur)
          (when-not busy?
@@ -70,3 +70,13 @@
    Call this on reconnect — real coordination on a real event, not a timeout."
   [g]
   (swap! g dissoc :token :pending))
+
+#?(:cljs
+   (defn refresh!
+     "Catch up a requested aggregate, including a hung first load, only within
+      its existing authenticated session. Retains the latest requested options."
+     [g]
+     (let [prior @g current (connection-epoch/snapshot)]
+       (when (and current (:latest prior)
+                  (= (:session-id current) (:session-id (:epoch prior))))
+         (run! g (:latest prior))))))

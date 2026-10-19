@@ -4,14 +4,14 @@
    The server fans out per-recipient (message-notify-broadcast), so this stream
    only ever carries my notifications. Mention slice of
    doc/archive/mentions-notifications-contacts-design.md — unread badges come later."
-  (:require [clojure.core.async :refer [go <!] :include-macros true]
-            [kabel.pubsub :as pubsub]
-            [kabel.pubsub.protocol :as proto]
-            [org.replikativ.spindel.engine.core :as rtc]
+  (:require [org.replikativ.spindel.engine.core :as rtc]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.chat-remote :as cr]
             [is.simm.uis.web.desktop.remote :as rem]
+            [is.simm.uis.web.desktop.aggregate :as aggregate]
+            [is.simm.uis.web.desktop.connection-epoch :as epoch]
+            [is.simm.uis.web.desktop.topic-subscription :as subscription]
             [is.simm.runtimes.web :as web]))
 
 (defn notify-topic
@@ -63,97 +63,113 @@
       (set! (.-onclick n)
             (fn [_] (.focus js/window) (.close n))))))
 
+(declare mark-read!)
+
 (defn- handle-message-event!
   "A message landed in a room I belong to. Badge it (awareness) unless I'm
    already viewing that room; pop it (interruption) only when the server says so
    for my per-room level (`:popup?`) and I can't already see it."
   [{:keys [room-id popup?] :as payload}]
   (let [viewing? (viewing-room? room-id)]
-    (when-not viewing?
-      (sig/bump-room-unread! (str room-id))
-      (when popup?
-        (show-popup! payload)))))
+    (if viewing?
+      (mark-read! (str room-id))
+      (do (sig/bump-room-unread! (str room-id))
+          (when popup? (show-popup! payload))))
+    viewing?))
 
-(defonce ^:private unread-loaded? (atom false))
+(def ^:private owner (subscription/owner))
+(def ^:private unread-gate (aggregate/gate))
+(def ^:private prefs-gate (aggregate/gate))
+(def ^:private pref-requests (atom {}))
 
 (defn load-unread!
-  "Seed per-room unread badges from the server's durable read cursors on login.
-   Idempotent per page load. Resets sig/unread-counts to the server truth (so a
-   reload restores the same badges)."
+  "Load durable unread truth. A live event during this snapshot queues another
+   pass, so snapshot overwrite cannot permanently lose or double-count it."
   []
-  (when-not @unread-loaded?
-    (reset! unread-loaded? true)
-    (binding [rtc/*execution-context* runtime]
-      (let [s (cr/load-unread-counts! web/server-id)]
-        (s (fn [counts]
-             (binding [rtc/*execution-context* runtime]
-               (reset! sig/unread-counts (or counts {}))))
-           (fn [err]
-             (reset! unread-loaded? false)
-             (js/console.error "[notify-sync] load-unread error:" err)))))))
+  (aggregate/run!
+   unread-gate
+   (fn [done current?]
+     (binding [rtc/*execution-context* runtime]
+       (let [s (cr/load-unread-counts! web/server-id)]
+         (s (fn [counts]
+              (try (when (current?)
+                     (binding [rtc/*execution-context* runtime]
+                       (let [active (active-chat-room-id)]
+                         (reset! sig/unread-counts
+                                 (cond-> (or counts {})
+                                   (and active (viewing-room? active)) (dissoc (str active)))))))
+                   (finally (done))))
+            (fn [err]
+              (try (when (current?) (js/console.error "[notify-sync] unread load failed:" err))
+                   (finally (done))))))))))
 
 (defn mark-read!
   "Clear a room's badge locally AND advance the durable server cursor, so the
    read state survives a reload. Called when the user opens a room."
   [room-id-str]
-  (sig/mark-room-read! room-id-str)
-  (binding [rtc/*execution-context* runtime]
+  (let [connection (epoch/snapshot)]
+   (sig/mark-room-read! room-id-str)
+   (binding [rtc/*execution-context* runtime]
     (let [s (cr/mark-read! web/server-id (str room-id-str))]
       ;; The badge stays cleared — the person did read the room — but a
       ;; cursor that did not advance brings it back on reload, so say so.
-      (s (rem/on-ok "Could not mark the room as read." nil)
-         (rem/on-error "Could not mark the room as read.")))))
-
-(defonce ^:private prefs-loaded? (atom false))
+      (s (fn [result]
+           (when (epoch/current? connection)
+             ((rem/on-ok "Could not mark the room as read." (fn [_] (load-unread!))) result)))
+         (fn [error]
+           (when (epoch/current? connection)
+             ((rem/on-error "Could not mark the room as read.") error))))))))
 
 (defn load-notify-prefs!
-  "Seed per-room notification levels from the server on login. Idempotent."
+  "Load per-room notification levels, fenced and coalesced by socket epoch."
   []
-  (when-not @prefs-loaded?
-    (reset! prefs-loaded? true)
-    (binding [rtc/*execution-context* runtime]
-      (let [s (cr/load-notify-prefs! web/server-id)]
-        (s (fn [prefs]
-             (binding [rtc/*execution-context* runtime]
-               ;; keys serialize as keywords over the wire — normalise to strings
-               (reset! sig/notify-prefs (into {} (map (fn [[k v]] [(name k) v]) (or prefs {}))))))
-           (fn [err]
-             (reset! prefs-loaded? false)
-             (js/console.error "[notify-sync] load-notify-prefs error:" err)))))))
+  (aggregate/run!
+   prefs-gate
+   (fn [done current?]
+     (binding [rtc/*execution-context* runtime]
+       (let [s (cr/load-notify-prefs! web/server-id)]
+         (s (fn [prefs]
+              (try (when (current?)
+                     (binding [rtc/*execution-context* runtime]
+                       (reset! sig/notify-prefs (into {} (map (fn [[k v]] [(name k) v]) (or prefs {}))))))
+                   (finally (done))))
+            (fn [err]
+              (try (when (current?) (js/console.error "[notify-sync] preferences load failed:" err))
+                   (finally (done))))))))))
 
 (defn set-notify-pref!
   "Set a room's notification level (:all/:mentions/:none) locally + on the server."
   [room-id-str level]
   (binding [rtc/*execution-context* runtime]
-    (let [prev (get @sig/notify-prefs (str room-id-str))
+    (let [connection (epoch/snapshot) request-id (random-uuid)
+          current? #(and (epoch/current? connection) (= request-id (get @pref-requests room-id-str)))
+          prev (get @sig/notify-prefs (str room-id-str))
           ;; shown at once; put back when the server does not take it
           undo! (fn [err]
-                  (binding [rtc/*execution-context* runtime]
-                    (swap! sig/notify-prefs
-                           #(if prev (assoc % (str room-id-str) prev) (dissoc % (str room-id-str)))))
-                  ((rem/on-error "Could not change the notification level.") err))]
+                  (when (current?)
+                    (binding [rtc/*execution-context* runtime]
+                      (swap! sig/notify-prefs
+                             #(if prev (assoc % (str room-id-str) prev) (dissoc % (str room-id-str)))))
+                    ((rem/on-error "Could not change the notification level.") err)))]
+      (swap! pref-requests assoc room-id-str request-id)
       (swap! sig/notify-prefs assoc (str room-id-str) level)
       (let [s (cr/set-notify-pref! web/server-id (str room-id-str) level)]
-        (s (fn [r] (when-let [e (rem/result-failure r)] (undo! e)))
+        (s (fn [r]
+             (if-let [e (rem/result-failure r)] (undo! e)
+                     (when (current?) (load-notify-prefs!))))
            undo!)))))
 
-(defonce ^:private subscribed? (atom false))
-
 (defn subscribe!
-  "Subscribe once to my private notify topic. `party-id-str` is my party uuid.
-   Idempotent per page load. Auth-gated server-side to my own stream."
+  "Own my private stream for this authenticated socket. Catch up durable badges
+   and preferences after handshake, without replaying old notification popups."
   [party-id-str]
-  (when (and party-id-str (not @subscribed?))
-    (reset! subscribed? true)
-    (let [topic    (notify-topic party-id-str)
-          strategy (proto/pub-sub-only-strategy
-                     (fn [payload]
-                       (when (= :message (:kind payload))
-                         (handle-message-event! payload))))]
-      (go
-        (let [result (<! (pubsub/subscribe! @web/client #{topic}
-                                            {:strategies {topic strategy}}))]
-          (if (:error result)
-            (do (reset! subscribed? false)
-                (js/console.error "[notify-sync] subscribe failed:" (pr-str result)))
-            (js/console.log "[notify-sync] subscribed to my notification stream")))))))
+  (let [connection (epoch/snapshot)]
+    (when (= (str party-id-str) (str (:party connection)))
+      (subscription/ensure!
+       owner {:connection connection :peer (:client (web/current-session))
+              :topic (notify-topic party-id-str)
+              :on-ready #(do (load-unread!) (load-notify-prefs!))
+              :on-message (fn [payload]
+                            (when (= :message (:kind payload))
+                              (when-not (handle-message-event! payload)
+                                (load-unread!))))}))))

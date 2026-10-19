@@ -40,6 +40,7 @@
             [dvergr.chat.schema :as chat-schema]
             [dvergr.system.db :as dsdb]
             [is.simm.distributed-scope :as ds]
+            [is.simm.authority.rpc-wire :as rpc-wire]
             [is.simm.model.access :as access]
             [is.simm.model.parties :as parties]
             [is.simm.model.system-db :as system-db]
@@ -204,39 +205,22 @@
   "Deliver `fn-name` (a normalized name such as \"cancel-room-run!\", or a
    symbol sent verbatim, as a client names a fn the registry may not hold)
    with `arg-map` as a network-inbound invocation from
-   `principal`, through distributed-scope's `dispatch-invocation!` with simmis's
+   `principal`, through Kabel's public inbound middleware/server with simmis's
    `authorize-remote` as the gate, wrapped as the server wraps it
    (`rpc-errors/gate`, `rpc-errors/install!`) — the path a websocket message takes once
    kabel-auth has attached `:kabel/principal`. Returns
    `{:result …}` or `{:error \"…\" :refused? bool}`; `:refused?` is true when the
    GATE refused (the handler never ran)."
   [principal fn-name arg-map]
-  (let [peer-id (random-uuid)
-        router-id (random-uuid)
-        out (a/chan 1)
-        owners @#'ds/invocation-owners]
+  (let [call-name (if (symbol? fn-name) fn-name (registered-fn fn-name))]
     ;; the server's wiring (`web/start-server!`): the gate and the handlers
     ;; answer a failure with `rpc-errors`' short map, never the exception
     (rpc-errors/install!)
-    (swap! owners assoc peer-id {:supervisor sv/S
-                                 :authorize-fn (rpc-errors/gate access/authorize-remote)
-                                 :router-id router-id})
-    (try
-      (@#'ds/dispatch-invocation! peer-id router-id
-                                  {:fn-name (if (symbol? fn-name) fn-name (registered-fn fn-name))
-                                   :arg-map arg-map
-                                   :scope peer-id
-                                   :request-id (random-uuid)
-                                   :request-scope peer-id
-                                   :kabel/principal principal
-                                   ::ds/reply-out out})
-      (let [[resp port] (a/alts!! [out (a/timeout 30000)])]
-        (when-not (= port out)
-          (throw (ex-info "inbound invocation produced no reply" {:fn fn-name})))
-        (if-let [e (:error resp)]
-          {:error e
-           :refused? (boolean (re-find #":type :(not-authorized|authentication-required)" e))}
-          {:result (:result resp)}))
-      (finally (swap! owners dissoc peer-id)))))
+    (let [resp (rpc-wire/invoke! principal call-name arg-map
+                                 (rpc-errors/gate access/authorize-remote))]
+      (if-let [e (:error resp)]
+        {:error e
+         :refused? (boolean (re-find #":type :(not-authorized|authentication-required)" e))}
+        {:result (:result resp)}))))
 
 (defn refused? [resp] (true? (:refused? resp)))

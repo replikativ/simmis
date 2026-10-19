@@ -29,6 +29,7 @@
 ;; =============================================================================
 
 #?(:cljs (defonce ^:private gates (atom {})))
+#?(:cljs (defn refresh-loaded! [] (doseq [[_ gate] @gates] (agg/refresh! gate))))
 
 #?(:cljs
    (defonce ^:private requested

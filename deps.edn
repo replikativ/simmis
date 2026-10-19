@@ -1,5 +1,5 @@
-{;; Default dependency set: Maven releases, except the temporary reviewed
- ;; Dvergr Git pin documented below, coordinated with Dvergr's own pins.
+{;; Default dependency set: Maven releases plus temporary immutable, reviewed
+ ;; source pins documented below, coordinated with Dvergr's own pins.
  ;; This is the set we can run tests against as a stable baseline.
  ;;
  ;; For cross-repo development against the up-to-date sibling git checkouts,
@@ -7,7 +7,7 @@
  ;;   clj -M:local:dev     (dev environment on local checkouts)
  ;;   clj -M:local:test    (tests on local checkouts)
  ;;
- ;; Apart from that temporary pin, dependencies resolve from Maven. The
+ ;; Apart from those temporary pins, dependencies resolve from Maven. The
  ;; :stack alias overlays ONLY ../dvergr, for the common case of developing
  ;; the agent substrate and simmis together.
  :deps {org.clojure/clojure {:mvn/version "1.12.5"}
@@ -112,7 +112,11 @@
         ;; top-level pin wins (`clj -Stree`). is.simm.runtimes.storage-gc's
         ;; `datahike-fail-closed-gc-version` names this release. Storage GC
         ;; stays opt-in all the same.
-        org.replikativ/datahike {:mvn/version "0.8.1906"}
+        ;; Reconnect ownership API (PR1118) plus Git source-root parity (PR1119).
+        ;; The immutable pin needs no checkout-relative extra paths. Keep until
+        ;; the required upstream approval and release are available.
+        org.replikativ/datahike {:git/url "https://github.com/replikativ/datahike"
+                                :git/sha "989f2d04ff5e25f3b440d54492018bc9ffdc1622"}
         org.replikativ/konserve {:mvn/version "0.9.394"}
         ;; 0.1.40 additionally limits client inventory to keys reachable from
         ;; the configured walker (konserve-sync#14). Clients no longer scan or
@@ -157,10 +161,9 @@
         ;; registered topic could write its store. That predicate still asked
         ;; `can?` for `:read` whatever the operation was, so it closed the hole
         ;; only to "same check as subscribe" — the residue 0.3.105 finishes.
-        ;; Connection disposal must retire old pubsub subscriptions before
-        ;; reconnect completes; verified upstream fix pending release.
-        org.replikativ/kabel {:git/url "https://github.com/replikativ/kabel"
-                             :git/sha "b677638dfd9a7db317340232ff706c1aa3c2e0eb"}
+        ;; Owned subscription drain on reconnect, guarded unsubscribe, and
+        ;; Missionary compatibility with this graph's newer core.async.
+        org.replikativ/kabel {:mvn/version "0.3.143"}
         ;; kontor — double-entry accounting kernel; powers is.simm.model.books
         ;; (per-room governed double-entry) + the metering→ledger bridge.
         ;; Kept direct because Simmis itself uses the accounting APIs.
@@ -188,7 +191,11 @@
         org.replikativ/geheimnis {:mvn/version "0.2.36"}
         org.replikativ/hasch {:mvn/version "0.4.104"}
         org.replikativ/incognito {:mvn/version "0.3.69"}
-        org.replikativ/superv.async {:mvn/version "0.3.51"}
+        ;; PR33 drains late errors through physical restart joins. Reviewed and
+        ;; CI-green; pending required upstream approval/release. Without it,
+        ;; repeated failed reconnect attempts can deadlock supervisor restart.
+        org.replikativ/superv.async {:git/url "https://github.com/replikativ/superv.async.git"
+                                    :git/sha "09d14ab05ba752ad0b83428c5573856119105900"}
         ;; 0.3.37, not 0.3.36 — it carries yggdrasil#15, which fixes TWO things
         ;; simmis depends on and 0.3.36 gets wrong:
         ;;   • `merge!` selected datoms by raw entity id, so accepting a
@@ -279,7 +286,7 @@
         ;; distributed-scope still declares the pre-rename io.replikativ group
         ;; for hasch/kabel; exclude so only the org.replikativ artifacts (same
         ;; namespaces) are on the classpath.
-        is.simm/distributed-scope {:mvn/version "0.1.10"
+        is.simm/distributed-scope {:mvn/version "0.1.11"
                                    :exclusions [io.replikativ/hasch
                                                 io.replikativ/kabel]}
 

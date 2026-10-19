@@ -22,15 +22,14 @@
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]])
             #?(:cljs [is.simm.uis.web.desktop.db-signal :as db-sig])
+            #?(:cljs [is.simm.uis.web.desktop.client-sync :as client-sync])
             #?(:cljs [is.simm.uis.web.desktop.user-rooms-sync :as urs])
             #?(:cljs [is.simm.uis.web.desktop.message-notify-sync :as mns])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
             #?(:cljs [is.simm.uis.web.desktop.experiments-remote :as experiments-remote])
             #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [cljs.core.async :refer [go]])
-            #?(:cljs [is.simm.runtimes.web :as web])
-            #?(:cljs [is.simm.uis.web.desktop.branching-sync :as br-sync])
-            #?(:cljs [is.simm.uis.web.desktop.perspectives-sync :as psync]))
+            #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el]
                             [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
@@ -1001,6 +1000,19 @@
                  (el/span {} "New Contact")))))))))
 
 #?(:cljs
+   (defn render-replica-status-spin
+     "Transport connected does not mean all requested data caught up."
+     []
+     (spin
+       (let [states (iv/get-new (track db-sig/replica-sync))
+             error (some #(when (= :error (:status %)) (:error %)) (vals states))]
+         (el/div {:class "nav-sync-status" :role "status"}
+           (when error
+             (el/p {:class "error-message"
+                    :title (if (string? error) error (rem/error-text error))}
+               "Data sync paused. Reconnect or reload to retry.")))))))
+
+#?(:cljs
    (defn render-sidebar-footer-spin
      "Footer spin — tracks connection-status and current-user."
      []
@@ -1024,28 +1036,15 @@
   #?(:cljs
      (spin
        (let [current-user (iv/get-new (track sig/current-user))
+             connection (iv/get-new (track sig/memory-connection))
              width (iv/get-new (track sig/sidebar-width))
              ctx (or rtc/*execution-context* runtime)
              resize! (fn [value] (binding [rtc/*execution-context* ctx]
                                   (reset! sig/sidebar-width (memory-tree/sidebar-width value (.-innerWidth js/window)))))]
-         ;; First-time roster load + push subscription. The dirty-bit
-         ;; subscription keeps sig/user-rooms fresh after server-side
-         ;; roster changes (KB create/share, contact add, room
-         ;; membership). See user_rooms_sync.cljs.
-         (when (some? current-user)
-           (when (nil? @sig/user-rooms)
-             (urs/refresh-user-rooms! (:id current-user)))
-           (urs/subscribe! (:id current-user))
-           ;; Subscribe to my private @mention notification stream. Idempotent.
-           (mns/subscribe! (:id current-user))
-           ;; Seed unread badges + per-room notification levels. Idempotent.
-           (mns/load-unread!)
-           (mns/load-notify-prefs!)
-           ;; Subscribe to KB branching events (single global topic, client
-           ;; filters by KB-access). Idempotent.
-           (br-sync/subscribe!)
-           ;; register the aggregate invalidations on the SAME subscription
-           (psync/install!))
+         ;; Authentication alone is not replica readiness. The coordinator
+         ;; subscribes before taking fresh roster snapshots and reauthorizes
+         ;; already-open replicas without replacing their optimistic overlays.
+         (when (some? current-user) (client-sync/ensure! connection current-user))
          (el/aside {:class "nav-sidebar"}
            (el/div {:class "nav-sidebar-resizer" :role "separator" :aria-label "Navigation width"
                     :aria-orientation "vertical" :aria-valuemin 180 :aria-valuemax 640 :aria-valuenow width :tabindex 0
@@ -1077,6 +1076,7 @@
              (await (render-memory-section-spin))
              (await (render-contacts-section-spin)))
            ;; Footer: User, Settings, Status
+           (await (render-replica-status-spin))
            (await (render-sidebar-footer-spin)))))
      :clj
      ;; Server-side: static shell only. The sidebar is client-only; this

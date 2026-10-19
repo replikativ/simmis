@@ -97,13 +97,14 @@ simmis's authorizer about each of them (below, "dvergr ops").
 
 An RPC with no row is **refused**, so forgetting one produces a dead feature
 rather than an open one. `rpc-coverage-test` joins the live registry against
-the table in both directions: a registered fn without a row fails it, and so
-does a row without a registered fn.
+the table in both directions: a registered fn without a row or an explicitly
+reviewed denial fails it, and so does a row without a registered fn.
 
 datahike.kabel's raw store handlers (`dispatch`, `create-database`,
-`delete-database`) are not in that registry. They register in
-`kabel.remote/functions`, which the server does not serve, and they have no
-row, so the gate would refuse them if they became reachable. `dispatch` checks
+`delete-database`) share the `kabel.remote/functions` registry now used by
+distributed-scope. Their exact qualified symbols are explicitly denied, for
+every principal including administrators; they are never permission rows.
+`dispatch` checks
 nothing itself: served behind any row admitting room members, it would let a
 member transact raw datoms, forged messages included, into the room's store.
 So the browser never writes through its replica's writer: wiki edits are

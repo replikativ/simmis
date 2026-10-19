@@ -11,19 +11,21 @@
   (:require [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.signals :as sig]
-            #?(:cljs [clojure.core.async :refer [go <! put! promise-chan] :include-macros true])
+            #?(:cljs [clojure.core.async :refer [go] :include-macros true])
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
             #?(:cljs [org.replikativ.spindel.incremental.interval :as iv])
             #?(:cljs [org.replikativ.spindel.effects.track :refer [track]])
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]])
             #?(:cljs [is.simm.uis.web.desktop.branching-remote :as br])
-            #?(:cljs [is.simm.runtimes.web :as web]))
-  )
+            #?(:cljs [is.simm.uis.web.desktop.aggregate :as aggregate])
+            #?(:cljs [is.simm.uis.web.desktop.connection-epoch :as epoch])
+            #?(:cljs [is.simm.runtimes.web :as web])))
 
 ;; How many recent commits to show before "Show older".
 (def ^:private DEFAULT-LIMIT 25)
 
-#?(:cljs (defonce ^:private loading (atom #{})))
+#?(:cljs (defonce ^:private loading (atom {})))
+#?(:cljs (defonce ^:private gates (atom {})))
 #?(:cljs (defonce ^:private show-limit (atom {})))  ; scope-str → limit
 
 #?(:cljs
@@ -31,19 +33,31 @@
      "Fire-and-forget load of the KB's commit graph into
       sig/commit-graph-data. Idempotent per scope unless :force?."
      [db-scope & {:keys [force?]}]
-     (let [sk (str db-scope)]
-       (when (and db-scope (or force? (not (contains? @loading sk))))
-         (swap! loading conj sk)
-         (go
-           (let [ch (promise-chan)]
-             (binding [rtc/*execution-context* runtime]
-               (let [s (br/kb-commit-graph! web/server-id sk)]
-                 (s (fn [r] (put! ch {:ok r})) (fn [e] (put! ch {:err e})))))
-             (let [{:keys [ok err]} (<! ch)]
-               (binding [rtc/*execution-context* runtime]
-                 (if err
-                   (js/console.error "[subway] load error:" err)
-                   (swap! sig/commit-graph-data assoc sk ok))))))))))
+     (let [sk (str db-scope) connection (epoch/snapshot)]
+       (when (and connection db-scope (or force? (not= connection (get @loading sk))))
+         (swap! loading assoc sk connection)
+         (let [gate (get (swap! gates #(if (contains? % sk) % (assoc % sk (aggregate/gate)))) sk)]
+           (aggregate/run!
+            gate
+            (fn [done current?]
+              ;; Dispatch outside a render spin, but keep callback ownership
+              ;; in the aggregate gate rather than an extra pending channel.
+              (go
+                (try
+                  (binding [rtc/*execution-context* runtime]
+                    (let [s (br/kb-commit-graph! web/server-id sk)]
+                      (s (fn [value]
+                           (try
+                             (when (current?)
+                               (binding [rtc/*execution-context* runtime]
+                                 (swap! sig/commit-graph-data assoc sk value)))
+                             (finally (done))))
+                         (fn [error]
+                           (try (when (current?) (js/console.error "[subway] load error:" error))
+                                (finally (done)))))))
+                  (catch :default error
+                    (when (current?) (js/console.error "[subway] load error:" error))
+                    (done)))))))))))
 
 #?(:cljs
    (defn invalidate!
@@ -59,10 +73,16 @@
       does not pull its history over the wire."
      [db-scope]
      (let [sk (str db-scope)]
-       (when (contains? (binding [rtc/*execution-context* runtime]
-                          @sig/commit-graph-data)
-                        sk)
+       (when (contains? @loading sk)
          (load-commit-graph! db-scope :force? true)))))
+
+#?(:cljs
+   (defn reload-loaded!
+     "Catch up requested graphs for this session, including hung first loads."
+     []
+     (doseq [[scope connection] @loading
+             :when (= (:session-id connection) (:session-id (epoch/snapshot)))]
+       (load-commit-graph! scope :force? true))))
 
 (defn- day-key [^js d]
   #?(:cljs (str (.getFullYear d) "-" (inc (.getMonth d)) "-" (.getDate d)) :clj ""))

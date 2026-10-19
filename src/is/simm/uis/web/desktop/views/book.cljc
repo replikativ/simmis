@@ -17,6 +17,8 @@
             #?(:cljs [is.simm.uis.web.desktop.accounting-remote :as ar])
             #?(:cljs [is.simm.uis.web.desktop.refs :as refs])
             #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
+            #?(:cljs [is.simm.uis.web.desktop.aggregate :as aggregate])
+            #?(:cljs [is.simm.uis.web.desktop.connection-epoch :as epoch])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.incremental.interval]))
@@ -59,34 +61,44 @@
      (atom {})))
 
 #?(:cljs
+   (defonce ^:private gates (atom {})))
+
+#?(:cljs
+   (defn- load-report! [key opts make-spin target]
+     (swap! requested assoc key {:opts opts :connection (epoch/snapshot)})
+     (let [gate (get (swap! gates #(if (contains? % key) % (assoc % key (aggregate/gate)))) key)]
+       (aggregate/run!
+        gate
+        (fn [done current?]
+          (go
+            (let [{:keys [ok err]} (<! (remote-result (make-spin)))]
+              (try
+                (when (current?)
+                  (binding [rtc/*execution-context* runtime]
+                    (swap! target assoc key
+                           (if err {:error (error-text err) :opts opts} {:data ok :opts opts}))))
+                (finally (done))))))))))
+
+#?(:cljs
    (defn load-book!
      "Fetch `room-id`'s reports for `opts` into `sig/books`."
      [room-id opts]
-     (swap! requested assoc room-id opts)
-     (go
-       (let [{:keys [ok err]} (<! (remote-result (ar/load-book! web/server-id room-id opts)))]
-         (binding [rtc/*execution-context* runtime]
-           (swap! sig/books assoc room-id
-                  (if err {:error (error-text err) :opts opts} {:data ok :opts opts})))))))
+     (load-report! room-id opts #(ar/load-book! web/server-id room-id opts) sig/books)))
 
 #?(:cljs
    (defn load-ledger!
      "Fetch one account's ledger into `sig/book-ledgers`."
      [room-id path opts]
-     (swap! requested assoc [room-id path] opts)
-     (go
-       (let [{:keys [ok err]} (<! (remote-result
-                                   (ar/load-account-ledger! web/server-id room-id path opts)))]
-         (binding [rtc/*execution-context* runtime]
-           (swap! sig/book-ledgers assoc [room-id path]
-                  (if err {:error (error-text err) :opts opts} {:data ok :opts opts})))))))
+     (load-report! [room-id path] opts
+                   #(ar/load-account-ledger! web/server-id room-id path opts) sig/book-ledgers)))
 
 #?(:cljs
    (defn reload-all!
      "Load every open book again — a posting landed somewhere. The opts each
       was last asked for still apply."
      []
-     (doseq [[k opts] @requested]
+     (doseq [[k {:keys [opts connection]}] @requested
+             :when (= (:session-id connection) (:session-id (epoch/snapshot)))]
        (if (vector? k)
          (load-ledger! (first k) (second k) opts)
          (load-book! k opts)))))
@@ -343,7 +355,8 @@
   [{:keys [room-id room-name db-scope]}]
   #?(:cljs
      (spin
-       (let [books (iv/get-new (track sig/books))
+       (let [connection (iv/get-new (track sig/memory-connection))
+             books (iv/get-new (track sig/books))
              ledgers (iv/get-new (track sig/book-ledgers))
              ui-all (iv/get-new (track sig/book-ui))
              gref (iv/get-new (track sig/global-ref))
@@ -357,10 +370,12 @@
                     from (assoc :from from)
                     cut-ms (assoc :as-of-tx cut-ms))
              account (:account ui)
-             _ (when (not= opts (get @requested room-id))
+             _ (when (or (not= opts (:opts (get @requested room-id)))
+                         (not= connection (:connection (get @requested room-id))))
                  (load-book! room-id opts))
              _ (when (and account (= :ledger (:report ui))
-                          (not= opts (get @requested [room-id account])))
+                          (or (not= opts (:opts (get @requested [room-id account])))
+                              (not= connection (:connection (get @requested [room-id account])))))
                  (load-ledger! room-id account opts))]
          (view {:room-name room-name
                 :book (get books room-id)

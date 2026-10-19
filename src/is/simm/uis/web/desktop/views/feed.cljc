@@ -27,6 +27,7 @@
                      [org.replikativ.spindel.effects.track :refer [track]])))
 
 #?(:cljs (defonce ^:private gate (agg/gate)))
+#?(:cljs (defn refresh-loaded! [] (agg/refresh! gate)))
 
 #?(:cljs
    (defn load-feed!

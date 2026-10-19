@@ -303,7 +303,9 @@ saved-workflow preparation as native server execution. It freezes the inspected
 bundle, literal parameters, fixture/input overlays and regular-file modes before
 admission. Only those files reach the guest. Ordinary workflow source may include
 checker/gold files, but authored checkers are not executed and this is not a
-benchmark secrecy boundary. Exact retries observe the original Job; recovery
+benchmark secrecy boundary. Saved workflows reject `:review` and
+`:workflow/writes` declarations: this adapter does not silently enable retained
+world adoption or whole-world auto-merge. Exact retries observe the original Job; recovery
 reconstructs its input only from the stored snapshot, not newer room content.
 `ops/worker-benchmarks.clj` is a host-only local-worker adapter for the same
 experiment runner: one enrolled candidate, up to eight case/repetition cells,
@@ -382,6 +384,33 @@ That gives two distinct channels, and they are authorized separately:
 
 See [authority.md](authority.md) for how each is gated.
 
+Authentication, subscription readiness and replica readiness are separate
+boundaries. Each authenticated socket gets an epoch. The shell reestablishes
+owned invalidation subscriptions, reads an authoritative room/KB roster, and
+reconciles already-open replicas; it does not eagerly open every wiki. Lazy
+opens wait for that roster. Revoked scopes are withdrawn immediately, including
+historical/proposal signals held by mounted views. Subscription replacement
+joins an unsubscribe guarded by the exact old strategy before installing a
+replacement. Old epoch callbacks cannot publish into the current views.
+
+On same-peer reconnect, `datahike.kabel.connector/resubscribe!` confirms a fresh
+server branch head and completed handshake on the existing connection. Its
+optimistic overlay is retained; neither writes nor predictions are replayed.
+The shared replica's initial bootstrap also follows epoch changes while still
+loading. Previously requested aggregate reports catch up with their latest
+options, including requests whose replies were lost with the socket.
+
+`replica-io` owns one native lifecycle slot per Datahike store UUID across peers
+and epochs; a different backend configuration cannot reuse that UUID. Server
+preparation RPCs run outside this physical lease, so a lost RPC cannot block a
+new epoch before construction starts. After construction starts, logical
+cancellation does not release physical ownership: replacement waits for the
+old constructor and confirmed subscription cleanup. Failed cleanup quarantines
+that store with explicit cleanup-only recovery, rather than wiping IndexedDB.
+Joined disposal is supported here for the pinned memory/IndexedDB tiered stores,
+not arbitrary plugin backends. A peer/account replacement retires the old slots
+and clears account projections; same-peer reconnect does not clear editor drafts.
+
 ## Three rules that shape everything else
 
 **Writes go through the server.** The client proposes; the server resolves the
@@ -395,9 +424,10 @@ at once is a datahike.optimistic PREDICTION over the RPC that makes it durable
 head after the write, the prediction is dropped once the replica reaches that
 head, and a refused or failed RPC rejects it and tells the user. `opt/transact!`
 would hand the transaction to the replica's KabelWriter — a raw
-`datahike.kabel/dispatch`, past `can?`, which this server does not serve — and
-such a write never arrives and never fails. The same holds for `d/transact!` on
-any replica conn and for konserve writes into a synced store;
+`datahike.kabel/dispatch`, past the operation-level `can?`. The shared RPC
+runtime now routes that function, but Simmis explicitly denies it for every
+principal. Neither `d/transact!` on a replica nor konserve writes into a synced
+store are authorized application writes;
 `browser-write-guard-test` reads every ClojureScript file (and the `:cljs`
 branch of every `.cljc`) and fails on any of them.
 

@@ -273,6 +273,9 @@
          (mapcat #(if (seq? %) % [%]) body)))))
 
 #?(:cljs
+   (declare expanded-changes))
+
+#?(:cljs
    (defn- difference
      "THE panel: how the chosen reference differs from the present.
 

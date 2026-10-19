@@ -293,7 +293,7 @@
                       db system-id)]
       (boolean
        (some (fn [[room-eid perm]]
-             (and (permission-satisfies? (or perm :read) action)
+               (and (permission-satisfies? (or perm :read) action)
                   ;; REACHABILITY, not permission — hence `:read` and not
                   ;; `action`. The question here is only "is this party in the
                   ;; room that holds the grant", so a grant held by a room the
@@ -301,7 +301,7 @@
                   ;; comes from the grant, checked just above; asking the room
                   ;; for `action` too would require room OWNERSHIP to merge a
                   ;; fork into a repo the room was explicitly granted.
-                  (party-can-access-room? db party-uuid room-eid :read)))
+                    (party-can-access-room? db party-uuid room-eid :read)))
              grants)))))
 
 (defn- drive-eid-by-id [db drive-id]
@@ -594,11 +594,9 @@
 ;; refused.
 ;;
 ;; datahike.kabel's handlers (`dispatch`, `create-database`,
-;; `delete-database`) are NOT in that registry. They register in
-;; `kabel.remote/functions`, which the server never serves (it composes
-;; distributed-scope's middleware, not `kabel.remote/serve`), so they are
-;; unreachable and have no row: if they ever became reachable through this
-;; gate they would be refused. A raw transact into a room's message store
+;; `delete-database`) now share the served `kabel.remote/functions` registry.
+;; Their exact qualified symbols are explicitly denied before policy lookup.
+;; They must never get application permission rows. A raw room-store transact
 ;; must stay refused (it would forge messages); see raw-paths-test.
 
 (defn normalize-remote-name
@@ -819,9 +817,9 @@
      ;; :merge on each fork's own scope before it lands one
      "accept-fork!"            {:action W :resource (proposal :proposal-id-str)}
      "dismiss-fork!"           {:action W :resource (fn [a] {:proposal-fork
-                                                              {:proposal (:proposal-id-str a)
-                                                               :scope (:scope-str a)
-                                                               :branch (:branch a)}})}
+                                                             {:proposal (:proposal-id-str a)
+                                                              :scope (:scope-str a)
+                                                              :branch (:branch a)}})}
      ;; Commenting is a WRITE on the proposal's room, not a read: it puts words
      ;; on a shared record under the author's name, and `request-changes!` also
      ;; puts a contributor back to work. Room membership is the gate, the same
@@ -882,12 +880,21 @@
      "load-leaderboard!"       {:action R :resource (room :room-id-str)}
      "join-experiment-room!"   {:action A :resource (always :admin)}}))
 
+(def denied-remote-functions
+  "Transport-level database capabilities are not application RPCs. Even room
+   owners and administrators must use the authorized application operations."
+  '#{datahike.kabel/dispatch datahike.kabel/create-database datahike.kabel/delete-database})
+
+(defn denied-remote? [fn-name]
+  (contains? denied-remote-functions (if (string? fn-name) (symbol fn-name) fn-name)))
+
 (defn authorize-remote
   "The `:authorize-fn` for distributed-scope's invoke-on-peer. Consulted for
    every network-inbound remote call before its handler runs. Deny-by-default:
    an unpoliced fn, an unauthenticated principal, or a failed `can?` is refused."
   [principal fn-name arg-map]
-  (if-let [{:keys [action resource]} (get rpc-policy (normalize-remote-name fn-name))]
+  (if-let [{:keys [action resource]} (when-not (denied-remote? fn-name)
+                                       (get rpc-policy (normalize-remote-name fn-name)))]
     (let [fname (normalize-remote-name fn-name)
           ;; RESOLVE ONCE. The denial log below used to call `(resource
           ;; arg-map)` a second time, outside the guard — measured, not

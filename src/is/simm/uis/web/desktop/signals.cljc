@@ -1309,3 +1309,28 @@
      (binding [rtc/*execution-context* runtime]
        (reset! drag-state nil))
      :clj nil))
+
+#?(:cljs
+   (defn clear-account-state!
+     "Retire projections and drafts at account/peer replacement, NOT ordinary
+      same-peer socket reconnect. Call after invalidating the old epoch."
+     []
+     (clear-captured-results!)
+     (doseq [s [current-user settings-data admin-data mail-data
+                schedules-data proposals-data feed-data accounting-data tasks-data
+                user-rooms commit-graph-data]]
+       (reset! s nil))
+     (doseq [s [room-details screens-results recordings-results web-captures-results video-call-info
+                drive-data files-upload-status unread-counts notify-prefs
+                block-conflicts orphaned-blocks room-app-status leaderboards
+                books book-ledgers book-ui workflow-editor-state memory-editor-state
+                memory-navigation-state run-server-facts chat-scroll-windows
+                chat-reply-targets active-kb-branch kb-branches projected-branch-dbs]]
+       (reset! s {}))
+     (reset! global-ref :now)
+     (reset! drag-state nil)
+     (reset! layout-columns [{:id initial-col-id :width 1.0
+                              :tabs [{:id initial-tab-id :type :chat :title "Assistants"
+                                      :data {:room-id "personal-ai-placeholder" :room-name "Assistants"}}]
+                              :active-tab initial-tab-id}])
+     (reset! active-column-id initial-col-id)))
