@@ -9,9 +9,11 @@
             [dvergr.agent.run :as run]
             [dvergr.catalog.room :as catalog]
             [dvergr.catalog.workspace :as workspace]
+            [dvergr.discourse :as discourse]
             [dvergr.jobs :as jobs]
             [dvergr.resource :as resource]
             [dvergr.room.store :as store]
+            [dvergr.room.registry :as registry]
             [dvergr.room.store.datahike :as room-store]
             [dvergr.system.db :as system-db]
             [dvergr.substrate.geschichte :as geschichte]
@@ -21,12 +23,16 @@
             [is.simm.documents.markdown :as markdown]
             [is.simm.authority.world :as authority-world]
             [is.simm.model.system-db :as sdb]
+            [is.simm.model.knowledge-dispositions :as dispositions]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.knowledge-admission :as admission]
             [is.simm.ops.knowledge-filing :as filing]
             [is.simm.ops.knowledge-inputs :as inputs]
             [is.simm.ops.knowledge-outputs :as outputs]
             [is.simm.ops.knowledge-workspace :as knowledge-workspace]
+            [is.simm.ops.knowledge-publish :as publish]
+            [is.simm.ops.file-output-storage :as output-storage]
+            [is.simm.ops.proposals :as proposals]
             [is.simm.ops.work :as work]
             [is.simm.ops.work-test]
             [is.simm.ops.workflow-runs :as workflows]
@@ -329,13 +335,18 @@
           (is (= expected (filing/current-target registry-db room-id room)))
           (is (= {:same-db? true :room-id room-id :same-room? true} @seen)))))))
 
-(defn native-workspace-probe
+(def native-written-path "wiki/native.md")
+(def native-written-text "# Retained knowledge\n\nWritten by bounded SCI.\n")
+
+(defn- native-workspace-probe*
   "Explicit no-model diagnostic, not a scheduled job or a default test. Runs
    the actual Job/fork/setup/Echo/certification driver with two repositories.
    The memory default descriptor is isolated; this is NOT a file-registry
    ownership test. All system DB and Room registry changes are scoped/restored.
    No money is minted and provider preparation must not run."
-  [owned-first?]
+  [owned-first? program-mode]
+  (when-not (contains? #{:echo :sci-write} program-mode)
+    (throw (ex-info "Unknown fixed native diagnostic mode" {})))
   (authority-world/with-world [conn w]
     (@#'is.simm.ops.work-test/with-room
      (fn [room]
@@ -364,6 +375,8 @@
              _ (repo/commit! attached {:message "Attached evidence for native selection probe"})
              captured (inputs/capture @owned inputs/default-policy)
              basis (inputs/publication-basis @owned identity)
+             attached-before (inputs/publication-basis @attached)
+             proposal-count-before (count (d/q '[:find ?p :where [?p :proposal/id _]] @conn))
              submission {:request-id (random-uuid) :name "memory"
                          :expected-bundle (:id (catalog/bundle "memory" source))
                          :model "fixture-no-provider"
@@ -372,7 +385,17 @@
              source-prepared (workflows/prepare-source {:files source}
                                                        (select-keys submission workflows/source-fields) captured)
              team (roster/make-agent (roster/make-roster {:id :knowledge-native-probe})
-                                     {:id :candidate :program {:kind :echo}})
+                                     {:id :candidate :tools #{} :sandbox #{}
+                                      :program (if (= :sci-write program-mode)
+                                                 {:kind :sci :timeout-ms 30000 :args []
+                                                  :entrypoint 'knowledge.native/main
+                                                  :source (str "(ns knowledge.native)"
+                                                               "(require '[babashka.fs :as fs])"
+                                                               "(defn main [_] (fs/create-dirs \"/out/wiki\")"
+                                                               "(spit " (pr-str (str "/out/" native-written-path))
+                                                               " " (pr-str native-written-text) ")"
+                                                               "\"Prepared retained wiki change.\")")}
+                                                 {:kind :echo})})
              agent (roster/agent team :candidate)
              evaluator (outputs/with-capture work/completion)
              verifier (evaluation/evaluator-ref evaluator)
@@ -402,36 +425,80 @@
              prepared (workflows/bind-publication
                        {:team team :agent :candidate :environment definition :evaluator evaluator
                         :world-setup setup :request-kind :workflow :execution-kind :saved-workflow
+                        :delegation-policy {:tools #{} :sandboxes #{#{}} :providers #{}
+                                            :program-kinds #{:echo :sci} :max-attempts 1 :max-parallelism 1}
                         :resources {resource/model-dispatches 1M} :basis input}
                        {:publication-basis basis :captured captured})
              principal {:principal/id (str "party/" (:owner w))
                         :principal/actor (keyword "party" (str (:owner w)))}]
          ;; Synthetic dispatch allowance only; no paid model exists in team.
          (resource/mint! room {:id (random-uuid) :resources {resource/model-dispatches 1M}})
-         (with-redefs [work/prepare (fn [& _] (throw (AssertionError. "Provider preparation in native probe")))
-                       admission/default-target (fn [rid r]
-                                                  (when-not (and (= rid (:room w)) (identical? r room))
-                                                    (throw (ex-info "Noncanonical memory probe room" {})))
-                                                  {:conn owned :identity identity})]
-           (let [admitted (work/submit-prepared! conn ec/*execution-context* principal (:room w) room submission prepared)
-                 status (jobs/status (:job admitted) 25000)
-                 request (requests/get-request conn (:id admitted))
-                 result (when (and (= :completed (:status status))
-                                   (false? (:work.request/return-pending? request)))
-                          (filing/prepare conn principal (:room w) room (:id admitted)))]
-             {:owned-first? owned-first? :job-status (:status status) :job-error (:error status)
-              :returned? (false? (:work.request/return-pending? request))
-              :expected {:runtime-system (system-id owned)
-                         :repository (:geschichte.repo/id (query/repository @owned))
-                         :store (get-in @owned [:config :store :id])
-                         :backend (get-in @owned [:config :store :backend])}
-              :source-branch (get-in @owned [:config :branch])
-              :attached {:runtime-system (system-id attached)
-                         :repository (:geschichte.repo/id (query/repository @attached))}
-              :observed (deref observed 0 :not-prepared)
-              :workspace-proof (some-> (get-in result [:disposition :candidate])
-                                       (#(episode/attempt room %)) :attempt/evidence :knowledge-workspace)
-              :disposition (:kind (:disposition result))})))))))
+         (let [resolve-target (fn [rid r]
+                                (when-not (and (= rid (:room w)) (identical? r room))
+                                  (throw (ex-info "Noncanonical memory probe room" {})))
+                                {:conn owned :identity identity})]
+           ;; Only the test host default resolver is isolated, in both writer
+           ;; snapshot arities. Authority, canonical connection, publication,
+           ;; durable card projection and all storage/transactions are real.
+           (with-redefs [work/prepare (fn [& _] (throw (AssertionError. "Provider preparation in native probe")))
+                         admission/default-target (fn
+                                                    ([rid r] (resolve-target rid r))
+                                                    ([_db rid r] (resolve-target rid r)))]
+             (let [admitted (work/submit-prepared! conn ec/*execution-context* principal (:room w) room submission prepared)
+                   status (jobs/status (:job admitted) 25000)
+                   request (requests/get-request conn (:id admitted))
+                   result (when (and (= :completed (:status status))
+                                     (false? (:work.request/return-pending? request)))
+                            (filing/prepare conn principal (:room w) room (:id admitted)))
+                   _ (when (= :sci-write program-mode)
+                       ;; Refuse before publication if the real lookup would
+                       ;; need to hydrate any filesystem-backed application
+                       ;; room. This isolated diagnostic owns only this Room.
+                       (let [slug (:room/slug (d/entity @conn [:room/id (:room w)]))]
+                         (when-not (and slug (identical? room (registry/lookup (store/slug->room-id slug))))
+                           (throw (ex-info "Native diagnostic Room is not the registered publication target" {})))))
+                   filed (when (and result (= :sci-write program-mode))
+                           (publish/file-completed-request! conn principal (:room w) room (:id admitted)))
+                   replayed (when filed
+                              (with-redefs [filing/prepare (fn [& _] (throw (AssertionError. "Historical retry recertified")))]
+                                (publish/file-completed-request! conn principal (:room w) room (:id admitted))))
+                   proposal (when filed (proposals/get-proposal (:proposal filed)))]
+               {:owned-first? owned-first? :job-status (:status status) :job-error (:error status)
+                :program-mode program-mode
+                :returned? (false? (:work.request/return-pending? request))
+                :expected {:runtime-system (system-id owned)
+                           :repository (:geschichte.repo/id (query/repository @owned))
+                           :store (get-in @owned [:config :store :id])
+                           :backend (get-in @owned [:config :store :backend])}
+                :source-branch (get-in @owned [:config :branch])
+                :attached {:runtime-system (system-id attached)
+                           :repository (:geschichte.repo/id (query/repository @attached))}
+                :observed (deref observed 0 :not-prepared)
+                :workspace-proof (some-> (get-in result [:disposition :candidate])
+                                         (#(episode/attempt room %)) :attempt/evidence :knowledge-workspace)
+                :disposition (:kind (:disposition result))
+                :filed filed :replayed replayed
+                :joint-receipt (when filed (dispositions/disposition (requests/get-request conn (:id admitted))))
+                :new-proposals (- (count (d/q '[:find ?p :where [?p :proposal/id _]] @conn)) proposal-count-before)
+                :message-status (:proposal/message-status proposal)
+                :cards (when filed (count (filter #(= (:proposal/message-id proposal) (:id %))
+                                                  (discourse/messages room))))
+                :retained-pair (when filed (output-storage/read-file conn (:manifest filed) native-written-path))
+                :parents-unchanged? (and (= basis (inputs/publication-basis @owned identity))
+                                         (= attached-before (inputs/publication-basis @attached)))}))))))))
+
+(defn native-workspace-probe
+  "Opt-in Echo driver diagnostic; no model/provider, no Proposal or room card."
+  [owned-first?]
+  (native-workspace-probe* owned-first? :echo))
+
+(defn native-written-workspace-probe
+  "Opt-in bounded SCI -> retained Proposal -> joint receipt -> one real room
+   card -> historical retry diagnostic. No provider/money/new execution lane.
+   Test-only memory default resolution is NOT a provisioned-home auth test.
+   This writes no canonical wiki files and performs no adoption."
+  [owned-first?]
+  (native-workspace-probe* owned-first? :sci-write))
 
 (deftest only-the-exact-frozen-environment-and-durable-attempt-can-certify
   (with-fixture
