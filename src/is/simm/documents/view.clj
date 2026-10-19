@@ -10,7 +10,9 @@
             [geschichte.query :as query]
             [geschichte.repo :as repo]
             [hasch.core :as hasch]
+            [is.simm.documents.blocks :as blocks]
             [is.simm.documents.markdown :as markdown]
+            [is.simm.documents.properties :as properties]
             [is.simm.documents.repository :as documents]))
 
 (def ^:private max-files 200)
@@ -33,7 +35,7 @@
 (defn selection
   "Bounded source-only descriptor. Cache writes and unrelated files do not
    change its identity. Schema revision is supplied by trusted host code."
-  [db {:keys [root schema-revision] :or {root "wiki"}}]
+  [db {:keys [root schema-revision property-bindings] :or {root "wiki" property-bindings {}}}]
   (when (nil? schema-revision) (refuse! :missing-schema-revision))
   (let [prefix (prefix! root)
         repository-id (:geschichte.repo/id (query/repository db))
@@ -64,8 +66,10 @@
           (refuse! :unsupported-file)))
       (when (> (reduce + 0 (map :size (vals files))) max-total-bytes)
         (refuse! :too-many-source-bytes))
-      {:repository-id repository-id :selection-kind :worktree :root root :projection-version 1
-       :files files :codec markdown/syntax-profile :schema-revision schema-revision})))
+      {:repository-id repository-id :selection-kind :worktree :root root :projection-version 2
+       :files files :codec markdown/syntax-profile :block-codec blocks/profile
+       :property-schema (:revision (properties/compile-schema db property-bindings))
+       :schema-revision schema-revision})))
 
 (defn current?
   "Whether this view still matches the selected source and trusted schema.
@@ -97,22 +101,31 @@
                      (= (boolean (:db/isComponent expected)) (boolean (:db/isComponent actual)))
                      (= (:db/unique expected) (:db/unique actual)))
         (refuse! :incompatible-projection-schema)))
-    (when (or (contains? schema :document/id) (contains? schema :document.node/kind))
+    (when (or (contains? schema :document/id) (contains? schema :document.node/kind)
+              (contains? schema :document.block/id))
       (let [roots (when (contains? schema :document/id)
                     (vec (take (inc max-files) (map :e (d/datoms db :aevt :document/id)))))
             nodes (when (contains? schema :document.node/kind)
                     (vec (take (inc max-total-nodes)
                                (map :e (d/datoms db :aevt :document.node/kind)))))
-            owned (set (concat roots nodes))]
-        (when (or (> (count roots) max-files) (> (count nodes) max-total-nodes))
+            block-entities (when (contains? schema :document.block/id)
+                             (vec (take (inc max-total-nodes)
+                                        (map :e (d/datoms db :aevt :document.block/id)))))
+            owned (set (concat roots nodes block-entities))]
+        (when (or (> (count roots) max-files) (> (+ (count nodes) (count block-entities)) max-total-nodes))
           (refuse! :too-many-existing-projection-entities))
         (let [reachable (loop [pending (vec roots), seen #{}]
                           (if-let [eid (peek pending)]
                             (if (contains? seen eid)
                               (recur (pop pending) seen)
-                              (let [row (d/pull db '[:document/nodes :document.node/children] eid)
+                              (let [attrs (filterv #(contains? schema %)
+                                                   [:document/nodes :document.node/children
+                                                    :document/blocks :document.block/children])
+                                    row (d/pull db attrs eid)
                                     children (map :db/id (concat (:document/nodes row)
-                                                                 (:document.node/children row)))]
+                                                                 (:document.node/children row)
+                                                                 (:document/blocks row)
+                                                                 (:document.block/children row)))]
                                 (when-not (every? owned children) (refuse! :foreign-projection-child))
                                 (recur (into (pop pending) children) (conj seen eid))))
                             seen))]
@@ -125,7 +138,8 @@
                                       :where [?e ?a ?target]] db (vec owned))
                   :when (= :db.type/ref (:db/valueType (get schema attr)))]
             (when-not (and (contains? owned source)
-                           (#{:document/nodes :document.node/children} attr))
+                           (#{:document/nodes :document.node/children
+                              :document/blocks :document.block/children} attr))
               (refuse! :authored-reference-to-projection))))))))
 
 (defn prepare
@@ -135,6 +149,7 @@
   [source-db options]
   (let [selected (selection source-db options)
         _ (projection-ownership! source-db)
+        property-schema (properties/compile-schema source-db (get options :property-bindings {}))
         docs (:documents
               (reduce (fn [{:keys [documents node-count]} [path {:keys [content size]}]]
                         (let [logical-size (:geschichte.content/size
@@ -145,6 +160,9 @@
                             (refuse! :content-size-mismatch))
                           (let [parsed (markdown/parse (markdown/decode bytes))
                                 identity (document-identity (:repository-id selected) path parsed)
+                                semantic (when-let [id (:id identity)] (blocks/project id parsed))
+                                property-values (properties/decode property-schema
+                                                                   (get-in parsed [:frontmatter :properties]))
                                 n (+ node-count (count (tree-seq (comp seq :children) :children
                                                                  {:children (:nodes parsed)})))]
                             ;; Stop between files rather than accumulating all ASTs
@@ -153,14 +171,27 @@
                             {:node-count n
                              :documents (conj documents
                                               (-> (merge parsed (dissoc identity :diagnostics))
-                                                  (assoc :path path :content content
-                                                         :diagnostics (into (:diagnostics parsed)
-                                                                            (:diagnostics identity)))))})))
+                                                  (assoc :path path :content content :semantic semantic
+                                                         :properties property-values
+                                                         :diagnostics (into (or (:diagnostics semantic)
+                                                                                (:diagnostics parsed))
+                                                                            (concat (:diagnostics identity)
+                                                                                    (:diagnostics property-values))))))})))
                       {:documents [] :node-count 0} (:files selected)))
         duplicate-ids (->> docs (keep :id) frequencies (keep (fn [[id n]] (when (> n 1) id))) set)
+        semantic-ids (mapcat (fn [doc]
+                              (cons {:id (:id doc) :path (:path doc)}
+                                    (for [block (mapcat #(tree-seq (comp seq :children) :children %)
+                                                        (get-in doc [:semantic :blocks]))]
+                                      {:id (:id block) :path (:path doc) :from (:from block)}))) docs)
+        duplicate-semantic-ids (->> semantic-ids (keep :id) frequencies
+                                    (keep (fn [[id n]] (when (> n 1) id))) set)
         diagnostics (into (vec (mapcat :diagnostics docs))
-                          (for [doc docs :when (contains? duplicate-ids (:id doc))]
-                            {:kind :duplicate-document-id :path (:path doc)}))
+                          (concat (for [doc docs :when (contains? duplicate-ids (:id doc))]
+                                    {:kind :duplicate-document-id :path (:path doc)})
+                                  (for [{:keys [id path from]} semantic-ids
+                                        :when (and (some? from) (contains? duplicate-semantic-ids id))]
+                                    {:kind :duplicate-semantic-id :path path :from from})))
         base {:id (hasch/uuid selected) :selection selected
               :documents docs :diagnostics diagnostics}]
     (if (seq diagnostics)
@@ -169,12 +200,14 @@
             missing (remove #(contains? installed (:db/ident %)) documents/schema)
             old (when (contains? installed :document/id)
                   (d/q '[:find [?e ...] :where [?e :document/id]] source-db))
-            projection (map (fn [{:keys [id path content revision nodes]}]
-                              {:document/id id :document/path path
+            projection (map (fn [{:keys [id path content revision nodes properties semantic]}]
+                              (merge (:values properties)
+                               {:document/id id :document/path path
                                :document/source-content [:geschichte.content/id content]
-                               :document/revision revision :document/projection-version 2
+                               :document/revision revision :document/projection-version 3
                                :document/valid? true
-                               :document/nodes (mapv documents/syntax-node-tx (range) nodes)}) docs)
+                               :document/blocks (mapv blocks/entity-tx (:blocks semantic))
+                               :document/nodes (mapv documents/syntax-node-tx (range) nodes)})) docs)
             tx (vec (concat missing (map #(vector :db/retractEntity %) old) projection))]
         (assoc base :status :ready :db (if (seq tx) (d/db-with source-db tx) source-db))))))
 

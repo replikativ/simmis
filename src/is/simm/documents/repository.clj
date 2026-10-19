@@ -21,7 +21,13 @@
          {:db/ident :document/nodes :db/valueType :db.type/ref
           :db/cardinality :db.cardinality/many :db/isComponent true}
          {:db/ident :document.node/children :db/valueType :db.type/ref
-          :db/cardinality :db.cardinality/many :db/isComponent true}]
+          :db/cardinality :db.cardinality/many :db/isComponent true}
+         {:db/ident :document/blocks :db/valueType :db.type/ref
+          :db/cardinality :db.cardinality/many :db/isComponent true}
+         {:db/ident :document.block/children :db/valueType :db.type/ref
+          :db/cardinality :db.cardinality/many :db/isComponent true}
+         {:db/ident :document.block/id :db/valueType :db.type/uuid
+          :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}]
         (for [[attr type] [[:document/revision :db.type/uuid]
                            [:document/projection-version :db.type/long]
                            [:document/valid? :db.type/boolean]
@@ -32,7 +38,11 @@
                            [:document.node/table-header? :db.type/boolean]
                            [:document.node/table-alignment :db.type/keyword]
                            [:document.node/from :db.type/long]
-                           [:document.node/to :db.type/long]]]
+                           [:document.node/to :db.type/long]
+                           [:document.block/from :db.type/long]
+                           [:document.block/to :db.type/long]
+                           [:document.block/ordinal :db.type/long]
+                           [:document.block/identity-status :db.type/keyword]]]
           {:db/ident attr :db/valueType type :db/cardinality :db.cardinality/one})))
 
 (defn initialize!

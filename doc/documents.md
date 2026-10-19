@@ -1,7 +1,7 @@
 # Document storage prototype
 
-`is.simm.documents.markdown`, `is.simm.documents.repository` and
-`is.simm.documents.view` are an isolated
+`is.simm.documents.markdown`, `blocks`, `properties`, `repository` and
+`view` are an isolated
 prototype. They are **not** connected to live KBs, room tools, RPC, user
 provisioning or the document UI. Existing wikis still use their current
 pages/HTML-block model. No existing store is converted by booting this code.
@@ -15,8 +15,8 @@ coordinates. It does not serialize the tree back into source or execute code.
 
 Frontmatter is parsed with safe YAML, duplicate-key rejection and bounded
 depth/aliases. Malformed or unsupported metadata remains intact, with a short
-diagnostic instead of a guessed repair. This is raw metadata, not yet a codec
-for Simmis's programmable property schema. Syntax projection and source sizes
+diagnostic instead of a guessed repair. Typed projection requires explicit
+trusted schema bindings as described below. Syntax projection and source sizes
 are bounded; exceeding a limit is an explicit refusal.
 
 The syntax profile pins Flexmark 0.64.8 with explicit table, task-list,
@@ -30,14 +30,82 @@ comments do not become backlinks. Frontmatter relation values need a separate
 schema-aware codec; they are not treated as body references.
 
 This profile does not yet implement complete Obsidian callout/math semantics,
-stable semantic-block identity or Simmis grouping metadata. Those constructs
-remain in the original source; recognizing syntax is not a claim that the
+arbitrary legacy semantic-block identity or Simmis widget metadata. The separate
+grouping codec below provides explicit identities for new files. Recognizing syntax is not a claim that the
 semantic codec or rich editor can round-trip every feature.
 
 `patch` accepts a content revision and non-overlapping edits in that revision's
 coordinates. A stale revision, overlapping edits or a range splitting a UTF-16
 surrogate pair is refused. Untouched source is preserved. A no-op edit does not
 rewrite the file.
+
+## Semantic blocks and selective region edits
+
+The experimental grouping codec distinguishes semantic Simmis blocks from
+Markdown syntax nodes and a heading outline. A block can contain several
+paragraphs and an internal rich-text list, plus separately identified children:
+
+```markdown
+<!-- simmis:block 00000000-0000-4000-8000-000000000001 -->
+
+Two paragraphs or a list can belong to this one block.
+
+<!-- simmis:block 00000000-0000-4000-8000-000000000002 -->
+
+A separately identified child.
+
+<!-- /simmis:block -->
+
+More parent content.
+
+<!-- /simmis:block -->
+```
+
+These are reserved, paired, top-level Markdown comment nodes, not regex matches
+over arbitrary source. Literal examples in code remain inert. Invalid,
+unclosed, misplaced or duplicate markers produce diagnostics rather than
+automatic repair. Semantic nesting is bounded to 100 levels. Unmarked Markdown
+still projects as ordinary blocks with **provisional revision/position IDs**;
+opening it does not insert markers or promise stable identity across edits.
+
+Each explicit group has source regions excluding its complete child ranges.
+`blocks/replace-region` checks the expected source revision, preserves child
+bytes and rejects changes to the explicit identity tree or document frontmatter.
+Opening a code fence that hides a child is therefore refused, not accepted
+because the child's original bytes happen to remain present. Full-source edits
+remain a separate operation that can intentionally change structure/metadata.
+
+The immutable view exposes source-spanned `:document.block/*` entities with
+UUID, identity status, ordinal and child refs. They are separate from disposable
+`:document.node/*` syntax entities. Document and block IDs are checked across
+the selected files before building a queryable DB. This is not migration into
+existing `:entity/uuid` HTML blocks, complete Obsidian anchor reconciliation or
+the full codec for block properties/grouping widgets.
+
+## Schema-bound document properties
+
+`properties/compile-schema` accepts host-supplied bindings from portable YAML
+names to existing categorical morphism UUIDs. It uses `morphism/attr-of` and
+the actual captured Datahike attribute schema, and hashes relevant morphism
+facts into the selection descriptor. Changes to ownership/schema invalidate
+the view even if files and a caller's schema-version label remain unchanged.
+Files cannot supply these bindings, install schema or execute computations.
+
+Supported ordinary values are strings, booleans, bounded longs, finite doubles,
+canonical UUID strings and UTC-offset-qualified instants, with explicit one/many
+cardinality. Numbers/booleans are not guessed from strings. Explicit required
+properties are checked; many-valued fields are bounded to 1,000 items. Raw and
+unknown metadata remain intact. Successful values become typed facts on the
+derived document entity, queryable alongside syntax and semantic structure;
+the persistent source DB is not modified.
+
+Reflected domain properties and formulas are owner-managed, not file-authored
+facts. Component, unique, reference and programmable-validator properties are
+also refused until their corresponding ownership/resolution/checker path is
+implemented; uniqueness must never silently upsert unrelated documents. System
+source/projection/identity/schema/authority namespaces cannot be targeted by an
+apparent ordinary morphism. User-defined categories are not limited to `S`.
+Diagnostics identify the property/reason without copying its value into logs.
 
 ## Colocated storage proof
 
@@ -87,8 +155,9 @@ integration. Colocation alone does not make those operations correct.
 `view/prepare` derives an immutable Datahike value from one captured source DB;
 it does not transact into the source connection or create another registered
 repository. The descriptor includes repository identity, selected folder's
-exact Markdown paths/content IDs/sizes/modes, syntax and projection versions,
-and a **trusted host-supplied** schema revision. It selects the worktree, not
+exact Markdown paths/content IDs/sizes/modes, syntax/block/projection versions,
+captured property-schema digest and a **trusted host-supplied** broader schema
+revision. It selects the worktree, not
 just HEAD: uncommitted edits matter. Projection writes and unrelated files do
 not change this descriptor.
 
@@ -132,8 +201,10 @@ than silently deleting references or claiming a block migration.
 The descriptor currently covers Markdown syntax inputs only. Attachments,
 templates, schema declarations and link resolution outside the selected folder
 must join the versioned inputs before they can influence a semantic view.
-Typed projection must verify its schema revision against captured trusted
-schema facts; the prototype only requires a trusted caller-supplied token.
+Typed bound properties verify actual captured morphism/attribute facts. The
+broader semantic/schema token remains host-supplied; it is not proof of full
+schema-manifest/widget support. `prepare` accepts the authorized source DB,
+not a previously derived view as a writable or re-preparable source.
 
 This read barrier supersedes the idea that every Geschichte operation must
 atomically rewrite application projections. The colocated write proof above

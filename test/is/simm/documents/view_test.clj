@@ -3,6 +3,7 @@
             [datahike.api :as d]
             [geschichte.content :as content]
             [geschichte.repo :as repo]
+            [is.simm.documents.blocks :as blocks]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.repository :as documents]
             [is.simm.documents.view :as view]))
@@ -100,7 +101,7 @@
         (let [v (view/current-view conn options)]
           (is (= :invalid (:status v)))
           (is (nil? (:db v)))
-          (is (= #{:duplicate-document-id} (set (map :kind (:diagnostics v))))))
+          (is (contains? (set (map :kind (:diagnostics v))) :duplicate-document-id)))
         (write! conn "wiki/b.md" "---\nsimmis-id: not-a-uuid\n---\nbody")
         (let [v (view/current-view conn options)]
           (is (= :invalid (:status v)))
@@ -234,3 +235,73 @@
       (documents/initialize! conn)
       (d/transact conn [{:db/ident :document/source-content :db/isComponent true}])
       (is (thrown? clojure.lang.ExceptionInfo (view/current-view conn options))))))
+
+(deftest semantic-group-identities-and-codec-are-part-of-the-selected-view
+  (with-repository
+    (fn [conn]
+      (let [id (random-uuid)
+            source (str "<!-- simmis:block " id " -->\n\nFirst.\n\nSecond.\n\n<!-- /simmis:block -->\n")]
+        (write! conn "wiki/a.md" source)
+        (let [v (view/current-view conn options)]
+          (is (= :ready (:status v)))
+          (is (= id (get-in v [:documents 0 :semantic :blocks 0 :id])))
+          (is (= #{[id :explicit]}
+                 (d/q '[:find ?id ?status :where [?e :document.block/id ?id]
+                        [?e :document.block/identity-status ?status]] (:db v))))
+          (is (= 1 (count (get-in v [:documents 0 :semantic :blocks]))))
+          (with-redefs [blocks/profile (assoc blocks/profile :version 2)]
+            (is (not (view/current? @conn options v)))))
+        (write! conn "wiki/b.md" source)
+        (let [v (view/current-view conn options)]
+          (is (= :invalid (:status v)))
+          (is (nil? (:db v)))
+          (is (= #{:duplicate-semantic-id} (set (map :kind (:diagnostics v))))))))))
+
+(deftest typed-properties-use-existing-categorical-schema-and-are-queryable
+  (with-repository
+    (fn [conn]
+      (let [id (random-uuid)]
+        (d/transact conn [{:db/ident :entity/uuid :db/valueType :db.type/uuid
+                           :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                          {:db/ident :entity/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                          {:db/ident :morphism/cardinality :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+                          {:db/ident :morphism/storage-attr :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+                          {:db/ident :S.Project/staff :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                          {:entity/uuid id :entity/name "S/Project/staff" :morphism/cardinality :one}])
+        (write! conn "wiki/a.md" "---\nstaff: 3\ncustom: retain\n---\n# Project")
+        (let [opts (assoc options :property-bindings {"staff" id})
+              tx (:max-tx @conn)
+              v (view/current-view conn opts)]
+          (is (= :ready (:status v)))
+          (is (= #{["wiki/a.md" 3]}
+                 (d/q '[:find ?path ?n :where [?e :document/path ?path] [?e :S.Project/staff ?n]] (:db v))))
+          (is (empty? (d/q '[:find ?e :where [?e :S.Project/staff]] @conn)))
+          (is (= tx (:max-tx @conn)))
+          (is (= {"custom" "retain"} (get-in v [:documents 0 :properties :unknown])))
+          ;; Actual morphism ownership changes invalidate the view even while
+          ;; files AND the caller's schema revision label stay unchanged.
+          (d/transact conn [{:entity/uuid id :morphism/storage-attr :S.Project/staff}])
+          (is (not (view/current? @conn opts v)))
+          (let [changed (view/current-view conn opts)]
+            (is (= :invalid (:status changed)))
+            (is (nil? (:db changed)))
+            (is (= :owner-managed-property (-> changed :diagnostics first :kind)))))))))
+
+(deftest semantic-block-hierarchy-is-queryable-without-confusing-internal-lists
+  (with-repository
+    (fn [conn]
+      (let [parent (random-uuid) child (random-uuid)
+            source (str "<!-- simmis:block " parent " -->\n\n- Internal list\n  - Internal item\n\n"
+                        "<!-- simmis:block " child " -->\n\nChild\n\n<!-- /simmis:block -->\n\n"
+                        "After\n\n<!-- /simmis:block -->\n")]
+        (write! conn "wiki/a.md" source)
+        (let [v (view/current-view conn options)]
+          (is (= :ready (:status v)))
+          (is (= #{[parent child 0]}
+                 (d/q '[:find ?parent ?child ?order :where
+                        [?p :document.block/id ?parent] [?p :document.block/children ?c]
+                        [?c :document.block/id ?child] [?c :document.block/ordinal ?order]] (:db v))))
+          (is (= 2 (count (d/q '[:find ?e :where [?e :document.block/id]] (:db v)))))
+          (is (= 2 (count (d/q '[:find ?e :where [?e :document.node/kind :BulletList]] (:db v))))
+              "Two nested Markdown lists are still internal content, not semantic children")
+          (is (= source (get-in v [:documents 0 :source]))))))))
