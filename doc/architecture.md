@@ -43,6 +43,15 @@ workspace when one exists. Neither route creates a proposal or hydrates trunk.
 Selection/content identifiers do not pin storage against GC: these read receipts
 explicitly borrow the source lifetime rather than promising archival retention.
 
+`ops.knowledge-inputs` prepares bounded frozen inputs for ordinary saved
+workflows: incoming evidence in declared inbox/transcript folders and supporting
+knowledge in separate folders. A metadata-only trigger fingerprint excludes
+supporting wiki changes; an execution fingerprint includes them. Workflow,
+staging and output folders cannot be selected as inputs. Capture copies exact
+UTF-8 sources plus a content-addressed manifest into the normal workflow input
+map (100 files/2 MiB total, including the manifest). This collector does not
+submit work, spend funds, advance maintenance cursors or install a schedule.
+
 Room source and execution state have different lifetimes. A daemon room's
 repository is initially seeded from the sandbox library (or its configured
 import source); participants load source into their own SCI interpreters,

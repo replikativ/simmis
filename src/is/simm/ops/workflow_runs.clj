@@ -10,13 +10,12 @@
             [hasch.core :as hasch]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.work :as work]
+            [is.simm.ops.workflow-policy :as source-policy]
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]))
 
-(def policy {:version 1 :max-params 32 :max-param-bytes 65536
-             :max-task-bytes 16000 :max-input-files 100 :max-input-bytes 2097152
-             :source :pinned-bundle :checker :not-executed :parent :room-fork})
+(def policy source-policy/policy)
 (def parameter-name [:re #"^[A-Za-z][A-Za-z0-9_-]{0,63}$"])
 (def parameters [:map-of {:max 32} parameter-name [:string {:max 4000}]])
 (def inputs [:map-of {:max 100} [:string {:min 1 :max 512}]
