@@ -209,7 +209,9 @@
        (realistic-locators! conn w room)
        (workflows/write! room {:principal/id "fixture"} {:name "echo" :files knowledge-source})
        (workspace/seed! room {"/docs/input.md" "trunk input" "/inbox/evidence.md" "Evidence"
-                              "/wiki/context.md" "Prior knowledge"})
+                              "/wiki/context.md" "Prior knowledge"
+                              "/out/wiki/stale.md" "Previous run output"
+                              "/out/keep.edn" "{:keep true}"})
        (let [request (assoc (input knowledge-source) :inputs {"/docs/input.md" "explicit input"})
              principal (ops/party-principal (:owner w)) host-ctx ec/*execution-context*
              calls (atom 0) changed (atom false) retained (volatile! nil)
@@ -239,11 +241,13 @@
                       (get-in (first attempts) [:attempt/environment :environment/verifier :verifier/id])))
                (is (map? (knowledge-outputs/validate!
                           (get-in (first attempts) [:attempt/evidence :knowledge-output]))))
+               (is (empty? (get-in (first attempts) [:attempt/evidence :knowledge-output :files])))
                (is (contains? (:files (requests/publication-basis conn (:id admission))) "wiki/context.md"))
                (is (= 2 @calls))
-               (is (= {"/out/result.md" "pinned helper|explicit input|false"}
+               (is (= {"/out/result.md" "pinned helper|explicit input|false" "/out/keep.edn" "{:keep true}"}
                       (get-in (first attempts) [:attempt/evidence :files])))
-               (is (empty? (workspace/read-tree room "/out")))
+               (is (= {"/out/wiki/stale.md" "Previous run output" "/out/keep.edn" "{:keep true}"}
+                      (workspace/read-tree room "/out")))
                (is (= "trunk input" (get (workspace/read-tree room "/docs") "/docs/input.md")))
                (is (= "new helper" (get-in (original-snapshot room "echo") [:files "helpers/data.txt"])))
                (is (= :review (:run/settlement-status child)))
@@ -266,7 +270,8 @@
                  (is (= "explicit input" (get (workspace/read-tree room "/docs") "/docs/input.md")))
                  (is (= "pinned helper" (get-in (original-snapshot room "echo") [:files "helpers/data.txt"])))
                  (is (not (contains? (:files (original-snapshot room "echo")) "helpers/new.txt")))
-                 (is (= {"/out/result.md" "pinned helper|explicit input|false"} (workspace/read-tree room "/out"))))))
+                 (is (= {"/out/result.md" "pinned helper|explicit input|false" "/out/keep.edn" "{:keep true}"}
+                        (workspace/read-tree room "/out"))))))
            (finally
              (when (and @retained (nil? (discourse/settlement @retained))) (forks/discard! @retained)))))))))
 

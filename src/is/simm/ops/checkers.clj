@@ -133,6 +133,10 @@
   ([bundle] (world-setup bundle nil))
   ([bundle selection-policy]
    (validate-calibration! bundle)
+   (when selection-policy
+     (knowledge-workspace/validate-inputs! (:fixtures bundle))
+     (doseq [case (vals (:cases bundle))]
+       (knowledge-workspace/validate-inputs! (:fixtures case))))
    (let [base (cond-> (catalog/world-setup bundle)
                 selection-policy knowledge-workspace/with-frozen-staging)]
      (if-not (:calibration bundle)

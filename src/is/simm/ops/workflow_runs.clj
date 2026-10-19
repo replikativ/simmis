@@ -122,8 +122,9 @@
   (let [prefix (str "/workflows/" name "/")
         digest (str (hasch/uuid entries))]
     (evaluation/make-world-setup
-     {:id :simmis/workflow-inputs :version 1
-      :basis {:name name :bundle (str (:id bundle)) :inputs digest :policy policy}
+     {:id :simmis/workflow-inputs :version (if collector? 2 1)
+      :basis (cond-> {:name name :bundle (str (:id bundle)) :inputs digest :policy policy}
+               collector? (assoc :cleanup knowledge-workspace/cleanup-policy))
       :prepare
       (fn [{world :room}]
         ;; This is the RUN WORLD, never the source room. Replace the entire
@@ -131,9 +132,11 @@
         ;; must not leak into the pinned execution. No source is evaluated.
         (workspace/ensure-workspace! world)
         (let [inherited (:files (workflows/snapshot world name))
-              staged (when collector? (knowledge-workspace/staging-removals world))
-              edits (merge staged (zipmap (map #(str prefix %) (keys inherited)) (repeat nil))
+              edits (merge (zipmap (map #(str prefix %) (keys inherited)) (repeat nil))
                            (into {} (map (fn [[p text]] [(str prefix p) {:text text}])) source))]
+          (when (> (count edits) files/max-batch-files)
+            (invalid! "Pinned workflow subtree exceeds the canonical writer batch limit"))
+          (when collector? (knowledge-workspace/clear-owned! world))
           (files/write! world edits {:message (str "Pin workflow " name " at " (:id bundle))}))
         (when (seq entries) (workspace/seed! world entries))
         {:bundle (str (:id bundle)) :inputs digest :files (count entries)
@@ -169,6 +172,8 @@
           prefix (str "/workflows/" name "/")
           entries (input-files prefix (merge (:fixtures bundle) (get-in bundle [:cases case :fixtures])) inputs)
           provenance {:name name :bundle (str expected-bundle) :case case :params params :policy policy}]
+      (when (knowledge-inputs/declaration (:files snapshot))
+        (knowledge-workspace/validate-inputs! entries))
       {:bundle bundle :task task :inputs entries :source (:files snapshot)
        :selection-policy (knowledge-inputs/declaration (:files snapshot)) :workflow provenance})))
 
@@ -246,8 +251,8 @@
   (if publication-basis
     (do
       (when-not (and (uuid? (:execution-id captured))
-                    (= (:execution-id captured)
-                       (get-in prepared [:basis :workflow :input-selection :execution-id])))
+                     (= (:execution-id captured)
+                        (get-in prepared [:basis :workflow :input-selection :execution-id])))
         (invalid! "Publication basis has no matching frozen knowledge execution"))
       (assoc-in prepared [:basis :knowledge/publication-basis] publication-basis))
     prepared))
@@ -294,12 +299,12 @@
         (let [snapshot (or snapshot (workflows/snapshot room (:name input)))
               selected (select-keys input source-fields)
               resolution (if resolution
-                         (do (when-not (contains? resolution :captured)
-                               (invalid! "Retained resolution has no captured input decision"))
-                             resolution)
-                         (resolve-admission room snapshot selected))
+                           (do (when-not (contains? resolution :captured)
+                                 (invalid! "Retained resolution has no captured input decision"))
+                               resolution)
+                           (resolve-admission room snapshot selected))
               captured (:captured resolution)]
           (work/submit-prepared! conn host-ctx principal room-id room input
-                                (bind-publication
-                                 (if captured (prepare snapshot input captured) (prepare snapshot input))
-                                 resolution)))))))
+                                 (bind-publication
+                                  (if captured (prepare snapshot input captured) (prepare snapshot input))
+                                  resolution)))))))
