@@ -17,6 +17,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.model.workers :as workers]
             [is.simm.ops.work :as work]
+            [is.simm.ops.knowledge-outputs :as knowledge-outputs]
             [is.simm.ops.worker-credentials :as credentials]
             [is.simm.ops.worker-files :as files]
             [is.simm.ops.worker-output :as output]
@@ -242,11 +243,14 @@
                              (refuse! ::conflict "Selected room files changed before Run admission"))
                            {:input-id (:input-id frozen)})})
         protocol (make-protocol conn host-ctx room room-id request-id pinned frozen basis)
-        evaluator (make-evaluator config (:limits input) basis)
+        evaluator (cond-> (make-evaluator config (:limits input) basis)
+                    (get-in workflow [:workflow :input-selection]) knowledge-outputs/with-capture)
+        verifier (evaluation/evaluator-ref evaluator)
         grant {admission-unit 1M}
         env (environment/make-environment
              (cond-> {:id :simmis/local-worker :task task
-                      :verifier {:id :simmis/local-worker-completion :version 1 :basis basis}
+                      :verifier {:id (:verifier/id verifier) :version (:verifier/version verifier)
+                                 :basis (:verifier/basis verifier)}
                       :limits {:timeout-ms (get-in input [:limits :timeout-ms]) :cancel-timeout-ms 30000 :on-timeout :verdict}
                       :world {:isolation :ctx :settlement (keyword (get-in input [:limits :settlement]))
                               :effects work/effects :resources grant :setup (evaluation/world-setup-ref setup)

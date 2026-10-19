@@ -11,6 +11,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.work :as work]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
+            [is.simm.ops.knowledge-outputs :as knowledge-outputs]
             [is.simm.ops.knowledge-workspace :as knowledge-workspace]
             [is.simm.ops.workflow-policy :as source-policy]
             [is.simm.ops.workflows :as workflows]
@@ -259,7 +260,9 @@
   (let [{:keys [task inputs source world-setup workflow]} (prepare-source snapshot (select-keys input source-fields) captured)
         prepared (work/prepare {:request-id (:request-id input) :task task :model model :limits limits})
         base (:environment prepared)
-        verifier (:environment/verifier base)
+        evaluator (cond-> (:evaluator prepared)
+                    (:input-selection workflow) knowledge-outputs/with-capture)
+        verifier (evaluation/evaluator-ref evaluator)
         env (environment/make-environment
              {:id :simmis/saved-workflow :task task
               :verifier {:id (:verifier/id verifier) :version (:verifier/version verifier)
@@ -268,7 +271,7 @@
               :world (assoc (:environment/world base) :setup (evaluation/world-setup-ref world-setup))
               :metadata {:workflow workflow}})]
     (assoc prepared :request-kind :workflow :execution-kind :saved-workflow
-           :environment env :world-setup world-setup
+           :environment env :evaluator evaluator :world-setup world-setup
            :basis (assoc (:basis prepared) :submission input :environment env
                          :source source :inputs inputs :workflow workflow))))
 

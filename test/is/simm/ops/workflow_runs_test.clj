@@ -22,6 +22,7 @@
             [is.simm.ops.checkers :as checkers]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.work :as work]
+            [is.simm.ops.knowledge-outputs :as knowledge-outputs]
             [is.simm.ops.work-test]
             [is.simm.ops.workflow-runs :as workflow-runs]
             [is.simm.ops.workflows :as workflows]
@@ -234,6 +235,10 @@
                (vreset! retained (registry/lookup (:run/world child)))
                (is (= :completed (:status status)) (pr-str (select-keys status [:status :error])))
                (is (:settled? status))
+               (is (= :simmis/knowledge-completion
+                      (get-in (first attempts) [:attempt/environment :environment/verifier :verifier/id])))
+               (is (map? (knowledge-outputs/validate!
+                          (get-in (first attempts) [:attempt/evidence :knowledge-output]))))
                (is (contains? (:files (requests/publication-basis conn (:id admission))) "wiki/context.md"))
                (is (= 2 @calls))
                (is (= {"/out/result.md" "pinned helper|explicit input|false"}
