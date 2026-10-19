@@ -133,6 +133,14 @@
     {:arglists ([title])
      :doc "This KB's page as {:title :blocks}, or nil. See wiki/read-page to search every attached KB."}})
 
+(def memory-docs
+  '{documents {:arglists ([])
+               :doc "Source-selected Markdown descriptors from the current file world, with status and selection receipt. Invalid/pending views are explicit."}
+    read {:arglists ([path])
+          :doc "Exact Markdown source, semantic blocks and properties at a repository-relative path, with selection receipt. Missing document is nil; non-ready views carry diagnostics."}
+    search {:arglists ([text])
+            :doc "Literal case-sensitive source search, at most 50 hits, with UTF-16 ranges and source/selection identifiers. Receipts borrow source lifetime, not archival retention."}})
+
 (def wiki-docs
   '{read-page
     {:arglists ([title])

@@ -34,7 +34,12 @@ roots/exclusions, a 20,000-entry metadata scan bound, and separate 200-document,
 8-MiB source and syntax-node bounds. Invalid identities or syntax return diagnostics,
 not a queryable partial view. The resolver-backed `agents.memory-read` vocabulary
 offers document descriptors, exact source reads and bounded literal search; it
-does not expose its backing DB. It is not yet installed in participant interpreters.
+does not expose its backing DB. Participants with a writable room repository get
+this vocabulary beside the unchanged legacy `wiki/*` API. Saved functions resolve
+their selected world and live room/repository authority on every call through
+Dvergr's effect boundary. Whole-world descendants read their exact registered
+repository; an ordinary participant instead follows its existing proposal file
+workspace when one exists. Neither route creates a proposal or hydrates trunk.
 Selection/content identifiers do not pin storage against GC: these read receipts
 explicitly borrow the source lifetime rather than promising archival retention.
 

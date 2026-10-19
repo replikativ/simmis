@@ -29,6 +29,7 @@
             [dvergr.discourse :as d]
             [dvergr.discourse.llm :as llm]
             [dvergr.agent.room-context :as room-ctx]
+            [dvergr.runtime.ctx :as runtime-ctx]
             [dvergr.sandbox :as sandbox]
             [dvergr.rooms :as drooms]
             [dvergr.room.registry :as rreg]
@@ -44,6 +45,7 @@
             [is.simm.model.access :as access]
             [is.simm.agents.vocab :as vocab]
             [is.simm.agents.wiki-read :as wiki-read]
+            [is.simm.agents.source-memory :as source-memory]
             [is.simm.model.parties :as parties]
             [is.simm.model.system-db :as system-db]
             [is.simm.model.model-selection :as model-selection]
@@ -551,6 +553,8 @@
   (->> (sdb/systems-for-room room-uuid)
        (filter #(and (= :repo (get-in % [:system :system/type]))
                      (#{:owner :read-write} (:permission %))))
+       (sort-by (juxt #(if (= :owner (:permission %)) 0 1)
+                      #(str (get-in % [:system :system/id]))))
        first :system :system/id))
 
 (defn- repo-fork!
@@ -664,6 +668,50 @@
   (when-let [scope (room-repo-scope room-uuid)]
     (when (and overlay @overlay)
       (get-in @overlay [:ctx-forks [scope agent-uuid]]))))
+
+(defn- source-proposal-fork
+  [campaigns overlays {:keys [room-id agent-id scope]}]
+  (let [agent-uuid (access/actor->party-uuid agent-id)
+        campaign (get campaigns room-id)
+        overlay (if (and campaign (contains? (:members @campaign) agent-uuid))
+                  campaign (get overlays [room-id agent-uuid]))]
+    (when overlay (get-in @overlay [:ctx-forks [scope agent-uuid]]))))
+
+(defn- existing-source-proposal-workspace
+  "Read routing only: no proposal cell, code fork, room or writer is created."
+  [target]
+  (when-let [fork (source-proposal-fork @room-campaigns @proposal-overlays target)]
+      (or (:workspace (branching/repo-fork-workspace fork))
+          (throw (ex-info "Existing proposal repository is unavailable"
+                          {:type ::missing-proposal-workspace})))))
+
+(defn- authorize-source-memory!
+  [{:keys [room-id agent-id scope]}]
+  (let [party (access/actor->party-uuid agent-id)
+        db (some-> (system-db/get-conn) deref)]
+    (when-not (access/sandbox-room-repository-allows? db party room-id scope)
+      (throw (ex-info "Agent may not read this room repository"
+                      {:type :not-authorized :room room-id})))))
+
+(defn- add-source-memory-ns! [sci-ctx cctx room room-uuid agent-uuid]
+  (when-let [scope (room-repo-scope room-uuid)]
+    (let [owner (:ctx room) capability-id (:capability-id cctx)
+          path (branching/repo-scope-path scope)]
+      (when-not (and capability-id path)
+        (throw (ex-info "Participant has no source capability identity" {})))
+      (runtime-ctx/install-sandbox-binding!
+       owner capability-id
+       {:simmis/source-memory {:room-id room-uuid :agent-id (keyword "party" (str agent-uuid))
+                               :scope scope :system-id (branching/repo-system-id path)}})
+      (sci/add-namespace!
+       sci-ctx 'memory
+       (vocab/with-docs
+        'memory
+        (source-memory/bindings owner capability-id (:receipts cctx)
+                                {:authorize! authorize-source-memory!
+                                 :proposal-workspace existing-source-proposal-workspace
+                                 :options {:schema-revision :simmis-source-memory-v1}})
+        vocab/memory-docs)))))
 
 (defn- wrap-repo-tool
   "Redirect one file tool onto the agent's code fork when a proposal is active.
@@ -2518,6 +2566,7 @@
                 ;; which overlay is active in the middle of a turn
                 (let [overlay-fn #(active-overlay room-uuid agent-uuid)]
                   (add-wiki-ns! sci-ctx kb-conns room-uuid agent-uuid)
+                  (add-source-memory-ns! sci-ctx cctx room room-uuid agent-uuid)
                   (add-kb-write-ns! sci-ctx kb-conns overlay-fn agent-uuid)
                   (add-proposal-ns! sci-ctx room-uuid agent-uuid)
                   (add-book-ns! sci-ctx room-uuid overlay-fn agent-uuid)

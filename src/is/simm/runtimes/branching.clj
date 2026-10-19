@@ -145,7 +145,7 @@
     (some-> (parse-uuid scope) sdb/system-by-id :system/scope)
     :else (str scope)))
 
-(defn- repo-system-id
+(defn repo-system-id
   "Yggdrasil system id under which dvergr registers a room repo.
 
    MIRRORS the private `dvergr.system.rooms/repo-system-name`. Roadmap #6 tracks

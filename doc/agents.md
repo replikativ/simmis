@@ -31,6 +31,7 @@ a curated vocabulary, injected as namespaces:
 | Namespace | For |
 |---|---|
 | `wiki` / `kb` | pages, blocks, attributes, typed properties |
+| `memory` | bounded source-selected Markdown descriptors, reads and literal search in the current file world |
 | `kontor` | the room's double-entry book — `entry!`, `balances`, `accounts` |
 | `proposal` | opening, filing and releasing proposals |
 | `sheet` / `office` | spreadsheet and document intake |
@@ -40,6 +41,15 @@ a curated vocabulary, injected as namespaces:
 
 Plus ordinary `datahike.api`, so an agent can query rather than being restricted
 to a hand-built accessor for every question.
+
+`memory/documents`, `memory/read` and `memory/search` address Markdown in the
+room file tree, not legacy KB pages. They return explicit ready/invalid/pending
+status and selection receipts; a source hash is not a promise of archival
+retention. A saved function follows a descendant world's repository or the
+ordinary participant's existing proposal file workspace, never opening a fork
+just to read. Membership, exact repository attachment and the world's read
+effect policy are rechecked on use. The isolated workflow worker does not gain
+live room access through this namespace.
 
 `wiki` and `kb` reach the KBs attached to the agent's room, and only those the
 agent itself may reach through the room's grants (`access/sandbox-kb-allows?`,

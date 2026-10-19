@@ -1099,6 +1099,21 @@
              {:action action :room (str room-id) :kb (str kb-id)
               :subject (str (subject->party-uuid subject))})))
 
+(defn sandbox-room-repository-allows?
+  "Live room read authority plus an attached repository grant, from ONE host
+   snapshot. A saved source capability loses access after detach or membership
+   revocation; an unknown permission never grants access."
+  [db subject room-id scope]
+  (boolean
+   (and db subject room-id scope
+        (can? db subject :read {:room room-id})
+        (some #{:owner :read-write :read}
+              (d/q '[:find [?permission ...] :in $ ?room-id ?scope
+                     :where [?r :room/id ?room-id]
+                     [?s :system/id ?scope] [?s :system/type :repo]
+                     [?g :grant/room ?r] [?g :grant/system ?s]
+                     [?g :grant/permission ?permission]] db room-id scope)))))
+
 (defn may-eval-in-room?
   "May `subject` evaluate code in room `room-id`'s sandbox? The `eval-in-room!`
    policy row's question (`:merge` on the room — the owner), asked so the UI can

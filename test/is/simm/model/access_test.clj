@@ -10,6 +10,7 @@
 (def ^:private schema
   [{:db/ident :party/id :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
    {:db/ident :system/id :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+   {:db/ident :system/type :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
    {:db/ident :kb/owner :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}
    {:db/ident :kb/shared-with :db/valueType :db.type/uuid :db/cardinality :db.cardinality/many}
    {:db/ident :kb/db-scope :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
@@ -82,6 +83,31 @@
 (def ^:private kb-eid-by-id @#'access/kb-eid-by-id)
 (def ^:private room-eid-by-id @#'access/room-eid-by-id)
 (def ^:private admin? @#'access/admin?)
+
+(deftest source-repository-access-rechecks-membership-grants-and-system-type
+  (let [conn (test-db) scope (random-uuid)]
+    (try
+      (d/transact conn [{:db/id "repo" :system/id scope :system/type :repo}
+                       {:db/id "grant" :grant/room [:room/id room-id]
+                        :grant/system "repo" :grant/permission :read}])
+      (doseq [permission [:read :read-write :owner]]
+        (let [grant (d/q '[:find ?g . :in $ ?scope :where [?s :system/id ?scope] [?g :grant/system ?s]] @conn scope)]
+          (d/transact conn [{:db/id grant :grant/permission permission}]))
+        (is (access/sandbox-room-repository-allows? @conn room-mate room-id scope)))
+      (is (not (access/sandbox-room-repository-allows? @conn stranger room-id scope)))
+      (is (not (access/sandbox-room-repository-allows? @conn room-mate room-id (random-uuid))))
+      (d/transact conn [{:system/id scope :system/type :kb}])
+      (is (not (access/sandbox-room-repository-allows? @conn room-mate room-id scope)))
+      (d/transact conn [{:system/id scope :system/type :repo}])
+      (d/transact conn [[:db/retract [:room/id room-id] :room/parties [:party/id room-mate]]])
+      (is (not (access/sandbox-room-repository-allows? @conn room-mate room-id scope)))
+      (d/transact conn [{:room/id room-id :room/parties [[:party/id room-mate]]}])
+      (let [grant (d/q '[:find ?g . :in $ ?scope :where [?s :system/id ?scope] [?g :grant/system ?s]] @conn scope)]
+        (d/transact conn [{:db/id grant :grant/permission :read-only}])
+        (is (not (access/sandbox-room-repository-allows? @conn room-mate room-id scope)))
+        (d/transact conn [[:db/retractEntity grant]])
+        (is (not (access/sandbox-room-repository-allows? @conn room-mate room-id scope))))
+      (finally (d/release conn)))))
 
 (deftest kb-access-direct-and-transitive
   (let [db @(test-db)
