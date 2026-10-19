@@ -1493,6 +1493,13 @@
              ;; The room's Runs, from its replica: live as it is.
              {active-runs :active recent-runs :recent}
              (if room-db (run-detail/query-room-runs room-db 24) {:active [] :recent []})
+             result-attempts
+             (when room-db
+               (mapv (fn [attempt]
+                       (assoc attempt :captured-result
+                              (get captured-results
+                                   (result-actions/state-key room-id (:run-id attempt) (:id attempt)))))
+                     (attempt-board/recent-results (attempt-board/attempts room-db) 12)))
              ;; whether the viewer may stop each live Run is the server's to say
              _ (doseq [r active-runs] (run-actions/ensure-can-cancel! room-id (:id r)))
 
@@ -1947,6 +1954,15 @@
                          active-runs)
              :on-open open-run!
              :on-cancel #(run-actions/cancel! room-id %)})
+
+           (when-not time-travel?
+             (run-inspector/room-results-view
+              {:attempts result-attempts
+               :on-open-run open-run!
+               :on-load-results #(result-actions/manifest! room-id (:run-id %) (:id %))
+               :on-more-results #(result-actions/manifest-page! room-id (:run-id %1) (:id %1) %2)
+               :on-preview-result #(result-actions/preview! room-id (:run-id %1) (:id %1) %2)
+               :on-download-result #(result-actions/download! room-id (:run-id %1) (:id %1) %2)}))
 
            ;; Messages container — native CSS scroll (overflow-y: auto)
            ;; (Old exploration-diff-summary / fork-controls bars removed

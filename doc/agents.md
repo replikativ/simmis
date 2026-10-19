@@ -365,6 +365,17 @@ an expired login fails without refresh or persistence. Renew it separately.
 Job/Run state and captured results appear in the existing room inspectors and
 artifact MCP reads, with subscription usage explicitly unreported.
 
+Room chat also offers a collapsible **Recorded results** shelf for the twelve
+most recent certified Attempts with explicit Run relations. Expanding the shelf
+does not fetch file contents: **Show recorded files** loads the authorized
+manifest, then **Preview** or **Download** reads a selected captured file using
+the same bounded reader as the Run inspector. **Open Run / review work** opens
+that Run's existing review/proposal controls; it does not merge anything.
+Certificates can contain no files or failing checks. These immutable results
+are not current room files or wiki pages. Older results remain in **Attempts**;
+the shelf is hidden during historical chat browsing rather than showing current
+results as historical evidence.
+
 After interruption or a lost completion reply, use
 `worker_driver.py --state /private/room-worker reconcile --run RUN_UUID`.
 This never relaunches or sends GO, and does not need the artifact or login to

@@ -213,6 +213,39 @@
         (when-let [error (:error download)] (el/p {:role "alert"} error))
         (when (:complete? download) (el/p {:role "status"} (str "Download prepared · " (:path download))))))))
 
+(defn room-results-view
+  "Discover recorded results from chat without treating them as room files.
+   Reuses the inspector's bounded, authorized reader and its context-backed UI
+   state. Merely rendering/expanding this shelf performs no network reads."
+  [{:keys [attempts on-open-run on-load-results on-more-results
+           on-preview-result on-download-result]}]
+  (when (seq attempts)
+    (el/details {:class "chat-recorded-results"}
+      (el/summary {} (str "Recorded results · " (count attempts) " recent attempts"))
+      (el/div {:class "chat-recorded-results-body"}
+        (el/p {} "Captured evidence, not merged room files or wiki pages. Checks may not have passed. Older attempts remain in Attempts.")
+        (map (fn [attempt]
+               (el/details {:key (:id attempt) :class "chat-recorded-result"
+                            :data-attempt-id (:id attempt)}
+                 (el/summary {}
+                   (str (or (:environment attempt) "Attempt") " · "
+                        (or (:model attempt) "No model") " · "
+                        (or (status-label (:status attempt)) "Unknown") " · "
+                        (short-id (:id attempt))))
+                 (el/button {:class "run-result-action"
+                             :on-click (fn [event]
+                                         (when on-open-run
+                                           (on-open-run event (:run-id attempt))))}
+                   "Open Run / review work")
+                 (captured-results-view
+                  {:attempt-id (:id attempt)
+                   :captured-result (:captured-result attempt)
+                   :on-load-results #(on-load-results attempt)
+                   :on-more-results #(on-more-results attempt %)
+                   :on-preview-result #(on-preview-result attempt %)
+                   :on-download-result #(on-download-result attempt %)})))
+             attempts)))))
+
 (defn view
   "Render one Run. `live-run` wins for transient :cancelling status; durable
    detail supplies history, effects, outputs, and structural relations."

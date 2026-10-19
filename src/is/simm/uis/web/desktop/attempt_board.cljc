@@ -98,6 +98,17 @@
            (sort-by (juxt #(or (:started-at %) 0) :id))
            vec))))
 
+(defn recent-results
+  "A bounded newest-first projection of certified Attempts with an explicit
+   Run relation. A certificate need not contain files or have passed its checks;
+   the authorized manifest reader answers that separately, on demand."
+  [attempts limit]
+  (->> attempts
+       (filter :run-id)
+       (sort-by (juxt #(or (:started-at %) 0) :id) #(compare %2 %1))
+       (take limit)
+       vec))
+
 (defn- median [xs]
   (when (seq xs)
     (let [v (vec (sort xs)) n (count v)]
