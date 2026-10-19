@@ -42,8 +42,22 @@
          ;; Not in the list: the action came from a chat card for a proposal
          ;; the list has not loaded. An `:action-error` written here would be
          ;; written nowhere, and the refusal would be invisible.
-         (when-let [msg (:action-error (f {}))]
-           (sig/show-error! "The proposal action did not complete." msg :remote))))))
+         (if (= :ready (get-in @sig/proposals-data [:retained-audits pid :state]))
+           (swap! sig/proposals-data update-in [:retained-audits pid :proposal] f)
+           (when-let [msg (:action-error (f {}))]
+             (sig/show-error! "The proposal action did not complete." msg :remote)))))))
+
+#?(:cljs
+   (defn load-retained-audit! [pid]
+     (let [request-id (random-uuid) epoch (connection-epoch/snapshot)]
+       (binding [rtc/*execution-context* runtime]
+         (swap! sig/proposals-data card-model/begin-audit-request pid request-id))
+       (rem/spin! #(pr/proposal-retained-audit! web/server-id pid)
+                  (fn [result error]
+                    (when (connection-epoch/current? epoch)
+                      (binding [rtc/*execution-context* runtime]
+                        (swap! sig/proposals-data card-model/apply-audit-result
+                               pid request-id result (some-> error rem/error-text)))))))))
 
 #?(:cljs
    (defn- current-diff-request? [pid request-id]
@@ -1247,6 +1261,29 @@
    [:unclassified "Checking…"
     "Working out whether these still merge."]])
 
+(defn- retained-audit-view [pid audit]
+  #?(:cljs
+     (case (:state audit)
+       nil (do (load-retained-audit! pid)
+               (el/div {:class "proposal-note-line"} "Checking retained evidence…"))
+       :loading (el/div {:class "proposal-note-line"} "Checking retained evidence…")
+       :unavailable nil
+       :error (el/div {}
+                      (el/div {:class "proposal-error"} (:error audit))
+                      (el/button {:class "btn btn-secondary btn-sm" :on-click (fn [_] (load-retained-audit! pid))}
+                                 "Retry retained evidence"))
+       :ready (let [p (:proposal audit)]
+                (el/div {:class "proposal-card"}
+                        (el/h3 {} (:title p))
+                        (el/p {:class "proposal-note-line"}
+                              "Retained audit — this decision is closed. Inspecting evidence does not reopen it.")
+                        (when (:summary p) (el/p {} (:summary p)))
+                        (for [f (:forks p)]
+                          (el/div {:key (:scope f)}
+                                  (fork-diff-view pid (assoc f :status (or (:status f) (:status p))
+                                                             :file-bodies (:file-bodies p) :only-fork? true)))))))
+     :clj nil))
+
 (defn proposals-view
   "The ForkSet inbox. With `focus-id`, ONE ForkSet — how a Task or Feed row
    opens the proposal it points at instead of the list it was listed in.
@@ -1316,7 +1353,9 @@
                                (el/button {:class "btn btn-secondary btn-sm"
                                            :on-click (fn [_]
                                                        (retry-proposal-state! focus-id))}
-                                          "Retry"))))
+                                          "Retry"))
+                             (when (#{:accepted :dismissed} status)
+                               (retained-audit-view focus-id (get-in data [:retained-audits focus-id])))))
                    (and focus-id (nil? focused))
                    (el/div {:class "proposals-empty"} "Loading…")
                    (empty? proposals)

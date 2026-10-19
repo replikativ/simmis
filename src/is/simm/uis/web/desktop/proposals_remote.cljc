@@ -226,6 +226,15 @@
                                                            (java.util.UUID/fromString scope-str) path)))))
                   :cljs nil)))
 
+(defn-spin-remote proposal-retained-audit!
+  [server-id proposal-id-str]
+  (spin-remote server-id [proposal-id-str]
+               #?(:clj (let [party (access/authenticated-party-id)]
+                         (await (blocking/blocking
+                                 #(ctx/with-server-context
+                                    (file-review/audit party (java.util.UUID/fromString proposal-id-str))))))
+                  :cljs nil)))
+
 (defn-spin-remote accept-proposal!
   [server-id proposal-id-str force? note]
   (spin-remote server-id [proposal-id-str force? note]

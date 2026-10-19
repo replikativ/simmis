@@ -130,6 +130,21 @@
     (is (:retry? m))
     (is (:accept-disabled? m))))
 
+(deftest retained-audit-responses-are-exact-and-do-not-repopulate-replaced-state
+  (let [pid "closed" request (random-uuid)
+        waiting (proposal-card/begin-audit-request {:proposals []} pid request)
+        result {:id pid :status :dismissed :forks [{:system-type :file-output}]}
+        ready (proposal-card/apply-audit-result waiting pid request result nil)]
+    (is (= :ready (get-in ready [:retained-audits pid :state])))
+    (is (= result (get-in ready [:retained-audits pid :proposal])))
+    (is (= {:proposals []} (proposal-card/apply-audit-result {:proposals []} pid request result nil)))
+    (is (= waiting (proposal-card/apply-audit-result waiting pid (random-uuid) result nil)))
+    (is (= :unavailable (get-in (proposal-card/apply-audit-result waiting pid request nil nil)
+                                [:retained-audits pid :state])))
+    (doseq [invalid [(assoc result :id "other") (assoc result :status :open) (assoc result :forks [])]]
+      (is (= :error (get-in (proposal-card/apply-audit-result waiting pid request invalid nil)
+                            [:retained-audits pid :state]))))))
+
 (deftest overlapping-diff-results-only-apply-the-latest-request
   (let [a #uuid "00000000-0000-0000-0000-00000000000a"
         b #uuid "00000000-0000-0000-0000-00000000000b"

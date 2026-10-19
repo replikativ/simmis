@@ -41,6 +41,33 @@
                               [:file-bodies ["scope" "wiki/a.md"] :body])))))
       (finally (context/close-context! ctx)))))
 
+(deftest closed-audit-and-file-responses-remain-in-the-reactive-audit-row
+  (let [ctx (context/fork-context runtime/runtime)
+        callbacks (atom [])
+        deferred (fn ([_ callback] (swap! callbacks conj callback))
+                   ([_ callback _] (swap! callbacks conj callback)))
+        audit {:id "closed" :status :dismissed :title "Retained"
+               :forks [{:scope "scope" :system-type :file-output}]}
+        body {:path "wiki/a.md" :before nil :after "Audit body"}]
+    (try
+      (with-redefs [runtime/runtime ctx remote/spin! deferred
+                    epoch/snapshot (constantly :fixture) epoch/current? (constantly true)]
+        (binding [ec/*execution-context* ctx]
+          (reset! sig/proposals-data {:proposals []})
+          (proposals/load-retained-audit! "closed")
+          ((first @callbacks) audit nil)
+          (is (= audit (get-in @sig/proposals-data [:retained-audits "closed" :proposal])))
+          (proposals/load-retained-file! "closed" "scope" "wiki/a.md")
+          ((second @callbacks) body nil)
+          (is (= body (get-in @sig/proposals-data [:retained-audits "closed" :proposal
+                                                   :file-bodies ["scope" "wiki/a.md"] :body])))
+          (is (empty? (:proposals @sig/proposals-data)))
+          (proposals/load-retained-audit! "closed")
+          (reset! sig/proposals-data {:proposals []})
+          ((nth @callbacks 2) audit nil)
+          (is (nil? (:retained-audits @sig/proposals-data)))))
+      (finally (context/close-context! ctx)))))
+
 (deftest successful-decisions-reverify-focused-status-instead-of-reusing-open-cache
   (let [ctx (context/fork-context runtime/runtime)
         retries (atom [])]

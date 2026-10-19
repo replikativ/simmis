@@ -54,6 +54,23 @@
                  (review/read-file party proposal scope "wiki/old.md"))))
         (is (= 1 @calls))))))
 
+(deftest resolved-proposals-retain-an-authorized-metadata-audit
+  (with-review
+    (fn [{:keys [conn party proposal scope]}]
+      (d/transact conn [{:db/id [:proposal/id proposal] :proposal/status :dismissed}])
+      (with-redefs [artifact/get-value (fn [& _] (throw (AssertionError. "Audit read a body")))]
+        (let [audit (review/audit party proposal)]
+          (is (= (str proposal) (:id audit)))
+          (is (= :dismissed (:status audit)))
+          (is (= (str scope) (get-in audit [:forks 0 :scope])))
+          (is (= "wiki/old.md" (get-in audit [:forks 0 :files 0 :path])))))
+      (is (= "After" (:after (review/read-file party proposal scope "wiki/old.md"))))
+      (is (nil? (review/audit nil proposal)))
+      (is (nil? (review/audit party (random-uuid))))
+      (with-redefs [access/can? (constantly false)
+                    storage/manifest (fn [& _] (throw (AssertionError. "Denied audit reached manifest")))]
+        (is (nil? (review/audit party proposal)))))))
+
 (deftest canonical-review-is-not-a-target-compatibility-check-or-a-paid-summary
   (with-review
     (fn [{:keys [party scope proposal]}]

@@ -851,6 +851,7 @@
      "proposal-status!"        {:action R :resource (always :authenticated)}
      "proposal-diff!"          {:action R :resource (proposal :proposal-id-str)}
      "proposal-file!"          {:action R :resource (proposal :proposal-id-str)}
+     "proposal-retained-audit!" {:action R :resource (always :authenticated)}
      "proposal-checks!"        {:action R :resource (proposal :proposal-id-str)}
      ;; a room's labels (`is.simm.workflows.review`): reading the room. There
      ;; is no row that writes one — a label is recorded by the decision itself

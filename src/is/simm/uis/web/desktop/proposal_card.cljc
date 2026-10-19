@@ -67,6 +67,20 @@
   (and (not= :file-output (:system-type fork))
        (not (false? (:settlement-supported? fork)))))
 
+(defn begin-audit-request [data pid request-id]
+  (assoc-in data [:retained-audits pid] {:state :loading :request-id request-id}))
+
+(defn apply-audit-result [data pid request-id result error]
+  (if (not= request-id (get-in data [:retained-audits pid :request-id]))
+    data
+    (assoc-in data [:retained-audits pid]
+              (cond
+                error {:state :error :error error}
+                (nil? result) {:state :unavailable}
+                (and (= pid (:id result)) (#{:accepted :dismissed} (:status result))
+                     (seq (:forks result))) {:state :ready :proposal result}
+                :else {:state :error :error "No valid retained audit was returned"}))))
+
 (defn begin-file-request [proposal scope path request-id]
   (assoc-in proposal [:file-bodies [scope path]] {:status :loading :request-id request-id}))
 
