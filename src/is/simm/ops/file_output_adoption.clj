@@ -25,16 +25,10 @@
   (when (simple/on-drain-thread?) (refuse! :requires-host-worker))
   (when-not (and conn (identical? conn (sdb/get-conn))) (refuse! :noncanonical-connection)))
 
-(defn snapshot
-  "INTERNAL pure control-DB read. Authorize before inspecting component data.
-   Only a single ordinary open file component is supported. This neither loads
-   bodies nor grants claim ownership; use against the serialized writer's DB
-   again before performing any eventual journal transition."
+(defn- filing-snapshot
+  "Canonical filing integrity only. Callers must authorize their exact verb
+   BEFORE invoking this private reader. Never use it as an authority bypass."
   [db party room-id proposal-id]
-  (when-not (and (every? uuid? [party room-id proposal-id])
-                 (access/can? db party :read {:room room-id})
-                 (access/can? db party :merge {:room room-id}))
-    (refuse! :denied))
   (let [p (d/pull db [:db/id :proposal/id :proposal/room :proposal/status
                       :proposal/author :proposal/run :proposal/filing-hash :proposal/review]
                   [:proposal/id proposal-id])]
@@ -54,8 +48,7 @@
                        (nil? (:proposal.fork/status fork))
                        (= room-id (:proposal.fork/authority-scope fork))
                        (string? (:proposal.fork/branch fork))
-                       (re-matches #"[A-Za-z0-9._-]{1,128}" (:proposal.fork/branch fork))
-                       (access/may-merge-proposal-fork? db party fork))
+                       (re-matches #"[A-Za-z0-9._-]{1,128}" (:proposal.fork/branch fork)))
           (refuse! :unsupported-component))
         (let [owner (manifests/owner db scope)]
           (when-not (= (select-keys owner [:proposal :room :fork-eid :proposal-eid])
@@ -82,6 +75,53 @@
               (refuse! :invalid-filing))
             {:binding binding :proposal p :fork fork :retained retained
              :disposition disposition}))))))
+
+(defn snapshot
+  "INTERNAL merge-authorized control-DB read. Only one ordinary open file
+   component is supported. No bodies are loaded and no ownership is granted.
+   Repeat against the serialized writer DB before any journal transition."
+  [db party room-id proposal-id]
+  (when-not (and (every? uuid? [party room-id proposal-id])
+                 (access/can? db party :read {:room room-id})
+                 (access/can? db party :write {:proposal proposal-id})
+                 (access/can? db party :merge {:room room-id}))
+    (refuse! :denied))
+  (let [proof (filing-snapshot db party room-id proposal-id)]
+    (when-not (access/may-merge-proposal-fork? db party (:fork proof))
+      (refuse! :denied))
+    proof))
+
+(defn decision-snapshot
+  "INTERNAL pure writer guard for retained-file withdrawal/revision requests.
+   Preserve each existing public permission resource, including author
+   withdrawal without merge authority. No live target lookup, body IO, branch
+   mutation or journal ownership recovery. Compose the decision datoms in the
+   SAME serialized transaction that calls this function."
+  [db party room-id proposal-id {:keys [verb scope branch] :as action}]
+  (let [resource (case verb
+                   :dismiss-proposal (when (= #{:verb} (set (keys action)))
+                                       {:proposal-forks proposal-id})
+                   :dismiss-fork (when (and (= #{:verb :scope :branch} (set (keys action)))
+                                            (uuid? scope) (or (string? branch) (keyword? branch)))
+                                   {:proposal-fork {:proposal proposal-id :scope scope :branch branch}})
+                   :request-changes (when (and (every? #{:verb :branch} (keys action))
+                                               (or (nil? branch) (string? branch) (keyword? branch)))
+                                      {:proposal proposal-id})
+                   nil)]
+    (when-not (and resource (every? uuid? [party room-id proposal-id])
+                   (access/can? db party :write resource))
+      (refuse! :denied))
+    (let [{:keys [binding fork] :as proof} (filing-snapshot db party room-id proposal-id)
+          operation (adoptions/current-operation db (:db/id fork))]
+      (when (or (and (= :dismiss-fork verb) (not= scope (:proposal.fork/scope fork)))
+                (and branch (not= (name branch) (:proposal.fork/branch fork))))
+        (refuse! :unsupported-component))
+      (when (and operation
+                 (or (not= :aborted (:state operation))
+                     (not= (dissoc binding :actor)
+                           (select-keys operation (remove #{:actor} (keys binding))))))
+        (refuse! :publication-pending))
+      proof)))
 
 (defn prepare
   "Host-only read preflight for a NEW adoption. Canonical Room/default target

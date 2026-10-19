@@ -5,6 +5,7 @@
             [dvergr.artifact :as artifact]
             [is.simm.documents.markdown :as markdown]
             [is.simm.model.file-adoptions :as adoptions]
+            [is.simm.model.access :as access]
             [is.simm.ops.file-output-adoption :as adoption]
             [is.simm.ops.file-output-storage :as storage]
             [is.simm.ops.knowledge-filing :as filing]
@@ -30,6 +31,91 @@
 
 (defn- claim! [{:keys [conn party room-id room prepared]}]
   (adoption/claim! conn party room-id room prepared))
+
+(deftest withdrawal-and-revision-permissions-do-not-require-merge
+  (with-filed
+    (fn [{:keys [conn party room-id proposal manifest]}]
+      (let [member (random-uuid) outsider (random-uuid)
+            branch (:proposal.fork/branch
+                    (first (:proposal/forks (proposals/get-proposal proposal))))
+            snapshot #(adoption/decision-snapshot @conn % room-id proposal %2)]
+        (d/transact conn [{:party/id member}
+                          [:db/add [:room/id room-id] :room/parties [:party/id member]]
+                          ;; Author remains a member but loses merge authority.
+                          [:db/retract [:room/id room-id] :room/owner]])
+        (is (false? (access/can? @conn party :merge {:room room-id})))
+        ;; No adoption schema has been installed in this legacy fixture.
+        (is (= proposal (get-in (snapshot party {:verb :dismiss-proposal}) [:binding :proposal])))
+        (is (= manifest (get-in (snapshot party {:verb :dismiss-fork :scope manifest :branch branch})
+                                [:binding :component])))
+        (is (thrown? Exception (snapshot member {:verb :dismiss-proposal})))
+        (is (thrown? Exception (snapshot member {:verb :dismiss-fork :scope manifest :branch branch})))
+        (is (= member (get-in (snapshot member {:verb :request-changes}) [:binding :actor])))
+        (is (thrown? Exception (snapshot outsider {:verb :request-changes})))
+        (is (thrown? Exception (snapshot nil {:verb :dismiss-proposal})))
+        (is (thrown? Exception (snapshot party {:verb :dismiss-proposal :force? true})))
+        (is (thrown? Exception (adoption/snapshot @conn party room-id proposal)))))))
+
+(deftest decisions-need-no-target-or-bodies-but-refuse-an-active-publication
+  (with-prepared-claim
+    (fn [{:keys [conn party room-id proposal prepared] :as state}]
+      (let [snapshot #(adoption/decision-snapshot @conn party room-id proposal {:verb %})
+            fork-eid (get-in prepared [:proof :fork :db/id])]
+        (with-redefs [filing/current-target (fn [& _] (throw (AssertionError. "Target lookup during withdrawal")))
+                      storage/read-file-in (fn [& _] (throw (AssertionError. "Body IO during withdrawal")))]
+          (is (map? (snapshot :dismiss-proposal)))
+          (is (map? (snapshot :request-changes))))
+        (let [op (:operation (claim! state))]
+          (with-redefs [filing/current-target (fn [& _] (throw (AssertionError. "Target lookup during withdrawal")))
+                        storage/read-file-in (fn [& _] (throw (AssertionError. "Body IO during withdrawal")))]
+            (is (= op (adoptions/current-operation @conn fork-eid)))
+            (is (thrown? Exception (snapshot :dismiss-proposal)))
+            (is (thrown? Exception (snapshot :request-changes)))))))))
+
+(deftest journal-outcomes-and-corrupt-links-fence-decisions
+  (doseq [state [:applying :accepted :aborted :partial :shared :foreign :orphaned]]
+    (with-prepared-claim
+      (fn [{:keys [conn party room-id proposal prepared] :as fixture}]
+        (let [op (:operation (claim! fixture))
+              eid (get-in prepared [:proof :fork :db/id])
+              decide #(adoption/decision-snapshot @conn party room-id proposal {:verb :dismiss-proposal})
+              transition! (fn [expected next-state fields]
+                            (d/transact conn
+                                        (adoptions/transition-tx-data @conn eid expected next-state fields
+                                                                      (java.util.Date.))))]
+          (case state
+            :applying (transition! op :applying {})
+            :accepted (do (transition! op :applying {})
+                          (let [commit (random-uuid)]
+                            (transition! (adoptions/operation @conn (:id op)) :accepted
+                                         {:noop? false :commit commit :head commit})))
+            :aborted (transition! op :aborted {:reason :witnessed-predispatch-failure})
+            :partial (d/transact conn [[:db/retract [:file.adoption/id (:id op)] :file.adoption/intent]])
+            :shared (d/transact conn [{:proposal.fork/scope (random-uuid)
+                                       :proposal.fork/system-type :file-output
+                                       :proposal.fork/file-adoption [:file.adoption/id (:id op)]}])
+            :foreign (let [component (random-uuid)
+                           other (adoptions/make (assoc (:binding (:proof prepared))
+                                                        :component component :manifest component)
+                                                 (random-uuid) (java.util.Date.))]
+                       (d/transact conn [{:db/id -1 :proposal.fork/scope component
+                                          :proposal.fork/system-type :file-output}])
+                       (let [other-eid (d/q '[:find ?e . :in $ ?scope
+                                              :where [?e :proposal.fork/scope ?scope]] @conn component)]
+                         (d/transact conn (adoptions/claim-tx-data @conn other-eid other))
+                         (d/transact conn [[:db/retract other-eid :proposal.fork/file-adoption]
+                                           [:db/add eid :proposal.fork/file-adoption
+                                            [:file.adoption/id (:id other)]]])))
+            :orphaned (d/transact conn [[:db/retract eid :proposal.fork/file-adoption]]))
+          (if (= :aborted state)
+            (do (is (map? (decide)))
+                (let [member (random-uuid)]
+                  (d/transact conn [{:party/id member}
+                                    [:db/add [:room/id room-id] :room/parties [:party/id member]]])
+                  (is (= member (get-in (adoption/decision-snapshot @conn member room-id proposal
+                                                                    {:verb :request-changes})
+                                        [:binding :actor])))))
+            (is (thrown? Exception (decide)))))))))
 
 (deftest preflight-uses-retained-evidence-not-an-expired-attempt-or-live-file
   (with-filed

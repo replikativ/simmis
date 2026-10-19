@@ -149,6 +149,18 @@
                            :proposal.fork/file-adoption [:file.adoption/id (:id a)]}])
         (is (thrown? Exception (transition! conn eid a :applying {})))))))
 
+(deftest indexed-history-refuses-erased-links-without-conferring-ownership
+  (doseq [abort? [false true]]
+    (with-store
+      (fn [conn eid binding]
+        (let [a (adoptions/make binding (random-uuid) (java.util.Date.))]
+          (claim! conn eid a)
+          (when abort? (transition! conn eid a :aborted {:reason :witnessed-predispatch-failure}))
+          (d/transact conn [[:db/retract eid :proposal.fork/file-adoption]])
+          (is (thrown? Exception (adoptions/current-operation @conn eid)))
+          (is (thrown? Exception (claim! conn eid (adoptions/make binding (random-uuid) (java.util.Date.)))))
+          (is (thrown? Exception (transition! conn eid a :applying {}))))))))
+
 (deftest transition-clock-cannot-move-backwards
   (with-store
     (fn [conn eid binding]

@@ -13,7 +13,8 @@
   (conj
    (mapv (fn [[ident type]]
            (cond-> {:db/ident ident :db/valueType type :db/cardinality :db.cardinality/one}
-             (= ident :file.adoption/id) (assoc :db/unique :db.unique/value)))
+             (= ident :file.adoption/id) (assoc :db/unique :db.unique/value)
+             (= ident :file.adoption/component) (assoc :db/index true)))
          [[:file.adoption/id :db.type/uuid] [:file.adoption/version :db.type/long]
           [:file.adoption/intent :db.type/uuid] [:file.adoption/token :db.type/uuid]
           [:file.adoption/proposal :db.type/uuid] [:file.adoption/component :db.type/uuid]
@@ -146,6 +147,8 @@
         (refuse! :invalid-journal-link))
       row)))
 
+(declare current-operation)
+
 (defn linked-operation!
   "INTERNAL integrity check of an exact open component's latest journal row.
    This is NOT claim ownership: live readback or replay can never replace the
@@ -153,9 +156,44 @@
   [db fork-eid expected]
   (validate! expected)
   (let [fork (fork! db fork-eid expected)
-        current (latest db fork)]
+        current (current-operation db (:db/id fork))]
     (when-not (= expected current) (refuse! :claim-changed))
     current))
+
+(defn current-operation
+  "INTERNAL integrity-only latest journal read for an open retained component.
+   Authorize first; this never confers publication ownership. Corrupt, shared
+   or foreign-component links refuse rather than appearing unclaimed. Bounded
+   indexed history also refuses orphaned active rows and erased binding links;
+   this is not repair/detection of arbitrary deletion of journal facts."
+  [db fork-eid]
+  (let [link-installed? (seq (d/datoms db :avet :db/ident :proposal.fork/file-adoption))
+        ;; Before the journal schema is installed, typed Datahike cannot hold
+        ;; this link. Do not pull an unknown attribute; partially installed or
+        ;; malformed *present* links must still fail closed through latest.
+        pattern (cond-> [:db/id :proposal.fork/scope :proposal.fork/system-type :proposal.fork/status]
+                  link-installed? (conj {:proposal.fork/file-adoption [:db/id :file.adoption/id]}))
+        fork (when (integer? fork-eid) (d/pull db pattern fork-eid))]
+    (when-not (and (:db/id fork) (= :file-output (:proposal.fork/system-type fork))
+                   (uuid? (:proposal.fork/scope fork))
+                   (nil? (:proposal.fork/status fork)))
+      (refuse! :component-not-open))
+    (let [row (latest db fork)
+          history (when link-installed?
+                    (vec (take 1001 (d/datoms db :avet :file.adoption/component
+                                              (:proposal.fork/scope fork)))))]
+      (when (or (> (count history) 1000) (and (seq history) (nil? row)))
+        (refuse! :invalid-journal-history))
+      (when (and row (not= (:component row) (:proposal.fork/scope fork)))
+        (refuse! :component-binding-changed))
+      (doseq [datom history
+              :let [historical (metadata (d/pull db '[*] (:e datom)))]]
+        (when-not (and row
+                       (= (dissoc (select-keys row binding-keys) :actor)
+                          (dissoc (select-keys historical binding-keys) :actor))
+                       (or (= (:id row) (:id historical)) (= :aborted (:state historical))))
+          (refuse! :invalid-journal-history)))
+      row)))
 
 (defn claim-tx-data
   "INTERNAL pure writer composition. Existing claimed/applying/accepted rows,
@@ -165,7 +203,7 @@
   (validate! value)
   (when-not (= :claimed (:state value)) (refuse! :not-a-claim))
   (let [fork (fork! db fork-eid value)
-        previous (latest db fork)]
+        previous (current-operation db (:db/id fork))]
     (when (and previous
                (not= (dissoc (select-keys previous binding-keys) :actor)
                      (dissoc (select-keys value binding-keys) :actor)))
