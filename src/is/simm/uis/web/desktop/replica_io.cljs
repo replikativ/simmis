@@ -5,7 +5,6 @@
             [datahike.api :as d]
             [datahike.kabel.connector :as connector]
             [datahike.optimistic :as optimistic]
-            [datahike.writer :as writer]
             [is.simm.uis.web.desktop.resource-slot :as resource]))
 
 (defonce ^:private stores (atom {}))
@@ -40,28 +39,24 @@
   (when-let [value @overlay] (optimistic/close! value)))
 
 (defn- supported-disposal? [config]
-  ;; Verified against the pinned Konserve release, NOT arbitrary plugin stores.
-  ;; These leaf release methods are no-ops, so generic d/release's second async
-  ;; store-release cannot later close a replacement. Other backends need a
-  ;; joined native release API before they may claim this disposal guarantee.
+  ;; Complete owned release is joined below, but retain the backend allowlist
+  ;; verified by our integration tests rather than promising plugin correctness.
   (let [store (:store config)]
     (and (= :tiered (:backend store))
          (= :memory (get-in store [:frontend-config :backend]))
          (= :indexeddb (get-in store [:backend-config :backend])))))
 
-(defn- dispose! [config {:keys [conn native-writer] :as handle}]
+(defn- dispose! [config {:keys [conn] :as handle}]
   (close-overlay! handle)
   (go
     (try
       (when-not (supported-disposal? config)
         (throw (ex-info "Joined native disposal is only verified for memory/IndexedDB replicas" {})))
-      (let [closed (<! (writer/shutdown native-writer))]
+      (d/release conn)
+      (let [closed (<! (connector/await-release! conn))]
         (when-not (true? closed)
           (throw (if (instance? js/Error closed) closed
-                     (ex-info "Replica subscription cleanup did not confirm completion" {}))))
-        ;; With shared registry retention and memoized owned writer shutdown,
-        ;; this cannot later unregister a sibling/replacement store by UUID.
-        (d/release conn)
+                     (ex-info "Replica resource cleanup did not confirm completion" {}))))
         true)
       (catch :default error error))))
 
@@ -107,8 +102,7 @@
                                            (if-not (current?) (withdrawn)
                                                    (let [conn (<! (connector/connect-kabel config {:sync? false}))]
                                                      (if (instance? js/Error conn) conn
-                                                         (when conn {:conn conn :native-writer (:writer @conn)
-                                                                     :overlay (atom nil)}))))))})
+                                                         (when conn {:conn conn :overlay (atom nil)}))))))})
                               [value source] (alts! [cancel native-result] :priority true)]
                           ;; Logical cancellation is NOT proof of native
                           ;; cleanup. The slot retains that physical lifetime.

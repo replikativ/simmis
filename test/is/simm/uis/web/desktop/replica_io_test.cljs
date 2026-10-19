@@ -1,9 +1,8 @@
 (ns is.simm.uis.web.desktop.replica-io-test
   (:require [cljs.test :refer-macros [deftest is async]]
-            [clojure.core.async :refer [go <! put! promise-chan] :include-macros true]
+            [clojure.core.async :refer [go <! put! promise-chan poll!] :include-macros true]
             [datahike.api :as d]
             [datahike.kabel.connector :as connector]
-            [datahike.writer :as writer]
             [is.simm.uis.web.desktop.replica-io :as io]))
 
 (defn- delivered [value] (doto (promise-chan) (put! value)))
@@ -26,7 +25,7 @@
                  published (atom []) connected (atom 0) conn (atom {:writer :writer})]
              (try
                (with-redefs [connector/connect-kabel (fn [_ _] (swap! connected inc) (delivered conn))
-                             writer/shutdown (fn [_] (delivered true))
+                             connector/await-release! (fn [_] (delivered true))
                              d/release (fn ([_]) ([_ _]))]
                  (let [a (io/open! cfg (assoc (options :a published) :prepare! #(do (put! started true) lost)))]
                    (<! started)
@@ -55,10 +54,11 @@
                                (if (= :a (:peer configuration))
                                  (do (swap! events conj :open-a) (put! opened-a true) finish-a)
                                  (do (swap! events conj :open-b) (delivered conn-b))))
-                             writer/shutdown
-                             (fn [native-writer]
-                               (swap! events conj [:shutdown native-writer])
-                               (if (= :a native-writer) (do (put! shutting-down true) drained) (delivered true)))
+                             connector/await-release!
+                             (fn [conn]
+                               (let [id (if (identical? conn conn-a) :a :b)]
+                                 (swap! events conj [:native-close id])
+                                 (if (= :a id) (do (put! shutting-down true) drained) (delivered true))))
                              d/release (fn ([conn] (swap! events conj [:release (if (identical? conn conn-a) :a :b)]))
                                          ([_ _]))]
                  (let [a (io/open! (assoc cfg :peer :a) (options :a published))]
@@ -68,14 +68,39 @@
                      (is (= [:open-a] @events))
                      (put! finish-a conn-a)
                      (<! shutting-down)
-                     (is (= [:open-a [:shutdown :a]] @events))
+                     (is (= [:open-a [:release :a] [:native-close :a]] @events))
                      (is (empty? @published) "Old constructor must never publish")
+                     (is (nil? (poll! b)) "Replacement waits for post-subscription native close too")
                      (put! drained true)
                      (is (= :ready (:status (<! b))))
                      (is (instance? js/Error (<! a)))
-                     (is (= [:open-a [:shutdown :a] [:release :a] :open-b] @events))
+                     (is (= [:open-a [:release :a] [:native-close :a] :open-b] @events))
                      (is (= [conn-b] @published))
                      (is (true? (<! (io/retire! cfg)))))))
+               (catch :default error (is false (str error)))
+               (finally (done)))))))
+
+(deftest uncertain-native-close-holds-the-slot-until-explicit-recovery
+  (async done
+         (go
+           (let [cfg (config) conn (atom {:writer :fixture})
+                 published (atom []) opens (atom 0) closes (atom 0)
+                 failure (ex-info "Native close not confirmed" {})]
+             (try
+               (with-redefs [connector/connect-kabel (fn [& _] (swap! opens inc) (delivered conn))
+                             connector/await-release! (fn [_]
+                                                        (delivered (if (= 1 (swap! closes inc)) failure true)))
+                             d/release (fn ([_]) ([_ _]))]
+                 (is (= :ready (:status (<! (io/open! cfg (options :a published))))))
+                 (is (identical? failure (<! (io/retire! cfg))))
+                 (is (= :held (:phase (io/status cfg))))
+                 (is (identical? failure (<! (io/open! cfg (options :b published)))))
+                 (is (= 1 @opens) "No constructor after unconfirmed native close")
+                 (is (true? (<! (io/recover! cfg))))
+                 (is (= 2 @closes))
+                 (is (= :ready (:status (<! (io/open! cfg (options :b published))))))
+                 (is (= 2 @opens))
+                 (is (true? (<! (io/retire! cfg)))))
                (catch :default error (is false (str error)))
                (finally (done)))))))
 
@@ -93,7 +118,7 @@
                                                           (is (identical? failure error))
                                                           (swap! recovered inc)
                                                           (delivered true))
-                             writer/shutdown (fn [_] (delivered true))
+                             connector/await-release! (fn [_] (delivered true))
                              d/release (fn ([_]) ([_ _]))]
                  (is (identical? failure (<! (io/open! cfg (options :same published)))))
                  (is (= :held (:phase (io/status cfg))))
@@ -112,7 +137,7 @@
            (let [cfg (config) published (atom []) conn (atom {:writer :writer}) calls (atom 0)]
              (try
                (with-redefs [connector/connect-kabel (fn [_ _] (swap! calls inc) (delivered conn))
-                             writer/shutdown (fn [_] (delivered true))
+                             connector/await-release! (fn [_] (delivered true))
                              d/release (fn ([_]) ([_ _]))]
                  (is (= :ready (:status (<! (io/open! cfg (options :a published))))))
                  (let [error (<! (io/open! (assoc-in cfg [:store :backend-config :name] "different")

@@ -112,11 +112,12 @@
         ;; top-level pin wins (`clj -Stree`). is.simm.runtimes.storage-gc's
         ;; `datahike-fail-closed-gc-version` names this release. Storage GC
         ;; stays opt-in all the same.
-        ;; Reconnect ownership API (PR1118) plus Git source-root parity (PR1119).
+        ;; Reconnect + leased retirement (PR1118), Git source-root parity
+        ;; (PR1119), and commit ACK isolation from listener failures (PR1120).
         ;; The immutable pin needs no checkout-relative extra paths. Keep until
         ;; the required upstream approval and release are available.
         org.replikativ/datahike {:git/url "https://github.com/replikativ/datahike"
-                                :git/sha "989f2d04ff5e25f3b440d54492018bc9ffdc1622"}
+                                :git/sha "d29181c7882671f4ed68292904d9b0b5118fac10"}
         org.replikativ/konserve {:mvn/version "0.9.394"}
         ;; 0.1.40 additionally limits client inventory to keys reachable from
         ;; the configured walker (konserve-sync#14). Clients no longer scan or
