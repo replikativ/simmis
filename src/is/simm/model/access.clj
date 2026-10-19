@@ -773,6 +773,7 @@
      "load-memory-history!"    {:action R :resource (room :room-id-str)}
      "load-memory-history-file!" {:action R :resource (room :room-id-str)}
      "evaluate-memory-code!"   {:action M :resource (room :room-id-str)}
+     "evaluate-memory-repl!"   {:action M :resource (room :room-id-str)}
      "search-memory-files!"    {:action R :resource (room :room-id-str)}
      "analyze-memory-text!"    {:action R :resource (room :room-id-str)}
      "apply-memory-rich-edit!" {:action R :resource (room :room-id-str)}

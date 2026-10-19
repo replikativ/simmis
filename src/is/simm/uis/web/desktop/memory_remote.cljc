@@ -20,7 +20,7 @@
      (when-not party (throw (ex-info "Authentication required" {:type :authentication-required})))
      (context/with-server-context
        (let [id (parse-uuid room-id)
-             action (cond (= :evaluate operation) :merge
+             action (cond (#{:evaluate :repl} operation) :merge
                           (#{:save :move :office-save :rich-save} operation) :write
                           :else :read)]
          (when-not id (throw (ex-info "Invalid room identity" {:type :invalid})))
@@ -39,6 +39,9 @@
                    :evaluate (evaluation/evaluate! room party args
                                #(when-not (access/can? @(system-db/get-conn) party :merge {:room id})
                                   (throw (ex-info "Room evaluation permission was revoked" {:type :not-authorized}))))
+                   :repl (evaluation/evaluate-repl! room party args
+                           #(when-not (access/can? @(system-db/get-conn) party :merge {:room id})
+                              (throw (ex-info "Room evaluation permission was revoked" {:type :not-authorized}))))
                    :download (files/read-binary room (:path args) (:expected args))
                    :analyze (files/with-workspace room
                               (fn [conn]
@@ -82,6 +85,13 @@
   (spin-remote server-id [room-id-str request]
     #?(:clj (let [party (access/authenticated-party-id)]
               (await (blocking/blocking #(invoke-memory party room-id-str :evaluate request))))
+       :cljs nil)))
+
+(defn-spin-remote evaluate-memory-repl!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+    #?(:clj (let [party (access/authenticated-party-id)]
+              (await (blocking/blocking #(invoke-memory party room-id-str :repl request))))
        :cljs nil)))
 
 (defn-spin-remote load-memory-history!

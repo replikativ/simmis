@@ -44,6 +44,11 @@
               (doseq [kind [:member :non-member :admin :anon]]
                 (is (world/refused? (inbound kind "evaluate-memory-code!" {:request request}))))
               (is (:error (inbound :owner "evaluate-memory-code!" {:request (assoc request :actor (:member w))}))))
+            (let [request {:syntax :superficie :text "20 + 22" :namespace "user"}]
+              (is (= "42" (get-in (inbound :owner "evaluate-memory-repl!" {:request request}) [:result :value])))
+              (doseq [kind [:member :non-member :admin :anon]]
+                (is (world/refused? (inbound kind "evaluate-memory-repl!" {:request request}))))
+              (is (:error (inbound :owner "evaluate-memory-repl!" {:request (assoc request :party (:member w))}))))
             (let [opened (files/read-file room "wiki/hello.md") analysis (:analysis opened)
                   slot (first (:slots analysis))
                   edit (assoc (select-keys slot [:from :to]) :model (assoc-in (:model slot) [:content 0 :content 0 :text] "Updated"))

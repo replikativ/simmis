@@ -70,6 +70,20 @@
              (is (false? (.. view -state -readOnly)))
              (is (identical? view (.-simmisEditorView el))))))
 
+(deftest repl-submit-key-does-not-run-the-native-insert-blank-line-command
+  (mounted "(+ 1 2)"
+           (fn [el view]
+             (let [evaluations (atom 0) changes (atom 0)]
+               (.setAttribute el "data-evaluate" "true")
+               (.addEventListener el "input" (fn [e]
+                                               (when (= el (.-target e))
+                                                 (if (.. e -detail -evaluate) (swap! evaluations inc) (swap! changes inc)))))
+               (.dispatchEvent (.-contentDOM view)
+                               (js/KeyboardEvent. "keydown" #js {:key "Enter" :code "Enter" :ctrlKey true :bubbles true :cancelable true}))
+               (is (= 1 @evaluations))
+               (is (zero? @changes))
+               (is (= "(+ 1 2)" (.toString (.. view -state -doc))))))))
+
 (deftest authoritative-replacements-and-owner-changes-do-not-inherit-local-undo
   (mounted "base"
            (fn [^js el ^js view]

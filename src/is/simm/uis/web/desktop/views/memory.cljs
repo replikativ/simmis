@@ -69,6 +69,52 @@
                       (el/code {:class "hljs language-superficie"
                                 :innerHTML (md/highlight-code (:text result) "superficie")}))))))
 
+(defn- repl-view [state a preference]
+  (let [syntax (editor/repl-syntax state preference)
+        input (editor/repl-input state syntax)
+        running? (get-in state [:loading :repl])
+        evaluate? (get-in state [:permissions :evaluate?])
+        history (get-in state [:repl :history])]
+    (el/details {:class "memory-repl"}
+                (el/summary {} "Room REPL · Clojure / Superficie")
+                (el/p {:class "memory-note"} "Separate scratch input; never saves or rewrites the file. Both syntaxes use your same human SCI session. Ctrl+Enter evaluates. User-defined macros can be called normally; custom Superficie block-shape registration is not exposed.")
+                (el/div {:class "memory-toolbar" :aria-label "REPL input syntax"}
+                        (el/span {} "Input syntax")
+                        (for [[mode label] [[:clojure "Clojure input"] [:superficie "Superficie input"]]]
+                          (el/button {:key mode :class (when (= syntax mode) "selected")
+                                      :on-click (fn [_] ((:repl-change a) assoc :syntax mode))} label))
+                        (el/button {:on-click (fn [_] ((:repl-change a) dissoc :syntax))} "Follow code preference")
+                        (el/label {} "Namespace "
+                                  (el/input {:aria-label "REPL namespace" :value (get-in state [:repl :namespace] "user")
+                                             :on-input (fn [e] ((:repl-change a) assoc :namespace (.. e -target -value)))})))
+                (el/div {}
+                        (source/view {:id [(:owner a) :repl syntax] :path (if (= syntax :clojure) "scratch.clj" "scratch.sup")
+                                      :label (str (name syntax) " REPL input") :value input
+                                      :selection (get-in state [:repl :inputs syntax :selection])
+                                      :on-evaluate (fn [] (when (and evaluate? (not running?) (not (str/blank? input)))
+                                                           ((:repl-evaluate a) syntax)))
+                                      :on-change (fn [text selection]
+                                                   ((:repl-change a) assoc-in [:inputs syntax] {:text text :selection selection}))}))
+                (el/button {:disabled (or running? (not evaluate?) (str/blank? input))
+                            :on-click (fn [_] ((:repl-evaluate a) syntax))}
+                           (if running? "Evaluating…" "Evaluate REPL input"))
+                (when-not evaluate? (el/p {:class "memory-note"} "Room-owner evaluation permission is required."))
+                (for [receipt history]
+                  (el/details {:key (str (:id receipt)) :open (= (:id receipt) (:id (first history)))
+                               :class "memory-repl-receipt"}
+                              (el/summary {} (str (if (:success receipt) "Result" "Failed") " · " (name (:input-syntax receipt))
+                                                 " · " (:namespace receipt)))
+                              (el/pre {} (if (:success receipt) (:value receipt) (:error receipt)))
+                              (when (:partial? receipt) (el/p {} "Earlier forms may have executed; inspect the session before retrying."))
+                              (when (:session-retired? receipt) (el/p {} "Timed out. This interpreter was retired; the next evaluation starts a fresh session."))
+                              (when (seq (:stdout receipt)) (el/pre {} (str "stdout\n" (:stdout receipt))))
+                              (when (seq (:stderr receipt)) (el/pre {} (str "stderr\n" (:stderr receipt))))
+                              (el/details {} (el/summary {} "Submitted input") (el/pre {} (:input-source receipt)))
+                              (when (:generated-clojure receipt)
+                                (el/details {} (el/summary {} "Clojure submitted for evaluation")
+                                            (when (:generated-truncated? receipt) (el/p {} "Generated-source preview is truncated."))
+                                            (el/pre {} (:generated-clojure receipt)))))))))
+
 (defn- rich-toolbar [write?]
   (el/div {:class "memory-toolbar memory-document-toolbar"}
                     (for [[op label] [[:bold "Bold"] [:italic "Italic"] [:strike "Strike"]
@@ -210,12 +256,14 @@
                                         (el/p {:class "memory-note"} "An earlier draft's save completed after this version was selected. This draft was kept unchanged; check the saved version before another save."))
                                       (when (and text? (not clojure?))
                                         (el/div {:class "memory-toolbar" :aria-label "Document views"}
+                                                (el/span {} "File view")
                                                 (for [[mode label] (if markdown? [[:read "Read"] [:rich "Rich text"] [:outline "Outline"] [:source "Source"]]
                                                                       [[:source "Code / text"]])]
                                                   (el/button {:key mode :class (when (= mode (:mode draft)) "selected")
                                                               :on-click (fn [_] ((:mode a) path mode))} label))))
                                       (when clojure?
                                         (el/div {:class "memory-toolbar" :aria-label "Code syntax view"}
+                                                (el/span {} "File view")
                                                 (for [[mode label] [[:clojure "Clojure"] [:superficie "Superficie"]]]
                                                   (el/button {:key mode :class (when (= mode code-view) "selected")
                                                               :on-click (fn [_] ((:change a) path assoc :code-view mode))} label))
@@ -265,7 +313,9 @@
                                         (not text?) (el/p {:class "memory-note"} "Binary file. Download preserves the original bytes; document-specific editing is not available in this view yet.")
                                         (and clojure? (= :superficie code-view)) (superficie-view (:text draft))
                                         (= :source (:mode draft)) (source-view path draft a write?)
-                                        :else (document-view path draft a write?)))))))))
+                                        :else (document-view path draft a write?))
+                                      (when (and text? (re-find #"(?i)\.(clj|cljc|bb)$" path))
+                                        (repl-view state a syntax-pref)))))))))
 
 (defn render [data]
   (spin

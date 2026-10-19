@@ -45,12 +45,38 @@ For `.clj`, `.cljc` and `.bb` files, explicit selection, top-level-form and
 whole-file evaluation targets the authenticated human's separate room-scoped
 SCI world component. It does not borrow an agent interpreter or inject its
 room tools. Definitions persist for that human in the room until its context
-closes; descendant worlds select an independent interpreter. Evaluation is
+closes; descendant worlds select an independent interpreter. The session index
+is itself a fork-owned non-reactive world component: a following child's index
+must not observe a later parent retirement and lose its existing interpreter.
+Evaluation is
 owner/`:merge` gated, serialized per interpreter and bounded to 64K source
 characters and a ten-second evaluator timeout. Timeout retires the session so
 later requests cannot reuse its unwinding heap. Results, printed output and
 the exact evaluated source are retained in the editor signal, not as a durable
 Run or a deployed workflow. The old chat inspector Quick eval input is removed.
+
+Below the file buffer, the code-file panel includes a dual-input **Room REPL**.
+Separate Clojure and Superficie scratch buffers follow the Code View preference unless locally
+overridden; switching syntax never converts a buffer or changes the file draft.
+Both inputs use the same human SCI world component, with an explicit namespace
+target. A submitted `ns` change updates that target only if the user has not
+changed it while the request was pending. Parsing and evaluation run within
+the existing sandbox evaluator's ten-second boundary, with a 16K-character
+input bound. Clojure and Superficie both parse/evaluate incrementally. Symbol
+and keyword resolution consult the selected SCI interpreter, not JVM host
+namespaces. No host eval or mutable user block/shape registration in global
+Superficie registries is used; ordinary user-defined macros can be called, but
+custom Superficie block-shape registration is not exposed.
+
+The last 20 REPL receipts live in the context-owned editor signal, recording
+original input, syntax, namespace, printed value/output and generated Clojure
+(preview bounded to 64K characters). They are not durable Run receipts. Failed
+evaluation retains a receipt and warns that earlier forms may have executed;
+input is not transactional. A timeout retires the selected interpreter. The
+UI targets the live room's human session; this does not introduce an arbitrary
+world picker or an agent-interpreter attachment. Underlying component-based
+fork isolation is covered by the evaluation tests. Superficie input is a
+separate language input, not an assertion of lossless source-view conversion.
 
 The file tab's Context footer previews changes from a bounded 31-commit window
 of the canonical Geschichte ancestry, including merges. It compares file

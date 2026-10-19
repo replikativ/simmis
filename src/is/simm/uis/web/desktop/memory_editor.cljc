@@ -7,6 +7,21 @@
 (defn code-view [draft preference]
   (or (:code-view draft) preference :clojure))
 
+(defn repl-syntax [state preference] (or (get-in state [:repl :syntax]) preference :clojure))
+
+(defn repl-input [state syntax] (get-in state [:repl :inputs syntax :text] ""))
+
+(defn repl-result [state receipt]
+  (cond-> (update-in state [:repl :history] #(vec (take 20 (cons receipt %))))
+    (and (:namespace receipt)
+         (= (:requested-namespace receipt) (get-in state [:repl :namespace] "user")))
+    (assoc-in [:repl :namespace] (:namespace receipt))))
+
+(defn evaluation-receipt? [slot reply]
+  (and (or (= :repl slot) (and (vector? slot) (= :evaluate (first slot))))
+       (= :human-sci (:target reply)) (uuid? (:id reply))
+       (or (true? (:success reply)) (false? (:success reply)))))
+
 (defn begin-rich [d]
   (let [analysis (:analysis d)]
     (if (or (:rich-base d) (not= :ready (get-in analysis [:semantic :status]))

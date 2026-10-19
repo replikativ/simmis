@@ -60,7 +60,13 @@
                                    ;; never normalize source merely by opening it.
                                    (.of (.-lineSeparator EditorState) "\n")
                                    (history) (lineNumbers) (drawSelection)
-                                   (.of keymap (.concat defaultKeymap historyKeymap))
+                                   (.of keymap (.concat
+                                                #js [#js {:key "Mod-Enter"
+                                                          :run (fn [_]
+                                                                 (if (= "true" (.getAttribute el "data-evaluate"))
+                                                                   (do (.dispatchEvent el (js/CustomEvent. "input" #js {:bubbles true :composed true :detail #js {:evaluate true}})) true)
+                                                                   false))}]
+                                                defaultKeymap historyKeymap))
                                    (syntaxHighlighting defaultHighlightStyle)
                                    (.of lang (language-extension (.getAttribute el "data-language")))
                                    (.of permissions #js [(.of (.-readOnly EditorState) (readonly? el))
@@ -138,7 +144,7 @@
 
 (register!)
 
-(defn view [{:keys [id path value selection read-only? on-change label]}]
+(defn view [{:keys [id path value selection read-only? on-change on-evaluate label]}]
   (foreign-node
    {:tag :simmis-source-editor :key id :class "source-editor"
     :data-owner (pr-str [id (:fork-id ec/*execution-context*)])
@@ -146,12 +152,15 @@
     :data-source (or value "") :data-language (language path)
     :data-selection (js/JSON.stringify (clj->js (or selection {:anchor 0 :head 0})))
     :data-read-only (str (boolean read-only?))
+    :data-evaluate (str (boolean on-evaluate))
     :on-input (fn [^js event]
                 ;; Ignore the contenteditable's native bubbling input event;
                 ;; only our source/selection snapshot is application input.
                 (when (and (= (.-target event) (.-currentTarget event))
                            (.-detail event) (not read-only?))
                   (let [^js detail (.-detail event)]
-                    (on-change (.-source detail)
-                               {:anchor (.. detail -selection -anchor)
-                                :head (.. detail -selection -head)}))))}))
+                    (if (.-evaluate detail)
+                      (when on-evaluate (on-evaluate))
+                      (on-change (.-source detail)
+                                 {:anchor (.. detail -selection -anchor)
+                                  :head (.. detail -selection -head)})))))}))

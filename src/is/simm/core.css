@@ -9102,3 +9102,8 @@ body.tab-dragging .column-drop-zone {
 .memory-evaluation-result { padding: 8px; border: 1px solid var(--mono-border); border-radius: 6px; }
 .memory-evaluation-result pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .memory-history-entry { display: block; margin: 4px 0; text-align: left; white-space: normal; }
+.memory-repl { margin: 12px 0; padding: 10px; border: 1px solid var(--mono-border); border-radius: 6px; }
+.memory-repl > summary { cursor: pointer; font-weight: 600; }
+.memory-repl .source-editor { min-height: 100px; max-height: 300px; overflow: auto; }
+.memory-repl-receipt { margin: 8px 0; padding: 8px; border-top: 1px solid var(--mono-border); }
+.memory-repl-receipt pre { white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -2,11 +2,75 @@
   (:require [clojure.test :refer [deftest is]]
             [dvergr.discourse :as discourse]
             [dvergr.room.store.memory :as memory]
+            [dvergr.sandbox :as sandbox]
             [org.replikativ.spindel.engine.context :as context]
             [superficie.core :as superficie]
             [is.simm.documents.evaluation :as evaluation]))
 
 (defn request [code] {:path "examples/scratch.clj" :text code :scope :file :from 0 :to 0})
+
+(deftest dual-mode-repl-evaluates-in-one-world-with-original-input-receipts
+  (let [room (discourse/make-room {:id (keyword (str "repl-world-" (random-uuid))) :store (memory/make)})
+        human (random-uuid)
+        run (fn [r syntax text]
+              (evaluation/evaluate-repl! r human {:syntax syntax :text text :namespace "demo.repl"} (constantly true)))]
+    (try
+      (let [source "defn square [x]:\n  x * x\nend" result (run room :superficie source)]
+        (is (:success result) (pr-str result))
+        (is (= source (:input-source result)))
+        (is (= :superficie (:input-syntax result)))
+        (is (re-find #"defn square" (:generated-clojure result))))
+      (is (= "49" (:value (run room :clojure "(square 7)"))))
+      (is (:success (run room :clojure "(def factor 2)")))
+      (is (= "18" (:value (run room :superficie "factor * square(3)"))))
+      (let [fork (context/fork-context (:ctx room)) child (assoc room :ctx fork)]
+        (try
+          (is (:success (run child :superficie "def factor: 3")))
+          (is (= "2" (:value (run room :clojure "factor"))))
+          (is (= "3" (:value (run child :superficie "factor"))))
+          (finally (context/close-context! fork))))
+      (is (:success (run room :clojure "(defmacro twice [x] `(+ ~x ~x))")))
+      (is (= "10" (:value (run room :superficie "twice(5)"))))
+      (is (:success (run room :clojure "(require '[clojure.string :as s])")))
+      (is (= "\"HELLO\"" (:value (run room :superficie "s/upper-case(\"hello\")"))))
+      (is (= ":clojure.string/key" (:value (run room :superficie "::s/key"))))
+      (is (= "\"OKAY\"" (:value (run room :superficie "require('[clojure.string :as t])\nt/upper-case(\"okay\")"))))
+      (is (= "9" (:value (run room :superficie "defmacro triple [x]:\n  list(quote(*), x, 3)\nend\ntriple(3)"))))
+      (is (= "Ada\n" (:stdout (run room :superficie "println(\"Ada\")"))))
+      (let [result (run room :superficie "def retained: 7\nmissingFunction()")]
+        (is (false? (:success result)))
+        (is (:partial? result))
+        (is (re-find #"retained" (:generated-clojure result)))
+        (is (= "7" (:value (run room :clojure "retained")))))
+      (is (false? (:success (run room :superficie "square(2]"))))
+      (is (= "other.repl" (:namespace (run room :clojure "(ns other.repl) (def x 5)"))))
+      (is (= "5" (:value (run room :clojure "(require '[org.replikativ.spindel.spin.cps :refer [spin]]) (deref (spin (+ 2 3)))"))))
+      (doseq [r [{:syntax :js :text "1" :namespace "user"}
+                 {:syntax :clojure :text "1" :namespace "user) (def bad 1)"}
+                 {:syntax :clojure :text "1" :namespace "user" :party (random-uuid)}]]
+        (is (thrown? Exception (evaluation/evaluate-repl! room human r (constantly true)))))
+      (is (thrown? Exception (evaluation/evaluate-repl! room human {:syntax :clojure :text "(def denied 1)" :namespace "user"}
+                                                      #(throw (ex-info "revoked" {})))))
+      (finally (discourse/close-room! room)))))
+
+(deftest a-repl-timeout-retires-the-interpreter-without-affecting-other-humans
+  (let [room (discourse/make-room {:id (keyword (str "repl-timeout-" (random-uuid))) :store (memory/make)})
+        a (random-uuid) b (random-uuid)
+        run #(evaluation/evaluate-repl! room %1 {:syntax :clojure :text %2 :namespace "user"} (constantly true))]
+    (try
+      (is (:success (run a "(def old-value 1)")))
+      (is (:success (run b "(def old-value 2)")))
+      (let [fork (context/fork-context (:ctx room))]
+        (try
+          (with-redefs [sandbox/eval-code (fn [& _] {:success false :error {:type "TimeoutException" :message "test timeout"}})]
+            (is (:session-retired? (run a "old-value"))))
+          (let [result (evaluation/evaluate-repl! (assoc room :ctx fork) a
+                         {:syntax :clojure :text "old-value" :namespace "user"} (constantly true))]
+            (is (= "1" (:value result)) (pr-str result)))
+          (finally (context/close-context! fork))))
+      (is (false? (:success (run a "old-value"))))
+      (is (= "2" (:value (run b "old-value"))))
+      (finally (discourse/close-room! room)))))
 
 (deftest source-selection-is-inert-exact-and-bounded
   (is (= "(+ 2 3)" (:code (evaluation/request-code

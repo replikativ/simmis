@@ -162,6 +162,7 @@
    "load-memory-history!"    [(c :room MEMBERS)]
    "load-memory-history-file!" [(c :room MEMBERS)]
    "evaluate-memory-code!"   [(c :room OWNER)]
+   "evaluate-memory-repl!"   [(c :room OWNER)]
    "search-memory-files!"    [(c :room MEMBERS)]
    "analyze-memory-text!"    [(c :room MEMBERS)]
    "apply-memory-rich-edit!" [(c :room MEMBERS)]

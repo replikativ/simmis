@@ -36,7 +36,7 @@
               (binding [ec/*execution-context* ctx ec/*spin-id* nil]
                 (let [s (invoke)]
                   (s (fn [reply]
-                       (if-let [error (rem/result-failure reply)]
+                       (if-let [error (when-not (editor/evaluation-receipt? slot reply) (rem/result-failure reply))]
                          (finish! #(-> % (assoc-in [:loading slot] false)
                                        (assoc-in [:errors slot] (rem/error-text error))))
                          (try
@@ -152,6 +152,14 @@
                                               (update :generation inc))) s))
                             (fn [_] (folder! (parent path)) (navigation-refresh!))))))]
       {:owner key :state state :change change! :folder folder! :open #(open! % false) :reload #(open! % true)
+       :repl-change (fn [f & args] (apply update! update :repl f args))
+       :repl-evaluate
+       (fn [syntax]
+         (when-not (get-in (state) [:loading :repl])
+           (let [request {:text (editor/repl-input (state) syntax) :syntax syntax
+                          :namespace (or (get-in (state) [:repl :namespace]) "user")}]
+             (request! :repl #(remote/evaluate-memory-repl! web/server-id room request)
+                       editor/repl-result))))
        :history (fn [path]
                   (request! [:history path] #(remote/load-memory-history! web/server-id room path)
                             #(assoc-in %1 [:history path] %2)))
