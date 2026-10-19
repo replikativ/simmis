@@ -17,7 +17,12 @@
         (let [id (proposals/file-proposal!
                   {:title "Retained output review"
                    :forks [{:scope (random-uuid) :branch :ordinary :system-type :kb}
-                           {:scope scope :branch :retained :system-type :file-output}]})]
+                           {:scope scope :branch :retained :system-type :kb}]})
+              fork (first (filter #(= scope (:proposal.fork/scope %))
+                                  (:proposal/forks (proposals/get-proposal id))))]
+          ;; Inject a minimal/incomplete row deliberately: the landing gate must
+          ;; refuse even before a retained manifest can be inspected.
+          (d/transact conn [[:db/add (:db/id fork) :proposal.fork/system-type :file-output]])
           (f id scope)))
       (finally (d/release conn)))))
 
@@ -26,8 +31,8 @@
     (fn [id scope]
       (let [effects (atom [])]
         (with-redefs-fn {#'branching/land! (fn [& _] (swap! effects conj :land))
-                        #'is.simm.ops.proposals/review-decision
-                        (fn [_] (swap! effects conj :review-dispatch) nil)}
+                         #'is.simm.ops.proposals/review-decision
+                         (fn [_] (swap! effects conj :review-dispatch) nil)}
           #(doseq [force? [false true]]
              (is (thrown? clojure.lang.ExceptionInfo
                           (proposals/accept-proposal! id :force? force?)))
@@ -52,8 +57,8 @@
                                     (:proposal/forks (proposals/get-proposal id))))
             effects (atom [])]
         (with-redefs-fn {#'is.simm.ops.proposals/review-decision
-                        (fn [_] (swap! effects conj :review-dispatch)
-                          (fn [& _] (swap! effects conj :whole-review-accept)))}
+                         (fn [_] (swap! effects conj :review-dispatch)
+                           (fn [& _] (swap! effects conj :whole-review-accept)))}
           #(doseq [force? [false true]]
              (is (thrown? clojure.lang.ExceptionInfo
                           (proposals/accept-fork! id (:proposal.fork/scope ordinary) :ordinary

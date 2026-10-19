@@ -11,6 +11,8 @@
   (:require [is.simm.model.system-db :as sdb]
             [is.simm.model.access :as access]
             [is.simm.model.forkset :as fs]
+            [is.simm.model.file-outputs :as file-manifests]
+            [is.simm.ops.file-output-plan :as file-plans]
             [is.simm.runtimes.branching :as branching]
             [is.simm.runtimes.context :as ctx]
             [clojure.string :as str]
@@ -34,13 +36,14 @@
 
 (defn- fork-filing-value
   [{:keys [scope authority-scope branch base-commit system-type
-           world-system-id settlement-id settlement-state descriptor]
+           world-system-id settlement-id settlement-state descriptor file-output]
     fork-author :author}]
   ;; A positional value gives pr-str a stable order independent of map
   ;; implementation. Descriptor is already persisted through pr-str below.
-  [scope authority-scope (name branch) (some-> base-commit str) system-type
-   (some-> world-system-id str) settlement-id settlement-state
-   (some-> descriptor pr-str) fork-author])
+  (cond-> [scope authority-scope (name branch) (some-> base-commit str) system-type
+           (some-> world-system-id str) settlement-id settlement-state
+           (some-> descriptor pr-str) fork-author]
+    file-output (conj (:file-output/id file-output))))
 
 (defn- filing-hash
   [{:keys [title summary author room run adoption forks intent attrs comments]}]
@@ -80,11 +83,37 @@
    `attrs` are further `:proposal/*` attributes filed in the same transaction
    (an escalated review's linkage, `is.simm.workflows.review`), and `comments`
    the opening `:proposal.comment/*` rows — both part of the ONE immutable
-   filing, so a retried filing cannot add a second first comment."
-  [{:keys [id title summary author room run adoption forks intent attrs comments]}]
+   filing, so a retried filing cannot add a second first comment.
+
+   Host retention callbacks may supply the captured canonical `connection` and
+   a typed `:file-output` component. This is storage filing, not certification
+   or authorization; the host bridge must establish those before calling it."
+  [{:keys [id title summary author room run adoption forks intent attrs comments connection]}]
   {:pre [(string? title) (seq forks)
          (or (nil? intent) (contains? fs/intents intent))]}
-  (let [id (or id (random-uuid))
+  (let [connection (or connection (conn))
+        _ (when-not (identical? connection (conn))
+            (throw (ex-info "Proposal bodies and filing must use the canonical control connection" {})))
+        _ (when (some #(contains? attrs %) [:db/id :proposal/id :proposal/title :proposal/summary
+                                            :proposal/status :proposal/created-at :proposal/filing-hash
+                                            :proposal/forks :proposal/room :proposal/author :proposal/run
+                                            :proposal/adoption :proposal/intent :proposal/message-id
+                                            :proposal/message-status :proposal/comments])
+            (throw (ex-info "Proposal extension attributes cannot replace canonical filing fields" {})))
+        _ (doseq [{:keys [file-output scope authority-scope system-type]} forks
+                  :when (or file-output (= :file-output system-type))]
+            (when-not (map? file-output)
+              (throw (ex-info "Retained file component requires a typed manifest" {})))
+            (let [manifest (file-plans/validate-manifest! (file-manifests/metadata file-output))
+                  entries (:file-output/entries file-output)
+                  refs (into {} (map (juxt :file-output.entry/path :file-output.entry/body-ref)) entries)]
+              (when-not (and (= :file-output system-type) (= room (:room manifest) authority-scope)
+                             (= scope (:id manifest)) (seq entries)
+                             (= (count entries) (count (:entries manifest)))
+                             (every? #(uuid? (:file-output.entry/body-ref %)) entries)
+                             (= file-output (file-manifests/entity manifest refs)))
+                (throw (ex-info "Retained file component has invalid room, identity or body bindings" {})))))
+        id (or id (random-uuid))
         ;; A proposal's canonical chat identity is reserved in the SAME
         ;; transaction as the proposal. Publication may crash and retry, but it
         ;; must never mint a second card. Roomless legacy/import rows remain
@@ -96,46 +125,47 @@
                                   :attrs attrs :comments comments})
         entity
         (cond-> {:proposal/id id
-                :proposal/title title
-                :proposal/status :open
-                :proposal/created-at (java.util.Date.)
-                :proposal/filing-hash filing-hash
-                :proposal/forks (mapv (fn [{:keys [scope authority-scope branch
-                                                   base-commit system-type
-                                                   world-system-id settlement-id
-                                                   settlement-state descriptor]
-                                            fork-author :author}]
-                                        (cond-> {:proposal.fork/scope scope
-                                                 :proposal.fork/branch (name branch)}
-                                          base-commit (assoc :proposal.fork/base-commit (str base-commit))
-                                          authority-scope (assoc :proposal.fork/authority-scope
-                                                                 authority-scope)
-                                          system-type (assoc :proposal.fork/system-type system-type)
-                                          world-system-id (assoc :proposal.fork/world-system-id
-                                                                 (str world-system-id))
-                                          settlement-id (assoc :proposal.fork/settlement-id settlement-id)
-                                          settlement-state (assoc :proposal.fork/settlement-state
-                                                                  settlement-state)
-                                          descriptor (assoc :proposal.fork/descriptor (pr-str descriptor))
-                                          fork-author (assoc :proposal.fork/author fork-author)))
-                                      forks)}
-         summary (assoc :proposal/summary summary)
-         author  (assoc :proposal/author author)
-         room    (assoc :proposal/room room)
-         room    (assoc :proposal/message-id message-id
-                        :proposal/message-status :pending)
-         run     (assoc :proposal/run run)
-         adoption (assoc :proposal/adoption [:world-adoption/id adoption])
-         (seq attrs) (merge attrs)
-         (seq comments) (assoc :proposal/comments (vec comments))
+                 :proposal/title title
+                 :proposal/status :open
+                 :proposal/created-at (java.util.Date.)
+                 :proposal/filing-hash filing-hash
+                 :proposal/forks (mapv (fn [{:keys [scope authority-scope branch
+                                                    base-commit system-type
+                                                    world-system-id settlement-id
+                                                    settlement-state descriptor file-output]
+                                             fork-author :author}]
+                                         (cond-> {:proposal.fork/scope scope
+                                                  :proposal.fork/branch (name branch)}
+                                           base-commit (assoc :proposal.fork/base-commit (str base-commit))
+                                           authority-scope (assoc :proposal.fork/authority-scope
+                                                                  authority-scope)
+                                           system-type (assoc :proposal.fork/system-type system-type)
+                                           world-system-id (assoc :proposal.fork/world-system-id
+                                                                  (str world-system-id))
+                                           settlement-id (assoc :proposal.fork/settlement-id settlement-id)
+                                           settlement-state (assoc :proposal.fork/settlement-state
+                                                                   settlement-state)
+                                           descriptor (assoc :proposal.fork/descriptor (pr-str descriptor))
+                                           file-output (assoc :proposal.fork/file-output file-output)
+                                           fork-author (assoc :proposal.fork/author fork-author)))
+                                       forks)}
+          summary (assoc :proposal/summary summary)
+          author  (assoc :proposal/author author)
+          room    (assoc :proposal/room room)
+          room    (assoc :proposal/message-id message-id
+                         :proposal/message-status :pending)
+          run     (assoc :proposal/run run)
+          adoption (assoc :proposal/adoption [:world-adoption/id adoption])
+          (seq attrs) (merge attrs)
+          (seq comments) (assoc :proposal/comments (vec comments))
          ;; only when non-default: absent already MEANS :change, and writing
          ;; the default would make old and new rows differ for no reason
-         (and intent (not= fs/default-intent intent))
-         (assoc :proposal/intent intent))]
+          (and intent (not= fs/default-intent intent))
+          (assoc :proposal/intent intent))]
     ;; The existence decision belongs to Datahike's serialized transaction
     ;; snapshot. Concurrent/ambiguous retries cannot append anonymous component
     ;; refs or reset lifecycle fields; a conflicting reuse of the UUID fails.
-    (d/transact (conn) [[:db.fn/call file-proposal-if-absent entity]])
+    (d/transact connection [[:db.fn/call file-proposal-if-absent entity]])
     (log/log! {:level :info :id ::filed :data {:proposal id :title title
                                                :forks (count forks)}})
     ;; Resolve lazily to keep the proposal store independent of live discourse
@@ -447,7 +477,6 @@
           (swap! review-cache assoc k v)
           v)))))
 
-
 (defn- resolution-facts
   "The `who`/`why` half of a resolution, omitted when not supplied. Recorded
    at decision time because it cannot be reconstructed later — see
@@ -557,16 +586,16 @@
                :data {:proposal proposal-id :forks (count forks)}}
               "landing forks with no acting party — authorization not checked"))
   (when by
-   (let [db (some-> (sdb/get-conn) deref)
-        refused (vec (for [f forks
-                           :let [scope (or (:proposal.fork/authority-scope f)
-                                           (:proposal.fork/scope f))]
-                           :when (not (access/may-merge-proposal-fork? db by f))]
-                       (str scope)))]
-    (when (seq refused)
-      (throw (ex-info "not authorized to write every fork's trunk"
-                      {:error :not-authorized :proposal proposal-id
-                       :scopes refused}))))))
+    (let [db (some-> (sdb/get-conn) deref)
+          refused (vec (for [f forks
+                             :let [scope (or (:proposal.fork/authority-scope f)
+                                             (:proposal.fork/scope f))]
+                             :when (not (access/may-merge-proposal-fork? db by f))]
+                         (str scope)))]
+      (when (seq refused)
+        (throw (ex-info "not authorized to write every fork's trunk"
+                        {:error :not-authorized :proposal proposal-id
+                         :scopes refused}))))))
 
 (defn- settle-proposal!
   "Flip the proposal once no fork is left open, and report what it became.
@@ -663,14 +692,14 @@
         cid (random-uuid)]
     (when-not p (throw (ex-info "unknown proposal" {:id id})))
     (d/transact (conn)
-      [{:proposal/id id
-        :proposal/comments
-        [(cond-> {:proposal.comment/id cid
-                  :proposal.comment/body (str/trim body)
-                  :proposal.comment/at (java.util.Date.)
-                  :proposal.comment/kind (or kind :comment)}
-           author (assoc :proposal.comment/author author)
-           fork-branch (assoc :proposal.comment/fork-branch (name fork-branch)))]}])
+                [{:proposal/id id
+                  :proposal/comments
+                  [(cond-> {:proposal.comment/id cid
+                            :proposal.comment/body (str/trim body)
+                            :proposal.comment/at (java.util.Date.)
+                            :proposal.comment/kind (or kind :comment)}
+                     author (assoc :proposal.comment/author author)
+                     fork-branch (assoc :proposal.comment/fork-branch (name fork-branch)))]}])
     (log/log! {:level :info :id ::commented
                :data {:proposal id :kind (or kind :comment)
                       :fork (some-> fork-branch name)}})
