@@ -10,6 +10,7 @@
             [dvergr.jobs :as jobs]
             [dvergr.model.registry :as models]
             [dvergr.resource :as resource]
+            [dvergr.room.store :as room-store]
             [dvergr.scheduler.cron :as cron]
             [hasch.core :as hasch]
             [is.simm.model.access :as access]
@@ -17,6 +18,7 @@
             [is.simm.model.workflow-schedules :as schedules]
             [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.dvergr :as principals]
+            [is.simm.ops.knowledge-publish :as knowledge-publish]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflows-run]
             [is.simm.ops.workflows :as workflows]
@@ -46,6 +48,7 @@
                      ;; Alpha policy change intentionally requires redeploying
                      ;; old activations (including generic/benchmark ones).
                      :publication-target :owned-default-v1
+                     :processing :durable-filing-v1
                      :cursor :processed-not-adopted}
    :overlap :skip :missed :latest :allowance :shared-room})
 
@@ -214,28 +217,104 @@
                      (true? (:completed? checks))
                      (every? true? (vals checks)))))))))))
 
+(defn- publication-required?
+  "Classify the frozen deployment, not a mutable request's truthy marker.
+   Live knowledge cannot silently become an unbound fixture when its journal
+   or retained publication binding is missing/corrupt."
+  [conn target occurrence request]
+  (let [retained (when (:schedule.occurrence/input-ref occurrence)
+                   (schedules/retained-input conn occurrence))
+        planned (when (= :workflow (:kind target))
+                  (workflows-run/plan-source
+                   (:snapshot target) (select-keys (:execution target) workflows-run/source-fields)))
+        live? (and (:selection-policy planned)
+                   (not (contains? (:inputs planned) "/in/knowledge/manifest.edn")))
+        marked? (or (contains? request :work.request/publication-basis-id)
+                    (some? (:publication-basis retained)))]
+    (when (or live? marked?)
+      (let [basis (requests/publication-basis conn (:work.request/id request))]
+        (when-not (and live? retained basis (= basis (:publication-basis retained)))
+          (throw (ex-info "Scheduled knowledge publication binding is unavailable"
+                          {:type ::publication-binding-unavailable}))))
+      true)))
+
+(defn- durable-completion
+  "Restart fallback after the canonical physical-return flag is false. A
+   process-local Job lookup is helpful, not the authority for completed work."
+  [room request target]
+  (binding [ec/*execution-context* (:ctx room)]
+    (let [id (:work.request/job request)
+          r (when (uuid? id) (run/run room id))]
+      (when (and r (false? (:work.request/return-pending? request))
+                 (= (if (= :benchmark (:kind target)) :experiment :workflow) (:run/kind r))
+                 (= (room-store/conversation-id room) (:run/room r))
+                 (= (:work.request/by request) (access/actor->party-uuid (:run/actor r)))
+                 (nil? (:run/parent r))
+                 (contains? #{:completed :failed :cancelled} (:run/status r))
+                 (instance? java.util.Date (:run/ended-at r)))
+        {:id id :status (:run/status r) :finished-at (:run/ended-at r) :settled? true}))))
+
+(defn- file-input! [conn row occurrence request room]
+  ;; The original delegator files, not the scheduler service or whoever
+  ;; resumed the activation. Historical retry does not need the Attempt.
+  (let [value (knowledge-publish/file-completed-request!
+               conn (principals/party-principal (:schedule.activation/by row))
+               (:schedule.activation/room row) room (:work.request/id request))
+        proof (schedules/processing-proof conn (:schedule.occurrence/id occurrence))]
+    ;; Do not adopt a different freshly read, merely self-hashed receipt in
+    ;; place of the exact filing the host just validated. The cursor writer
+    ;; compares this frozen proof again against its own serialized snapshot.
+    (when-not (and proof (= value (:disposition proof)))
+      (throw (ex-info "Scheduled output filing changed" {:type ::filing-unavailable})))
+    (schedules/mark-input-processed! conn (:schedule.occurrence/id occurrence) proof)))
+
+(defn- process-input! [conn row occurrence request job room target]
+  (if (= :completed (:status job))
+    (if (publication-required? conn target occurrence request)
+      (file-input! conn row occurrence request room)
+      (if (input-processed? conn request room)
+        (schedules/mark-input-processed! conn (:schedule.occurrence/id occurrence))
+        (schedules/block! conn row :execution-failed)))
+    (schedules/block! conn row :execution-failed)))
+
 (defn- release-settled! [conn row resolve-room]
   (when-let [oid (:schedule.activation/active-occurrence row)]
     (let [o (schedules/occurrence conn oid)
-          r (when-let [rid (:schedule.occurrence/request o)] (requests/get-request conn rid))
-          job (when-let [id (:work.request/job r)] (jobs/status id))]
-      (when (and (= :linked (:schedule.occurrence/state o)) (:settled? job)
-                 (false? (:work.request/return-pending? r))
-                 (contains? #{:completed :failed :cancelled} (:status job)))
+          r (when-let [rid (:schedule.occurrence/request o)] (requests/get-request conn rid))]
+      (when (and (= :linked (:schedule.occurrence/state o))
+                 (false? (:work.request/return-pending? r)))
         (try
-          (let [room (resolve-room (:schedule.activation/room row))]
-            (publish-completion! conn row o r job room)
-            (when (:schedule.occurrence/input-ref o)
-              (if (and (= :completed (:status job)) (input-processed? conn r room))
-                (schedules/mark-input-processed! conn oid)
-                ;; Do not spin automatic retries or call failed work processed.
-                ;; Human resumption may reconsider the same source snapshot.
-                (schedules/block! conn row :execution-failed))))
-          (schedules/clear-active! conn row oid)
+          (let [room (or (resolve-room (:schedule.activation/room row))
+                         (throw (ex-info "Scheduled result room is unavailable" {:type ::room-unavailable})))
+                target (schedules/target conn row)
+                filed (when (:schedule.occurrence/input-ref o)
+                        (schedules/processing-proof conn oid))]
+            (if (and filed (true? (:schedule.occurrence/announced? o)))
+              (do
+                ;; The already announced immutable completion and exact durable
+                ;; filing survive expiry of Job/Attempt records. Reauthorize via
+                ;; the fixed host writer; never invent a completion timestamp.
+                (when-not (publication-required? conn target o r)
+                  (throw (ex-info "Unexpected scheduled knowledge filing" {:type ::filing-unavailable})))
+                (file-input! conn row o r room)
+                (schedules/clear-active! conn row oid))
+              ;; Hydrate the Room before lookup, including after restart. The
+              ;; fully filed/announced branch above never consults Job/Attempt.
+              (let [job (or (binding [ec/*execution-context* (:ctx room)]
+                              (jobs/status (:work.request/job r)))
+                            (durable-completion room r target))]
+                (when (and filed (nil? job))
+                  (throw (ex-info "Scheduled completion record is unavailable"
+                                  {:type ::completion-record-unavailable})))
+                (when (and (:settled? job) (contains? #{:completed :failed :cancelled} (:status job)))
+                  (publish-completion! conn row o r job room)
+                  (when (:schedule.occurrence/input-ref o)
+                    (process-input! conn row o r job room target))
+                  (schedules/clear-active! conn row oid)))))
           (catch InterruptedException e (throw e))
           (catch Exception e
             ;; Retain the unresolved pointer until its room announcement is
-            ;; durable; retry publication, never the completed execution.
+            ;; durable; retry filing/publication, never the completed execution.
             (log/log! {:level :warn :id ::completion-publication-pending
                        :data {:occurrence oid :exception-class (.getName (class e))}})))))))
 

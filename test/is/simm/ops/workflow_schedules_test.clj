@@ -22,9 +22,11 @@
             [is.simm.ops.knowledge-admission :as knowledge-admission]
             [is.simm.ops.workflow-runs-test :as workflow-fixture]
             [is.simm.model.work-requests :as requests]
+            [is.simm.model.knowledge-dispositions :as dispositions]
             [is.simm.model.workflow-schedules :as model]
             [is.simm.ops.dvergr :as principals]
             [is.simm.ops.work :as work]
+            [is.simm.ops.knowledge-publish :as knowledge-publish]
             [is.simm.ops.workflow-runs :as workflow-runs]
             [is.simm.ops.workflow-schedules :as schedules]
             [is.simm.ops.workflows :as workflows]
@@ -57,7 +59,7 @@
       (d/create-database cfg)
       (let [conn (d/connect cfg)]
         (try
-          (d/transact conn (into model/schema requests/schema))
+          (d/transact conn (concat model/schema requests/schema dispositions/schema))
           (let [target {:version 1 :kind :workflow :cadence {:interval-ms 60000 :tz "UTC"}
                         :snapshot {:files source :manifest []} :host-policy fixture-policy
                         :execution {:name "echo" :expected-bundle (:id (catalog/bundle "echo" source))
@@ -74,21 +76,48 @@
                           jobs/status (constantly nil)]
               (f {:conn conn :ctx ctx :owner owner :room-id room-id :room {:ctx ctx}
                   :row row :target target})))
-          (finally (d/release conn)))))))
+          (finally
+            (d/release conn)
+            (context/close-context! ctx)))))))
 
 (defn- pending! [{:keys [conn row target]}]
   (model/claim-due! conn row (:cadence target) (java.util.Date. 60000))
   (first (model/occurrences conn (:schedule.activation/id row))))
 
 (defn- record-request! [{:keys [conn owner room-id target environment]} occurrence submitted?]
-  (let [{:keys [request]} (requests/claim!
+  (let [o (model/occurrence conn (:schedule.occurrence/id occurrence))
+        retained (when (:schedule.occurrence/input-ref o) (model/retained-input conn o))
+        basis (:publication-basis retained)
+        {:keys [request]} (requests/claim!
                            conn {:party owner :room room-id :client-id (:schedule.occurrence/id occurrence)
                                  :kind :workflow :intent (cond-> {:submission (:execution target)}
-                                                           environment (assoc :environment environment))
+                                                           environment (assoc :environment environment)
+                                                           basis (assoc :knowledge/publication-basis basis
+                                                                        :workflow {:input-selection
+                                                                                   {:execution-id (get-in retained [:captured :execution-id])}}))
                                  :limits (update (get-in target [:execution :limits]) :settlement keyword)})]
     (if submitted?
       (requests/record-job! conn (:work.request/id request) (:work.request/claim request) (random-uuid))
       request)))
+
+(defn- fixture-file!
+  "Orchestration double ONLY. Real host certification/Proposal storage has its
+   own integration tests. These schedules use deliberately synthetic Attempts;
+   do not mistake a typed fixture receipt for host filing authority."
+  [conn _principal _room-id room rid]
+  (let [request (requests/get-request conn rid)]
+    (or (dispositions/disposition request)
+        (do
+          (when-not (#'schedules/input-processed? conn request room)
+            (throw (ex-info "Synthetic candidate did not pass" {:type ::uncertified})))
+          (let [value (dispositions/make
+                       {:request rid :intent (:work.request/intent-id request)
+                        :basis (:work.request/publication-basis-id request)
+                        :job (:work.request/job request) :candidate (random-uuid)
+                        :attempt-content (random-uuid) :output (random-uuid) :kind :no-op})]
+            (d/transact conn [[:db.fn/call dispositions/tx-data
+                               (dispositions/request-binding request) value]])
+            value)))))
 
 (defn- tick! [{:keys [conn ctx room]} millis]
   (schedules/tick! conn ctx (constantly room) (java.util.Date. millis)))
@@ -107,7 +136,8 @@
                                      :now (java.util.Date. 0) :next-fire (java.util.Date. 60000)})]
         (try
           (workspace/ensure-workspace! room)
-          (with-redefs [knowledge-admission/default-target workflow-fixture/fixture-default-target]
+          (with-redefs [knowledge-admission/default-target workflow-fixture/fixture-default-target
+                        knowledge-publish/file-completed-request! fixture-file!]
             (f (assoc fixture :room room :target target :row row
                       :environment (environment/make-environment
                                     {:id :scheduled-fixture :task "Process evidence"
@@ -118,7 +148,7 @@
   (binding [ec/*execution-context* (:ctx room)]
     (repo/write! (:conn (geschichte/current-workspace)) path (.getBytes ^String text "UTF-8"))))
 
-(defn- certify-candidate! [{:keys [conn room environment]} occurrence status passed?]
+(defn- certify-candidate! [{:keys [conn room environment owner]} occurrence status passed?]
   (let [request (requests/get-request conn (:schedule.occurrence/request occurrence))
         job-id (:work.request/job request)
         agent (roster/agent (roster/make-agent (roster/make-roster {:id :fixture})
@@ -126,7 +156,8 @@
         metrics {:agent-def-hash (hasch/uuid agent) :agent-version (:agent/version agent)
                  :program-kind :echo :interpreter-version 1}]
     (binding [ec/*execution-context* (:ctx room)]
-      (run/start! room :fixture (random-uuid) nil {:id job-id :kind :workflow})
+      (run/start! room (:principal/actor (principals/party-principal owner))
+                  (random-uuid) nil {:id job-id :kind :workflow})
       (let [candidate (run/start! room :fixture (random-uuid) nil
                                   {:kind :attempt :parent job-id
                                    :provenance (into {} (map (fn [[k v]] [(keyword "run" (name k)) v])) metrics)})
@@ -139,6 +170,166 @@
         (store/-store-attempt! (:store room) (store/conversation-id room)
                                (attempt/make-attempt environment agent receipt {} :review))
         (run/finish! job-id :completed)))))
+
+(defn- with-completed-input [f]
+  (with-input-fixture
+    (fn [{:keys [conn row] :as fixture}]
+      (write-source! fixture "inbox/source.md" "Synthetic evidence for schedule storage tests")
+      (let [calls (atom 0)]
+        (with-redefs [workflow-runs/submit!
+                      (fn [_ _ _ _ _ input _ _]
+                        (swap! calls inc)
+                        (record-request! fixture {:schedule.occurrence/id (:request-id input)} true))]
+          (tick! fixture 60000)
+          (let [o (first (model/occurrences conn (:schedule.activation/id row)))]
+            (certify-candidate! fixture o :completed true)
+            (requests/mark-returned! conn (:schedule.occurrence/request o))
+            (f (assoc fixture :occurrence o :calls calls
+                      :request (requests/get-request conn (:schedule.occurrence/request o))))))))))
+
+(defn- assert-held! [{:keys [conn row occurrence calls]}]
+  (let [a (model/activation conn (:schedule.activation/id row))]
+    (is (= (:schedule.occurrence/id occurrence) (:schedule.activation/active-occurrence a)))
+    (is (nil? (:schedule.activation/last-processed-input a)))
+    (is (= 1 @calls))))
+
+(deftest missing-live-bindings-never-fall-back-to-generic-attempt-processing
+  (doseq [missing [:request :retained]]
+    (with-completed-input
+      (fn [{:keys [conn request] :as fixture}]
+        (when (= missing :request)
+          (d/transact conn [[:db/retract [:work.request/id (:work.request/id request)]
+                             :work.request/publication-basis-id (:work.request/publication-basis-id request)]]))
+        (let [read-retained model/retained-input]
+          (with-redefs-fn
+            {#'model/retained-input (fn [conn o]
+                                      (cond-> (read-retained conn o)
+                                        (= missing :retained) (dissoc :publication-basis)))
+             #'knowledge-publish/file-completed-request!
+             (fn [& _] (throw (AssertionError. "Unbound knowledge reached filing")))
+             #'schedules/input-processed?
+             (fn [& _] (throw (AssertionError. "Unbound knowledge downgraded to fixture")))
+             #'jobs/status (constantly {:status :completed :settled? true})}
+            #(tick! fixture 120000)))
+        (assert-held! fixture)))))
+
+(deftest filed-and-announced-recovery-needs-neither-job-nor-attempt
+  (with-completed-input
+    (fn [{:keys [conn row occurrence calls] :as fixture}]
+      (let [first? (atom true)]
+        (with-redefs [jobs/status (constantly {:status :completed :settled? true})
+                      schedules/publish-completion!
+                      (fn [conn _ o _ _ _] (model/mark-announced! conn (:schedule.occurrence/id o)))
+                      knowledge-publish/file-completed-request!
+                      (fn [& args]
+                        (let [value (apply fixture-file! args)]
+                          ;; The durable filing exists, but chat publication's
+                          ;; response failed before the host helper returned.
+                          (if (compare-and-set! first? true false)
+                            (throw (ex-info "Synthetic chat publication failure" {}))
+                            value)))]
+          (tick! fixture 120000)
+          (assert-held! fixture)
+          (model/set-enabled! conn (:schedule.activation/id row) false)
+          (with-redefs [jobs/status (fn [& _] (throw (AssertionError. "Historical retry read Job")))
+                        run/run (fn [& _] (throw (AssertionError. "Historical retry read Run")))
+                        schedules/input-processed?
+                        (fn [& _] (throw (AssertionError. "Historical retry recertified Attempt")))]
+            (tick! fixture 180000))
+          (let [a (model/activation conn (:schedule.activation/id row))]
+            (is (= (:schedule.occurrence/input-id occurrence) (:schedule.activation/last-processed-input a)))
+            (is (nil? (:schedule.activation/active-occurrence a)))
+            (is (false? (:schedule.activation/enabled? a)))
+            (is (= 1 @calls))))))))
+
+(deftest a-different-self-hashed-receipt-cannot-replace-the-host-filing-result
+  (with-completed-input
+    (fn [{:keys [conn] :as fixture}]
+      (with-redefs [jobs/status (constantly {:status :completed :settled? true})
+                    knowledge-publish/file-completed-request!
+                    (fn [& args]
+                      (let [value (apply fixture-file! args)
+                            changed (dispositions/make
+                                     (assoc (dissoc value :id :version) :output (random-uuid)))]
+                        ;; Coherently rehashed storage corruption, not just an
+                        ;; invalid digest: it still wasn't the host's result.
+                        (d/transact conn [(into {:db/id [:work.request/id (:request value)]}
+                                                (map (fn [[k v]] [(keyword "knowledge.disposition" (name k)) v]))
+                                                changed)])
+                        value))]
+        (tick! fixture 120000))
+      (assert-held! fixture))))
+
+(deftest cursor-write-failure-retries-the-filing-not-the-execution
+  (with-completed-input
+    (fn [{:keys [conn row occurrence calls] :as fixture}]
+      (let [mark model/mark-input-processed! first? (atom true)]
+        (with-redefs [jobs/status (constantly {:status :completed :settled? true})
+                      schedules/publish-completion!
+                      (fn [conn _ o _ _ _] (model/mark-announced! conn (:schedule.occurrence/id o)))
+                      model/mark-input-processed!
+                      (fn [& args]
+                        (if (compare-and-set! first? true false)
+                          (throw (ex-info "Synthetic cursor write failure" {}))
+                          (apply mark args)))]
+          (tick! fixture 120000)
+          (assert-held! fixture)
+          (is (some? (model/processing-proof conn (:schedule.occurrence/id occurrence))))
+          (model/set-enabled! conn (:schedule.activation/id row) false)
+          (with-redefs [jobs/status (fn [& _] (throw (AssertionError. "Cursor retry read Job")))]
+            (tick! fixture 180000))
+          (let [a (model/activation conn (:schedule.activation/id row))]
+            (is (= (:schedule.occurrence/input-id occurrence) (:schedule.activation/last-processed-input a)))
+            (is (nil? (:schedule.activation/active-occurrence a)))
+            (is (= 1 @calls))))))))
+
+(deftest an-unannounced-filing-without-a-completion-record-holds
+  (with-completed-input
+    (fn [{:keys [conn room-id room request] :as fixture}]
+      (fixture-file! conn nil room-id room (:work.request/id request))
+      (with-redefs [jobs/status (constantly nil) run/run (constantly nil)
+                    knowledge-publish/file-completed-request!
+                    (fn [& _] (throw (AssertionError. "Missing completion timestamp was invented")))]
+        (tick! fixture 120000))
+      (assert-held! fixture))))
+
+(deftest a-pending-physical-return-never-enters-filing
+  (with-completed-input
+    (fn [{:keys [conn request] :as fixture}]
+      (d/transact conn [[:db/add [:work.request/id (:work.request/id request)] :work.request/return-pending? true]])
+      (with-redefs [jobs/status (fn [& _] (throw (AssertionError. "Pending return entered completion")))
+                    knowledge-publish/file-completed-request!
+                    (fn [& _] (throw (AssertionError. "Pending return entered filing")))]
+        (tick! fixture 120000))
+      (assert-held! fixture))))
+
+(deftest explicitly-retained-fixture-inputs-are-not-live-publication
+  (with-completed-input
+    (fn [{:keys [conn target occurrence request]}]
+      (let [retained (model/retained-input conn occurrence)
+            fixture-target (assoc-in target [:execution :inputs] (get-in retained [:captured :inputs]))]
+        (with-redefs [model/retained-input (constantly (assoc retained :publication-basis nil))]
+          (is (not (#'schedules/publication-required?
+                    conn fixture-target occurrence (dissoc request :work.request/publication-basis-id)))))))))
+
+(deftest cache-loss-recovers-from-the-owned-durable-root-only
+  (doseq [change [nil [:run/actor :other] [:run/room :other] [:run/kind :task]
+                  [:run/parent (random-uuid)] [:run/ended-at nil]]]
+    (with-completed-input
+      (fn [{:keys [conn row request calls] :as fixture}]
+        (let [read-run run/run]
+          (with-redefs [jobs/status (constantly nil)
+                        run/run (fn [room id]
+                                  (cond-> (read-run room id)
+                                    (and change (= id (:work.request/job request)))
+                                    (assoc (first change) (second change))))]
+            (tick! fixture 120000)))
+        (if change
+          (assert-held! fixture)
+          (let [a (model/activation conn (:schedule.activation/id row))]
+            (is (uuid? (:schedule.activation/last-processed-input a)))
+            (is (nil? (:schedule.activation/active-occurrence a)))
+            (is (= 1 @calls))))))))
 
 (deftest empty-selection-skips-before-body-allowance-provider-and-job-work
   (with-input-fixture
@@ -236,14 +427,17 @@
           (with-redefs [jobs/status (constantly {:status :completed :settled? true})]
             (tick! fixture 120000))
           (let [a (model/activation conn (:schedule.activation/id row))]
-            (is (false? (:schedule.activation/enabled? a)))
-            (is (= :execution-failed (:schedule.activation/reason a)))
+            ;; A completed Job whose output cannot be certified remains held
+            ;; for filing/reconciliation; it is never automatically rerun.
+            (is (:schedule.activation/enabled? a))
+            (is (uuid? (:schedule.activation/active-occurrence a)))
             (is (nil? (:schedule.activation/last-processed-input a)))))))))
 
 (deftest an-activation-without-the-default-target-policy-refuses-before-capture
   (let [current (schedules/host-policy)
         old (update current :input-selection dissoc :publication-target)]
     (is (= :owned-default-v1 (get-in current [:input-selection :publication-target])))
+    (is (= :durable-filing-v1 (get-in current [:input-selection :processing])))
     (with-fixture
       (fn [{:keys [conn ctx row target] :as fixture}]
         (model/set-enabled! conn (:schedule.activation/id row) false)
