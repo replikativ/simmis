@@ -10,6 +10,39 @@ ClojureScript client holds a real Datahike replica of the ones it may see and
 queries it locally; agents run in a sandbox on the server and write to
 branches rather than to trunk.
 
+## Room files and execution state
+
+The room **Memory** panel browses its Geschichte worktree on demand rather
+than downloading file contents as a browser database replica. Markdown,
+workflow files, and room-local Clojure source share the same hierarchy.
+Markdown offers Read, selective Rich text, semantic Outline, and exact Source
+views; unsupported rich regions remain inert source. Existing independent KBs
+and drive resources remain accessible while this file-backed surface is
+introduced; they are not silently migrated or deleted.
+
+Room source and execution state have different lifetimes. A daemon room's
+repository is initially seeded from the sandbox library (or its configured
+import source); participants load source into their own SCI interpreters,
+selected through their Spindel execution contexts/worlds. Saving a file in
+Memory neither evaluates it nor reloads any interpreter. Host-injected
+functions and permissions are capabilities, not editable source files.
+
+Editor drafts, selections, request tokens, and read/mutation generations live
+in a session/room/column-keyed Spindel signal. Native CodeMirror/Tiptap handles
+and download object URLs belong only to their DOM elements and are released
+on detach. Authenticated RPCs capture the principal before dispatching bounded
+store/parsing work off the FRP drain. Saves use the canonical Dvergr file
+writer's opened-revision precondition, effect gate, and applied entry receipt;
+a late pre-save read cannot replace a new save acknowledgement. A revoked
+room write permission is checked again at the actual effect boundary.
+
+Office containers have a bounded advanced XML-part editor, not a Word/Excel
+layout editor. Each operation reopens the selected immutable file revision;
+there is no retained server document handle. Validation disables DTDs, and an
+edit copies untouched part bytes rather than re-emitting their XML. Exact
+no-ops retain the original container. Saving modified XML does not certify
+Office schema validity or preserve a document signature's validity.
+
 ## Processes and ports
 
 One JVM runs everything in development (`clj -M:dev`):

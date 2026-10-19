@@ -28,6 +28,7 @@
             [is.simm.uis.web.desktop.views.new-contact :as new-contact-view]
             [is.simm.uis.web.desktop.views.room-settings :as room-settings-view]
             [is.simm.uis.web.desktop.views.files :as files-view]
+            #?(:cljs [is.simm.uis.web.desktop.views.memory :as memory-view])
             [is.simm.uis.web.desktop.views.mail :as mail-view]
             [is.simm.uis.web.desktop.views.kb-settings :as kb-settings-view]
             [is.simm.uis.web.desktop.views.sandbox-panel :as sandbox-panel]
@@ -634,6 +635,7 @@
     :screens "images"
     :feed "activity"
     :files "folder"
+    :memory "folder"
     :mail "mail"
     :schedules "calendar"
     :proposals "git-pull-request"
@@ -1910,7 +1912,7 @@
                                         :clj nil))}
                (vc/icon "app-window" {:class "chat-settings-icon"}))
              (el/button {:class "chat-settings-btn"
-                         :title "Files"
+                         :title "Memory"
                          :on-click (fn [_]
                                      #?(:cljs
                                         (let [[tab-type tab-data opts]
@@ -2445,6 +2447,10 @@
 
     :files
     (files-view/files-view data)
+
+    :memory
+    #?(:cljs (memory-view/render (assoc data :col-id col-id))
+       :clj (el/p {} "Memory"))
 
     :room-settings
     #?(:cljs

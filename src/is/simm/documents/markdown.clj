@@ -7,7 +7,8 @@
   (:require [clj-yaml.core :as yaml]
             [hasch.core :as hasch])
   (:import [com.vladsch.flexmark.parser Parser]
-           [com.vladsch.flexmark.ast Heading]
+           [com.vladsch.flexmark.ast Heading Text Code FencedCodeBlock IndentedCodeBlock Link OrderedList]
+           [com.vladsch.flexmark.util.sequence Escaping]
            [com.vladsch.flexmark.ext.tables TablesExtension TableCell]
            [com.vladsch.flexmark.ext.gfm.tasklist TaskListExtension TaskListItem]
            [com.vladsch.flexmark.ext.gfm.strikethrough StrikethroughExtension]
@@ -23,7 +24,7 @@
 
 (def syntax-profile
   "Pinned syntax projection, not a claim of complete Obsidian/plugin support."
-  {:id :simmis/markdown-syntax :version 1 :parser "flexmark/0.64.8"
+  {:id :simmis/markdown-syntax :version 2 :parser "flexmark/0.64.8"
    :features #{:tables :tasks :strikethrough :footnotes :wikilinks :wiki-embeds}})
 
 (defn- parser []
@@ -101,6 +102,15 @@
            :to (+ offset (.getEndOffset node))
            :children (mapv #(syntax-node % offset (inc depth) remaining) (children node))}
     (instance? Heading node) (assoc :heading-level (.getLevel ^Heading node))
+    (instance? Text node) (assoc :text (Escaping/unescapeString (.getChars node)))
+    (instance? Code node) (assoc :literal (str (.getText ^Code node)))
+    (instance? FencedCodeBlock node)
+    (assoc :literal (str (.getContentChars ^FencedCodeBlock node))
+           :language (str (.getInfo ^FencedCodeBlock node)))
+    (instance? IndentedCodeBlock node) (assoc :literal (str (.getContentChars ^IndentedCodeBlock node)))
+    (instance? OrderedList node) (assoc :start (.getStartNumber ^OrderedList node))
+    (instance? Link node) (assoc :url (Escaping/unescapeString (.getUrl ^Link node))
+                                 :title (Escaping/unescapeString (.getTitle ^Link node)))
     (instance? TaskListItem node) (assoc :checked? (.isItemDoneMarker ^TaskListItem node))
     (instance? TableCell node)
     (merge (let [alignment (.getAlignment ^TableCell node)]

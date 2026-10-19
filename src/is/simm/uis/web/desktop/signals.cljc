@@ -329,6 +329,10 @@
            "Session/room keyed source drafts, request fences and immutable admissions."
            (signal runtime {})))
 
+#?(:cljs (def memory-editor-state
+           "Session/room/view keyed file drafts, folders and request fences."
+           (signal runtime {})))
+
 #?(:cljs
    (defn clear-captured-results!
      "Release browser download URLs with their owning authenticated session."

@@ -66,7 +66,7 @@
               {:title (str room-name " Screens") :new-tab? true :col-id col-id}]
     :video [:video {:room-id room-id :room-name room-name}
             {:title (str room-name " Call") :new-tab? true :col-id col-id}]
-    :files [:files {:room-id room-id}
-            {:title (str room-name " Files") :new-tab? true :col-id col-id}]
+    :files [:memory {:room-id room-id :room-name room-name}
+            {:title (str room-name " Memory") :new-tab? true :col-id col-id}]
     :settings [:room-settings {:room-id room-id}
                {:title (str room-name " Settings") :new-tab? true :col-id col-id}]))

@@ -9057,3 +9057,26 @@ body.tab-dragging .column-drop-zone {
 .workflow-field input, .workflow-field select { min-width: 0; padding: 7px; border: 1px solid var(--mono-border); border-radius: 6px; color: inherit; background: var(--mono-bg-surface); }
 .workflow-inspection { margin: 16px 0; font-size: var(--text-sm); overflow-wrap: anywhere; }
 .workflow-launch { border-top: 1px solid var(--mono-border); padding-top: 12px; }
+/* Memory: shared file source, not a shared interpreter. */
+.memory-panel { padding: 18px; height: 100%; overflow: auto; }
+.memory-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.memory-toolbar h2 { flex: 1; margin: 0; font-size: 18px; }
+.memory-toolbar button, .memory-region > button, .memory-outline button, .memory-upload { padding: 5px 10px; border: 1px solid var(--border-color, #465063); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.memory-toolbar button:disabled { opacity: .45; cursor: default; }
+.memory-layout { display: grid; grid-template-columns: minmax(140px, 23%) minmax(0, 1fr); gap: 18px; }
+.memory-tree { border-right: 1px solid var(--border-color, #465063); min-width: 0; }
+.memory-tree-item { display: block; width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; padding: 6px 10px; border: 0; background: transparent; color: inherit; cursor: pointer; }
+.memory-tree-item.selected, .memory-toolbar .selected { background: rgba(110, 145, 210, .18); }
+.memory-detail { min-width: 0; }
+.memory-detail h3 { overflow-wrap: anywhere; }
+.memory-note, .memory-properties, .memory-outline small, .memory-source-region small { font-size: 12px; opacity: .75; }
+.memory-region { padding: 8px 12px; margin-bottom: 6px; border: 1px solid transparent; border-radius: 8px; }
+.memory-region:hover { border-color: var(--border-color, #465063); }
+.memory-document pre, .memory-outline pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.memory-rich-content { min-height: 70px; padding: 12px; outline: none; border: 1px solid var(--border-color, #465063); border-radius: 6px; }
+.memory-rich-content p { margin: 8px 0; }
+.memory-region-editor > .memory-toolbar { margin-top: 8px; }
+.memory-conflict { padding: 12px; border: 1px solid #b9914e; border-radius: 8px; margin-bottom: 12px; }
+.memory-upload input { max-width: 180px; margin-left: 8px; }
+.memory-outline-block { padding: 10px; border-left: 2px solid var(--border-color, #465063); }
+@media (max-width: 650px) { .memory-layout { grid-template-columns: 120px minmax(0, 1fr); gap: 8px; } .memory-panel { padding: 10px; } }

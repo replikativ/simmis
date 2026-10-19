@@ -11,6 +11,7 @@
             [geschichte.repo :as repo]
             [hasch.core :as hasch]
             [is.simm.documents.blocks :as blocks]
+            [is.simm.documents.identity :as identity]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.properties :as properties]
             [is.simm.documents.repository :as documents]))
@@ -76,16 +77,6 @@
    A true answer is as-of this DB snapshot, not a lock on subsequent writes."
   [db options view]
   (= (:selection view) (selection db options)))
-
-(defn- document-identity [repository-id path parsed]
-  (if-let [entry (find (get-in parsed [:frontmatter :properties]) "simmis-id")]
-    (let [raw (val entry)
-          id (when (string? raw)
-               (try (java.util.UUID/fromString raw) (catch IllegalArgumentException _ nil)))]
-      (if (and id (= raw (str id)))
-        {:id id :identity-status :explicit}
-        {:identity-status :invalid :diagnostics [{:kind :invalid-document-id :path path}]}))
-    {:id (hasch/uuid [:source-document repository-id path]) :identity-status :provisional}))
 
 (defn- projection-ownership!
   "Only our disposable schema/entities may be replaced in a derived view.
@@ -159,7 +150,7 @@
                           (when-not (and bytes (= size (alength ^bytes bytes)))
                             (refuse! :content-size-mismatch))
                           (let [parsed (markdown/parse (markdown/decode bytes))
-                                identity (document-identity (:repository-id selected) path parsed)
+                                identity (identity/document (:repository-id selected) path parsed)
                                 semantic (when-let [id (:id identity)] (blocks/project id parsed))
                                 property-values (properties/decode property-schema
                                                                    (get-in parsed [:frontmatter :properties]))

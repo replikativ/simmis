@@ -385,7 +385,7 @@
         ;; must use the classified wallet schema; no legacy migration is implied.
         ;; Use the merged #363 commit: the earlier feature SHA is retired.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "ddad276352f1b9b28fcc75c6e9294359ed57ad09"}}
+                               :git/sha "bddad4113d9fa448a2bb0b5215c24cd88b1ff2c6"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead

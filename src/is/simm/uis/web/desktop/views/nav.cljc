@@ -748,6 +748,17 @@
                                         (conj s "kbs"))))))})
            (when-not (contains? collapsed "kbs")
              (el/div {:class "nav-section-items"}
+               (for [room (sort-by :room/name rooms)
+                     :let [id (:room/id room) title (:room/name room)]]
+                 (el/div {:key (str "workspace-" id) :class "nav-subsection"}
+                         (el/div {:class "nav-item"
+                                  :on-click (fn [_]
+                                              (binding [rtc/*execution-context* runtime]
+                                                (sig/open-or-activate-tab!
+                                                 :memory {:room-id id :room-name title}
+                                                 {:title (str title " Memory")})))}
+                                 (vc/icon "folder")
+                                 (el/span {:class "nav-item-label"} (str title " /")))))
                (when (seq kb-items)
                  ;; render-fn returns spins → ifor-each returns a spin → await it
                  (await (ifor-each :kb/id kb-items

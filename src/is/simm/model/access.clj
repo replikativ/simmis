@@ -768,6 +768,15 @@
      "close-screen-grant!"     {:action W :resource (room :room-id-str)}
      "screen-grant-heartbeat!" {:action W :resource (room :room-id-str)}
      "load-room-drive!"        {:action R :resource (room :room-id-str)}
+     "load-memory-folder!"     {:action R :resource (room :room-id-str)}
+     "load-memory-file!"       {:action R :resource (room :room-id-str)}
+     "analyze-memory-text!"    {:action R :resource (room :room-id-str)}
+     "apply-memory-rich-edit!" {:action R :resource (room :room-id-str)}
+     "download-memory-file!"   {:action R :resource (room :room-id-str)}
+     "save-memory-file!"       {:action W :resource (room :room-id-str)}
+     "move-memory-file!"       {:action W :resource (room :room-id-str)}
+     "load-memory-office-part!" {:action R :resource (room :room-id-str)}
+     "save-memory-office-part!" {:action W :resource (room :room-id-str)}
      ;; --- room create + rooms list (self) ---
      ;; the initial members pass the same check as `add-room-party!`'s party
      "create-room!"            {:action W :resource (self :creator-id-str)}

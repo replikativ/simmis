@@ -114,7 +114,7 @@
       (write! conn "wiki/a.md" "text")
       (let [v (view/current-view conn options)]
         (is (not (view/current? @conn (assoc options :schema-revision :v2) v)))
-        (with-redefs [markdown/syntax-profile (assoc markdown/syntax-profile :version 2)]
+        (with-redefs [markdown/syntax-profile (update markdown/syntax-profile :version inc)]
           (is (not (view/current? @conn options v))))
         (doseq [root ["" "../wiki" "/wiki" "wiki/" "a\\b" ".git"]]
           (is (thrown? clojure.lang.ExceptionInfo (view/selection @conn (assoc options :root root)))))

@@ -62,6 +62,7 @@
             [is.simm.uis.web.desktop.experiments-remote]
             [is.simm.uis.web.desktop.results-remote]
             [is.simm.uis.web.desktop.workflows-remote]
+            [is.simm.uis.web.desktop.memory-remote]
             [is.simm.uis.web.desktop.feed-remote]
             [org.replikativ.spindel.distributed.core :as dist])
   (:import [java.io File]

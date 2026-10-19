@@ -76,6 +76,9 @@
   [session]
   (= (:id session) (:id @current-session*)))
 
+(defn- clear-memory-editor-state! []
+  (reset! sig/memory-editor-state {}))
+
 (defn stop-session!
   "Abort all supervised work owned by a client session and remove its peer
    registry entry. Client peers connect directly rather than through
@@ -86,6 +89,8 @@
       (sig/clear-captured-results!)
       (reset! sig/schedules-data nil)
       (reset! sig/workflow-editor-state {}))
+    (binding [rtc/*execution-context* runtime]
+      (clear-memory-editor-state!))
     (reset! current-session* nil))
   (when supervisor
     (doseq [abort-ch (:aborts supervisor)]
@@ -241,6 +246,7 @@
     (sig/clear-captured-results!)
     (reset! sig/schedules-data nil)
     (reset! sig/workflow-editor-state {})
+    (clear-memory-editor-state!)
     (reset! sig/current-user user))
   (let [session (create-client! token)]
     (show-app!)
