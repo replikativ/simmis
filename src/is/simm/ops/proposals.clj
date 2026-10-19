@@ -100,7 +100,7 @@
                                             :proposal/adoption :proposal/intent :proposal/message-id
                                             :proposal/message-status :proposal/comments])
             (throw (ex-info "Proposal extension attributes cannot replace canonical filing fields" {})))
-        _ (doseq [{:keys [file-output scope authority-scope system-type]} forks
+        _ (doseq [{:keys [file-output scope authority-scope system-type branch]} forks
                   :when (or file-output (= :file-output system-type))]
             (when-not (map? file-output)
               (throw (ex-info "Retained file component requires a typed manifest" {})))
@@ -108,6 +108,11 @@
                   entries (:file-output/entries file-output)
                   refs (into {} (map (juxt :file-output.entry/path :file-output.entry/body-ref)) entries)]
               (when-not (and (= :file-output system-type) (= room (:room manifest) authority-scope)
+                             ;; This is a component address, not a Git ref.
+                             ;; `name`/keyword round trips must preserve it.
+                             (or (string? branch)
+                                 (and (keyword? branch) (nil? (namespace branch))))
+                             (re-matches #"[A-Za-z0-9._-]{1,128}" (name branch))
                              (= scope (:id manifest)) (seq entries)
                              (= (count entries) (count (:entries manifest)))
                              (every? #(uuid? (:file-output.entry/body-ref %)) entries)
@@ -310,6 +315,7 @@
                     (fn [forks]
                       (mapv (fn [f]
                               (case (:proposal.fork/system-type f)
+                                :file-output (assoc f :proposal.fork/settlement-supported? false)
                                 :world (assoc f :proposal.fork/capability-live?
                                               (live? (:proposal.fork/scope f)))
                                 ;; a reviewed world is a live dvergr fork: after a
@@ -378,12 +384,16 @@
    reads only the summary counts, so `:patch? false` keeps tiering from reading
    every changed blob on both sides of a code fork."
   [fork]
-  (branching/delta (:proposal.fork/scope fork) (fork-type fork)
-                   (fork-branch-kw fork) {:patch? false}))
+  (if (= :file-output (fork-type fork))
+    {:summary {:files-changed (count (get-in fork [:proposal.fork/file-output :file-output/entries]))}
+     :target-compatibility :not-checked :settlement-supported? false}
+    (branching/delta (:proposal.fork/scope fork) (fork-type fork)
+                     (fork-branch-kw fork) {:patch? false})))
 
 (defn- fork-conflict-seq [fork]
-  (branching/conflicts-with-trunk (:proposal.fork/scope fork) (fork-type fork)
-                                  (fork-branch-kw fork)))
+  (when-not (= :file-output (fork-type fork))
+    (branching/conflicts-with-trunk (:proposal.fork/scope fork) (fork-type fork)
+                                    (fork-branch-kw fork))))
 
 (defn fork-heads
   "The current head commit of each fork branch, plus of each fork's TRUNK.
@@ -425,19 +435,22 @@
    commits. Returns nil when summarization fails — the raw diff is always the
    source of truth and renders regardless."
   [p diffs]
-  (ctx/with-server-context
-    (let [heads (mapv (fn [f] (fork-head-id f (fork-branch-kw f))) (open-forks p))
-          k [(:proposal/id p) heads]]
-      (if (contains? @summary-cache k)
-        (get @summary-cache k)
-        (let [s ((requiring-resolve 'is.simm.ops.diff-summary/summarize-diff)
-                 {:title (:proposal/title p)
-                  :rationale (:proposal/summary p)
-                  :diffs diffs})]
+  ;; Retained file inspection must not introduce an unfunded model call.
+  ;; Its filing rationale and exact per-file evidence already render directly.
+  (when-not (some #(= :file-output (fork-type %)) (:proposal/forks p))
+    (ctx/with-server-context
+      (let [heads (mapv (fn [f] (fork-head-id f (fork-branch-kw f))) (open-forks p))
+            k [(:proposal/id p) heads]]
+        (if (contains? @summary-cache k)
+          (get @summary-cache k)
+          (let [s ((requiring-resolve 'is.simm.ops.diff-summary/summarize-diff)
+                   {:title (:proposal/title p)
+                    :rationale (:proposal/summary p)
+                    :diffs diffs})]
           ;; cache negatives too — a proposal whose summary fails should not
           ;; re-attempt (and re-bill) an LLM call on every card render
-          (swap! summary-cache assoc k s)
-          s)))))
+            (swap! summary-cache assoc k s)
+            s))))))
 
 (defn- compute-proposal-review
   "The uncached body of `proposal-review`."
@@ -453,8 +466,12 @@
                       :conflicts (mapv #(assoc % :scope (str scope) :branch (name b))
                                        (fork-conflict-seq f))}))
           conflicts (vec (mapcat :conflicts entries))]
-      {:tier (classify (into {} (map (juxt :system :delta)) entries) conflicts)
-       :conflicts conflicts})))
+      (cond-> {:tier (classify (into {} (map (juxt :system :delta)) entries) conflicts)
+               :conflicts conflicts}
+        (some #(= :file-output (fork-type %)) (open-forks p))
+        ;; Counting retained edits is not a mergeability check against a live
+        ;; target. Keep these out of the existing "Ready to land" projection.
+        (assoc :tier :review-only :settlement-supported? false :target-compatibility :not-checked)))))
 
 (defn proposal-review
   "Tier + conflicts for a proposal, classified by DVERGR's fork classifier so

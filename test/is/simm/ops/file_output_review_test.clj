@@ -10,6 +10,7 @@
             [is.simm.ops.file-output-review :as review]
             [is.simm.ops.file-output-storage :as storage]
             [is.simm.ops.proposal-publication :as publication]
+            [is.simm.ops.semantic-diff :as semantic]
             [is.simm.ops.proposals :as proposals]))
 
 (defn- with-review [f]
@@ -52,6 +53,18 @@
           (is (= {:path "wiki/old.md" :before "Before\r\n" :after "After"}
                  (review/read-file party proposal scope "wiki/old.md"))))
         (is (= 1 @calls))))))
+
+(deftest canonical-review-is-not-a-target-compatibility-check-or-a-paid-summary
+  (with-review
+    (fn [{:keys [party scope proposal]}]
+      (let [p (proposals/get-proposal proposal)]
+        (with-redefs [artifact/get-value (fn [& _] (throw (AssertionError. "Review metadata read bodies")))]
+          (is (= :review-only (:tier (proposals/proposal-review p))))
+          (is (= :not-checked (:target-compatibility (proposals/proposal-review p))))
+          (is (= :file-output (:system-type (semantic/semantic-diff scope :retained :file-output :principal party)))))
+        (with-redefs [clojure.core/requiring-resolve
+                      (fn [& _] (throw (AssertionError. "Retained inspection attempted an unfunded model summary")))]
+          (is (nil? (proposals/proposal-summary p []))))))))
 
 (deftest unauthenticated-unreadable-or-wrong-proposal-refuses-before-artifact-access
   (with-review

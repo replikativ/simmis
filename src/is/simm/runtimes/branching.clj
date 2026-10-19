@@ -917,6 +917,7 @@
   "The branch a fork of this system-type lands on."
   [scope system-type]
   (cond
+    (= :file-output system-type) :file-output/unverified-target
     (world? system-type) :world/trunk
     (review-world? system-type) :world/trunk
     (repo? system-type) (repo-trunk scope)
@@ -926,6 +927,8 @@
   "Head commit of `branch`, as a string, or nil when it does not resolve."
   [scope system-type branch]
   (cond
+    (= :file-output system-type) (if (= branch :file-output/unverified-target)
+                                   "target-not-checked" (str scope))
     (world? system-type) (world-call 'head-id scope branch)
     (review-world? system-type) (review-call 'world-head-id scope branch)
     (repo? system-type) (repo-head-id scope branch)
@@ -934,6 +937,8 @@
 (defn fork-branch!
   "Create a fork branch off trunk. `{:branch :parent :existed?}`."
   [scope system-type slug]
+  (when (= :file-output system-type)
+    (throw (ex-info "Retained file evidence is not a branch to fork" {:system-type system-type})))
   (cond
     (or (world? system-type) (review-world? system-type))
     (throw (ex-info "Worlds are created by Runs, not branch minting"
@@ -951,6 +956,9 @@
    counts should pass it."
   ([scope system-type branch] (delta scope system-type branch nil))
   ([scope system-type branch opts]
+   (when (= :file-output system-type)
+     (throw (ex-info "Retained file review requires its canonical proposal context"
+                     {:system-type system-type})))
    (let [trunk (trunk-of scope system-type)]
      (cond
        (world? system-type) (world-call 'delta scope)
@@ -968,6 +976,9 @@
    For a repo these are real. The datahike adapter still answers `[]`, so a KB
    fork's silence means \"not computed\", not \"clean\"."
   [scope system-type branch]
+  (when (= :file-output system-type)
+    (throw (ex-info "Retained file target compatibility has not been checked"
+                    {:system-type system-type :target-compatibility :not-checked})))
   (let [trunk (trunk-of scope system-type)]
     (or (cond
           (world? system-type)

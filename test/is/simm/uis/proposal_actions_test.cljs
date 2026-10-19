@@ -5,6 +5,7 @@
             [is.simm.uis.web.desktop.runtime :as runtime]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.remote :as remote]
+            [is.simm.uis.web.desktop.connection-epoch :as epoch]
             [is.simm.uis.web.desktop.views.proposals :as proposals]))
 
 (defn reply [response]
@@ -12,6 +13,33 @@
   (fn
     ([_ callback] (callback response nil))
     ([_ callback _] (callback response nil))))
+
+(deftest retained-file-inspection-is-reactive-and-fences-hidden-or-older-replies
+  (let [ctx (context/fork-context runtime/runtime)
+        callbacks (atom [])
+        body {:path "wiki/a.md" :before nil :after "Retained"}
+        deferred (fn ([_ callback] (swap! callbacks conj callback))
+                   ([_ callback _] (swap! callbacks conj callback)))]
+    (try
+      (with-redefs [runtime/runtime ctx remote/spin! deferred
+                    epoch/snapshot (constantly :fixture) epoch/current? (constantly true)]
+        (binding [ec/*execution-context* ctx]
+          (reset! sig/proposals-data {:proposals [{:id "proposal"}]})
+          (proposals/load-retained-file! "proposal" "scope" "wiki/a.md")
+          (is (= :loading (get-in (first (:proposals @sig/proposals-data))
+                                  [:file-bodies ["scope" "wiki/a.md"] :status])))
+          (proposals/hide-retained-file! "proposal" "scope" "wiki/a.md")
+          ((first @callbacks) body nil)
+          (is (nil? (get-in (first (:proposals @sig/proposals-data)) [:file-bodies ["scope" "wiki/a.md"]])))
+          (proposals/load-retained-file! "proposal" "scope" "wiki/a.md")
+          (proposals/load-retained-file! "proposal" "scope" "wiki/a.md")
+          ((second @callbacks) (assoc body :after "Older reply") nil)
+          (is (= :loading (get-in (first (:proposals @sig/proposals-data))
+                                  [:file-bodies ["scope" "wiki/a.md"] :status])))
+          ((nth @callbacks 2) body nil)
+          (is (= body (get-in (first (:proposals @sig/proposals-data))
+                              [:file-bodies ["scope" "wiki/a.md"] :body])))))
+      (finally (context/close-context! ctx)))))
 
 (deftest successful-decisions-reverify-focused-status-instead-of-reusing-open-cache
   (let [ctx (context/fork-context runtime/runtime)

@@ -49,6 +49,16 @@
                   (catch clojure.lang.ExceptionInfo e (:error (ex-data e)))))))
     (is (zero? @calls))))
 
+(deftest retained-output-never-falls-through-to-a-kb-backend
+  (let [scope (random-uuid)]
+    (with-redefs [branching/kb-diff (fn [& _] (throw (AssertionError. "Unexpected KB diff")))
+                  branching/kb-conflicts (fn [& _] (throw (AssertionError. "Unexpected KB conflicts")))]
+      (is (= (str scope) (branching/head-id scope :file-output :retained)))
+      (is (= "target-not-checked" (branching/head-id scope :file-output :file-output/unverified-target)))
+      (is (thrown? clojure.lang.ExceptionInfo (branching/delta scope :file-output :retained)))
+      (is (thrown? clojure.lang.ExceptionInfo (branching/conflicts-with-trunk scope :file-output :retained)))
+      (is (thrown? clojure.lang.ExceptionInfo (branching/fork-branch! scope :file-output "new"))))))
+
 (deftest selecting-an-ordinary-component-cannot-bypass-a-whole-review-gate
   (with-proposal
     (fn [id _]

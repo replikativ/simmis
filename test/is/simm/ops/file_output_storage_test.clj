@@ -36,7 +36,7 @@
                     (proposals/file-proposal!
                      {:connection conn :id proposal :title "Retained wiki output" :room (:room manifest)
                       :forks [{:scope (:id manifest) :authority-scope (:room manifest)
-                               :system-type :file-output :branch (str "files/" (:id manifest))
+                               :system-type :file-output :branch (str "files-" (:id manifest))
                                :file-output entity}]}))]
         (with-redefs [system-db/get-conn (constantly conn)
                       publication/publish! (fn [id]
@@ -64,6 +64,16 @@
           (doseq [inject [(fn [entity] (assoc entity :db/id 123))
                           (fn [entity] (assoc-in entity [:file-output/entries 0 :db/id] 123))]]
             (is (thrown? clojure.lang.ExceptionInfo (storage/publish! conn plan #(file! (inject %))))))
+          (doseq [branch [nil :files/nested "files/nested" "" "space here"]]
+            (is (thrown? clojure.lang.ExceptionInfo
+                         (storage/publish!
+                          conn plan
+                          (fn [entity]
+                            (with-redefs [d/transact (fn [& _] (throw (AssertionError. "Invalid address reached transaction")))]
+                              (proposals/file-proposal!
+                               {:connection conn :title "Invalid component address" :room (:room manifest)
+                                :forks [{:scope (:id manifest) :authority-scope (:room manifest)
+                                         :system-type :file-output :branch branch :file-output entity}]})))))))
           (doseq [attrs [{:proposal/room (random-uuid)} {:proposal/forks []}
                          {:proposal/filing-hash "override"} {:db/id 123}]]
             (is (thrown? clojure.lang.ExceptionInfo

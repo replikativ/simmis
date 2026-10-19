@@ -45,7 +45,7 @@
    An adopted world may contain files or datoms; :world is not a data type.
    Missing counts are unknown, never evidence of an empty contribution."
   [{:keys [system-type counts files entries] :as fork}]
-  (let [files? (or (#{:repo :review-world} system-type)
+  (let [files? (or (#{:repo :review-world :file-output} system-type)
                    (and (= :world system-type)
                         (or (contains? fork :files) (contains? counts :files-changed))))
         kind (cond files? :files (= :book system-type) :entries :else :entities)]
@@ -53,12 +53,32 @@
      :label (case system-type
               :kb "Wiki" :fs "Drive" :book "Book" :repo "Code"
               :review-world "Workflow's work"
+              :file-output "Retained files"
               :world (if files? "Run files" "Run data")
               (str system-type))
      :changed (case kind
                 :files (or (:files-changed counts) (when (contains? fork :files) (count files)))
                 :entries (when (contains? fork :entries) (count entries))
                 (:entities-touched counts))}))
+
+(defn settlement-supported?
+  "Readiness, independent of permissions and live execution capabilities."
+  [fork]
+  (and (not= :file-output (:system-type fork))
+       (not (false? (:settlement-supported? fork)))))
+
+(defn begin-file-request [proposal scope path request-id]
+  (assoc-in proposal [:file-bodies [scope path]] {:status :loading :request-id request-id}))
+
+(defn apply-file-result [proposal scope path request-id result error]
+  (if (not= request-id (get-in proposal [:file-bodies [scope path] :request-id]))
+    proposal
+    (let [valid? (and (map? result) (= path (:path result)) (string? (:after result))
+                      (or (nil? (:before result)) (string? (:before result))))]
+      (assoc-in proposal [:file-bodies [scope path]]
+                (if (or error (not valid?))
+                  {:status :error :error (or error "No valid retained comparison was returned")}
+                  {:status :ready :body result})))))
 
 (defn apply-diff-result
   "Apply a diff result only when it belongs to the newest request.
@@ -95,6 +115,7 @@
                              (some #(and (nil? (:status %))
                                          (false? (:capability-live? %)))
                                    forks))
+        review-only? (boolean (some #(and (nil? (:status %)) (not (settlement-supported? %))) forks))
         busy? (boolean (:busy? proposal))
         diff-ready? (some? (:diffs proposal))
         diff-error (:diff-error proposal)
@@ -116,6 +137,7 @@
      :accept-force? (boolean (:accept-warned? proposal))
      :accept-label (cond
                      busy? "Working…"
+                     review-only? "Review only"
                      diff-error "Review unavailable"
                      (not diff-ready?) "Checking…"
                      capability-missing? "Unavailable"
@@ -123,6 +145,6 @@
                      (:accept-warned? proposal) "Accept anyway"
                      :else "Accept")
      :accept-disabled? (or (not open?) busy? diff-error (not diff-ready?)
-                           blocked? capability-missing?)
+                           blocked? capability-missing? review-only?)
      :request-disabled? (or (not open?) busy?)
      :dismiss-disabled? (or (not open?) busy? capability-missing?)}))

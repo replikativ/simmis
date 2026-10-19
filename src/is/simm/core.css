@@ -8762,6 +8762,11 @@ body.tab-dragging .column-drop-zone {
    scroll on their own X axis — a long source line must not widen the review
    column and push the Accept / Dismiss buttons off screen. */
 .proposal-repo-files { margin-bottom: 6px; }
+.proposal-retained-file { margin: 10px 0; }
+.proposal-retained-source { white-space: pre-wrap; overflow-wrap: anywhere;
+  overflow: auto; max-height: 24rem; padding: 8px;
+  border: 1px solid var(--mono-border-subtle, #ebebea); border-radius: 3px;
+  font-family: monospace; font-size: 0.85em; }
 .proposal-file.diff-mod { border-left-color: #7a5cc0; }
 .proposal-repo-stat { font-family: monospace; font-size: 0.78em; opacity: 0.65;
                       white-space: pre; overflow-x: auto; margin-bottom: 6px; }
