@@ -1,17 +1,16 @@
-// Vendored from the `superficie` npm package: dist/superficie.hljs.js (v0.2.28).
-//
-// It is a standalone highlight.js grammar — no runtime deps, no ProseMirror.
-// The npm package existed in simmis ONLY to deliver this one file, via a
-// `file:../superficie` dependency that made `npm i` impossible for anyone
-// without the sibling checkout. The Clojure/Script side (`superficie.api`)
-// comes from the `org.replikativ/superficie` Maven dep and is unaffected.
-//
-// To refresh: copy ../superficie/dist/superficie.hljs.js over the body below.
+// Vendored from replikativ/superficie: editors/highlightjs/superficie.hljs.js
+// (source at commit 776192f, corresponding to Maven release 0.2.41).
+// Standalone highlight.js grammar; no separate npm runtime dependency.
+// Refresh from the tracked upstream grammar when bumping Superficie.
 /**
  * Superficie language definition for highlight.js
  *
  * Designed to be close to Clojure's highlighting while adding
- * superficie-specific syntax (|>, .>, :=, =>, end blocks).
+ * superficie-specific syntax (|>, .>, :=, =>, x -> body, x[i] <- v,
+ * | match arms, end blocks).
+ *
+ * Source of truth: editors/highlightjs/superficie.hljs.js in the superficie
+ * repository; the npm release copies it to dist/.
  *
  * Usage:
  *   <script src="highlight.min.js"></script>
@@ -44,9 +43,22 @@
     var BLOCK_KEYWORDS = 'defmacro defn defn- fn fn- def defonce ns ' +
       'defmulti defmethod defprotocol defrecord deftype reify proxy ' +
       'if if-not if-let if-some when when-not when-let when-some when-first ' +
-      'let binding with-open with-redefs loop cond condp case ' +
+      'let letfn binding with-open with-redefs loop cond condp case match ' +
       'for doseq dotimes do try catch finally while ' +
       'end else new not throw recur and or mod rem in';
+
+    // A Clojure symbol may contain - / ! ? * . etc., so \b is not a symbol
+    // boundary: without these, `map` would match inside par/map-void! and
+    // `zero` inside add-zero.
+    var SYM_CHAR = "[A-Za-z0-9_\\-!?*+<>=&'/.$%#]";
+    var SYM_BEFORE = '(?<!' + SYM_CHAR + '|:)';
+    var SYM_AFTER = "(?![A-Za-z0-9_\\-!?*+<>=&'/.$%#])";
+
+    function wordsPattern(words) {
+      return words.split(' ').map(function (w) {
+        return w.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+      }).join('|');
+    }
 
     // --- Atoms ---
 
@@ -82,9 +94,11 @@
     };
 
     // --- Superficie-specific operators ---
+    // x -> body (lambda) and x[i] <- v (store) only with spaces around them, so
+    // ->url and <-chan stay symbols; a | match arm only at the start of a line
     var OPERATOR = {
       scope: 'operator',
-      match: /:=|=>|\|>|\.>|not=|==|<=|>=|\+(?=\s)|\-(?=\s)|\*(?=\s)|\/(?=\s)/,
+      match: /:=|=>|\|>|\.>|(?<=\s)->(?=\s)|(?<=\s)<-(?=\s)|(?<=^[ \t]*)\|(?=\s)|not=|==|<=|>=|\+(?=\s)|\-(?=\s)|\*(?=\s)|\/(?=\s)/,
       relevance: 0
     };
 
@@ -123,16 +137,17 @@
       relevance: 0
     };
 
-    // --- Definition forms: defn name, def name, defrecord Name, etc. ---
+    // --- Definition forms: defn name, a/defn name, deftm name, etc. ---
+    // Only the defined name is a title; parameters and types stay plain.
     var DEFINITION = {
-      begin: /\b(defmacro|defn-?|defonce|def|defmulti|defmethod|defprotocol|defrecord|deftype|reify|proxy)\s+/,
-      beginScope: 'keyword',
-      end: /(?=\(|:=|\s*$)/,
-      contains: [{
-        scope: 'title.function',
-        match: /[a-zA-Z_\-!.?+*=<>&'][a-zA-Z0-9_\-!.?+*=<>&'/;:$#]*/,
-        relevance: 0
-      }]
+      match: [
+        new RegExp(SYM_BEFORE + '(?:[A-Za-z0-9_.\\-]+\\/)?(?:defmacro|defn-?|defonce|def|defmulti|defmethod|' +
+                   'defprotocol|defrecord|deftype|deftm|deftheorem|theorem|inductive)' + SYM_AFTER),
+        /\s+/,
+        new RegExp("[A-Za-z_\\-!?*+<>=&'][A-Za-z0-9_\\-!?*+<>=&'/.$%#]*")
+      ],
+      scope: { 1: 'keyword', 3: 'title.function' },
+      relevance: 0
     };
 
     // --- ns form ---
@@ -148,30 +163,38 @@
     };
 
     // --- Build keyword pattern for block keywords ---
-    var KW_PATTERN = BLOCK_KEYWORDS.replace(/[- ]/g, function (c) {
-      return c === ' ' ? '|' : '\\-';
-    });
+    var KW_PATTERN = wordsPattern(BLOCK_KEYWORDS);
 
     var KEYWORD = {
-      match: new RegExp('\\b(' + KW_PATTERN + ')\\b'),
+      match: new RegExp(SYM_BEFORE + '(' + KW_PATTERN + ')' + SYM_AFTER),
+      scope: 'keyword',
+      relevance: 0
+    };
+
+    // --- Any block head: the first word of a line that ends in ':' opens a
+    // block, so library macros (par/map-void!, spin, a/theorem) highlight
+    // without being listed. Not `x := …`, where x is a name, and not a line
+    // that continues a bracket from the line above (`k :- Double] :- Void:`),
+    // which closes a bracket before it opens one.
+    var BLOCK_HEAD = {
+      match: new RegExp("(?<=^[ \\t]*)[A-Za-z_*!?<>=&][A-Za-z0-9_\\-!?*+<>=&'/.$%#]*" +
+                        '(?![^\\n]*:=)(?![^\\n\\[]*\\])(?![^\\n(]*\\))(?=[^\\n]*:[ \\t]*$)', 'm'),
       scope: 'keyword',
       relevance: 0
     };
 
     // --- Built-in function calls: map(...), filter(...), str(...) ---
-    var BUILTIN_PATTERN = CLOJURE_BUILTINS.replace(/[- ]/g, function (c) {
-      return c === ' ' ? '|' : '\\-';
-    });
+    var BUILTIN_PATTERN = wordsPattern(CLOJURE_BUILTINS);
 
     var BUILTIN_CALL = {
-      match: new RegExp('\\b(' + BUILTIN_PATTERN + ')(?=\\()'),
+      match: new RegExp(SYM_BEFORE + '(' + BUILTIN_PATTERN + ')(?=\\()'),
       scope: 'built_in',
       relevance: 0
     };
 
     // --- Built-in as value (not called): passed as argument, e.g. map(inc, xs) ---
     var BUILTIN_VALUE = {
-      match: new RegExp('\\b(' + BUILTIN_PATTERN + ')\\b'),
+      match: new RegExp(SYM_BEFORE + '(' + BUILTIN_PATTERN + ')' + SYM_AFTER),
       scope: 'built_in',
       relevance: 0
     };
@@ -179,7 +202,7 @@
     // --- Regular function calls: f(...) ---
     var FUNC_CALL = {
       match: new RegExp(
-        '(?!\\b(?:' + KW_PATTERN + '|' + BUILTIN_PATTERN + ')\\b)' +
+        SYM_BEFORE + '(?!(?:' + KW_PATTERN + '|' + BUILTIN_PATTERN + ')(?=\\())' +
         '[a-zA-Z_\\-!.?+*=<>&\'][a-zA-Z0-9_\\-!.?+*=<>&\'/;:$#]*(?=\\()'),
       scope: 'title.function',
       relevance: 0
@@ -223,6 +246,7 @@
         CHARACTER,
         DEFINITION,
         NS_FORM,
+        BLOCK_HEAD,
         METADATA,
         VAR_REF,
         CONSTRUCTOR,

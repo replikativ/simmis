@@ -234,7 +234,7 @@
         org.replikativ/briefkasten {:mvn/version "0.1.3"}
 
         ;; superficie - Clojure <-> readable syntax transformer
-        org.replikativ/superficie {:mvn/version "0.2.28"}
+        org.replikativ/superficie {:mvn/version "0.2.41"}
 
         ;; rechentafel - pure-Clojure Excel interpreter (parser → per-cell dep
         ;; graph → dirty-set topological recalc, 412 Excel functions). Backs the

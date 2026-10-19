@@ -3,6 +3,7 @@
             [dvergr.discourse :as discourse]
             [dvergr.room.store.memory :as memory]
             [org.replikativ.spindel.engine.context :as context]
+            [superficie.core :as superficie]
             [is.simm.documents.evaluation :as evaluation]))
 
 (defn request [code] {:path "examples/scratch.clj" :text code :scope :file :from 0 :to 0})
@@ -48,4 +49,25 @@
       (is (thrown? Exception (evaluation/evaluate! room a (request "(def denied 1)")
                                                    #(throw (ex-info "revoked" {})))))
       (is (false? (:success (run a "denied"))))
+      (finally (discourse/close-room! room)))))
+
+(deftest superficie-can-feed-the-same-forkable-sci-interpreter
+  ;; Parser interoperability proof, not a second evaluator or a shipped REPL
+  ;; input mode: transformed code still crosses the ordinary evaluator gate.
+  (let [room (discourse/make-room {:id (keyword (str "dual-sci-" (random-uuid))) :store (memory/make)})
+        human (random-uuid)
+        run (fn [r syntax source]
+              (evaluation/evaluate! r human
+                (request (if (= syntax :superficie) (superficie/sup->clj source) source)) (constantly true)))]
+    (try
+      (is (:success (run room :superficie "defn square [x]:\n  x * x\nend")))
+      (is (= "49" (:value (run room :clojure "(square 7)"))))
+      (is (:success (run room :clojure "(def factor 2)")))
+      (is (= "18" (:value (run room :superficie "factor * square(3)"))))
+      (let [fork (context/fork-context (:ctx room)) child (assoc room :ctx fork)]
+        (try
+          (is (:success (run child :superficie "def factor: 3")))
+          (is (= "2" (:value (run room :clojure "factor"))))
+          (is (= "3" (:value (run child :clojure "factor"))))
+          (finally (context/close-context! fork))))
       (finally (discourse/close-room! room)))))

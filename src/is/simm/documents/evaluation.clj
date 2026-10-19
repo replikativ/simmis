@@ -7,10 +7,11 @@
             [clojure.tools.reader.reader-types :as readers]
             [is.simm.documents.files :as files]
             [is.simm.documents.markdown :as markdown]
+            [is.simm.runtimes.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.signal :refer [signal]]))
 
-(defonce ^:private sessions (signal {}))
+(defonce ^:private sessions (signal context/server-context {}))
 
 (defn- form-range [text cursor]
   (let [r (readers/indexing-push-back-reader text)
