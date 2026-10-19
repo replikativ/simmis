@@ -10,6 +10,7 @@
             [hasch.core :as hasch]
             [is.simm.documents.files :as files]
             [is.simm.documents.markdown :as markdown]
+            [is.simm.ops.knowledge-workspace :as knowledge-workspace]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.util Arrays Base64]))
@@ -126,3 +127,28 @@
                (assoc ((:observe base) context)
                       :knowledge-output (get-in context [:execution/evidence :knowledge-output])))
     :verify (:verify base)}))
+
+(defn with-publication-target
+  "Bind any existing host evaluator, including the worker-specific one, to its
+   actual selected workspace. Preserve base observation and grading; the extra
+   proof is trusted capture evidence, never inferred from model text."
+  [base target]
+  (knowledge-workspace/expected-proof target)
+  (evaluation/make-evaluator
+   {:id :simmis/knowledge-workspace-completion :version 1
+    :basis {:base (evaluation/evaluator-ref base) :target target}
+    :tier (evaluation/evaluator-tier base)
+    :capture (fn [{world :world/room :as context}]
+               (binding [ec/*execution-context* (:ctx world)]
+                 (let [proof (knowledge-workspace/target-proof! world target)
+                       captured (when-let [capture (:capture base)] (capture context))]
+                   (knowledge-workspace/target-proof! world target)
+                   (assoc captured :knowledge-workspace proof))))
+    :observe (fn [context]
+               (assoc ((:observe base) context)
+                      :knowledge-workspace (get-in context [:execution/evidence :knowledge-workspace])))
+    :verify (fn [context evidence]
+              (let [verdict ((:verify base) context evidence)
+                    valid? (= (knowledge-workspace/expected-proof target) (:knowledge-workspace evidence))]
+                (assoc verdict :checks (assoc (:checks verdict) :knowledge-workspace? valid?)
+                       :reward (if valid? (:reward verdict) 0.0))))}))

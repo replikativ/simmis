@@ -260,7 +260,23 @@
                      (= (:execution-id captured)
                         (get-in prepared [:basis :workflow :input-selection :execution-id])))
         (invalid! "Publication basis has no matching frozen knowledge execution"))
-      (assoc-in prepared [:basis :knowledge/publication-basis] publication-basis))
+      (publication/validate! publication-basis)
+      (let [target (:target publication-basis)
+            setup (knowledge-workspace/with-publication-target (:world-setup prepared) target)
+            evaluator (knowledge-outputs/with-publication-target (:evaluator prepared) target)
+            verifier (evaluation/evaluator-ref evaluator)
+            old (environment/validate-environment (:environment prepared))
+            env (environment/make-environment
+                 (cond-> {:id (:environment/id old) :version (:environment/version old)
+                          :task (:environment/task old) :limits (:environment/limits old)
+                          :verifier {:id (:verifier/id verifier) :version (:verifier/version verifier)
+                                     :basis (:verifier/basis verifier)}
+                          :world (assoc (:environment/world old) :setup (evaluation/world-setup-ref setup))}
+                   (contains? old :environment/metadata) (assoc :metadata (:environment/metadata old))))]
+        (-> prepared
+            (assoc :environment env :world-setup setup :evaluator evaluator)
+            (assoc-in [:basis :environment] env)
+            (assoc-in [:basis :knowledge/publication-basis] publication-basis))))
     prepared))
 
 (defn prepare

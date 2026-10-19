@@ -2,6 +2,8 @@
   (:require [clojure.edn :as edn]
             [clojure.test :refer [deftest is]]
             [datahike.api :as d]
+            [dvergr.agent.environment :as environment]
+            [dvergr.agent.evaluation :as evaluation]
             [dvergr.catalog.workspace :as workspace]
             [dvergr.discourse :as discourse]
             [dvergr.room.store.memory :as store]
@@ -218,7 +220,16 @@
                   (resolve))))
             captured (:captured resolution)
             basis (:publication-basis resolution)
-            prepared {:basis {:workflow {:input-selection {:execution-id (:execution-id captured)}}}}]
+            setup (evaluation/make-world-setup
+                   {:id :fixture/binding :prepare (fn [_] (throw (AssertionError. "Admission executed setup")))})
+            evaluator (evaluation/make-evaluator
+                       {:id :fixture/binding :observe identity
+                        :verify (fn [_ _] (throw (AssertionError. "Admission executed verifier")))})
+            env (environment/make-environment {:id :fixture/binding :task :binding
+                                               :verifier {:id :fixture/binding}})
+            prepared {:environment env :world-setup setup :evaluator evaluator
+                      :basis {:environment env
+                              :workflow {:input-selection {:execution-id (:execution-id captured)}}}}]
         (is (= "Original evidence" (get-in captured [:inputs "/in/knowledge/sources/inbox/a.md"])))
         (is (= {:present? false} (inputs/publication-before basis "wiki/new.md")))
         (is (contains? (:files basis) "wiki/a.md"))

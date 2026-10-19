@@ -7,7 +7,63 @@
             [dvergr.catalog.workspace :as room-workspace]
             [dvergr.rooms.files :as files]
             [dvergr.substrate.geschichte :as workspace]
-            [org.replikativ.spindel.engine.core :as ec]))
+            [geschichte.query :as query]
+            [is.simm.model.knowledge-publication :as publication]
+            [malli.core :as m]
+            [org.replikativ.spindel.engine.core :as ec]
+            [yggdrasil.protocols :as protocols]))
+
+(defn expected-proof
+  "The portable identity a bound host capture must prove. Constructing this
+   value does not execute a world or grant any publication authority."
+  [target]
+  (when-not (and (publication/host-target? target)
+                 (m/validate publication/target-schema target))
+    (throw (ex-info "Knowledge execution requires an explicit retained target" {})))
+  {:version 1 :target target :selected-system (:runtime-system target)
+   :actual (select-keys target [:runtime-system :repository :store :backend])})
+
+(defn validate-proof!
+  "Check retained trusted capture evidence, never a model-authored result."
+  [target proof]
+  (when-not (= (expected-proof target) proof)
+    (throw (ex-info "Knowledge execution workspace proof does not match its target" {})))
+  proof)
+
+(defn target-proof!
+  "Read the selected RUN world's real identity. A coincidentally correct legacy
+   fallback is insufficient. Fork branch names differ; store/repository identity
+   must not. Returns portable data, no connections or permissions."
+  [world target]
+  (expected-proof target)
+  (binding [ec/*execution-context* (:ctx world)]
+    (when-not (and (workspace/workspace-selected?)
+                   (= (:runtime-system target) (workspace/selected-system-id)))
+      (throw (ex-info "Knowledge execution has no matching explicit workspace selection" {})))
+    (let [{:keys [conn system]} (workspace/current-workspace)
+          db @conn
+          proof {:version 1 :target target :selected-system (workspace/selected-system-id)
+                 :actual {:runtime-system (str (protocols/system-id system))
+                          :repository (:geschichte.repo/id (query/repository db))
+                          :store (get-in db [:config :store :id])
+                          :backend (get-in db [:config :store :backend])}}]
+      (validate-proof! target proof))))
+
+(defn with-publication-target
+  "Bind an existing setup before it constructs tools or stages input. No new
+   effects or grants: selection is host-controlled forkable computation state."
+  [base target]
+  (expected-proof target)
+  (evaluation/make-world-setup
+   {:id :simmis/knowledge-workspace :version 1
+    :basis {:base (evaluation/world-setup-ref base) :target target}
+    :prepare (fn [{world :room :as context}]
+               (binding [ec/*execution-context* (:ctx world)]
+                 (workspace/select-workspace! (:runtime-system target))
+                 (target-proof! world target)
+                 (let [result ((:prepare base) context)]
+                   (target-proof! world target)
+                   result)))}))
 
 (def cleanup-policy
   {:version 2 :roots ["in/knowledge" "out/wiki"] :max-paths files/max-batch-files})
