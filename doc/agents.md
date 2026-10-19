@@ -376,6 +376,11 @@ are not current room files or wiki pages. Older results remain in **Attempts**;
 the shelf is hidden during historical chat browsing rather than showing current
 results as historical evidence.
 
+Screen descriptions retain failed frames as failed archive entries when the
+vision provider throws or is unconfigured, rather than silently dropping the
+frame. Provider exception text is not copied into the searchable archive;
+trusted task-model resolution errors can report the configured model problem.
+
 After interruption or a lost completion reply, use
 `worker_driver.py --state /private/room-worker reconcile --run RUN_UUID`.
 This never relaunches or sends GO, and does not need the artifact or login to

@@ -372,10 +372,11 @@
         ;; 0.1.312 keeps model/broker loading independent of Datahike and the
         ;; agent runtime, preserving trusted installation boundaries (#355).
         ;; Temporary immutable upstream pin for scoped coordinators, owned Run
-        ;; sessions and world-spend attribution (dvergr#357–361). Alpha stores
+        ;; sessions, world-spend attribution and subscription image input
+        ;; (dvergr#357–361, #363). Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "769bf2a011d9fcbc2c3fa2e0b2d7e9482283df7f"}}
+                               :git/sha "3d0c540f63093d59d87beee5aab117c81dbedea3"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
