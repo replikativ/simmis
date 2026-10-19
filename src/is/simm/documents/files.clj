@@ -9,6 +9,7 @@
             [dvergr.substrate.geschichte :as workspace]
             [geschichte.content :as content]
             [geschichte.query :as query]
+            [geschichte.repo :as repo]
             [hasch.core :as hasch]
             [is.simm.documents.blocks :as blocks]
             [is.simm.documents.identity :as identity]
@@ -101,6 +102,21 @@
       (refuse! ::corrupt "File content does not match its selected revision"))
     bytes))
 
+(defn search-paths [room term]
+  (when-not (and (string? term) (<= 1 (count (str/trim term)) 128))
+    (refuse! ::invalid "Enter a filename or path, up to 128 characters"))
+  (with-workspace room
+    (fn [conn]
+      (let [rows (vec (take (inc max-index-entries) (d/datoms @conn :avet :geschichte.work/path)))
+            needle (str/lower-case (str/trim term))]
+        (when (> (count rows) max-index-entries) (refuse! ::limit "Workspace exceeds the interactive path index limit"))
+        (let [matches (vec (take 101 (for [row rows :let [path (:v row)]
+                                          :when (and (str/includes? (str/lower-case path) needle)
+                                                     (not (str/ends-with? path "/.keep"))
+                                                     (try (path! path) true (catch Exception _ false)))]
+                                      {:path path :name (last (str/split path #"/")) :kind (file-kind path)})))]
+          {:query term :entries (vec (take 100 matches)) :more? (> (count matches) 100)})))))
+
 (defn analyze
   "Inert document analysis; never load/require/eval file code or widgets."
   [repository-id path text]
@@ -131,6 +147,58 @@
                                                      (if (= kind :text) :file kind))
                  :repository-id repo-id :execution-policy :source-only}
           text (assoc :text text :analysis (analyze repo-id path text)))))))
+
+(defn history
+  "File changes reachable from the current Geschichte HEAD. Metadata only;
+   a bounded window, not a claim to enumerate all history or follow renames."
+  [room path]
+  (path! path)
+  (with-workspace room
+    (fn [conn]
+      (let [captured (atom @conn)
+            commits (vec (repo/log captured {:limit 32}))
+            selected-entry (fn [commit]
+                             (let [tree (repo/tree-at captured commit)]
+                               (when (> (count tree) max-index-entries)
+                                 (refuse! ::limit "History snapshot exceeds the interactive file limit"))
+                               (get tree path)))
+            window (take 31 commits)
+            unavailable (filter #(nil? (:geschichte.commit/snapshot %)) window)
+            changed (for [commit window
+                          :when (:geschichte.commit/snapshot commit)
+                          :let [parents (:geschichte.commit/parents commit)
+                                _ (when (> (count parents) 32) (refuse! ::limit "Too many merge parents for preview"))
+                                known-parents (filter :geschichte.commit/snapshot parents)
+                                boundary? (not= (count parents) (count known-parents))
+                                selected (selected-entry commit)]
+                          :when (or boundary? (if (seq parents)
+                                               (some #(not= selected (selected-entry %)) known-parents)
+                                               (some? selected)))]
+                      {:commit (:geschichte.commit/id commit)
+                       :boundary? boundary?
+                       :parents (mapv :geschichte.commit/id parents)
+                       :time (:geschichte.commit/time commit)
+                       :message (:geschichte.commit/message commit)
+                       :author (:geschichte.commit/author commit) :entry selected})]
+        {:path path :versions (vec changed) :scanned (min 31 (count commits))
+         :unavailable (mapv :geschichte.commit/id unavailable)
+         :more? (> (count commits) 31) :lineage :ancestry}))))
+
+(defn read-history [room path commit-id]
+  (path! path)
+  (when-not (uuid? commit-id) (refuse! ::invalid "Select a saved revision"))
+  (when-not (some #(= commit-id (:commit %)) (:versions (history room path)))
+    (refuse! ::conflict "Revision is outside the current history window; refresh history"))
+  (with-workspace room
+    (fn [conn]
+      (let [captured (atom @conn) selected (get (repo/tree-at captured commit-id) path)]
+        (if-not selected {:path path :commit commit-id :deleted? true}
+          (do
+            (when (> (:size selected) markdown/max-source-bytes)
+              (refuse! ::limit "Historical source exceeds the preview limit"))
+            (when-not (#{:markdown :text} (file-kind path))
+              (refuse! ::invalid "Historical preview currently supports text files"))
+            {:path path :commit commit-id :text (markdown/decode (repo/read-at captured commit-id path))}))))))
 
 (defn read-binary [room path expected]
   (path! path)

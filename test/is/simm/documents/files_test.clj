@@ -18,6 +18,23 @@
 (defn- save! [room path text expected]
   (files/save-file! room {:path path :text text :expected expected}))
 
+(deftest history-is-canonical-metadata-with-an-independent-read-only-preview
+  (with-room
+    (fn [room]
+      (let [first-save (save! room "wiki/history.md" "one" nil)
+            second-save (save! room "wiki/history.md" "two" (:entry first-save))]
+        (save! room "unrelated.md" "other" nil)
+        (let [history (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "History loaded a blob")))]
+                        (files/history room "wiki/history.md"))
+              versions (:versions history)]
+          (is (= [(:commit second-save) (:commit first-save)] (mapv (comp str :commit) versions)))
+          (is (= "one" (:text (files/read-history room "wiki/history.md" (parse-uuid (:commit first-save)))))))
+        (is (= "two" (:text (files/read-file room "wiki/history.md"))))
+        (let [log repo/log missing-id (random-uuid)]
+          (with-redefs [repo/log (fn [& args] (conj (vec (apply log args)) {:geschichte.commit/id missing-id}))]
+            (is (= [missing-id] (:unavailable (files/history room "wiki/history.md"))))))
+        (is (thrown? Exception (files/read-history room "wiki/history.md" (random-uuid))))))))
+
 (deftest one-tree-includes-notes-code-and-attachments-without-loading-blobs
   (with-room
     (fn [room]

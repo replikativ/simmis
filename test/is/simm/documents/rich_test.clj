@@ -3,6 +3,8 @@
             [clojure.string :as str]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.rich :as rich]
+            [is.simm.documents.files :as files]
+            [is.simm.uis.web.desktop.memory-editor :as editor]
             [is.simm.documents.rich-text :as text]))
 
 (def repo-id #uuid "00000000-0000-4000-8000-000000000001")
@@ -55,3 +57,43 @@
                                      {:type "horizontalRule"}]}]
     (is (thrown? clojure.lang.ExceptionInfo
                  (rich/apply-edit repo-id "wiki/note.md" source (markdown/revision source) 0 6 model)))))
+
+(deftest continuous-rich-drafts-are-source-local-and-batch-validation-agrees
+  (let [source "---\r\ncustom: retained\r\n---\r\n\r\n# Title\r\n\r\nFirst paragraph.\r\n\r\n[[Opaque]]\r\n\r\nLast paragraph.\r\n"
+        analysis (files/analyze repo-id "wiki/test.md" source)
+        file {:path "wiki/test.md" :kind :markdown :entry {:content :initial} :text source :analysis analysis}
+        d (editor/draft file) base-id (get-in d [:rich-base :id])
+        slots (filter :model (:slots analysis)) first-slot (second slots) last-slot (last slots)
+        revised (-> d
+                    (editor/rich-changed base-id (:from first-slot)
+                                         (assoc-in (:model first-slot) [:content 0 :content 0 :text] "Edited first") {:from 1 :to 1})
+                    (editor/rich-changed base-id (:from last-slot)
+                                         (assoc-in (:model last-slot) [:content 0 :content 0 :text] "Edited last") {:from 2 :to 2}))
+        expected (rich/apply-edits repo-id "wiki/test.md" source (:revision analysis) (editor/rich-edits revised))]
+    (is (= :rich (:mode d)))
+    (is (= source (:text d)))
+    (is (= 2 (count (editor/rich-edits revised))))
+    (is (= expected (:text revised)))
+    (is (= expected (-> source (str/replace "First paragraph." "Edited first") (str/replace "Last paragraph." "Edited last"))))
+    (is (str/includes? expected "[[Opaque]]\r\n"))
+    (let [opaque (first (filter #(nil? (:model %)) (:slots analysis)))
+          selection (editor/source-selection revised (:from opaque) (:to opaque))]
+      (is (= (str/index-of (:text revised) "[[Opaque]]") (:anchor selection))))
+    (is (= revised (editor/rich-changed revised :old-world (:from first-slot) (:model first-slot) nil)))
+    (let [saved (editor/saved-at-generation revised (:generation d) (:text revised) {:entry {:content :saved}})
+          typed (editor/rich-changed revised base-id (:from first-slot)
+                                     (assoc-in (:model first-slot) [:content 0 :content 0 :text] "Typed during save") nil)
+          ack (editor/saved-at-generation typed (:generation d) (:text revised) {:entry {:content :saved}})]
+      (is (not (editor/dirty? saved)))
+      (is (editor/dirty? ack))
+      (is (str/includes? (:text ack) "Typed during save"))
+      (is (= base-id (get-in ack [:rich-base :id]))))
+    (is (nil? (:rich-base (editor/changed revised "# Source edit\n" {:anchor 0 :head 0}))))))
+
+(deftest batch-rich-edits-refuse-overlap-stale-source-and-metadata-injection
+  (let [source "First\n\nSecond\n" analysis (files/analyze repo-id "test.md" source)
+        a (first (:slots analysis)) edit (select-keys a [:from :to :model])]
+    (is (thrown? clojure.lang.ExceptionInfo (rich/apply-edits repo-id "test.md" source (:revision analysis) [edit edit])))
+    (is (thrown? clojure.lang.ExceptionInfo (rich/apply-edits repo-id "test.md" "changed" (:revision analysis) [edit])))
+    (is (thrown? clojure.lang.ExceptionInfo (rich/apply-edits repo-id "test.md" source (:revision analysis)
+                  [(assoc edit :model {:type "doc" :content [{:type "horizontalRule"} {:type "paragraph" :content [{:type "text" :text "title: injected"}]} {:type "horizontalRule"}]})])))))

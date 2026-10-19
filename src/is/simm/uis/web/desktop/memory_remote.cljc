@@ -9,6 +9,7 @@
             #?(:clj [is.simm.model.system-db :as system-db])
             #?(:clj [is.simm.agents.room-agents :as rooms])
             #?(:clj [is.simm.documents.files :as files])
+            #?(:clj [is.simm.documents.evaluation :as evaluation])
             #?(:clj [is.simm.documents.rich :as rich])
             #?(:clj [is.simm.documents.office :as office])
             #?(:clj [geschichte.query :as query])
@@ -19,7 +20,9 @@
      (when-not party (throw (ex-info "Authentication required" {:type :authentication-required})))
      (context/with-server-context
        (let [id (parse-uuid room-id)
-             action (if (#{:save :move :office-save} operation) :write :read)]
+             action (cond (= :evaluate operation) :merge
+                          (#{:save :move :office-save :rich-save} operation) :write
+                          :else :read)]
          (when-not id (throw (ex-info "Invalid room identity" {:type :invalid})))
          (access/require! action {:room id})
          (let [room (rooms/live-room id)]
@@ -29,7 +32,13 @@
                  reply
                  (case operation
                    :folder (files/list-folder room (:folder args))
+                   :search (files/search-paths room (:query args))
                    :file (files/read-file room (:path args))
+                   :history (files/history room (:path args))
+                   :history-file (files/read-history room (:path args) (:commit args))
+                   :evaluate (evaluation/evaluate! room party args
+                               #(when-not (access/can? @(system-db/get-conn) party :merge {:room id})
+                                  (throw (ex-info "Room evaluation permission was revoked" {:type :not-authorized}))))
                    :download (files/read-binary room (:path args) (:expected args))
                    :analyze (files/with-workspace room
                               (fn [conn]
@@ -45,6 +54,18 @@
                                      next (rich/apply-edit repo-id path text revision from to model)]
                                  {:text next :analysis (files/analyze repo-id path next)}))))
                    :save (files/save-file! room args {:authorize! authorize!})
+                   :rich-save
+                   (let [{:keys [path expected source revision edits text]} args]
+                     (when-not (= #{:path :expected :source :revision :edits :text} (set (keys args)))
+                       (throw (ex-info "Invalid rich document save" {:type :invalid})))
+                     (files/path! path)
+                     (files/with-workspace room
+                       (fn [conn]
+                         (let [repo-id (:geschichte.repo/id (query/repository @conn))
+                               result (rich/apply-edits repo-id path source revision edits)]
+                           (when-not (= result text)
+                             (throw (ex-info "Rich source validation differs from the draft; use Source to inspect it" {:type :invalid})))
+                           (files/save-file! room {:path path :expected expected :text result} {:authorize! authorize!})))))
                    :office (office/inspect! room (:path args) (:expected args) (:part args))
                    :office-save (office/save-part! room args {:authorize! authorize!})
                    :move (do
@@ -53,7 +74,29 @@
                            (files/move-file! room (:path args) (:target args) (:expected args)
                                              {:authorize! authorize!})))]
              (assoc reply :permissions
-                    {:write? (access/can? @(system-db/get-conn) party :write {:room id})})))))))
+                    {:write? (access/can? @(system-db/get-conn) party :write {:room id})
+                     :evaluate? (access/can? @(system-db/get-conn) party :merge {:room id})})))))))
+
+(defn-spin-remote evaluate-memory-code!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+    #?(:clj (let [party (access/authenticated-party-id)]
+              (await (blocking/blocking #(invoke-memory party room-id-str :evaluate request))))
+       :cljs nil)))
+
+(defn-spin-remote load-memory-history!
+  [server-id room-id-str path]
+  (spin-remote server-id [room-id-str path]
+    #?(:clj (let [party (access/authenticated-party-id)]
+              (await (blocking/blocking #(invoke-memory party room-id-str :history {:path path}))))
+       :cljs nil)))
+
+(defn-spin-remote load-memory-history-file!
+  [server-id room-id-str path commit-id]
+  (spin-remote server-id [room-id-str path commit-id]
+    #?(:clj (let [party (access/authenticated-party-id)]
+              (await (blocking/blocking #(invoke-memory party room-id-str :history-file {:path path :commit commit-id}))))
+       :cljs nil)))
 
 (defn-spin-remote load-memory-folder!
   [server-id room-id-str folder]
@@ -67,6 +110,13 @@
   (spin-remote server-id [room-id-str path]
     #?(:clj (let [party (access/authenticated-party-id)]
               (await (blocking/blocking #(invoke-memory party room-id-str :file {:path path}))))
+       :cljs nil)))
+
+(defn-spin-remote search-memory-files!
+  [server-id room-id-str query-text]
+  (spin-remote server-id [room-id-str query-text]
+    #?(:clj (let [party (access/authenticated-party-id)]
+              (await (blocking/blocking #(invoke-memory party room-id-str :search {:query query-text}))))
        :cljs nil)))
 
 (defn-spin-remote analyze-memory-text!
@@ -88,6 +138,13 @@
   (spin-remote server-id [room-id-str request]
     #?(:clj (let [party (access/authenticated-party-id)]
               (await (blocking/blocking #(invoke-memory party room-id-str :save request))))
+       :cljs nil)))
+
+(defn-spin-remote save-memory-rich-file!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+    #?(:clj (let [party (access/authenticated-party-id)]
+              (await (blocking/blocking #(invoke-memory party room-id-str :rich-save request))))
        :cljs nil)))
 
 (defn-spin-remote move-memory-file!

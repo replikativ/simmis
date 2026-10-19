@@ -11,18 +11,19 @@
             [is.simm.runtimes.web :as web]))
 
 (defn state-key [data]
-  [(:id (web/current-session)) (str (:room-id data)) (:col-id data)])
+  [(:id (web/current-session)) (str (:room-id data)) (:col-id data) (:tab-id data)])
 
 (defn- parent [path] (str/join "/" (butlast (str/split path #"/"))))
 
 (defn controller [data]
   (let [ctx (or ec/*execution-context* runtime) session (web/current-session)
         room (str (:room-id data)) key (state-key data)
+        state-signal (or (:state-signal data) sig/memory-editor-state)
         current? #(web/current-session? session)
-        state #(binding [ec/*execution-context* ctx] (get @sig/memory-editor-state key))
+        state #(binding [ec/*execution-context* ctx] (get @state-signal key))
         update! (fn [f & args]
                   (binding [ec/*execution-context* ctx]
-                    (when (current?) (apply swap! sig/memory-editor-state update key f args))))
+                    (when (current?) (apply swap! state-signal update key f args))))
         change! (fn [path f & args] (apply update! update-in [:drafts path] f args))
         request!
         (fn [slot invoke consume & [after]]
@@ -53,7 +54,11 @@
               (catch :default error
                 (finish! #(-> % (assoc-in [:loading slot] false)
                               (assoc-in [:errors slot] (rem/error-text error))))))))]
-    (letfn [(folder! [path]
+    (letfn [(navigation-refresh! []
+              (when-not (= :navigation (:col-id data))
+                ((:refresh (controller {:room-id (:room-id data) :col-id :navigation
+                                        :state-signal sig/memory-navigation-state})))))
+            (folder! [path]
               (request! [:folder path] #(remote/load-memory-folder! web/server-id room path)
                         #(assoc-in %1 [:folders path] %2)))
             (analyze! [path]
@@ -71,16 +76,21 @@
                               (update-in s [:drafts path] editor/loaded-at-generation generation reply))))))
             (save! [path]
               (let [draft (get-in (state) [:drafts path]) sent (:text draft)]
-                (when (and (not (:rich-edit draft)) (not (get-in (state) [:loading [:save path]]))
+                (when (and (not (get-in (state) [:loading [:save path]]))
                            (not (get-in (state) [:loading [:move path]])))
                   (request! [:save path]
-                            #(remote/save-memory-file! web/server-id room
-                                                       {:path path :expected (get-in draft [:source :entry]) :text sent})
+                            #(if-let [base (:rich-base draft)]
+                               (remote/save-memory-rich-file! web/server-id room
+                                                              {:path path :expected (get-in draft [:source :entry]) :text sent
+                                                               :source (:text base) :revision (get-in base [:analysis :revision])
+                                                               :edits (editor/rich-edits draft)})
+                               (remote/save-memory-file! web/server-id room
+                                                         {:path path :expected (get-in draft [:source :entry]) :text sent}))
                             (fn [s reply] (update-in s [:drafts path] editor/saved-at-generation (:generation draft) sent reply))
-                            (fn [_] (folder! (parent path)))))))
+                            (fn [_] (folder! (parent path)) (navigation-refresh!))))))
             (mode! [path mode]
-              (when-not (get-in (state) [:drafts path :rich-edit])
-                (change! path assoc :mode mode)
+              (do
+                (change! path #(cond-> (assoc % :mode mode) (= mode :rich) editor/begin-rich))
                 (when (and (not= mode :source) (nil? (get-in (state) [:drafts path :analysis])))
                   (analyze! path))))
             (create! [path]
@@ -112,7 +122,7 @@
                                                #(remote/save-memory-file! web/server-id room
                                                                           {:path path :expected nil :base64 payload})
                                                (fn [s _] s)
-                                               (fn [_] (folder! folder) (open! path true))))))))
+                                               (fn [_] (folder! folder) (navigation-refresh!) (open! path true))))))))
                       (.catch (fn [e] (update! assoc-in [:errors :upload] (rem/error-text e))))))))
             (office-open! [path part]
               (let [draft (get-in (state) [:drafts path]) generation (:generation draft)
@@ -140,8 +150,27 @@
                                               (assoc-in [:office :saved-text] sent)
                                               (assoc :last-commit (:commit reply))
                                               (update :generation inc))) s))
-                            (fn [_] (folder! (parent path)))))))]
+                            (fn [_] (folder! (parent path)) (navigation-refresh!))))))]
       {:owner key :state state :change change! :folder folder! :open #(open! % false) :reload #(open! % true)
+       :history (fn [path]
+                  (request! [:history path] #(remote/load-memory-history! web/server-id room path)
+                            #(assoc-in %1 [:history path] %2)))
+       :history-file (fn [path commit-id]
+                       (request! [:history-file path]
+                                 #(remote/load-memory-history-file! web/server-id room path commit-id)
+                                 #(assoc-in %1 [:history-preview path] %2)))
+       :evaluate (fn [path scope]
+                   (let [draft (get-in (state) [:drafts path])
+                         {:keys [anchor head]} (:selection draft)
+                         request {:path path :text (:text draft) :scope scope
+                                  :from (min (or anchor 0) (or head 0)) :to (max (or anchor 0) (or head 0))}]
+                     (when-not (get-in (state) [:loading [:evaluate path]])
+                       (request! [:evaluate path] #(remote/evaluate-memory-code! web/server-id room request)
+                                 #(assoc-in %1 [:evaluations path] (assoc %2 :input-text (:text draft)))))))
+       :ensure-path (fn []
+                      (when (and (:path data) (not= (:path data) (:opened-path (state))))
+                        (update! assoc :opened-path (:path data))
+                        (open! (:path data) false)))
        :ensure-root (fn []
                       (when (and (:id session) (current?)
                                  (nil? (get-in (state) [:folders ""]))
@@ -149,13 +178,26 @@
                         (folder! "")))
        :analyze analyze! :save save! :mode mode! :create create! :download download! :upload upload!
        :office-open office-open! :office-save office-save!
+       :select-path #(update! assoc :selected %)
+       :set-query #(update! assoc :query %)
+       :search (fn [] (let [query (:query (state))]
+                       (when-not (str/blank? query)
+                         (request! :search #(remote/search-memory-files! web/server-id room query)
+                                   (fn [s reply] (if (= query (:query s)) (assoc s :search reply) s))))))
+       :toggle-root (fn [] (update! update :root-expanded? not) (folder! (or (:focus-folder (state)) "")))
+       :focus-folder (fn [path]
+                       (update! assoc :focus-folder path :current-folder path :query "" :root-expanded? true)
+                       (folder! path))
+       :rich-change (fn [path base-id from model selection]
+                      (try (change! path editor/rich-changed base-id from model selection)
+                           (catch :default error (update! assoc-in [:errors [:rich path]] (rem/error-text error)))))
        :root (fn [] (update! assoc :current-folder "") (folder! ""))
        :mkdir (fn [path]
                 (request! [:mkdir path]
                           #(remote/save-memory-file! web/server-id room
                                                      {:path (str path "/.keep") :expected nil :text ""})
                           (fn [s _] (-> s (assoc :current-folder path) (assoc-in [:expanded path] true)))
-                          (fn [_] (folder! (parent path)) (folder! path))))
+                          (fn [_] (folder! (parent path)) (folder! path) (navigation-refresh!))))
        :toggle (fn [path]
                  (let [expanded (get-in (state) [:expanded path])]
                    (update! assoc-in [:expanded path] (not expanded))
@@ -164,37 +206,16 @@
        :refresh (fn []
                   (update! assoc :errors {})
                   (doseq [folder (keys (:folders (state)))] (folder! folder))
+                  (navigation-refresh!)
                   (when-let [path (:selected (state))] (open! path true)))
        :use-incoming (fn [path]
                        (when (js/confirm "Replace this local draft with the newer saved version?")
                          (change! path editor/use-incoming)
                          (update! update :errors dissoc [:save path] [:file path] [:rich path])))
-       :start-rich (fn [path slot]
-                     (change! path assoc :rich-edit {:slot slot :model (:model slot) :token (str (random-uuid))}))
-       :change-rich (fn [path token model selection]
-                      (when (= token (get-in (state) [:drafts path :rich-edit :token]))
-                        (change! path update :rich-edit assoc :model model :selection selection)))
-       :cancel-rich #(change! % dissoc :rich-edit)
-       :apply-rich
-       (fn [path]
-         (let [draft (get-in (state) [:drafts path]) region (:rich-edit draft)
-               text (:text draft) token (:token region) slot (:slot region)]
-           (request! [:rich path]
-                     #(remote/apply-memory-rich-edit! web/server-id room
-                                                      {:path path :text text :revision (get-in draft [:analysis :revision])
-                                                       :from (:from slot) :to (:to slot) :model (:model region)})
-                     (fn [s reply]
-                       (if (and (= token (get-in s [:drafts path :rich-edit :token]))
-                                (= (:model region) (get-in s [:drafts path :rich-edit :model]))
-                                (= text (get-in s [:drafts path :text])))
-                         (update-in s [:drafts path]
-                                    #(-> % (assoc :text (:text reply) :analysis (:analysis reply)
-                                                  :analysis-text (:text reply)) (dissoc :rich-edit)))
-                         (assoc-in s [:errors [:rich path]] "The region changed during validation. Your newer edits are retained; apply again."))))))
        :move
        (fn [path target]
          (let [draft (get-in (state) [:drafts path])]
-           (if (or (editor/dirty? draft) (:rich-edit draft) (get-in (state) [:loading [:save path]])
+           (if (or (editor/dirty? draft) (get-in (state) [:loading [:save path]])
                    (get-in (state) [:loading [:office-save path]])
                    (get-in (state) [:loading [:move path]]) (get-in (state) [:drafts target]))
              (update! assoc-in [:errors :move] "Finish pending saves and choose a destination without another open draft before moving.")
@@ -208,4 +229,14 @@
                              (assoc-in s [:errors :move] "File moved; both local drafts were retained. Refresh before saving either draft.")
                              (-> s (assoc-in [:drafts target] moved) (update :drafts dissoc path)
                                  (assoc :selected (:path reply))))))
-                       (fn [_] (folder! (parent path)) (folder! (parent target)) (open! target true))))))})))
+                       (fn [_]
+                         (binding [ec/*execution-context* ctx]
+                           (swap! sig/layout-columns
+                                  (fn [columns]
+                                    (mapv (fn [col]
+                                            (if (= (:col-id data) (:id col))
+                                              (update col :tabs (fn [tabs]
+                                                                 (mapv (fn [tab] (if (= (:tab-id data) (:id tab))
+                                                                                  (-> tab (assoc-in [:data :path] target)
+                                                                                      (assoc :title (last (str/split target #"/")))) tab)) tabs))) col)) columns))))
+                         (folder! (parent path)) (folder! (parent target)) (navigation-refresh!) (open! target true))))))})))

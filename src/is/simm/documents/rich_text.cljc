@@ -44,7 +44,9 @@
 (declare emit)
 
 (defn- delimited [marker s]
-  (let [[_ before body after] (re-matches #"(?s)(\s*)(.*?)(\s*)" s)]
+  ;; Explicit anchors matter: cljs re-matches executes the JS regex first;
+  ;; an unanchored lazy body can choose an empty match and fail its size check.
+  (let [[_ before body after] (re-matches #"^(\s*)([\s\S]*?)(\s*)$" s)]
     (if (seq body) (str before marker body marker after) s)))
 
 (defn- inline [node depth budget]
@@ -120,7 +122,8 @@
                             (if (and (= "text" (:type n)) (= "text" (:type before))
                                      (= (:marks n) (:marks before)))
                               (conj (pop out) (update before :text str (:text n)))
-                              (conj out n)))) [] (:content node))]
+                              (conj out n)))) [] (:content node))
+        content (if (and (= type "doc") (= content [{:type "paragraph" :content []}])) [] content)]
     (if (= type "text")
       {:type type :text (:text node)
        :marks (vec (sort-by :type

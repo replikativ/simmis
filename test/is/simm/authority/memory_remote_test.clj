@@ -8,6 +8,7 @@
             [is.simm.agents.room-agents :as rooms]
             [is.simm.authority.world :as world]
             [is.simm.documents.files :as files]
+            [is.simm.documents.rich :as rich]
             [is.simm.runtimes.context :as context]
             [is.simm.uis.web.desktop.memory-remote]))
 
@@ -36,7 +37,23 @@
                      (get-in (inbound kind "load-memory-file!" {:path "src/core.clj"}) [:result :execution-policy])))
               (is (= "# Hello\n"
                      (get-in (inbound kind "load-memory-file!" {:path "wiki/hello.md"}) [:result :text]))))
+            (is (= ["src/core.clj"] (mapv :path (get-in (inbound :member "search-memory-files!" {:query-text "core"}) [:result :entries]))))
+            (is (seq (get-in (inbound :member "load-memory-history!" {:path "wiki/hello.md"}) [:result :versions])))
+            (let [request {:path "src/core.clj" :text "(+ 20 22)" :scope :file :from 0 :to 0}]
+              (is (= "42" (get-in (inbound :owner "evaluate-memory-code!" {:request request}) [:result :value])))
+              (doseq [kind [:member :non-member :admin :anon]]
+                (is (world/refused? (inbound kind "evaluate-memory-code!" {:request request}))))
+              (is (:error (inbound :owner "evaluate-memory-code!" {:request (assoc request :actor (:member w))}))))
+            (let [opened (files/read-file room "wiki/hello.md") analysis (:analysis opened)
+                  slot (first (:slots analysis))
+                  edit (assoc (select-keys slot [:from :to]) :model (assoc-in (:model slot) [:content 0 :content 0 :text] "Updated"))
+                  text (rich/apply-edits (:repository-id opened) (:path opened) (:text opened) (:revision analysis) [edit])
+                  request {:path (:path opened) :expected (:entry opened) :source (:text opened)
+                           :revision (:revision analysis) :edits [edit] :text text}]
+              (is (true? (get-in (inbound :member "save-memory-rich-file!" {:request request}) [:result :saved?])))
+              (is (= text (:text (files/read-file room "wiki/hello.md")))))
             (doseq [kind [:non-member :admin :anon]]
+              (is (world/refused? (inbound kind "save-memory-rich-file!" {:request {}})))
               (is (world/refused? (inbound kind "load-memory-folder!" {:folder ""})))
               (is (world/refused? (inbound kind "load-memory-file!" {:path "src/core.clj"})))
               (is (world/refused? (inbound kind "save-memory-file!"

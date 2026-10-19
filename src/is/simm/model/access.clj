@@ -770,10 +770,15 @@
      "load-room-drive!"        {:action R :resource (room :room-id-str)}
      "load-memory-folder!"     {:action R :resource (room :room-id-str)}
      "load-memory-file!"       {:action R :resource (room :room-id-str)}
+     "load-memory-history!"    {:action R :resource (room :room-id-str)}
+     "load-memory-history-file!" {:action R :resource (room :room-id-str)}
+     "evaluate-memory-code!"   {:action M :resource (room :room-id-str)}
+     "search-memory-files!"    {:action R :resource (room :room-id-str)}
      "analyze-memory-text!"    {:action R :resource (room :room-id-str)}
      "apply-memory-rich-edit!" {:action R :resource (room :room-id-str)}
      "download-memory-file!"   {:action R :resource (room :room-id-str)}
      "save-memory-file!"       {:action W :resource (room :room-id-str)}
+     "save-memory-rich-file!"  {:action W :resource (room :room-id-str)}
      "move-memory-file!"       {:action W :resource (room :room-id-str)}
      "load-memory-office-part!" {:action R :resource (room :room-id-str)}
      "save-memory-office-part!" {:action W :resource (room :room-id-str)}

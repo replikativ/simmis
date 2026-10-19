@@ -806,7 +806,7 @@
    - :chat -> Members, Pinned
    - :video -> Participants, Recordings
    - :feed -> Filters"
-  [col-id active-tab collapsed? height local-db room-states]
+  [col-id active-tab collapsed? height local-db room-states memory-context]
   (when active-tab
     (let [tab-type (:type active-tab)
           tab-id (:id active-tab)
@@ -855,7 +855,8 @@
         ;; Content
         (el/div {:key (str key-prefix "-content")
                  :class "context-footer-content"}
-          (render-context-content key-prefix tab-type (:data active-tab) local-db room-states))))))
+          (if (= :memory tab-type) memory-context
+              (render-context-content key-prefix tab-type (:data active-tab) local-db room-states)))))))
 
 ;; =============================================================================
 ;; Column
@@ -1028,7 +1029,9 @@
              ;; Await spins, pass through plain vnodes
              tab-content (if (instance? org.replikativ.spindel.spin.core/Spin tab-result)
                            (await tab-result)
-                           tab-result)]
+                           tab-result)
+             memory-context (when (= :memory (:type active-tab-data))
+                              (await (memory-view/render-context (:data active-tab-data))))]
          (el/div {:key id
                   :class (vc/class-names "column" (when is-active? "active"))
                   :data-col-id id
@@ -1050,7 +1053,7 @@
            ;; (per-KB signal for wiki tabs, shared local-db for non-KB).
            (render-context-footer id active-tab-data
                                   footer-collapsed? footer-height
-                                  tab-db room-states)
+                                  tab-db room-states memory-context)
 
            ;; Resize handle (not on last column)
            (when (< index (dec total-columns))
@@ -1110,7 +1113,7 @@
                (vc/icon "layout-grid")
                (el/h3 {} "No content")
                (el/p {} "Open a page from the sidebar."))))
-         (render-context-footer id active-tab-data true nil local-db nil)
+         (render-context-footer id active-tab-data true nil local-db nil nil)
          (when (< index (dec total-columns))
            (el/div {:class "column-resize-handle"
                     :on-mousedown (fn [_] nil)}))))))

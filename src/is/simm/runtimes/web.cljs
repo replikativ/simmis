@@ -77,6 +77,7 @@
   (= (:id session) (:id @current-session*)))
 
 (defn- clear-memory-editor-state! []
+  (reset! sig/memory-navigation-state {})
   (reset! sig/memory-editor-state {}))
 
 (defn stop-session!

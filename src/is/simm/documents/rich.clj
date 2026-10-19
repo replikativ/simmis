@@ -34,3 +34,21 @@
         (throw (ex-info "Rich edits cannot change document metadata or explicit block structure"
                         {:type ::invalid})))
       source)))
+
+(defn apply-edits
+  "Validate a bounded, disjoint set of original source spans. Descending edits
+   leave lower offsets unchanged; metadata/block invariants are checked per edit."
+  [repository-id path source revision edits]
+  (when-not (and (string? source) (vector? edits) (<= (count edits) 200)
+                 (<= (* (count source) (max 1 (count edits))) (* 8 1024 1024))
+                 (= revision (markdown/revision source)))
+    (throw (ex-info "Invalid rich document edit set" {:type ::invalid})))
+  (let [sorted (sort-by :from > edits)]
+    (loop [remaining sorted upper (count source)]
+      (when-let [{:keys [from to] :as edit} (first remaining)]
+        (when-not (and (= #{:from :to :model} (set (keys edit)))
+                       (integer? from) (integer? to) (<= 0 from to upper) (< from to))
+          (throw (ex-info "Rich edit spans must be disjoint original regions" {:type ::invalid})))
+        (recur (next remaining) from)))
+    (reduce (fn [text {:keys [from to model]}]
+              (apply-edit repository-id path text (markdown/revision text) from to model)) source sorted)))

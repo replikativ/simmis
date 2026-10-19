@@ -1,9 +1,53 @@
 (ns is.simm.uis.web.desktop.memory-editor
-  "Serializable, execution-context-owned document drafts and conflict rules.")
+  "Serializable, execution-context-owned document drafts and conflict rules."
+  (:require [is.simm.documents.rich-text :as rich]))
+
+(def max-rich-regions 200)
+
+(defn begin-rich [d]
+  (let [analysis (:analysis d)]
+    (if (or (:rich-base d) (not= :ready (get-in analysis [:semantic :status]))
+            (> (count (:slots analysis)) max-rich-regions)) d
+        (assoc d :rich-base {:id [(:revision analysis) (:generation d)]
+                            :text (:text d) :analysis analysis
+                            :models (into {} (keep (fn [slot] (when (:model slot) [(:from slot) (:model slot)]))) (:slots analysis))
+                            :selections {}}))))
+
+(defn rich-edits [d]
+  (let [{:keys [analysis models]} (:rich-base d)]
+    (vec (for [slot (:slots analysis)
+               :let [model (get models (:from slot))]
+               :when (and (:model slot) (not= (rich/normalize (:model slot)) (rich/normalize model)))]
+           {:from (:from slot) :to (:to slot) :model model}))))
+
+(defn rich-changed [d base-id from model selection]
+  (if (not= base-id (get-in d [:rich-base :id])) d
+      (let [slots (get-in d [:rich-base :analysis :slots])
+            slot (first (filter #(= from (:from %)) slots))]
+        (when-not (:model slot) (throw (ex-info "This region is source-only" {:type ::unsupported})))
+        (rich/validate-model! model)
+        (let [next (-> d (assoc-in [:rich-base :models from] model)
+                       (assoc-in [:rich-base :selections from] selection))
+              edits (into {} (map (juxt :from identity)) (rich-edits next))
+              text (reduce (fn [source slot]
+                             (if-let [edit (get edits (:from slot))]
+                               (rich/apply-region source slot (:model edit)) source))
+                           (get-in d [:rich-base :text]) (reverse slots))]
+          (assoc next :text text)))))
+
+(defn source-selection [d from to]
+  (let [source (get-in d [:rich-base :text]) edits (rich-edits d)
+        slots (into {} (map (juxt :from identity)) (get-in d [:rich-base :analysis :slots]))
+        offset (fn [position]
+                 (+ position (reduce + 0 (for [edit edits :when (<= (:to edit) position)]
+                                            (- (count (rich/apply-region source (get slots (:from edit)) (:model edit)))
+                                               (count source))))))]
+    {:anchor (offset from) :head (offset to)}))
 
 (defn draft [file]
-  {:source file :text (:text file) :analysis (:analysis file) :analysis-text (:text file) :generation 0
-   :mode (if (= :markdown (:kind file)) :read :source) :selection {:anchor 0 :head 0}})
+  (let [d {:source file :text (:text file) :analysis (:analysis file) :analysis-text (:text file) :generation 0
+           :mode (if (= :markdown (:kind file)) :rich :source) :selection {:anchor 0 :head 0}}]
+    (if (= :markdown (:kind file)) (begin-rich d) d)))
 
 (defn dirty? [d]
   (or (and (:source d) (nil? (get-in d [:source :entry])))
@@ -16,10 +60,15 @@
     (or (dirty? old) (:rich-edit old))
     (if (= (:entry file) (get-in old [:source :entry])) old (assoc old :incoming file))
     :else (assoc (merge (draft file) (select-keys old [:mode :selection]))
-                 :generation (inc (:generation old 0)))))
+                 ;; A same-entry refresh must not supersede an in-flight save.
+                 :generation (if (= (:entry file) (get-in old [:source :entry]))
+                               (:generation old 0) (inc (:generation old 0))))))
+
+(defn property-entries [properties] (sort-by (comp pr-str key) properties))
 
 (defn changed [d text selection]
   (cond-> (assoc d :text text :selection selection)
+    (not= text (:text d)) (dissoc :rich-base)
     (not= text (:analysis-text d)) (dissoc :analysis)))
 
 (defn loaded-at-generation [d generation file]
@@ -30,7 +79,9 @@
     (assoc (draft incoming) :generation (inc (:generation d 0))) d))
 
 (defn analyzed [d text analysis]
-  (if (= text (:text d)) (assoc d :analysis analysis :analysis-text text) d))
+  (if (= text (:text d))
+    (cond-> (assoc d :analysis analysis :analysis-text text)
+      (= :rich (:mode d)) begin-rich) d))
 
 (defn saved [d sent reply]
   (-> d

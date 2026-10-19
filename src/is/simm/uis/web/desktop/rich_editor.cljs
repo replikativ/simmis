@@ -88,8 +88,8 @@
                              (js->clj (.. event -detail -selection) :keywordize-keys true))))}))
 
 (defn command! [event operation]
-  (when-let [container (some-> (.-target event) (.closest ".memory-region-editor"))]
-    (when-let [el (.querySelector container "simmis-rich-editor")]
+  (when-let [container (some-> (.-target event) (.closest ".memory-document, .memory-region-editor"))]
+    (when-let [el (.querySelector container "simmis-rich-editor:focus-within")]
     (when-let [editor (.-simmisRichEditor el)]
       (let [chain (.focus (.chain editor))]
         (case operation

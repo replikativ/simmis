@@ -279,10 +279,12 @@
    self-tracking spin tree (see views/nav.cljc)."
   []
   (spin
-    (let [nav-vnode (await (nav/render-nav-sidebar))
+    (let [width (iv/get-new (track sig/sidebar-width))
+          nav-vnode (await (nav/render-nav-sidebar))
           cols-vnode (await (render-columns-spin))
           status-vnode (await (render-status-bar-spin))]
-      (el/div {:class "app-shell app-shell--chromeless"}
+      (el/div {:class "app-shell app-shell--chromeless"
+               :style {:grid-template-columns (str width "px minmax(0, 1fr)")}}
         nav-vnode
         cols-vnode
         status-vnode))))

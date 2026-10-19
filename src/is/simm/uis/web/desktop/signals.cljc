@@ -333,6 +333,12 @@
            "Session/room/view keyed file drafts, folders and request fences."
            (signal runtime {})))
 
+#?(:cljs (def memory-navigation-state
+           "Room-owned folder expansion, metadata snapshots, focus and search."
+           (signal runtime {})))
+
+#?(:cljs (def sidebar-width (signal runtime 260)))
+
 #?(:cljs
    (defn clear-captured-results!
      "Release browser download URLs with their owning authenticated session."

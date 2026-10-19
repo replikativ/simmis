@@ -12,11 +12,18 @@ branches rather than to trunk.
 
 ## Room files and execution state
 
-The room **Memory** panel browses its Geschichte worktree on demand rather
+The **Memory** tree in the resizable left navigation browses each room's
+Geschichte worktree on demand rather
 than downloading file contents as a browser database replica. Markdown,
 workflow files, and room-local Clojure source share the same hierarchy.
-Markdown offers Read, selective Rich text, semantic Outline, and exact Source
-views; unsupported rich regions remain inert source. Existing independent KBs
+Filename search and folder-focus breadcrumbs avoid unbounded indentation.
+Files open in independent tabs. Markdown offers Read, directly editable Rich
+text, semantic Outline, and exact Source views; unsupported rich regions remain
+inert source. Rich typing patches supported source spans locally; Save validates
+the complete bounded batch on the server before one canonical publication.
+YAML document properties and explicit document/block identities remain in the
+source; programmable property schemas are separate trusted definitions, not
+automatically installed by an uploaded file. Existing independent KBs
 and drive resources remain accessible while this file-backed surface is
 introduced; they are not silently migrated or deleted.
 
@@ -27,8 +34,31 @@ selected through their Spindel execution contexts/worlds. Saving a file in
 Memory neither evaluates it nor reloads any interpreter. Host-injected
 functions and permissions are capabilities, not editable source files.
 
+For `.clj`, `.cljc` and `.bb` files, explicit selection, top-level-form and
+whole-file evaluation targets the authenticated human's separate room-scoped
+SCI world component. It does not borrow an agent interpreter or inject its
+room tools. Definitions persist for that human in the room until its context
+closes; descendant worlds select an independent interpreter. Evaluation is
+owner/`:merge` gated, serialized per interpreter and bounded to 64K source
+characters and a ten-second evaluator timeout. Timeout retires the session so
+later requests cannot reuse its unwinding heap. Results, printed output and
+the exact evaluated source are retained in the editor signal, not as a durable
+Run or a deployed workflow. The old chat inspector Quick eval input is removed.
+
+The file tab's Context footer previews changes from a bounded 31-commit window
+of the canonical Geschichte ancestry, including merges. It compares file
+metadata against parent snapshots and loads historical text only on demand.
+Previews are read-only and do not change the draft, current branch or GlobalCut;
+this is not yet the legacy wiki's interactive history subway. Renames appear
+under their respective paths.
+Imported commits without materialized snapshots are reported as unavailable;
+a readable snapshot with an unavailable parent is labelled a boundary, not
+asserted to be a file change. Open file contents and folder listings currently
+refresh through explicit reads; they do not yet follow remote workspace changes
+automatically like the independent KB replicas.
+
 Editor drafts, selections, request tokens, and read/mutation generations live
-in a session/room/column-keyed Spindel signal. Native CodeMirror/Tiptap handles
+in a session/room/column/tab-keyed Spindel signal. Native CodeMirror/Tiptap handles
 and download object URLs belong only to their DOM elements and are released
 on detach. Authenticated RPCs capture the principal before dispatching bounded
 store/parsing work off the FRP drain. Saves use the canonical Dvergr file

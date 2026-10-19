@@ -14,6 +14,8 @@
             [org.replikativ.spindel.effects.track :refer [track]]
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.signals :as sig]
+            [is.simm.uis.web.desktop.memory-tree :as memory-tree]
+            #?(:cljs [is.simm.uis.web.desktop.views.memory-navigation :as memory-nav])
             [clojure.string :as str]
             #?(:cljs [datahike.api :as d])
             #?(:cljs [org.replikativ.spindel.spin.core])
@@ -748,17 +750,8 @@
                                         (conj s "kbs"))))))})
            (when-not (contains? collapsed "kbs")
              (el/div {:class "nav-section-items"}
-               (for [room (sort-by :room/name rooms)
-                     :let [id (:room/id room) title (:room/name room)]]
-                 (el/div {:key (str "workspace-" id) :class "nav-subsection"}
-                         (el/div {:class "nav-item"
-                                  :on-click (fn [_]
-                                              (binding [rtc/*execution-context* runtime]
-                                                (sig/open-or-activate-tab!
-                                                 :memory {:room-id id :room-name title}
-                                                 {:title (str title " Memory")})))}
-                                 (vc/icon "folder")
-                                 (el/span {:class "nav-item-label"} (str title " /")))))
+               (when (seq rooms)
+                 (await (ifor-each :room/id (sort-by :room/name rooms) memory-nav/render)))
                (when (seq kb-items)
                  ;; render-fn returns spins → ifor-each returns a spin → await it
                  (await (ifor-each :kb/id kb-items
@@ -1030,7 +1023,11 @@
   []
   #?(:cljs
      (spin
-       (let [current-user (iv/get-new (track sig/current-user))]
+       (let [current-user (iv/get-new (track sig/current-user))
+             width (iv/get-new (track sig/sidebar-width))
+             ctx (or rtc/*execution-context* runtime)
+             resize! (fn [value] (binding [rtc/*execution-context* ctx]
+                                  (reset! sig/sidebar-width (memory-tree/sidebar-width value (.-innerWidth js/window)))))]
          ;; First-time roster load + push subscription. The dirty-bit
          ;; subscription keeps sig/user-rooms fresh after server-side
          ;; roster changes (KB create/share, contact add, room
@@ -1050,6 +1047,27 @@
            ;; register the aggregate invalidations on the SAME subscription
            (psync/install!))
          (el/aside {:class "nav-sidebar"}
+           (el/div {:class "nav-sidebar-resizer" :role "separator" :aria-label "Navigation width"
+                    :aria-orientation "vertical" :aria-valuemin 180 :aria-valuemax 640 :aria-valuenow width :tabindex 0
+                    :on-pointerdown (fn [e]
+                                      (when (= 0 (.-button e))
+                                        (.preventDefault e)
+                                        (let [el (.-currentTarget e)]
+                                          (set! (.-simmisResizeStart el) #js {:x (.-clientX e) :width width})
+                                          (.setPointerCapture el (.-pointerId e)))))
+                    :on-pointermove (fn [e]
+                                      (when-let [start (.-simmisResizeStart (.-currentTarget e))]
+                                        (resize! (+ (.-width start) (- (.-clientX e) (.-x start))))))
+                    :on-pointerup (fn [e]
+                                    (let [el (.-currentTarget e)]
+                                      (set! (.-simmisResizeStart el) nil)
+                                      (when (.hasPointerCapture el (.-pointerId e)) (.releasePointerCapture el (.-pointerId e)))))
+                    :on-lostpointercapture #(set! (.-simmisResizeStart (.-currentTarget %)) nil)
+                    :on-keydown (fn [e]
+                                  (case (.-key e)
+                                    "ArrowLeft" (do (.preventDefault e) (resize! (- width 10)))
+                                    "ArrowRight" (do (.preventDefault e) (resize! (+ width 10)))
+                                    "Home" (do (.preventDefault e) (resize! 260)) nil))})
            ;; Header: Logo + Search
            (await (render-sidebar-header-spin))
            ;; Scrollable content area
