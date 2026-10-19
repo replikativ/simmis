@@ -30,7 +30,8 @@
             [is.simm.ops.workflows :as workflows]
             [jsonista.core :as json]
             [malli.core :as m]
-            [org.replikativ.spindel.engine.core :as ec]))
+            [org.replikativ.spindel.engine.core :as ec]
+            [yggdrasil.protocols :as protocols]))
 
 (deftest unsupported-adoption-declarations-are-not-silently-accepted
   (is (#'workflow-runs/supported-definition? {:task "Maintain wiki"}))
@@ -195,8 +196,10 @@
    Exercise selection/Run behavior with a pinned host descriptor; canonical
    registry and runtime rejection is tested separately in knowledge-admission."
   [room-id room]
-  {:conn (binding [ec/*execution-context* (:ctx room)] (:conn (geschichte/current-workspace)))
-   :identity {:registry-system room-id :runtime-system "fixture-runtime"}})
+  (binding [ec/*execution-context* (:ctx room)]
+    (let [{:keys [conn system]} (geschichte/current-workspace)]
+      {:conn conn
+       :identity {:registry-system room-id :runtime-system (str (protocols/system-id system))}})))
 
 (defn- response [n]
   (let [events (concat
@@ -248,8 +251,10 @@
                (vreset! retained (registry/lookup (:run/world child)))
                (is (= :completed (:status status)) (pr-str (select-keys status [:status :error])))
                (is (:settled? status))
-               (is (= :simmis/knowledge-completion
+               (is (= :simmis/knowledge-workspace-completion
                       (get-in (first attempts) [:attempt/environment :environment/verifier :verifier/id])))
+               (is (= :simmis/knowledge-completion
+                      (get-in (first attempts) [:attempt/environment :environment/verifier :verifier/basis :base :verifier/id])))
                (is (map? (knowledge-outputs/validate!
                           (get-in (first attempts) [:attempt/evidence :knowledge-output]))))
                (is (empty? (get-in (first attempts) [:attempt/evidence :knowledge-output :files])))
