@@ -102,3 +102,49 @@
         (is (= text (:source (md/patch text (:revision parsed) []))))
         (is (= (str (subs text 0 start) "Edited text" (subs text end))
                (:source changed)))))))
+
+(deftest syntax-profile-projects-structure-without-equating-it-to-semantic-blocks
+  (let [source (str "# Heading\n\n- [ ] Pending\n- [x] Done\n\n"
+                    "| Name | Cost |\n| :--- | ---: |\n| A | 100 |\n\n"
+                    "~~Old~~ and a footnote.[^note]\n\n[^note]: Source.\n")
+        doc (md/parse source)
+        nodes (rest (tree-seq (comp seq :children) :children {:children (:nodes doc)}))]
+    (is (= md/syntax-profile (:syntax-profile doc)))
+    (is (= 1 (:heading-level (first (:nodes doc)))))
+    (is (= [false true] (mapv :checked? (filter #(= :TaskListItem (:kind %)) nodes))))
+    (is (= #{:left :right} (set (keep :table-alignment nodes))))
+    (doseq [kind [:TableBlock :TableRow :TableCell :Strikethrough :FootnoteBlock]]
+      (is (some #(= kind (:kind %)) nodes)))
+    (is (= source (:source doc)))))
+
+(deftest references-retain-exact-spans-labels-fragments-and-remain-unresolved
+  (let [source (str "\uFEFF---\r\ntitle: Links\r\n---\r\n"
+                    "[[Plan#^block-1|Label]] ![[assets/chart.svg]] [[#Heading]]\n")
+        doc (md/parse source)
+        refs (md/references doc)]
+    (is (= [:wikilink :embed :wikilink] (mapv :kind refs)))
+    (is (= ["Plan" "assets/chart.svg" ""] (mapv :target refs)))
+    (is (= ["^block-1" nil "Heading"] (mapv :fragment refs)))
+    (is (= "Label" (:label (first refs))))
+    (doseq [{:keys [from to target-from target-to target status revision]} refs]
+      (is (= target (subs source target-from target-to)))
+      (is (<= (:body-from doc) from target-from target-to to (count source)))
+      (is (= :unresolved status))
+      (is (= (:revision doc) revision)))))
+
+(deftest literal-reference-contexts-do-not-invent-backlinks
+  (let [source (:source (first (filter #(= :literal-reference-contexts (:id %)) fixtures/cases)))
+        refs (md/references (md/parse source))]
+    (is (= ["Target"] (mapv :target refs)))
+    (is (= ["alias"] (mapv :label refs)))))
+
+(deftest target-span-edits-preserve-reference-labels-fragments-and-literal-examples
+  (let [source "See [[Old/Plan#^evidence|Our plan]]. `[[Old/Plan]]` stays literal.\n"
+        doc (md/parse source)
+        ref (first (md/references doc))
+        changed (md/patch source (:revision doc)
+                          [{:from (:target-from ref) :to (:target-to ref) :text "New/Plan"}])]
+    (is (= "See [[New/Plan#^evidence|Our plan]]. `[[Old/Plan]]` stays literal.\n"
+           (:source changed)))
+    (is (= "^evidence" (:fragment (first (md/references changed)))))
+    (is (= "Our plan" (:label (first (md/references changed)))))))

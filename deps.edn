@@ -265,6 +265,13 @@
         ;; org-mode path when we add org-roam).
         clj-commons/clj-yaml {:mvn/version "1.0.29"}
         com.vladsch.flexmark/flexmark {:mvn/version "0.64.8"}
+        ;; Explicit native-document syntax profile. Keep all extension versions
+        ;; aligned with the core parser; no whole-document formatter is used.
+        com.vladsch.flexmark/flexmark-ext-tables {:mvn/version "0.64.8"}
+        com.vladsch.flexmark/flexmark-ext-gfm-tasklist {:mvn/version "0.64.8"}
+        com.vladsch.flexmark/flexmark-ext-gfm-strikethrough {:mvn/version "0.64.8"}
+        com.vladsch.flexmark/flexmark-ext-wikilink {:mvn/version "0.64.8"}
+        com.vladsch.flexmark/flexmark-ext-footnotes {:mvn/version "0.64.8"}
 
         ;; distributed-scope still declares the pre-rename io.replikativ group
         ;; for hasch/kabel; exclude so only the org.replikativ artifacts (same

@@ -18,6 +18,21 @@ diagnostic instead of a guessed repair. This is raw metadata, not yet a codec
 for Simmis's programmable property schema. Syntax projection and source sizes
 are bounded; exceeding a limit is an explicit refusal.
 
+The syntax profile pins Flexmark 0.64.8 with explicit table, task-list,
+strikethrough, footnote and wikilink/embed extensions. It preserves heading
+levels, task state and table-cell alignment. `references` extracts body
+wikilinks/embeds only from parsed syntax nodes, keeping original target spelling,
+aliases, heading/block fragments, source revision and exact UTF-16 spans.
+References remain unresolved: no title/path guessing, permission decisions or
+automatic network fetch occurs here. Literal code, escaped examples and HTML
+comments do not become backlinks. Frontmatter relation values need a separate
+schema-aware codec; they are not treated as body references.
+
+This profile does not yet implement complete Obsidian callout/math semantics,
+stable semantic-block identity or Simmis grouping metadata. Those constructs
+remain in the original source; recognizing syntax is not a claim that the
+semantic codec or rich editor can round-trip every feature.
+
 `patch` accepts a content revision and non-overlapping edits in that revision's
 coordinates. A stale revision, overlapping edits or a range splitting a UTF-16
 surrogate pair is refused. Untouched source is preserved. A no-op edit does not
@@ -29,6 +44,10 @@ An explicitly initialized disposable Geschichte database can also hold
 `:document/*` and `:document.node/*` entities. Its document UUID is independent
 of its path. Source bytes are Geschichte content; syntax nodes reference
 source spans rather than holding another serialized document.
+
+Syntax children have explicit ordinal attributes as well as source spans,
+since Datahike cardinality-many references are unordered. These ordinals are
+derived syntax order, not semantic block fractional order or stable identity.
 
 `content/transact-content!` publishes the source's worktree reference,
 document revision and syntax projection in one Datahike transaction. A pure

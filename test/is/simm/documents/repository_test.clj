@@ -166,3 +166,21 @@
         (is (= "original" (markdown/decode (repo/read conn "note.md"))))
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"projection does not match"
                              (documents/read-document conn id)))))))
+
+(deftest markdown-structure-has-queryable-order-levels-and-task-state
+  (with-repository
+    (fn [conn]
+      (let [id (random-uuid)
+            source (str "## Heading\n\n- [ ] Open\n- [x] Done\n\n"
+                        "| Name |\n| ---: |\n| Value |\n")]
+        (documents/create! conn {:id id :path "structured.md" :source source})
+        (is (= [[0 :Heading] [1 :BulletList] [2 :TableBlock]]
+               (sort-by first
+                        (d/q '[:find ?order ?kind :in $ ?id
+                               :where [?doc :document/id ?id] [?doc :document/nodes ?node]
+                               [?node :document.node/ordinal ?order]
+                               [?node :document.node/kind ?kind]] @conn id))))
+        (is (= #{[2]} (d/q '[:find ?level :where [_ :document.node/heading-level ?level]] @conn)))
+        (is (= #{[true] [false]} (d/q '[:find ?checked :where [_ :document.node/checked? ?checked]] @conn)))
+        (is (= #{[:right]} (d/q '[:find ?align :where [_ :document.node/table-alignment ?align]] @conn)))
+        (is (= source (:source (documents/read-document conn id))))))))

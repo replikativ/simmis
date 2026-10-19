@@ -26,6 +26,11 @@
                            [:document/projection-version :db.type/long]
                            [:document/valid? :db.type/boolean]
                            [:document.node/kind :db.type/keyword]
+                           [:document.node/heading-level :db.type/long]
+                           [:document.node/ordinal :db.type/long]
+                           [:document.node/checked? :db.type/boolean]
+                           [:document.node/table-header? :db.type/boolean]
+                           [:document.node/table-alignment :db.type/keyword]
                            [:document.node/from :db.type/long]
                            [:document.node/to :db.type/long]]]
           {:db/ident attr :db/valueType type :db/cardinality :db.cardinality/one})))
@@ -82,9 +87,14 @@
                       {:type ::conflict})))
     current))
 
-(defn- node-tx [{:keys [kind from to children]}]
-  (cond-> {:document.node/kind kind :document.node/from from :document.node/to to}
-    (seq children) (assoc :document.node/children (mapv node-tx children))))
+(defn- node-tx [ordinal {:keys [kind from to children heading-level checked? table-header? table-alignment]}]
+  (cond-> {:document.node/kind kind :document.node/from from :document.node/to to
+           :document.node/ordinal (long ordinal)}
+    heading-level (assoc :document.node/heading-level (long heading-level))
+    (some? checked?) (assoc :document.node/checked? checked?)
+    (some? table-header?) (assoc :document.node/table-header? table-header?)
+    table-alignment (assoc :document.node/table-alignment table-alignment)
+    (seq children) (assoc :document.node/children (mapv node-tx (range) children))))
 
 (defn publish-tx
   "Pure Datahike transaction function. CAS and projection publish atomically."
@@ -98,9 +108,9 @@
         :geschichte.work/mode (long repo/default-mode)}
        (cond-> {:document/id id :document/path path
                 :document/source-content [:geschichte.content/id content-id]
-                :document/revision (:revision projection) :document/projection-version 1
+                :document/revision (:revision projection) :document/projection-version 2
                 :document/valid? (:valid? projection)}
-         (seq (:nodes projection)) (assoc :document/nodes (mapv node-tx (:nodes projection))))]))))
+         (seq (:nodes projection)) (assoc :document/nodes (:nodes projection)))]))))
 
 (defn read-document
   "Read one immutable DB view. An external file write invalidates the view
@@ -128,7 +138,7 @@
        ;; projection data, never document text/frontmatter, into the tx function.
        [[:db.fn/call publish-tx id expected path content-id
          {:revision (:revision parsed) :size (long (alength bytes))
-          :valid? (empty? (:diagnostics parsed)) :nodes (:nodes parsed)}]]))
+          :valid? (empty? (:diagnostics parsed)) :nodes (mapv node-tx (range) (:nodes parsed))}]]))
     {:id id :path path :revision (:revision parsed)}))
 
 (defn create! [conn {:keys [id path source]}]

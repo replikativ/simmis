@@ -7,6 +7,12 @@
   (:require [clj-yaml.core :as yaml]
             [hasch.core :as hasch])
   (:import [com.vladsch.flexmark.parser Parser]
+           [com.vladsch.flexmark.ast Heading]
+           [com.vladsch.flexmark.ext.tables TablesExtension TableCell]
+           [com.vladsch.flexmark.ext.gfm.tasklist TaskListExtension TaskListItem]
+           [com.vladsch.flexmark.ext.gfm.strikethrough StrikethroughExtension]
+           [com.vladsch.flexmark.ext.footnotes FootnoteExtension]
+           [com.vladsch.flexmark.ext.wikilink WikiLinkExtension WikiNode WikiImage]
            [com.vladsch.flexmark.util.ast Node]
            [java.nio ByteBuffer CharBuffer]
            [java.nio.charset CodingErrorAction StandardCharsets]))
@@ -14,6 +20,21 @@
 (def max-source-bytes 2097152)
 (def max-syntax-nodes 20000)
 (def max-syntax-depth 100)
+
+(def syntax-profile
+  "Pinned syntax projection, not a claim of complete Obsidian/plugin support."
+  {:id :simmis/markdown-syntax :version 1 :parser "flexmark/0.64.8"
+   :features #{:tables :tasks :strikethrough :footnotes :wikilinks :wiki-embeds}})
+
+(defn- parser []
+  (-> (Parser/builder)
+      (.extensions [(TablesExtension/create) (TaskListExtension/create)
+                    (StrikethroughExtension/create) (FootnoteExtension/create)
+                    (WikiLinkExtension/create)])
+      (.set WikiLinkExtension/LINK_FIRST_SYNTAX true)
+      (.set WikiLinkExtension/ALLOW_ANCHORS true)
+      (.set WikiLinkExtension/IMAGE_LINKS true)
+      (.build)))
 
 (defn- invalid! [message]
   (throw (ex-info message {:type ::invalid})))
@@ -75,10 +96,40 @@
 (defn- syntax-node [^Node node offset depth remaining]
   (when (or (> depth max-syntax-depth) (neg? (vswap! remaining dec)))
     (invalid! "Document syntax exceeds the projection limit"))
-  {:kind (keyword (.getNodeName node))
-   :from (+ offset (.getStartOffset node))
-   :to (+ offset (.getEndOffset node))
-   :children (mapv #(syntax-node % offset (inc depth) remaining) (children node))})
+  (cond-> {:kind (keyword (.getNodeName node))
+           :from (+ offset (.getStartOffset node))
+           :to (+ offset (.getEndOffset node))
+           :children (mapv #(syntax-node % offset (inc depth) remaining) (children node))}
+    (instance? Heading node) (assoc :heading-level (.getLevel ^Heading node))
+    (instance? TaskListItem node) (assoc :checked? (.isItemDoneMarker ^TaskListItem node))
+    (instance? TableCell node)
+    (merge (let [alignment (.getAlignment ^TableCell node)]
+             (cond-> {:table-header? (.isHeader ^TableCell node)}
+               alignment (assoc :table-alignment (keyword (.toLowerCase (.name alignment)))))))
+    (instance? WikiNode node)
+    (assoc :reference
+           (let [^WikiNode wiki node
+                 target (.getPageRef wiki)
+                 label (.getText wiki)
+                 fragment (.getAnchorRef wiki)]
+             (cond-> {:kind (if (instance? WikiImage node) :embed :wikilink)
+                      :target (str target)
+                      :target-from (+ offset (.getStartOffset target))
+                      :target-to (+ offset (.getEndOffset target))
+                      :status :unresolved}
+               (seq (str label)) (assoc :label (str label))
+               (seq (str fragment)) (assoc :fragment (str fragment)))))))
+
+(defn references
+  "References recognized in valid Markdown syntax contexts, with exact source
+   spans and unresolved spelling. Resolution/authority is a separate operation."
+  [document]
+  (->> (:nodes document)
+       (mapcat #(tree-seq (comp seq :children) :children %))
+       (keep (fn [{:keys [reference from to]}]
+               (when reference (assoc reference :from from :to to
+                                                :revision (:revision document)))))
+       vec))
 
 (defn parse
   "Retain EXACT source and derive syntax spans/properties. Invalid frontmatter
@@ -87,11 +138,10 @@
   (let [id (revision source)
         fm (frontmatter source)
         offset (or (:to fm) 0)
-        parser (.build (Parser/builder))
-        tree (.parse parser (subs source offset))
+        tree (.parse (parser) (subs source offset))
         ;; Per-call traversal budget; never a registry or shared editor state.
         remaining (volatile! max-syntax-nodes)]
-    {:source source :revision id :body-from offset :frontmatter fm
+    {:source source :revision id :syntax-profile syntax-profile :body-from offset :frontmatter fm
      :diagnostics (vec (:diagnostics fm))
      :nodes (mapv #(syntax-node % offset 0 remaining) (children tree))}))
 
