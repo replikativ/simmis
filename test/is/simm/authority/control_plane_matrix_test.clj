@@ -158,6 +158,8 @@
    "load-workflow-source!"   [(c :room MEMBERS)]
    "save-workflow-source!"   [(c :room MEMBERS)]
    "load-memory-folder!"     [(c :room MEMBERS)]
+   "prepare-memory-stream!" [(c :room MEMBERS)]
+   "load-memory-metadata!"  [(c :room MEMBERS)]
    "load-memory-file!"       [(c :room MEMBERS)]
    "load-memory-history!"    [(c :room MEMBERS)]
    "load-memory-history-file!" [(c :room MEMBERS)]

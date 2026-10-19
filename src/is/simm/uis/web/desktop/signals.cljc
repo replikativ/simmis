@@ -333,6 +333,10 @@
            "Session/room/view keyed file drafts, folders and request fences."
            (signal runtime {})))
 
+#?(:cljs (def memory-connection
+           "Authenticated socket epoch; changes on reconnect, not on rendering."
+           (signal runtime nil)))
+
 #?(:cljs (def memory-navigation-state
            "Room-owned folder expansion, metadata snapshots, focus and search."
            (signal runtime {})))

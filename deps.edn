@@ -157,7 +157,10 @@
         ;; registered topic could write its store. That predicate still asked
         ;; `can?` for `:read` whatever the operation was, so it closed the hole
         ;; only to "same check as subscribe" — the residue 0.3.105 finishes.
-        org.replikativ/kabel {:mvn/version "0.3.139"}
+        ;; Connection disposal must retire old pubsub subscriptions before
+        ;; reconnect completes; verified upstream fix pending release.
+        org.replikativ/kabel {:git/url "https://github.com/replikativ/kabel"
+                             :git/sha "b677638dfd9a7db317340232ff706c1aa3c2e0eb"}
         ;; kontor — double-entry accounting kernel; powers is.simm.model.books
         ;; (per-room governed double-entry) + the metering→ledger bridge.
         ;; Kept direct because Simmis itself uses the accounting APIs.

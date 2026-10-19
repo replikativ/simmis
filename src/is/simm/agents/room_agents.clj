@@ -309,6 +309,12 @@
 ;; Live discourse Room resolution
 ;; =============================================================================
 
+(defn registered-room
+  "Read-only canonical lookup. Unlike live-room, never hydrates a missing room."
+  [room-uuid]
+  (when-let [slug (:room/slug (rooms/get-room room-uuid))]
+    (rreg/lookup (rstore/slug->room-id slug))))
+
 (defn live-room
   "The live dvergr discourse Room for a simmis room uuid. Rooms created by
    `rooms/create-room!` are registered at provision time; after a JVM

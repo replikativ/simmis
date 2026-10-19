@@ -3,6 +3,7 @@
             [is.simm.runtimes.instance :as instance]
             [superv.async :refer [S go-super <?? <?]]
             [kabel.peer :as peer]
+            [kabel.pubsub :as pubsub]
             [kabel.http-kit :as http-kit]
             [is.simm.distributed-scope :refer [remote-middleware invoke-on-peer]]
             ;; Authentication middleware
@@ -16,6 +17,7 @@
             ;; Server execution context
             [is.simm.runtimes.context :as ctx]
             [is.simm.runtimes.application-ops :as application-ops]
+            [is.simm.runtimes.memory-changes :as memory-changes]
             ;; System DB (must init before auth)
             [is.simm.model.system-db :as system-db]
             [is.simm.model.access :as access]
@@ -570,6 +572,7 @@
     (= topic simmis-scope)           (some? (:sub principal))
     (contains? control-topics topic) (some? (:sub principal))
     (notify-topic-party topic)       (= (notify-topic-party topic) (str (:sub principal)))
+    (memory-changes/topic-party topic) (= (str (memory-changes/topic-party topic)) (str (:sub principal)))
     :else                            (access/can? principal :read topic)))
 
 (defn data-plane-publish-authorized?
@@ -956,9 +959,22 @@
         ;; Browser RPC uses the same canonical operations as optional MCP.
         ;; Install before accepting requests, even when MCP is disabled.
         (application-ops/start!)
+        (memory-changes/start!
+         {:resolve-room #(ctx/with-server-context
+                           ((requiring-resolve 'is.simm.agents.room-agents/registered-room) %))
+          :allowed? (fn [party room-id]
+                      (ctx/with-server-context
+                        (access/can? @(system-db/get-conn) party :read {:room room-id})))
+          :publish! (fn [party hint]
+                      (pubsub/publish! server (memory-changes/topic party) hint))})
+        ((requiring-resolve 'dvergr.room.registry/add-pre-unregister-hook!)
+         ::memory-changes memory-changes/unwatch-room!)
+        ((requiring-resolve 'dvergr.room.registry/add-register-hook!)
+         ::memory-changes memory-changes/refresh-room!)
         (try
           (<? S (peer/start server))
           (catch Throwable e
+            (memory-changes/stop!)
             (application-ops/stop!)
             (throw e)))
         (swap! server-state assoc :started? true)
@@ -1074,6 +1090,7 @@
   []
   ;; Also release a dispatcher created during a partial startup.
   ((requiring-resolve 'is.simm.runtimes.workflow-schedules/stop!))
+  (memory-changes/stop!)
   (when (:started? @server-state)
     (try ((requiring-resolve 'is.simm.runtimes.mcp/stop!))
          (finally

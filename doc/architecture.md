@@ -86,9 +86,34 @@ this is not yet the legacy wiki's interactive history subway. Renames appear
 under their respective paths.
 Imported commits without materialized snapshots are reported as unavailable;
 a readable snapshot with an unavailable parent is labelled a boundary, not
-asserted to be a file change. Open file contents and folder listings currently
-refresh through explicit reads; they do not yet follow remote workspace changes
-automatically like the independent KB replicas.
+asserted to be a file change.
+
+Folder listings and open buffers follow private workspace invalidation hints.
+An owned host notifier listens to the canonical concrete connection's durable
+Datahike commits, queues/coalesces room identities off the commit loop, and
+rechecks each recipient's current read authority before publishing. Speculative
+connections do not publish to this feed. The private `:memory/<party>` stream
+carries only room identities, never paths, branch IDs or file bytes. It is not
+raw Geschichte-store replication: Datahike store walking can traverse blobs,
+and a trunk-scoped handshake alone does not filter subsequent store writes.
+
+After each authenticated socket handshake, Memory reconciles immutable bounded
+metadata snapshots, even when no hint was received. A hint arriving during a
+read causes a second reconciliation on completion, not a timer. Changed open
+files load on demand; clean buffers adopt them, while dirty text, selections,
+rich regions and Office edits remain with an incoming-revision notice. Deleted
+or externally moved files retain their buffers and cannot be implicitly
+recreated. External renames are deletion/addition, not guessed from equal hashes.
+Per-view read epochs fence old folder/file replies against newer metadata;
+background refresh never changes the selected file. Metadata requests cover up
+to 64 folders and buffers per view; collapsing a folder releases its listing.
+
+The notifier owns routing interests for the process lifetime, not one callback
+per mounted editor. Room shutdown releases concrete listeners; retained party/
+room identities allow rebind after canonical room replacement, followed by
+catch-up. Application shutdown joins its one notifier worker. Local durable
+writer commits, including logical checkout/reset, are observed; independent
+external-process writes to a shared physical store are not a supported feed.
 
 Editor drafts, selections, request tokens, and read/mutation generations live
 in a session/room/column/tab-keyed Spindel signal. Native CodeMirror/Tiptap handles

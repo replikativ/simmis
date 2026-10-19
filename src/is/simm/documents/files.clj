@@ -56,36 +56,60 @@
     (re-find #"(?i)\.(clj[cs]?|edn|bb|js|jsx|ts|tsx|json|ya?ml|xml|html?|css|sh|py|sql|csv|txt|log)$" path) :text
     :else :file))
 
+(defn- folder-from-db [db folder]
+  (when-not (= "" folder) (path! folder))
+  (let [prefix (if (seq folder) (str folder "/") "")
+        upper (if (seq folder) (str folder "0") "\uffff")
+        rows (vec (take (inc max-index-entries)
+                        (d/index-range db {:attrid :geschichte.work/path :start prefix :end upper})))]
+    (when (> (count rows) max-index-entries)
+      (refuse! ::limit "This folder exceeds the bounded metadata listing limit"))
+    (let [items
+          (reduce
+           (fn [items datom]
+             (let [path (:v datom)
+                   allowed? (try (path! path) true (catch Exception _ false))]
+               (if (and allowed? (str/starts-with? path prefix))
+                 (let [[name rest] (str/split (subs path (count prefix)) #"/" 2)
+                       key (str prefix name)
+                       item (if rest {:path key :name name :kind :folder}
+                                {:path key :name name :kind (file-kind path) :entry (entry db path)})
+                       prior (get items key)]
+                   (when (and prior (not= (= :folder (:kind prior)) (= :folder (:kind item))))
+                     (refuse! ::corrupt "A workspace path is both a folder and a file"))
+                   (assoc items key item))
+                 items))) (sorted-map) rows)]
+      {:path folder :entries (vec (sort-by (juxt #(not= :folder (:kind %)) :name) (vals items)))
+       :revision (hasch/uuid items)})))
+
 (defn list-folder
   "Metadata only. Every Markdown file is knowledge regardless of folder name.
    A conventional wiki/ folder is organization, not a special storage silo."
   [room folder]
-  (when-not (= "" folder) (path! folder))
+  (with-workspace room #(folder-from-db @% folder)))
+
+(defn metadata
+  "One immutable, bounded workspace snapshot. No file bodies or content blobs.
+   Missing requested paths are explicit nil entries, not failed file reads."
+  [room request]
+  (when-not (and (= #{:folders :paths} (set (keys request)))
+                 (vector? (:folders request)) (<= (count (:folders request)) 64)
+                 (vector? (:paths request)) (<= (count (:paths request)) 64))
+    (refuse! ::invalid "Request at most 64 open folders and 64 files"))
+  (doseq [folder (:folders request)] (when-not (= "" folder) (path! folder)))
+  (doseq [path (:paths request)] (path! path))
   (with-workspace room
     (fn [conn]
-      (let [db @conn prefix (if (seq folder) (str folder "/") "")
-            upper (if (seq folder) (str folder "0") "\uffff")
-            rows (vec (take (inc max-index-entries)
-                            (d/index-range db {:attrid :geschichte.work/path :start prefix :end upper})))]
-        (when (> (count rows) max-index-entries)
-          (refuse! ::limit "This folder exceeds the bounded metadata listing limit"))
-        (let [items
-              (reduce
-               (fn [items datom]
-                 (let [path (:v datom)
-                       allowed? (try (path! path) true (catch Exception _ false))]
-                   (if (and allowed? (str/starts-with? path prefix))
-                     (let [[name rest] (str/split (subs path (count prefix)) #"/" 2)
-                           key (str prefix name)
-                           item (if rest {:path key :name name :kind :folder}
-                                    {:path key :name name :kind (file-kind path) :entry (entry db path)})
-                           prior (get items key)]
-                       (when (and prior (not= (= :folder (:kind prior)) (= :folder (:kind item))))
-                         (refuse! ::corrupt "A workspace path is both a folder and a file"))
-                       (assoc items key item))
-                     items))) (sorted-map) rows)]
-          {:path folder :entries (vec (sort-by (juxt #(not= :folder (:kind %)) :name) (vals items)))
-           :revision (hasch/uuid items)})))))
+      (let [db @conn repository (query/repository db)
+            workspace {:repository-id (:geschichte.repo/id repository)
+                       :workspace-id (:id (workspace/current-workspace))
+                       :branch (get-in db [:config :branch])
+                       :ref (:geschichte.repo/head repository)
+                       :head (get (query/refs db) (:geschichte.repo/head repository))}
+            folders (into {} (map (fn [folder] [folder (folder-from-db db folder)])) (:folders request))
+            entries (into {} (map (fn [path] [path (entry db path)])) (:paths request))]
+        {:workspace workspace :folders folders :entries entries
+         :revision (hasch/uuid [workspace folders entries])}))))
 
 (defn source-bytes
   "Read exactly one captured content ID, checking metadata before allocation."

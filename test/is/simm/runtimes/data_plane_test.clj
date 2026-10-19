@@ -42,6 +42,7 @@
     (doseq [topic [web/simmis-scope
                    :branching/event
                    :user-rooms/dirty
+                   (keyword "memory" (str alice))
                    (keyword "notify" (str alice))]]
       (is (false? (:allowed? (authorized? nil topic true)))
           (str "anonymous denied on " topic))
@@ -110,6 +111,13 @@
   ;; of its own.
   (let [topic (keyword "runs" (str alice))]
     (is (false? (:allowed? (authorized? (principal bob) topic false))))))
+
+(deftest private-memory-topic-does-not-inherit-room-or-admin-authority
+  (let [topic (keyword "memory" (str alice))]
+    (is (:allowed? (authorized? (principal alice) topic false)))
+    (is (not (:allowed? (authorized? (principal bob) topic true))))
+    (is (not (:allowed? (authorized? nil topic true))))
+    (is (not (:allowed? (authorized? (principal alice) :memory/not-a-uuid false))))))
 
 ;; =============================================================================
 ;; Store scopes — the delegating branch

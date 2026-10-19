@@ -9,6 +9,7 @@
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.memory-actions :as actions]
             [is.simm.uis.web.desktop.memory-editor :as editor]
+            [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.source-editor :as source]
             [is.simm.uis.web.desktop.rich-editor :as rich-editor]
             [is.simm.uis.web.desktop.markdown :as md]
@@ -216,6 +217,8 @@
                                                         (set! (.. e -target -value) ""))}))))
             (for [[slot error] (:errors state)]
               (el/p {:key (pr-str slot) :class "proposal-error" :role "alert"} error))
+            (when-let [error (sync/problem @sync/state)]
+              (el/p {:class "proposal-error" :role "alert"} error))
             (el/div {:class "memory-layout"}
                     (el/div {:class "memory-detail"}
                             (if-not draft
@@ -237,6 +240,7 @@
                                               (el/span {} (if (editor/dirty? draft) "Unsaved draft" "Saved version"))
                                               (when text?
                                                 (el/button {:disabled (or (not write?) (get-in state [:loading [:save path]])
+                                                                         (:remote-deleted? draft)
                                                                          (not (editor/dirty? draft)))
                                                             :on-click (fn [_] ((:save a) path))} "Save"))
                                               (el/button {:on-click (fn [_] ((:reload a) path))} "Check for changes")
@@ -248,10 +252,15 @@
                                               (when write?
                                                 (el/button {:disabled (editor/dirty? draft)
                                                             :on-click (fn [_] (ask-path "Move file to" path #((:move a) path %)))} "Move")))
-                                      (when (:incoming draft)
+                                      (when (or (:incoming draft) (:incoming-entry draft))
                                         (el/div {:class "memory-conflict" :role "status"}
-                                                (el/p {} "The saved file changed. Your draft is retained; saving it will refuse the stale version.")
-                                                (el/button {:on-click (fn [_] ((:use-incoming a) path))} "Discard draft and use saved version")))
+                                                (if (:remote-deleted? draft)
+                                                  (el/p {} "This file was deleted or moved. Your buffer is retained for recovery; it will not be recreated automatically.")
+                                                  (el/div {}
+                                                          (el/p {} "The saved file changed. Your draft is retained; saving it will refuse the stale version.")
+                                                          (if (:incoming draft)
+                                                            (el/button {:on-click (fn [_] ((:use-incoming a) path))} "Discard draft and use saved version")
+                                                            (el/p {:class "memory-note"} "The new revision has not loaded yet. Reload to retry if the read failed."))))))
                                       (when (:earlier-save-receipt draft)
                                         (el/p {:class "memory-note"} "An earlier draft's save completed after this version was selected. This draft was kept unchanged; check the saved version before another save."))
                                       (when (and text? (not clojure?))
@@ -319,10 +328,13 @@
 
 (defn render [data]
   (spin
-   (let [states (iv/get-new (track sig/memory-editor-state))
+   (let [connection (iv/get-new (track sig/memory-connection))
+         stream (iv/get-new (track sync/state))
+         states (iv/get-new (track sig/memory-editor-state))
          syntax-pref (iv/get-new (track sig/syntax-pref))
          a (actions/controller data) state (get states (:owner a))]
      ((:ensure-path a))
+     ((:ensure-sync a) connection stream)
      (view data state a syntax-pref))))
 
 (defn render-context [data]

@@ -51,3 +51,26 @@
   (let [receipt {:id (random-uuid) :requested-namespace "user" :namespace "research.new"}]
     (is (= "research.new" (get-in (editor/repl-result {} receipt) [:repl :namespace])))
     (is (= "my.other" (get-in (editor/repl-result {:repl {:namespace "my.other"}} receipt) [:repl :namespace])))))
+
+(deftest remote-deletion-preserves-every-editing-state-and-never-becomes-a-new-file
+  (let [file {:path "a.md" :entry {:content :a} :text "Saved"}
+        d (-> (editor/draft file)
+              (editor/changed "My draft" {:anchor 2 :head 4})
+              (assoc :office {:text "edited XML" :saved-text "original XML"}))
+        missing (editor/observed-entry d nil)]
+    (is (:remote-deleted? missing))
+    (is (get-in missing [:incoming :deleted?]))
+    (is (= d (select-keys missing (keys d))))
+    (is (= missing (editor/use-incoming missing)))
+    (is (= (:source d) (:source (editor/observed-entry (editor/draft file) nil))))
+    (is (not (:remote-deleted? (editor/observed-entry missing (:entry file)))))
+    (is (nil? (:incoming (editor/observed-entry missing (:entry file)))))))
+
+(deftest metadata-selection-recovers-an-initial-folder-failure-and-covers-pending-reads
+  (is (= {:folders [""] :paths []}
+         (editor/metadata-request {:root-expanded? true :errors {[:folder ""] "failed"}})))
+  (is (= {:folders ["notes" "slow"] :paths ["a.clj" "b.clj"]}
+         (editor/metadata-request {:root-expanded? true :focus-folder "notes"
+                                   :drafts {"a.clj" {}}
+                                   :loading {[:folder "slow"] true [:file "b.clj"] true
+                                             [:folder "old"] false}}))))

@@ -37,6 +37,11 @@
                      (get-in (inbound kind "load-memory-file!" {:path "src/core.clj"}) [:result :execution-policy])))
               (is (= "# Hello\n"
                      (get-in (inbound kind "load-memory-file!" {:path "wiki/hello.md"}) [:result :text]))))
+            (doseq [kind [:owner :member]]
+              (is (= ["hello.md"]
+                     (mapv :name (get-in (inbound kind "load-memory-metadata!"
+                                                 {:request {:folders ["wiki"] :paths ["wiki/hello.md"]}})
+                                        [:result :folders "wiki" :entries])))))
             (is (= ["src/core.clj"] (mapv :path (get-in (inbound :member "search-memory-files!" {:query-text "core"}) [:result :entries]))))
             (is (seq (get-in (inbound :member "load-memory-history!" {:path "wiki/hello.md"}) [:result :versions])))
             (let [request {:path "src/core.clj" :text "(+ 20 22)" :scope :file :from 0 :to 0}]
@@ -58,6 +63,9 @@
               (is (true? (get-in (inbound :member "save-memory-rich-file!" {:request request}) [:result :saved?])))
               (is (= text (:text (files/read-file room "wiki/hello.md")))))
             (doseq [kind [:non-member :admin :anon]]
+              (is (world/refused? (inbound kind "load-memory-metadata!"
+                                         {:request {:folders [""] :paths []}})))
+              (is (world/refused? (inbound kind "prepare-memory-stream!" {})))
               (is (world/refused? (inbound kind "save-memory-rich-file!" {:request {}})))
               (is (world/refused? (inbound kind "load-memory-folder!" {:folder ""})))
               (is (world/refused? (inbound kind "load-memory-file!" {:path "src/core.clj"})))

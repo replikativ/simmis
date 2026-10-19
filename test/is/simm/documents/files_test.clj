@@ -62,6 +62,25 @@
         (is (= (str text "New\r\n") (:text (files/read-file room path))))
         (is (thrown? clojure.lang.ExceptionInfo (save! room path "second creator" nil)))))))
 
+(deftest metadata-is-one-bounded-source-free-snapshot-with-explicit-missing-paths
+  (with-room
+    (fn [room]
+      (let [saved (save! room "wiki/a.md" "# A" nil)
+            request {:folders ["" "wiki"] :paths ["wiki/a.md" "missing.md"]}
+            first-view (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Metadata read a blob")))]
+                         (files/metadata room request))]
+        (is (= (:entry saved) (get-in first-view [:entries "wiki/a.md"])))
+        (is (contains? (:entries first-view) "missing.md"))
+        (is (nil? (get-in first-view [:entries "missing.md"])))
+        (is (= ["a.md"] (mapv :name (get-in first-view [:folders "wiki" :entries]))))
+        (is (= first-view (files/metadata room request)))
+        (save! room "wiki/a.md" "# Changed" (:entry saved))
+        (is (not= (:revision first-view) (:revision (files/metadata room request))))
+        (doseq [bad [(assoc request :principal "forged")
+                     (assoc request :paths ["../private"])
+                     (assoc request :folders (vec (repeat 65 "")))]]
+          (is (thrown? Exception (files/metadata room bad))))))))
+
 (deftest file-saves-use-the-canonical-writers-own-opened-snapshot
   (with-room
     (fn [room]

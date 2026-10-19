@@ -76,11 +76,35 @@
   (cond
     (nil? old) (draft file)
     (or (dirty? old) (:rich-edit old))
-    (if (= (:entry file) (get-in old [:source :entry])) old (assoc old :incoming file))
+    (if (= (:entry file) (get-in old [:source :entry]))
+      (dissoc old :incoming :incoming-entry :remote-deleted?)
+      (-> old (assoc :incoming file) (dissoc :incoming-entry)))
     :else (assoc (merge (draft file) (select-keys old [:mode :selection :code-view]))
                  ;; A same-entry refresh must not supersede an in-flight save.
                  :generation (if (= (:entry file) (get-in old [:source :entry]))
                                (:generation old 0) (inc (:generation old 0))))))
+
+(defn observed-entry
+  "Deletion retains the entire draft/Office model, even when clean. It is not
+   permission to recreate a missing file. Only an explicit recovery can do so."
+  [d entry]
+  (let [d (when d (assoc d :observed-entry entry))]
+   (cond
+    (nil? d) d
+    (= entry (get-in d [:source :entry])) (dissoc d :incoming :incoming-entry :remote-deleted?)
+    (nil? entry) (assoc d :remote-deleted? true
+                       :incoming {:path (get-in d [:source :path]) :entry nil :deleted? true})
+    :else (cond-> (assoc (dissoc d :remote-deleted?) :incoming-entry entry)
+            (get-in d [:incoming :deleted?]) (dissoc :incoming)))))
+
+(defn metadata-request [state]
+  (let [pending (for [[slot loading?] (:loading state)
+                      :when (and loading? (vector? slot))] slot)]
+    {:folders (vec (sort (distinct (concat (keys (:folders state))
+                                          (when (:root-expanded? state) [(or (:focus-folder state) "")])
+                                          (map second (filter #(= :folder (first %)) pending))))))
+     :paths (vec (sort (distinct (concat (keys (:drafts state))
+                                        (map second (filter #(= :file (first %)) pending))))))}))
 
 (defn property-entries [properties] (sort-by (comp pr-str key) properties))
 
@@ -92,9 +116,17 @@
 (defn loaded-at-generation [d generation file]
   (if (= generation (:generation d)) (loaded d file) d))
 
+(defn metadata-generation-current? [expected actual]
+  (or (= expected actual)
+      ;; An initial file read may have finished while metadata was in flight.
+      ;; Generation zero permits observation, not draft replacement: dirty?
+      ;; still protects typing; any completed save/move advances the generation.
+      (and (nil? expected) (= 0 actual))))
+
 (defn use-incoming [d]
   (if-let [incoming (:incoming d)]
-    (assoc (draft incoming) :generation (inc (:generation d 0))) d))
+    (if (:deleted? incoming) d
+        (assoc (draft incoming) :generation (inc (:generation d 0)))) d))
 
 (defn analyzed [d text analysis]
   (if (= text (:text d))

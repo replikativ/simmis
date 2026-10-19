@@ -141,6 +141,14 @@ Subscription to a store scope goes through `can?`. Publication *from* a client
 is refused unconditionally: sync is one-directional here, so an inbound publish
 is either a bug or an attack, whoever sends it.
 
+Memory's separate `:memory/<party-uuid>` invalidation topic admits only that
+authenticated party, not other members or administrators. Before publishing a
+room-only hint, its notifier checks the recipient's current room read authority;
+join-time topic authorization alone would not revoke an existing subscription.
+Metadata and file bytes still require the ordinary room-scoped authenticated
+RPC gates. This stream does not grant raw Geschichte-store replication or
+expose speculative branch identities.
+
 ### HTTP plane — routes
 
 Every route declares `:auth` in its route data:

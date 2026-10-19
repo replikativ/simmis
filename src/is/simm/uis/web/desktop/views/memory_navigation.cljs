@@ -8,6 +8,7 @@
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.memory-tree :as tree]
+            [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.memory-actions :as actions])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]))
 
@@ -64,11 +65,14 @@
 
 (defn render [room]
   (spin
-   (let [states (iv/get-new (track sig/memory-navigation-state))
+   (let [connection (iv/get-new (track sig/memory-connection))
+         stream (iv/get-new (track sync/state))
+         states (iv/get-new (track sig/memory-navigation-state))
          id (:room/id room) title (:room/name room) a (controller id)
          state (get states (:owner a)) folder (or (:focus-folder state) "")
          open! (fn [path] ((:select-path a) path) (open-file! id title path))
          search (when (= (:query state) (get-in state [:search :query])) (:search state))]
+     (when (:root-expanded? state) ((:ensure-sync a) connection stream))
      (el/div {:key (str "workspace-" id) :class "nav-subsection memory-navigation"}
              (el/button {:class "nav-item memory-room-toggle" :aria-expanded (str (boolean (:root-expanded? state)))
                          :on-click (fn [_] ((:toggle-root a)))}
@@ -91,6 +95,10 @@
                                  (for [{:keys [label path]} (tree/breadcrumbs folder)]
                                    (el/button {:key path :title path :on-click (fn [_] ((:focus-folder a) path))} label))))
                        (for [[slot error] (:errors state)] (el/p {:key (pr-str slot) :role "alert" :class "proposal-error"} error))
+                       (when-let [error (sync/problem stream)]
+                         (el/p {:role "alert" :class "proposal-error"} error))
+                       (when (or (get-in state [:errors :watch]) (sync/problem stream))
+                         (el/button {:on-click (fn [_] ((:refresh a)))} "Retry live updates"))
                        (if search
                          (el/div {:class "memory-file-matches"}
                                  (for [item (:entries search)] (file-row (assoc item :name (:path item)) state open! 0))

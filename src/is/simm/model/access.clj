@@ -769,6 +769,8 @@
      "screen-grant-heartbeat!" {:action W :resource (room :room-id-str)}
      "load-room-drive!"        {:action R :resource (room :room-id-str)}
      "load-memory-folder!"     {:action R :resource (room :room-id-str)}
+     "prepare-memory-stream!" {:action R :resource (room :room-id-str)}
+     "load-memory-metadata!"  {:action R :resource (room :room-id-str)}
      "load-memory-file!"       {:action R :resource (room :room-id-str)}
      "load-memory-history!"    {:action R :resource (room :room-id-str)}
      "load-memory-history-file!" {:action R :resource (room :room-id-str)}

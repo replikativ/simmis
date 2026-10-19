@@ -7,6 +7,7 @@
             #?(:clj [org.replikativ.spindel.blocking :as blocking])
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.model.system-db :as system-db])
+            #?(:clj [is.simm.model.db :as db])
             #?(:clj [is.simm.agents.room-agents :as rooms])
             #?(:clj [is.simm.documents.files :as files])
             #?(:clj [is.simm.documents.evaluation :as evaluation])
@@ -31,6 +32,11 @@
                               (throw (ex-info "Room write permission was revoked" {:type :not-authorized})))
                  reply
                  (case operation
+                   :metadata (files/metadata room args)
+                   :watch (do
+                            ((requiring-resolve 'is.simm.runtimes.memory-changes/register-topic!)
+                             @db/server-peer party)
+                            ((requiring-resolve 'is.simm.runtimes.memory-changes/watch!) id room party))
                    :folder (files/list-folder room (:folder args))
                    :search (files/search-paths room (:query args))
                    :file (files/read-file room (:path args))
@@ -79,6 +85,20 @@
              (assoc reply :permissions
                     {:write? (access/can? @(system-db/get-conn) party :write {:room id})
                      :evaluate? (access/can? @(system-db/get-conn) party :merge {:room id})})))))))
+
+(defn-spin-remote prepare-memory-stream!
+  [server-id room-id-str]
+  (spin-remote server-id [room-id-str]
+    #?(:clj (let [party (access/authenticated-party-id)]
+              (await (blocking/blocking #(invoke-memory party room-id-str :watch {}))))
+       :cljs nil)))
+
+(defn-spin-remote load-memory-metadata!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+    #?(:clj (let [party (access/authenticated-party-id)]
+              (await (blocking/blocking #(invoke-memory party room-id-str :metadata request))))
+       :cljs nil)))
 
 (defn-spin-remote evaluate-memory-code!
   [server-id room-id-str request]

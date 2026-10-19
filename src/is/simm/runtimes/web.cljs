@@ -77,6 +77,7 @@
   (= (:id session) (:id @current-session*)))
 
 (defn- clear-memory-editor-state! []
+  (reset! sig/memory-connection nil)
   (reset! sig/memory-navigation-state {})
   (reset! sig/memory-editor-state {}))
 
@@ -196,6 +197,10 @@
                                            (when (current?)
                                              (.removeItem js/sessionStorage "simmis-reauth-tried")
                                              (reset! authenticated-principal principal)
+                                             (binding [rtc/*execution-context* runtime]
+                                               (reset! sig/memory-connection
+                                                       {:session-id session-id :epoch (random-uuid)
+                                                        :party (:sub principal)}))
                                              (put! auth-result {:status :authenticated
                                                                 :principal principal})))
                                          :on-error
