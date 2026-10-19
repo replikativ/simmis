@@ -2,6 +2,8 @@
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
             [jsonista.core :as json]
+            [hasch.core :as hasch]
+            [is.simm.model.knowledge-publication :as publication]
             [is.simm.model.work-requests :as requests]))
 
 (defn- with-store [f]
@@ -16,6 +18,45 @@
   {:party (random-uuid) :room (random-uuid) :client-id (random-uuid) :kind :attempt
    :limits {:budget-microdollars 10000 :max-dispatches 2 :timeout-ms 1000}
    :intent {:task "deterministic fixture" :candidate {:kind :echo}}})
+
+(deftest publication-basis-is-retained-with-the-exact-request-intent
+  (with-store
+    (fn [conn]
+      (let [body {:version 1 :root "wiki" :target {:repository (random-uuid) :store (random-uuid)
+                                                 :backend :memory :branch :db :ref "refs/heads/main"}
+                  :files {} :directories []}
+            basis (assoc body :id (hasch/uuid [:simmis/knowledge-publication-basis-v1 body]))
+            input (-> (intent)
+                      (assoc-in [:intent :workflow :input-selection :execution-id] (random-uuid))
+                      (assoc-in [:intent :knowledge/publication-basis] basis))
+            {:keys [request]} (requests/claim! conn input)
+            id (:work.request/id request)]
+        (is (= (:id basis) (:work.request/publication-basis-id request)))
+        (is (= basis (requests/publication-basis conn id)))
+        (is (false? (:claimed? (requests/claim! conn input))))
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (requests/claim! conn (assoc-in input [:intent :knowledge/publication-basis :root] "elsewhere"))))
+        (d/transact conn [[:db/add (:db/id request) :work.request/publication-basis-id (random-uuid)]])
+        (is (thrown? clojure.lang.ExceptionInfo (requests/publication-basis conn id)))
+        (d/transact conn [[:db/add (:db/id request) :work.request/publication-basis-id (:id basis)]
+                          [:db/add (:db/id request) :work.request/kind :different]])
+        (is (thrown? clojure.lang.ExceptionInfo (requests/publication-basis conn id)))))))
+
+(deftest self-hashing-does-not-make-incomplete-or-unsafe-occupancy-valid
+  (let [body {:version 1 :root "wiki"
+              :target {:repository (random-uuid) :store (random-uuid)
+                       :backend :memory :branch :db :ref "refs/heads/main"}
+              :files {} :directories []}
+        seal #(assoc % :id (hasch/uuid [:simmis/knowledge-publication-basis-v1 %]))]
+    (is (= (seal body) (publication/validate! (seal body))))
+    (doseq [bad [(assoc body :target {})
+                 (assoc-in body [:target :ref] " ")
+                 (assoc body :directories ["wiki/../escape"])
+                 (assoc body :directories ["wiki" "wiki"])
+                 (assoc body :files {"wiki/a.md" {:content (random-uuid) :size -1 :mode 33188}})
+                 (assoc body :files {"other/a.md" {:content (random-uuid) :size 1 :mode 33188}})
+                 (assoc body :unexpected true)]]
+      (is (thrown? clojure.lang.ExceptionInfo (publication/validate! (seal bad)))))))
 
 (deftest json-integer-limits-persist-as-typed-longs-without-changing-intent
   (with-store

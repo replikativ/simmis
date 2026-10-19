@@ -259,7 +259,7 @@
           (throw (ex-info "Scheduled capture belongs to another target revision"
                           {:type :is.simm.model.workflow-schedules/corrupt})))
         (submit retained))
-      (workflows-run/with-source-selection
+      (workflows-run/with-admission-selection
        room (:snapshot target) (select-keys (:execution target) workflows-run/source-fields)
        (fn [selection capture]
          (if-not selection
@@ -268,9 +268,9 @@
                                      (:trigger-id selection)])]
              (when (= :capture (schedules/select-input! conn oid claim input-id (:empty? selection)))
                (schedules/retain-input!
-                conn oid claim {:version 1 :input-id input-id
+                conn oid claim (merge (capture) {:version 1 :input-id input-id
                                 :target-revision (:schedule.activation/revision row)
-                                :selection selection :captured (capture)})
+                                :selection selection}))
                ;; Read the durable artifact, not a transient recapture, even on
                ;; the first submission. Restart uncertainty remains held.
                (submit (schedules/retained-input conn (schedules/occurrence conn oid)))))))))))

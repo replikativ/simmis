@@ -45,6 +45,10 @@
 (defn snapshot [files]
   {:files files :manifest (mapv (fn [[p s]] {:path p :size (alength (.getBytes s "UTF-8"))}) files)})
 
+(def knowledge-source
+  (assoc source "input-selection.edn"
+         "{:kind :knowledge :policy {:version 1 :trigger-roots [\"inbox\" \"transcripts\"] :context-roots [\"wiki\"] :exclude-prefixes []}}"))
+
 (defn input
   ([] (input source))
   ([files]
@@ -202,9 +206,10 @@
      (fn [room]
        (workspace/ensure-workspace! room)
        (realistic-locators! conn w room)
-       (workflows/write! room {:principal/id "fixture"} {:name "echo" :files source})
-       (workspace/seed! room {"/docs/input.md" "trunk input"})
-       (let [request (assoc (input) :inputs {"/docs/input.md" "explicit input"})
+       (workflows/write! room {:principal/id "fixture"} {:name "echo" :files knowledge-source})
+       (workspace/seed! room {"/docs/input.md" "trunk input" "/inbox/evidence.md" "Evidence"
+                              "/wiki/context.md" "Prior knowledge"})
+       (let [request (assoc (input knowledge-source) :inputs {"/docs/input.md" "explicit input"})
              principal (ops/party-principal (:owner w)) host-ctx ec/*execution-context*
              calls (atom 0) changed (atom false) retained (volatile! nil)
              original-snapshot workflows/snapshot
@@ -229,6 +234,7 @@
                (vreset! retained (registry/lookup (:run/world child)))
                (is (= :completed (:status status)) (pr-str (select-keys status [:status :error])))
                (is (:settled? status))
+               (is (contains? (:files (requests/publication-basis conn (:id admission))) "wiki/context.md"))
                (is (= 2 @calls))
                (is (= {"/out/result.md" "pinned helper|explicit input|false"}
                       (get-in (first attempts) [:attempt/evidence :files])))

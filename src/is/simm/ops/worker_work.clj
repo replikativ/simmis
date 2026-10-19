@@ -268,9 +268,12 @@
   (let [pinned (enrollment! conn host-ctx room-id by input)
         config (binding [ec/*execution-context* host-ctx] (workers/payload conn pinned :simmis.worker/config-ref))
         snapshot (workflows/snapshot room (:name input))
-        captured (workflow-runs/resolve-source room snapshot (select-keys input workflow-runs/source-fields))
+        resolution (workflow-runs/resolve-admission room snapshot (select-keys input workflow-runs/source-fields))
+        captured (:captured resolution)
         workflow (assoc (workflow-input snapshot input config captured) :snapshot snapshot)]
-    (prepare-frozen conn host-ctx room-id room request-id input pinned (:frozen workflow) workflow)))
+    (workflow-runs/bind-publication
+     (prepare-frozen conn host-ctx room-id room request-id input pinned (:frozen workflow) workflow)
+     resolution)))
 
 (defn- submit-prepared! [conn host-ctx principal room-id room input kind prepare]
   (binding [ec/*execution-context* host-ctx]

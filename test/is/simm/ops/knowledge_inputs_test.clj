@@ -176,6 +176,43 @@
         (is (= "Keep this" (:text (document-files/read-file room "unrelated.txt")))))
       (finally (discourse/close-room! room)))))
 
+(deftest admission-binds-complete-occupancy-to-the-same-frozen-db
+  (let [room (discourse/make-room {:id (keyword (str "publication-admission-" (random-uuid)))
+                                  :store (store/make)})]
+    (try
+      (workspace/ensure-workspace! room)
+      (workspace/seed! room {"/inbox/a.md" "Original evidence" "/wiki/a.md" "Original wiki"})
+      (let [source (assoc workflow-fixture/source "input-selection.edn"
+                          (pr-str {:kind :knowledge :policy inputs/default-policy}))
+            snapshot (workflow-fixture/snapshot source)
+            request {:name "reusable" :expected-bundle (:id (dvergr.catalog.room/bundle "reusable" source))}
+            resolution
+            (workflow-runs/with-admission-selection
+             room snapshot request
+             (fn [_ resolve]
+               ;; The live workspace advances after selection but before bodies
+               ;; and complete occupancy are captured. Both must use the old DB.
+               (binding [ec/*execution-context* (:ctx room)]
+                 (let [conn (:conn (geschichte/current-workspace))]
+                   (write! conn "inbox/a.md" "Later evidence")
+                   (write! conn "wiki/new.md" "Human work")))
+               (resolve)))
+            captured (:captured resolution)
+            basis (:publication-basis resolution)
+            prepared {:basis {:workflow {:input-selection {:execution-id (:execution-id captured)}}}}]
+        (is (= "Original evidence" (get-in captured [:inputs "/in/knowledge/sources/inbox/a.md"])))
+        (is (= {:present? false} (inputs/publication-before basis "wiki/new.md")))
+        (is (contains? (:files basis) "wiki/a.md"))
+        (is (= basis (get-in (workflow-runs/bind-publication prepared resolution)
+                            [:basis :knowledge/publication-basis])))
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (workflow-runs/bind-publication {:basis {}} resolution)))
+        (let [fixtures (assoc request :inputs (:inputs captured))
+              unbound (workflow-runs/resolve-admission room snapshot fixtures)]
+          (is (= {:captured nil :publication-basis nil} unbound))
+          (is (= prepared (workflow-runs/bind-publication prepared unbound)))))
+      (finally (discourse/close-room! room)))))
+
 (deftest knowledge-output-and-staging-edits-do-not-retrigger-maintenance
   (with-repository
     (fn [conn]

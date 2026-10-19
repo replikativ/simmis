@@ -195,29 +195,61 @@
     (cond-> (assoc planned :inputs entries :world-setup (setup (:name input) bundle source entries (some? resolved)))
       provenance (assoc-in [:workflow :input-selection] provenance))))
 
-(defn with-source-selection
+(defn- with-selection
   "Host admission only, after authorization. Callback receives a metadata-only
-   selection and a zero-argument capture function over that SAME immutable DB.
+   selection and a zero-argument resolution function over that SAME immutable DB.
    It can skip unchanged work without loading bodies. Retained fixture inputs
    need no live capture; ordinary pure preparation verifies them again. Never
    persist the callback/DB, only its captured byte data."
-  [room snapshot input f]
+  [room snapshot input publication? f]
   (let [{:keys [selection-policy inputs]} (plan-source snapshot input)]
     (if selection-policy
       (if (contains? inputs "/in/knowledge/manifest.edn")
         (let [retained (knowledge-inputs/from-inputs selection-policy inputs)]
-          (f (select-keys retained [:trigger-id :execution-id :empty? :manifest]) (constantly nil)))
+          (f (select-keys retained [:trigger-id :execution-id :empty? :manifest])
+             (constantly {:captured nil :publication-basis nil})))
         (binding [ec/*execution-context* (:ctx room)]
           (let [conn (:conn ((requiring-resolve 'dvergr.substrate.geschichte/current-workspace)))]
             (when-not conn (invalid! "Room has no knowledge source workspace"))
             (let [db @conn selected (knowledge-inputs/selection db selection-policy)]
-              (f (dissoc selected :manifest-text) #(knowledge-inputs/capture db selection-policy))))))
-      (f nil (constantly nil)))))
+              (f (dissoc selected :manifest-text)
+                 #(hash-map :captured (knowledge-inputs/capture db selection-policy)
+                            :publication-basis (when publication? (knowledge-inputs/publication-basis db))))))))
+      (f nil (constantly {:captured nil :publication-basis nil})))))
+
+(defn with-admission-selection
+  "Host-only same-snapshot input and publication resolution, after authorization."
+  [room snapshot input f]
+  (with-selection room snapshot input true f))
+
+(defn with-source-selection
+  "Compatibility projection for callers that only need frozen model inputs."
+  [room snapshot input f]
+  (with-selection room snapshot input false
+    (fn [selection resolve] (f selection #(:captured (resolve))))))
+
+(defn resolve-admission
+  "Host-only resolution. Fixture/model-authored inputs never supply a basis."
+  [room snapshot input]
+  (with-admission-selection room snapshot input (fn [_ resolve] (resolve))))
 
 (defn resolve-source
   "Resolve declared sources after authorization, without submission or spend."
   [room snapshot input]
   (with-source-selection room snapshot input (fn [_ capture] (capture))))
+
+(defn bind-publication
+  "Bind host-only target occupancy to the canonical request, never model inputs.
+   This retains historical evidence, not permission to publish an output."
+  [prepared {:keys [publication-basis captured]}]
+  (if publication-basis
+    (do
+      (when-not (and (uuid? (:execution-id captured))
+                    (= (:execution-id captured)
+                       (get-in prepared [:basis :workflow :input-selection :execution-id])))
+        (invalid! "Publication basis has no matching frozen knowledge execution"))
+      (assoc-in prepared [:basis :knowledge/publication-basis] publication-basis))
+    prepared))
 
 (defn prepare
   "Construct from ONE immutable source snapshot. The bundle is task data;
@@ -258,10 +290,13 @@
           (work/status conn host-ctx principal room-id id))
         (let [snapshot (or snapshot (workflows/snapshot room (:name input)))
               selected (select-keys input source-fields)
-              captured (if resolution
+              resolution (if resolution
                          (do (when-not (contains? resolution :captured)
                                (invalid! "Retained resolution has no captured input decision"))
-                             (:captured resolution))
-                         (resolve-source room snapshot selected))]
+                             resolution)
+                         (resolve-admission room snapshot selected))
+              captured (:captured resolution)]
           (work/submit-prepared! conn host-ctx principal room-id room input
-                                (if captured (prepare snapshot input captured) (prepare snapshot input))))))))
+                                (bind-publication
+                                 (if captured (prepare snapshot input captured) (prepare snapshot input))
+                                 resolution)))))))

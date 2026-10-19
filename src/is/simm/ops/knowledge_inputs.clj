@@ -13,6 +13,7 @@
             [is.simm.documents.files :as files]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.view :as view]
+            [is.simm.model.knowledge-publication :as publication]
             [is.simm.ops.workflow-policy :as workflow-policy]
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m])
@@ -114,7 +115,8 @@
                  :files entries :directories (vec directories)}]
       (when (> (byte-count (pr-str basis)) max-publication-basis-bytes)
         (refuse! :publication-basis-too-large))
-      (assoc basis :id (hasch/uuid [:simmis/knowledge-publication-basis-v1 basis])))))
+      (publication/validate!
+       (assoc basis :id (hasch/uuid [:simmis/knowledge-publication-basis-v1 basis]))))))
 
 (defn publication-before
   "Expected state for one exact repository-relative output target, from the

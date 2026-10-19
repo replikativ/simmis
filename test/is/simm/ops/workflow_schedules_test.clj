@@ -162,6 +162,7 @@
                       (fn [_ _ _ _ _ input _ resolution]
                         (swap! calls inc)
                         (is (= "Original evidence" (get-in resolution [:captured :inputs "/in/knowledge/sources/inbox/source.md"])))
+                        (is (uuid? (get-in resolution [:publication-basis :id])))
                         (record-request! fixture {:schedule.occurrence/id (:request-id input)} true))]
           (tick! fixture 60000)
           (let [o (first (model/occurrences conn (:schedule.activation/id row)))
@@ -241,7 +242,7 @@
     (fn [{:keys [conn ctx owner room-id room target]}]
       (with-redefs [models/get-model (fn [id] {:id id})
                     workflows/snapshot (fn [& _] (:snapshot target))
-                    workflow-runs/with-source-selection (fn [& _] (throw (AssertionError. "Deployment captured live evidence")))
+                    workflow-runs/with-admission-selection (fn [& _] (throw (AssertionError. "Deployment captured live evidence")))
                     work/prepare (fn [& _] (throw (AssertionError. "Deployment prepared a provider")))]
         (let [row (schedules/create! conn ctx (principals/party-principal owner) room-id room
                                      {:request-id (random-uuid) :kind "workflow"
