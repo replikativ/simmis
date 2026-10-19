@@ -58,6 +58,12 @@
 
 (defn port-offset [] (parse-port-offset (System/getenv "SIMMIS_PORT_OFFSET")))
 
+(defn development-bind-address
+  "The open development token minter must never listen on the LAN. Normal
+   hosted/password authentication preserves the existing binding behavior."
+  ([] (development-bind-address (System/getenv "SIMMIS_DEV_AUTH")))
+  ([setting] (when (= "true" setting) "127.0.0.1")))
+
 (defn ports
   "The dev ports, offset by `offset` (default: SIMMIS_PORT_OFFSET)."
   ([] (ports (port-offset)))

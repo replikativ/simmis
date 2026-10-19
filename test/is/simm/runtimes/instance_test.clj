@@ -7,6 +7,11 @@
 
 (def ^:private unset? #(nil? (System/getenv %)))
 
+(deftest development-auth-is-loopback-only
+  (is (= "127.0.0.1" (instance/development-bind-address "true")))
+  (doseq [setting [nil "" "false" "TRUE" "1"]]
+    (is (nil? (instance/development-bind-address setting)))))
+
 (deftest port-offset-parsing
   (is (= 0 (instance/parse-port-offset nil)))
   (is (= 0 (instance/parse-port-offset "")))

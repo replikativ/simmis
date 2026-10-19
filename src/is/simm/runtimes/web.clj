@@ -617,7 +617,10 @@
 (defn create-server!
   "Create a new server peer instance with composite HTTP+WS handler."
   []
-  (let [hk-handler (http-kit/create-http-kit-handler! S url server-id)
+  (let [bind-address (instance/development-bind-address)
+        hk-handler (http-kit/create-http-kit-handler!
+                    S url server-id (atom {}) (atom {})
+                    (cond-> {} bind-address (assoc :server-opts {:ip bind-address})))
         ;; Wrap the start-fn to use composite handler
         original-start-fn (:start-fn hk-handler)
         composite-start-fn (fn [volatile]
