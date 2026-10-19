@@ -388,12 +388,17 @@
         ;; must use the classified wallet schema; no legacy migration is implied.
         ;; Use the merged #363 commit: the earlier feature SHA is retired.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "bddad4113d9fa448a2bb0b5215c24cd88b1ff2c6"}}
+                               :git/sha "bddad4113d9fa448a2bb0b5215c24cd88b1ff2c6"
+                               ;; Kabel supplies the maintained HTTP-kit fork.
+                               ;; Both artifacts contain org.httpkit classes;
+                               ;; the original can shadow its WebSocket fixes.
+                               :exclusions [http-kit/http-kit]}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
            ;; of duplicating namespaces on the classpath.
-           :local {:extra-deps {org.replikativ/dvergr {:local/root "../dvergr"}
+           :local {:extra-deps {org.replikativ/dvergr {:local/root "../dvergr"
+                                                     :exclusions [http-kit/http-kit]}
                                 org.replikativ/spindel {:local/root "../spindel"}
                                 org.replikativ/partial-cps {:local/root "../partial-cps"}
                                 org.replikativ/datahike {:local/root "../datahike"}
@@ -458,7 +463,8 @@
            ;; happens to sit on; when two siblings disagree on how a shared lib
            ;; is coordinated (one :local/root, one :mvn/version at equal depth)
            ;; the CLI cannot compare them and the alias fails outright.
-           :stack {:extra-deps {org.replikativ/dvergr {:local/root "../dvergr"}}}
+           :stack {:extra-deps {org.replikativ/dvergr {:local/root "../dvergr"
+                                                     :exclusions [http-kit/http-kit]}}}
 
            ;; Development environment - starts nREPL (47888), shadow-cljs (9631), and web server (47295);
            ;; SIMMIS_PORT_OFFSET moves all of them (is.simm.runtimes.instance)
@@ -469,7 +475,8 @@
                             "-XX:+DebugNonSafepoints"
                             "-XX:+EnableDynamicAgentLoading"
                             "--enable-native-access=ALL-UNNAMED"]
-                 :extra-deps {thheller/shadow-cljs {:mvn/version "2.28.21"}
+                 :extra-deps {thheller/shadow-cljs {:mvn/version "2.28.21"
+                                                  :exclusions [http-kit/http-kit]}
                               binaryage/devtools {:mvn/version "1.0.7"}
                               nrepl/nrepl {:mvn/version "1.3.1"}
                               cider/cider-nrepl {:mvn/version "0.50.2"}
@@ -504,7 +511,8 @@
            ;; start! would boot a whole dev stack (an :app WATCH that
            ;; overwrites the release bundle, nREPL, non-daemon threads that
            ;; keep the "finished" build JVM alive) inside the build process.
-           :shadow {:extra-deps {thheller/shadow-cljs {:mvn/version "2.28.21"}
+           :shadow {:extra-deps {thheller/shadow-cljs {:mvn/version "2.28.21"
+                                                    :exclusions [http-kit/http-kit]}
                                  binaryage/devtools {:mvn/version "1.0.7"}}}
 
            ;; Uberjar build (clojure -T:build uber) — see build.clj
