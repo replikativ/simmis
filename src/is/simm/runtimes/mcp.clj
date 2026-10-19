@@ -34,13 +34,15 @@
           "job_list" "job_status" "attempt_list" "attempt_detail" "review_list"
           "scorecard_list" "scorecard_detail" "experiment_progress" "experiment_report"
           "catalog_list" "simmis_attempt-files" "simmis_attempt-file"
-          "simmis_workspace-bundle" "simmis_workspace-bundle-chunk"}))
+          "simmis_workspace-bundle" "simmis_workspace-bundle-chunk"
+          "simmis_workflow-schedule-list"}))
 
 (def work-tools
   (into read-tools #{"simmis_post" "simmis_task" "simmis_coordinator" "simmis_work-allowance"
                      "simmis_work-status" "job_cancel"
                      "simmis_workflow-write" "simmis_workflow-check" "simmis_workflow-run"
                      "simmis_workflow-list" "simmis_workflow-source"
+                     "simmis_workflow-schedule-create" "simmis_workflow-schedule-set-enabled"
                      "simmis_benchmark" "simmis_cli-benchmark" "simmis_cli-allowance"}))
 
 (def worker-control-tools

@@ -13,7 +13,40 @@
             [is.simm.ops.work-test]
             [is.simm.ops.worker-control :as control]
             [is.simm.runtimes.auth-config :as auth]
-            [is.simm.runtimes.worker-maintenance :as maintenance]))
+            [is.simm.runtimes.worker-maintenance :as maintenance]
+            [malli.core :as m]))
+
+(deftest schedule-execution-transport-is-closed-and-kind-specific
+  (let [[input _] (@#'is.simm.ops.work-test/fixture)
+        request (str (random-uuid)) bundle (str (random-uuid))
+        execution (merge (select-keys input [:model :limits])
+                         {:name "example" :expected-bundle bundle
+                          :params {:subject "literal"}
+                          :inputs {(keyword "/docs/λ.md") "input"}})
+        args {:room "room" :request-id request :kind "workflow"
+              :cadence {:tz "UTC" :interval-ms 60000} :execution execution}
+        normalized (api/workflow-schedule-transport args)]
+    (is (= (parse-uuid request) (:request-id normalized)))
+    (is (= (parse-uuid bundle) (get-in normalized [:execution :expected-bundle])))
+    (is (= {"subject" "literal"} (get-in normalized [:execution :params])))
+    (is (= {"/docs/λ.md" "input"} (get-in normalized [:execution :inputs])))
+    (is (not (contains? (:execution normalized) :request-id)))
+    (doseq [bad [(assoc args :eval "(+ 1 2)")
+                 (assoc-in args [:cadence :eval] "(+ 1 2)")
+                 (assoc-in args [:execution :request-id] request)
+                 (assoc-in args [:execution :room] "elsewhere")
+                 (assoc-in args [:execution :limits :unknown] 1)
+                 (assoc args :kind "benchmark")]]
+      (is (false? (m/validate api/workflow-schedule-create-schema bad))))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (api/workflow-schedule-transport
+                  (assoc-in args [:execution :params] {:subject "a" "subject" "b"}))))
+    (let [benchmark (-> args (assoc :kind "benchmark")
+                        (assoc :execution {:name "example" :expected-bundle bundle
+                                           :models [(:model input)] :repetitions 1
+                                           :limits (:limits input)}))]
+      (is (= (parse-uuid bundle)
+             (get-in (api/workflow-schedule-transport benchmark) [:execution :expected-bundle]))))))
 
 (deftest coordinator-op-preserves-room-authorization-and-canonical-request-identity
   (world/with-world [conn w]

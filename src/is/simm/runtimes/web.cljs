@@ -84,6 +84,7 @@
   (when (and session (current-session? session))
     (binding [rtc/*execution-context* runtime]
       (sig/clear-captured-results!)
+      (reset! sig/schedules-data nil)
       (reset! sig/workflow-editor-state {}))
     (reset! current-session* nil))
   (when supervisor
@@ -238,6 +239,7 @@
   ;; Set current-user signal for UI
   (binding [rtc/*execution-context* runtime]
     (sig/clear-captured-results!)
+    (reset! sig/schedules-data nil)
     (reset! sig/workflow-editor-state {})
     (reset! sig/current-user user))
   (let [session (create-client! token)]

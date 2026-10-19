@@ -284,7 +284,23 @@ continues to enforce its existing HTTP-dispatch accounting unchanged.
 
 The workflow editor exposes this as “This server · Claude Code text benchmark”.
 It uses the server's trusted, existing Claude login—not an uploaded credential.
-This experimental backend is disabled by default. A trusted operator enables it
+
+The hosted execution backend also supports pinned recurring deployments through
+the workflow editor's “Recurring deployment” controls. Save and inspect source,
+choose the case/model/limits, then explicitly confirm an interval and timezone.
+The activation retains that revision even when authoring files are later edited.
+Schedules shows activation status and recent occurrences with links to their
+canonical Run/results. Pause withdraws work still queued for admission; already
+admitted work has its normal Run lifecycle. Resume rechecks the original
+delegator's current authority and the pinned host/model policies. A changed
+policy requires a new activation. Interrupted admissions remain held for
+reconciliation, not replayed. Each occurrence uses the room's existing finite
+allowance; exhaustion pauses the activation without provisioning more.
+Ordinary workflow completion remains distinct from checker-backed benchmarking.
+Recurring benchmarks require installation-operator authority as well as room
+merge authority. CLI and local-worker executions are not scheduled by this path.
+
+The experimental Claude Code text backend is disabled by default. A trusted operator enables it
 with JVM properties `simmis.cli-benchmarks.enabled=true`,
 `simmis.cli-benchmarks.unit=YOUR.service` and (optionally)
 `simmis.cli-benchmarks.manager=user` (`system` for a system service). Admission

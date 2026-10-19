@@ -1,0 +1,289 @@
+(ns is.simm.ops.workflow-schedules
+  "Pinned scheduled work through canonical admission. No new wallet, evaluator
+   or execution status; finite allowance is the existing shared room allowance."
+  (:require [datahike.api :as d]
+            [dvergr.agent.experiment.runner :as runner]
+            [dvergr.discourse :as discourse]
+            [dvergr.jobs :as jobs]
+            [dvergr.model.registry :as models]
+            [dvergr.resource :as resource]
+            [dvergr.scheduler.cron :as cron]
+            [hasch.core :as hasch]
+            [is.simm.model.access :as access]
+            [is.simm.model.work-requests :as requests]
+            [is.simm.model.workflow-schedules :as schedules]
+            [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.dvergr :as principals]
+            [is.simm.ops.work :as work]
+            [is.simm.ops.workflow-runs :as workflows-run]
+            [is.simm.ops.workflows :as workflows]
+            [malli.core :as m]
+            [org.replikativ.spindel.engine.core :as ec]
+            [taoensso.telemere :as log]))
+
+(def cadence-schema
+  [:map {:closed true}
+   [:tz [:string {:min 1 :max 100}]]
+   [:interval-ms {:optional true} [:int {:min 60000 :max 31536000000}]]
+   [:every {:optional true} [:enum "day" "week" "month"]]
+   [:at {:optional true} [:re #"^\d{2}:\d{2}$"]]
+   [:on {:optional true} [:enum "monday" "tuesday" "wednesday" "thursday" "friday" "saturday" "sunday"]]
+   [:on-day {:optional true} [:int {:min 1 :max 28}]]])
+
+(def create-schema
+  [:map {:closed true} [:request-id :uuid] [:kind [:enum "workflow" "benchmark"]]
+   [:cadence cadence-schema]
+   ;; The exact execution schema is checked below, separately for each kind.
+   [:execution :map]])
+
+(defn host-policy []
+  {:version 1 :libraries (runner/library-versions) :effects work/effects
+   :workflow workflows-run/policy :models :explicit-registry-id
+   :overlap :skip :missed :latest :allowance :shared-room})
+
+(defn model-policy [kind execution]
+  ;; Registry refreshes can change concrete ids in place. Freeze their
+  ;; execution/pricing metadata digest, not credentials or display names.
+  (into (sorted-map)
+        (map (fn [id]
+               [id (hasch/uuid (select-keys (models/get-model id)
+                                            [:id :provider :api-type :model :context :max-output
+                                             :pricing :quirks :capabilities]))]))
+        (if (= kind :benchmark) (:models execution) [(:model execution)])))
+
+(defn- policy-current? [target]
+  (and (= (host-policy) (:host-policy target))
+       (= (model-policy (:kind target) (:execution target)) (:model-policy target))))
+
+(defn- cadence! [value]
+  (when-not (m/validate cadence-schema value)
+    (throw (ex-info "Invalid schedule cadence" {:type ::invalid})))
+  (try (java.time.ZoneId/of (:tz value))
+       (catch java.time.DateTimeException _
+         (throw (ex-info "Invalid schedule timezone" {:type ::invalid}))))
+  (when (and (:interval-ms value) (not (zero? (mod (:interval-ms value) 60000))))
+    (throw (ex-info "Schedule intervals use whole minutes" {:type ::invalid})))
+  (when-not (if (:interval-ms value)
+              (not-any? #(contains? value %) [:every :at :on :on-day])
+              (and (:every value) (:at value)
+                   (= (contains? value :on) (= "week" (:every value)))
+                   (= (contains? value :on-day) (= "month" (:every value)))))
+    (throw (ex-info "Use one interval or one explicit calendar cadence" {:type ::invalid})))
+  (try
+    (let [spec (cron/normalize-spec
+                (cond-> (dissoc value :interval-ms)
+                  (:interval-ms value) (assoc :every-ms (:interval-ms value))
+                  (:every value) (update :every keyword)
+                  (:on value) (update :on keyword)))]
+      ;; Exercise time parsing before publishing an activation.
+      (cron/next-fire-time spec (java.time.Instant/now))
+      spec)
+    (catch IllegalArgumentException _ (throw (ex-info "Invalid schedule time" {:type ::invalid})))
+    (catch java.time.DateTimeException _ (throw (ex-info "Invalid schedule time" {:type ::invalid})))))
+
+(defn- authorize! [conn principal room kind]
+  ((if (= kind :benchmark) benchmarks/authorize! work/authorize!) conn principal room))
+
+(defn- execution! [kind input]
+  (let [schema (if (= kind :benchmark) benchmarks/schema workflows-run/schema)]
+    (when-not (and (not (contains? input :request-id))
+                   (m/validate schema (assoc input :request-id (random-uuid))))
+      (throw (ex-info "Invalid scheduled execution" {:type ::invalid}))))
+  ;; A deployment pins a registry id, not a mutable alias/family.
+  (doseq [id (if (= kind :benchmark) (:models input) [(:model input)])]
+    (when-not (= id (:id (models/get-model id)))
+      (throw (ex-info "Select an explicit installed model id for a schedule" {:type ::invalid}))))
+  input)
+
+(defn create! [conn ctx principal room-id room input]
+  (when-not (m/validate create-schema input)
+    (throw (ex-info "Invalid workflow schedule" {:type ::invalid})))
+  (binding [ec/*execution-context* ctx]
+    (let [kind (keyword (:kind input)) party (authorize! conn principal room-id kind)
+          spec (cadence! (:cadence input))
+          execution (execution! kind (:execution input))
+          id (hasch/uuid [:simmis/schedule-activation-v1 party room-id (:request-id input)])
+          ;; Retries after authoring edits observe their admitted revision.
+          existing (schedules/activation conn id)]
+      (if existing
+        (let [prior (schedules/target conn existing)]
+          (when-not (= (select-keys prior [:kind :cadence :execution])
+                       {:kind kind :cadence spec :execution execution})
+            (throw (ex-info "Schedule request identity names different work" {:type ::conflict})))
+          existing)
+        (let [snapshot (workflows/snapshot room (:name execution))
+              request (assoc execution :request-id id)
+              _ (if (= kind :benchmark) (benchmarks/prepare snapshot request)
+                    (workflows-run/prepare-source snapshot (select-keys execution workflows-run/source-fields)))
+              target {:version 1 :kind kind :cadence spec :execution execution
+                      :snapshot snapshot :host-policy (host-policy)}
+              target (assoc target :model-policy (model-policy kind execution))
+              now (java.util.Date.)]
+          (schedules/create! conn {:id id :room room-id :by party :target target :now now
+                                   :next-fire (java.util.Date/from (cron/next-fire-time spec (.toInstant now)))}))))))
+
+(defn set-enabled! [conn ctx principal room-id id enabled?]
+  (binding [ec/*execution-context* ctx]
+    (let [row (schedules/activation conn id)]
+      (when-not (= room-id (:schedule.activation/room row))
+        (throw (ex-info "No such workflow schedule in this room" {:type ::missing})))
+      (let [target (schedules/target conn row)]
+        (authorize! conn principal room-id (:kind target))
+        (when enabled?
+          (when-let [oid (:schedule.activation/active-occurrence row)]
+            (when (= :interrupted (:schedule.occurrence/state (schedules/occurrence conn oid)))
+              (throw (ex-info "Interrupted admission requires reconciliation before resuming" {:type ::conflict}))))
+          ;; The stored delegator, not the caller resuming it, pays/acts.
+          (authorize! conn (principals/party-principal (:schedule.activation/by row)) room-id (:kind target))
+          (when-not (policy-current? target)
+            (throw (ex-info "Host policy changed; admit a new schedule revision" {:type ::conflict}))))
+        (schedules/set-enabled! conn id enabled?)))))
+
+(defn- request-id [row occurrence]
+  (requests/request-id (:schedule.activation/by row) (:schedule.activation/room row)
+                       (:schedule.occurrence/id occurrence)))
+
+(defn recover!
+  "Startup only, after the previous dispatcher is physically gone and canonical
+   orphan recovery ran. A claim without a linked request is NOT replayed."
+  [conn ctx]
+  (binding [ec/*execution-context* ctx]
+    (doseq [occurrence (schedules/admitting-occurrences conn)]
+      (let [row (schedules/activation conn (:schedule.occurrence/activation occurrence))
+            rid (request-id row occurrence) request (requests/get-request conn rid)]
+        (schedules/finish-admission! conn (:schedule.occurrence/id occurrence)
+                                     (if (= :submitted (:work.request/state request)) :linked :interrupted)
+                                     (when request rid) :restart)
+        (when-not (= :submitted (:work.request/state request))
+          (schedules/block! conn row :interrupted))))))
+
+(defn completion-message [row occurrence target request job]
+  (when-not (instance? java.util.Date (:finished-at job))
+    (throw (ex-info "Completed Job has no durable completion time" {:type ::job-unavailable})))
+  (let [id (hasch/uuid [:simmis/schedule-completion-v1 (:schedule.occurrence/id occurrence)])]
+    (assoc (discourse/message
+            :simmis/workflows :_room-log
+            (str "Scheduled " (name (:kind target)) " · " (get-in target [:execution :name])
+                 " · " (name (:status job))
+                 "\nOpen the Run for captured files, evaluation results and any proposal. Completion alone does not establish correctness.")
+            nil {:role :system :kind :workflow/completed :source :workflow-schedule
+                 :run-id (:work.request/job request)})
+           :id id :thread-root-id id
+           :ts (.getTime ^java.util.Date (:finished-at job)))))
+
+(defn publish-completion! [conn row occurrence request job room]
+  (when-not (:schedule.occurrence/announced? occurrence)
+    (when-not room (throw (ex-info "Scheduled result room is unavailable" {:type ::room-unavailable})))
+    (binding [ec/*execution-context* (:ctx room)]
+      ;; Reserved id and immutable envelope make a crash between these two
+      ;; stores retry-safe, like canonical proposal publication. No agent wakes.
+      (discourse/post! room (completion-message row occurrence (schedules/target conn row) request job)))
+    (schedules/mark-announced! conn (:schedule.occurrence/id occurrence))))
+
+(defn- release-settled! [conn row resolve-room]
+  (when-let [oid (:schedule.activation/active-occurrence row)]
+    (let [o (schedules/occurrence conn oid)
+          r (when-let [rid (:schedule.occurrence/request o)] (requests/get-request conn rid))
+          job (when-let [id (:work.request/job r)] (jobs/status id))]
+      (when (and (= :linked (:schedule.occurrence/state o)) (:settled? job)
+                 (false? (:work.request/return-pending? r))
+                 (contains? #{:completed :failed :cancelled} (:status job)))
+        (try
+          (publish-completion! conn row o r job (resolve-room (:schedule.activation/room row)))
+          (schedules/clear-active! conn row oid)
+          (catch InterruptedException e (throw e))
+          (catch Exception e
+            ;; Retain the unresolved pointer until its room announcement is
+            ;; durable; retry publication, never the completed execution.
+            (log/log! {:level :warn :id ::completion-publication-pending
+                       :data {:occurrence oid :exception-class (.getName (class e))}})))))))
+
+(defn- dispatch! [conn ctx resolve-room row o]
+  (when (schedules/admit! conn (:schedule.occurrence/id o))
+    (let [oid (:schedule.occurrence/id o) rid (request-id row o)]
+      (try
+        (let [target (schedules/target conn row)
+              _ (when-not (policy-current? target)
+                  (throw (ex-info "Host policy changed" {:type ::policy-changed})))
+              principal (principals/party-principal (:schedule.activation/by row))
+              _ (authorize! conn principal (:schedule.activation/room row) (:kind target))
+              room (or (resolve-room (:schedule.activation/room row))
+                       (throw (ex-info "Room is not hydrated" {:type ::room-unavailable})))
+              _ (binding [ec/*execution-context* (:ctx room)]
+                  (let [balance (resource/balance room)]
+                    (when-not (every? (fn [[unit amount]] (>= (get balance unit 0M) amount))
+                                      (work/resources (get-in target [:execution :limits])))
+                      (throw (ex-info "Shared room allowance exhausted" {:type ::budget-exhausted})))))
+              input (assoc (:execution target) :request-id oid)]
+          (if (= :benchmark (:kind target))
+            (benchmarks/submit-snapshot! conn ctx principal (:schedule.activation/room row) room input (:snapshot target))
+            (workflows-run/submit! conn ctx principal (:schedule.activation/room row) room input (:snapshot target)))
+          (schedules/finish-admission! conn oid :linked rid nil))
+        (catch Exception e
+          ;; An uncertain post-submission response is reconciled from the
+          ;; canonical request, never interpreted as permission to resubmit.
+          (let [request (requests/get-request conn rid)
+                submitted? (= :submitted (:work.request/state request))
+                reason (if request :interrupted (or (:type (ex-data e)) :admission-failed))]
+            (schedules/finish-admission! conn oid (if submitted? :linked (if request :interrupted :blocked))
+                                         (when request rid) reason)
+            (when-not submitted?
+              (schedules/block! conn row reason)
+              (when-not request (schedules/clear-active! conn row oid)))
+            (when (instance? InterruptedException e)
+              (.interrupt (Thread/currentThread))
+              (throw e))))))))
+
+(defn tick!
+  "Off-engine only. One pass coalesces due times, drains pending occurrences
+   through existing admission, and retains overlap until real cleanup settles."
+  [conn ctx resolve-room now]
+  (binding [ec/*execution-context* ctx]
+    (doseq [row (schedules/activations conn)]
+      (when (.isInterrupted (Thread/currentThread))
+        (throw (InterruptedException. "Workflow dispatcher stopped")))
+      (try
+        (release-settled! conn row resolve-room)
+        (when (:schedule.activation/enabled? row)
+          (let [target (schedules/target conn row)]
+            (schedules/claim-due! conn row (:cadence target) now)))
+        (when-let [oid (:schedule.activation/active-occurrence
+                        (schedules/activation conn (:schedule.activation/id row)))]
+          (let [o (schedules/occurrence conn oid)]
+            (when (= :pending (:schedule.occurrence/state o))
+              (dispatch! conn ctx resolve-room row o))))
+        (catch InterruptedException e
+          (.interrupt (Thread/currentThread))
+          (throw e))
+        (catch Exception e
+          ;; One corrupt target/backlog must not starve unrelated schedules.
+          (schedules/block! conn row (or (:type (ex-data e)) :dispatcher-failed))
+          (log/log! {:level :error :id ::activation-held
+                     :data {:activation (:schedule.activation/id row)
+                            :exception-class (.getName (class e))}}))))))
+
+(defn list-room [conn ctx principal room-id]
+  (binding [ec/*execution-context* ctx]
+    (let [party (access/actor->party-uuid (:principal/id principal))]
+      (when-not (access/can? @conn party :read {:room room-id})
+        (throw (ex-info "Room read authority required" {:type ::denied})))
+      (mapv (fn [row]
+              (let [target (schedules/target conn row)]
+                {:id (str (:schedule.activation/id row)) :room-id (str room-id)
+                 :name (get-in target [:execution :name]) :kind (:kind target)
+                 :revision (str (:schedule.activation/revision row))
+                 :bundle (str (get-in target [:execution :expected-bundle]))
+                 :by (str (:schedule.activation/by row)) :enabled? (:schedule.activation/enabled? row)
+                 :reason (:schedule.activation/reason row) :cadence (:cadence target)
+                 :next-fire (.getTime ^java.util.Date (:schedule.activation/next-fire row))
+                 :occurrences
+                 (mapv (fn [o]
+                         (let [r (when-let [rid (:schedule.occurrence/request o)] (requests/get-request conn rid))
+                               j (when-let [id (:work.request/job r)] (jobs/status id))]
+                           {:id (str (:schedule.occurrence/id o)) :state (:schedule.occurrence/state o)
+                            :intended-at (.getTime ^java.util.Date (:schedule.occurrence/intended-at o))
+                            :coalesced (:schedule.occurrence/coalesced o) :reason (:schedule.occurrence/reason o)
+                            :job (some-> (:work.request/job r) str) :status (:status j)
+                            :settled? (:settled? j)}))
+                       (schedules/recent-occurrences conn (:schedule.activation/id row) 12))}))
+            (filter #(= room-id (:schedule.activation/room %)) (schedules/activations conn))))))

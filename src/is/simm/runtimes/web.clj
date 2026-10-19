@@ -997,6 +997,16 @@
             (log/log! {:level :warn :id ::scheduler-start-failed
                        :data {:error (str e)}})))
 
+        ;; Host-only pinned deployments reuse the clock, but admission and
+        ;; recovery run on their owned off-engine worker, never in a fork.
+        ;; Subsystem startup above is best-effort; unattended work is not.
+        ;; Explicitly require this dependency even if another subsystem failed.
+        (ctx/with-server-context
+          ((requiring-resolve 'dvergr.runtime.clock/start!)))
+        ((requiring-resolve 'is.simm.runtimes.workflow-schedules/start!)
+         (system-db/get-conn) ctx/server-context
+         (requiring-resolve 'is.simm.agents.room-agents/live-room))
+
         ;; Telegram channel (Stage 4) — no-op without a configured token.
         (try
           (require 'is.simm.runtimes.telegram)
@@ -1061,6 +1071,8 @@
 (defn stop-server!
   "Stop the web server. Idempotent - does nothing if not started."
   []
+  ;; Also release a dispatcher created during a partial startup.
+  ((requiring-resolve 'is.simm.runtimes.workflow-schedules/stop!))
   (when (:started? @server-state)
     (try ((requiring-resolve 'is.simm.runtimes.mcp/stop!))
          (finally

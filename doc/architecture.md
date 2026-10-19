@@ -82,6 +82,17 @@ Room-header workflow
 tabs carry the room replica scope into their Run inspectors and open results
 in the column that owns the action. Restored workflow and Run tabs resolve
 missing scopes from the authenticated room roster, like chat/thread tabs.
+Pinned recurring deployments use a host-owned scheduling adapter, not another
+execution engine. A listener on Dvergr's root clock only coalesces notifications
+into a one-element queue; one owned off-engine worker recovers and drains the
+system-DB occurrence outbox through the existing workflow/benchmark admissions.
+Copied clock listeners reject non-root contexts. Shutdown unsubscribes and joins
+the physical worker before replacement. Current authority, retained-source
+identity and host/model policy are checked at each admission. Money and dispatch
+allowance come from the same finite shared room wallet as manual execution;
+scheduling never creates funds. Overlaps are skipped and missed ticks coalesce
+to the latest intended slot. The Schedules view keeps these deployments distinct
+from legacy agent-authored prompt/code tasks.
 Separately, an
 exact-revision offline benchmark reuses Dvergr's experiment runner and room
 Attempts/Scorecards; it requires both installation-operator and room merge

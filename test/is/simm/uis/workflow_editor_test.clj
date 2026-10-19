@@ -6,6 +6,24 @@
              :definition {:params {:goal "old default"}}
              :inspection {:ok true :bundle "bundle" :cases []}})
 
+(deftest recurring-deployments-retain-the-inspected-execution-intent
+  (let [draft (-> (editor/draft source) (assoc-in [:form :model] "explicit-model")
+                  (assoc-in [:form :schedule-minutes] "60")
+                  (assoc-in [:form :schedule-tz] "Europe/Berlin"))
+        request (editor/scheduled-submission draft "activation")]
+    (is (= "activation" (:request-id request)))
+    (is (= "workflow" (:kind request)))
+    (is (= {:interval-ms 3600000 :tz "Europe/Berlin"} (:cadence request)))
+    (is (= (dissoc (editor/submission draft "ignored") :request-id) (:execution request)))
+    (is (not (contains? (:execution request) :request-id)))
+    (doseq [bad [(assoc-in draft [:form :backend] "local")
+                 (assoc-in draft [:form :backend] "cli")
+                 (assoc-in draft [:form :schedule-minutes] "0")
+                 (assoc-in draft [:form :schedule-minutes] "1.5")
+                 (assoc-in draft [:form :schedule-tz] "")
+                 (assoc draft :files {})]]
+      (is (thrown? clojure.lang.ExceptionInfo (editor/scheduled-submission bad "bad"))))))
+
 (deftest cli-text-submission-and-allowance-never-claim-http-or-money-bounds
   (let [draft (-> (editor/draft source)
                   (update :form editor/set-form-field :backend "cli")

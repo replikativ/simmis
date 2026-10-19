@@ -801,7 +801,16 @@ UUID. UUIDs resolve through the current system database before authorization
 and Attempt lookup; an unknown UUID never falls back to a same-spelled slug.
 
 The selected MCP surface authors, runs and benchmarks named workflows;
-ordinary `simmis_task` remains a separate free-form task. Proposal promotion is available in
+freshly minted read credentials additionally expose `simmis_workflow-schedule-list`.
+Fresh work credentials expose `simmis_workflow-schedule-create` and
+`simmis_workflow-schedule-set-enabled`; older credentials keep their literal
+tool ceilings. Schedule writes require room merge authority and benchmarks also
+require installation-operator authority. A schedule retains its creating party,
+and every occurrence rechecks that party's current authority. Resuming as another
+owner does not replace the delegator or transfer execution authority. The target
+pins source and execution/model policy; it does not grant a standing exemption
+from permission checks. Scheduling spends existing shared room allowance only.
+Ordinary `simmis_task` remains a separate free-form task. Proposal promotion is available in
 the browser, not as a selected MCP write. MCP local worker controls require their
 separate explicit credential and admission setting. The browser's fixed local
 workflow/list/benchmark/allowance RPCs use its authenticated human session,

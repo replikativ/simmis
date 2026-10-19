@@ -11,6 +11,7 @@
 (def defaults
   {:backend "hosted" :worker "" :worker-admissions "1"
    :model "" :case "" :mode "run" :split "development" :repetitions "1" :cli-runs "2"
+   :schedule-minutes "1440" :schedule-tz "UTC"
    :budget-microdollars "100000" :max-dispatches "4"
    :max-model-steps "4" :timeout-ms "120000" :timeout-default? true :settlement "review"})
 
@@ -40,7 +41,7 @@
 (defn dirty? [draft] (not= (:files draft) (get-in draft [:source :files])))
 
 (defn reloaded [old source]
-  (merge (draft source) (select-keys old [:submission :fund-request :fund-backend :funded? :fund-reply])))
+  (merge (draft source) (select-keys old [:submission :schedule-submission :fund-request :fund-backend :funded? :fund-reply])))
 
 (defn saved [draft sent reply]
   (let [defaults (parameters {:definition (:definition reply)})
@@ -152,3 +153,13 @@
           (cond-> (assoc base :params params)
             (not local?) (assoc :model model)
             (seq selected) (assoc :case selected)))))))
+
+(defn scheduled-submission [draft request-id]
+  (when-not (= "hosted" (get-in draft [:form :backend] "hosted"))
+    (invalid! "Schedules currently require hosted execution"))
+  (let [execution (dissoc (submission draft request-id) :request-id)
+        minutes (bounded-integer (:form draft) :schedule-minutes 1 525600)
+        tz (str/trim (get-in draft [:form :schedule-tz] "UTC"))]
+    (when (or (str/blank? tz) (> (count tz) 100)) (invalid! "Enter an explicit timezone"))
+    {:request-id request-id :kind (if (= "benchmark" (get-in draft [:form :mode])) "benchmark" "workflow")
+     :cadence {:interval-ms (* 60000 minutes) :tz tz} :execution execution}))

@@ -14,7 +14,7 @@
         source (:source draft) form (:form draft)
         permissions (:permissions state)
         loading (reduce (fn [out slot] (assoc out slot (boolean (get-in state [:loading [slot selected]]))))
-                        {:list (boolean (get-in state [:loading :list]))} [:source :save :submit :fund])
+                        {:list (boolean (get-in state [:loading :list]))} [:source :save :submit :fund :schedule])
         write? (:write? permissions) merge? (:merge? permissions)
         benchmark? (= "benchmark" (:mode form))
         display-cases (if benchmark? (editor/benchmark-cases (:inspection source) form)
@@ -196,6 +196,25 @@
                                                                                   #?(:cljs (when (js/confirm "Start a different request? The previous request may still be running; this does not cancel it and could create additional work.")
                                                                                              (change dissoc :submission)) :clj nil))}
                                                                      "Start a different request…")))
+                                                (when (and (not local?) (not cli?))
+                                                  (el/div {:class "workflow-scheduling"}
+                                                          (el/h4 {} "Recurring deployment")
+                                                          (field "Interval · minutes (1–525600)" (:schedule-minutes form) #(set-form :schedule-minutes %))
+                                                          (field "Timezone (e.g. Europe/Berlin)" (:schedule-tz form) #(set-form :schedule-tz %))
+                                                          (el/p {:class "workflow-note"} "Pins saved source and the execution settings above. Uses the shared room allowance; no automatic funding or merging. Overlapping work is skipped. Manage activations and inspect occurrences in Schedules.")
+                                                          (el/button {:disabled (or (:schedule loading) (editor/dirty? draft)
+                                                                                  (not (get-in source [:inspection :ok]))
+                                                                                  (and (:schedule-submission draft)
+                                                                                       (nil? (get-in draft [:schedule-submission :reply]))))
+                                                                      :on-click (fn [_] ((:schedule actions) selected false))}
+                                                                     "Confirm and activate schedule…")
+                                                          (when (:schedule-submission draft)
+                                                            (el/button {:disabled (:schedule loading)
+                                                                        :on-click (fn [_] ((:schedule actions) selected true))}
+                                                                       "Retry identical activation"))
+                                                          (when-let [reply (get-in draft [:schedule-submission :reply])]
+                                                            (el/p {} (str "Schedule: " (:id reply) " · "
+                                                                          (if (:enabled? reply) "Active" "Paused"))))))
                                                 (when submission
                                                   (el/p {} (str "Request: " (get-in submission [:payload :request-id]))))
                                                 (when-let [reply (:reply submission)]

@@ -22,6 +22,8 @@
             #?(:clj [is.simm.ops.run-world-proposals :as world-proposals])
             #?(:clj [is.simm.ops.experiments :as experiments])
             #?(:clj [is.simm.ops.chat :as chat-ops])
+            #?(:clj [is.simm.ops.workflow-schedules :as workflow-schedules])
+            #?(:clj [is.simm.runtimes.context :as host-context])
             #?(:clj [is.simm.ops.dvergr :as dvergr-ops])
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.model.message-notify-broadcast :as mnb])
@@ -482,6 +484,14 @@
                                                        vec)]
                                  [(get slug->name slug slug)
                                   (workflow-topology-mermaid ss kb-names)])))
+          :workflow-schedules
+          (host-context/with-server-context
+            (vec (mapcat (fn [room]
+                           (map #(assoc % :room-name (:room/name room))
+                                (workflow-schedules/list-room
+                                 (system-db/get-conn) host-context/server-context
+                                 (dvergr-ops/party-principal party-id) (:room/id room))))
+                         party-rooms)))
           :shapes shapes})
        :cljs nil)))
 

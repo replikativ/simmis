@@ -138,6 +138,26 @@
                               #((submitter backend mode) web/server-id room payload)
                               (fn [s reply] (assoc-in s [:drafts name :submission :reply] reply))))
                   (catch :default error (update! assoc-in [:errors :submit] (rem/error-text error))))))
+            (schedule! [name retry?]
+              (try
+                (let [draft (get-in (state) [:drafts name])
+                      pending (:schedule-submission draft)]
+                  (when (or (get-in (state) [:loading [:schedule name]])
+                            (and (not retry?) pending (nil? (:reply pending))))
+                    (throw (js/Error. "Retry the unresolved schedule request first")))
+                  (let [payload (if retry? (:payload pending)
+                                    (editor/scheduled-submission draft (str (random-uuid))))]
+                    (when-not payload (throw (js/Error. "No schedule request to retry")))
+                    (when (or retry?
+                              (confirm! (str "Activate recurring " (:kind payload) " · " name "?\n"
+                                             "Every " (/ (get-in payload [:cadence :interval-ms]) 60000) " minutes; "
+                                             (get-in payload [:cadence :tz]) ".\n"
+                                             "Pins this saved source and current execution settings. Each occurrence uses the shared room allowance; no automatic funding or merging. Overlapping occurrences are skipped.")))
+                      (change! name assoc :schedule-submission (if retry? pending {:payload payload}))
+                      (request! :schedule name #(remote/create-workflow-schedule! web/server-id room payload)
+                                (fn [s reply]
+                                  (-> s (assoc-in [:drafts name :schedule-submission :reply] reply)))))))
+                (catch :default error (update! assoc-in [:errors :schedule] (rem/error-text error)))))
             (fund! [name]
               (try
                 (when (get-in (state) [:loading [:fund name]])
@@ -172,7 +192,7 @@
                    (if (and (string? name) (re-matches #"[a-z0-9][a-z0-9-]{0,63}" name))
                      (select! name (nil? (get-in (state) [:drafts name])) true)
                      (update! assoc-in [:errors :source] "Use a lowercase workflow name with letters, digits and dashes (max64)."))))
-       :change change! :save save! :submit submit! :fund fund!
+       :change change! :save save! :submit submit! :fund fund! :schedule schedule!
        :open-run (fn [job]
                    (binding [ec/*execution-context* ctx]
                      (when (web/current-session? session)
