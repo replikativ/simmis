@@ -173,6 +173,11 @@ admission captures these as normal frozen files under `/in/knowledge/`; no live
 room knowledge capability is injected into the isolated worker. Run provenance
 records trigger, execution and manifest identities. Benchmarks must supply
 retained evidence in their case fixtures and never collect from the live room.
+Scheduled server workflows use the same collector with a durable per-occurrence
+snapshot. Empty initial inputs and unchanged evidence skip without inference;
+supporting wiki edits alone do not trigger a maintenance loop. Failed or
+uncertified attempts pause rather than consume the processed-input cursor.
+Successful processing does not automatically adopt generated files or knowledge.
 Over MCP, human controls
 require a separately requested `worker-control` token. Neither an existing
 read token nor a work token gains them; this operator-helper session should not

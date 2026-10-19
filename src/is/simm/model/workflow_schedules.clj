@@ -23,6 +23,7 @@
          [:schedule.activation/last-occurrence :db.type/uuid]
          [:schedule.activation/active-occurrence :db.type/uuid]
          [:schedule.activation/reason :db.type/keyword]
+         [:schedule.activation/last-processed-input :db.type/uuid]
          [:schedule.occurrence/id :db.type/uuid]
          [:schedule.occurrence/activation :db.type/uuid]
          [:schedule.occurrence/revision :db.type/uuid]
@@ -31,6 +32,9 @@
          [:schedule.occurrence/coalesced :db.type/long]
          [:schedule.occurrence/state :db.type/keyword]
          [:schedule.occurrence/claim :db.type/uuid]
+         [:schedule.occurrence/input-id :db.type/uuid]
+         [:schedule.occurrence/input-ref :db.type/store-ref]
+         [:schedule.occurrence/input-revision :db.type/uuid]
          [:schedule.occurrence/request :db.type/uuid]
          [:schedule.occurrence/announced? :db.type/boolean]
          [:schedule.occurrence/reason :db.type/keyword]]))
@@ -171,7 +175,91 @@
 (defn admit! [conn oid]
   (let [claim (random-uuid)]
     (d/transact conn [[:db.fn/call admit-tx oid claim]])
-    (= claim (:schedule.occurrence/claim (occurrence conn oid)))))
+    (when (= claim (:schedule.occurrence/claim (occurrence conn oid))) claim)))
+
+(defn- claimed-occurrence! [db oid claim]
+  (let [o (pull-row db :schedule.occurrence/id oid)
+        a (when o (pull-row db :schedule.activation/id (:schedule.occurrence/activation o)))]
+    (when-not (and (uuid? claim) (= claim (:schedule.occurrence/claim o))
+                   (= :admitting (:schedule.occurrence/state o))
+                   (= (:schedule.occurrence/revision o) (:schedule.activation/revision a))
+                   (= oid (:schedule.activation/active-occurrence a)))
+      (throw (ex-info "Scheduled input admission no longer owns its occurrence" {:type ::conflict})))
+    ;; Pausing withdraws PENDING work, not this already-owned admission.
+    [o a]))
+
+(defn- select-input-tx [db oid claim input-id empty-input?]
+  (let [[o a] (claimed-occurrence! db oid claim)
+        prior (:schedule.activation/last-processed-input a)
+        reason (cond (= input-id prior) :unchanged
+                     (and empty-input? (nil? prior)) :no-inputs)]
+    (when (and (:schedule.occurrence/input-id o)
+               (not= input-id (:schedule.occurrence/input-id o)))
+      (throw (ex-info "Occurrence already selected different evidence" {:type ::conflict})))
+    (cond-> [{:db/id (:db/id o) :schedule.occurrence/input-id input-id}]
+      reason (into [{:db/id (:db/id o) :schedule.occurrence/state :skipped
+                     :schedule.occurrence/reason reason}
+                    [:db/retract (:db/id a) :schedule.activation/active-occurrence oid]]))))
+
+(defn select-input!
+  "Claim-fenced metadata decision BEFORE allowance/provider work. Skip and
+   release are one transaction; only a prior successfully processed execution
+   suppresses unchanged evidence. This cursor says nothing about adoption."
+  [conn oid claim input-id empty-input?]
+  (when-not (and (uuid? input-id) (boolean? empty-input?))
+    (throw (ex-info "Invalid scheduled input selection" {:type ::conflict})))
+  (d/transact conn [[:db.fn/call select-input-tx oid claim input-id empty-input?]])
+  (let [o (occurrence conn oid)]
+    (if (= :skipped (:schedule.occurrence/state o)) (:schedule.occurrence/reason o) :capture)))
+
+(defn- retain-input-tx [db oid claim input-id revision ref]
+  (let [[o _] (claimed-occurrence! db oid claim)]
+    (when-not (= input-id (:schedule.occurrence/input-id o))
+      (throw (ex-info "Capture differs from selected scheduled evidence" {:type ::conflict})))
+    (if (:schedule.occurrence/input-ref o)
+      (do (when-not (= revision (:schedule.occurrence/input-revision o))
+            (throw (ex-info "Occurrence already retained different inputs" {:type ::conflict}))) [])
+      [{:db/id (:db/id o) :schedule.occurrence/input-ref ref
+        :schedule.occurrence/input-revision revision}])))
+
+(defn retain-input!
+  "Retain complete frozen input data before ordinary work submission. Retrying
+   cannot replace this occurrence's source snapshot with newer room contents."
+  [conn oid claim value]
+  (when-not (and (map? value) (= 1 (:version value)) (uuid? (:input-id value)))
+    (throw (ex-info "Invalid retained scheduled inputs" {:type ::conflict})))
+  (let [revision (hasch/uuid value)]
+    (artifact/publish-value!
+     (artifact/datahike-store conn) value
+     (fn [ref]
+       (d/transact conn [[:db.fn/call retain-input-tx oid claim (:input-id value) revision ref]])))
+    (occurrence conn oid)))
+
+(defn retained-input [conn o]
+  (when-let [ref (:schedule.occurrence/input-ref o)]
+    (let [value (artifact/get-value (artifact/datahike-store conn) ref)]
+      (when-not (and (= 1 (:version value))
+                     (= (:schedule.occurrence/input-revision o) (hasch/uuid value))
+                     (= (:schedule.occurrence/input-id o) (:input-id value)))
+        (throw (ex-info "Scheduled inputs failed their content identity" {:type ::corrupt})))
+      value)))
+
+(defn- processed-input-tx [db oid]
+  (let [o (pull-row db :schedule.occurrence/id oid)
+        a (when o (pull-row db :schedule.activation/id (:schedule.occurrence/activation o)))]
+    (when (and (= :linked (:schedule.occurrence/state o))
+               (= oid (:schedule.activation/active-occurrence a))
+               (= (:schedule.occurrence/revision o) (:schedule.activation/revision a))
+               (uuid? (:schedule.occurrence/request o))
+               (:schedule.occurrence/input-ref o) (:schedule.occurrence/input-id o))
+      [{:db/id (:db/id a) :schedule.activation/last-processed-input (:schedule.occurrence/input-id o)}])))
+
+(defn mark-input-processed!
+  "Host calls only after the linked Job settled and its candidate Attempt
+   was certified successful against the request's exact environment.
+   Successful processing/proposal is not knowledge adoption."
+  [conn oid]
+  (d/transact conn [[:db.fn/call processed-input-tx oid]]))
 
 (defn finish-admission! [conn oid state request reason]
   (d/transact conn [(cond-> {:db/id [:schedule.occurrence/id oid] :schedule.occurrence/state state}

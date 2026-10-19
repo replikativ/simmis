@@ -1,11 +1,24 @@
 (ns is.simm.ops.workflow-schedules-test
   (:require [clojure.test :refer [deftest is testing]]
             [datahike.api :as d]
+            [dvergr.agent.attempt :as attempt]
+            [dvergr.agent.environment :as environment]
+            [dvergr.agent.roster :as roster]
+            [dvergr.agent.run :as run]
             [dvergr.catalog.room :as catalog]
+            [dvergr.catalog.workspace :as workspace]
             [dvergr.discourse :as discourse]
             [dvergr.jobs :as jobs]
             [dvergr.resource :as resource]
             [dvergr.room.store.datahike :as room-store]
+            [dvergr.room.store.memory :as memory-store]
+            [dvergr.room.store :as store]
+            [dvergr.model.registry :as models]
+            [dvergr.substrate.geschichte :as geschichte]
+            [geschichte.content :as content]
+            [geschichte.repo :as repo]
+            [hasch.core :as hasch]
+            [is.simm.ops.knowledge-inputs :as knowledge-inputs]
             [is.simm.model.work-requests :as requests]
             [is.simm.model.workflow-schedules :as model]
             [is.simm.ops.dvergr :as principals]
@@ -65,10 +78,11 @@
   (model/claim-due! conn row (:cadence target) (java.util.Date. 60000))
   (first (model/occurrences conn (:schedule.activation/id row))))
 
-(defn- record-request! [{:keys [conn owner room-id target]} occurrence submitted?]
+(defn- record-request! [{:keys [conn owner room-id target environment]} occurrence submitted?]
   (let [{:keys [request]} (requests/claim!
                            conn {:party owner :room room-id :client-id (:schedule.occurrence/id occurrence)
-                                 :kind :workflow :intent {:submission (:execution target)}
+                                 :kind :workflow :intent (cond-> {:submission (:execution target)}
+                                                          environment (assoc :environment environment))
                                  :limits (update (get-in target [:execution :limits]) :settlement keyword)})]
     (if submitted?
       (requests/record-job! conn (:work.request/id request) (:work.request/claim request) (random-uuid))
@@ -76,6 +90,164 @@
 
 (defn- tick! [{:keys [conn ctx room]} millis]
   (schedules/tick! conn ctx (constantly room) (java.util.Date. millis)))
+
+(defn- with-input-fixture [f]
+  (with-fixture
+    (fn [{:keys [conn ctx owner room-id row target] :as fixture}]
+      (model/set-enabled! conn (:schedule.activation/id row) false)
+      (let [room (discourse/make-room {:id (keyword (str "scheduled-inputs-" (random-uuid)))
+                                     :ctx ctx :store (memory-store/make)})
+            source (assoc source "input-selection.edn"
+                          (pr-str {:kind :knowledge :policy knowledge-inputs/default-policy}))
+            target (-> target (assoc :snapshot {:files source :manifest []})
+                       (assoc-in [:execution :expected-bundle] (:id (catalog/bundle "echo" source))))
+            row (model/create! conn {:id (random-uuid) :room room-id :by owner :target target
+                                     :now (java.util.Date. 0) :next-fire (java.util.Date. 60000)})]
+        (try
+          (workspace/ensure-workspace! room)
+          (f (assoc fixture :room room :target target :row row
+                    :environment (environment/make-environment
+                                  {:id :scheduled-fixture :task "Process evidence"
+                                   :verifier {:id :completed :version 1}})))
+          (finally (discourse/close-room! room)))))))
+
+(defn- write-source! [{:keys [room]} path text]
+  (binding [ec/*execution-context* (:ctx room)]
+    (repo/write! (:conn (geschichte/current-workspace)) path (.getBytes ^String text "UTF-8"))))
+
+(defn- certify-candidate! [{:keys [conn room environment]} occurrence status passed?]
+  (let [request (requests/get-request conn (:schedule.occurrence/request occurrence))
+        job-id (:work.request/job request)
+        agent (roster/agent (roster/make-agent (roster/make-roster {:id :fixture})
+                                             {:id :candidate :program {:kind :echo}}) :candidate)
+        metrics {:agent-def-hash (hasch/uuid agent) :agent-version (:agent/version agent)
+                 :program-kind :echo :interpreter-version 1}]
+    (binding [ec/*execution-context* (:ctx room)]
+      (run/start! room :fixture (random-uuid) nil {:id job-id :kind :workflow})
+      (let [candidate (run/start! room :fixture (random-uuid) nil
+                                  {:kind :attempt :parent job-id
+                                   :provenance (into {} (map (fn [[k v]] [(keyword "run" (name k)) v])) metrics)})
+            id (:run/id candidate)
+            receipt (environment/make-attempt-receipt
+                     environment {:run-id id :provider :fixture :model "fixture"
+                                  :status status :started-at 0 :elapsed-ms 1 :metrics metrics
+                                  :checks {:completed? passed?} :reward (if passed? 1.0 0.0)})]
+        (run/finish! id status)
+        (store/-store-attempt! (:store room) (store/conversation-id room)
+                               (attempt/make-attempt environment agent receipt {} :review))
+        (run/finish! job-id :completed)))))
+
+(deftest empty-selection-skips-before-body-allowance-provider-and-job-work
+  (with-input-fixture
+    (fn [{:keys [conn row] :as fixture}]
+      (write-source! fixture "wiki/context.md" "Knowledge context without new evidence")
+      (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Skip read a body")))
+                    resource/balance (fn [& _] (throw (AssertionError. "Skip checked allowance")))
+                    work/prepare (fn [& _] (throw (AssertionError. "Skip prepared a provider")))
+                    workflow-runs/submit! (fn [& _] (throw (AssertionError. "Skip submitted a job")))]
+        (tick! fixture 60000)
+        (let [o (first (model/occurrences conn (:schedule.activation/id row)))]
+          (is (= :skipped (:schedule.occurrence/state o)))
+          (is (= :no-inputs (:schedule.occurrence/reason o)))
+          (is (nil? (:schedule.occurrence/input-ref o)))
+          (is (nil? (:schedule.activation/active-occurrence (model/activation conn (:schedule.activation/id row)))))
+          (is (empty? (requests/requests conn))))))))
+
+(deftest completed-evidence-skips-with-no-money-even-after-supporting-knowledge-edits
+  (with-input-fixture
+    (fn [{:keys [conn row] :as fixture}]
+      (write-source! fixture "inbox/source.md" "Original evidence")
+      (let [calls (atom 0)]
+        (with-redefs [workflow-runs/submit!
+                      (fn [_ _ _ _ _ input _ resolution]
+                        (swap! calls inc)
+                        (is (= "Original evidence" (get-in resolution [:captured :inputs "/in/knowledge/sources/inbox/source.md"])))
+                        (record-request! fixture {:schedule.occurrence/id (:request-id input)} true))]
+          (tick! fixture 60000)
+          (let [o (first (model/occurrences conn (:schedule.activation/id row)))
+                retained (model/retained-input conn o)]
+            (is (= :linked (:schedule.occurrence/state o)))
+            (is (uuid? (:schedule.occurrence/input-revision o)))
+            (is (= (:schedule.activation/revision row) (:target-revision retained)))
+            (certify-candidate! fixture o :completed true)
+            (requests/mark-returned! conn (:schedule.occurrence/request o)))
+          (write-source! fixture "wiki/context.md" "Adopted supporting knowledge must not trigger a loop")
+          (with-redefs [jobs/status (constantly {:status :completed :settled? true})
+                        resource/balance (fn [& _] (throw (AssertionError. "Unchanged evidence checked allowance")))
+                        content/read-by-id (fn [& _] (throw (AssertionError. "Unchanged evidence loaded source bytes")))]
+            (tick! fixture 120000))
+          (let [a (model/activation conn (:schedule.activation/id row))
+                [latest prior] (model/occurrences conn (:schedule.activation/id row))]
+            (is (= 1 @calls))
+            (is (= :unchanged (:schedule.occurrence/reason latest)))
+            (is (= :skipped (:schedule.occurrence/state latest)))
+            (is (= (:schedule.occurrence/input-id prior) (:schedule.activation/last-processed-input a)))
+            (is (:schedule.activation/enabled? a))
+            (is (= 1 (count (requests/requests conn))))))))))
+
+(deftest failed-execution-holds-without-advancing-processing-and-explicit-resume-retries
+  (with-input-fixture
+    (fn [{:keys [conn ctx owner room-id row] :as fixture}]
+      (write-source! fixture "inbox/source.md" "Evidence")
+      (let [calls (atom 0)]
+        (with-redefs [workflow-runs/submit!
+                      (fn [_ _ _ _ _ input _ _]
+                        (swap! calls inc)
+                        (record-request! fixture {:schedule.occurrence/id (:request-id input)} true))]
+          (tick! fixture 60000)
+          (let [o (first (model/occurrences conn (:schedule.activation/id row)))]
+            (requests/mark-returned! conn (:schedule.occurrence/request o)))
+          (with-redefs [jobs/status (constantly {:status :failed :settled? true})]
+            (tick! fixture 120000)
+            (tick! fixture 180000))
+          (let [a (model/activation conn (:schedule.activation/id row))]
+            (is (= 1 @calls))
+            (is (false? (:schedule.activation/enabled? a)))
+            (is (= :execution-failed (:schedule.activation/reason a)))
+            (is (nil? (:schedule.activation/last-processed-input a))))
+          (schedules/set-enabled! conn ctx (principals/party-principal owner) room-id (:schedule.activation/id row) true)
+          (tick! fixture 240000)
+          (is (= 2 @calls)))))))
+
+(deftest completed-job-with-failed-uncertified-or-wrong-environment-attempt-never-advances-input
+  (doseq [[status passed? wrong-environment?]
+          [[:failed false false] [:completed false false] [nil nil false] [:completed true true]]]
+    (with-input-fixture
+      (fn [{:keys [conn row] :as fixture}]
+        (write-source! fixture "inbox/source.md" "Evidence must remain retryable")
+        (with-redefs [workflow-runs/submit!
+                      (fn [_ _ _ _ _ input _ _]
+                        (record-request! fixture {:schedule.occurrence/id (:request-id input)} true))]
+          (tick! fixture 60000)
+          (let [o (first (model/occurrences conn (:schedule.activation/id row)))]
+            (when status
+              (certify-candidate!
+               (cond-> fixture
+                 wrong-environment?
+                 (assoc :environment (environment/make-environment
+                                      {:id :different-task :task "Unrelated work"
+                                       :verifier {:id :completed :version 1}})))
+               o status passed?))
+            (requests/mark-returned! conn (:schedule.occurrence/request o)))
+          (with-redefs [jobs/status (constantly {:status :completed :settled? true})]
+            (tick! fixture 120000))
+          (let [a (model/activation conn (:schedule.activation/id row))]
+            (is (false? (:schedule.activation/enabled? a)))
+            (is (= :execution-failed (:schedule.activation/reason a)))
+            (is (nil? (:schedule.activation/last-processed-input a)))))))))
+
+(deftest deployment-pins-live-input-policy-without-collecting-or-preparing-a-provider
+  (with-input-fixture
+    (fn [{:keys [conn ctx owner room-id room target]}]
+      (with-redefs [models/get-model (fn [id] {:id id})
+                    workflows/snapshot (fn [& _] (:snapshot target))
+                    workflow-runs/with-source-selection (fn [& _] (throw (AssertionError. "Deployment captured live evidence")))
+                    work/prepare (fn [& _] (throw (AssertionError. "Deployment prepared a provider")))]
+        (let [row (schedules/create! conn ctx (principals/party-principal owner) room-id room
+                                     {:request-id (random-uuid) :kind "workflow"
+                                      :cadence {:interval-ms 60000 :tz "UTC"} :execution (:execution target)})]
+          (is (uuid? (:schedule.activation/id row)))
+          (is (= (:snapshot target) (:snapshot (model/target conn row)))))))))
 
 (deftest completion-publication-retries-the-same-envelope-after-a-lost-acknowledgement
   ;; Save the real function before the ordinary fixture stubs room delivery.

@@ -189,19 +189,29 @@
     (cond-> (assoc planned :inputs entries :world-setup (setup (:name input) bundle source entries (some? resolved)))
       provenance (assoc-in [:workflow :input-selection] provenance))))
 
-(defn resolve-source
-  "Host admission only, after room authorization and before provider/spend.
-   Explicit retained inputs stay frozen; otherwise capture the declared policy
-   from ONE immutable room snapshot. No submission or adoption occurs here."
-  [room snapshot input]
+(defn with-source-selection
+  "Host admission only, after authorization. Callback receives a metadata-only
+   selection and a zero-argument capture function over that SAME immutable DB.
+   It can skip unchanged work without loading bodies. Retained fixture inputs
+   need no live capture; ordinary pure preparation verifies them again. Never
+   persist the callback/DB, only its captured byte data."
+  [room snapshot input f]
   (let [{:keys [selection-policy inputs]} (plan-source snapshot input)]
-    (when selection-policy
+    (if selection-policy
       (if (contains? inputs "/in/knowledge/manifest.edn")
-        (do (knowledge-inputs/from-inputs selection-policy inputs) nil)
+        (let [retained (knowledge-inputs/from-inputs selection-policy inputs)]
+          (f (select-keys retained [:trigger-id :execution-id :empty? :manifest]) (constantly nil)))
         (binding [ec/*execution-context* (:ctx room)]
           (let [conn (:conn ((requiring-resolve 'dvergr.substrate.geschichte/current-workspace)))]
             (when-not conn (invalid! "Room has no knowledge source workspace"))
-            (knowledge-inputs/capture @conn selection-policy)))))))
+            (let [db @conn selected (knowledge-inputs/selection db selection-policy)]
+              (f (dissoc selected :manifest-text) #(knowledge-inputs/capture db selection-policy))))))
+      (f nil (constantly nil)))))
+
+(defn resolve-source
+  "Resolve declared sources after authorization, without submission or spend."
+  [room snapshot input]
+  (with-source-selection room snapshot input (fn [_ capture] (capture))))
 
 (defn prepare
   "Construct from ONE immutable source snapshot. The bundle is task data;
@@ -226,8 +236,10 @@
 
 (defn submit!
   "Submit current source, or a host-retained immutable snapshot. Exact retries
-   are resolved before either source read or provider preparation."
-  [conn host-ctx principal room-id room input & [snapshot]]
+   are resolved before either source read or provider preparation. A host-retained
+   resolution supplies :captured (possibly nil for already-frozen fixtures) and
+   explicitly prevents collecting different live inputs."
+  [conn host-ctx principal room-id room input & [snapshot resolution]]
   (when-not (m/validate schema input) (invalid! "Invalid workflow execution"))
   (binding [ec/*execution-context* host-ctx]
     (let [party (work/authorize! conn principal room-id)
@@ -240,6 +252,10 @@
           (work/status conn host-ctx principal room-id id))
         (let [snapshot (or snapshot (workflows/snapshot room (:name input)))
               selected (select-keys input source-fields)
-              captured (resolve-source room snapshot selected)]
+              captured (if resolution
+                         (do (when-not (contains? resolution :captured)
+                               (invalid! "Retained resolution has no captured input decision"))
+                             (:captured resolution))
+                         (resolve-source room snapshot selected))]
           (work/submit-prepared! conn host-ctx principal room-id room input
-                                (prepare snapshot input captured)))))))
+                                (if captured (prepare snapshot input captured) (prepare snapshot input))))))))

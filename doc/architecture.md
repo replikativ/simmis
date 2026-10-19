@@ -58,8 +58,17 @@ the retry identity. Captured bytes and collector provenance are retained with
 the work request. Pure preparation and benchmarks require verified frozen
 inputs instead of resolving a live policy. Setup replaces the collector-owned
 `/in/knowledge/` subtree so inherited stale staging cannot augment the manifest;
-unrelated room files remain. Recurring deployment does not yet admit unresolved
-live-source declarations.
+unrelated room files remain. Recurring deployments pin the policy, then select
+one immutable source snapshot per occurrence. An initially empty or unchanged
+trigger set skips before body reads, allowance checks or provider preparation.
+Deleting all previously processed evidence is a change that requires another
+attempt. Selected bytes are retained before submission; uncertain admission is
+held after restart, never recaptured from newer room state. Only a physically
+settled Job whose direct candidate has a successful certified Attempt against
+the request's exact EnvironmentDef advances the processed-input cursor. Job
+completion alone does not. Failed or uncertified work holds the activation for
+explicit resumption. This cursor records processing/proposal, not adoption of
+any generated knowledge.
 
 Room source and execution state have different lifetimes. A daemon room's
 repository is initially seeded from the sandbox library (or its configured

@@ -16,6 +16,58 @@
                            :target {:kind :workflow :cadence {:interval-ms 60000 :tz "UTC"}
                                     :snapshot {:files {"task.md" "pinned"}}}}))
 
+(deftest source-selection-retention-and-processed-cursor-are-claim-fenced
+  (with-db
+    (fn [conn]
+      (let [a (create conn) aid (:schedule.activation/id a) input-id (random-uuid)]
+        (schedules/claim-due! conn a {:interval-ms 60000} (java.util.Date. 60000))
+        (let [o (first (schedules/occurrences conn aid)) oid (:schedule.occurrence/id o)
+              claim (schedules/admit! conn oid)
+              value {:version 1 :input-id input-id :selection {:trigger-id (random-uuid)}
+                     :captured {:inputs {"/in/evidence.md" "Original"}}}]
+          (is (= :capture (schedules/select-input! conn oid claim input-id false)))
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (schedules/retain-input! conn oid (random-uuid) value)))
+          (is (nil? (:schedule.occurrence/input-ref (schedules/occurrence conn oid))))
+          ;; Pause after admission doesn't withdraw the already-owned claim.
+          (schedules/set-enabled! conn aid false)
+          (schedules/retain-input! conn oid claim value)
+          (schedules/retain-input! conn oid claim value)
+          (is (= value (schedules/retained-input conn (schedules/occurrence conn oid))))
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (schedules/retain-input! conn oid claim (assoc-in value [:captured :inputs "/in/evidence.md"] "Later"))))
+          (schedules/mark-input-processed! conn oid)
+          (is (nil? (:schedule.activation/last-processed-input (schedules/activation conn aid))))
+          (schedules/finish-admission! conn oid :linked (random-uuid) nil)
+          (schedules/mark-input-processed! conn oid)
+          (is (= input-id (:schedule.activation/last-processed-input (schedules/activation conn aid))))
+          (schedules/clear-active! conn a oid))
+        (schedules/set-enabled! conn aid true)
+        (schedules/claim-due! conn a {:interval-ms 60000} (java.util.Date. 120000))
+        (let [o (first (schedules/occurrences conn aid)) oid (:schedule.occurrence/id o)
+              claim (schedules/admit! conn oid)]
+          (is (= :unchanged (schedules/select-input! conn oid claim input-id false)))
+          (is (= :skipped (:schedule.occurrence/state (schedules/occurrence conn oid))))
+          (is (nil? (:schedule.activation/active-occurrence (schedules/activation conn aid)))))
+        ;; Deleting the final evidence file is a changed input, not an initial
+        ;; empty inbox. It needs a reconciliation attempt rather than a skip.
+        (schedules/claim-due! conn a {:interval-ms 60000} (java.util.Date. 180000))
+        (let [o (first (schedules/occurrences conn aid)) oid (:schedule.occurrence/id o)
+              claim (schedules/admit! conn oid)]
+          (is (= :capture (schedules/select-input! conn oid claim (random-uuid) true))))))))
+
+(deftest empty-evidence-skip-never-creates-a-capture-or-processed-watermark
+  (with-db
+    (fn [conn]
+      (let [a (create conn) aid (:schedule.activation/id a)]
+        (schedules/claim-due! conn a {:interval-ms 60000} (java.util.Date. 60000))
+        (let [o (first (schedules/occurrences conn aid)) oid (:schedule.occurrence/id o)
+              claim (schedules/admit! conn oid)]
+          (is (= :no-inputs (schedules/select-input! conn oid claim (random-uuid) true)))
+          (is (nil? (:schedule.occurrence/input-ref (schedules/occurrence conn oid))))
+          (is (nil? (:schedule.activation/active-occurrence (schedules/activation conn aid))))
+          (is (nil? (:schedule.activation/last-processed-input (schedules/activation conn aid)))))))))
+
 (deftest retained-target-cursor-and-occurrence-are-durable
   (with-db
     (fn [conn]
@@ -29,8 +81,8 @@
           (is (= (java.util.Date. 240000) (:schedule.activation/next-fire (schedules/activation conn id))))
           (schedules/claim-due! conn a {:interval-ms 60000} (java.util.Date. 190000))
           (is (= 1 (count (schedules/occurrences conn id))))
-          (is (true? (schedules/admit! conn (:schedule.occurrence/id o))))
-          (is (false? (schedules/admit! conn (:schedule.occurrence/id o))))
+          (is (uuid? (schedules/admit! conn (:schedule.occurrence/id o))))
+          (is (nil? (schedules/admit! conn (:schedule.occurrence/id o))))
           (schedules/claim-due! conn a {:interval-ms 60000} (java.util.Date. 250000))
           (is (= [:skipped :admitting] (mapv :schedule.occurrence/state (schedules/occurrences conn id))))
           (is (= :overlap (:schedule.occurrence/reason (first (schedules/occurrences conn id))))))))))
@@ -46,10 +98,10 @@
         (schedules/claim-due! conn a {:interval-ms 60000} (java.util.Date. 190000))
         (let [o (first (schedules/occurrences conn id))]
           (schedules/set-enabled! conn id false)
-          (is (false? (schedules/admit! conn (:schedule.occurrence/id o))))
+          (is (nil? (schedules/admit! conn (:schedule.occurrence/id o))))
           (is (= :skipped (:schedule.occurrence/state (schedules/occurrence conn (:schedule.occurrence/id o)))))
           (schedules/set-enabled! conn id true)
-          (is (false? (schedules/admit! conn (:schedule.occurrence/id o)))))))))
+          (is (nil? (schedules/admit! conn (:schedule.occurrence/id o)))))))))
 
 (deftest concurrent-ticks-insert-only-one-occurrence
   (with-db
@@ -72,8 +124,8 @@
             (is (= (java.util.Date. 600000) (:schedule.occurrence/intended-at latest)))
             (is (= 9 (:schedule.occurrence/coalesced latest)))
             (is (= :coalesced (:schedule.occurrence/reason prior)))
-            (is (false? (schedules/admit! conn (:schedule.occurrence/id old))))
-            (is (true? (schedules/admit! conn (:schedule.occurrence/id latest))))))))))
+            (is (nil? (schedules/admit! conn (:schedule.occurrence/id old))))
+            (is (uuid? (schedules/admit! conn (:schedule.occurrence/id latest))))))))))
 
 (deftest calendar-times-use-explicit-zone-and-intended-anchoring
   (let [spec {:every :day :at "09:00" :tz "Europe/Berlin"}
