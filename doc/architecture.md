@@ -430,6 +430,14 @@ are separately fenced: an old completion cannot release the replacement's gate.
 Proposal diff/check requests retain independent epoch fences alongside their row
 request IDs, since they normally finish after the parent list request completes.
 
+The internal native-resource slot separates logical cancellation from physical
+cleanup. One worker serializes construction, publication and retirement for its
+resource. A superseded constructor must return and be disposed before its
+replacement opens; retirement barriers do not wait for later replacements to
+retire. Failed cleanup quarantines that slot while other stores can progress.
+Explicit recovery retries the retained cleanup only. Unknown constructor errors
+are not proof of cleanup and do not authorize another native open or cache wipe.
+
 **A failure is a value.** `nil` means never attempted, `{:error …}` means it
 broke, a list means it worked. An empty list must never be able to mean
 "denied" or "the schema is missing".
