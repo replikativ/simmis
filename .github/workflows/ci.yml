@@ -70,6 +70,8 @@ jobs:
       - uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           cli: latest
+      - name: Prepare Git dependency Java interfaces
+        run: clojure -J-Xmx1g -X:deps prep
       - name: Build dedicated local SCI runtime
         run: clojure -J-Xmx1g -T:build worker
       - name: Select the configured JDK for the fixed local bootstrap
