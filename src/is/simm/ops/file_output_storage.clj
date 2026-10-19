@@ -48,28 +48,41 @@
       (throw (ex-info "Retained file paths are not unique" {:type ::corrupt})))
     (plans/validate-manifest! manifest)))
 
-(defn manifest-in
-  "Bounded validated metadata from ONE immutable DB, including a writer's
-   serialized snapshot. No artifact/connection reads or authorization."
+(defn retained-in
+  "Bounded validated metadata and exact GC-tracked body references from ONE
+   immutable DB. No body reads or authorization. This snapshot is NOT a blob
+   retention pin; missing concurrently collected bytes must fail closed."
   [db id]
   (let [row (row-in! db id)]
     (when-not (every? #(uuid? (:file-output.entry/body-ref %)) (:file-output/entries row))
       (throw (ex-info "Retained file body reference is missing" {:type ::corrupt})))
-    (checked-metadata row)))
+    {:manifest (checked-metadata row)
+     :body-refs (into (sorted-map)
+                      (map (juxt :file-output.entry/path :file-output.entry/body-ref))
+                      (:file-output/entries row))}))
+
+(defn manifest-in
+  "Bounded validated metadata from ONE immutable DB, including a writer's
+   serialized snapshot. No artifact/connection reads or authorization."
+  [db id]
+  (:manifest (retained-in db id)))
 
 (defn manifest
   "Bounded metadata only; no file body fetch. Caller authorizes the request."
   [conn id]
   (manifest-in @conn id))
 
-(defn read-file
-  "Fetch just one retained file pair, validating it against typed metadata.
-   No reads from the source room, live world or original Attempt store."
-  [conn id path]
-  (let [row (row-in! @conn id) metadata (checked-metadata row)
-        entry (get-in metadata [:entries path])]
+(defn read-file-in
+  "Fetch one exact retained pair named by an immutable DB snapshot. The caller
+   authorizes that snapshot first. Missing bytes fail closed: a DB snapshot is
+   not a GC pin. No source room, live world or Attempt store is consulted."
+  [conn db id path]
+  (let [{:keys [manifest body-refs]} (retained-in db id)
+        entry (get-in manifest [:entries path])]
     (when-not entry (throw (ex-info "File is not in this manifest" {:type ::missing})))
-    (let [stored (first (filter #(= path (:file-output.entry/path %)) (:file-output/entries row)))
-          ref (:file-output.entry/body-ref stored)]
-      (when-not (uuid? ref) (throw (ex-info "File body reference is missing" {:type ::corrupt})))
-      (plans/validate-pair! entry (artifact/get-value (artifact/datahike-store conn) ref)))))
+    (plans/validate-pair! entry (artifact/get-value (artifact/datahike-store conn) (get body-refs path)))))
+
+(defn read-file
+  "Fetch one retained pair from the current snapshot after authorization."
+  [conn id path]
+  (read-file-in conn @conn id path))
