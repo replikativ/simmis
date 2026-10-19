@@ -15,6 +15,7 @@
             #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.uis.web.desktop.proposals-remote :as pr])
             #?(:cljs [is.simm.uis.web.desktop.aggregate :as agg])
+            #?(:cljs [is.simm.uis.web.desktop.connection-epoch :as connection-epoch])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.incremental.interval]
@@ -57,7 +58,8 @@
      ;; A failure has to land on the card. Silently ignoring it left `:diffs`
      ;; nil forever, so a DENIED diff rendered as a permanent "Loading changes…"
      ;; — indistinguishable from a slow one, and invisible in the console.
-     (let [request-id (random-uuid)]
+     (let [request-id (random-uuid)
+           epoch (connection-epoch/snapshot)]
        ;; The token lives in the reactive row it protects. A newer list
        ;; replaces the row and installs its own token before starting its RPC,
        ;; so callbacks from the old list become harmless without a second
@@ -66,6 +68,7 @@
        (rem/spin!
         #(pr/proposal-diff! web/server-id pid)
         (fn [ok err]
+         (when (connection-epoch/current? epoch)
           (update-proposal!
            pid #(card-model/apply-diff-result
                  % request-id ok (some-> err rem/error-text)))
@@ -74,7 +77,7 @@
           (when (and (nil? err)
                      (current-diff-request? pid request-id)
                      (some #(= :repo (:system-type %)) (:forks ok)))
-            (load-checks-into-signal! pid request-id)))))))
+            (load-checks-into-signal! pid request-id))))))))
 
 #?(:cljs
    (defn- load-checks-into-signal!
@@ -86,15 +89,16 @@
       result), so surfacing an error for it would put a red line on a card whose
      change is fine."
      [pid diff-version]
+     (let [epoch (connection-epoch/snapshot)]
      (rem/spin!
       #(pr/proposal-checks! web/server-id pid)
       (fn [ok _err]
-        (when ok
+        (when (and ok (connection-epoch/current? epoch))
           (update-proposal! pid
                             (fn [proposal]
                               (if (= diff-version (:diff-request-id proposal))
                                 (assoc proposal :checks (vec ok))
-                                proposal))))))))
+                                proposal)))))))))
 
 ;; --- focus verification ------------------------------------------------------
 ;;
@@ -127,7 +131,7 @@
      []
      (agg/run!
       gate
-      (fn [done]
+      (fn [done current?]
         ;; Snapshot at fetch START, not at completion: these are exactly the ids
         ;; this round trip can speak for. An id requested WHILE it is in flight
         ;; is not in the snapshot, and the gate's pending bit runs another pass
@@ -136,7 +140,8 @@
           (rem/spin!
            #(pr/list-proposals! web/server-id "open")
            (fn [ok err]
-             (binding [rtc/*execution-context* runtime]
+             (when (current?)
+              (binding [rtc/*execution-context* runtime]
                ;; retire the questions BEFORE the signal write — that write is
                ;; what re-renders, and it must not land on a stale "still
                ;; asking" flag. A FAILED fetch retires them too: the error
@@ -151,7 +156,7 @@
                              {:proposals [] :error (rem/error-text err)}))
                  (do (reset! sig/proposals-data
                              {:proposals (vec ok) :loaded-at (js/Date.now)})
-                     (doseq [p ok] (load-diff-into-signal! (:id p))))))
+                     (doseq [p ok] (load-diff-into-signal! (:id p)))))))
              (done))))))))
 
 ;; Why an id is absent, once the list has spoken: :accepted | :dismissed |

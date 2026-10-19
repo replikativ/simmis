@@ -34,19 +34,20 @@
      []
      (agg/run!
       gate
-      (fn [done]
+      (fn [done current?]
         (go
           (let [ch (promise-chan)]
             (binding [rtc/*execution-context* runtime]
               (let [s (ar/load-position! web/server-id)]
                 (s (fn [r] (put! ch {:ok r})) (fn [e] (put! ch {:err e})))))
             (let [{:keys [ok err]} (<! ch)]
-              (binding [rtc/*execution-context* runtime]
+              (when (current?)
+               (binding [rtc/*execution-context* runtime]
                 (reset! sig/accounting-data
                         (if err
                           {:books [] :error (or (rem/error-text err)
                                                 (ex-message err) (str err))}
-                          {:books (vec ok) :loaded-at (js/Date.now)})))
+                          {:books (vec ok) :loaded-at (js/Date.now)}))))
               (done))))))))
 
 #?(:cljs

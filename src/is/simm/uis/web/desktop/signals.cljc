@@ -23,6 +23,7 @@
             [is.simm.uis.web.desktop.room-actions :as room-actions]
             [is.simm.uis.web.desktop.tab-heal :as tab-heal]
             #?(:cljs [is.simm.uis.web.desktop.datahike-query :as dq])
+            #?(:cljs [is.simm.uis.web.desktop.connection-epoch :as connection-epoch])
             #?(:cljs [org.replikativ.spindel.signal :refer [->SignalRef]])
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]]))
@@ -334,8 +335,8 @@
            (signal runtime {})))
 
 #?(:cljs (def memory-connection
-           "Authenticated socket epoch; changes on reconnect, not on rendering."
-           (signal runtime nil)))
+           "Authenticated socket epoch; alias shared with low-level replicas."
+           connection-epoch/connection))
 
 #?(:cljs (def memory-navigation-state
            "Room-owned folder expansion, metadata snapshots, focus and search."

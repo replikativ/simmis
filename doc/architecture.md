@@ -422,6 +422,14 @@ the server refuses it.
 index. If an aggregate is slow, cache it on a key derived from the sources' own
 heads, so a stale entry is impossible rather than unlikely.
 
+Client aggregate RPC gates are owned by the authenticated socket epoch. Feed,
+Tasks, Accounting, Proposals and each room's leaderboard coalesce invalidations
+while retaining the latest requested parameters. A replacement epoch can start
+even if its predecessor never completed. Result writes and completion callbacks
+are separately fenced: an old completion cannot release the replacement's gate.
+Proposal diff/check requests retain independent epoch fences alongside their row
+request IDs, since they normally finish after the parent list request completes.
+
 **A failure is a value.** `nil` means never attempted, `{:error …}` means it
 broke, a list means it worked. An empty list must never be able to mean
 "denied" or "the schema is missing".
