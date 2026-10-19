@@ -29,7 +29,9 @@ jobs:
             - deps-v1-
       - run:
           name: Run JVM tests (Maven baseline)
-          command: clojure -X:test
+          command: |
+            clojure -X:deps prep
+            clojure -X:test
           no_output_timeout: 15m
       - save_cache:
           key: deps-v1-{{ checksum "deps.edn" }}
@@ -64,7 +66,9 @@ jobs:
           command: npm ci
       - run:
           name: Build production frontend
-          command: npm run release
+          command: |
+            clojure -X:deps prep
+            npm run release
           no_output_timeout: 20m
       - run:
           name: Execute client lifecycle tests in Chrome
@@ -91,6 +95,7 @@ jobs:
           name: Build standalone uberjar
           command: |
             npm ci
+            clojure -X:deps prep
             clojure -T:build uber
           no_output_timeout: 30m
       - store_artifacts:
