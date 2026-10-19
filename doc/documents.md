@@ -50,6 +50,12 @@ safe metadata failures, no-op writes, competing edits, source/projection atomic
 visibility, moves, destination collisions, retained history and byte export /
 reimport with an explicitly retained document UUID.
 
+`test/is/simm/documents/source_fixtures.cljc` supplies synthetic business,
+research, nested-structure, literal-reference, legacy-HTML and inert-widget
+documents. Source tests exercise LF/CRLF/CR and BOM variants. Each fixture also
+names required semantic capabilities as an acceptance checklist; these are
+not assertions that the current parser implements the complete dialect.
+
 A raw Geschichte checkout restores repository files, **not arbitrary
 application projection datoms**. A regression test demonstrates that this
 produces an explicitly refused stale projection. The prototype therefore does

@@ -1,5 +1,7 @@
 (ns is.simm.documents.markdown-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
+            [is.simm.documents.source-fixtures :as fixtures]
             [is.simm.documents.markdown :as md]))
 
 (def fixture
@@ -81,3 +83,22 @@
   (with-redefs [md/max-source-bytes 4]
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"too large"
                          (md/parse "🦋🦋")))))
+
+(deftest representative-documents-preserve-source-before-semantic-codecs-are-added
+  ;; This intentionally proves preservation/locality only, not support for all
+  ;; features named in :required-semantics. Separate codec tests must prove those.
+  (doseq [{:keys [id source editable]} fixtures/cases
+          separator ["\n" "\r\n" "\r"]
+          bom ["" "\uFEFF"]]
+    (testing (str id " newline=" (pr-str separator) " bom=" (boolean (seq bom)))
+      (let [text (str bom (str/replace source "\n" separator))
+            parsed (md/parse text)
+            start (.indexOf text editable)
+            end (+ start (count editable))
+            changed (md/patch text (:revision parsed)
+                              [{:from start :to end :text "Edited text"}])]
+        (is (= text (:source parsed)))
+        (is (= text (md/decode (md/source-bytes text))))
+        (is (= text (:source (md/patch text (:revision parsed) []))))
+        (is (= (str (subs text 0 start) "Edited text" (subs text end))
+               (:source changed)))))))
