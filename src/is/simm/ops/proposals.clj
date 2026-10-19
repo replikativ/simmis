@@ -329,6 +329,14 @@
 
 (defn- fork-type [fork] (:proposal.fork/system-type fork))
 
+(defn- ensure-supported-landing!
+  "Retained file evidence is review-only until guarded publication is wired.
+   Check the WHOLE selection before any dispatch or landing side effect."
+  [forks]
+  (when (some #(= :file-output (fork-type %)) forks)
+    (throw (ex-info "Retained file proposals are review-only; adoption is not available"
+                    {:error :settlement-unavailable :system-type :file-output}))))
+
 (defn- fork-head-id [fork branch]
   (branching/head-id (:proposal.fork/scope fork) (fork-type fork) branch))
 
@@ -740,6 +748,7 @@
   [id & {:keys [force? note by]}]
   (let [p (open-proposal! id)
         forks (open-forks p)]
+    (ensure-supported-landing! forks)
     (if-let [decide! (review-decision p)]
       (decide! id :accept :note note :by by)
       (do
@@ -886,6 +895,9 @@
   [id scope branch & {:keys [force? note by]}]
   (let [p (open-proposal! id)
         f (open-fork! p scope branch)]
+    ;; Escalated reviews decide their entire proposal even when entered from
+    ;; a component action. Never let an ordinary sibling bypass whole-set gates.
+    (ensure-supported-landing! (if (:proposal/review p) (open-forks p) [f]))
     (if-let [decide! (review-decision p)]
       (decide! id :accept :note note :by by)
       (do

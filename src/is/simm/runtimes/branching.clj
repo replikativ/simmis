@@ -990,6 +990,9 @@
   "Merge `branch` into its trunk. Throws with the backend's reason when the
    merge cannot be made — a repo refuses an unresolved conflict."
   [scope system-type branch]
+  (when (= :file-output system-type)
+    (throw (ex-info "Retained file proposals require guarded publication, not branch merge"
+                    {:error :settlement-unavailable :scope scope :system-type system-type})))
   (let [trunk (trunk-of scope system-type)]
     (cond
       (world? system-type) (world-call 'settle-scope! scope :merge)
@@ -1003,6 +1006,9 @@
   "Delete a fork branch."
   [scope system-type branch]
   (cond
+    ;; A retained manifest is not a live branch. Dismissal records canonical
+    ;; proposal resolution without deleting its auditable evidence.
+    (= :file-output system-type) nil
     (world? system-type) (world-call 'settle-scope! scope :discard)
     (review-world? system-type)
     (throw (ex-info "A reviewed world is decided through its review, not dropped"
