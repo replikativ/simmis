@@ -118,9 +118,9 @@
         ;; (PR1119), and commit ACK isolation from listener failures (PR1120).
         ;; The immutable pin needs no checkout-relative extra paths. Keep until
         ;; the merged upstream fix is released and verified. Use the
-        ;; public rebased PR1120 head, not its now-unreachable stacked ancestor.
+        ;; permanent PR1120 main squash, not its retired stacked ancestor.
         org.replikativ/datahike {:git/url "https://github.com/replikativ/datahike"
-                                 :git/sha "5ea54328ad0704aa7053abea067b9434de5015d6"}
+                                :git/sha "ee3e066c2c304b77b9f3d26bf2411aa61a45c3f8"}
         org.replikativ/konserve {:mvn/version "0.9.394"}
         ;; 0.1.40 additionally limits client inventory to keys reachable from
         ;; the configured walker (konserve-sync#14). Clients no longer scan or
@@ -403,12 +403,14 @@
         ;; scoped file publication receipts (#366), and writer-snapshot default
         ;; resolution (#368). The public #368 head also repairs the transitive
         ;; Datahike source pin; a root override cannot skip resolving a retired
-        ;; transitive Git SHA. Pin the reviewed, green main squash.
+        ;; transitive Git SHA. The reviewed #369 head additionally binds workspace
+        ;; selection to fork-local execution state, never attachment order. Its
+        ;; main-based source passed the exact 21-test selector regression suite.
         ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         ;; Use the merged #363 commit: the earlier feature SHA is retired.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "c295badc77ab3483dab33cf9ce5982b4d2005e2c"
+                               :git/sha "bf8dbcaba8f4d2ddd00f8048878fec2b65094d19"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.
