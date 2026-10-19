@@ -27,6 +27,17 @@ automatically installed by an uploaded file. Existing independent KBs
 and drive resources remain accessible while this file-backed surface is
 introduced; they are not silently migrated or deleted.
 
+The experimental source-selected knowledge view derives semantic document/block
+rows from one immutable Geschichte snapshot without writing a second repository.
+Its default selection includes root and nested Markdown, with trusted exact folder
+roots/exclusions, a 20,000-entry metadata scan bound, and separate 200-document,
+8-MiB source and syntax-node bounds. Invalid identities or syntax return diagnostics,
+not a queryable partial view. The resolver-backed `agents.memory-read` vocabulary
+offers document descriptors, exact source reads and bounded literal search; it
+does not expose its backing DB. It is not yet installed in participant interpreters.
+Selection/content identifiers do not pin storage against GC: these read receipts
+explicitly borrow the source lifetime rather than promising archival retention.
+
 Room source and execution state have different lifetimes. A daemon room's
 repository is initially seeded from the sandbox library (or its configured
 import source); participants load source into their own SCI interpreters,

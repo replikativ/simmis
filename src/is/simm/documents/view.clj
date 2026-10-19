@@ -11,12 +11,14 @@
             [geschichte.repo :as repo]
             [hasch.core :as hasch]
             [is.simm.documents.blocks :as blocks]
+            [is.simm.documents.files :as files]
             [is.simm.documents.identity :as identity]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.properties :as properties]
             [is.simm.documents.repository :as documents]))
 
 (def ^:private max-files 200)
+(def ^:private max-scanned-entries 20000)
 (def ^:private max-total-bytes (* 8 1024 1024))
 (def ^:private max-total-nodes 100000)
 
@@ -25,49 +27,63 @@
 
 (defn- prefix! [root]
   ;; Require one exact repository-relative folder, not an arbitrary query.
-  (when-not (and (string? root) (<= 1 (count root) 512)
+  (when-not (and (string? root) (<= 0 (count root) 512)
                  (not (re-find #"[\\\p{Cntrl}]" root))
-                 (every? #(and (not (str/blank? %))
+                 (or (= "" root)
+                     (every? #(and (not (str/blank? %))
                                (not (#{"." ".." ".git" ".geschichte"} %)))
-                         (str/split root #"/" -1)))
+                             (str/split root #"/" -1))))
     (refuse! :invalid-root))
-  (str root "/"))
+  (if (= "" root) "" (str root "/")))
+
+(defn- policy-prefixes! [paths]
+  (when-not (and (vector? paths) (<= (count paths) 64))
+    (refuse! :invalid-selection-policy))
+  (->> paths (map prefix!) distinct sort vec))
 
 (defn selection
   "Bounded source-only descriptor. Cache writes and unrelated files do not
    change its identity. Schema revision is supplied by trusted host code."
-  [db {:keys [root schema-revision property-bindings] :or {root "wiki" property-bindings {}}}]
+  [db {:keys [roots exclude-prefixes schema-revision property-bindings]
+       :or {roots [""] exclude-prefixes [] property-bindings {}} :as options}]
+  ;; The experimental singular spelling must not silently widen to all files.
+  (when (contains? options :root) (refuse! :invalid-selection-policy))
   (when (nil? schema-revision) (refuse! :missing-schema-revision))
-  (let [prefix (prefix! root)
+  (let [prefixes (policy-prefixes! roots)
+        excluded (policy-prefixes! exclude-prefixes)
         repository-id (:geschichte.repo/id (query/repository db))
-        rows (vec (take (inc max-files)
-                        (d/index-range db {:attrid :geschichte.work/path
-                                           :start prefix
-                                           :end (str root "0")})))]
+        rows (vec (take (inc max-scanned-entries)
+                        (d/datoms db :avet :geschichte.work/path)))]
     (when-not repository-id (refuse! :missing-repository))
-    ;; Bound all entries in this folder, not just Markdown: never traverse an
-    ;; unbounded prefix and then filter it down to a small visible result.
-    (when (> (count rows) max-files) (refuse! :too-many-files))
+    ;; Metadata traversal and selected source bodies have separate limits:
+    ;; room sandbox code must not consume the Markdown document allowance.
+    (when (> (count rows) max-scanned-entries) (refuse! :too-many-worktree-entries))
     (let [files (into (sorted-map)
                       (keep (fn [datom]
-                              (let [row (d/pull db '[* {:geschichte.work/content
+                              (let [row (d/pull db '[:geschichte.work/path
+                                                    :geschichte.work/size :geschichte.work/mode
+                                                    {:geschichte.work/content
                                                        [:geschichte.content/id]}]
                                                 (:e datom))
                                     path (:geschichte.work/path row)]
-                                (when (and (str/starts-with? path prefix)
+                                (when (and (some #(str/starts-with? path %) prefixes)
+                                           (not-any? #(str/starts-with? path %) excluded)
                                            (re-find #"(?i)\.(md|markdown)$" path))
                                   [path {:content (get-in row [:geschichte.work/content
                                                                :geschichte.content/id])
                                          :size (:geschichte.work/size row)
                                          :mode (:geschichte.work/mode row)}])))) rows)]
-      (doseq [[_ {:keys [content size mode]}] files]
+      (when (> (count files) max-files) (refuse! :too-many-files))
+      (doseq [[path {:keys [content size mode]}] files]
+        (files/path! path)
         (when-not (and (uuid? content) (integer? size) (<= 0 size markdown/max-source-bytes)
                        ;; No symlink following, executable Markdown or gitlinks.
                        (= mode repo/default-mode))
           (refuse! :unsupported-file)))
       (when (> (reduce + 0 (map :size (vals files))) max-total-bytes)
         (refuse! :too-many-source-bytes))
-      {:repository-id repository-id :selection-kind :worktree :root root :projection-version 2
+      {:repository-id repository-id :selection-kind :worktree
+       :roots prefixes :exclude-prefixes excluded :projection-version 3
        :files files :codec markdown/syntax-profile :block-codec blocks/profile
        :property-schema (:revision (properties/compile-schema db property-bindings))
        :schema-revision schema-revision})))

@@ -3,12 +3,13 @@
             [datahike.api :as d]
             [geschichte.content :as content]
             [geschichte.repo :as repo]
+            [is.simm.agents.memory-read :as memory]
             [is.simm.documents.blocks :as blocks]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.repository :as documents]
             [is.simm.documents.view :as view]))
 
-(def options {:root "wiki" :schema-revision :test-schema-v1})
+(def options {:roots ["wiki"] :schema-revision :test-schema-v1})
 
 (defn- with-repository [f]
   (let [cfg {:store {:backend :memory :id (random-uuid)}
@@ -116,9 +117,49 @@
         (is (not (view/current? @conn (assoc options :schema-revision :v2) v)))
         (with-redefs [markdown/syntax-profile (update markdown/syntax-profile :version inc)]
           (is (not (view/current? @conn options v))))
-        (doseq [root ["" "../wiki" "/wiki" "wiki/" "a\\b" ".git"]]
-          (is (thrown? clojure.lang.ExceptionInfo (view/selection @conn (assoc options :root root)))))
-        (is (thrown? clojure.lang.ExceptionInfo (view/selection @conn {:root "wiki"})))))))
+        (doseq [root ["../wiki" "/wiki" "wiki/" "a\\b" ".git"]]
+          (is (thrown? clojure.lang.ExceptionInfo (view/selection @conn (assoc options :roots [root])))))
+        (is (thrown? clojure.lang.ExceptionInfo (view/selection @conn {:roots ["wiki"]})))))))
+
+(deftest repository-wide-markdown-selection-is-bounded-separately-from-code
+  (with-repository
+    (fn [conn]
+      (doseq [path ["README.md" "wiki/a.md" "nested/deeper/B.MARKDOWN" "private/a.md"
+                    "private-extra/visible.md"]]
+        (write! conn path "# Knowledge"))
+      ;; More code than the Markdown allowance is normal for a seeded room.
+      (d/transact conn (mapv (fn [n] {:geschichte.work/path (str "src/" n ".clj")}) (range 210)))
+      (let [all {:schema-revision :test-schema-v1}
+            limited (assoc all :exclude-prefixes ["private"])
+            selected (view/selection @conn limited)]
+        (is (= #{"README.md" "wiki/a.md" "nested/deeper/B.MARKDOWN"
+                 "private/a.md" "private-extra/visible.md"}
+               (set (keys (:files (view/selection @conn all))))))
+        (is (= #{"README.md" "wiki/a.md" "nested/deeper/B.MARKDOWN" "private-extra/visible.md"}
+               (set (keys (:files selected)))))
+        (is (= selected (view/selection @conn (assoc limited :roots ["" ""])))))
+      (with-redefs-fn {(ns-resolve 'is.simm.documents.view 'max-scanned-entries) 10}
+        #(is (= :too-many-worktree-entries
+                (try (view/selection @conn {:schema-revision :test-schema-v1})
+                     (catch clojure.lang.ExceptionInfo e (:reason (ex-data e))))))))))
+
+(deftest source-view-feeds-read-vocabulary-without-writing
+  (with-repository
+    (fn [conn]
+      (write! conn "README.md" "# Current knowledge\nExact source.")
+      (let [opts {:schema-revision :test-schema-v1}
+            api (memory/bindings #(view/current-view conn opts))
+            before (:max-tx @conn)
+            result ((api 'read) "README.md")]
+        (is (= :ready (:status result)))
+        (is (= "# Current knowledge\nExact source." (get-in result [:document :source])))
+        (is (= 20 (get-in ((api 'search) "Exact") [:matches 0 :from])))
+        (is (= before (:max-tx @conn)))
+        (write! conn "README.md" "---\nsimmis-id: invalid\n---\nInvalid")
+        (let [invalid ((api 'documents))]
+          (is (= :invalid (:status invalid)))
+          (is (seq (:diagnostics invalid)))
+          (is (not (contains? invalid :documents))))))))
 
 (deftest malformed-metadata-never-becomes-an-empty-successful-kb
   (with-repository
