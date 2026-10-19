@@ -24,6 +24,7 @@
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [taoensso.telemere :as log]))
 
 (def cadence-schema
@@ -157,10 +158,15 @@
   (requests/request-id (:schedule.activation/by row) (:schedule.activation/room row)
                        (:schedule.occurrence/id occurrence)))
 
+(defn- off-engine! []
+  (when (simple/on-drain-thread?)
+    (throw (ex-info "Scheduled work must run off the engine drain" {:type ::engine-thread}))))
+
 (defn recover!
   "Startup only, after the previous dispatcher is physically gone and canonical
    orphan recovery ran. A claim without a linked request is NOT replayed."
   [conn ctx]
+  (off-engine!)
   (binding [ec/*execution-context* ctx]
     (doseq [occurrence (schedules/admitting-occurrences conn)]
       (let [row (schedules/activation conn (:schedule.occurrence/activation occurrence))
@@ -390,6 +396,7 @@
   "Off-engine only. One pass coalesces due times, drains pending occurrences
    through existing admission, and retains overlap until real cleanup settles."
   [conn ctx resolve-room now]
+  (off-engine!)
   (binding [ec/*execution-context* ctx]
     (doseq [row (schedules/activations conn)]
       (when (.isInterrupted (Thread/currentThread))

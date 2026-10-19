@@ -9,7 +9,8 @@
             [is.simm.ops.file-output-storage :as storage]
             [is.simm.ops.knowledge-filing :as filing]
             [is.simm.ops.proposals :as proposals]
-            [org.replikativ.spindel.engine.core :as ec]))
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.impl.simple :as simple]))
 
 (defn- refuse! [reason]
   (throw (ex-info "Knowledge output filing was refused" {:type ::refused :reason reason})))
@@ -124,7 +125,8 @@
    Attempt. After authorization, retry can republish the existing reserved chat
    card without recertifying an expired Attempt or rerunning the Job."
   [conn principal room-id room request-id]
-  (when ec/*spin-id* (refuse! :requires-host-worker))
+  ;; Futures convey dynamic bindings, not ownership of the engine's drain.
+  (when (simple/on-drain-thread?) (refuse! :requires-host-worker))
   (when-not (uuid? request-id) (refuse! :invalid-request))
   (canonical-connection! conn)
   (let [db @conn row (request-row db request-id)]

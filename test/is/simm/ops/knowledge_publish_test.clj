@@ -11,7 +11,12 @@
             [is.simm.ops.knowledge-filing-test :as fixture]
             [is.simm.ops.knowledge-publish :as publish]
             [is.simm.ops.proposal-publication :as publication]
-            [is.simm.ops.proposals :as proposals]))
+            [is.simm.ops.proposals :as proposals]
+            [org.replikativ.spindel.core :as sp]
+            [org.replikativ.spindel.engine.context :as execution]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.spin.sync :as sync]))
 
 (defn- with-fixture
   ([f] (with-fixture {} f))
@@ -41,6 +46,40 @@
 
 (defn- proposal-count [conn]
   (count (d/q '[:find ?p :where [?p :proposal/id _]] @conn)))
+
+(deftest physical-drain-not-inherited-bindings-controls-filing
+  (let [ctx (execution/create-execution-context)]
+    (try
+      (with-fixture
+        (fn [{:keys [conn] :as state}]
+          (let [native (promise) refused (promise)
+                gate (sync/create-deferred ctx)]
+            (binding [ec/*execution-context* ctx]
+              (sp/spawn!
+               (sp/spin
+                (sp/await gate)
+                (deliver native
+                         (future
+                           {:spin ec/*spin-id* :flag simple/*in-drain?*
+                            :drain? (simple/on-drain-thread?) :value (file! state)}))
+            ;; Even clearing the inherited flags cannot disguise a real drain.
+                (deliver refused
+                         (binding [ec/*spin-id* nil simple/*in-drain?* false]
+                           (try
+                             (publish/file-completed-request! nil nil nil nil nil)
+                             ::unexpected
+                             (catch clojure.lang.ExceptionInfo error (:reason (ex-data error))))))))
+              (sync/deliver! gate true))
+            (is (= :requires-host-worker (deref refused 3000 ::timeout)))
+            (let [worker (deref native 3000 nil)
+                  result (when worker (deref worker 30000 ::timeout))]
+              (is (some? (:spin result)))
+              (is (true? (:flag result)))
+              (is (false? (:drain? result)))
+              (is (= :proposed (get-in result [:value :kind])))
+              (is (= (:value result) (receipt state)))
+              (is (= 1 (proposal-count conn)))))))
+      (finally (execution/close-context! ctx)))))
 
 (deftest certified-output-files-one-joint-proposal-and-retries-without-the-attempt
   (with-fixture

@@ -31,7 +31,10 @@
             [is.simm.ops.workflow-schedules :as schedules]
             [is.simm.ops.workflows :as workflows]
             [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as ec]))
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.core :as sp]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.spin.sync :as sync]))
 
 (def fixture-policy {:version 1 :fixture true})
 
@@ -79,6 +82,37 @@
           (finally
             (d/release conn)
             (context/close-context! ctx)))))))
+
+(deftest dispatcher-entries-require-a-native-thread-not-cleared-dynamic-flags
+  (with-fixture
+    (fn [{:keys [conn ctx room]}]
+      (let [native (promise) refused (promise) gate (sync/deferred)]
+        (sp/spawn!
+         (sp/spin
+          (sp/await gate)
+          (deliver native
+                   (future
+                     (let [spin ec/*spin-id* flag simple/*in-drain?*
+                           drain? (simple/on-drain-thread?)]
+                       (schedules/recover! conn ctx)
+                       ;; Before the first due time: no admission or provider.
+                       (schedules/tick! conn ctx (constantly room) (java.util.Date. 0))
+                       {:spin spin :flag flag :drain? drain? :returned? true})))
+          (deliver refused
+                   (binding [ec/*spin-id* nil simple/*in-drain?* false]
+                     [(try (schedules/recover! nil nil) ::unexpected
+                           (catch clojure.lang.ExceptionInfo error (:type (ex-data error))))
+                      (try (schedules/tick! nil nil nil nil) ::unexpected
+                           (catch clojure.lang.ExceptionInfo error (:type (ex-data error))))]))))
+        (sync/deliver! gate true)
+        (is (= [::schedules/engine-thread ::schedules/engine-thread]
+               (deref refused 3000 ::timeout)))
+        (let [worker (deref native 3000 nil)
+              result (when worker (deref worker 30000 ::timeout))]
+          (is (some? (:spin result)))
+          (is (true? (:flag result)))
+          (is (false? (:drain? result)))
+          (is (true? (:returned? result))))))))
 
 (defn- pending! [{:keys [conn row target]}]
   (model/claim-due! conn row (:cadence target) (java.util.Date. 60000))

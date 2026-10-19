@@ -16,7 +16,7 @@
 (defonce ^:private service (atom nil))
 
 (defn- off-engine! []
-  (when simple/*in-drain?*
+  (when (simple/on-drain-thread?)
     (throw (ex-info "Scheduled-work lifecycle must run off the engine drain"
                     {:type ::engine-thread}))))
 

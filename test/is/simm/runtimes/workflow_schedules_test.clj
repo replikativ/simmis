@@ -8,7 +8,8 @@
             [org.replikativ.spindel.engine.context :as execution]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.simple :as simple]
-            [org.replikativ.spindel.signal :as sig]))
+            [org.replikativ.spindel.signal :as sig]
+            [org.replikativ.spindel.spin.sync :as sync]))
 
 (use-fixtures :each
   (fn [f]
@@ -92,7 +93,42 @@
       (is (= :stopped (runtime/stop!))))))
 
 (deftest lifecycle-is-refused-on-the-engine-drain
-  (binding [simple/*in-drain?* true]
-    (is (thrown? clojure.lang.ExceptionInfo
-                 (runtime/start! ::conn context/server-context ::resolve)))
-    (is (thrown? clojure.lang.ExceptionInfo (runtime/stop!)))))
+  (let [result (promise) gate (sync/deferred)]
+    (sp/spawn!
+     (sp/spin
+      (sp/await gate)
+      (deliver result
+               (binding [ec/*spin-id* nil simple/*in-drain?* false]
+                 [(try (runtime/start! ::conn context/server-context ::resolve) ::unexpected
+                       (catch clojure.lang.ExceptionInfo error (:type (ex-data error))))
+                  (try (runtime/stop!) ::unexpected
+                       (catch clojure.lang.ExceptionInfo error (:type (ex-data error))))]))))
+    (sync/deliver! gate true)
+    (is (= [::runtime/engine-thread ::runtime/engine-thread] (await-event result)))))
+
+(deftest inherited-engine-bindings-do-not-refuse-a-native-lifecycle-owner
+  (let [ctx context/server-context
+        clock-signal (sig/signal (java.util.Date. 0))
+        native (promise) gate (sync/deferred)]
+    (with-redefs [clock/clock-signal (constantly clock-signal)
+                  clock/minute-now (constantly (java.util.Date. 0))
+                  schedules/recover! (fn [& _] nil)
+                  schedules/tick! (fn [& _] nil)]
+      (sp/spawn!
+       (sp/spin
+        (sp/await gate)
+        (deliver native
+                 (future
+                   {:spin ec/*spin-id* :flag simple/*in-drain?*
+                    :drain? (simple/on-drain-thread?)
+                    :start (runtime/start! ::conn ctx ::resolve)
+                    :stop (runtime/stop!)}))))
+      (sync/deliver! gate true)
+      (let [worker (await-event native)
+            result (deref worker 30000 ::timeout)]
+        (is (some? (:spin result)))
+        (is (true? (:flag result)))
+        (is (false? (:drain? result)))
+        (is (= :started (:start result)))
+        (is (= :stopped (:stop result)))
+        (is (not (runtime/running?)))))))
