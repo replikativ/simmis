@@ -17,7 +17,7 @@
 (defn- target-value [{:keys [conn registry-system runtime-system]}]
   {:conn conn :identity {:registry-system registry-system :runtime-system runtime-system}})
 
-(defn default-target
+(defn default-binding
   "Resolve after room authorization. Reject a stale/forked runtime Room before
    reading any knowledge files. The returned connection is the only source of
    the admission snapshot; retain identity data, never these live handles.
@@ -28,7 +28,7 @@
      (throw (ex-info "Knowledge admission requires the canonical live room" {:type ::unavailable})))
    (binding [ec/*execution-context* (:ctx room)]
      (canonical-room! room-id room (room-agents/registered-room room-id))
-     (target-value (rooms/default-workspace room-id))))
+     (rooms/default-workspace room-id)))
   ([registry-db room-id room]
    (when-not (uuid? room-id)
      (throw (ex-info "Knowledge admission requires the canonical live room" {:type ::unavailable})))
@@ -36,4 +36,13 @@
      (let [slug (:room/slug (d/entity registry-db [:room/id room-id]))
            registered (when slug (registry/lookup (store/slug->room-id slug)))]
        (canonical-room! room-id room registered)
-       (target-value (rooms/default-workspace registry-db room-id))))))
+       (rooms/default-workspace registry-db room-id)))))
+
+(defn default-target
+  "Compatibility projection of the host default binding; no new selection.
+   Use default-binding when an explicit descriptor consumer needs the exact
+   validated SystemIdentity as well as its connection."
+  ([room-id room]
+   (target-value (default-binding room-id room)))
+  ([registry-db room-id room]
+   (target-value (default-binding registry-db room-id room))))

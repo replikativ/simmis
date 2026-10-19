@@ -44,7 +44,7 @@
 (defn entry [db path]
   (when-let [eid (:e (first (d/datoms db :avet :geschichte.work/path path)))]
     (let [row (d/pull db '[:geschichte.work/size :geschichte.work/mode
-                          {:geschichte.work/content [:geschichte.content/id]}] eid)]
+                           {:geschichte.work/content [:geschichte.content/id]}] eid)]
       {:content (get-in row [:geschichte.work/content :geschichte.content/id])
        :size (:geschichte.work/size row) :mode (:geschichte.work/mode row)})))
 
@@ -135,10 +135,10 @@
             needle (str/lower-case (str/trim term))]
         (when (> (count rows) max-index-entries) (refuse! ::limit "Workspace exceeds the interactive path index limit"))
         (let [matches (vec (take 101 (for [row rows :let [path (:v row)]
-                                          :when (and (str/includes? (str/lower-case path) needle)
-                                                     (not (str/ends-with? path "/.keep"))
-                                                     (try (path! path) true (catch Exception _ false)))]
-                                      {:path path :name (last (str/split path #"/")) :kind (file-kind path)})))]
+                                           :when (and (str/includes? (str/lower-case path) needle)
+                                                      (not (str/ends-with? path "/.keep"))
+                                                      (try (path! path) true (catch Exception _ false)))]
+                                       {:path path :name (last (str/split path #"/")) :kind (file-kind path)})))]
           {:query term :entries (vec (take 100 matches)) :more? (> (count matches) 100)})))))
 
 (defn analyze
@@ -158,19 +158,26 @@
          :diagnostics (into (vec (or (:diagnostics semantic) (:diagnostics parsed))) diagnostics)}))
     {:kind :text :revision (markdown/revision text) :diagnostics []}))
 
+(defn read-file-in
+  "Project one file from an explicit immutable target DB. Internal storage
+   primitive, NOT an authorization endpoint: the host must resolve and validate
+   the canonical target and current authority before supplying this snapshot.
+   No workspace selection, connection lookup, interpreter or write is involved."
+  [db path]
+  (path! path)
+  (let [selected (entry db path) bytes (source-bytes db path selected)
+        kind (file-kind path)
+        text (when (and (not (#{:office :image} kind)) (<= (alength ^bytes bytes) markdown/max-source-bytes))
+               (try (markdown/decode bytes) (catch Exception _ nil)))
+        repo-id (:geschichte.repo/id (query/repository db))]
+    (cond-> {:path path :entry selected :kind (if text (if (= kind :markdown) :markdown :text)
+                                                  (if (= kind :text) :file kind))
+             :repository-id repo-id :execution-policy :source-only}
+      text (assoc :text text :analysis (analyze repo-id path text)))))
+
 (defn read-file [room path]
   (path! path)
-  (with-workspace room
-    (fn [conn]
-      (let [db @conn selected (entry db path) bytes (source-bytes db path selected)
-            kind (file-kind path)
-            text (when (and (not (#{:office :image} kind)) (<= (alength ^bytes bytes) markdown/max-source-bytes))
-                   (try (markdown/decode bytes) (catch Exception _ nil)))
-            repo-id (:geschichte.repo/id (query/repository db))]
-        (cond-> {:path path :entry selected :kind (if text (if (= kind :markdown) :markdown :text)
-                                                     (if (= kind :text) :file kind))
-                 :repository-id repo-id :execution-policy :source-only}
-          text (assoc :text text :analysis (analyze repo-id path text)))))))
+  (with-workspace room #(read-file-in @% path)))
 
 (defn history
   "File changes reachable from the current Geschichte HEAD. Metadata only;
@@ -196,8 +203,8 @@
                                 boundary? (not= (count parents) (count known-parents))
                                 selected (selected-entry commit)]
                           :when (or boundary? (if (seq parents)
-                                               (some #(not= selected (selected-entry %)) known-parents)
-                                               (some? selected)))]
+                                                (some #(not= selected (selected-entry %)) known-parents)
+                                                (some? selected)))]
                       {:commit (:geschichte.commit/id commit)
                        :boundary? boundary?
                        :parents (mapv :geschichte.commit/id parents)
@@ -217,12 +224,12 @@
     (fn [conn]
       (let [captured (atom @conn) selected (get (repo/tree-at captured commit-id) path)]
         (if-not selected {:path path :commit commit-id :deleted? true}
-          (do
-            (when (> (:size selected) markdown/max-source-bytes)
-              (refuse! ::limit "Historical source exceeds the preview limit"))
-            (when-not (#{:markdown :text} (file-kind path))
-              (refuse! ::invalid "Historical preview currently supports text files"))
-            {:path path :commit commit-id :text (markdown/decode (repo/read-at captured commit-id path))}))))))
+                (do
+                  (when (> (:size selected) markdown/max-source-bytes)
+                    (refuse! ::limit "Historical source exceeds the preview limit"))
+                  (when-not (#{:markdown :text} (file-kind path))
+                    (refuse! ::invalid "Historical preview currently supports text files"))
+                  {:path path :commit commit-id :text (markdown/decode (repo/read-at captured commit-id path))}))))))
 
 (defn read-binary [room path expected]
   (path! path)
@@ -235,9 +242,9 @@
 
 (defn- expected-entry! [value]
   (when-not (or (nil? value)
-                 (and (map? value) (= #{:content :size :mode} (set (keys value)))
-                      (uuid? (:content value)) (integer? (:size value)) (<= 0 (:size value) max-open-bytes)
-                      (integer? (:mode value))))
+                (and (map? value) (= #{:content :size :mode} (set (keys value)))
+                     (uuid? (:content value)) (integer? (:size value)) (<= 0 (:size value) max-open-bytes)
+                     (integer? (:mode value))))
     (refuse! ::invalid "A save requires the exact opened file descriptor"))
   value)
 
@@ -293,10 +300,10 @@
     (fn [conn]
       (let [db @conn bytes (source-bytes db path expected)
             written (room-files/write! room {(str "/" path) nil
-                                 (str "/" target) {:base64 (.encodeToString (Base64/getEncoder) bytes)}}
-                           {:expected-worktree {(str "/" path) expected (str "/" target) nil}
-                            :file-modes {(str "/" target) (:mode expected)}
-                            :boundary (publication-boundary room authorize!)
-                            :message (str "Move " path " to " target)})]
+                                             (str "/" target) {:base64 (.encodeToString (Base64/getEncoder) bytes)}}
+                                       {:expected-worktree {(str "/" path) expected (str "/" target) nil}
+                                        :file-modes {(str "/" target) (:mode expected)}
+                                        :boundary (publication-boundary room authorize!)
+                                        :message (str "Move " path " to " target)})]
         (when-not (:applied? written) (refuse! ::not-applied "The effect policy did not apply this move"))
         {:path target :entry (:entry (first (:written written))) :commit (:commit written) :moved? true}))))
