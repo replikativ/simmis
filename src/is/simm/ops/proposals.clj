@@ -68,9 +68,10 @@
                        :proposal (:proposal/id entity)})))
     [entity]))
 
-(defn file-proposal!
-  "Record an open proposal. `forks` = [{:scope uuid :branch str
-   :base-commit str :system-type kw :author uuid} …]. Returns the proposal id.
+(defn prepare-filing
+  "Build a canonical open Proposal entity without writing or publishing it.
+   `forks` = [{:scope uuid :branch str
+   :base-commit str :system-type kw :author uuid} …].
 
    `:author` on a FORK is the party who wrote it, which on a campaign is not
    `author` (the filer) — see `:proposal.fork/author`.
@@ -85,16 +86,13 @@
    the opening `:proposal.comment/*` rows — both part of the ONE immutable
    filing, so a retried filing cannot add a second first comment.
 
-   Host retention callbacks may supply the captured canonical `connection` and
-   a typed `:file-output` component. This is storage filing, not certification
-   or authorization; the host bridge must establish those before calling it."
-  [{:keys [id title summary author room run adoption forks intent attrs comments connection]}]
+   Typed `:file-output` components are validated here. This is storage entity
+   construction, not certification or authorization. The host must establish
+   both before composing filing-tx-data into a serialized writer transaction."
+  [{:keys [id title summary author room run adoption forks intent attrs comments]}]
   {:pre [(string? title) (seq forks)
          (or (nil? intent) (contains? fs/intents intent))]}
-  (let [connection (or connection (conn))
-        _ (when-not (identical? connection (conn))
-            (throw (ex-info "Proposal bodies and filing must use the canonical control connection" {})))
-        _ (when (some #(contains? attrs %) [:db/id :proposal/id :proposal/title :proposal/summary
+  (let [_ (when (some #(contains? attrs %) [:db/id :proposal/id :proposal/title :proposal/summary
                                             :proposal/status :proposal/created-at :proposal/filing-hash
                                             :proposal/forks :proposal/room :proposal/author :proposal/run
                                             :proposal/adoption :proposal/intent :proposal/message-id
@@ -167,16 +165,37 @@
          ;; the default would make old and new rows differ for no reason
           (and intent (not= fs/default-intent intent))
           (assoc :proposal/intent intent))]
+    entity))
+
+(defn filing-tx-data
+  "INTERNAL storage composition against the serialized writer's DB value.
+   Accept only a host-built prepare-filing entity after authorization. Exact
+   replay is empty; conflicting immutable content refuses. This neither grants
+   authority nor publishes chat, and must not be used to bypass host checks."
+  [db entity]
+  (file-proposal-if-absent db entity))
+
+(defn file-proposal!
+  "Record an open Proposal and publish its reserved canonical chat message.
+   See prepare-filing for the filing fields. Returns the Proposal UUID.
+   Retention callers must use the canonical control connection synchronously;
+   this storage operation does not establish certification or authorization."
+  [{:keys [connection] :as filing}]
+  (let [connection (or connection (conn))
+        _ (when-not (identical? connection (conn))
+            (throw (ex-info "Proposal bodies and filing must use the canonical control connection" {})))
+        entity (prepare-filing filing)
+        id (:proposal/id entity)]
     ;; The existence decision belongs to Datahike's serialized transaction
     ;; snapshot. Concurrent/ambiguous retries cannot append anonymous component
     ;; refs or reset lifecycle fields; a conflicting reuse of the UUID fails.
-    (d/transact connection [[:db.fn/call file-proposal-if-absent entity]])
-    (log/log! {:level :info :id ::filed :data {:proposal id :title title
-                                               :forks (count forks)}})
+    (d/transact connection [[:db.fn/call filing-tx-data entity]])
+    (log/log! {:level :info :id ::filed :data {:proposal id :title (:proposal/title entity)
+                                               :forks (count (:proposal/forks entity))}})
     ;; Resolve lazily to keep the proposal store independent of live discourse
     ;; plumbing. publish! records failure and leaves :pending; proposal filing
     ;; itself remains durable and retryable even when the room is unavailable.
-    (when room
+    (when (:proposal/room entity)
       ((requiring-resolve 'is.simm.ops.proposal-publication/publish!) id))
     id))
 
