@@ -87,14 +87,16 @@
                       {:type ::conflict})))
     current))
 
-(defn- node-tx [ordinal {:keys [kind from to children heading-level checked? table-header? table-alignment]}]
+(defn syntax-node-tx
+  "Source-free disposable syntax entity. Not a stable semantic block identity."
+  [ordinal {:keys [kind from to children heading-level checked? table-header? table-alignment]}]
   (cond-> {:document.node/kind kind :document.node/from from :document.node/to to
            :document.node/ordinal (long ordinal)}
     heading-level (assoc :document.node/heading-level (long heading-level))
     (some? checked?) (assoc :document.node/checked? checked?)
     (some? table-header?) (assoc :document.node/table-header? table-header?)
     table-alignment (assoc :document.node/table-alignment table-alignment)
-    (seq children) (assoc :document.node/children (mapv node-tx (range) children))))
+    (seq children) (assoc :document.node/children (mapv syntax-node-tx (range) children))))
 
 (defn publish-tx
   "Pure Datahike transaction function. CAS and projection publish atomically."
@@ -138,7 +140,7 @@
        ;; projection data, never document text/frontmatter, into the tx function.
        [[:db.fn/call publish-tx id expected path content-id
          {:revision (:revision parsed) :size (long (alength bytes))
-          :valid? (empty? (:diagnostics parsed)) :nodes (mapv node-tx (range) (:nodes parsed))}]]))
+          :valid? (empty? (:diagnostics parsed)) :nodes (mapv syntax-node-tx (range) (:nodes parsed))}]]))
     {:id id :path path :revision (:revision parsed)}))
 
 (defn create! [conn {:keys [id path source]}]

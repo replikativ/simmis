@@ -1,6 +1,7 @@
 # Document storage prototype
 
-`is.simm.documents.markdown` and `is.simm.documents.repository` are an isolated
+`is.simm.documents.markdown`, `is.simm.documents.repository` and
+`is.simm.documents.view` are an isolated
 prototype. They are **not** connected to live KBs, room tools, RPC, user
 provisioning or the document UI. Existing wikis still use their current
 pages/HTML-block model. No existing store is converted by booting this code.
@@ -81,6 +82,63 @@ produces an explicitly refused stale projection. The prototype therefore does
 not register the store as a live Yggdrasil system or claim checkout/merge
 integration. Colocation alone does not make those operations correct.
 
+## Source-selected immutable views
+
+`view/prepare` derives an immutable Datahike value from one captured source DB;
+it does not transact into the source connection or create another registered
+repository. The descriptor includes repository identity, selected folder's
+exact Markdown paths/content IDs/sizes/modes, syntax and projection versions,
+and a **trusted host-supplied** schema revision. It selects the worktree, not
+just HEAD: uncommitted edits matter. Projection writes and unrelated files do
+not change this descriptor.
+
+`view/current-view` rechecks that descriptor after preparing the view. If the
+source changes during preparation it returns `:pending`, without a stale DB
+masquerading as current. Each ready result remains explicitly as-of its
+descriptor, not a promise to lock future writes. Recheck it for later current
+reads and write/review/merge decisions. Malformed documents and duplicate IDs
+return `:invalid` with diagnostics, not a queryable partial/empty success.
+
+Raw writes, removes, moves and checkout therefore need no global projection
+callback: they change the source selection. Tests exercise these operations,
+an injected race during content reads, and independent historical DB values.
+Import/reset/merge publication, restart and GC lifetime still need integration
+acceptance tests before production registration.
+
+A canonical `simmis-id` UUID in YAML frontmatter supplies explicit document
+identity. Missing IDs are marked **provisional**, deterministically scoped to
+repository/path, and are not promised to survive external renames. Invalid or
+duplicate IDs are refused, never silently upserted into one document. This is
+not yet the semantic block/property identity codec.
+
+Selection is prefix-indexed and bounded to 200 entries, 2 MiB per source,
+8 MiB total source and 100,000 syntax nodes, stopping between files. Only
+regular non-executable Markdown is accepted; symlinks are not followed. There
+is no persistent/global projection cache. The caller must retain the source
+store and referenced content lifetime; keeping a DB value is not a claim of
+a durable GC pin. Views are borrowed in-process query values: do not persist
+their IDs as reconstructible retained snapshots or publish their DB as a new
+connection. Solving that lifecycle and current authorization remains a
+gate to live KB integration. A derived DB also is **not** a data-redaction or
+permission boundary: it inherits the authorized captured repository DB.
+
+Existing disposable projection rows may be replaced only with compatible
+schema and exclusive ownership: authored attributes or incoming references
+from non-projection entities cause refusal. Orphan syntax nodes and unexpected
+component ownership are also refused. Unrelated authored schema/property
+facts remain queryable. This deliberately refuses mixed legacy layouts rather
+than silently deleting references or claiming a block migration.
+
+The descriptor currently covers Markdown syntax inputs only. Attachments,
+templates, schema declarations and link resolution outside the selected folder
+must join the versioned inputs before they can influence a semantic view.
+Typed projection must verify its schema revision against captured trusted
+schema facts; the prototype only requires a trusted caller-supplied token.
+
+This read barrier supersedes the idea that every Geschichte operation must
+atomically rewrite application projections. The colocated write proof above
+remains a useful optimization, not a universal publication requirement.
+
 Document UUID preservation in these tests is explicit; it is not automatic
 identity recovery after an external file move. Syntax-node eids are disposable
 and are not stable wiki-block identities. Legacy block migration, portable
@@ -103,3 +161,39 @@ authoritative source replacements reset native undo history. Local edits that
 are echoed back through controlled props keep their history. Undo history is
 ephemeral device state, not serialized simulation state; draft source/selection
 can be restored without sharing a native handle or another context's history.
+
+## Place in the knowledge-work campaign
+
+The next gates are ordered to make memory work an ordinary workflow rather
+than a second special-purpose subsystem:
+
+1. Define and test the semantic codec: page/block UUIDs, nested grouping,
+   references, typed/programmed properties and inert widget declarations.
+   Syntax nodes and heading outlines are not substitutes for those blocks.
+2. Integrate the source-selected read barrier with one existing repository
+   owner, including merge/import, source retention and permission revocation.
+   Derived facts are rebuilt from final source, not independently merged.
+3. Add a small rich-editor slice alongside Source and Read, then Outline and
+   properties where supported. Edit a supported source region without
+   reserializing unrelated/unknown Markdown. Keep native handles context-local.
+4. Install memory maintenance as an editable, versioned workflow with the same
+   manual execution, benchmark and durable schedule path as ad-hoc workflows.
+   Use bounded budgets, durable source watermarks, source-linked proposals and
+   scoped revocable merge policy. No-change runs should need no inference.
+5. Exercise the complete loop locally: source change -> scheduled workflow ->
+   cited memory proposal -> checked adoption -> query/UI -> retained benchmark.
+   Then land reviewed releases/CI and deploy the verified slice.
+
+Office work is a bounded parallel track, not a prerequisite for Markdown.
+Original DOCX/XLSX/PPTX binaries remain authoritative. The existing SCI ZIP/XML
+API can support programmatic edits without a visual editor, but well-formed
+XML alone does not establish valid relationships, layout or document fidelity.
+Before expanding it, make staging execution-context-owned, enforce handle
+scope and revision/permission checks, and test that untouched archive members
+survive edits. Evaluate an optional human editor adapter against preservation,
+visual fidelity, licensing and deployment cost; do not silently convert Office
+files into Markdown or deploy a full office service as part of this prototype.
+
+Meeting/screen transcription, broader learning loops, mobile clients and
+simulation remain on the overarching agenda. They consume these same
+source/proposal/workflow interfaces rather than blocking this milestone.
