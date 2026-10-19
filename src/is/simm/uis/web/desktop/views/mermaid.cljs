@@ -3,23 +3,25 @@
    index.html (same as lucide/vega) rather than bundled — its full npm build
    pulls @upsetjs/venn.js, which shadow can't resolve. Client-only. Used by the
    Schedules/workflow view to draw the katzen `->mermaid` topology."
-  (:require [org.replikativ.spindel.dom.elements :as el]
+  (:require [is.simm.uis.web.desktop.sanitize :as sanitize]
+            [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.foreign])
   (:require-macros [org.replikativ.spindel.dom.elements :as el]
                    [org.replikativ.spindel.dom.foreign :refer [foreign-node]]))
 
 (defonce ^:private inited? (atom false))
 
+(def configuration
+  {:startOnLoad false :theme "dark" :securityLevel "strict"
+   ;; Preserve Mermaid's secure defaults; diagrams cannot re-enable HTML labels
+   ;; (removed by final sanitization) or provide theme CSS through configuration.
+   :secure ["secure" "securityLevel" "startOnLoad" "maxTextSize"
+            "suppressErrorRendering" "maxEdges" "htmlLabels" "flowchart" "themeCSS"]
+   :htmlLabels false :flowchart {:htmlLabels false :curve "basis"}})
+
 (defn- ensure-init! []
   (when (and (not @inited?) (exists? js/mermaid))
-    (.initialize js/mermaid
-                 #js {:startOnLoad false
-                      :theme "dark"
-                      ;; strict: never honour click/script directives in a
-                      ;; diagram string (defense-in-depth — the string is built
-                      ;; from schedule metadata, but treat it as data regardless).
-                      :securityLevel "strict"
-                      :flowchart #js {:htmlLabels true :curve "basis"}})
+    (.initialize js/mermaid (clj->js configuration))
     (reset! inited? true)))
 
 (defn render-into!
@@ -31,7 +33,7 @@
     (if (exists? js/mermaid)
       (do (ensure-init!)
           (-> (.render js/mermaid (str "mmdsvg-" (js/Math.abs (hash code))) code)
-              (.then (fn [res] (set! (.-innerHTML el) (.-svg ^js res))))
+              (.then (fn [res] (set! (.-innerHTML el) (sanitize/svg (.-svg ^js res)))))
               (.catch (fn [_e] (set! (.-textContent el) code)))))
       (set! (.-textContent el) code))))
 
@@ -42,17 +44,17 @@
    panel degrades to text rather than throwing into the render tree."
   [code]
   (foreign-node
-    {:key (str "mmd-" (hash code))
-     :class "mermaid-diagram"
-     :on-mount
-     (fn [container]
-       (when (and container (string? code) (seq code))
-         (if (exists? js/mermaid)
-           (do (ensure-init!)
-               (-> (.render js/mermaid (str "mmdsvg-" (js/Math.abs (hash code))) code)
-                   (.then (fn [res] (set! (.-innerHTML container) (.-svg ^js res))))
-                   (.catch (fn [_e]
-                             (set! (.-className container) "mermaid-diagram mermaid-diagram--error")
-                             (set! (.-textContent container) "diagram unavailable")))))
-           (do (set! (.-className container) "mermaid-diagram mermaid-diagram--error")
-               (set! (.-textContent container) "diagram unavailable")))))}))
+   {:key (str "mmd-" (hash code))
+    :class "mermaid-diagram"
+    :on-mount
+    (fn [container]
+      (when (and container (string? code) (seq code))
+        (if (exists? js/mermaid)
+          (do (ensure-init!)
+              (-> (.render js/mermaid (str "mmdsvg-" (js/Math.abs (hash code))) code)
+                  (.then (fn [res] (set! (.-innerHTML container) (sanitize/svg (.-svg ^js res)))))
+                  (.catch (fn [_e]
+                            (set! (.-className container) "mermaid-diagram mermaid-diagram--error")
+                            (set! (.-textContent container) "diagram unavailable")))))
+          (do (set! (.-className container) "mermaid-diagram mermaid-diagram--error")
+              (set! (.-textContent container) "diagram unavailable")))))}))

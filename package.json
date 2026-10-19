@@ -28,6 +28,7 @@
     "@tiptap/pm": "^3.6.6",
     "@tiptap/starter-kit": "^3.6.6",
     "@tiptap/suggestion": "^3.6.6",
+    "dompurify": "3.4.17",
     "highlight.js": "^11.11.1",
     "marked": "^17.0.4",
     "marked-highlight": "^2.2.3",
