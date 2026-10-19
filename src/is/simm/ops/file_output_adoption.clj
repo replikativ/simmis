@@ -1,6 +1,7 @@
 (ns is.simm.ops.file-output-adoption
-  "INTERNAL read-only preflight for forthcoming guarded adoption. No route,
-   claim, schema installation, publication, status mutation or execution. The
+  "INTERNAL preparation and serialized ownership for forthcoming guarded
+   adoption. No route, schema installation, target publication, proposal status
+   mutation or execution. The
    returned data is NOT a capability: an eventual serialized host writer must
    repeat authority/target checks and compare the exact frozen storage proof."
   (:require [datahike.api :as d]
@@ -19,6 +20,10 @@
 (defn- refuse! [reason]
   (throw (ex-info "Retained file adoption is unavailable"
                   {:type ::unavailable :reason reason})))
+
+(defn- host-connection! [conn]
+  (when (simple/on-drain-thread?) (refuse! :requires-host-worker))
+  (when-not (and conn (identical? conn (sdb/get-conn))) (refuse! :noncanonical-connection)))
 
 (defn snapshot
   "INTERNAL pure control-DB read. Authorize before inspecting component data.
@@ -86,8 +91,7 @@
    Party is captured by the trusted authenticated host, never a client field.
    No caller-supplied bytes, manifest, descriptor or claim token is accepted."
   [conn party room-id room proposal-id]
-  (when (simple/on-drain-thread?) (refuse! :requires-host-worker))
-  (when-not (and conn (identical? conn (sdb/get-conn))) (refuse! :noncanonical-connection))
+  (host-connection! conn)
   (let [db @conn
         {:keys [binding retained] :as proof} (snapshot db party room-id proposal-id)
         manifest (:manifest retained)]
@@ -98,3 +102,52 @@
                          [path (storage/read-file-in conn db (:id manifest) path)]))]
       (plans/validate-plan! {:manifest manifest :proposal proposal-id :bodies bodies})
       {:proof proof :plan {:manifest manifest :proposal proposal-id :bodies bodies}})))
+
+(defn- prepared! [{:keys [proof plan] :as prepared} party room-id]
+  (when-not (and (= #{:proof :plan} (set (keys prepared)))
+                 (= party (get-in proof [:binding :actor]))
+                 (= room-id (get-in proof [:binding :room]))
+                 (= (:manifest plan) (get-in proof [:retained :manifest]))
+                 (= (:proposal plan) (get-in proof [:binding :proposal])))
+    (refuse! :invalid-preflight))
+  (plans/validate-plan! plan)
+  prepared)
+
+(defn- claim-tx
+  "Fixed writer composition: no artifact IO, hydration, Room lock, nested
+   transaction or caller-supplied transaction callback. The preflight is data,
+   not authority. Check its COMPLETE proof against this serialized DB value."
+  [db party room-id room proof operation]
+  (let [current (snapshot db party room-id (get-in proof [:binding :proposal]))]
+    (when-not (= proof current) (refuse! :preflight-changed))
+    (when-not (= (get-in proof [:binding :target]) (filing/current-target db room-id room))
+      (refuse! :target-changed))
+    (adoptions/claim-tx-data db (get-in proof [:fork :db/id]) operation)))
+
+(defn claim!
+  "INTERNAL trusted-host storage boundary, NOT an endpoint or publication.
+   Takes only the host's prepared value; never accept this map from a client.
+   Schema must already be installed by the owning host (tests only for now).
+
+   Fresh invocation token, one claim transaction, NO retries. Only its original
+   acknowledged report confers permission to continue towards dispatch. Any
+   error/lost ACK leaves ownership unacknowledged: expose only operation ID,
+   never infer ownership from a live readback. Applying and all competing
+   decision paths must be wired before this is used by a public accept action."
+  [conn party room-id room prepared]
+  (host-connection! conn)
+  (prepared! prepared party room-id)
+  (let [proof (:proof prepared)
+        operation (adoptions/make (:binding proof) (random-uuid) (java.util.Date.))]
+    (try
+      (let [report (d/transact conn [[:db.fn/call
+                                      (fn [db] (claim-tx db party room-id room proof operation))]])]
+        (when-not (:db-after report) (refuse! :claim-report-unavailable))
+        ;; Only the immutable result of THIS acknowledged native invocation.
+        ;; Do not replace it with @conn, even if the same token is readable.
+        (adoptions/linked-operation! (:db-after report) (get-in proof [:fork :db/id]) operation)
+        (assoc prepared :operation operation))
+      (catch Throwable error
+        (when (instance? InterruptedException error) (.interrupt (Thread/currentThread)))
+        (throw (ex-info "File adoption claim was not acknowledged; do not publish"
+                        {:type ::claim-unacknowledged :operation (:id operation)} error))))))

@@ -146,7 +146,11 @@
         (refuse! :invalid-journal-link))
       row)))
 
-(defn- linked! [db fork-eid expected]
+(defn linked-operation!
+  "INTERNAL integrity check of an exact open component's latest journal row.
+   This is NOT claim ownership: live readback or replay can never replace the
+   original invocation's acknowledged claim transaction. Authorize projections."
+  [db fork-eid expected]
   (validate! expected)
   (let [fork (fork! db fork-eid expected)
         current (latest db fork)]
@@ -179,7 +183,7 @@
    Those are HOST obligations, not conclusions this storage helper can infer.
    Applying/accepted can NEVER release ownership or authorize a replay."
   [db fork-eid expected next-state fields now]
-  (linked! db fork-eid expected)
+  (linked-operation! db fork-eid expected)
   (when-not (and (instance? java.util.Date now)
                  (not (.before ^java.util.Date now (:updated-at expected)))
                  (case next-state

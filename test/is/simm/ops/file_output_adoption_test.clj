@@ -4,6 +4,7 @@
             [dvergr.agent.episode :as episode]
             [dvergr.artifact :as artifact]
             [is.simm.documents.markdown :as markdown]
+            [is.simm.model.file-adoptions :as adoptions]
             [is.simm.ops.file-output-adoption :as adoption]
             [is.simm.ops.file-output-storage :as storage]
             [is.simm.ops.knowledge-filing :as filing]
@@ -19,6 +20,16 @@
 
 (defn- prepare [{:keys [conn party room-id room proposal]}]
   (adoption/prepare conn party room-id room proposal))
+
+(defn- with-prepared-claim [f]
+  (with-filed
+    (fn [{:keys [conn] :as state}]
+      ;; Not installed by the product yet: only this private memory fixture.
+      (d/transact conn adoptions/schema)
+      (f (assoc state :prepared (prepare state))))))
+
+(defn- claim! [{:keys [conn party room-id room prepared]}]
+  (adoption/claim! conn party room-id room prepared))
 
 (deftest preflight-uses-retained-evidence-not-an-expired-attempt-or-live-file
   (with-filed
@@ -107,3 +118,125 @@
           (is (= original-ref @seen))
           ;; New snapshot names a missing blob and must refuse, never fall back.
           (is (thrown? Exception (storage/read-file conn manifest "wiki/existing.md"))))))))
+
+(deftest acknowledged-claim-is-one-internal-owner-not-a-publication
+  (with-prepared-claim
+    (fn [{:keys [conn workspace proposal prepared] :as state}]
+      (let [files-before @workspace
+            result (claim! state)
+            operation (:operation result)]
+        (is (= :claimed (:state operation)))
+        (is (= (:binding (:proof prepared))
+               (select-keys operation [:proposal :component :manifest :room :actor :filing :disposition :target])))
+        (is (= operation (adoptions/operation @conn (:id operation))))
+        (is (= prepared (dissoc result :operation)))
+        (is (thrown? Exception (claim! state)))
+        (is (= 1 (count (d/q '[:find ?e :where [?e :file.adoption/id _]] @conn))))
+        (is (= files-before @workspace))
+        (is (= :open (:proposal/status (proposals/get-proposal proposal))))))))
+
+(deftest concurrent-host-claims-have-one-acknowledged-owner
+  (with-prepared-claim
+    (fn [{:keys [conn workspace] :as state}]
+      (let [start (promise) files-before @workspace
+            workers (mapv (fn [_]
+                            (future @start
+                                    (try (:operation (claim! state))
+                                         (catch clojure.lang.ExceptionInfo error
+                                           (:type (ex-data error)))))) (range 4))]
+        (deliver start true)
+        (let [results (mapv #(deref % 10000 ::timeout) workers)
+              owners (filterv map? results)]
+          (is (not-any? #{::timeout} results))
+          (is (= 1 (count owners)))
+          (is (= 3 (count (filter #{::adoption/claim-unacknowledged} results))))
+          (is (= (first owners) (adoptions/operation @conn (:id (first owners)))))
+          (is (= files-before @workspace)))))))
+
+(deftest writer-rechecks-frozen-proof-authority-and-target-without-body-reads
+  (doseq [alter! [(fn [state] (assoc-in state [:prepared :proof :proposal :proposal/run] (random-uuid)))
+                  (fn [{:keys [conn room-id] :as state}]
+                    (d/transact conn [[:db/retract [:room/id room-id] :room/owner]]) state)
+                  (fn [{:keys [conn] :as state}]
+                    ;; The bounded fork authority projection omits entries.
+                    (let [manifest-eid (:e (first (d/datoms @conn :avet :file-output/id (:manifest state))))
+                          eid (:v (first (d/datoms @conn :eavt manifest-eid :file-output/entries)))]
+                      (d/transact conn [[:db/add eid :file-output.entry/body-ref (random-uuid)]]))
+                    state)]]
+    (with-prepared-claim
+      (fn [{:keys [conn workspace] :as initial}]
+        (let [state (alter! initial) target @workspace reads (atom 0)]
+          (with-redefs [storage/read-file-in (fn [& _] (swap! reads inc) (throw (AssertionError. "Artifact IO in writer")))]
+            (is (thrown? Exception (claim! state))))
+          (is (zero? @reads))
+          (is (empty? (d/q '[:find ?e :where [?e :file.adoption/id _]] @conn)))
+          (is (= target @workspace))))))
+  (with-prepared-claim
+    (fn [{:keys [conn basis] :as state}]
+      (with-redefs [filing/current-target (fn [& _] (assoc (:target basis) :store (random-uuid)))]
+        (is (thrown? Exception (claim! state))))
+      (is (empty? (d/q '[:find ?e :where [?e :file.adoption/id _]] @conn))))))
+
+(deftest lost-claim-ack-never-recovers-publisher-ownership-from-readback
+  (with-prepared-claim
+    (fn [{:keys [conn workspace] :as state}]
+      (let [original d/transact target @workspace readbacks (atom 0)
+            error (with-redefs [d/transact (fn [& args]
+                                             (apply original args)
+                                             (throw (ex-info "Injected lost ACK after commit" {})))
+                                adoptions/linked-operation! (fn [& _]
+                                                              (swap! readbacks inc)
+                                                              (throw (AssertionError. "Ownership readback after lost ACK")))]
+                    (try (claim! state) nil
+                         (catch clojure.lang.ExceptionInfo error error)))
+            id (:operation (ex-data error))]
+        (is (= ::adoption/claim-unacknowledged (:type (ex-data error))))
+        (is (zero? @readbacks))
+        (is (uuid? id))
+        (is (not (contains? (ex-data error) :token)))
+        (is (= :claimed (:state (adoptions/operation @conn id))))
+        (is (thrown? Exception (claim! state)))
+        (is (= 1 (count (d/q '[:find ?e :where [?e :file.adoption/id _]] @conn))))
+        (is (= target @workspace))))))
+
+(deftest interrupted-claim-keeps-interrupt-and-does-not-return-ownership
+  (with-prepared-claim
+    (fn [state]
+      (let [result (promise)
+            worker (Thread.
+                    ^Runnable
+                    (fn []
+                      (with-redefs [d/transact (fn [& _] (throw (InterruptedException. "Injected claim interruption")))]
+                        (try (claim! state) (deliver result ::unexpected)
+                             (catch clojure.lang.ExceptionInfo error
+                               (deliver result {:type (:type (ex-data error))
+                                                :operation (:operation (ex-data error))
+                                                :interrupted? (.isInterrupted (Thread/currentThread))}))))))]
+        (.start worker)
+        (.join worker 10000)
+        (is (not (.isAlive worker)))
+        (let [answer (deref result 1000 ::timeout)]
+          (is (= ::adoption/claim-unacknowledged (:type answer)))
+          (is (uuid? (:operation answer)))
+          (is (true? (:interrupted? answer))))))))
+
+(deftest missing-or-stale-ack-report-cannot-be-replaced-by-live-readback
+  (doseq [mode [:missing :stale]]
+    (with-prepared-claim
+      (fn [{:keys [conn workspace] :as state}]
+        (let [original d/transact target @workspace
+              error (with-redefs [d/transact
+                                  (fn [& args]
+                                    (let [report (apply original args)]
+                                      (case mode
+                                        :missing (dissoc report :db-after)
+                                        :stale (assoc report :db-after (:db-before report)))))]
+                      (try (claim! state) nil
+                           (catch clojure.lang.ExceptionInfo error error)))
+              id (:operation (ex-data error))]
+          (is (= ::adoption/claim-unacknowledged (:type (ex-data error))))
+          (is (uuid? id))
+          (is (= :claimed (:state (adoptions/operation @conn id))))
+          (is (thrown? Exception (claim! state)))
+          (is (= 1 (count (d/q '[:find ?e :where [?e :file.adoption/id _]] @conn))))
+          (is (= target @workspace)))))))
