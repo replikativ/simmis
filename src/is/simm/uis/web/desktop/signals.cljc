@@ -59,9 +59,9 @@
            (signal runtime nil)))
 
 #?(:cljs (def syntax-pref
-           "Signal for preferred code block syntax view: :clojure or :superficie.
+           "Signal for preferred code syntax view: :clojure or :superficie.
             Initialised from :ui-prefs in settings-data after login.
-            Kept separate so toggling it only re-renders the wiki editor, not the whole app."
+            Kept separate for code-file, wiki and chat projections."
            (signal runtime :clojure)))
 
 #?(:cljs (def commit-graph-data

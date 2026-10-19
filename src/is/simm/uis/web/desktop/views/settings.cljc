@@ -244,7 +244,7 @@
           (el/div {:class "settings-section"}
             (el/h3 {:class "settings-section-title"} "Code View")
             (el/p {:class "settings-section-desc"}
-              "Choose how code blocks are displayed in the wiki editor.")
+              "Choose how Clojure files and code blocks are displayed. Superficie is a read-only view; Clojure remains the editable source.")
             (el/div {:class "settings-model-list"}
               (ifor-each first [[:clojure "Clojure" "Native S-expression syntax (editable)"]
                                 [:superficie "Superficie" "Readable indented syntax (read-only)"]]

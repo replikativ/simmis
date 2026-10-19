@@ -21,3 +21,9 @@
     (is (= properties (into {} entries)))
     (is (= 4 (count entries)))
     (is (every? string? (map (comp pr-str key) entries)))))
+
+(deftest code-views-follow-user-preference-with-a-local-override
+  (is (= :clojure (editor/code-view {} nil)))
+  (is (= :superficie (editor/code-view {} :superficie)))
+  (is (= :clojure (editor/code-view {:code-view :clojure} :superficie)))
+  (is (= :superficie (editor/code-view {:code-view :superficie} :clojure))))

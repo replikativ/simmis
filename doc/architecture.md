@@ -34,6 +34,13 @@ selected through their Spindel execution contexts/worlds. Saving a file in
 Memory neither evaluates it nor reloads any interpreter. Host-injected
 functions and permissions are capabilities, not editable source files.
 
+Clojure-family files (`.clj`, `.cljc`, `.cljs`, `.bb`) follow the existing user
+Code View preference: editable Clojure or a read-only Superficie projection.
+A per-tab override and Follow preference control do not change the file bytes
+or saved preference. Conversion failures explicitly retain source editing;
+the file writer and evaluator never consume the projected syntax. `.cljs`
+display support does not enable ClojureScript execution on the JVM evaluator.
+
 For `.clj`, `.cljc` and `.bb` files, explicit selection, top-level-form and
 whole-file evaluation targets the authenticated human's separate room-scoped
 SCI world component. It does not borrow an agent interpreter or inject its

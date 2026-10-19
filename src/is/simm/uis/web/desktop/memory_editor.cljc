@@ -4,6 +4,9 @@
 
 (def max-rich-regions 200)
 
+(defn code-view [draft preference]
+  (or (:code-view draft) preference :clojure))
+
 (defn begin-rich [d]
   (let [analysis (:analysis d)]
     (if (or (:rich-base d) (not= :ready (get-in analysis [:semantic :status]))
@@ -59,7 +62,7 @@
     (nil? old) (draft file)
     (or (dirty? old) (:rich-edit old))
     (if (= (:entry file) (get-in old [:source :entry])) old (assoc old :incoming file))
-    :else (assoc (merge (draft file) (select-keys old [:mode :selection]))
+    :else (assoc (merge (draft file) (select-keys old [:mode :selection :code-view]))
                  ;; A same-entry refresh must not supersede an in-flight save.
                  :generation (if (= (:entry file) (get-in old [:source :entry]))
                                (:generation old 0) (inc (:generation old 0))))))

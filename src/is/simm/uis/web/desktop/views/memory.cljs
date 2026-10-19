@@ -11,6 +11,8 @@
             [is.simm.uis.web.desktop.memory-editor :as editor]
             [is.simm.uis.web.desktop.source-editor :as source]
             [is.simm.uis.web.desktop.rich-editor :as rich-editor]
+            [is.simm.uis.web.desktop.markdown :as md]
+            [superficie.api :refer [toSup]]
             [is.simm.uis.web.desktop.views.memory-navigation :as navigation]
             [is.simm.uis.web.desktop.download-link :as download])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]))
@@ -54,6 +56,18 @@
   (source/view {:id [(:owner a) path] :path path :label "Memory file source"
                 :value (:text draft) :selection (:selection draft) :read-only? (not write?)
                 :on-change (fn [text selection] ((:change a) path editor/changed text selection))}))
+
+(defn- superficie-view [text]
+  (let [result (try (let [converted (when (<= (count text) 65536) (toSup text))]
+                     (if (string? converted) {:text converted} {:error? true}))
+                    (catch :default _ {:error? true}))]
+    (el/div {:class "memory-superficie"}
+            (el/p {:class "memory-note"} "Superficie · read-only projection of the current Clojure source. Switch to Clojure to edit; saving and evaluation always use the original source.")
+            (if (:error? result)
+              (el/p {:role "status"} "This draft cannot be rendered as Superficie. The original source is unchanged; use Clojure to inspect or edit it.")
+              (el/pre {:class "code-panel-sup"}
+                      (el/code {:class "hljs language-superficie"
+                                :innerHTML (md/highlight-code (:text result) "superficie")}))))))
 
 (defn- rich-toolbar [write?]
   (el/div {:class "memory-toolbar memory-document-toolbar"}
@@ -123,11 +137,13 @@
                                                          :selection (editor/source-selection draft (:from slot) (:to slot))))}
                                            "Open in Source")))))))))))
 
-(defn- view [data state a]
+(defn- view [data state a syntax-pref]
   (let [path (:selected state) draft (get-in state [:drafts path])
         write? (true? (get-in state [:permissions :write?]))
         markdown? (= :markdown (get-in draft [:source :kind]))
         text? (string? (:text draft))
+        clojure? (and text? (re-find #"(?i)\.(clj|cljc|cljs|bb)$" (or path "")))
+        code-view (editor/code-view draft syntax-pref)
         office? (= :office (get-in draft [:source :kind])) office (:office draft)
         folder (or (:current-folder state) "")
         ask-path (fn [label default action]
@@ -192,12 +208,19 @@
                                                 (el/button {:on-click (fn [_] ((:use-incoming a) path))} "Discard draft and use saved version")))
                                       (when (:earlier-save-receipt draft)
                                         (el/p {:class "memory-note"} "An earlier draft's save completed after this version was selected. This draft was kept unchanged; check the saved version before another save."))
-                                      (when text?
+                                      (when (and text? (not clojure?))
                                         (el/div {:class "memory-toolbar" :aria-label "Document views"}
                                                 (for [[mode label] (if markdown? [[:read "Read"] [:rich "Rich text"] [:outline "Outline"] [:source "Source"]]
                                                                       [[:source "Code / text"]])]
                                                   (el/button {:key mode :class (when (= mode (:mode draft)) "selected")
                                                               :on-click (fn [_] ((:mode a) path mode))} label))))
+                                      (when clojure?
+                                        (el/div {:class "memory-toolbar" :aria-label "Code syntax view"}
+                                                (for [[mode label] [[:clojure "Clojure"] [:superficie "Superficie"]]]
+                                                  (el/button {:key mode :class (when (= mode code-view) "selected")
+                                                              :on-click (fn [_] ((:change a) path assoc :code-view mode))} label))
+                                                (el/button {:class (when (nil? (:code-view draft)) "selected")
+                                                            :on-click (fn [_] ((:change a) path dissoc :code-view))} "Follow preference")))
                                       (when (and text? (not markdown?))
                                         (el/p {:class "memory-note"} "Saving changes the versioned room file only. It does not evaluate code, reload an agent, or grant capabilities."))
                                       (when (and text? (re-find #"(?i)\.(clj|cljc|bb)$" path))
@@ -205,6 +228,7 @@
                                                 (el/p {:class "memory-note"} "Target: your room-scoped SCI session · separate from agents · no room tools injected. Definitions persist until the room closes or the server restarts. Evaluates the current draft, not necessarily the saved file.")
                                                 (for [[scope label] [[:selection "Evaluate selection"] [:form "Evaluate top-level form"] [:file "Evaluate file"]]]
                                                   (el/button {:key scope :disabled (or (not (get-in state [:permissions :evaluate?]))
+                                                                                                      (and (not= :file scope) (= :superficie code-view))
                                                                                                       (get-in state [:loading [:evaluate path]])
                                                                                                       (and (= scope :selection) (= (get-in draft [:selection :anchor]) (get-in draft [:selection :head]))))
                                                               :on-mousedown #(.preventDefault %)
@@ -239,15 +263,17 @@
                                                                                    (get-in state [:loading [:office-save path]]))
                                                                       :on-click (fn [_] ((:office-save a) path))} "Save XML part"))))
                                         (not text?) (el/p {:class "memory-note"} "Binary file. Download preserves the original bytes; document-specific editing is not available in this view yet.")
+                                        (and clojure? (= :superficie code-view)) (superficie-view (:text draft))
                                         (= :source (:mode draft)) (source-view path draft a write?)
                                         :else (document-view path draft a write?)))))))))
 
 (defn render [data]
   (spin
    (let [states (iv/get-new (track sig/memory-editor-state))
+         syntax-pref (iv/get-new (track sig/syntax-pref))
          a (actions/controller data) state (get states (:owner a))]
      ((:ensure-path a))
-     (view data state a))))
+     (view data state a syntax-pref))))
 
 (defn render-context [data]
   (spin
