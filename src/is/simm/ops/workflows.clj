@@ -7,7 +7,6 @@
             [dvergr.rooms.files :as files]
             [dvergr.substrate.geschichte :as workspace]
             [geschichte.content :as content]
-            [geschichte.query :as query]
             [hasch.core :as hasch]
             [is.simm.ops.benchmark-dataset :as dataset]
             [malli.core :as m]
@@ -69,16 +68,29 @@
     (catch CharacterCodingException _
       (invalid! "Workflow entries must contain valid UTF-8 text"))))
 
-(defn snapshot-in
-  "Read manifest, content metadata and bodies from ONE immutable DB. This is a
-   storage projector, not authorization, selection or a lease against GC."
+(defn- snapshot-entries!
+  "Inspect every prefix path entity, including incomplete rows hidden by a
+   worktree inner join. Bound the index BEFORE entity or content access."
   [db name]
-  (let [prefix (prefix! name)]
-    (let [entries (into (sorted-map)
-                        (filter (fn [[p _]] (str/starts-with? (str "/" p) prefix)))
-                        (query/worktree db))
-          reader (atom db)]
-      (when (> (count entries) max-files) (invalid! "Workflow has too many files"))
+  (let [prefix (prefix! name)
+        stem (subs prefix 1)
+        end (str (subs stem 0 (dec (count stem))) "0")
+        ;; Datahike's upper bound is inclusive. Its exact sentinel is outside
+        ;; this directory and can only be the LAST row. Take before removing
+        ;; that one value so native acquisition remains bounded by101.
+        rows (into [] (comp (take (inc max-files)) (remove #(= end (:v %))))
+                   (d/index-range db {:attrid :geschichte.work/path :start stem :end end}))]
+    (when (> (count rows) max-files) (invalid! "Workflow has too many files"))
+    (let [entries (reduce (fn [entries row]
+                            (let [path (:v row) entity (d/entity db (:e row))]
+                              (when-not (and (string? path) (str/starts-with? path stem)
+                                             (= path (:geschichte.work/path entity))
+                                             (not (contains? entries path)))
+                                (invalid! "Invalid workflow path metadata"))
+                              (assoc entries path
+                                     {:content (:geschichte.content/id (:geschichte.work/content entity))
+                                      :size (:geschichte.work/size entity) :mode (:geschichte.work/mode entity)})))
+                          (sorted-map) rows)]
       (when (some #(> (- (count (key %)) (dec (count prefix))) 512) entries)
         (invalid! "Workflow source paths exceed the 512-character limit"))
       (doseq [[path {:keys [size mode content]}] entries]
@@ -93,16 +105,25 @@
       (doseq [[_ {:keys [size content]}] entries]
         (when-not (= size (:geschichte.content/size (d/entity db [:geschichte.content/id content])))
           (invalid! "Workflow content metadata does not match its pinned size")))
-      {:files
-       (into (sorted-map)
-             (map (fn [[path {:keys [size mode] id :content}]]
-                    (let [^bytes bytes (content/read-by-id reader id)]
-                      (when-not (and bytes (= size (alength bytes)))
-                        (invalid! "Workflow content does not match its pinned size"))
-                      [(subs (str "/" path) (count prefix)) (strict-text bytes)])))
-             entries)
-       :manifest (mapv (fn [[p entry]]
-                         (assoc entry :path (subs (str "/" p) (count prefix)))) entries)})))
+      entries)))
+
+(defn snapshot-in
+  "Read manifest, content metadata and bodies from ONE immutable DB. This is a
+   storage projector, not authorization, selection or a lease against GC."
+  [db name]
+  (let [prefix (prefix! name)
+        entries (snapshot-entries! db name)
+        reader (atom db)]
+    {:files
+     (into (sorted-map)
+           (map (fn [[path {:keys [size mode] id :content}]]
+                  (let [^bytes bytes (content/read-by-id reader id)]
+                    (when-not (and bytes (= size (alength bytes)))
+                      (invalid! "Workflow content does not match its pinned size"))
+                    [(subs (str "/" path) (count prefix)) (strict-text bytes)])))
+           entries)
+     :manifest (mapv (fn [[p entry]]
+                       (assoc entry :path (subs (str "/" p) (count prefix)))) entries)}))
 
 (defn snapshot
   "Selected workspace compatibility wrapper, including isolated Run worlds."
@@ -168,9 +189,10 @@
    No file contents are loaded. Revision pins the sorted name set across pages."
   [db {:keys [offset expected-revision] :or {offset 0} :as request}]
   (list-arguments! request)
-  (let [entries (vec (take (inc max-list-entries)
-                           (d/index-range db {:attrid :geschichte.work/path
-                                              :start "workflows/" :end "workflows0"})))]
+  (let [entries (into [] (comp (take (inc max-list-entries))
+                               (remove #(= "workflows0" (:v %))))
+                      (d/index-range db {:attrid :geschichte.work/path
+                                         :start "workflows/" :end "workflows0"}))]
     (when (> (count entries) max-list-entries) (invalid! "Workflow path index exceeds the listing limit"))
     (let [names (vec (sort (into #{}
                                  (keep (fn [datom]

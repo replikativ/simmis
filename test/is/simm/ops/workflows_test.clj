@@ -1,12 +1,14 @@
 (ns is.simm.ops.workflows-test
   (:require [clojure.test :refer [deftest is testing]]
             [dvergr.catalog.workspace :as workspace]
+            [dvergr.catalog.room :as catalog]
             [dvergr.discourse :as discourse]
             [dvergr.room.store.memory :as memory]
             [dvergr.substrate.geschichte :as native]
             [datahike.api :as d]
             [geschichte.content :as content]
             [geschichte.query :as query]
+            [hasch.core :as hasch]
             [is.simm.ops.workflows :as workflows]
             [org.replikativ.spindel.engine.core :as ec]))
 
@@ -245,31 +247,41 @@
   (with-workspace
     (fn [room]
       (workflows/write! room principal {:name "echo" :files fixture})
-      (let [read-tree query/worktree]
-        (doseq [change [(fn [entry] (assoc entry :mode 0xA000))
-                        (fn [entry] (update entry :size inc))]]
-          (with-redefs [query/worktree
-                        (fn [db] (update (read-tree db) "workflows/echo/gold.edn" change))]
-            (is (thrown? clojure.lang.ExceptionInfo (workflows/snapshot room "echo"))))))
-      (workspace/seed! room {"/workflows/echo/invalid.txt" "x"})
-      (let [entry (get (query/worktree @(:conn (native/current-workspace))) "workflows/echo/invalid.txt")]
-        (with-redefs [content/read-by-id (fn [& _] (byte-array [(unchecked-byte 0xC3)]))
-                      query/worktree (fn [_] {"workflows/echo/invalid.txt" entry})]
+      (let [db @(:conn (native/current-workspace))
+            eid (:db/id (d/entity db [:geschichte.work/path "workflows/echo/gold.edn"]))]
+        (doseq [[attr value] [[:geschichte.work/mode 0xA000]
+                              [:geschichte.work/size 999]]]
+          (let [corrupt (:db-after (d/with db [[:db/add eid attr value]]))]
+            (is (thrown? clojure.lang.ExceptionInfo (workflows/snapshot-in corrupt "echo"))))))
+      (let [db @(:conn (native/current-workspace))
+            read-by-id content/read-by-id]
+        (with-redefs [content/read-by-id
+                      (fn [reader id & options]
+                        (let [bytes (aclone ^bytes (apply read-by-id reader id options))]
+                          (aset-byte bytes 0 (unchecked-byte 0xC3))
+                          (aset-byte bytes 1 (unchecked-byte 0x28))
+                          bytes))]
           (is (thrown-with-msg? clojure.lang.ExceptionInfo #"valid UTF-8"
-                                (workflows/snapshot room "echo"))))))))
+                                (workflows/snapshot-in db "echo"))))))))
 
 (deftest snapshot-bounds-are-checked-before-reading-content
   (with-workspace
     (fn [room]
-      (doseq [entries [(into {} (for [i (range (inc workflows/max-files))]
-                                  [(str "workflows/echo/" i)
-                                   {:mode 0x81A4 :size 0 :content (random-uuid)}]))
-                       (into {} (for [i (range 5)]
-                                  [(str "workflows/echo/" i)
-                                   {:mode 0x81A4 :size workflows/max-file-bytes :content (random-uuid)}]))]]
-        (with-redefs [query/worktree (constantly entries)
-                      content/read-by-id (fn [& _] (throw (AssertionError. "must reject manifest first")))]
-          (is (thrown? clojure.lang.ExceptionInfo (workflows/snapshot room "echo"))))))))
+      (workspace/seed! room {"/seed.md" "seed"})
+      (let [db @(:conn (native/current-workspace))
+            content-id (:geschichte.content/id (:geschichte.work/content (d/entity db [:geschichte.work/path "seed.md"])))]
+        (doseq [[message rows]
+                [[#"too many files" (mapv (fn [i] {:geschichte.work/path (str "workflows/echo/" i)})
+                                          (range (inc workflows/max-files)))]
+                 [#"exceeds the byte limit"
+                  (mapv (fn [i] {:geschichte.work/path (str "workflows/echo/" i)
+                                 :geschichte.work/content [:geschichte.content/id content-id]
+                                 :geschichte.work/mode 33188 :geschichte.work/size workflows/max-file-bytes})
+                        (range 5))]]]
+          (let [corrupt (:db-after (d/with db rows))]
+            (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "must reject manifest first")))]
+              (is (thrown-with-msg? clojure.lang.ExceptionInfo message
+                                    (workflows/snapshot-in corrupt "echo"))))))))))
 
 (deftest malformed-supporting-edn-is-structural-not-executable
   (with-workspace
@@ -347,13 +359,22 @@
     (fn [room]
       (workflows/write! room principal {:name "echo" :files fixture})
       (let [db @(:conn (native/current-workspace))
-            entry (get (query/worktree db) "workflows/echo/gold.edn")]
-        (doseq [invalid [(assoc entry :content "not-a-uuid") (assoc entry :content (random-uuid))
-                         (assoc entry :mode nil) (assoc entry :mode 0xA1FF)
-                         (assoc entry :size nil) (assoc entry :size -1) (update entry :size inc)]]
-          (with-redefs [query/worktree (constantly {"workflows/echo/a.md" entry "workflows/echo/z.md" invalid})
-                        content/read-by-id (fn [& _] (throw (AssertionError. "Validate all metadata first")))]
-            (is (thrown? clojure.lang.ExceptionInfo (workflows/snapshot-in db "echo")))))
+            entity (d/entity db [:geschichte.work/path "workflows/echo/gold.edn"])
+            eid (:db/id entity)
+            content-eid (:db/id (:geschichte.work/content entity))]
+        (doseq [tx [[[:db/retract eid :geschichte.work/content]]
+                    [[:db/retract eid :geschichte.work/mode]]
+                    [[:db/retract eid :geschichte.work/size]]
+                    [[:db/add eid :geschichte.work/mode 0xA1FF]]
+                    [[:db/add eid :geschichte.work/size -1]]
+                    [[:db/add eid :geschichte.work/size 999]]
+                    [[:db/retract content-eid :geschichte.content/id]]
+                    [[:db/retract content-eid :geschichte.content/size]]
+                    [{:geschichte.work/path "workflows/echo/z-hidden.md"}]]]
+          (let [corrupt (:db-after (d/with db tx))]
+            (with-redefs [query/worktree (fn [& _] (throw (AssertionError. "No whole-worktree inner join")))
+                          content/read-by-id (fn [& _] (throw (AssertionError. "Validate all metadata first")))]
+              (is (thrown? clojure.lang.ExceptionInfo (workflows/snapshot-in corrupt "echo"))))))
         (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Reject invalid paging before decode")))]
           (doseq [request [{:offset -1} {:offset "0"} {:file-offset -1} {:file-offset 101}
                            {:file-offset 10} {:path "gold.edn"} {:offset 524289}]]
@@ -368,3 +389,103 @@
                   content/read-by-id (fn [& _] (throw (AssertionError. "Listing never reads content")))]
       (is (thrown? clojure.lang.ExceptionInfo (workflows/list-page-in db {})))
       (is (= (inc workflows/max-list-entries) @seen)))))
+
+(deftest workflow-prefix-overflow-is-lazy-and-precedes-all-entity-and-body-access
+  (let [db {:fixture :prefix-only} seen (atom 0)]
+    (with-redefs [d/index-range
+                  (fn [actual options]
+                    (is (identical? db actual))
+                    (is (= {:attrid :geschichte.work/path :start "workflows/echo/" :end "workflows/echo0"}
+                           options))
+                    (map (fn [n] (swap! seen inc) {:e n :v (str "workflows/echo/" n)})
+                         (range)))
+                  d/entity (fn [& _] (throw (AssertionError. "Overflow must precede entity access")))
+                  query/worktree (fn [& _] (throw (AssertionError. "No whole-index inner join")))
+                  content/read-by-id (fn [& _] (throw (AssertionError. "Overflow must precede body access")))]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"too many files"
+                            (workflows/snapshot-in db "echo")))
+      (is (= 101 @seen)))))
+
+(deftest name-list-inclusive-upper-sentinel-does-not-consume-a-directory-row
+  (with-workspace
+    (fn [room]
+      (workflows/write! room principal {:name "echo" :files fixture})
+      (let [db (:db-after (d/with @(:conn (native/current-workspace))
+                                  [{:geschichte.work/path "workflows0"}]))
+            rows (d/index-range db {:attrid :geschichte.work/path :start "workflows/" :end "workflows0"})]
+        (is (= 5 (count rows)))
+        (is (= "workflows0" (:v (last rows))))
+        (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Names never load source bodies")))
+                      workflows/max-list-entries 4]
+          (let [page (workflows/list-page-in db {})]
+            (is (= ["echo"] (:names page)))
+            (is (= (str (hasch/uuid [:workflow-names ["echo"]])) (:revision page)))))
+        (with-redefs [workflows/max-list-entries 3]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"exceeds the listing limit"
+                                (workflows/list-page-in db {}))))))))
+
+(deftest real-prefix-boundary-preserves-manifests-source-and-portable-identities
+  (with-workspace
+    (fn [room]
+      (workflows/write! room principal {:name "echo" :files fixture})
+      (let [db @(:conn (native/current-workspace))
+            entry (get (query/worktree db) "workflows/echo/gold.edn")
+            extra (mapv (fn [n] {:geschichte.work/path (format "workflows/echo/extra-%03d.md" n)
+                                 :geschichte.work/content [:geschichte.content/id (:content entry)]
+                                 :geschichte.work/size (:size entry) :geschichte.work/mode (:mode entry)})
+                        (range (- workflows/max-files (count fixture))))
+            full (:db-after (d/with db (conj extra
+                                             {:geschichte.work/path "unrelated/incomplete.md"}
+                                           ;; The inclusive upper sentinel is
+                                           ;; unrelated even with invalid attrs.
+                                             {:geschichte.work/path "workflows/echo0"})))
+            ;; Explicitly retain the former valid-file ordering/shape and ID
+            ;; formulas, independently of the new collector.
+            legacy-manifest (mapv (fn [[path entry]] (assoc entry :path (subs path (count "workflows/echo/"))))
+                                  (into (sorted-map)
+                                        (filter (fn [[path _]] (clojure.string/starts-with? path "workflows/echo/")))
+                                        (query/worktree full)))
+            overflow (:db-after (d/with full [(assoc (first extra) :geschichte.work/path "workflows/echo/overflow.md")]))]
+        (is (= 100 (count legacy-manifest)))
+        (is (= "workflows/echo0"
+               (:v (last (d/index-range full {:attrid :geschichte.work/path
+                                              :start "workflows/echo/" :end "workflows/echo0"})))))
+        (with-redefs [query/worktree (fn [& _] (throw (AssertionError. "No whole-worktree query")))]
+          (let [snapshot (workflows/snapshot-in full "echo")]
+            (is (= legacy-manifest (:manifest snapshot)))
+            (is (= (hasch/uuid {:name "echo" :manifest legacy-manifest})
+                   (workflows/source-revision "echo" snapshot)))
+            (is (= (str (:id (catalog/bundle "echo" (:files snapshot))))
+                   (:bundle (workflows/inspect-snapshot "echo" snapshot))))))
+        (with-redefs [d/entity (fn [& _] (throw (AssertionError. "101 rows refuse before metadata")))
+                      content/read-by-id (fn [& _] (throw (AssertionError. "101 rows refuse before bodies")))]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"too many files"
+                                (workflows/snapshot-in overflow "echo"))))))))
+
+(deftest actual-utf8-byte-boundaries-are-inclusive-and-refuse-overflow-before-bodies
+  (with-workspace
+    (fn [room]
+      (let [text (apply str (repeat (quot workflows/max-file-bytes 4) "🦋"))]
+        (is (= workflows/max-file-bytes (alength (.getBytes text "UTF-8"))))
+        ;; Identical content deduplicates, but each source file counts toward
+        ;; the bundle's actual byte budget independently.
+        (workspace/seed! room (into {"/one-byte.md" "x" "/oversized.md" (str text "x")}
+                                    (for [n (range 4)] [(str "/workflows/echo/" n ".md") text])))
+        (let [db @(:conn (native/current-workspace))
+              snapshot (workflows/snapshot-in db "echo")
+              alias-row (fn [source destination]
+                          (let [entity (d/entity db [:geschichte.work/path source])]
+                            {:geschichte.work/path destination
+                             :geschichte.work/content [:geschichte.content/id (:geschichte.content/id (:geschichte.work/content entity))]
+                             :geschichte.work/size (:geschichte.work/size entity)
+                             :geschichte.work/mode (:geschichte.work/mode entity)}))]
+          (is (= 4 (count (:files snapshot))))
+          (is (every? #(= text %) (vals (:files snapshot))))
+          (is (= workflows/max-bundle-bytes (reduce + (map :size (:manifest snapshot)))))
+          (doseq [[message row]
+                  [[#"exceeds the byte limit" (alias-row "one-byte.md" "workflows/echo/extra.md")]
+                   [#"bounded regular text files" (alias-row "oversized.md" "workflows/echo/0.md")]]]
+            (let [overflow (:db-after (d/with db [row]))]
+              (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Metadata byte limit before bodies")))]
+                (is (thrown-with-msg? clojure.lang.ExceptionInfo message
+                                      (workflows/snapshot-in overflow "echo")))))))))))
