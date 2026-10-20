@@ -66,15 +66,14 @@
   (binding [ec/*execution-context* host-ctx] (authorize! conn principal room-id))
   (cli-owner/ownership!)
   (work/provision-prepared! conn host-ctx principal room-id room input
-                           {:limits (select-keys input [:max-cli-runs])
-                            :resources {"cli-run-admission" (bigdec (:max-cli-runs input))}
-                            :units cli-units}))
+                            {:limits (select-keys input [:max-cli-runs])
+                             :resources {"cli-run-admission" (bigdec (:max-cli-runs input))}
+                             :units cli-units}))
 
-(defn authorize!
-  "Operator status alone never grants access to someone else's room."
-  [conn principal room-id]
-  (let [db @conn
-        party (access/actor->party-uuid (:principal/id principal))]
+(defn authorize-in!
+  "Pure operator AND room read/merge gate over ONE supplied control snapshot."
+  [db principal room-id]
+  (let [party (access/actor->party-uuid (:principal/id principal))]
     (when-not (and party
                    (= :admin (d/q '[:find ?role . :in $ ?p
                                     :where [?e :party/id ?p] [?e :party/role ?role]] db party))
@@ -83,6 +82,11 @@
       (throw (ex-info "An installation operator with room merge authority must admit this checker revision"
                       {:type ::denied})))
     party))
+
+(defn authorize!
+  "Operator status alone never grants access to someone else's room."
+  [conn principal room-id]
+  (authorize-in! @conn principal room-id))
 
 (defn- prepare*
   "Pure construction after one pinned file read. No checker/provider execution
@@ -110,7 +114,7 @@
     (when selection-policy
       (doseq [case (if (seq selected) selected [nil])]
         (knowledge-inputs/from-inputs selection-policy
-                                     (merge (:fixtures bundle) (get-in bundle [:cases case :fixtures])))))
+                                      (merge (:fixtures bundle) (get-in bundle [:cases case :fixtures])))))
     (when-not (= (count models) (count (set models))) (invalid! "Duplicate models"))
     (when-not (and (= (count selected) (count (set selected)))
                    (every? all-cases selected)
@@ -137,7 +141,7 @@
                                          :timeout-ms (:timeout-ms limits)})
           plan (update plan :team work-sandbox/restrict-team)
           _ (when-not (every? #(contains? (if cli? #{:claude-code} work/dispatch-accounted-providers)
-                                         (get-in % [:agent/model-policy :provider]))
+                                          (get-in % [:agent/model-policy :provider]))
                               (roster/agents (:team plan)))
               (invalid! "Benchmark models must use accounted native providers"))
           owner (when cli? (cli-owner/ownership!))
@@ -168,7 +172,7 @@
                                     :budget-dollars (/ dollars 1000000.0)})
                     :world (assoc (:environment/world env)
                                   :effects work/effects :resources (if cli? {"cli-run-admission" 1M}
-                                                                     (work/resources cell-limits))
+                                                                       (work/resources cell-limits))
                                   :setup (evaluation/world-setup-ref setup))
                     :metadata (:environment/metadata env)}))
                 (:environments plan))
@@ -193,12 +197,12 @@
                                                                  :bundle (str expected-bundle)}
                                                :operator-admitted-bundle (str expected-bundle)})))]
       (cond-> {:bundle bundle :plan (assoc plan :experiment experiment)
-       :cells cell-count :cell-limits cell-limits
+               :cells cell-count :cell-limits cell-limits
        ;; Canonical definitions only; no functions, room handles or checker
        ;; runtime state in the durable admission intent.
-       :basis {:submission input :experiment experiment :team (:team plan)
-               :limits limits :policy checkers/policy}
-       :execution-owner owner}
+               :basis {:submission input :experiment experiment :team (:team plan)
+                       :limits limits :policy checkers/policy}
+               :execution-owner owner}
         cli? (assoc :request-kind :cli-benchmark :resources {"cli-run-admission" (bigdec cell-count)}
                     :resource-units cli-units)))))
 
@@ -280,18 +284,30 @@
            :settled! (fn [_] (retire!))
            :abandon! (fn [_] (retire!)))))
 
+(defn retry-request
+  "Metadata-only NORMAL exact-submission decision for the two fixed benchmark
+   kinds. No source/probe/admission work and no authority is granted here."
+  [kind conn party room-id input]
+  (when-not (#{:benchmark :cli-benchmark} kind) (invalid! "Invalid benchmark kind"))
+  (let [id (requests/request-id party room-id (:request-id input))]
+    (if-let [row (requests/get-request conn id)]
+      {:status (if (and (= kind (:work.request/kind row))
+                        (= input (get-in (requests/payload conn row) [:input :submission])))
+                 :retry :conflict)
+       :id id}
+      {:status :absent})))
+
 (defn- submit-kind! [kind prepare-fn input-schema conn host-ctx principal room-id room input & [snapshot]]
   (when-not (m/validate input-schema input) (invalid! "Invalid benchmark request"))
   (binding [ec/*execution-context* host-ctx]
     (let [party (authorize! conn principal room-id)
-          id (requests/request-id party room-id (:request-id input))]
-      (if-let [row (requests/get-request conn id)]
+          {:keys [status id]} (retry-request kind conn party room-id input)]
+      (when (= :conflict status)
+        (throw (ex-info "Request identity was used for different work" {:type ::conflict})))
+      (if (= :retry status)
         ;; A client can observe its exact old submission even after the room's
         ;; authoring files change. It cannot silently schedule the new revision.
-        (do (when-not (and (= kind (:work.request/kind row))
-                           (= input (get-in (requests/payload conn row) [:input :submission])))
-              (throw (ex-info "Request identity was used for different work" {:type ::conflict})))
-            (work/status conn host-ctx principal room-id id))
+        (work/status conn host-ctx principal room-id id)
         (let [prepared (prepare-fn (or snapshot (workflows/snapshot room (:name input))) input)]
           (work/submit-prepared! conn host-ctx principal room-id room input
                                  (adapter host-ctx room prepared principal)))))))
