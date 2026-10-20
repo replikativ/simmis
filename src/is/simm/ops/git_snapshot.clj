@@ -9,7 +9,6 @@
             [geschichte.content :as content]
             [geschichte.git.object :as object]
             [geschichte.git.pack :as pack]
-            [geschichte.query :as query]
             [hasch.core :as hasch]
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.security MessageDigest]
@@ -21,8 +20,30 @@
 (defn- refuse! [message]
   (throw (ex-info message {:type ::invalid})))
 
+(defn- snapshot-entries! [db]
+  ;; Bound index acquisition itself, not a fully realized query/worktree. An
+  ;; inner-join manifest query would also omit corrupt/incomplete path rows.
+  (let [rows (vec (take (inc (:max-files policy))
+                        (d/datoms db :avet :geschichte.work/path)))]
+    (when (> (count rows) (:max-files policy))
+      (refuse! "Workspace exceeds snapshot file limit"))
+    (reduce (fn [entries datom]
+              (let [path (:v datom)
+                    entity (d/entity db (:e datom))
+                    entry {:content (:geschichte.content/id (:geschichte.work/content entity))
+                           :size (:geschichte.work/size entity)
+                           :mode (:geschichte.work/mode entity)}]
+                (when-not (and (string? path) (<= (count path) 1024)
+                               (= (str "/" path) (try (files/workspace-path (str "/" path))
+                                                      (catch Exception _ nil)))
+                               (= path (:geschichte.work/path entity))
+                               (not (contains? entries path)))
+                  (refuse! "Snapshot requires unique canonical file paths"))
+                (assoc entries path entry)))
+            (sorted-map) rows)))
+
 (defn- snapshot* [db identity expected]
-  (let [entries (into (sorted-map) (query/worktree db))
+  (let [entries (snapshot-entries! db)
         id (hasch/uuid (conj identity entries))
         reader (atom db)]
     (when (and expected (not= expected id))
