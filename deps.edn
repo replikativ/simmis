@@ -410,10 +410,14 @@
         ;; #372 seals explicit-target completion at native boundaries; reviewed
         ;; head and permanent squash have identical trees, 76/595 fresh-JVM
         ;; regressions and all required CI passed. No legacy writer API change.
+        ;; #373 adds optional immutable host file reads for MCP tools/resources.
+        ;; Pin its permanent main squash: tree-identical to the reviewed head,
+        ;; 113/1746 local regressions and all required CI passed. Simmis's owned
+        ;; host remains inactive until catalog/export/source routing is coherent.
         ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "4cbd1e2dfaeaa368bb3557be0f11465502eb49e4"
+                               :git/sha "ead139d9aee0231d7166b45619a44191bcccb8fe"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.
