@@ -403,11 +403,15 @@
         ;; transitive Git SHA. The merged #369 fix additionally binds workspace
         ;; selection to fork-local execution state, never attachment order. Pin
         ;; its permanent main squash (tree-identical to the reviewed PR head).
+        ;; #370 is merged: off-drain SCI preparation and owned physical cleanup.
+        ;; #371's public immutable head adds explicit-target file batches without
+        ;; mutating Room selection; source independently reviewed, 82/500 local
+        ;; regressions green. Temporary until its required full CI/main squash.
         ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         ;; Use the merged #363 commit: the earlier feature SHA is retired.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "e8b4501c01d6bd9b212d9e8f6a9c616873fc8d4a"
+                               :git/sha "44d3a7a87c32792e8d0b12a583859f3c59701a7a"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.
