@@ -9,6 +9,7 @@
             [geschichte.content :as content]
             [geschichte.query :as query]
             [hasch.core :as hasch]
+            [is.simm.ops.benchmark-dataset :as dataset]
             [is.simm.ops.workflows :as workflows]
             [org.replikativ.spindel.engine.core :as ec]))
 
@@ -402,9 +403,11 @@
                   d/entity (fn [& _] (throw (AssertionError. "Overflow must precede entity access")))
                   query/worktree (fn [& _] (throw (AssertionError. "No whole-index inner join")))
                   content/read-by-id (fn [& _] (throw (AssertionError. "Overflow must precede body access")))]
-      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"too many files"
-                            (workflows/snapshot-in db "echo")))
-      (is (= 101 @seen)))))
+      (doseq [project [workflows/snapshot-in workflows/manifest-in]]
+        (reset! seen 0)
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"too many files"
+                              (project db "echo")))
+        (is (= 101 @seen))))))
 
 (deftest name-list-inclusive-upper-sentinel-does-not-consume-a-directory-row
   (with-workspace
@@ -489,3 +492,90 @@
               (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Metadata byte limit before bodies")))]
                 (is (thrown-with-msg? clojure.lang.ExceptionInfo message
                                       (workflows/snapshot-in overflow "echo")))))))))))
+
+(deftest manifest-projection-is-metadata-only-and-shares-the-complete-row-validator
+  (with-workspace
+    (fn [room]
+      (workflows/write! room principal {:name "echo" :files fixture})
+      (let [db @(:conn (native/current-workspace))
+            expected (:manifest (workflows/snapshot-in db "echo"))
+            corrupt (:db-after (d/with db [{:geschichte.work/path "workflows/echo/hidden.md"}]))]
+        (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Manifest never loads bodies")))
+                      query/worktree (fn [& _] (throw (AssertionError. "No omitting worktree join")))
+                      native/current-workspace (fn [] (throw (AssertionError. "No ambient selection")))]
+          (is (= expected (workflows/manifest-in db "echo")))
+          (is (= [] (workflows/manifest-in db "empty")))
+          (is (thrown? clojure.lang.ExceptionInfo (workflows/manifest-in corrupt "echo"))))))))
+
+(deftest captured-details-and-pages-do-not-reacquire-source-or-follow-selected-edits
+  (with-workspace
+    (fn [room]
+      (let [text (apply str (repeat 5000 "🦋世"))
+            files (assoc fixture "large.md" text)]
+        (workflows/write! room principal {:name "echo" :files files})
+        (let [conn (:conn (native/current-workspace)) db @conn
+              captured (workflows/snapshot-in db "echo")
+              expected (workflows/details-in db "echo")
+              expected-page (workflows/source-page-in db {:name "echo"})
+              forbidden (fn [& _] (throw (AssertionError. "Captured formatter must not reacquire source")))]
+          (workspace/seed! room {"/workflows/echo/gold.edn" "{:expected :newer}"})
+          (with-redefs [d/index-range forbidden d/entity forbidden content/read-by-id forbidden
+                        native/current-workspace forbidden workflows/snapshot forbidden workflows/snapshot-in forbidden
+                        workflows/details forbidden workflows/details-in forbidden]
+            (let [details (workflows/details-of "echo" captured)
+                  revision (:revision details)
+                  chunks (loop [offset 0 chunks []]
+                           (let [page (workflows/source-page-of details {:name "echo" :path "large.md"
+                                                                         :offset offset :expected-revision revision})
+                                 bytes (.decode (java.util.Base64/getDecoder) ^String (:base64 page))]
+                             (is (<= (alength bytes) 8192))
+                             (if-let [next-offset (:next-offset page)]
+                               (recur next-offset (conj chunks bytes))
+                               (conj chunks bytes))))]
+              (is (= expected details))
+              (is (= files (:files details)))
+              (is (= expected-page (workflows/source-page-of details {:name "echo"})))
+              (is (= text (String. ^bytes (byte-array (mapcat seq chunks)) "UTF-8")))
+              (let [host-revision (str (random-uuid))
+                    retagged (-> details (assoc :revision host-revision)
+                                 (assoc-in [:inspection :revision] host-revision))
+                    page (workflows/source-page-of retagged {:name "echo" :expected-revision host-revision})]
+                (is (= host-revision (:revision page)))
+                (is (= (get-in details [:inspection :bundle]) (get-in page [:inspection :bundle])))))))))))
+
+(deftest captured-page-validation-and-invalid-drafts-remain-pure
+  (let [empty-source {:files (sorted-map) :manifest []}
+        draft-source {:files (sorted-map "workflow.edn" "{:unclosed")
+                      :manifest [{:path "workflow.edn" :content (random-uuid) :size 10 :mode 33188}]}
+        empty-details (workflows/details-of "empty" empty-source)
+        draft-details (workflows/details-of "draft" draft-source)]
+    (is (= (str (workflows/source-revision "empty" empty-source)) (:revision empty-details)))
+    (is (false? (get-in empty-details [:inspection :ok])))
+    (is (false? (get-in draft-details [:inspection :ok])))
+    (is (= 0 (:file-count (workflows/source-page-of empty-details {:name "empty"}))))
+    (is (= "workflow.edn" (get-in (workflows/source-page-of draft-details {:name "draft"}) [:files 0 :path])))
+    (doseq [request [{:name "other"} {:name "draft" :offset -1}
+                     {:name "draft" :path "workflow.edn"} {:name "draft" :file-offset 1}
+                     {:name "draft" :expected-revision "not-a-uuid"}
+                     {:name "draft" :expected-revision (str (random-uuid))}]]
+      (is (thrown? clojure.lang.ExceptionInfo (workflows/source-page-of draft-details request))))))
+
+(deftest inspection-propagates-direct-and-wrapped-interruption-instead-of-draft-problems
+  (doseq [stage [:bundle :dataset] wrapped? [false true]]
+    (let [bundle catalog/bundle calls (atom {:bundle 0 :dataset 0})
+          interrupted (InterruptedException. "cancelled")
+          failure (if wrapped? (ex-info "wrapped interruption" {} interrupted) interrupted)]
+      (try
+        (with-redefs [catalog/bundle (fn [& args]
+                                       (swap! calls update :bundle inc)
+                                       (if (= stage :bundle) (throw failure) (apply bundle args)))
+                      dataset/manifest (fn [& _] (swap! calls update :dataset inc) (throw failure))]
+          (let [error (try (workflows/details-of "echo" {:files fixture :manifest []})
+                           nil (catch Exception error error))
+                ;; clojure.test's report-counter STM may consume interruption.
+                ;; Observe the operation BEFORE any assertion/reporting.
+                interrupted? (.isInterrupted (Thread/currentThread))]
+            (is (identical? failure error))
+            (is interrupted?))
+          (is (= {:bundle 1 :dataset (if (= stage :bundle) 0 1)} @calls)))
+        (finally (Thread/interrupted))))))

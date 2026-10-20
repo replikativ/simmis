@@ -107,6 +107,16 @@
           (invalid! "Workflow content metadata does not match its pinned size")))
       entries)))
 
+(defn- source-manifest [prefix entries]
+  (mapv (fn [[path entry]] (assoc entry :path (subs (str "/" path) (count prefix)))) entries))
+
+(defn manifest-in
+  "HOST INTERNAL metadata-only projection of the complete bounded source. Read
+   all path/content metadata from ONE immutable DB; never load source bodies.
+   Data, not authorization, caller-selected target authority or a GC lease."
+  [db name]
+  (source-manifest (prefix! name) (snapshot-entries! db name)))
+
 (defn snapshot-in
   "Read manifest, content metadata and bodies from ONE immutable DB. This is a
    storage projector, not authorization, selection or a lease against GC."
@@ -122,8 +132,7 @@
                       (invalid! "Workflow content does not match its pinned size"))
                     [(subs (str "/" path) (count prefix)) (strict-text bytes)])))
            entries)
-     :manifest (mapv (fn [[p entry]]
-                       (assoc entry :path (subs (str "/" p) (count prefix)))) entries)}))
+     :manifest (source-manifest prefix entries)}))
 
 (defn snapshot
   "Selected workspace compatibility wrapper, including isolated Run worlds."
@@ -139,6 +148,13 @@
    Separate from the validated bundle's execution identity."
   [name snapshot]
   (hasch/uuid {:name name :manifest (:manifest snapshot)}))
+
+(defn- interrupted-failure? [failure]
+  (loop [cause failure seen #{}]
+    (cond (nil? cause) false
+          (instance? InterruptedException cause) true
+          (contains? seen cause) false
+          :else (recur (.getCause ^Throwable cause) (conj seen cause)))))
 
 (defn inspect-snapshot [name snapshot]
   (let [problems (catalog/check-files (:files snapshot))]
@@ -157,9 +173,19 @@
                    :checker-executed? false}
             evaluation (assoc :evaluation evaluation)))
         (catch Exception e
+          ;; Cancellation is not an invalid authored draft. Preserve wrapped
+          ;; native interruption before diagnostic conversion loses its cause.
+          (when (interrupted-failure? e)
+            (.interrupt (Thread/currentThread))
+            (throw e))
           {:ok false :name name :checker-executed? false :problems [(ex-message e)]})))))
 
-(defn- source-details [name source]
+(defn details-of
+  "HOST INTERNAL pure formatting of an already captured snapshot. No live
+   Room, DB or content-store reads; checker text remains inert. Captured data
+   is not an authorization token and this function grants no file access."
+  [name source]
+  (prefix! name)
   (let [revision (str (source-revision name source))
         inspection (assoc (inspect-snapshot name source) :revision revision)]
     (cond-> {:name name :revision revision
@@ -171,13 +197,13 @@
 (defn details-in
   "Editable source and inert inspection from one supplied immutable DB."
   [db name]
-  (source-details name (snapshot-in db name)))
+  (details-of name (snapshot-in db name)))
 
 (defn details
   "One bounded editable source revision and its non-executing inspection.
    A malformed draft still has an identity and can be repaired safely."
   [room name]
-  (source-details name (snapshot room name)))
+  (details-of name (snapshot room name)))
 
 (defn- list-arguments! [{:keys [offset expected-revision] :or {offset 0}}]
   (when-not (and (integer? offset) (<= 0 offset max-list-entries)
@@ -284,18 +310,28 @@
   (when (and (or path (pos? file-offset)) (nil? expected-revision))
     (invalid! "Later source pages require expected-revision")))
 
+(defn source-page-of
+  "HOST INTERNAL pure bounded page of already captured details. The request
+   must name that same source; revisions retain the supplied details' identity.
+   No selected workspace or live body read, and no new authority."
+  [source request]
+  (source-arguments! request)
+  (when-not (= (:name source) (:name request))
+    (invalid! "Source page names a different captured workflow"))
+  (source-page* source request))
+
 (defn source-page-in
   "Bounded source metadata/chunks from the supplied immutable DB. Content-only
    source revisions remain unchanged; the host binds target identity separately."
   [db request]
   (source-arguments! request)
-  (source-page* (details-in db (:name request)) request))
+  (source-page-of (details-in db (:name request)) request))
 
 (defn source-page
   "Selected workspace compatibility source paging, without executing checkers."
   [room request]
   (source-arguments! request)
-  (source-page* (details room (:name request)) request))
+  (source-page-of (details room (:name request)) request))
 
 (defn write!
   "One bounded atomic repository commit, restricted to this bundle's subtree.
