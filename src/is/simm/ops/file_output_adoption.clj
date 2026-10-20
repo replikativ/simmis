@@ -16,6 +16,7 @@
             [is.simm.ops.file-output-publication :as native-publication]
             [is.simm.ops.file-output-storage :as storage]
             [is.simm.ops.knowledge-filing :as filing]
+            [is.simm.ops.owned-workspace :as owned-workspace]
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [malli.core :as m]))
 
@@ -195,7 +196,7 @@
         (throw (ex-info "File adoption claim was not acknowledged; do not publish"
                         {:type ::claim-unacknowledged :operation (:id operation)} error))))))
 
-(defn applying!
+(defn- applying-with-binding!
   "INTERNAL original-publisher callback, not a route or recovery operation.
    Only call with this native invocation's acknowledged claim and exact native
    pre-dispatch candidate. Recheck the full proof, current authority/target and
@@ -205,7 +206,7 @@
    return from before-dispatch and let the native writer start. Missing/lost
    ACK throws and never recovers ownership from readback. It can leave applying
    without a publication: absence of a receipt must never authorize replay."
-  [conn party room-id room claimed candidate]
+  [conn party room-id room claimed candidate owned-binding]
   (host-connection! conn)
   (when-not (= #{:proof :plan :operation} (set (keys claimed)))
     (refuse! :invalid-claim))
@@ -227,6 +228,13 @@
                           (refuse! :preflight-changed))
                         (when-not (= (get-in proof [:binding :target]) (filing/current-target db room-id room))
                           (refuse! :target-changed))
+                        ;; Fixed host binding, not a caller-supplied transaction
+                        ;; callback. Use THIS writer snapshot for ownership and
+                        ;; authority, retaining the original live System/conn.
+                        (when owned-binding
+                          (let [current (owned-workspace/validate! db party :merge room-id room owned-binding)]
+                            (when-not (= (get-in proof [:binding :target]) (:target current))
+                              (refuse! :target-changed))))
                         (adoptions/transition-tx-data db (get-in proof [:fork :db/id]) operation
                                                       :applying {} at))]])]
         (when-not (:db-after report) (refuse! :applying-report-unavailable))
@@ -236,6 +244,23 @@
         (when (instance? InterruptedException error) (.interrupt (Thread/currentThread)))
         (throw (ex-info "File adoption dispatch transition was not acknowledged; do not publish"
                         {:type ::applying-unacknowledged :operation (:id operation)} error))))))
+
+(defn applying!
+  "Internal journal-only transition. Native publication controllers must use
+   bound-applying! instead, so the original host binding is rechecked in the
+   serialized admission. Both paths require their own original immutable ACK."
+  [conn party room-id room claimed candidate]
+  (applying-with-binding! conn party room-id room claimed candidate nil))
+
+(defn bound-applying!
+  "INTERNAL fixed native dispatch gate. Revalidate the original trusted-host
+   owned binding in the SAME transaction as proof, authority and latest-token
+   checks. The binding is neither persisted nor accepted from a client; no
+   arbitrary callback, target mutation, artifact-body IO or lifetime lease is
+   introduced."
+  [conn party room-id room claimed candidate owned-binding]
+  (when-not (map? owned-binding) (refuse! :missing-owned-binding))
+  (applying-with-binding! conn party room-id room claimed candidate owned-binding))
 
 (defn- finalized-report!
   "Original immutable ACK only. The general journal readers deliberately require
