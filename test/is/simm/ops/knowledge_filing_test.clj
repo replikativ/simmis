@@ -66,7 +66,8 @@
 (defn- with-fixture
   ([f] (with-fixture {} f))
   ([options f]
-   (let [conn (memory-conn) workspace (memory-conn)]
+   (let [conn (memory-conn) workspace (memory-conn)
+         fixture-configs (mapv #(-> % deref :config) [workspace conn])]
      (try
        (d/transact conn system-db/schema)
        (d/transact conn sdb/schema)
@@ -163,9 +164,16 @@
                :principal principal :request id :job job :candidate candidate
                :certified certified :output output :basis basis :identity identity})))
        (finally
+         (when-not (every? #(and (= :memory (get-in % [:store :backend]))
+                                 (uuid? (get-in % [:store :id]))) fixture-configs)
+           (throw (ex-info "Refusing cleanup outside the exact named-memory fixture" {})))
          (governance/ungovern! conn)
          (d/release workspace)
-         (d/release conn))))))
+         (d/release conn)
+         ;; Release intentionally preserves named-memory stores for reconnect.
+         ;; This synchronous fixture owns both UUID stores, not just their
+         ;; connections; delete them after writers have physically stopped.
+         (doseq [cfg fixture-configs] (d/delete-database cfg)))))))
 
 (defn- prepare [{:keys [conn principal room-id room request]}]
   (filing/prepare conn principal room-id room request))
