@@ -259,10 +259,10 @@
                   (authorize!)
                   (next effect)))))))
 
-(defn save-file!
+(defn- save-file-through!
   "One canonical effect-checked writer with the opened revision included in
    its before snapshot. Editing source does not reload an agent interpreter."
-  [room {:keys [path expected text base64] :as request} & [{:keys [authorize!]}]]
+  [room system {:keys [path expected text base64] :as request} {:keys [authorize!]}]
   (when-not (every? room-files/write-capabilities [:expected-worktree :applied-receipt])
     (refuse! ::unavailable "The file writer must support opened-revision preconditions"))
   (path! path)
@@ -279,10 +279,13 @@
                          (catch IllegalArgumentException _ (refuse! ::invalid "Invalid file encoding")))))
         _ (when (> (alength ^bytes bytes) max-open-bytes) (refuse! ::limit "File is too large"))
         target (str "/" path)
-        written (room-files/write! room {target {:base64 (.encodeToString (Base64/getEncoder) bytes)}}
-                                   {:expected-worktree {target expected}
-                                    :boundary (publication-boundary room authorize!)
-                                    :message (str "Edit " path)})
+        batch {target {:base64 (.encodeToString (Base64/getEncoder) bytes)}}
+        options {:expected-worktree {target expected}
+                 :boundary (publication-boundary room authorize!)
+                 :message (str "Edit " path)}
+        written (if system
+                  (room-files/write-to! room system batch options)
+                  (room-files/write! room batch options))
         _ (when-not (:applied? written) (refuse! ::not-applied "The effect policy did not apply this file save"))
         ;; The canonical writer's in-thunk committed receipt, not a later
         ;; worktree read and not an assumed file mode.
@@ -290,6 +293,22 @@
         _ (when-not (= (blob/blob-id bytes) (:content selected))
             (refuse! ::receipt "The save receipt does not match the submitted bytes"))]
     {:path path :entry selected :commit (:commit written) :saved? true}))
+
+(defn save-file!
+  "Legacy selected-workspace editor save; validation and native receipt checks
+   are shared with explicit-target saves. Does not reload agent interpreters."
+  [room request & [options]]
+  (save-file-through! room nil request options))
+
+(defn save-file-to!
+  "HOST explicit-target editor save. Uses the exact registered SystemIdentity;
+   never changes selection or falls back to the selected workspace. This does
+   not establish host authority or an opened target stamp: the caller must
+   supply its fixed current-authorization gate and validate that precondition."
+  [room system request & [options]]
+  (when-not (and system (contains? room-files/write-capabilities :explicit-workspace))
+    (refuse! ::unavailable "An exact explicit workspace writer is required"))
+  (save-file-through! room system request options))
 
 (defn move-file! [room path target expected & [{:keys [authorize!]}]]
   (when-not (every? room-files/write-capabilities [:expected-worktree :applied-receipt :file-modes])
