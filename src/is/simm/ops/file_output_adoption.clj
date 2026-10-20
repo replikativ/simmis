@@ -1,9 +1,10 @@
 (ns is.simm.ops.file-output-adoption
-  "INTERNAL preparation and serialized ownership for forthcoming guarded
-   adoption. No route, schema installation, target publication, proposal status
-   mutation or execution. The
-   returned data is NOT a capability: an eventual serialized host writer must
-   repeat authority/target checks and compare the exact frozen storage proof."
+  "INTERNAL fixed control writers prepare, claim, apply and finalize joint
+   adoption facts. No endpoint, schema installation, target publication or
+   execution. Returned data is NOT a capability or substitute for original ACKs.
+   Admission/dispatch repeats current authority/target checks; finalization
+   only records an original publisher's
+   observed fact. Every transition compares the exact frozen storage proof."
   (:require [datahike.api :as d]
             [is.simm.model.access :as access]
             [is.simm.model.file-adoptions :as adoptions]
@@ -27,8 +28,9 @@
   (when-not (and conn (identical? conn (sdb/get-conn))) (refuse! :noncanonical-connection)))
 
 (defn- filing-snapshot
-  "Canonical filing integrity only. Callers must authorize their exact verb
-   BEFORE invoking this private reader. Never use it as an authority bypass."
+  "Canonical filing integrity only. Fresh decisions authorize their exact verb
+   before invoking this reader. The original publisher may also record its
+   already observed committed fact; this does not admit another operation."
   [db party room-id proposal-id]
   (let [p (d/pull db [:db/id :proposal/id :proposal/room :proposal/status
                       :proposal/author :proposal/run :proposal/filing-hash :proposal/review]
@@ -234,3 +236,85 @@
         (when (instance? InterruptedException error) (.interrupt (Thread/currentThread)))
         (throw (ex-info "File adoption dispatch transition was not acknowledged; do not publish"
                         {:type ::applying-unacknowledged :operation (:id operation)} error))))))
+
+(defn- finalized-report!
+  "Original immutable ACK only. The general journal readers deliberately require
+   an OPEN component; do not relax them to inspect this terminal projection."
+  [db proof expected at]
+  (when-not db (refuse! :finalization-report-unavailable))
+  (let [{:keys [proposal component room actor]} expected
+        fork-eid (get-in proof [:fork :db/id])
+        p (d/pull db [:db/id :proposal/id :proposal/status :proposal/resolved-by :proposal/resolved-at]
+                  [:proposal/id proposal])
+        f (d/pull db [:proposal.fork/status :proposal/resolved-by :proposal/resolved-at
+                      {:proposal.fork/file-adoption [:db/id :file.adoption/id]}] fork-eid)
+        link (:proposal.fork/file-adoption f)
+        owners (when (:db/id link)
+                 (vec (take 2 (d/datoms db :avet :proposal.fork/file-adoption (:db/id link)))))
+        owner (manifests/owner db component)]
+    (when-not (and (= expected (adoptions/operation db (:id expected)))
+                   (= (:id expected) (:file.adoption/id link))
+                   (= [fork-eid] (mapv :e owners))
+                   (= {:proposal proposal :room room :fork-eid fork-eid :proposal-eid (:db/id p)}
+                      (select-keys owner [:proposal :room :fork-eid :proposal-eid]))
+                   (= :accepted (:proposal/status p) (:proposal.fork/status f))
+                   (= actor (:proposal/resolved-by p) (:proposal/resolved-by f))
+                   (= at (:proposal/resolved-at p) (:proposal/resolved-at f)))
+      (refuse! :finalization-report-mismatch))
+    {:operation expected :proposal proposal :status :accepted}))
+
+(defn finalize!
+  "INTERNAL original publisher's finalization, NOT an endpoint or recovery API.
+   The owning host supplies its ORIGINAL acknowledged applying value and the
+   already observed scoped WINNING receipt from the canonical native writer.
+   Pure receipt validity alone is not evidence that publication occurred.
+
+   Record that observed fact even if permission/default selection changed
+   AFTER publication. No new authorization, target lookup, body IO or dispatch
+   occurs here. Canonical filing integrity and exact latest ownership are still
+   checked in the SAME transaction as all three terminal records. Corruption
+   leaves the outcome unresolved; it never permits abort, restore or replay.
+
+   Only the original report establishes returned success. A lost ACK can hide
+   durable acceptance; never infer original ownership from a live readback."
+  [conn applying receipt]
+  (host-connection! conn)
+  (when-not (= #{:proof :plan :operation} (set (keys applying)))
+    (refuse! :invalid-applying))
+  (let [{:keys [proof plan operation]} applying
+        {:keys [proposal room actor]} operation]
+    (adoptions/validate! operation)
+    (when-not (and (= :applying (:state operation))
+                   (= (:binding proof) (select-keys operation (keys (:binding proof))))
+                   (= (:manifest plan) (get-in proof [:retained :manifest]))
+                   (= (:proposal plan) proposal))
+      (refuse! :invalid-applying))
+    (native-publication/validate-receipt! operation (:manifest plan) receipt)
+    (let [at (java.util.Date.)
+          outcome (into {} (for [key [:commit :head :noop?]
+                                 :let [attr (keyword "publication" (name key))]
+                                 :when (contains? receipt attr)]
+                             [key (get receipt attr)]))
+          expected (adoptions/validate! (merge operation outcome {:state :accepted :updated-at at}))]
+      (try
+        (let [report (d/transact
+                      conn
+                      [[:db.fn/call
+                        (fn [db]
+                          ;; This records an admitted operation's observed fact,
+                          ;; not a fresh merge or a permission-bypass option.
+                          (when-not (= proof (filing-snapshot db actor room proposal))
+                            (refuse! :preflight-changed))
+                          (into (adoptions/transition-tx-data db (get-in proof [:fork :db/id])
+                                                              operation :accepted outcome at)
+                                [{:db/id (get-in proof [:fork :db/id])
+                                  :proposal.fork/status :accepted
+                                  :proposal/resolved-by actor :proposal/resolved-at at}
+                                 {:db/id (get-in proof [:proposal :db/id])
+                                  :proposal/status :accepted
+                                  :proposal/resolved-by actor :proposal/resolved-at at}]))]])]
+          (finalized-report! (:db-after report) proof expected at))
+        (catch Throwable error
+          (when (instance? InterruptedException error) (.interrupt (Thread/currentThread)))
+          (throw (ex-info "File adoption finalization was not acknowledged; durable outcome may already be accepted"
+                          {:type ::finalization-unacknowledged :operation (:id operation)} error)))))))
