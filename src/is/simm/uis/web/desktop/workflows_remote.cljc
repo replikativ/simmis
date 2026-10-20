@@ -34,7 +34,9 @@
        (dops/op-error! "Invalid owned workflow read" ::owned-read-invalid 400))
      (let [host (try
                   (let [conn (system-db/get-conn) host-ctx context/server-context]
-                    {:execution-ctx host-ctx ::owned-reads/owner (owned-reads/host-owner conn host-ctx)})
+                    ;; The CLJS reader also parses this skipped server form;
+                    ;; its alias map has no server-only owned-reads alias.
+                    {:execution-ctx host-ctx :is.simm.ops.owned-reads/owner (owned-reads/host-owner conn host-ctx)})
                   (catch Throwable error
                     (work-api/owned-workflow-read-error! (ex-info "Host owner unavailable" {} error))))
            principal (ops/party-principal party)]

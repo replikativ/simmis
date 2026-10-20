@@ -71,10 +71,11 @@
         ;; Keep the direct UI/runtime pin aligned with Dvergr's reviewed
         ;; independent-session and funding-recovery foundation (spindel#146),
         ;; plus the reviewed stable-reference SCI replacement API (#147).
+        ;; Historical forks own their workspace and join native disposal (#148).
         ;; Use the public squash commit, not a local-only development commit:
         ;; the worker package resolves this same basis on clean machines.
         org.replikativ/spindel {:git/url "https://github.com/replikativ/spindel.git"
-                                :git/sha "0cda03449d853f32c13d4087b1f9abbc19400db5"}
+                                :git/sha "2e394753b9871b0c705d21e6aef1784b2b74d6b0"}
         ;; spindel 0.1.53 brings anglican 1.1.0 (its inference methods), which
         ;; brings timbre 4.10.0, whose ClojureScript no longer compiles
         ;; ("Can't redefine a constant"). A current timbre serves anglican's
@@ -231,7 +232,10 @@
         ;; (#27), so an overlay swap's mutator may run MORE THAN ONCE. Every
         ;; function simmis hands to an overlay or swap! must be pure — side
         ;; effects go before or after the swap, never inside it.
-        org.replikativ/yggdrasil {:mvn/version "0.3.49"}
+        ;; Match the new historical-overlay contract (#29). An old direct Maven
+        ;; pin would override the compatible transitive dependency.
+        org.replikativ/yggdrasil {:git/url "https://github.com/replikativ/yggdrasil"
+                                  :git/sha "dee7438acbf428323779e6d59fc18db4aa9d7556"}
         ;; Keep the direct Geschichte dependency aligned with dvergr: nearest
         ;; wins, and Simmis also relies on Yggdrasil's Geschichte adapter and
         ;; its content-level merge API.
