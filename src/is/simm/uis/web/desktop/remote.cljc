@@ -48,6 +48,7 @@
 
 (def ^:private client-error-types
   #{:not-authorized :authentication-required :validation-error
+    :memory/target-changed
     :dispatch/invalid-mentions :proposal/merge-failed :dvergr.principal/denied})
 
 (defn- error-map [value]

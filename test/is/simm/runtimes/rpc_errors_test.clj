@@ -98,6 +98,18 @@
                                                           :type :unreviewed :correlation-id 5}}))))
     (is (nil? (remote/error-info (ex-info "oversize" {:data (str "{" (apply str (repeat 5000 "x")))}))))))
 
+(deftest memory-target-change-has-one-bounded-public-classification
+  (let [id (random-uuid)
+        error (ex-info "The Memory repository changed; refresh before editing."
+                       {:type :memory/target-changed :reason :target-changed
+                        :target {:store "private-store"} :connection "private-handle"})
+        safe (rpc-errors/client-info error id)]
+    (is (= {:error (ex-message error) :type :memory/target-changed :correlation-id (str id)} safe))
+    (is (= safe (remote/error-info (ex-info "legacy" {:error (pr-str safe)}))))
+    (is (= safe (remote/error-info (ex-info "modern" {:type (:type safe)
+                                                      :data (pr-str (dissoc safe :type))}))))
+    (is (not (re-find #"private-store|private-handle|:reason|:target " (pr-str safe))))))
+
 (deftest a-handler-error-gets-only-its-message
   (let [secret-ex (ex-info "Room not found\nwhile resolving /home/x/.dvergr/systems"
                            {:type :internal/lookup :secret "s3cr3t" :path "/home/x/.dvergr"})]
