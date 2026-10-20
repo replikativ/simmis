@@ -3,6 +3,9 @@
    no configurable resolver/action, activation, selected fallback or retained authority."
   (:require [clojure.string :as str]
             [datahike.api :as d]
+            [dvergr.room.registry :as registry]
+            [dvergr.room.store :as room-store]
+            [dvergr.system.rooms :as native-rooms]
             [is.simm.agents.room-agents :as rooms]
             [is.simm.model.access :as access]
             [is.simm.model.system-db :as system-db]
@@ -127,6 +130,68 @@
     (binding [ec/*execution-context* execution-ctx]
       (let [db (current-control-db! control-conn execution-ctx)]
         (assoc (authorize-read! db principal original-handle) :control-db db)))))
+
+(defn- authorize-room! [db principal handle]
+  (let [{:keys [room-id party] :as current} (authorize-read! db principal handle)]
+    (when-not (access/can? db party :merge {:room room-id}) (refuse!))
+    current))
+
+(defn- registered-native-room [room-id slug]
+  ;; Use the slug from our authorized immutable control DB, not registered-room
+  ;; (which looks up room metadata again through a global connection).
+  (let [native-id (room-store/slug->room-id slug)
+        room (registry/lookup native-id)]
+    (when room
+      (when-not (and (= native-id (:id room)) (= slug (:slug room))
+                     (:ctx room) (:meta room) (uuid? (:incarnation room))
+                     (identical? (:ctx room) (native-rooms/room-ctx-for room-id))
+                     (true? (registry/admitted-incarnation? room))) (refuse!))
+      room)))
+
+(defn resolve-host-room!
+  "Fixed HOST human read+MERGE Room-only hydration for retained offline work.
+   No default/source/files lookup. Returns ephemeral HOST data including the
+   exact original owner pair; never persist/export it, put it in SCI/fork state,
+   or treat its control DB as a lease. Room ctx need not equal server ctx."
+  [host principal original-handle]
+  (let [{:keys [control-conn execution-ctx] :as owner} (original-owner! host)]
+    (binding [ec/*execution-context* execution-ctx]
+      (let [before (current-control-db! control-conn execution-ctx)
+            original (authorize-room! before principal original-handle)
+            registered (registered-native-room (:room-id original) (:slug original))
+            room (rooms/live-room (:room-id original))
+            after (current-control-db! control-conn execution-ctx)
+            current (authorize-room! after principal original-handle)
+            canonical (registered-native-room (:room-id current) (:slug current))]
+        (when-not (and room
+                       (= original current)
+                       (or (nil? registered) (identical? registered room))
+                       (identical? room canonical))
+          (refuse!))
+        (assoc current :room room :control-db after ::room-owner owner)))))
+
+(defn validate-host-room!
+  "Current fixed read+MERGE and exact native Room-incarnation validation.
+   Never hydrates a missing/replacement Room, changes original owner or resolves
+   a source/default. Returns a refreshed ephemeral final-control-DB binding."
+  [host principal original-handle binding]
+  (let [{:keys [control-conn execution-ctx] :as owner} (original-owner! host)
+        captured (::room-owner binding)]
+    (when-not (and (map? binding)
+                   (= #{:party :room-id :slug :room :control-db ::room-owner} (set (keys binding)))
+                   (map? captured) (= #{:control-conn :execution-ctx} (set (keys captured)))
+                   (identical? control-conn (:control-conn captured))
+                   (identical? execution-ctx (:execution-ctx captured)))
+      (refuse!))
+    (clojure.core/binding [ec/*execution-context* execution-ctx]
+      (let [db (current-control-db! control-conn execution-ctx)
+            current (authorize-room! db principal original-handle)
+            room (registered-native-room (:room-id current) (:slug current))]
+        (when-not (and (= current (select-keys binding [:party :room-id :slug]))
+                       room (identical? room (:room binding))
+                       (identical? (:ctx room) (:ctx (:room binding)))
+                       (identical? (:meta room) (:meta (:room binding)))) (refuse!))
+        (assoc current :room room :control-db db ::room-owner owner)))))
 
 (defn resolve-host-read!
   "Fixed HOST composition entry. Validate the ORIGINAL host owner, then obtain

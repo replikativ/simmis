@@ -3,11 +3,16 @@
    No transport authentication simulation, runtime activation or new grants."
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
+            [dvergr.discourse :as discourse]
             [dvergr.ops :as dops]
+            [dvergr.room.registry :as registry]
+            [dvergr.system.rooms :as native-rooms]
             [dvergr.substrate.geschichte :as workspace]
             [geschichte.query :as query]
             [is.simm.agents.room-agents :as rooms]
             [is.simm.documents.files :as documents]
+            [is.simm.authority.world :as world]
+            [is.simm.model.system-db :as system-db]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.owned-mcp-test :as fixture]
             [is.simm.ops.owned-reads :as reads]
@@ -143,3 +148,208 @@
            (is (identical? @observed (:control-db binding)))
            (is (= "Final captured control"
                   (:room/name (d/entity (:control-db binding) [:room/id (:room w)]))))))))))
+
+(deftest room-only-resolution-and-validation-ignore-missing-default-and-selected-files
+  (doseq [order [true false]]
+    (@#'fixture/with-fixture
+     order
+     (fn [{:keys [conn w host room owned attached hydrations]}]
+       (let [p (ops/party-principal (:owner w)) handle (str (:room w))
+             slug (:room/slug (d/entity @conn [:room/id (:room w)]))
+             selected (workspace/selected-system-id) before (snapshot owned) other (snapshot attached)
+             calls (atom 0) forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "Room-only gate accessed workspace")))]
+         (d/transact conn [[:db/retract [:room/id (:room w)] :room/default-repository [:system/id (:repo-sys w)]]])
+         (with-redefs [owned/resolve! forbidden native-rooms/default-workspace forbidden
+                       workspace/current-workspace forbidden documents/read-file-in forbidden]
+           (doseq [original [handle slug]]
+             (let [binding (reads/resolve-host-room! host p original)]
+               (is (= #{:room :room-id :party :slug :control-db ::reads/room-owner} (set (keys binding))))
+               (is (identical? room (:room binding)))
+               (is (= [(:room w) (:owner w) slug] ((juxt :room-id :party :slug) binding)))
+               (is (identical? conn (:control-conn (::reads/room-owner binding))))
+               (with-redefs [rooms/live-room forbidden]
+                 (let [validated (reads/validate-host-room! host p original binding)]
+                   (is (identical? room (:room validated)))
+                   (is (:control-db validated))))))
+           (is (zero? @calls)))
+         (is (= [(:room w) (:room w)] @hydrations))
+         (is (= selected (workspace/selected-system-id)))
+         (is (= before (snapshot owned))) (is (= other (snapshot attached))))))))
+
+(deftest room-only-requires-human-read-and-merge-before-hydration
+  (@#'fixture/with-fixture
+   true (fn [{:keys [w host hydrations]}]
+          (let [owner (ops/party-principal (:owner w)) handle (str (:room w))]
+            (doseq [principal [(ops/party-principal (:member w))
+                               (ops/party-principal (:admin w))
+                               (assoc owner :principal/kind :worker)
+                               (assoc owner :principal/kind :agent)]]
+              (is (thrown? Exception (reads/resolve-host-room! host principal handle))))
+            (is (empty? @hydrations))))))
+
+(deftest room-only-rechecks-revocation-slug-and-owner-expiry-after-hydration
+  (doseq [change [:merge :slug :control :context]]
+    (@#'fixture/with-fixture
+     true
+     (fn [{:keys [conn w host room]}]
+       (let [p (ops/party-principal (:owner w)) handle (str (:room w))
+             current! reads/current-control-db! calls (atom 0) hydrations (atom 0)]
+         (with-redefs [rooms/live-room
+                       (fn [_]
+                         (swap! hydrations inc)
+                         (case change
+                           :merge (d/transact conn [{:room/id (:room w) :room/owner [:party/id (:member w)]
+                                                     :room/parties [[:party/id (:owner w)]]}])
+                           :slug (d/transact conn [{:room/id (:room w) :room/slug "Changed-during-Room-hydration"}])
+                           nil)
+                         room)
+                       reads/current-control-db!
+                       (fn [control ctx]
+                         (let [n (swap! calls inc)]
+                           (if (= n 2)
+                             (case change
+                               :control (with-redefs [system-db/get-conn (constantly (Object.))] (current! control ctx))
+                               :context (with-redefs [context/server-context (Object.)] (current! control ctx))
+                               (current! control ctx))
+                             (current! control ctx))))]
+           (is (thrown? Exception (reads/resolve-host-room! host p handle)))
+           (is (= 1 @hydrations))))))))
+
+(deftest room-only-validator-never-rehydrates-after-revocation-or-slug-remapping
+  (doseq [change [:merge :slug]]
+    (@#'fixture/with-fixture
+     true
+     (fn [{:keys [conn w host]}]
+       (let [p (ops/party-principal (:owner w)) handle (str (:room w))
+             binding (reads/resolve-host-room! host p handle) calls (atom 0)]
+         (case change
+           :merge (d/transact conn [{:room/id (:room w) :room/owner [:party/id (:member w)]
+                                     :room/parties [[:party/id (:owner w)]]}])
+           :slug (d/transact conn [{:room/id (:room w) :room/slug "Changed-after-Room-binding"}]))
+         (with-redefs [rooms/live-room (fn [& _] (swap! calls inc))]
+           (is (thrown? Exception (reads/validate-host-room! host p handle binding)))
+           (is (zero? @calls))))))))
+
+(defn- with-replacement [room f]
+  ;; Real native lifecycle/Room constructor, no facade or new context. The
+  ;; shared fixture owns its original ctx/store and ultimately closes them.
+  (let [replacement (atom nil)]
+    (try
+      (registry/unregister! (:id room))
+      (let [next (discourse/make-room {:id (:id room) :slug (:slug room) :ctx (:ctx room) :store (:store room)})]
+        (reset! replacement next)
+        (f next))
+      (finally
+        (when @replacement (discourse/close-room! @replacement {:close-context? false}))
+        (registry/register! room)))))
+
+(deftest room-only-refuses-native-replacement-during-hydration-and-on-final-validation
+  (doseq [phase [:hydrate :validate]]
+    (@#'fixture/with-fixture
+     true
+     (fn [{:keys [w host room]}]
+       (let [p (ops/party-principal (:owner w)) handle (str (:room w))]
+         (if (= :hydrate phase)
+           (let [replacement (atom nil)]
+             (try
+               (with-redefs [rooms/live-room
+                             (fn [_]
+                               (registry/unregister! (:id room))
+                               (let [next (discourse/make-room {:id (:id room) :slug (:slug room) :ctx (:ctx room) :store (:store room)})]
+                                 (reset! replacement next)
+                                 next))]
+                 (is (thrown? Exception (reads/resolve-host-room! host p handle)))
+                 (is (some? @replacement)))
+               (finally
+                 (when @replacement (discourse/close-room! @replacement {:close-context? false}))
+                 (registry/register! room))))
+           (let [binding (reads/resolve-host-room! host p handle)]
+             (with-replacement
+               room (fn [next]
+                      (is (not (identical? next room)))
+                      (is (not= (:incarnation next) (:incarnation room)))
+                      (let [calls (atom 0)]
+                        (with-redefs [rooms/live-room (fn [& _] (swap! calls inc))]
+                          (is (thrown? Exception (reads/validate-host-room! host p handle binding)))
+                          (is (zero? @calls)))))))))))))
+
+(deftest room-only-owner-expiry-and-drain-refuse-before-lookup-or-hydration
+  (@#'fixture/with-fixture
+   true
+   (fn [{:keys [conn w host]}]
+     (let [p (ops/party-principal (:owner w)) handle (str (:room w))
+           binding (reads/resolve-host-room! host p handle)
+           calls (atom 0) forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "Expired owner touched native Room")))]
+       (with-redefs [registry/lookup forbidden rooms/live-room forbidden]
+         (doseq [mode [:control :context :drain]]
+           (let [run (fn []
+                       (is (thrown? Exception (reads/resolve-host-room! host p handle)))
+                       (is (thrown? Exception (reads/validate-host-room! host p handle binding))))]
+             (case mode
+               :control (with-redefs [system-db/get-conn (constantly (Object.))] (run))
+               :context (with-redefs [context/server-context (Object.)] (run))
+               :drain (with-redefs [simple/on-drain-thread? (constantly true)] (run)))))
+         (is (zero? @calls)))
+       (is (identical? conn (system-db/get-conn)))))))
+
+(deftest room-only-newly-valid-owner-cannot-adopt-an-earlier-binding
+  (@#'fixture/with-fixture
+   true
+   (fn [{:keys [w host room]}]
+     (let [p (ops/party-principal (:owner w)) handle (str (:room w))
+           binding (reads/resolve-host-room! host p handle)
+           other (world/fresh-system-conn) cfg (:config @other)
+           next-host (assoc host ::reads/owner (reads/host-owner other (:ctx room)))
+           calls (atom 0) forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "New owner adopted old Room binding")))]
+       (try
+         (d/transact other [{:party/id (:owner w) :party/type :human}
+                            {:room/id (:room w) :room/slug (:slug binding)
+                             :room/owner [:party/id (:owner w)] :room/parties [[:party/id (:owner w)]]}])
+         (with-redefs [system-db/get-conn (constantly other)]
+           ;; The replacement owner is genuinely current and authorizes the
+           ;; SAME human/room tuple. It would otherwise be able to adopt it.
+           (is (= (:room w) (:room-id (reads/preflight-host-read! next-host p handle))))
+           (with-redefs [registry/lookup forbidden rooms/live-room forbidden]
+             (is (thrown? Exception (reads/validate-host-room! next-host p handle binding)))
+             (doseq [bad [nil {} (assoc binding ::reads/room-owner nil)
+                          (assoc binding ::reads/room-owner {:control-conn other})]]
+               (is (thrown? Exception (reads/validate-host-room! next-host p handle bad))))
+             (is (zero? @calls))))
+         (finally
+           ;; No Room/Spin/provider was admitted on this exact extra control DB.
+           (d/release other)
+           (assert (and (= :memory (get-in cfg [:store :backend])) (uuid? (get-in cfg [:store :id]))))
+           (d/delete-database cfg)))))))
+
+(deftest room-only-refuses-a-reserved-native-lifecycle-and-a-wrong-room-context
+  (@#'fixture/with-fixture
+   true
+   (fn [{:keys [w host]}]
+     (let [p (ops/party-principal (:owner w)) handle (str (:room w))
+           binding (reads/resolve-host-room! host p handle)
+           calls (atom 0) forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "Unavailable native Room was hydrated")))]
+       ;; Existing upstream registry tests prove actual transition reservation;
+       ;; these helper oracles prove its fixed predicate is not bypassed here.
+       (doseq [mode [:retiring :context]]
+         (with-redefs [rooms/live-room forbidden]
+           (let [run (fn []
+                       (is (thrown? Exception (reads/resolve-host-room! host p handle)))
+                       (is (thrown? Exception (reads/validate-host-room! host p handle binding))))]
+             (case mode
+               :retiring (with-redefs [registry/admitted-incarnation? (constantly false)] (run))
+               :context (with-redefs [native-rooms/room-ctx-for (constantly (Object.))] (run))))))
+       (is (zero? @calls))))))
+
+(deftest room-only-binding-carries-the-final-control-snapshot-not-a-prehydrate-copy
+  (@#'fixture/with-fixture
+   true
+   (fn [{:keys [conn w host room]}]
+     (let [p (ops/party-principal (:owner w)) handle (str (:room w))
+           after (atom nil) current! reads/current-control-db!]
+       (with-redefs [rooms/live-room (fn [_] (d/transact conn [{:room/id (:room w) :room/name "After Room hydration"}]) room)
+                     reads/current-control-db! (fn [& args] (let [db (apply current! args)] (reset! after db) db))]
+         (let [binding (reads/resolve-host-room! host p handle)]
+           (is (identical? @after (:control-db binding)))
+           (is (= "After Room hydration" (:room/name (d/entity (:control-db binding) [:room/id (:room w)]))))
+           (let [validated (reads/validate-host-room! host p handle binding)]
+             (is (identical? @after (:control-db validated))))))))))
