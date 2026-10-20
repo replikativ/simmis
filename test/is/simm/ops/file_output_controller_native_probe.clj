@@ -15,6 +15,7 @@
             [is.simm.model.file-adoptions :as adoptions]
             [is.simm.model.knowledge-dispositions :as dispositions]
             [is.simm.model.work-requests :as requests]
+            [is.simm.ops.file-output-adoption :as adoption]
             [is.simm.ops.file-output-controller :as controller]
             [is.simm.ops.file-output-plan :as plans]
             [is.simm.ops.file-output-publication :as publication]
@@ -28,6 +29,7 @@
 (def ^:private owned-source "(ns owned.workflow)\n(def task :owned-only)\n")
 (def ^:private attached-source "(ns attached.workflow)\n(def task :never-owned)\n")
 (def ^:private after-text "# Adopted native output\n\nRetained and merged through the exact owned workspace.\n")
+(def ^:private human-text "# Human refinement\n\nMade after publication; recovery must not overwrite it.\n")
 
 (defn- tree [db]
   (into (sorted-map)
@@ -87,7 +89,66 @@
     (is (= manifest (storage/manifest conn (:id manifest))))
     {:plan plan :disposition value}))
 
-(defn native-adoption-probe
+(defn- adopt-or-recover! [{:keys [conn w room owned]} plan recovery?]
+  (if-not recovery?
+    {:result (controller/adopt! conn (:owner w) (:room w) room (:proposal plan))
+     :publication-db @owned :current-party (:owner w) :expected-text after-text}
+    (let [failure (with-redefs [adoption/finalize!
+                                (fn [& _]
+                                 ;; The real writer has ALREADY returned its
+                                 ;; winning receipt. Simulate loss before the
+                                 ;; control terminal transaction, not fake IO.
+                                  (throw (ex-info "Control finalization unavailable after native publication" {})))]
+                    (try (controller/adopt! conn (:owner w) (:room w) room (:proposal plan))
+                         nil
+                         (catch clojure.lang.ExceptionInfo error error)))
+          operation-id (:operation (ex-data failure))
+          operation (adoptions/operation @conn operation-id)
+          publication-db @owned
+          winning (native-publication/recover publication-db (publication/identity operation (:manifest plan)))]
+      (is (= ::controller/pending (:type (ex-data failure))))
+      (is (= :applying (:state operation)))
+      (is (map? winning))
+      (is (= winning (publication/validate-receipt! operation (:manifest plan) winning)))
+      ;; Change the SAME published file, commit it, then switch logical ref.
+      ;; Historical reconciliation must observe the original fact, not replay
+      ;; its bytes into this later checkout or require its old HEAD.
+      (repo/write! owned "wiki/file.md" (markdown/source-bytes human-text))
+      (repo/write! owned "wiki/human.md" (markdown/source-bytes "Later human work\n"))
+      (repo/stage-all! owned)
+      (repo/commit! owned {:message "Human refinement after native publication"})
+      (repo/branch! owned "later-checkout")
+      (repo/checkout! owned "later-checkout")
+      (is (not= (:publication/ref winning) (query/current-ref @owned)))
+      (let [reconciler (random-uuid)
+            _ (d/transact conn [{:party/id reconciler}
+                                [:db/add [:room/id (:room w)] :room/owner [:party/id reconciler]]
+                                [:db/add [:room/id (:room w)] :room/parties [:party/id reconciler]]])
+            before @owned
+            forbidden (fn [& _] (throw (AssertionError. "Recovery attempted native publication or body IO")))
+            recovered (with-redefs [native-files/write-to! forbidden
+                                    native-publication/publish! forbidden
+                                    storage/read-file forbidden
+                                    storage/read-file-in forbidden]
+                        (adoption/recover! conn reconciler (:room w) room (:proposal plan)))
+            accepted (adoptions/operation @conn operation-id)]
+        (is (= :accepted (:status recovered)))
+        (is (false? (:already-accepted? recovered)))
+        (is (= (:owner w) (:actor accepted) (:actor recovered)))
+        (is (= reconciler (:reconciled-by accepted)))
+        (is (= before @owned))
+        (let [repeated (with-redefs [native-files/write-to! forbidden
+                                     native-publication/publish! forbidden
+                                     storage/read-file forbidden
+                                     storage/read-file-in forbidden]
+                         (adoption/recover! conn reconciler (:room w) room (:proposal plan)))]
+          (is (true? (:already-accepted? repeated)))
+          (is (= accepted (adoptions/operation @conn operation-id)))
+          (is (= before @owned)))
+        {:result {:status (:status recovered) :operation accepted}
+         :publication-db publication-db :current-party reconciler :expected-text human-text}))))
+
+(defn- native-probe*
   "Run once with true and once with false for BOTH registration orders.
    Calls the real native writer: an unavailable explicit writer throws rather
    than silently skipping. Uses real canonical control mappings/default grants,
@@ -95,7 +156,7 @@
    native receipt and terminal acceptance. Only upstream file-backed default
    provisioning/UUID-to-context discovery is scoped to the existing memory
    fixture descriptor. This does NOT prove agent certification or source routing."
-  [owned-first?]
+  [owned-first? recovery?]
   (when-not (and (boolean? owned-first?)
                  (contains? native-files/write-capabilities :explicit-workspace)
                  (ns-resolve 'dvergr.rooms.files 'write-to!))
@@ -131,7 +192,8 @@
                      _ (is (= attached-source (:text (files/read-file-in attached-before "workflows/fixture.clj"))))
                      _ (is (= (tree owned-before) (tree @owned)))
                      _ (is (= (tree attached-before) (tree @attached)))
-                     result (controller/adopt! conn (:owner w) (:room w) room proposal)
+                     {:keys [result publication-db current-party expected-text]}
+                     (adopt-or-recover! state plan recovery?)
                      db @conn operation (:operation result)
                      p (d/pull db '[:proposal/status :proposal/resolved-by :proposal/resolved-at
                                     {:proposal/forks [:db/id :proposal.fork/status
@@ -158,7 +220,7 @@
                  (is (= winning (publication/validate-receipt! operation (:manifest plan) winning)))
                  (is (= (:head operation) (:publication/head winning)))
                  (is (false? (:publication/noop? winning)))
-                 (let [target-db @owned
+                 (let [target-db publication-db
                        ref-eid (:db/id (d/entity target-db [:geschichte.ref/name (:publication/ref winning)]))
                        commit-eid (:db/id (d/entity target-db [:geschichte.commit/id (:publication/commit winning)]))
                        txs [(fact-tx target-db (:db/id winning) :publication/id)
@@ -166,7 +228,7 @@
                             (fact-tx target-db commit-eid :geschichte.commit/id)]]
                    (is (every? integer? txs))
                    (is (apply = txs)))
-                 (is (= after-text (:text (files/read-file-in @owned "wiki/file.md"))))
+                 (is (= expected-text (:text (files/read-file-in @owned "wiki/file.md"))))
                  (is (= owned-source (:text (files/read-file-in @owned "workflows/fixture.clj"))))
                  (is (= (tree attached-before) (tree @attached)))
                  (is (= (query/current-ref attached-before) (query/current-ref @attached)))
@@ -185,7 +247,7 @@
                                     #'storage/read-file-in forbidden
                                     #'storage/read-file forbidden}
                      #(is (thrown? clojure.lang.ExceptionInfo
-                                   (controller/adopt! conn (:owner w) (:room w) room proposal))))
+                                   (controller/adopt! conn current-party (:room w) room proposal))))
                    (is (= (:max-tx control-before) (:max-tx @conn)))
                    (is (= (:max-tx target-before) (:max-tx @owned)))
                    (is (= (tree target-before) (tree @owned)))
@@ -195,6 +257,7 @@
                    (is (= 1 (count (d/datoms @owned :aevt :publication/id)))))
                  {:owned-first? owned-first? :status (:status result)
                   :operation (:id operation) :proposal proposal :head (:head operation)
+                  :positive-recovery? recovery?
                   :synthetic-producer? true :agent-certification-tested? false})
                (finally (d/release output)))))))
       (finally
@@ -207,3 +270,18 @@
                          (uuid? (get-in cfg [:store :id])))
             (throw (ex-info "Refuse non-fixture cleanup" {:type ::invalid-cleanup})))
           (d/delete-database cfg))))))
+
+(defn native-adoption-probe
+  "OPT-IN ordinary native adoption in one registration order. No agent/model
+   certification claim: see namespace and native-probe* for fixture boundaries."
+  [owned-first?]
+  (native-probe* owned-first? false))
+
+(defn native-positive-recovery-probe
+  "OPT-IN actual native receipt -> unavailable control finalizer -> current-
+   authorized positive reconciliation, preserving later human edits/checkout.
+   A different reconciler accepts; repeat observes audit without republishing.
+   Run true AND false for both real repository registration orders. Synthetic
+   trusted producer remains separate from prior agent certification evidence."
+  [owned-first?]
+  (native-probe* owned-first? true))
