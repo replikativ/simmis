@@ -97,7 +97,7 @@
                              (let [frozen (get-in frozen [(get-in env [:environment/metadata :worker-cell]) :frozen])
                                    result ((:prepare checker-setup) context)]
                                (when-not (= frozen (files/freeze world (:task frozen) config
-                                                               (vec (keys (:files frozen))) limits))
+                                                                 (vec (keys (:files frozen))) limits))
                                  (refuse! "Benchmark fixtures differ from the pinned worker input"))
                                result))})
           evaluator (evaluator bundle config limits basis)
@@ -145,7 +145,7 @@
                         (fn [context]
                           (let [cell (cell! context)
                                 assignment (local/assignment-input conn host-ctx room room-id request-id pinned
-                                                                    (get-in frozen [cell :frozen]) cell (:run/id context))]
+                                                                   (get-in frozen [cell :frozen]) cell (:run/id context))]
                             (try
                               (binding [ec/*execution-context* host-ctx] (workers/prepare! conn assignment))
                               (prepare context)
@@ -174,11 +174,11 @@
   (binding [ec/*execution-context* host-ctx]
     (let [by (benchmarks/authorize! conn principal room-id)
           _ (when-not (= :human (:principal/kind principal)) (refuse! "Human benchmark admission required"))
-          id (requests/request-id by room-id (:request-id input))]
-      (if-let [row (requests/get-request conn id)]
+          id (requests/request-id by room-id (:request-id input))
+          {:keys [status]} (local/retry-request :local-worker-benchmark conn by room-id input)]
+      (if (not= :absent status)
         (do
-          (when-not (and (= :local-worker-benchmark (:work.request/kind row))
-                         (= input (get-in (requests/payload conn row) [:input :submission])))
+          (when (= :conflict status)
             (refuse! "Request identity belongs to different work"))
           (work/status conn host-ctx principal room-id id))
         (let [pinned (local/enrollment! conn host-ctx room-id by input)
@@ -186,5 +186,5 @@
               prepared (prepare (workflows/snapshot room (:name input)) input config pinned)
               cells (long (get (:resources prepared) local/admission-unit))]
           (work/submit-prepared! conn host-ctx principal room-id room
-                                (assoc-in input [:limits :max-worker-admissions] cells)
-                                (adapter conn host-ctx room-id room id pinned prepared principal)))))))
+                                 (assoc-in input [:limits :max-worker-admissions] cells)
+                                 (adapter conn host-ctx room-id room id pinned prepared principal)))))))

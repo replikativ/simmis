@@ -45,12 +45,30 @@
 (defn- refuse! [type message] (throw (ex-info message {:type type})))
 (defn- checked! [schema input]
   (when-not (m/validate schema input) (refuse! ::invalid "Invalid local worker request")))
-(defn- human! [conn principal room]
+(defn authorize-in!
+  "Fixed human worker admission gate over the supplied control snapshot."
+  [db principal room]
   (let [by (access/actor->party-uuid (:principal/id principal))]
     (when-not (and (= :human (:principal/kind principal))
-                   (credentials/permitted? @conn {:simmis.worker/by by :simmis.worker/room room}))
+                   (credentials/permitted? db {:simmis.worker/by by :simmis.worker/room room}))
       (refuse! ::denied "Current human room read and merge authority is required"))
     by))
+
+(defn- human! [conn principal room] (authorize-in! @conn principal room))
+
+(defn retry-request
+  "NORMAL metadata-only decision over the complete original local submission.
+   This is not admission authority, recovery, enrollment or a source read."
+  [kind conn party room input]
+  (when-not (contains? request-kinds kind)
+    (refuse! ::invalid "Invalid local worker request kind"))
+  (let [id (requests/request-id party room (:request-id input))]
+    (if-let [row (requests/get-request conn id)]
+      {:status (if (and (= kind (:work.request/kind row))
+                        (= input (get-in (requests/payload conn row) [:input :submission])))
+                 :retry :conflict)
+       :id id}
+      {:status :absent})))
 
 (defn provision! [conn host-ctx principal room-id room input]
   (checked! allowance-schema input)
@@ -62,13 +80,19 @@
 
 (defn- marker [id] [:simmis/local-worker-output id])
 
-(defn- current-enrollment? [conn pinned]
-  (let [current (workers/enrollment conn (:simmis.worker/id pinned))]
-    (and (= (select-keys pinned [:simmis.worker/id :simmis.worker/by :simmis.worker/room
-                                 :simmis.worker/generation :simmis.worker/config-id])
-            (select-keys current [:simmis.worker/id :simmis.worker/by :simmis.worker/room
-                                  :simmis.worker/generation :simmis.worker/config-id]))
-         (credentials/permitted? @conn current))))
+(defn current-enrollment-in?
+  "Current pinned enrollment and authority in EXACT supplied control DB.
+   No connection dereference or enrollment/config substitution."
+  [db pinned]
+  (let [fields [:simmis.worker/id :simmis.worker/by :simmis.worker/room
+                :simmis.worker/generation :simmis.worker/config-id]
+        current (when (every? #(some? (get pinned %)) fields)
+                  (d/pull db '[*] [:simmis.worker/id (:simmis.worker/id pinned)]))]
+    (boolean
+     (and current (= (select-keys pinned fields) (select-keys current fields))
+          (true? (credentials/permitted? db current))))))
+
+(defn- current-enrollment? [conn pinned] (current-enrollment-in? @conn pinned))
 
 (defn- metadata-files [descriptors]
   (update-vals descriptors #(select-keys % [:bytes :sha256 :mode])))
@@ -268,24 +292,29 @@
     (prepare-frozen conn host-ctx room-id room request-id input pinned
                     (files/freeze room (:task input) config (:paths input) (:limits input)) nil)))
 
-(defn- prepare-workflow [conn host-ctx room-id room by request-id input]
-  (let [pinned (enrollment! conn host-ctx room-id by input)
-        config (binding [ec/*execution-context* host-ctx] (workers/payload conn pinned :simmis.worker/config-ref))
-        snapshot (workflows/snapshot room (:name input))
-        resolution (workflow-runs/resolve-admission room-id room snapshot (select-keys input workflow-runs/source-fields))
-        captured (:captured resolution)
-        workflow (assoc (workflow-input snapshot input config captured) :snapshot snapshot)]
+(defn prepare-workflow-in
+  "HOST construction from already captured source/resolution and verified
+   enrollment/config. Does not acquire a workspace, enrollment or artifacts."
+  [conn host-ctx room-id room request-id input pinned config snapshot resolution]
+  (let [workflow (assoc (workflow-input snapshot input config (:captured resolution)) :snapshot snapshot)]
     (workflow-runs/bind-publication
      (prepare-frozen conn host-ctx room-id room request-id input pinned (:frozen workflow) workflow)
      resolution)))
 
+(defn- prepare-workflow [conn host-ctx room-id room by request-id input]
+  (let [pinned (enrollment! conn host-ctx room-id by input)
+        config (binding [ec/*execution-context* host-ctx] (workers/payload conn pinned :simmis.worker/config-ref))
+        snapshot (workflows/snapshot room (:name input))
+        resolution (workflow-runs/resolve-admission room-id room snapshot (select-keys input workflow-runs/source-fields))]
+    (prepare-workflow-in conn host-ctx room-id room request-id input pinned config snapshot resolution)))
+
 (defn- submit-prepared! [conn host-ctx principal room-id room input kind prepare]
   (binding [ec/*execution-context* host-ctx]
-    (let [by (human! conn principal room-id) id (requests/request-id by room-id (:request-id input))]
-      (if-let [row (requests/get-request conn id)]
+    (let [by (human! conn principal room-id) id (requests/request-id by room-id (:request-id input))
+          {:keys [status]} (retry-request kind conn by room-id input)]
+      (if (not= :absent status)
         (do
-          (when-not (and (= kind (:work.request/kind row))
-                         (= input (get-in (requests/payload conn row) [:input :submission])))
+          (when (= :conflict status)
             (refuse! ::conflict "Request identity was used for different work"))
           (work/status conn host-ctx principal room-id id))
         (work/submit-prepared! conn host-ctx principal room-id room
