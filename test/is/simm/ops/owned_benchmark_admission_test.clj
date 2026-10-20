@@ -11,7 +11,6 @@
             [dvergr.jobs :as jobs]
             [dvergr.model.api.claude-code :as claude-code]
             [dvergr.model.api.codex-subscription :as codex]
-            [dvergr.model.chat :as model-chat]
             [dvergr.model.gateway :as gateway]
             [dvergr.model.providers :as providers]
             [dvergr.resource :as resource]
@@ -310,7 +309,7 @@
                                (let [request (input kind host w files) p (cond-> (principal w) (not order) (assoc :principal/mcp? true))
                                      clean (discourse/make-room {:id (keyword (str "owned-benchmark-component-" (random-uuid))) :store (memory/make)})
                                      configs (atom []) clean-conn (atom nil) closed? (atom false) retired (atom 0) slot (java.util.concurrent.Semaphore. 1)
-                                     job (atom nil) done (atom nil) start jobs/start! chat model-chat/chat calls (atom [])
+                                     job (atom nil) done (atom nil) start jobs/start! calls (atom [])
                                      parent-before (state owned) other-before (state attached) selected (workspace/selected-system-id)
                                      provider (case kind :benchmark (codex/create {:credentials (gateway/static-credentials :fixture {} #{"https://chatgpt.com"})})
                                                     :cli-benchmark (claude-code/create {}))
@@ -326,7 +325,7 @@
                                    (reset! clean-conn (:conn (workspace/current-workspace)))
                                    (reset! configs [(:config @@clean-conn)]))
                                  (if (= kind :cli-benchmark)
-                                   (do (resource/install-unit! room {:symbol "cli-run-admission" :name "Fixture CLI admissions" :precision 0})
+                                   (do (resource/install-unit! room {:symbol "cli-run-admission" :name "CLI Run admissions" :precision 0})
                                        (resource/mint! room {:id (random-uuid) :resources {"cli-run-admission" 1M}}))
                                    (resource/mint! room {:id (random-uuid) :resources (work/resources (:limits request))}))
                                  (with-redefs-fn
@@ -338,18 +337,22 @@
                                     #'claude-code/execution-policy (constantly policy)
                                     #'runner/runtime-identity (constantly {:libraries {}})
                                     #'providers/providers (atom {(if (= kind :benchmark) :codex-subscription :claude-code) provider})
-            ;; Native HTTP is fixed BELOW real model-chat dispatch/reservation
-            ;; accounting. CLI alone replaces direct-chat/process invocation.
+            ;; Both kinds retain real model-chat/provider/accounting paths.
+            ;; Only HTTP or the CLI subprocess transport is replaced.
                                     #'gateway/*request-fn* (fn [http]
                                                              (when-not (= kind :benchmark)
                                                                (throw (AssertionError. "CLI fixture attempted HTTP")))
                                                              (swap! calls conj {:request (json/read-value (:body http) json/keyword-keys-object-mapper)})
                                                              (native-response (count @calls)))
-                                    #'model-chat/chat (fn [messages opts]
-                                                        (if (= kind :benchmark)
-                                                          (chat messages opts)
-                                                          (do (swap! calls conj {:messages messages :opts opts})
-                                                              (model-answer (count @calls)))))
+                                    #'claude-code/run-claude-streaming
+                                    (fn [messages opts]
+                                      (when-not (= kind :cli-benchmark)
+                                        (throw (AssertionError. "Native fixture attempted CLI")))
+                                      ;; The real CLI parser returns nil usage when its result
+                                      ;; omits usage. This fixture tests THAT unknown-usage
+                                      ;; case, not a claim that every CLI result is unpriced.
+                                      (swap! calls conj {:messages messages :opts opts :usage nil})
+                                      (assoc (model-answer (count @calls)) :usage nil))
                                     #'jobs/start! (fn [actual-room options actual-work & callbacks]
                                                     (apply start actual-room options
                                                            (fn [id]
@@ -382,7 +385,9 @@
                                          (is (not (re-find #"PRIVATE-CHECKER-GOLD|PRIVATE-CONTROL-DATA|OTHER document" (pr-str @calls))))
                                          (when (= kind :cli-benchmark)
                                            (is (every? #(= :text (get-in % [:opts :execution-mode])) @calls))
+                                           (is (= [nil nil] (mapv :usage @calls)))
                                            (is (= :cli-run-admission (get-in (first scorecards) [:scorecard/experiment :experiment/metadata :simmis/execution :accounting])))
+                                           (is (empty? (get-in (first attempts) [:attempt/receipt :attempt/metrics :spend :tokens])))
                                            (is (false? (get-in (first attempts) [:attempt/receipt :attempt/metrics :spend :priced?]))))
                                          (when (= kind :benchmark)
                                            ;; Existing subscription registry semantics: zero incremental
