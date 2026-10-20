@@ -417,10 +417,14 @@
         ;; #374 also projects room catalog entries from that same immutable
         ;; binding. Its permanent squash is tree-identical to the reviewed
         ;; source; 137/2037 local regressions and all required CI passed.
+        ;; #375 refuses incomplete catalog rows and handles inclusive prefix
+        ;; endpoints after bounded acquisition. Its permanent squash matches
+        ;; the reviewed tree; focused and 11-namespace regressions plus all
+        ;; four upstream CI checks passed. Owned host activation remains off.
         ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "0404d73e0ef215ea0d3699138b1aef6523fb831c"
+                               :git/sha "fbdaa8aa9c91a64a990e543df6e6000fd8dd4874"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.
