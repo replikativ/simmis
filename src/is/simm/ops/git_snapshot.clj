@@ -3,6 +3,7 @@
    No commit, checkout, export directory, remote transport or persistent cache."
   (:refer-clojure :exclude [chunk])
   (:require [clojure.string :as str]
+            [datahike.api :as d]
             [dvergr.rooms.files :as files]
             [dvergr.substrate.geschichte :as workspace]
             [geschichte.content :as content]
@@ -20,34 +21,54 @@
 (defn- refuse! [message]
   (throw (ex-info message {:type ::invalid})))
 
+(defn- snapshot* [db identity expected]
+  (let [entries (into (sorted-map) (query/worktree db))
+        id (hasch/uuid (conj identity entries))
+        reader (atom db)]
+    (when (and expected (not= expected id))
+      (throw (ex-info "Workspace changed; restart the snapshot download" {:type ::conflict})))
+    (when (> (count entries) (:max-files policy)) (refuse! "Workspace exceeds snapshot file limit"))
+    (doseq [[path {:keys [size mode content]}] entries]
+      (when-not (and (string? path) (<= (count path) 1024)
+                     (= (str "/" path) (try (files/workspace-path (str "/" path))
+                                            (catch Exception _ nil)))
+                     (contains? #{0x81A4 0x81ED} mode)
+                     (uuid? content)
+                     (integer? size) (<= 0 size (:max-file-bytes policy)))
+        (refuse! "Snapshot requires bounded regular files and canonical accessible paths")))
+    (when (> (reduce + 0 (map (comp :size val) entries)) (:max-total-bytes policy))
+      (refuse! "Workspace exceeds snapshot byte limit"))
+      ;; Validate ALL content metadata before allocating any file body. The
+      ;; reader below sees this same immutable DB, including content entities.
+    (doseq [[_ {:keys [size content]}] entries]
+      (when-not (= size (:geschichte.content/size (d/entity db [:geschichte.content/id content])))
+        (refuse! "Snapshot content metadata does not match its pinned size")))
+    {:id id
+     :files (into (sorted-map)
+                  (map (fn [[path {:keys [size mode] id :content}]]
+                         (let [bytes (content/read-by-id reader id)]
+                           (when-not (and bytes (= size (alength ^bytes bytes)))
+                             (refuse! "Snapshot content does not match its pinned size"))
+                           [path {:bytes bytes :mode mode}]))) entries)}))
+
+(defn snapshot-in
+  "HOST projection of one immutable DB. Identity binds an authenticated host's
+   canonical room UUID and opaque target stamp; neither input grants access.
+   No selected lookup, retained read lease, or portable catalog identity."
+  [db room-id target-stamp expected]
+  (when-not (and (uuid? room-id) (uuid? target-stamp)
+                 (or (nil? expected) (uuid? expected)))
+    (refuse! "Invalid owned snapshot identity"))
+  (snapshot* db [:simmis/git-snapshot-owned-v1 policy room-id target-stamp] expected))
+
 (defn snapshot
-  "Read one immutable worktree and verify every regular file's pinned content.
-   Validation is fail-closed: never silently omit inaccessible/unsafe files."
+  "Selected workspace compatibility wrapper. Preserve the existing v1 export
+   identity while pinning manifest AND content metadata to one immutable DB."
   [room expected]
   (binding [ec/*execution-context* (:ctx room)]
     (let [conn (or (:conn (workspace/current-workspace))
-                   (throw (ex-info "Room has no workspace" {:type ::unavailable})))
-          entries (into (sorted-map) (query/worktree @conn))
-          id (hasch/uuid [:simmis/git-snapshot policy (:id room) entries])]
-      (when (and expected (not= expected id))
-        (throw (ex-info "Workspace changed; restart the snapshot download" {:type ::conflict})))
-      (when (> (count entries) (:max-files policy)) (refuse! "Workspace exceeds snapshot file limit"))
-      (doseq [[path {:keys [size mode]}] entries]
-        (when-not (and (string? path) (<= (count path) 1024)
-                       (= (str "/" path) (try (files/workspace-path (str "/" path))
-                                              (catch Exception _ nil)))
-                       (contains? #{0x81A4 0x81ED} mode)
-                       (integer? size) (<= 0 size (:max-file-bytes policy)))
-          (refuse! "Snapshot requires bounded regular files and canonical accessible paths")))
-      (when (> (reduce + 0 (map (comp :size val) entries)) (:max-total-bytes policy))
-        (refuse! "Workspace exceeds snapshot byte limit"))
-      {:id id
-       :files (into (sorted-map)
-                    (map (fn [[path {:keys [size mode] id :content}]]
-                           (let [bytes (content/read-by-id conn id)]
-                             (when-not (and bytes (= size (alength ^bytes bytes)))
-                               (refuse! "Snapshot content does not match its pinned size"))
-                             [path {:bytes bytes :mode mode}]))) entries)})))
+                   (throw (ex-info "Room has no workspace" {:type ::unavailable})))]
+      (snapshot* @conn [:simmis/git-snapshot policy (:id room)] expected))))
 
 (defn bundle
   "A deterministic root-commit bundle assembled with Geschichte's Git
@@ -86,13 +107,26 @@
 (defn describe [room]
   (dissoc (bundle (snapshot room nil)) :data))
 
-(defn chunk [room expected offset length]
+(defn describe-in [db room-id target-stamp]
+  (dissoc (bundle (snapshot-in db room-id target-stamp nil)) :data))
+
+(defn- chunk-arguments! [expected offset length]
   (when-not (and (uuid? expected) (integer? offset) (<= 0 offset (:max-bundle-bytes policy))
                  (integer? length) (<= 1 length (:chunk-bytes policy)))
-    (refuse! "Invalid snapshot chunk arguments"))
-  (let [{:keys [data bytes] :as result} (bundle (snapshot room expected))
+    (refuse! "Invalid snapshot chunk arguments")))
+
+(defn- chunk-result [snapshot offset length]
+  (let [{:keys [data bytes] :as result} (bundle snapshot)
         end (min bytes (+ offset length))]
     (when (> offset bytes) (refuse! "Offset exceeds snapshot size"))
     (cond-> (assoc (dissoc result :data) :offset offset
                    :base64 (.encodeToString (Base64/getEncoder) (Arrays/copyOfRange ^bytes data offset end)))
       (< end bytes) (assoc :next-offset end))))
+
+(defn chunk-in [db room-id target-stamp expected offset length]
+  (chunk-arguments! expected offset length)
+  (chunk-result (snapshot-in db room-id target-stamp expected) offset length))
+
+(defn chunk [room expected offset length]
+  (chunk-arguments! expected offset length)
+  (chunk-result (snapshot room expected) offset length))

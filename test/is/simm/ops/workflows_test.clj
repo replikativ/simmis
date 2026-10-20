@@ -3,6 +3,7 @@
             [dvergr.catalog.workspace :as workspace]
             [dvergr.discourse :as discourse]
             [dvergr.room.store.memory :as memory]
+            [dvergr.substrate.geschichte :as native]
             [datahike.api :as d]
             [geschichte.content :as content]
             [geschichte.query :as query]
@@ -74,7 +75,7 @@
         (let [first (workflows/source-page room {:name "echo"})
               revision (:revision first)
               second (workflows/source-page room {:name "echo" :file-offset (:next-file-offset first)
-                                                   :expected-revision revision})
+                                                  :expected-revision revision})
               entries (concat (:files first) (:files second))
               output (java.io.ByteArrayOutputStream.)]
           (is (= 10 (count (:files first))))
@@ -85,7 +86,7 @@
           (is (not (contains? first :definition)))
           (loop [offset 0]
             (let [part (workflows/source-page room {:name "echo" :path "large.md" :offset offset
-                                                     :expected-revision revision})
+                                                    :expected-revision revision})
                   bytes (.decode (java.util.Base64/getDecoder) ^String (:base64 part))]
               (is (<= (alength bytes) 8192))
               (is (= offset (:offset part)))
@@ -93,8 +94,8 @@
               (when-let [next (:next-offset part)] (recur next))))
           (is (= text (.toString output "UTF-8")))
           (doseq [args [{:path "large.md"} {:file-offset 10}
-                       {:path "missing.md" :expected-revision revision}
-                       {:path "large.md" :offset 100000 :expected-revision revision}]]
+                        {:path "missing.md" :expected-revision revision}
+                        {:path "large.md" :offset 100000 :expected-revision revision}]]
             (is (thrown? clojure.lang.ExceptionInfo (workflows/source-page room (assoc args :name "echo")))))
           (workflows/write! room principal {:name "echo" :files {"extra/00.md" "changed"}})
           (doseq [args [{:file-offset 10} {:path "large.md" :offset 8192}]]
@@ -250,11 +251,12 @@
           (with-redefs [query/worktree
                         (fn [db] (update (read-tree db) "workflows/echo/gold.edn" change))]
             (is (thrown? clojure.lang.ExceptionInfo (workflows/snapshot room "echo"))))))
-      (with-redefs [content/read-by-id (fn [& _] (byte-array [(unchecked-byte 0xC3)]))
-                    query/worktree (fn [_] {"workflows/echo/invalid.txt"
-                                            {:mode 0x81A4 :size 1 :content (random-uuid)}})]
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"valid UTF-8"
-                              (workflows/snapshot room "echo")))))))
+      (workspace/seed! room {"/workflows/echo/invalid.txt" "x"})
+      (let [entry (get (query/worktree @(:conn (native/current-workspace))) "workflows/echo/invalid.txt")]
+        (with-redefs [content/read-by-id (fn [& _] (byte-array [(unchecked-byte 0xC3)]))
+                      query/worktree (fn [_] {"workflows/echo/invalid.txt" entry})]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"valid UTF-8"
+                                (workflows/snapshot room "echo"))))))))
 
 (deftest snapshot-bounds-are-checked-before-reading-content
   (with-workspace
@@ -278,3 +280,91 @@
           (is (some? (get-in result [:write :commit])))
           (is (false? (get-in result [:workflow :ok])))
           (is (false? (get-in result [:workflow :checker-executed?]))))))))
+
+(deftest immutable-workflow-projections-retain-bodies-and-portable-identities
+  (with-workspace
+    (fn [room]
+      (workflows/write! room principal {:name "echo" :files fixture})
+      (let [conn (:conn (native/current-workspace)) db @conn
+            selected (workflows/details room "echo")
+            original-read content/read-by-id reads (atom 0)]
+        (workspace/seed! room {"/workflows/echo/gold.edn" "{:expected :later}"})
+        (with-redefs [native/current-workspace (fn [] (throw (AssertionError. "No ambient selection in a projector")))
+                      content/read-by-id (fn [reader id & options]
+                                           (swap! reads inc)
+                                           (is (identical? db @reader) "Content entities use the exact frozen DB too")
+                                           (is (not (identical? conn reader)))
+                                           (apply original-read reader id options))]
+          (let [captured (workflows/snapshot-in db "echo")
+                projected (workflows/details-in db "echo")]
+            (is (pos? @reads))
+            (is (= fixture (:files captured)))
+            (is (= selected projected))
+            (is (= (:revision selected) (str (workflows/source-revision "echo" captured))))
+            (is (= (get-in selected [:inspection :bundle])
+                   (:bundle (workflows/inspect-snapshot "echo" captured))))))
+        (is (not= selected (workflows/details room "echo")))))))
+
+(deftest immutable-workflow-pages-do-not-follow-later-manifests-or-bytes
+  (with-workspace
+    (fn [room]
+      (let [text (apply str (repeat 5000 "a🦋世"))
+            files (into (assoc fixture "large.md" text)
+                        (for [n (range 12)] [(format "extra/%02d.md" n) (str n)]))]
+        (workflows/write! room principal {:name "echo" :files files})
+        (workspace/seed! room (into {} (for [n (range 27)]
+                                         [(format "/workflows/draft-%02d/broken.edn" n) "{:unclosed"])))
+        (let [db @(:conn (native/current-workspace))
+              names (workflows/list-page-in db {})
+              metadata (workflows/source-page-in db {:name "echo"})
+              revision (:revision metadata)]
+          (workspace/seed! room {"/workflows/another/new.edn" "{}"
+                                 "/workflows/echo/large.md" "newer"})
+          (with-redefs [native/current-workspace (fn [] (throw (AssertionError. "No ambient selection in paging")))]
+            (let [next-names (workflows/list-page-in db {:offset (:next-offset names)
+                                                         :expected-revision (parse-uuid (:revision names))})
+                  next-files (workflows/source-page-in db {:name "echo" :file-offset (:next-file-offset metadata)
+                                                           :expected-revision revision})
+                  output (java.io.ByteArrayOutputStream.)]
+              (is (= 28 (:total names)))
+              (is (= 28 (count (concat (:names names) (:names next-names)))))
+              (is (= (:revision names) (:revision next-names)))
+              (is (= (sort (keys files)) (map :path (concat (:files metadata) (:files next-files)))))
+              (loop [offset 0]
+                (let [part (workflows/source-page-in db {:name "echo" :path "large.md" :offset offset
+                                                         :expected-revision revision})
+                      bytes (.decode (java.util.Base64/getDecoder) ^String (:base64 part))]
+                  (is (<= (alength bytes) 8192))
+                  (.write output bytes 0 (alength bytes))
+                  (when-let [next (:next-offset part)] (recur next))))
+              (is (= text (.toString output "UTF-8")))))
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"names changed"
+                                (workflows/list-page room {:expected-revision (parse-uuid (:revision names))})))
+          (is (not= revision (:revision (workflows/source-page room {:name "echo"})))))))))
+
+(deftest immutable-workflow-metadata-and-page-bounds-fail-before-body-reads
+  (with-workspace
+    (fn [room]
+      (workflows/write! room principal {:name "echo" :files fixture})
+      (let [db @(:conn (native/current-workspace))
+            entry (get (query/worktree db) "workflows/echo/gold.edn")]
+        (doseq [invalid [(assoc entry :content "not-a-uuid") (assoc entry :content (random-uuid))
+                         (assoc entry :mode nil) (assoc entry :mode 0xA1FF)
+                         (assoc entry :size nil) (assoc entry :size -1) (update entry :size inc)]]
+          (with-redefs [query/worktree (constantly {"workflows/echo/a.md" entry "workflows/echo/z.md" invalid})
+                        content/read-by-id (fn [& _] (throw (AssertionError. "Validate all metadata first")))]
+            (is (thrown? clojure.lang.ExceptionInfo (workflows/snapshot-in db "echo")))))
+        (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Reject invalid paging before decode")))]
+          (doseq [request [{:offset -1} {:offset "0"} {:file-offset -1} {:file-offset 101}
+                           {:file-offset 10} {:path "gold.edn"} {:offset 524289}]]
+            (is (thrown? clojure.lang.ExceptionInfo
+                         (workflows/source-page-in db (assoc request :name "echo"))))))))))
+
+(deftest immutable-workflow-name-list-keeps-the-bounded-index-contract
+  (let [db {:fixture :immutable-index-only} seen (atom 0)]
+    (with-redefs [d/index-range (fn [actual _]
+                                  (is (identical? db actual))
+                                  (map (fn [n] (swap! seen inc) {:v (str "workflows/draft/file-" n)}) (range)))
+                  content/read-by-id (fn [& _] (throw (AssertionError. "Listing never reads content")))]
+      (is (thrown? clojure.lang.ExceptionInfo (workflows/list-page-in db {})))
+      (is (= (inc workflows/max-list-entries) @seen)))))
