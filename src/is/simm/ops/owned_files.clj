@@ -4,6 +4,7 @@
   (:require [hasch.core :as hasch]
             [is.simm.documents.files :as files]
             [is.simm.documents.office :as office]
+            [is.simm.documents.rich :as rich]
             [is.simm.model.system-db :as sdb]
             [is.simm.ops.owned-workspace :as owned]
             [org.replikativ.spindel.engine.impl.simple :as simple]))
@@ -39,15 +40,15 @@
     (update result :revision #(hasch/uuid [:simmis/owned-memory-metadata-v1 (:target-stamp result) %]))))
 
 (defn folder! [conn principal room-id room request]
-  (project! conn principal room-id room request #{:folder} false
+  (project! conn principal room-id room request #{:folder} (contains? request :expected-target-stamp)
             #(files/list-folder-in % (:folder request))))
 
 (defn search! [conn principal room-id room request]
-  (project! conn principal room-id room request #{:query} false
+  (project! conn principal room-id room request #{:query} (contains? request :expected-target-stamp)
             #(files/search-paths-in % (:query request))))
 
 (defn read! [conn principal room-id room request]
-  (project! conn principal room-id room request #{:path} false
+  (project! conn principal room-id room request #{:path} (contains? request :expected-target-stamp)
             #(files/read-file-in % (:path request))))
 
 (defn history! [conn principal room-id room request]
@@ -66,6 +67,26 @@
   (project! conn principal room-id room request #{:path :expected :part} true
             #(office/inspect-in % (:path request) (:expected request) (:part request))))
 
+(defn analyze!
+  "Inert draft analysis using the repository identity of the bound file target."
+  [conn principal room-id room request]
+  (closed! request #{:path :text} true)
+  (let [binding (binding! conn principal :read room-id room request true)]
+    (assoc (files/analyze (get-in binding [:target :repository]) (:path request) (:text request))
+           :target-stamp (:target-stamp binding))))
+
+(defn rich!
+  "Validate an inert rich-region edit in the original repository identity."
+  [conn principal room-id room request]
+  (closed! request #{:path :text :revision :from :to :model} true)
+  (let [binding (binding! conn principal :read room-id room request true)
+        {:keys [path text revision from to model]} request
+        repo-id (get-in binding [:target :repository])]
+    (files/path! path)
+    (let [next (rich/apply-edit repo-id path text revision from to model)]
+      {:text next :analysis (files/analyze repo-id path next)
+       :target-stamp (:target-stamp binding)})))
+
 (defn- save-bound! [conn principal room-id room binding request]
   (let [authorize! #(do (owned/validate! @conn principal :write room-id room binding) true)
         result (files/save-file-to! room (:system binding) request {:authorize! authorize!})]
@@ -78,6 +99,27 @@
   (let [binding (binding! conn principal :write room-id room request true)
         prepared (office/prepare-save-in (:db binding) (dissoc request :expected-target-stamp))]
     (save-bound! conn principal room-id room binding prepared)))
+
+(defn rich-save!
+  "Validate submitted rich source and publish with the SAME original binding."
+  [conn principal room-id room request]
+  (closed! request #{:path :expected :source :revision :edits :text} true)
+  (let [binding (binding! conn principal :write room-id room request true)
+        {:keys [path expected source revision edits text]} request
+        _ (files/path! path)
+        result (rich/apply-edits (get-in binding [:target :repository]) path source revision edits)]
+    (when-not (= result text) (refuse! :rich-source-mismatch))
+    (save-bound! conn principal room-id room binding {:path path :expected expected :text result})))
+
+(defn move!
+  "One current owned binding through native source/destination CAS and mode preservation."
+  [conn principal room-id room request]
+  (closed! request #{:path :target :expected} true)
+  (let [binding (binding! conn principal :write room-id room request true)
+        authorize! #(do (owned/validate! @conn principal :write room-id room binding) true)
+        result (files/move-file-to! room (:system binding) (:path request) (:target request)
+                                    (:expected request) {:authorize! authorize!})]
+    (assoc result :target-stamp (:target-stamp binding))))
 
 (defn save!
   "INTERNAL authenticated-host edit/create/upload vertical. Resolve the owned
