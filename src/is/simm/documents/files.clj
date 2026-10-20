@@ -327,19 +327,52 @@
     (refuse! ::unavailable "An exact explicit workspace writer is required"))
   (save-file-through! room system request options))
 
-(defn move-file! [room path target expected & [{:keys [authorize!]}]]
+(defn- move-file-through! [room system path target expected {:keys [authorize!]}]
   (when-not (every? room-files/write-capabilities [:expected-worktree :applied-receipt :file-modes])
     (refuse! ::unavailable "The file writer must support opened-revision preconditions"))
   (path! path) (path! target) (expected-entry! expected)
   (when (or (nil? expected) (= path target)) (refuse! ::invalid "Choose a different destination for an existing file"))
-  (with-workspace room
-    (fn [conn]
-      (let [db @conn bytes (source-bytes db path expected)
-            written (room-files/write! room {(str "/" path) nil
-                                             (str "/" target) {:base64 (.encodeToString (Base64/getEncoder) bytes)}}
-                                       {:expected-worktree {(str "/" path) expected (str "/" target) nil}
-                                        :file-modes {(str "/" target) (:mode expected)}
-                                        :boundary (publication-boundary room authorize!)
-                                        :message (str "Move " path " to " target)})]
-        (when-not (:applied? written) (refuse! ::not-applied "The effect policy did not apply this move"))
-        {:path target :entry (:entry (first (:written written))) :commit (:commit written) :moved? true}))))
+  (let [move! (fn [conn]
+                (let [db @conn
+                      _ (when-not (and (= expected (entry db path)) (nil? (entry db target)))
+                          (refuse! ::conflict "Move source changed or destination already exists"))
+                      bytes (source-bytes db path expected)
+                      source-path (str "/" path) target-path (str "/" target)
+                      batch {source-path nil target-path {:base64 (.encodeToString (Base64/getEncoder) bytes)}}
+                      options {:expected-worktree {source-path expected target-path nil}
+                               :file-modes {target-path (:mode expected)}
+                               :boundary (publication-boundary room authorize!)
+                               :message (str "Move " path " to " target)}
+                      written (if system
+                                (room-files/write-to! room system batch options)
+                                (room-files/write! room batch options))
+                      selected (:entry (first (:written written)))]
+                  (when-not (:applied? written)
+                    (refuse! ::not-applied "The effect policy did not apply this move"))
+                  ;; Never report a move from a policy-skipped removal/write,
+                  ;; or infer its result from a later mutable worktree read.
+                  (when-not (and (= expected selected)
+                                 (= [target-path] (mapv :path (:written written)))
+                                 (= [source-path] (:removed written)))
+                    (refuse! ::receipt "The native receipt does not describe the complete move"))
+                  {:path target :entry selected :commit (:commit written) :moved? true}))]
+    (if system
+      (binding [ec/*execution-context* (:ctx room)]
+        (move! (:conn (workspace/workspace-for-system! system))))
+      (with-workspace room move!))))
+
+(defn move-file!
+  "Legacy selected-workspace move, with source/destination revision checks and
+   mode preservation shared with the explicit native writer."
+  [room path target expected & [options]]
+  (move-file-through! room nil path target expected options))
+
+(defn move-file-to!
+  "HOST explicit-target move of one existing file. Reads and writes only the
+   exact registered SystemIdentity; never selects or falls back to an ambient
+   workspace. The host supplies its fixed current-authorization gate, validates
+   the opened target stamp and retains that original binding through this call."
+  [room system path target expected & [options]]
+  (when-not (and system (contains? room-files/write-capabilities :explicit-workspace))
+    (refuse! ::unavailable "An exact explicit workspace writer is required"))
+  (move-file-through! room system path target expected options))
