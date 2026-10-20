@@ -160,12 +160,8 @@
     (when-not (= expected current) (refuse! :claim-changed))
     current))
 
-(defn current-operation
-  "INTERNAL integrity-only latest journal read for an open retained component.
-   Authorize first; this never confers publication ownership. Corrupt, shared
-   or foreign-component links refuse rather than appearing unclaimed. Bounded
-   indexed history also refuses orphaned active rows and erased binding links;
-   this is not repair/detection of arbitrary deletion of journal facts."
+(defn- operation-fork
+  "Schema-aware bounded header, shared by two SEPARATE state-specific readers."
   [db fork-eid]
   (let [link-installed? (seq (d/datoms db :avet :db/ident :proposal.fork/file-adoption))
         ;; Before the journal schema is installed, typed Datahike cannot hold
@@ -174,25 +170,52 @@
         pattern (cond-> [:db/id :proposal.fork/scope :proposal.fork/system-type :proposal.fork/status]
                   link-installed? (conj {:proposal.fork/file-adoption [:db/id :file.adoption/id]}))
         fork (when (integer? fork-eid) (d/pull db pattern fork-eid))]
+    {:fork fork :link-installed? link-installed?}))
+
+(defn- checked-history
+  [db fork link-installed?]
+  (let [row (latest db fork)
+        history (when link-installed?
+                  (vec (take 1001 (d/datoms db :avet :file.adoption/component
+                                            (:proposal.fork/scope fork)))))]
+    (when (or (> (count history) 1000) (and (seq history) (nil? row)))
+      (refuse! :invalid-journal-history))
+    (when (and row (not= (:component row) (:proposal.fork/scope fork)))
+      (refuse! :component-binding-changed))
+    (doseq [datom history
+            :let [historical (metadata (d/pull db '[*] (:e datom)))]]
+      (when-not (and row
+                     (= (dissoc (select-keys row binding-keys) :actor)
+                        (dissoc (select-keys historical binding-keys) :actor))
+                     (or (= (:id row) (:id historical)) (= :aborted (:state historical))))
+        (refuse! :invalid-journal-history)))
+    row))
+
+(defn current-operation
+  "INTERNAL integrity-only latest journal read for an OPEN retained component.
+   Authorize first; this never confers publication ownership. Corrupt, shared,
+   foreign or orphaned active history refuses. No terminal/readback ownership."
+  [db fork-eid]
+  (let [{:keys [fork link-installed?]} (operation-fork db fork-eid)]
     (when-not (and (:db/id fork) (= :file-output (:proposal.fork/system-type fork))
                    (uuid? (:proposal.fork/scope fork))
                    (nil? (:proposal.fork/status fork)))
       (refuse! :component-not-open))
-    (let [row (latest db fork)
-          history (when link-installed?
-                    (vec (take 1001 (d/datoms db :avet :file.adoption/component
-                                              (:proposal.fork/scope fork)))))]
-      (when (or (> (count history) 1000) (and (seq history) (nil? row)))
-        (refuse! :invalid-journal-history))
-      (when (and row (not= (:component row) (:proposal.fork/scope fork)))
-        (refuse! :component-binding-changed))
-      (doseq [datom history
-              :let [historical (metadata (d/pull db '[*] (:e datom)))]]
-        (when-not (and row
-                       (= (dissoc (select-keys row binding-keys) :actor)
-                          (dissoc (select-keys historical binding-keys) :actor))
-                       (or (= (:id row) (:id historical)) (= :aborted (:state historical))))
-          (refuse! :invalid-journal-history)))
+    (checked-history db fork link-installed?)))
+
+(defn accepted-operation
+  "INTERNAL terminal integrity ONLY, not a broadened open-component guard.
+   Require accepted component AND accepted latest journal, with identical
+   bounded history/link checks. Current authorization is the host's duty;
+   this reader never confers publication or reconciliation ownership."
+  [db fork-eid]
+  (let [{:keys [fork link-installed?]} (operation-fork db fork-eid)]
+    (when-not (and (:db/id fork) (= :file-output (:proposal.fork/system-type fork))
+                   (uuid? (:proposal.fork/scope fork))
+                   (= :accepted (:proposal.fork/status fork)))
+      (refuse! :component-not-accepted))
+    (let [row (checked-history db fork link-installed?)]
+      (when-not (= :accepted (:state row)) (refuse! :journal-not-accepted))
       row)))
 
 (defn claim-tx-data

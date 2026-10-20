@@ -6,6 +6,7 @@
    only records an original publisher's
    observed fact. Every transition compares the exact frozen storage proof."
   (:require [datahike.api :as d]
+            [dvergr.rooms.publication :as scoped-publication]
             [is.simm.model.access :as access]
             [is.simm.model.file-adoptions :as adoptions]
             [is.simm.model.file-outputs :as manifests]
@@ -28,57 +29,69 @@
   (when (simple/on-drain-thread?) (refuse! :requires-host-worker))
   (when-not (and conn (identical? conn (sdb/get-conn))) (refuse! :noncanonical-connection)))
 
-(defn- filing-snapshot
-  "Canonical filing integrity only. Fresh decisions authorize their exact verb
-   before invoking this reader. The original publisher may also record its
-   already observed committed fact; this does not admit another operation."
-  [db party room-id proposal-id]
+(defn- filing-rows!
+  "Bounded structural header. State-specific callers keep their own CLOSED
+   admission rules; neither this reader nor metadata gives any authority."
+  [db room-id proposal-id]
   (let [p (d/pull db [:db/id :proposal/id :proposal/room :proposal/status
                       :proposal/author :proposal/run :proposal/filing-hash :proposal/review]
                   [:proposal/id proposal-id])]
     (when-not (and (= proposal-id (:proposal/id p)) (= room-id (:proposal/room p))
-                   (= :open (:proposal/status p)) (nil? (:proposal/review p)))
+                   (nil? (:proposal/review p)))
       (refuse! :unsupported-proposal))
-    ;; Count before component pull: plain/wildcard component pull can allocate
-    ;; every child before a caller discovers that the Proposal was oversized.
     (let [links (vec (take 2 (d/datoms db :eavt (:db/id p) :proposal/forks)))]
       (when-not (= 1 (count links)) (refuse! :unsupported-component-set))
       (let [fork (d/pull db [:db/id :proposal.fork/scope :proposal.fork/authority-scope
                              :proposal.fork/branch :proposal.fork/status :proposal.fork/system-type
                              {:proposal.fork/file-output [:file-output/id :file-output/room]}]
-                         (:v (first links)))
-            scope (:proposal.fork/scope fork)]
+                         (:v (first links)))]
         (when-not (and (= :file-output (:proposal.fork/system-type fork))
-                       (nil? (:proposal.fork/status fork))
                        (= room-id (:proposal.fork/authority-scope fork))
                        (string? (:proposal.fork/branch fork))
                        (re-matches #"[A-Za-z0-9._-]{1,128}" (:proposal.fork/branch fork)))
           (refuse! :unsupported-component))
-        (let [owner (manifests/owner db scope)]
-          (when-not (= (select-keys owner [:proposal :room :fork-eid :proposal-eid])
-                       {:proposal proposal-id :room room-id :fork-eid (:db/id fork) :proposal-eid (:db/id p)})
-            (refuse! :invalid-owner))
-          (let [{:keys [manifest] :as retained} (storage/retained-in db scope)
-                request (d/pull db '[*] [:work.request/id (:request manifest)])
-                disposition (dispositions/disposition request)
-                binding {:proposal proposal-id :component scope :manifest (:id manifest)
-                         :room room-id :actor party :filing (:proposal/filing-hash p)
-                         :disposition (:id disposition) :target (:target manifest)}]
-            (when-not (and (= :proposed (:kind disposition))
-                           (= proposal-id (:proposal disposition))
-                           (= scope (:manifest disposition))
-                           (= room-id (:room manifest) (:work.request/room request))
-                           (= (:proposal/author p) (:work.request/by request))
-                           (= (:proposal/run p) (:candidate disposition) (:attempt manifest))
-                           (= (:request manifest) (:request disposition))
-                           (= (:basis manifest) (:basis disposition))
-                           (= (:output manifest) (:output disposition))
-                           (seq (:entries manifest))
-                           (publication/host-target? (:target manifest))
-                           (m/validate adoptions/binding-schema binding))
-              (refuse! :invalid-filing))
-            {:binding binding :proposal p :fork fork :retained retained
-             :disposition disposition}))))))
+        {:proposal p :fork fork}))))
+
+(defn- filing-proof!
+  "Canonical immutable provenance, after the caller's exact authority/state
+   checks. Original publisher finalization does not admit fresh work."
+  [db party room-id proposal-id {:keys [proposal fork]}]
+  (let [p proposal scope (:proposal.fork/scope fork)
+        owner (manifests/owner db scope)]
+    (when-not (= (select-keys owner [:proposal :room :fork-eid :proposal-eid])
+                 {:proposal proposal-id :room room-id :fork-eid (:db/id fork) :proposal-eid (:db/id p)})
+      (refuse! :invalid-owner))
+    (let [{:keys [manifest] :as retained} (storage/retained-in db scope)
+          request (d/pull db '[*] [:work.request/id (:request manifest)])
+          disposition (dispositions/disposition request)
+          binding {:proposal proposal-id :component scope :manifest (:id manifest)
+                   :room room-id :actor party :filing (:proposal/filing-hash p)
+                   :disposition (:id disposition) :target (:target manifest)}]
+      (when-not (and (= :proposed (:kind disposition))
+                     (= proposal-id (:proposal disposition))
+                     (= scope (:manifest disposition))
+                     (= room-id (:room manifest) (:work.request/room request))
+                     (= (:proposal/author p) (:work.request/by request))
+                     (= (:proposal/run p) (:candidate disposition) (:attempt manifest))
+                     (= (:request manifest) (:request disposition))
+                     (= (:basis manifest) (:basis disposition))
+                     (= (:output manifest) (:output disposition))
+                     (seq (:entries manifest))
+                     (publication/host-target? (:target manifest))
+                     (m/validate adoptions/binding-schema binding))
+        (refuse! :invalid-filing))
+      {:binding binding :proposal p :fork fork :retained retained :disposition disposition})))
+
+(defn- filing-snapshot
+  "OPEN-only canonical filing reader. Preserve existing claim/decision/dispatch
+   admission; terminal recovery uses its own separately authorized state gate."
+  [db party room-id proposal-id]
+  ;; Preserve the early closed-Proposal refusal before component expansion.
+  (when-not (= :open (:proposal/status (d/pull db [:proposal/status] [:proposal/id proposal-id])))
+    (refuse! :unsupported-proposal))
+  (let [{:keys [fork] :as rows} (filing-rows! db room-id proposal-id)]
+    (when-not (nil? (:proposal.fork/status fork)) (refuse! :unsupported-component))
+    (filing-proof! db party room-id proposal-id rows)))
 
 (defn snapshot
   "INTERNAL merge-authorized control-DB read. Only one ordinary open file
@@ -262,9 +275,9 @@
   (when-not (map? owned-binding) (refuse! :missing-owned-binding))
   (applying-with-binding! conn party room-id room claimed candidate owned-binding))
 
-(defn- finalized-report!
-  "Original immutable ACK only. The general journal readers deliberately require
-   an OPEN component; do not relax them to inspect this terminal projection."
+(defn- terminal-facts!
+  "Terminal integrity only, not dispatch ownership. The host separately owns
+   current authorization or its original native invocation's ACK obligation."
   [db proof expected at]
   (when-not db (refuse! :finalization-report-unavailable))
   (let [{:keys [proposal component room actor]} expected
@@ -287,6 +300,11 @@
                    (= at (:proposal/resolved-at p) (:proposal/resolved-at f)))
       (refuse! :finalization-report-mismatch))
     {:operation expected :proposal proposal :status :accepted}))
+
+(defn- finalized-report!
+  "Original immutable ACK only. Do not substitute a live ownership readback."
+  [db proof expected at]
+  (terminal-facts! db proof expected at))
 
 (defn finalize!
   "INTERNAL original publisher's finalization, NOT an endpoint or recovery API.
@@ -343,3 +361,142 @@
           (when (instance? InterruptedException error) (.interrupt (Thread/currentThread)))
           (throw (ex-info "File adoption finalization was not acknowledged; durable outcome may already be accepted"
                           {:type ::finalization-unacknowledged :operation (:id operation)} error)))))))
+
+(defn- recovery-snapshot!
+  "Current authority and coherent joint state. Never supplies publisher ownership."
+  [db party room-id proposal-id]
+  (when-not (and (every? uuid? [party room-id proposal-id])
+                 (access/can? db party :read {:room room-id})
+                 (access/can? db party :read {:proposal proposal-id})
+                 (access/can? db party :write {:proposal proposal-id})
+                 (access/can? db party :merge {:room room-id}))
+    (refuse! :denied))
+  (let [{:keys [proposal fork] :as rows} (filing-rows! db room-id proposal-id)
+        _ (when-not (access/may-merge-proposal-fork? db party fork) (refuse! :denied))
+        state [(:proposal/status proposal) (:proposal.fork/status fork)]
+        operation (cond
+                    (= [:open nil] state) (adoptions/current-operation db (:db/id fork))
+                    (= [:accepted :accepted] state) (adoptions/accepted-operation db (:db/id fork))
+                    :else (refuse! :inconsistent-terminal-state))]
+    (when-not (#{:claimed :applying :accepted} (:state operation)) (refuse! :not-recoverable))
+    (when-not (= (= [:accepted :accepted] state) (= :accepted (:state operation)))
+      (refuse! :inconsistent-terminal-state))
+    (let [proof (filing-proof! db (:actor operation) room-id proposal-id rows)]
+      (when-not (= (:binding proof) (select-keys operation (keys (:binding proof))))
+        (refuse! :journal-binding-changed))
+      (when (= :accepted (:state operation))
+        (terminal-facts! db proof operation (:updated-at operation)))
+      {:proof proof :operation operation})))
+
+(defn- immutable-proof [proof]
+  (-> proof
+      (update :proposal dissoc :proposal/status)
+      (update :fork dissoc :proposal.fork/status)))
+
+(defn- same-operation! [before after]
+  (let [immutable #(dissoc % :state :updated-at :commit :head :noop? :reconciled-by)
+        forward {:claimed #{:claimed :applying :accepted}
+                 :applying #{:applying :accepted} :accepted #{:accepted}}]
+    (when-not (and (= (immutable before) (immutable after))
+                   (contains? (get forward (:state before)) (:state after))
+                   (or (= before after)
+                       (and (not= (:state before) (:state after))
+                            (not (.before ^java.util.Date (:updated-at after) (:updated-at before))))))
+      (refuse! :recovery-operation-changed))))
+
+(defn- recovery-binding!
+  [db party room-id room operation original]
+  ;; Strengthened resolve! calls the exact native workspace-for-system! guard,
+  ;; including all-type connection aliases and coherent canonical config.
+  (let [current (owned-workspace/resolve! db party :merge room-id room)]
+    (when-not (and (map? (:workspace-config current))
+                   (= (dissoc (:target operation) :ref) (dissoc (:target current) :ref))
+                   (or (nil? original)
+                       (and (identical? (:room original) (:room current))
+                            (identical? (:system original) (:system current))
+                            (identical? (:conn original) (:conn current))
+                            (= (:workspace-config original) (:workspace-config current)))))
+      (refuse! :target-changed))
+    current))
+
+(defn- receipt-outcome [receipt]
+  (into {} (for [key [:commit :head :noop?]
+                 :let [attr (keyword "publication" (name key))]
+                 :when (contains? receipt attr)]
+             [key (get receipt attr)])))
+
+(defn- recovery-tx
+  [db party room-id room observation binding receipt at]
+  (let [{:keys [proof operation]} (recovery-snapshot! db party room-id (get-in observation [:operation :proposal]))]
+    (same-operation! (:operation observation) operation)
+    (when-not (= (immutable-proof (:proof observation)) (immutable-proof proof))
+      (refuse! :preflight-changed))
+    (recovery-binding! db party room-id room operation binding)
+    (native-publication/validate-receipt! operation (get-in proof [:retained :manifest]) receipt)
+    (case (:state operation)
+      :claimed (refuse! :receipt-without-dispatch-admission)
+      :accepted []
+      :applying
+      (into (adoptions/transition-tx-data db (get-in proof [:fork :db/id]) operation :accepted
+                                          (assoc (receipt-outcome receipt) :reconciled-by party) at)
+            [{:db/id (get-in proof [:fork :db/id]) :proposal.fork/status :accepted
+              :proposal/resolved-by (:actor operation) :proposal/resolved-at at}
+             {:db/id (get-in proof [:proposal :db/id]) :proposal/status :accepted
+              :proposal/resolved-by (:actor operation) :proposal/resolved-at at}]))))
+
+(defn recover!
+  "INTERNAL CURRENT-authorized positive receipt observation, not dispatch or a
+   replacement for the original publisher's ACK. Derive the operation from
+   canonical control records; never accept a receipt/token/descriptor as input.
+   Current owned/native target must match every original target field EXCEPT
+   logical ref. Look up ORIGINAL ref/intent in one immutable target DB. No
+   schema installation, bodies, worktree/HEAD reads, target write or task replay.
+
+   Positive applying -> joint acceptance records ORIGINAL actor plus separate
+   current reconciled-by. Accepted positive repeat preserves all audit facts.
+   Claimed plus positive is inconsistent; absence is ONLY an observation, never
+   permission to take ownership, abort, retry publication or release a claim."
+  [conn party room-id room proposal-id]
+  (host-connection! conn)
+  (let [db @conn
+        {:keys [proof operation] :as observation} (recovery-snapshot! db party room-id proposal-id)
+        binding (recovery-binding! db party room-id room operation nil)
+        target-db (:db binding)
+        identity (native-publication/identity operation (get-in proof [:retained :manifest]))
+        ;; A pristine repository may have no receipt schema yet. Do not install
+        ;; it or pull an unknown attribute merely to establish absence.
+        receipt (when (seq (d/datoms target-db :avet :db/ident :publication/id))
+                  (scoped-publication/recover target-db identity))]
+    (if-not receipt
+      (if (= :accepted (:state operation))
+        (refuse! :accepted-receipt-unavailable)
+        {:status :pending :proposal proposal-id :operation-id (:id operation)
+         :observed-state (:state operation) :reason :receipt-not-observed})
+      (do
+        (native-publication/validate-receipt! operation (get-in proof [:retained :manifest]) receipt)
+        (let [at (java.util.Date.)]
+          (try
+            (let [report (d/transact conn [[:db.fn/call
+                                            (fn [writer-db]
+                                              (recovery-tx writer-db party room-id room observation binding receipt at))]])]
+              (when-not (and (:db-before report) (:db-after report)) (refuse! :recovery-report-unavailable))
+              (let [before (recovery-snapshot! (:db-before report) party room-id proposal-id)
+                    _ (same-operation! operation (:operation before))
+                    _ (when-not (= (immutable-proof proof) (immutable-proof (:proof before)))
+                        (refuse! :recovery-report-mismatch))
+                    previous (:operation before)
+                    expected (case (:state previous)
+                               :accepted previous
+                               :applying (adoptions/validate!
+                                          (merge previous (receipt-outcome receipt)
+                                                 {:state :accepted :updated-at at :reconciled-by party}))
+                               (refuse! :recovery-report-mismatch))
+                    _ (adoptions/accepted-operation (:db-after report) (get-in proof [:fork :db/id]))]
+                (finalized-report! (:db-after report) proof expected (:updated-at expected))
+                {:status :accepted :proposal proposal-id :operation-id (:id expected)
+                 :actor (:actor expected) :already-accepted? (= :accepted (:state previous))
+                 :recovered? true :outcome (select-keys expected [:commit :head :noop? :reconciled-by])}))
+            (catch Throwable error
+              (when (instance? InterruptedException error) (.interrupt (Thread/currentThread)))
+              (throw (ex-info "File adoption recovery was not acknowledged; durable outcome may already be accepted"
+                              {:type ::recovery-unacknowledged :operation (:id operation)} error)))))))))
