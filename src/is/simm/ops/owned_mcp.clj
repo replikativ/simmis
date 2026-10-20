@@ -8,7 +8,9 @@
             [org.replikativ.spindel.engine.core :as ec]))
 
 (def ^:private room-read-ops #{:room/files :room/read :catalog/list})
-(def ^:private export-read-ops #{:simmis/workspace-bundle :simmis/workspace-bundle-chunk})
+(def ^:private described-read-ops
+  #{:simmis/workspace-bundle :simmis/workspace-bundle-chunk
+    :simmis/workflow-list :simmis/workflow-source})
 (def ^:private denial {:allow? false :reason "Canonical room read refused"})
 
 (defn- refuse! []
@@ -48,16 +50,16 @@
           (cond
             ;; This NEW inactive host exports owned human Memory only. Never
             ;; allow then downgrade a worker/agent to selected repository bytes.
-            (and (contains? export-read-ops op) (#{:worker :agent} (:principal/kind principal))) denial
-            (or (not (contains? (into room-read-ops export-read-ops) op)) (global-catalog? request)
+            (and (contains? described-read-ops op) (#{:worker :agent} (:principal/kind principal))) denial
+            (or (not (contains? (into room-read-ops described-read-ops) op)) (global-catalog? request)
                 (#{:worker :agent} (:principal/kind principal)))
             ;; Preserve worker/agent and all unrelated op authority; NEVER map
             ;; those credentials to their enroller/owner's canonical Memory.
             (ops/authorize principal request)
             :else (do (mcp-human! principal)
-                      (if (contains? export-read-ops op)
-                  ;; Legacy export descriptors normalize UUID to slug. ONLY
-                  ;; these two reads compare both mappings in ONE control DB;
+                      (if (contains? described-read-ops op)
+                  ;; Legacy host descriptors normalize UUID to slug. ONLY
+                  ;; these fixed reads compare both mappings in ONE control DB;
                   ;; the original DTO handle remains the sole body selector.
                         (let [{:keys [action resource args]} request
                               [kind handle] resource]
@@ -102,7 +104,7 @@
 (defn host
   "Construct an INACTIVE per-host canonical human MCP read binding. Caller owns
    the current canonical connection/context lifetime. Nothing installs it.
-   Owned exports are human-only; legacy hosts and unrelated worker/agent
+   Owned exports/workflow inspections are human-only; legacy hosts and unrelated worker/agent
    delegation are unchanged. No cached allow decision or selection mutation."
   [canonical-control-conn host-ctx]
   (-> (ops/host host-ctx)

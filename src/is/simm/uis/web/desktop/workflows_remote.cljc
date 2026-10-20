@@ -8,12 +8,57 @@
             #?(:clj [org.replikativ.spindel.blocking :as blocking])
             #?(:clj [org.replikativ.spindel.engine.impl.simple :as simple])
             #?(:clj [datahike.api :as d])
+            #?(:clj [dvergr.ops :as dops])
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.model.system-db :as system-db])
             #?(:clj [is.simm.agents.room-agents :as rooms])
             #?(:clj [is.simm.ops.dvergr :as ops])
+            #?(:clj [is.simm.ops.owned-reads :as owned-reads])
+            #?(:clj [is.simm.ops.owned-workflows :as owned-workflows])
+            #?(:clj [is.simm.ops.work-api :as work-api])
             #?(:clj [is.simm.ops.workflows :as workflows])
             #?(:clj [is.simm.runtimes.context :as context])))
+
+#?(:clj
+   (defn invoke-owned-workflow-read
+     "DORMANT HOST-only normal-human reader. No remote or action calls this yet.
+      Fixed domain read authority, not an MCP identity or generic op capability."
+     [party original-room-handle operation args]
+     (when-not (uuid? party)
+       (dops/op-error! "Authentication required" ::owned-read-denied 403))
+     (when (simple/on-drain-thread?)
+       (dops/op-error! "Owned workflow reads require a host worker" ::owned-read-unavailable 503))
+     (when-not (and (#{:simmis/workflow-list :simmis/workflow-source} operation)
+                    (map? args) (not (contains? args :room))
+                    (string? original-room-handle) (<= 1 (count original-room-handle) 200))
+       (dops/op-error! "Invalid owned workflow read" ::owned-read-invalid 400))
+     (let [host (try
+                  (let [conn (system-db/get-conn) host-ctx context/server-context]
+                    {:execution-ctx host-ctx ::owned-reads/owner (owned-reads/host-owner conn host-ctx)})
+                  (catch Throwable error
+                    (work-api/owned-workflow-read-error! (ex-info "Host owner unavailable" {} error))))
+           principal (ops/party-principal party)]
+       (let [{:keys [data read-context]}
+             (try
+               ((case operation :simmis/workflow-list owned-workflows/list!
+                      :simmis/workflow-source owned-workflows/details!)
+                host principal original-room-handle args)
+               (catch Throwable error (work-api/owned-workflow-read-error! error)))
+             {:keys [control-db party room-id]} read-context]
+         (try
+           ;; Permission hints share the exact immutable control snapshot of
+           ;; this capture. They are not authority for a later write or run.
+           (assoc data :permissions
+                  {:write? (access/can? control-db party :write {:room room-id})
+                   :merge? (access/can? control-db party :merge {:room room-id})
+                   :fund? (= party (d/q '[:find ?owner . :in $ ?id
+                                          :where [?r :room/id ?id] [?r :room/owner ?p] [?p :party/id ?owner]] control-db room-id))
+                   :operator? (= :admin (d/q '[:find ?role . :in $ ?id
+                                               :where [?p :party/id ?id] [?p :party/role ?role]] control-db party))})
+           ;; Permission projection is OUTSIDE the normalized service boundary;
+           ;; arbitrary helper tags here cannot manufacture a public conflict.
+           (catch Throwable error
+             (work-api/owned-workflow-read-error! (ex-info "Permission projection unavailable" {} error))))))))
 
 #?(:clj
    (defn invoke-workflow [party room-id operation args]

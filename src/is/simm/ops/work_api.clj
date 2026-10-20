@@ -11,6 +11,7 @@
             [is.simm.ops.dvergr :as simmis-ops]
             [is.simm.ops.git-snapshot :as git-snapshot]
             [is.simm.ops.owned-reads :as owned-reads]
+            [is.simm.ops.owned-workflows :as owned-workflows]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflow-runs]
             [is.simm.ops.workflow-schedules :as workflow-schedules]
@@ -218,6 +219,30 @@
                                    (get args :length (:chunk-bytes git-snapshot/policy)))
             (git-snapshot/describe-in db room-id target-stamp)))))))
 
+(defn owned-workflow-read-error!
+  "HOST-only constant transport mapping of the fixed owned service's outcomes.
+   Never relay native messages/status metadata. No file authority or callback."
+  [error]
+  (loop [cause error seen #{}]
+    (cond (nil? cause) nil
+          (instance? InterruptedException cause) (.interrupt (Thread/currentThread))
+          (contains? seen cause) nil
+          :else (recur (.getCause ^Throwable cause) (conj seen cause))))
+  (let [[status kind message]
+        (case (:type (ex-data error))
+          :is.simm.ops.owned-workflows/invalid
+          [400 ::owned-workflow-invalid "Invalid owned workflow read"]
+          :is.simm.ops.owned-workflows/conflict
+          [409 ::owned-workflow-conflict "Workflow source changed; reload metadata"]
+          [503 ::owned-workflow-unavailable "Owned workflow read unavailable"])]
+    (ops/op-error! message kind status)))
+
+(defn- owned-workflow-read! [host args source?]
+  (try
+    (:data ((if source? owned-workflows/source! owned-workflows/list!)
+            host ops/*principal* (:room args) (dissoc args :room)))
+    (catch Throwable error (owned-workflow-read-error! error))))
+
 (def specifications
   (room-specifications
    {:simmis/workflow-schedule-list
@@ -250,17 +275,21 @@
      :doc "List25 room-local workflow names, including invalid drafts, without loading file contents. Scans at most20000 workflow path entries; refuses larger indices. expected-revision pins the sorted name set across pages. Never executes checker source."
      :impl (fn [host args]
              (checked! workflow-list-schema args)
-             (guarded host #(let [[_ _ room] (room! host (:room args))]
-                              (workflows/list-page room (cond-> (dissoc args :room)
-                                                          (:expected-revision args)
-                                                          (update :expected-revision uuid!))))))}
+             (if (owned-reads/owned-host? host)
+               (owned-workflow-read! host args false)
+               (guarded host #(let [[_ _ room] (room! host (:room args))]
+                                (workflows/list-page room (cond-> (dissoc args :room)
+                                                            (:expected-revision args)
+                                                            (update :expected-revision uuid!)))))))}
     :simmis/workflow-source
     {:kind :read :schema workflow-source-schema :authz {:action :read}
      :doc "Read source metadata in10-file pages, or <=8192 bytes of one file as base64 with path/offset/expected-revision. Source snapshots are bounded100 regular UTF8 files,512KiB/file,2MiB total. Chunks REQUIRE the inspected source revision; any source change refuses. Invalid drafts remain readable; no checker/calibration execution. Use revision for guarded writes and validated bundle id for execution."
      :impl (fn [host args]
              (checked! workflow-source-schema args)
-             (guarded host #(let [[_ _ room] (room! host (:room args))]
-                              (workflows/source-page room (dissoc args :room)))))}
+             (if (owned-reads/owned-host? host)
+               (owned-workflow-read! host args true)
+               (guarded host #(let [[_ _ room] (room! host (:room args))]
+                                (workflows/source-page room (dissoc args :room))))))}
     :simmis/workspace-bundle
     {:kind :read :schema bundle-schema :authz {:action :read}
      :doc "Describe a cloneable synthetic Git bundle of CURRENT workspace files (NOT original history or hosted Git). Bounded to512 regular files,1MiB/file,8MiB total; sensitive paths/symlinks refuse the whole export. Does not commit or write anything. Use snapshot and chunk tool to download; changes between chunks require a restart."
