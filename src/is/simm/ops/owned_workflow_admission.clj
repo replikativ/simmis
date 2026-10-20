@@ -84,6 +84,7 @@
                 _ (storage! #(work/authorize-in! (:control-db binding) principal (:room-id binding)))
                 manifest (storage! #(workflows/manifest-in (:db binding) (:name input)))
                 revision (storage! #(sources/source-id binding (:name input) manifest))]
+            (when-not (uuid? revision) (unavailable!))
             (when-not (= revision (:expected-owned-source input))
               (fail! ::conflict "Workflow source changed; reload metadata"))
             (let [snapshot (storage! #(workflows/snapshot-in (:db binding) (:name input)))

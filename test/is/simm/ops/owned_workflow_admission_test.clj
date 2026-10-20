@@ -343,6 +343,26 @@
                                                          (assoc input :expected-bundle (random-uuid)))))))))
        (is (zero? @calls))))))
 
+(deftest malformed-normal-source-identities-refuse-before-body-or-preparation
+  (@#'fixture/with-fixture
+   true
+   (fn [{:keys [w host owned]}]
+     (seed! owned saved/source)
+     (let [input (opened-input host w saved/source)
+           calls (atom 0)
+           forbidden (fn [& _]
+                       (swap! calls inc)
+                       (throw (AssertionError. "Malformed source identity continued admission")))]
+       (doseq [value [nil "not-a-UUID"]]
+         (with-redefs [sources/source-id (constantly value)
+                       workflows/snapshot-in forbidden
+                       runs/resolve-admission-in forbidden
+                       runs/prepare forbidden
+                       work/submit-prepared! forbidden]
+           (is (= ::owned/unavailable
+                  (:type (ex-data (failure #(owned/submit! host (principal w) (str (:room w)) input))))))))
+       (is (zero? @calls))))))
+
 (deftest interleaved-fresh-canonical-claims-never-upgrade-a-different-live-basis
   (@#'fixture/with-fixture
    true
