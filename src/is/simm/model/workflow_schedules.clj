@@ -6,7 +6,11 @@
             [dvergr.scheduler.cron :as cron]
             [hasch.core :as hasch]
             [is.simm.model.knowledge-dispositions :as dispositions]
-            [is.simm.model.work-requests :as requests]))
+            [is.simm.model.knowledge-publication :as publication]
+            [is.simm.model.work-requests :as requests]
+            [malli.core :as m])
+  (:import [java.nio CharBuffer]
+           [java.nio.charset CodingErrorAction StandardCharsets]))
 
 (def schema
   (mapv (fn [[ident type]]
@@ -262,6 +266,163 @@
                      (= (:schedule.occurrence/input-revision o) (hasch/uuid value))
                      (= (:schedule.occurrence/input-id o) (:input-id value)))
         (throw (ex-info "Scheduled inputs failed their content identity" {:type ::corrupt})))
+      value)))
+
+(def max-owned-input-bytes
+  ;; Captured text <=2MiB may escape sixfold; the publication basis is already
+  ;; encoded-bounded at 8MiB. Two bounded manifests plus metadata fit the margin.
+  (* 32 1024 1024))
+
+(def ^:private owned-input-text-limit (* 512 1024))
+(def ^:private owned-input-total-limit (* 2 1024 1024))
+(def ^:private owned-path-schema [:string {:min 1 :max 512}])
+(def ^:private owned-policy-schema
+  [:map {:closed true}
+   [:version [:= 1]]
+   [:trigger-roots [:vector {:min 1 :max 16} owned-path-schema]]
+   [:context-roots [:vector {:max 16} owned-path-schema]]
+   [:exclude-prefixes [:vector {:max 16} owned-path-schema]]])
+(def ^:private owned-manifest-schema
+  [:map {:closed true}
+   [:version [:= 1]] [:repository :uuid] [:policy owned-policy-schema]
+   [:trigger-id :uuid] [:execution-id :uuid]
+   [:files [:vector {:max 99}
+            [:map {:closed true}
+             [:path owned-path-schema] [:input owned-path-schema]
+             [:role [:enum :trigger :context]] [:content :uuid]
+             [:size [:int {:min 0 :max owned-input-text-limit}]]
+             [:mode [:= 33188]]]]]])
+(def ^:private owned-selection-schema
+  [:map {:closed true}
+   [:trigger-id :uuid] [:execution-id :uuid] [:empty? :boolean]
+   [:manifest owned-manifest-schema]])
+(def ^:private owned-capture-schema
+  (conj owned-selection-schema
+        [:inputs [:map-of {:max 100} owned-path-schema
+                  [:string {:max owned-input-text-limit}]]]))
+(def ^:private owned-origin-schema
+  [:map {:closed true}
+   [:target publication/target-schema] [:target-stamp :uuid] [:selection-id :uuid]])
+(def ^:private owned-input-schema
+  [:map {:closed true}
+   [:version [:= 2]] [:occurrence-id :uuid] [:input-id :uuid] [:target-revision :uuid]
+   [:selection owned-selection-schema]
+   [:captured [:maybe owned-capture-schema]]
+   [:publication-basis [:maybe publication/schema]]
+   [:knowledge-origin [:maybe owned-origin-schema]]])
+
+(defn- owned-input-invalid! []
+  (throw (ex-info "Invalid retained owned scheduled inputs" {:type ::corrupt})))
+
+(defn- strict-owned-text-size [text]
+  (let [encoder (doto (.newEncoder StandardCharsets/UTF_8)
+                  (.onMalformedInput CodingErrorAction/REPORT)
+                  (.onUnmappableCharacter CodingErrorAction/REPORT))]
+    (.remaining (.encode encoder (CharBuffer/wrap ^String text)))))
+
+(defn- validate-owned-input! [value]
+  ;; All collections/strings have finite structural bounds before encoding or
+  ;; hashing. Fixed semantic policy/content verification remains an ops duty.
+  (when-not (m/validate owned-input-schema value) (owned-input-invalid!))
+  (doseq [text (filter string? (tree-seq coll? seq value))]
+    (strict-owned-text-size text))
+  (let [{:keys [selection captured publication-basis knowledge-origin
+                target-revision input-id]} value
+        present (mapv some? [captured publication-basis knowledge-origin])]
+    (when-not (and (or (every? true? present) (every? false? present))
+                   (= input-id (hasch/uuid [:simmis/scheduled-input-v1
+                                            target-revision (:trigger-id selection)]))
+                   (= (select-keys selection [:trigger-id :execution-id])
+                      (select-keys (:manifest selection) [:trigger-id :execution-id]))
+                   (<= (strict-owned-text-size (pr-str (:manifest selection)))
+                       owned-input-text-limit)
+                   (or (nil? captured)
+                       (and (= selection (dissoc captured :inputs))
+                            (= (:execution-id selection) (:selection-id knowledge-origin))
+                            (= (:target publication-basis) (:target knowledge-origin))
+                            (publication/host-target? (:target knowledge-origin))
+                            (= (get-in selection [:manifest :repository])
+                               (get-in knowledge-origin [:target :repository])))))
+      (owned-input-invalid!))
+    (when captured
+      (let [sizes (mapv strict-owned-text-size (vals (:inputs captured)))]
+        (when-not (and (every? #(<= % owned-input-text-limit) sizes)
+                       (<= (reduce + 0 sizes) owned-input-total-limit)
+                       (<= (strict-owned-text-size (pr-str (:manifest captured)))
+                           owned-input-text-limit))
+          (owned-input-invalid!)))
+      (publication/validate! publication-basis)))
+  value)
+
+(defn- owned-input-row! [db oid claim value]
+  (let [[o a] (claimed-occurrence! db oid claim)]
+    (when-not (and (= oid (:occurrence-id value))
+                   (= (:target-revision value) (:schedule.activation/revision a)
+                      (:schedule.occurrence/revision o))
+                   (= (:input-id value) (:schedule.occurrence/input-id o)))
+      (owned-input-invalid!))
+    [o a]))
+
+(defn- retain-owned-input-tx [db oid claim identity revision ref]
+  (let [[o _] (owned-input-row! db oid claim identity)]
+    ;; Even an identical prior install cannot manufacture a new dispatch ACK.
+    (when (or (:schedule.occurrence/input-ref o)
+              (:schedule.occurrence/input-revision o))
+      (throw (ex-info "Owned scheduled inputs were already retained" {:type ::conflict})))
+    (retain-input-tx db oid claim (:input-id identity) revision ref)))
+
+(defn retain-owned-input!
+  "First-install v2 retention. Normal return is the occurrence from the ORIGINAL
+   acknowledged transaction, never a current-connection reconstruction. Neither
+   an existing artifact nor this storage API alone grants dispatch authority."
+  [conn oid claim value]
+  (when-not (and (uuid? oid) (uuid? claim)) (owned-input-invalid!))
+  (validate-owned-input! value)
+  (when-not (= oid (:occurrence-id value)) (owned-input-invalid!))
+  (let [prepared (artifact/prepare-value value max-owned-input-bytes)
+        revision (hasch/uuid value)]
+    (artifact/publish-value!
+     (artifact/datahike-store conn) value
+     (fn [ref]
+       (when-not (and (uuid? ref) (= ref (:ref prepared))) (owned-input-invalid!))
+       ;; Failed transaction arguments may be logged by the underlying writer.
+       ;; Only inert identity facts cross that boundary, never captured bodies.
+       (let [identity (select-keys value [:occurrence-id :target-revision :input-id])
+             report (d/transact conn [[:db.fn/call retain-owned-input-tx
+                                       oid claim identity revision ref]])]
+         (when-not (and (map? report) (:db-before report) (:db-after report))
+           (owned-input-invalid!))
+         (let [[before before-a] (owned-input-row! (:db-before report) oid claim value)
+               [after after-a] (owned-input-row! (:db-after report) oid claim value)]
+           (when-not (and (nil? (:schedule.occurrence/input-ref before))
+                          (nil? (:schedule.occurrence/input-revision before))
+                          (= (:schedule.occurrence/activation before)
+                             (:schedule.occurrence/activation after))
+                          (= (:schedule.activation/id before-a) (:schedule.activation/id after-a))
+                          (= (select-keys before-a [:schedule.activation/room :schedule.activation/by
+                                                    :schedule.activation/revision :schedule.activation/target-ref])
+                             (select-keys after-a [:schedule.activation/room :schedule.activation/by
+                                                   :schedule.activation/revision :schedule.activation/target-ref]))
+                          (= ref (:schedule.occurrence/input-ref after))
+                          (= revision (:schedule.occurrence/input-revision after)))
+             (owned-input-invalid!))
+           after))))))
+
+(defn retained-owned-input
+  "Bounded v2 observation only; reading an artifact does not recover a lost
+   first-install ACK or grant permission to recapture, replay or dispatch."
+  [conn o]
+  (when-let [ref (:schedule.occurrence/input-ref o)]
+    (let [envelope (artifact/get-bounded-value (artifact/datahike-store conn)
+                                               ref max-owned-input-bytes)
+          value (:value envelope)]
+      (validate-owned-input! value)
+      (when-not (and envelope
+                     (= (:schedule.occurrence/id o) (:occurrence-id value))
+                     (= (:schedule.occurrence/revision o) (:target-revision value))
+                     (= (:schedule.occurrence/input-id o) (:input-id value))
+                     (= (:schedule.occurrence/input-revision o) (hasch/uuid value)))
+        (owned-input-invalid!))
       value)))
 
 (def ^:private processing-occurrence-keys
