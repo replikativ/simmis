@@ -8,6 +8,7 @@
             [geschichte.query :as query]
             [is.simm.documents.files :as files]
             [is.simm.model.access :as access]
+            [is.simm.model.system-db :as sdb]
             [is.simm.ops.owned-files :as actions]
             [is.simm.ops.owned-workspace :as owned]
             [is.simm.ops.owned-workspace-test :as fixture]))
@@ -94,3 +95,21 @@
        (is (not (access/can? @conn member :merge {:room (:room w)})))
        (is (true? (:saved? (actions/save! conn member (:room w) room (request opened "Member edit\n")))))
        (is (= "Member edit\n" (:text (files/read-file-in @owned "wiki/file.md"))))))))
+
+(deftest replacement-control-owner-is-refused-at-the-native-effect-gate
+  (@#'fixture/with-fixture
+   false
+   (fn [{:keys [conn w room owned attached]}]
+     (let [opened (owned/read-file @conn (:owner w) (:room w) room "wiki/file.md" nil)
+           before @owned other @attached writer native-files/write-to!
+           replacement (atom @conn)]
+       (with-redefs [native-files/write-to!
+                     (fn [& args]
+                       ;; Even equal control snapshots are not the same host
+                       ;; owner. The original registry cannot remain a lease.
+                       (with-redefs [sdb/get-conn (constantly replacement)]
+                         (apply writer args)))]
+         (is (thrown? clojure.lang.ExceptionInfo
+                      (actions/save! conn (:owner w) (:room w) room (request opened "old control")))))
+       (is (= before @owned))
+       (is (= other @attached))))))

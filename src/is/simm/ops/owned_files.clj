@@ -12,9 +12,14 @@
 (defn- refuse! [reason]
   (throw (ex-info "Owned file action was refused" {:type ::refused :reason reason})))
 
+(defn- canonical-control! [conn]
+  (when-not (and conn (identical? conn (sdb/get-conn)))
+    (refuse! :invalid-host-input)))
+
 (defn- binding! [conn principal action room-id room request stamped?]
   (when (simple/on-drain-thread?) (refuse! :requires-host-worker))
-  (when-not (and conn (identical? conn (sdb/get-conn)) (map? request)
+  (canonical-control! conn)
+  (when-not (and (map? request)
                  (or (not stamped?) (uuid? (:expected-target-stamp request))))
     (refuse! :invalid-host-input))
   (let [binding (owned/resolve! @conn principal action room-id room)]
@@ -88,7 +93,8 @@
        :target-stamp (:target-stamp binding)})))
 
 (defn- save-bound! [conn principal room-id room binding request]
-  (let [authorize! #(do (owned/validate! @conn principal :write room-id room binding) true)
+  (let [authorize! #(do (canonical-control! conn)
+                        (owned/validate! @conn principal :write room-id room binding) true)
         result (files/save-file-to! room (:system binding) request {:authorize! authorize!})]
     (assoc result :target-stamp (:target-stamp binding))))
 
@@ -116,7 +122,8 @@
   [conn principal room-id room request]
   (closed! request #{:path :target :expected} true)
   (let [binding (binding! conn principal :write room-id room request true)
-        authorize! #(do (owned/validate! @conn principal :write room-id room binding) true)
+        authorize! #(do (canonical-control! conn)
+                        (owned/validate! @conn principal :write room-id room binding) true)
         result (files/move-file-to! room (:system binding) (:path request) (:target request)
                                     (:expected request) {:authorize! authorize!})]
     (assoc result :target-stamp (:target-stamp binding))))
