@@ -414,10 +414,13 @@
         ;; Pin its permanent main squash: tree-identical to the reviewed head,
         ;; 113/1746 local regressions and all required CI passed. Simmis's owned
         ;; host remains inactive until catalog/export/source routing is coherent.
+        ;; #374 also projects room catalog entries from that same immutable
+        ;; binding. Its permanent squash is tree-identical to the reviewed
+        ;; source; 137/2037 local regressions and all required CI passed.
         ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "ead139d9aee0231d7166b45619a44191bcccb8fe"
+                               :git/sha "0404d73e0ef215ea0d3699138b1aef6523fb831c"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.

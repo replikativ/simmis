@@ -3,11 +3,13 @@
    inactive Simmis host and real EACL/two native repos. No listener or JWT claim."
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
+            [dvergr.catalog.room :as catalog-room]
             [dvergr.mcp.json-rpc :as rpc]
             [dvergr.mcp.server :as server]
             [dvergr.mcp.surface :as surface]
             [dvergr.substrate.geschichte :as workspace]
             [geschichte.query :as query]
+            [geschichte.repo :as repo]
             [is.simm.ops.owned-mcp-test :as fixture]
             [jsonista.core :as json]))
 
@@ -103,3 +105,37 @@
                           (send "resources/read" {:uri (str "room://" room "/files/wiki/file.md")})]]
              (is (or (:error reply) (get-in reply [:result :isError]))))
            (is (= before (count @hydrations)))))))))
+
+(deftest configured-catalog-and-file-tools-use-the-same-owned-source
+  (doseq [owned-first? [true false]]
+    (@#'fixture/with-fixture
+     owned-first?
+     (fn [{:keys [conn w host owned attached hydrations]}]
+       (let [source {"workflow.edn" "{:title \"Owned insight\" :task \"Think\"}"
+                     "checker.clj" "(throw (ex-info \"CHECKER MUST NOT EXECUTE\" {}))"
+                     "fixtures/input.md" "Owned evidence"}
+             handle (str (:room w))
+             slug (:room/slug (d/entity @conn [:room/id (:room w)]))
+             expected (str (:id (catalog-room/bundle "insight" source)))]
+         (doseq [[connection files] [[owned source]
+                                     [attached (assoc source "fixtures/input.md" "Attachment evidence")]]
+                 [path text] files]
+           (repo/write! connection (str "workflows/insight/" path) (.getBytes ^String text "UTF-8")))
+         (let [selection (workspace/selected-system-id) other (durable-state attached)]
+           (with-redefs [server/current-daemon (constantly host)
+                         catalog-room/tier (constantly :ad-hoc)
+                         catalog-room/run-checker (fn [& _] (throw (AssertionError. "Checker executed")))]
+             (doseq [original [handle slug]]
+               (let [send (session "2026-07-28" (@#'fixture/principal w :member))
+                     rows (data (tool send "catalog_list" {:room original}))
+                     local (filterv #(= (str original "/insight") (:id %)) rows)
+                     opened (data (tool send "room_read"
+                                        {:room original :path "workflows/insight/fixtures/input.md"}))]
+                 (is (= 1 (count local)))
+                 (is (= expected (:bundle (first local))))
+                 (is (= "Owned insight" (:title (first local))))
+                 (is (= "Owned evidence" (:text opened)))
+                 (is (= (:target-stamp opened) (:target-stamp (first local))))))
+             (is (= [(:room w) (:room w) (:room w) (:room w)] @hydrations))
+             (is (= selection (workspace/selected-system-id)))
+             (is (= other (durable-state attached))))))))))
