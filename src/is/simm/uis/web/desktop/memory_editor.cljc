@@ -93,7 +93,7 @@
           (update :drafts
                   (fn [drafts]
                     (into {} (map (fn [[path d]]
-                                    [path (-> d (assoc :target-stale? true)
+                                    [path (-> d (assoc :target-stale? true :current-target-stamp stamp)
                                               (update :generation (fnil inc 0)))])) drafts)))
           (update :requests #(select-keys % [:repl]))
           (update :loading #(select-keys % [:repl]))
@@ -117,16 +117,47 @@
 
 (defn observed-entry
   "Deletion retains the entire draft/Office model, even when clean. It is not
-   permission to recreate a missing file. Only an explicit recovery can do so."
-  [d entry]
-  (let [d (when d (assoc d :observed-entry entry))]
-    (cond
-      (nil? d) d
-      (= entry (get-in d [:source :entry])) (dissoc d :incoming :incoming-entry :remote-deleted?)
-      (nil? entry) (assoc d :remote-deleted? true
-                          :incoming {:path (get-in d [:source :path]) :entry nil :deleted? true})
-      :else (cond-> (assoc (dissoc d :remote-deleted?) :incoming-entry entry)
-              (get-in d [:incoming :deleted?]) (dissoc :incoming)))))
+   permission to recreate a missing file. Only an explicit recovery can do so.
+
+   Three-arity observations are stamped metadata, not full incoming bodies.
+   observe-target must establish intentional target transitions; without that
+   marker the first observed/incoming stamp anchors later observations. UUIDs
+   do not carry chronology: a late old-target observation cannot switch back."
+  ([d entry]
+   (let [d (when d (assoc d :observed-entry entry))]
+     (cond
+       (nil? d) d
+       (= entry (get-in d [:source :entry])) (dissoc d :incoming :incoming-entry :remote-deleted?)
+       (nil? entry) (assoc d :remote-deleted? true
+                           :incoming {:path (get-in d [:source :path]) :entry nil :deleted? true})
+       :else (cond-> (assoc (dissoc d :remote-deleted?) :incoming-entry entry)
+               (get-in d [:incoming :deleted?]) (dissoc :incoming)))))
+  ([d entry stamp]
+   (when-not (uuid? stamp)
+     (throw (ex-info "A Memory observation needs an exact target stamp" {:type ::invalid-target})))
+   (let [known (or (:current-target-stamp d) (:observed-target-stamp d)
+                   (:incoming-target-stamp d) (get-in d [:incoming :target-stamp]))]
+     (cond
+       (nil? d) nil
+       (and known (not= known stamp)) d
+       (= stamp (get-in d [:source :target-stamp]))
+       (let [incoming (:incoming d)
+             same-incoming? (and (some? entry) (= stamp (:target-stamp incoming))
+                                 (= entry (:entry incoming)))
+             prior (cond-> (dissoc d :incoming-target-stamp :incoming-missing?)
+                     (and incoming (not same-incoming?)) (dissoc :incoming))]
+         (assoc (observed-entry prior entry) :observed-target-stamp stamp))
+       :else
+       (let [incoming (:incoming d)
+             same-incoming? (and (some? entry) (= stamp (:target-stamp incoming))
+                                 (= entry (:entry incoming))
+                                 (not (:deleted? incoming)))]
+         (cond-> (-> d
+                     (assoc :observed-entry entry :observed-target-stamp stamp
+                            :incoming-entry entry :incoming-target-stamp stamp :target-stale? true)
+                     (dissoc :remote-deleted? :incoming-missing?))
+           (nil? entry) (assoc :incoming-missing? true)
+           (not same-incoming?) (dissoc :incoming)))))))
 
 (defn metadata-request [state]
   (let [pending (for [[slot loading?] (:loading state)

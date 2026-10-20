@@ -41,7 +41,7 @@
         retained (get-in next [:drafts "wiki/page.md"])]
     (is (= 5 (:read-epoch next)))
     (is (= b (:target-stamp next)))
-    (is (= (assoc draft :generation 1 :target-stale? true) retained))
+    (is (= (assoc draft :generation 1 :target-stale? true :current-target-stamp b) retained))
     (is (= (:repl state) (:repl next)))
     (is (= {:repl :ongoing-repl} (:requests next)))
     (is (= {:repl true} (:loading next)))
@@ -71,3 +71,78 @@
     (is (= (file b) (:incoming original-fact)))
     (is (= "Actually saved in A" (get-in original-fact [:source :text])))
     (is (true? (:target-stale? original-fact)))))
+
+(deftest stamped-identical-metadata-retains-cross-target-incoming-and-human-models
+  (let [a (random-uuid) b (random-uuid)
+        d (assoc (editor/draft (file a)) :text "My work"
+                 :rich-base {:models {0 "Rich work"}}
+                 :office {:text "XML work" :saved-text "Old XML"})
+        incoming (editor/loaded d (file b))
+        observed (editor/observed-entry incoming (:entry (file b)) b)]
+    (is (= (:source d) (:source observed)))
+    (is (= (:text d) (:text observed)))
+    (is (= (:rich-base d) (:rich-base observed)))
+    (is (= (:office d) (:office observed)))
+    (is (= (file b) (:incoming observed)))
+    (is (= b (:incoming-target-stamp observed) (:observed-target-stamp observed)))
+    (is (true? (:target-stale? observed)))
+    (is (= observed (editor/observed-entry observed (:entry (file a)) a)))
+    (is (= b (get-in (editor/use-incoming observed) [:source :target-stamp])))))
+
+(deftest metadata-is-not-an-incoming-body-and-absence-in-b-does-not-delete-a
+  (let [a (random-uuid) b (random-uuid)
+        d (assoc (editor/draft (file a)) :text "Keep my source"
+                 :rich-base {:models {0 "Keep rich"}}
+                 :office {:text "Keep XML" :saved-text "Before"})
+        current (get-in (editor/observe-target {:target-stamp a :drafts {"wiki/page.md" d}} b)
+                        [:drafts "wiki/page.md"])
+        present (editor/observed-entry current (:entry (file b)) b)
+        absent (editor/observed-entry present nil b)]
+    (doseq [observed [present absent]]
+      (is (= (:source d) (:source observed)))
+      (is (= "Keep my source" (:text observed)))
+      (is (= (:office d) (:office observed)))
+      (is (= (:rich-base d) (:rich-base observed)))
+      (is (nil? (:incoming observed)))
+      (is (= observed (editor/use-incoming observed)))
+      (is (= observed (editor/observed-entry observed (:entry (file a)) a))))
+    (is (contains? absent :incoming-entry))
+    (is (nil? (:incoming-entry absent)))
+    (is (true? (:incoming-missing? absent)))
+    (is (not (:remote-deleted? absent)))
+    (is (= b (:incoming-target-stamp absent)))))
+
+(deftest changed-metadata-never-offers-an-outdated-incoming-body
+  (let [a (random-uuid) b (random-uuid)
+        d (assoc (editor/draft (file a)) :text "Local")
+        incoming (editor/loaded d (file b))
+        changed (editor/observed-entry incoming {:content :newer-in-b} b)
+        deleted (editor/observed-entry incoming nil b)]
+    (is (= {:content :newer-in-b} (:incoming-entry changed)))
+    (is (nil? (:incoming changed)))
+    (is (nil? (:incoming deleted)))
+    (is (true? (:incoming-missing? deleted)))
+    (is (= (:source d) (:source changed) (:source deleted)))))
+
+(deftest explicit-controller-transition-allows-return-without-guessing-uuid-order
+  (let [a (random-uuid) b (random-uuid)
+        d (assoc (editor/draft (file a)) :text "Local")
+        direct (editor/observed-entry d (:entry (file b)) b)
+        returned (get-in (editor/observe-target {:target-stamp b :drafts {"wiki/page.md" direct}} a)
+                         [:drafts "wiki/page.md"])
+        accepted (editor/observed-entry returned (:entry (file a)) a)]
+    (is (= direct (editor/observed-entry direct (:entry (file a)) a)))
+    (is (= a (:current-target-stamp accepted) (:observed-target-stamp accepted)))
+    (is (nil? (:incoming-target-stamp accepted)))
+    (is (nil? (:incoming-entry accepted)))
+    (is (= (:source d) (:source accepted)))
+    (is (= "Local" (:text accepted)))))
+
+(deftest stamped-same-target-metadata-keeps-the-legacy-conflict-behavior
+  (let [a (random-uuid) d (assoc (editor/draft (file a)) :text "Local")]
+    (doseq [entry [(:entry (file a)) {:content :changed} nil]]
+      (is (= (editor/observed-entry d entry)
+             (dissoc (editor/observed-entry d entry a) :observed-target-stamp))))
+    (is (nil? (editor/observed-entry nil nil a)))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (editor/observed-entry d nil nil)))))
