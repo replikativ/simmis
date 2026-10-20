@@ -12,7 +12,6 @@
             [is.simm.ops.knowledge-admission :as admission]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.yggdrasil :as ygg]
             [yggdrasil.protocols :as protocols]))
 
 (defn- refuse! [reason]
@@ -50,6 +49,9 @@
                        (mapcat #(facts db % [:grant/room :grant/system :grant/permission]) grants))]
       (hasch/uuid [:simmis/owned-default-mapping-v1 control-store (sort-by pr-str rows)]))))
 
+(defn- target-stamp [room-id mapping target workspace-config]
+  (hasch/uuid [:simmis/owned-workspace-target-v2 room-id mapping target workspace-config]))
+
 (defn resolve!
   "Resolve after authentication, using exactly this registry DB for authority,
    Room mapping and default ownership. Returns live HOST handles plus one
@@ -59,13 +61,16 @@
   (let [party (authorize! registry-db principal action room-id)
         {:keys [system conn registry-system runtime-system] :as descriptor}
         (admission/default-binding registry-db room-id room)
-        _ (binding [ec/*execution-context* (:ctx room)]
-            (let [matches (filterv #(= runtime-system (str (protocols/system-id %)))
-                                   (vals (ygg/registered-systems)))]
-              (when-not (and (= 1 (count matches)) (identical? system (first matches))
-                             (= :geschichte (protocols/system-type system))
-                             (identical? conn (workspace/gy-connection system)))
-                (refuse! :invalid-runtime))))
+        native (binding [ec/*execution-context* (:ctx room)]
+                 ;; The native explicit resolver also rejects a differently
+                 ;; named Geschichte OR Datahike alias of this connection.
+                 ;; Ambient selection cannot choose another system's policy.
+                 (workspace/workspace-for-system! system))
+        _ (when-not (and (= runtime-system (str (protocols/system-id system)))
+                         (identical? system (:system native))
+                         (identical? conn (:conn native)))
+            (refuse! :invalid-runtime))
+        workspace-config (dissoc (:repository native) :conn)
         db @conn
         target {:registry-system registry-system :runtime-system runtime-system
                 :repository (:geschichte.repo/id (query/repository db))
@@ -73,11 +78,18 @@
                 :branch (get-in db [:config :branch]) :ref (query/current-ref db)}
         _ (when-not (and (publication/host-target? target) (m/validate publication/target-schema target))
             (refuse! :invalid-target))
+        ;; Descriptor and file projection must describe ONE coherent snapshot.
+        ;; HEAD changes are fine; a config/ref switch between dereferences is
+        ;; refused, not silently stamped using pieces of two different targets.
+        _ (when-not (and (= (:config db) (:config workspace-config))
+                         (= (select-keys target [:repository :store :backend :branch :ref])
+                            (::workspace/physical-target native)))
+            (refuse! :target-changed))
         mapping (mapping-revision registry-db room-id registry-system)
-        stamp (hasch/uuid [:simmis/owned-workspace-target-v1 room-id mapping target])]
+        stamp (target-stamp room-id mapping target workspace-config)]
     {:room room :room-id room-id :party party :action action
      :descriptor descriptor :system system :conn conn :db db
-     :target target :target-stamp stamp}))
+     :target target :target-stamp stamp :workspace-config workspace-config}))
 
 (defn validate!
   "Re-resolve with the caller's CURRENT registry snapshot. Submitted stamp or
@@ -88,6 +100,7 @@
   (let [current (resolve! registry-db principal action room-id room)]
     (when-not (and (= (:target-stamp binding) (:target-stamp current))
                    (= (:target binding) (:target current))
+                   (= (:workspace-config binding) (:workspace-config current))
                    (identical? (:system binding) (:system current))
                    (identical? (:conn binding) (:conn current))
                    (identical? (:room binding) room))

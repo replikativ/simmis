@@ -404,14 +404,14 @@
         ;; selection to fork-local execution state, never attachment order. Pin
         ;; its permanent main squash (tree-identical to the reviewed PR head).
         ;; #370 is merged: off-drain SCI preparation and owned physical cleanup.
-        ;; #371's public immutable head adds explicit-target file batches without
-        ;; mutating Room selection; source independently reviewed, 82/500 local
-        ;; regressions green. Temporary until its required full CI/main squash.
+        ;; #371 adds explicit-target file batches without mutating Room
+        ;; selection. Pin its permanent main squash after independent review,
+        ;; 82/500 local regressions and all required full CI passed.
         ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         ;; Use the merged #363 commit: the earlier feature SHA is retired.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "44d3a7a87c32792e8d0b12a583859f3c59701a7a"
+                               :git/sha "54f043f44479d44e092518e223cdd84ddd4eb21b"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.
