@@ -27,9 +27,9 @@
     (if (or (:rich-base d) (not= :ready (get-in analysis [:semantic :status]))
             (> (count (:slots analysis)) max-rich-regions)) d
         (assoc d :rich-base {:id [(:revision analysis) (:generation d)]
-                            :text (:text d) :analysis analysis
-                            :models (into {} (keep (fn [slot] (when (:model slot) [(:from slot) (:model slot)]))) (:slots analysis))
-                            :selections {}}))))
+                             :text (:text d) :analysis analysis
+                             :models (into {} (keep (fn [slot] (when (:model slot) [(:from slot) (:model slot)]))) (:slots analysis))
+                             :selections {}}))))
 
 (defn rich-edits [d]
   (let [{:keys [analysis models]} (:rich-base d)]
@@ -58,8 +58,8 @@
         slots (into {} (map (juxt :from identity)) (get-in d [:rich-base :analysis :slots]))
         offset (fn [position]
                  (+ position (reduce + 0 (for [edit edits :when (<= (:to edit) position)]
-                                            (- (count (rich/apply-region source (get slots (:from edit)) (:model edit)))
-                                               (count source))))))]
+                                           (- (count (rich/apply-region source (get slots (:from edit)) (:model edit)))
+                                              (count source))))))]
     {:anchor (offset from) :head (offset to)}))
 
 (defn draft [file]
@@ -72,16 +72,47 @@
       (not= (:text d) (get-in d [:source :text]))
       (not= (get-in d [:office :text]) (get-in d [:office :saved-text]))))
 
+(defn same-target? [a b]
+  (= (:target-stamp a) (:target-stamp b)))
+
+(defn- same-document? [a b]
+  (and (same-target? a b) (= (:entry a) (:entry b))))
+
+(defn observe-target
+  "Inactive pure target-epoch transition, for the stamped adapter rollout.
+   A stamp is identity, not authority. Invalidate file I/O/cache identities even
+   for identical bytes, retaining every draft and its original source/Office/
+   rich model for explicit conflict handling. Generic Room REPL is not retargeted."
+  [state stamp]
+  (when-not (uuid? stamp)
+    (throw (ex-info "A Memory target needs an exact stamp" {:type ::invalid-target})))
+  (if (= stamp (:target-stamp state)) state
+      (-> state
+          (assoc :target-stamp stamp)
+          (update :read-epoch (fnil inc 0))
+          (update :drafts
+                  (fn [drafts]
+                    (into {} (map (fn [[path d]]
+                                    [path (-> d (assoc :target-stale? true)
+                                              (update :generation (fnil inc 0)))])) drafts)))
+          (update :requests #(select-keys % [:repl]))
+          (update :loading #(select-keys % [:repl]))
+          (update :errors #(select-keys % [:repl]))
+          (dissoc :folders :workspace :observed-entries :history :history-preview
+                  :search :download :evaluations :permissions :opened-path
+                  :watch-connection :sync))))
+
 (defn loaded [old file]
   (cond
     (nil? old) (draft file)
     (or (dirty? old) (:rich-edit old))
-    (if (= (:entry file) (get-in old [:source :entry]))
+    (if (same-document? file (:source old))
       (dissoc old :incoming :incoming-entry :remote-deleted?)
-      (-> old (assoc :incoming file) (dissoc :incoming-entry)))
+      (cond-> (-> old (assoc :incoming file) (dissoc :incoming-entry))
+        (not (same-target? file (:source old))) (assoc :target-stale? true)))
     :else (assoc (merge (draft file) (select-keys old [:mode :selection :code-view]))
                  ;; A same-entry refresh must not supersede an in-flight save.
-                 :generation (if (= (:entry file) (get-in old [:source :entry]))
+                 :generation (if (same-document? file (:source old))
                                (:generation old 0) (inc (:generation old 0))))))
 
 (defn observed-entry
@@ -89,22 +120,22 @@
    permission to recreate a missing file. Only an explicit recovery can do so."
   [d entry]
   (let [d (when d (assoc d :observed-entry entry))]
-   (cond
-    (nil? d) d
-    (= entry (get-in d [:source :entry])) (dissoc d :incoming :incoming-entry :remote-deleted?)
-    (nil? entry) (assoc d :remote-deleted? true
-                       :incoming {:path (get-in d [:source :path]) :entry nil :deleted? true})
-    :else (cond-> (assoc (dissoc d :remote-deleted?) :incoming-entry entry)
-            (get-in d [:incoming :deleted?]) (dissoc :incoming)))))
+    (cond
+      (nil? d) d
+      (= entry (get-in d [:source :entry])) (dissoc d :incoming :incoming-entry :remote-deleted?)
+      (nil? entry) (assoc d :remote-deleted? true
+                          :incoming {:path (get-in d [:source :path]) :entry nil :deleted? true})
+      :else (cond-> (assoc (dissoc d :remote-deleted?) :incoming-entry entry)
+              (get-in d [:incoming :deleted?]) (dissoc :incoming)))))
 
 (defn metadata-request [state]
   (let [pending (for [[slot loading?] (:loading state)
                       :when (and loading? (vector? slot))] slot)]
     {:folders (vec (sort (distinct (concat (keys (:folders state))
-                                          (when (:root-expanded? state) [(or (:focus-folder state) "")])
-                                          (map second (filter #(= :folder (first %)) pending))))))
+                                           (when (:root-expanded? state) [(or (:focus-folder state) "")])
+                                           (map second (filter #(= :folder (first %)) pending))))))
      :paths (vec (sort (distinct (concat (keys (:drafts state))
-                                        (map second (filter #(= :file (first %)) pending))))))}))
+                                         (map second (filter #(= :file (first %)) pending))))))}))
 
 (defn property-entries [properties] (sort-by (comp pr-str key) properties))
 
@@ -139,7 +170,7 @@
       (assoc-in [:source :text] sent)
       (assoc :last-commit (:commit reply))
       (update :generation (fnil inc 0))
-      (cond-> (= (:entry reply) (get-in d [:incoming :entry])) (dissoc :incoming))))
+      (cond-> (same-document? reply (:incoming d)) (dissoc :incoming))))
 
 (defn moved
   "Move the saved baseline, retaining any edits made while the move was in flight."
@@ -151,7 +182,7 @@
       (dissoc :incoming)))
 
 (defn saved-at-generation [d generation sent reply]
-  (if (= generation (:generation d)) (saved d sent reply)
+  (if (and (= generation (:generation d)) (same-target? (:source d) reply)) (saved d sent reply)
       (assoc d :earlier-save-receipt reply)))
 
 (defn response-current? [state slot token]
