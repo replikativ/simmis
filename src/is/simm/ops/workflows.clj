@@ -333,12 +333,10 @@
   (source-arguments! request)
   (source-page-of (details room (:name request)) request))
 
-(defn write!
-  "One bounded atomic repository commit, restricted to this bundle's subtree.
-   Nil removes a path. Other room files (including AGENTS.md) are not writable
-   through this capability. Author identity is supplied by the host."
-  [room principal {:keys [name expected-revision] edits :files :as input}]
-  (when-not (m/validate write-schema input) (invalid! "Invalid workflow edits"))
+(defn normalized-edits
+  "HOST pure edit plan shared by legacy and owned writers. No target or IO."
+  [name edits]
+  (when-not (m/validate write-schema {:name name :files edits}) (invalid! "Invalid workflow edits"))
   (let [prefix (prefix! name)
         entries (reduce-kv
                  (fn [out path text]
@@ -353,6 +351,15 @@
                  {} edits)
         size (reduce + 0 (keep (fn [[_ v]] (some-> (:text v) (.getBytes StandardCharsets/UTF_8) alength)) entries))]
     (when (> size max-bundle-bytes) (invalid! "Workflow edit batch exceeds the byte limit"))
+    {:prefix prefix :entries entries}))
+
+(defn write!
+  "One bounded atomic repository commit, restricted to this bundle's subtree.
+   Nil removes a path. Other room files (including AGENTS.md) are not writable
+   through this capability. Author identity is supplied by the host."
+  [room principal {:keys [name expected-revision] edits :files :as input}]
+  (when-not (m/validate write-schema input) (invalid! "Invalid workflow edits"))
+  (let [{:keys [entries]} (normalized-edits name edits)]
     (binding [ec/*execution-context* (:ctx room)]
       (let [conn (or (:conn (workspace/current-workspace))
                      (throw (ex-info "Room has no workspace" {:type ::unavailable})))]

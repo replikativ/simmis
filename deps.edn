@@ -421,10 +421,13 @@
         ;; endpoints after bounded acquisition. Its permanent squash matches
         ;; the reviewed tree; focused and 11-namespace regressions plus all
         ;; four upstream CI checks passed. Owned host activation remains off.
+        ;; #376 permanent squash adds full subtree CAS and joined native
+        ;; stage/commit/cleanup ACKs. Its tree matches the reviewed public head;
+        ;; local140/1145 and all required CI passed. Authoring remains inactive.
         ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "fbdaa8aa9c91a64a990e543df6e6000fd8dd4874"
+                               :git/sha "8b115db3e03f9e210b94deec408c1d51c058410d"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.

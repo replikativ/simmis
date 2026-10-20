@@ -54,8 +54,21 @@
 (defn- envelope [binding data]
   {:data data :read-context (select-keys binding [:control-db :party :room-id])})
 
-(defn- source-id [binding name manifest]
+(defn source-id
+  "HOST pure target-bound identity over a validated manifest; not authority."
+  [binding name manifest]
   (hasch/uuid [:simmis/owned-workflow-source-v1 (:room-id binding) (:target-stamp binding) name manifest]))
+
+(defn details-of
+  "HOST pure safe formatting of ORIGINAL captured source, including write ACKs."
+  [binding name snapshot]
+  (let [revision (str (source-id binding name (:manifest snapshot)))
+        details (workflows/details-of name snapshot)]
+    (-> (cond-> details
+          (seq (get-in details [:inspection :problems]))
+          (assoc-in [:inspection :problems] ["Workflow source is incomplete or invalid; inspect its files"]))
+        (assoc :revision revision)
+        (assoc-in [:inspection :revision] revision))))
 
 (defn- captured-details! [host principal handle request expected]
   (let [binding (storage! #(reads/resolve-host-read! host principal handle))
@@ -69,16 +82,9 @@
       (let [entry (first (filter #(= path (:path %)) manifest))]
         (when-not (and entry (<= (get request :offset 0) (:size entry))) (invalid!)))
       (when (> (get request :file-offset 0) (count manifest)) (invalid!)))
-    (let [details (storage! #(workflows/details-of name (workflows/snapshot-in (:db binding) name)))
-          ;; inspect-snapshot catches parser/helper exceptions as NORMAL data.
-          ;; Sanitize here too, without changing legacy diagnostics or files.
-          details (cond-> details
-                    (seq (get-in details [:inspection :problems]))
-                    (assoc-in [:inspection :problems]
-                              ["Workflow source is incomplete or invalid; inspect its files"]))]
+    (let [details (storage! #(details-of binding name (workflows/snapshot-in (:db binding) name)))]
       {:binding binding
-       :details (-> details (assoc :revision (str revision))
-                    (assoc-in [:inspection :revision] (str revision)))})))
+       :details details})))
 
 (defn details!
   "Full captured source for a host editor. :read-context stays HOST-only and

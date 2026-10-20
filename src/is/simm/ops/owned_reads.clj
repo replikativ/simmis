@@ -71,6 +71,26 @@
     (when-not (access/can? control-db party :read {:room room-id}) (refuse!))
     (assoc resolved :party party)))
 
+(defn authorize-write!
+  "Fixed HOST human read+write gate; no hydration or transferable authority."
+  [control-db principal original-handle]
+  (let [{:keys [party room-id] :as resolved} (authorize-read! control-db principal original-handle)]
+    (when-not (access/can? control-db party :write {:room room-id}) (refuse!))
+    resolved))
+
+(defn- resolve-action! [conn host-ctx principal handle action]
+  (binding [ec/*execution-context* host-ctx]
+    (let [authorize (case action :read authorize-read! :write authorize-write!)
+          before (current-control-db! conn host-ctx)
+          original (authorize before principal handle)
+          room (rooms/live-room (:room-id original))
+          after (current-control-db! conn host-ctx)
+          current (authorize after principal handle)]
+      (when-not (and room (= (select-keys original [:room-id :party])
+                             (select-keys current [:room-id :party]))) (refuse!))
+      (assoc (owned/resolve! after principal action (:room-id original) room)
+             :control-db after))))
+
 (defn resolve-read!
   "ONE ephemeral HOST rich binding from current canonical identity/EACL before
    hydration and again after. Fixed read only. No callbacks, actor/target/action
@@ -78,15 +98,8 @@
    :control-db and all live handles MUST stay host-only: never persist/export
    them through RPC/SCI or fork state, or treat them as an authorization lease."
   [canonical-control-conn actual-host-context authenticated-human-principal original-handle]
-  (binding [ec/*execution-context* actual-host-context]
-    (let [before (current-control-db! canonical-control-conn actual-host-context)
-          {:keys [room-id]} (authorize-read! before authenticated-human-principal original-handle)
-          room (rooms/live-room room-id)
-          after (current-control-db! canonical-control-conn actual-host-context)
-          current (authorize-read! after authenticated-human-principal original-handle)]
-      (when-not (and room (= room-id (:room-id current))) (refuse!))
-      (assoc (owned/resolve! after authenticated-human-principal :read room-id room)
-             :control-db after))))
+  (resolve-action! canonical-control-conn actual-host-context authenticated-human-principal
+                   original-handle :read))
 
 (defn host-owner
   "HOST-only captured owner DATA, not a callback or transferable authority.
@@ -98,14 +111,35 @@
   ;; Presence is intentional: malformed/expired owners MUST NOT fall back.
   (contains? host ::owner))
 
-(defn resolve-host-read!
-  "Fixed HOST composition entry. Validate the ORIGINAL host owner, then obtain
-   ONE rich canonical binding. No callback lookup, fresh owner adoption or
-   selected fallback; the explicit principal is authenticated by the caller."
-  [host authenticated-human-principal original-handle]
+(defn- original-owner! [host]
   (let [{:keys [control-conn execution-ctx] :as owner} (::owner host)]
     (when-not (and (map? owner) (= #{:control-conn :execution-ctx} (set (keys owner)))
                    control-conn execution-ctx
                    (identical? execution-ctx (:execution-ctx host)))
       (refuse!))
+    owner))
+
+(defn resolve-host-read!
+  "Fixed HOST composition entry. Validate the ORIGINAL host owner, then obtain
+   ONE rich canonical binding. No callback lookup, fresh owner adoption or
+   selected fallback; the explicit principal is authenticated by the caller."
+  [host authenticated-human-principal original-handle]
+  (let [{:keys [control-conn execution-ctx]} (original-owner! host)]
     (resolve-read! control-conn execution-ctx authenticated-human-principal original-handle)))
+
+(defn resolve-host-write!
+  "Fixed inactive HOST human writer binding. Never selected or owner-adopting."
+  [host principal original-handle]
+  (let [{:keys [control-conn execution-ctx]} (original-owner! host)]
+    (resolve-action! control-conn execution-ctx principal original-handle :write)))
+
+(defn validate-host-write!
+  "Revalidate current authority and the ORIGINAL target at native effect gates."
+  [host principal original-handle binding]
+  (let [{:keys [control-conn execution-ctx]} (original-owner! host)
+        db (current-control-db! control-conn execution-ctx)
+        current (authorize-write! db principal original-handle)]
+    (when-not (= (select-keys binding [:room-id :party]) (select-keys current [:room-id :party]))
+      (refuse!))
+    (owned/validate! db principal :write (:room-id binding) (:room binding) binding)
+    true))
