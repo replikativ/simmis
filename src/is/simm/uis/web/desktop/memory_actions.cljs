@@ -70,8 +70,8 @@
                 (when (string? text)
                   (request! [:analysis path] #(remote/analyze-memory-text! web/server-id room path text)
                             #(update-in %1 [:drafts path] editor/analyzed text %2)))))
-            (open! [path refresh? & [observed]]
-              (when-not observed (update! assoc :selected path))
+            (open! [path refresh? & [observed passive?]]
+              (when-not (or observed passive?) (update! assoc :selected path))
               (when (or refresh? (nil? (get-in (state) [:drafts path])))
                 (let [generation (get-in (state) [:drafts path :generation]) epoch (:read-epoch (state))
                       connection (binding [ec/*execution-context* ctx] @sig/memory-connection)]
@@ -149,15 +149,15 @@
                               (get-in (state) [:loading [:move path]]))
                   (request! [:office-save path]
                             #(remote/save-memory-office-part! web/server-id room
-                                                             {:path path :expected (get-in draft [:source :entry])
-                                                              :part (:part office) :text sent})
+                                                              {:path path :expected (get-in draft [:source :entry])
+                                                               :part (:part office) :text sent})
                             (fn [s reply]
                               (if (= (:part office) (get-in s [:drafts path :office :part]))
                                 (update-in s [:drafts path]
-                                         #(-> % (assoc-in [:source :entry] (:entry reply))
-                                              (assoc-in [:office :saved-text] sent)
-                                              (assoc :last-commit (:commit reply))
-                                              (update :generation inc))) s))
+                                           #(-> % (assoc-in [:source :entry] (:entry reply))
+                                                (assoc-in [:office :saved-text] sent)
+                                                (assoc :last-commit (:commit reply))
+                                                (update :generation inc))) s))
                             (fn [_] (folder! (parent path)) (navigation-refresh!))))))]
       {:owner key :state state :change change! :folder folder! :open #(open! % false) :reload #(open! % true)
        :repl-change (fn [f & args] (apply update! update :repl f args))
@@ -216,45 +216,58 @@
                      (update! assoc-in [:sync :attempted] marker)
                      (if (or (> (count (:folders request)) 64) (> (count (:paths request)) 64))
                        (update! assoc-in [:errors :metadata] "Live updates support 64 expanded folders and file buffers per view. Collapse folders or close buffers, then Refresh.")
-                      (request! :metadata #(remote/load-memory-metadata! web/server-id room request)
-                               (fn [current reply]
-                                 (if (or (not= connection @sig/memory-connection)
-                                         (not= connection (:watch-connection current))) current
-                                     (-> (reduce-kv
-                                          (fn [result path entry]
-                                            (if (editor/metadata-generation-current? (get generations path) (get-in result [:drafts path :generation]))
-                                              (update-in result [:drafts path] editor/observed-entry entry) result))
-                                          current (:entries reply))
-                                         (update :read-epoch (fnil inc 0))
-                                         (update :observed-entries merge (:entries reply))
-                                         (update :folders merge (:folders reply))
-                                         (assoc :workspace (:workspace reply))
-                                         (assoc-in [:sync :revision] (:revision reply))
-                                         (assoc-in [:sync :completed] marker))))
-                               (fn [reply]
-                                 (when (and (= connection (binding [ec/*execution-context* ctx] @sig/memory-connection))
-                                            (= connection (:watch-connection (state))))
-                                   (do
-                                     (binding [ec/*execution-context* ctx]
-                                       (when (seq (:query (state))) ((:search (controller data))))
-                                     (doseq [path (keys (:history (state)))]
-                                       (request! [:history path] #(remote/load-memory-history! web/server-id room path)
-                                                 #(assoc-in %1 [:history path] %2))))
-                                   (doseq [[path entry] (:entries reply)
-                                           :let [draft (get-in (state) [:drafts path])]
-                                           :when (and entry
-                                                      (editor/metadata-generation-current? (get generations path) (:generation draft))
-                                                      (not= entry (get-in draft [:source :entry]))
-                                                      (not= entry (get-in draft [:incoming :entry])))]
-                                     (open! path true entry))))))))))))))
+                       (request! :metadata #(remote/load-memory-metadata! web/server-id room request)
+                                 (fn [current reply]
+                                   (if (or (not= connection @sig/memory-connection)
+                                           (not= connection (:watch-connection current))) current
+                                       (-> (reduce-kv
+                                            (fn [result path entry]
+                                              (if (editor/metadata-generation-current? (get generations path) (get-in result [:drafts path :generation]))
+                                                (update-in result [:drafts path] editor/observed-entry entry) result))
+                                            current (:entries reply))
+                                           (update :read-epoch (fnil inc 0))
+                                           (update :observed-entries merge (:entries reply))
+                                           (update :folders merge (:folders reply))
+                                           (assoc :workspace (:workspace reply))
+                                           (assoc-in [:sync :revision] (:revision reply))
+                                           (assoc-in [:sync :completed] marker))))
+                                 (fn [reply]
+                                   (when (and (= connection (binding [ec/*execution-context* ctx] @sig/memory-connection))
+                                              (= connection (:watch-connection (state))))
+                                   ;; Metadata captured its paths BEFORE some
+                                   ;; current reads began (e.g. upload finish).
+                                   ;; Its epoch invalidates those reads too:
+                                   ;; replace omitted pending requests, without
+                                   ;; selecting their paths or retrying writes.
+                                     (doseq [[slot loading?] (:loading (state))
+                                             :when (and loading? (vector? slot))
+                                             :let [[kind path] slot]]
+                                       (cond
+                                         (and (= :file kind) (not (contains? (:entries reply) path)))
+                                         (open! path true nil true)
+                                         (and (= :folder kind) (not (contains? (:folders reply) path)))
+                                         (folder! path)))
+                                     (do
+                                       (binding [ec/*execution-context* ctx]
+                                         (when (seq (:query (state))) ((:search (controller data))))
+                                         (doseq [path (keys (:history (state)))]
+                                           (request! [:history path] #(remote/load-memory-history! web/server-id room path)
+                                                     #(assoc-in %1 [:history path] %2))))
+                                       (doseq [[path entry] (:entries reply)
+                                               :let [draft (get-in (state) [:drafts path])]
+                                               :when (and entry
+                                                          (editor/metadata-generation-current? (get generations path) (:generation draft))
+                                                          (not= entry (get-in draft [:source :entry]))
+                                                          (not= entry (get-in draft [:incoming :entry])))]
+                                         (open! path true entry))))))))))))))
        :analyze analyze! :save save! :mode mode! :create create! :download download! :upload upload!
        :office-open office-open! :office-save office-save!
        :select-path #(update! assoc :selected %)
        :set-query #(update! assoc :query %)
        :search (fn [] (let [query (:query (state))]
-                       (when-not (str/blank? query)
-                         (request! :search #(remote/search-memory-files! web/server-id room query)
-                                   (fn [s reply] (if (= query (:query s)) (assoc s :search reply) s))))))
+                        (when-not (str/blank? query)
+                          (request! :search #(remote/search-memory-files! web/server-id room query)
+                                    (fn [s reply] (if (= query (:query s)) (assoc s :search reply) s))))))
        :toggle-root (fn [] (update! update :root-expanded? not) (folder! (or (:focus-folder (state)) "")))
        :focus-folder (fn [path]
                        (update! assoc :focus-folder path :current-folder path :query "" :root-expanded? true)
@@ -309,7 +322,7 @@
                                     (mapv (fn [col]
                                             (if (= (:col-id data) (:id col))
                                               (update col :tabs (fn [tabs]
-                                                                 (mapv (fn [tab] (if (= (:tab-id data) (:id tab))
-                                                                                  (-> tab (assoc-in [:data :path] target)
-                                                                                      (assoc :title (last (str/split target #"/")))) tab)) tabs))) col)) columns))))
+                                                                  (mapv (fn [tab] (if (= (:tab-id data) (:id tab))
+                                                                                    (-> tab (assoc-in [:data :path] target)
+                                                                                        (assoc :title (last (str/split target #"/")))) tab)) tabs))) col)) columns))))
                          (folder! (parent path)) (folder! (parent target)) (navigation-refresh!) (open! target true))))))})))

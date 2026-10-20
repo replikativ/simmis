@@ -29,7 +29,7 @@
         (let [a (actions/controller data) key (:owner a) stream {:connection connection :status :ready :dirty {}}
               state #(get @states key)]
           (swap! states assoc key {:selected "a.clj" :folders {"" {:entries []}}
-                                  :drafts {"a.clj" (editor/draft a-file) "b.clj" (editor/draft b-file)}})
+                                   :drafts {"a.clj" (editor/draft a-file) "b.clj" (editor/draft b-file)}})
           ((:folder a) "slow")
           (let [old-folder (:folder @replies)]
             ((:ensure-sync a) connection stream)
@@ -93,3 +93,42 @@
             (is (= 2 @loads) "The newer metadata must trigger a fresh body read")
             ((:file @replies) {:path "a.clj" :entry {:content :new} :text "new"})
             (is (= "new" (get-in @states [(:owner a) :drafts "a.clj" :text])))))))))
+
+(deftest a-file-started-after-the-metadata-snapshot-is-not-stranded
+  (doseq [body-first? [false true]]
+    (binding [ec/*execution-context* runtime]
+      (let [session {:id (random-uuid)} connection {:epoch (random-uuid)}
+            states (signal runtime {}) replies (atom {}) loads (atom [])
+            file {:path "uploaded.clj" :entry {:content :uploaded} :text "Uploaded"}]
+        (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
+                      sig/memory-connection (signal runtime connection)
+                      sync/ensure! (fn [_])
+                      remote/prepare-memory-stream! (fn [& _] (fn [ok _] (ok {})))
+                      remote/load-memory-metadata!
+                      (fn [_ _ request]
+                        (is (not (some #{"uploaded.clj"} (:paths request))))
+                        (fn [ok _] (swap! replies assoc :metadata ok)))
+                      remote/load-memory-file!
+                      (fn [& _] (fn [ok _] (swap! loads conj ok)))]
+          (let [a (actions/controller {:room-id "test-room" :col-id :test :state-signal states})
+                stream {:connection connection :status :ready :dirty {}}
+                state #(get @states (:owner a))]
+            ((:ensure-sync a) connection stream)
+            ((:ensure-sync a) connection stream)
+            ;; Like upload completion: this path did not exist when metadata
+            ;; captured its request. No selected/deep-link rerender retries it.
+            ((:open a) "uploaded.clj")
+            ((:select-path a) "other.clj")
+            (let [old-body (first @loads)]
+              (when body-first? (old-body file))
+              ((:metadata @replies) {:folders {} :entries {} :revision :snapshot-before-upload})
+              (when-not body-first?
+                (is (= 2 (count @loads)) "Metadata must replace the invalidated, omitted body request")
+                (old-body (assoc file :text "Stale response"))
+                (is (nil? (get-in (state) [:drafts "uploaded.clj"])))
+                (is (true? (get-in (state) [:loading [:file "uploaded.clj"]]))
+                    "The old callback must not finish its replacement request")
+                ((last @loads) file))
+              (is (= "Uploaded" (get-in (state) [:drafts "uploaded.clj" :text])))
+              (is (= "other.clj" (:selected (state))) "Background retries must not navigate")
+              (is (false? (get-in (state) [:loading [:file "uploaded.clj"]]))))))))))
