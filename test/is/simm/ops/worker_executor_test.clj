@@ -82,11 +82,13 @@
         original catalog/ensure-workspace!
         close discourse/close-room!]
     (with-redefs [catalog/ensure-workspace! (fn [room] (reset! parent room) (original room))
-                  discourse/close-room! (fn [room]
-                                          (when (identical? room @parent)
-                                            (binding [ec/*execution-context* (:ctx room)]
-                                              (reset! at-close (set (keys (repo/worktree (:conn (workspace/current-workspace))))))))
-                                          (close room))]
+                  discourse/close-room! (fn close-spy
+                                          ([room] (close-spy room {}))
+                                          ([room options]
+                                           (when (identical? room @parent)
+                                             (binding [ec/*execution-context* (:ctx room)]
+                                               (reset! at-close (set (keys (repo/worktree (:conn (workspace/current-workspace))))))))
+                                           (close room options)))]
       (is (thrown? clojure.lang.ExceptionInfo
                    (with-inference
                      (fn [messages _]
@@ -131,13 +133,15 @@
     (with-redefs [forks/workspace-merge-guard (fn [& _] (fn [_] (swap! guarded inc)
                                                           (throw (ex-info "Merge refused" {}))))
                   discourse/close-room!
-                  (fn [room]
-                    ;; This test runs in a shared JVM, not a disposable process.
-                    ;; Discard this guest's retained review fork before closing.
-                    (binding [ec/*execution-context* (:ctx room)]
-                      (doseq [child (registry/children (:id room)) :when (discourse/fork-handle child)]
-                        (discourse/discard child)))
-                    (close room))]
+                  (fn close-spy
+                    ([room] (close-spy room {}))
+                    ([room options]
+                     ;; This test runs in a shared JVM, not a disposable process.
+                     ;; Discard this guest's retained review fork before closing.
+                     (binding [ec/*execution-context* (:ctx room)]
+                       (doseq [child (registry/children (:id room)) :when (discourse/fork-handle child)]
+                         (discourse/discard child)))
+                     (close room options)))]
       (is (thrown? clojure.lang.ExceptionInfo
                    (run-code (frozen {}) "(spit \"/out/result.txt\" \"not settled\")")))
       (is (= 1 @guarded)))))
