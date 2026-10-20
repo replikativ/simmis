@@ -1,6 +1,6 @@
 (ns is.simm.ops.owned-reads
-  "Fixed transport-neutral HOST canonical human read service. No configurable
-   resolver, activation, writer action, selected fallback or retained authority."
+  "Fixed HOST canonical human workspace gates. Read/write entries are fixed;
+   no configurable resolver/action, activation, selected fallback or retained authority."
   (:require [clojure.string :as str]
             [datahike.api :as d]
             [is.simm.agents.room-agents :as rooms]
@@ -118,6 +118,15 @@
                    (identical? execution-ctx (:execution-ctx host)))
       (refuse!))
     owner))
+
+(defn preflight-host-read!
+  "HOST metadata-only original-owner/canonical-human gate. No hydration or
+   target lookup. Returned control snapshot is ephemeral, never authority."
+  [host principal original-handle]
+  (let [{:keys [control-conn execution-ctx]} (original-owner! host)]
+    (binding [ec/*execution-context* execution-ctx]
+      (let [db (current-control-db! control-conn execution-ctx)]
+        (assoc (authorize-read! db principal original-handle) :control-db db)))))
 
 (defn resolve-host-read!
   "Fixed HOST composition entry. Validate the ORIGINAL host owner, then obtain
