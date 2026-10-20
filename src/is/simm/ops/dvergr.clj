@@ -35,15 +35,21 @@
              :where [?r :room/id ?id] [?r :room/slug ?slug]] @conn id))
     arg))
 
+(defn external-arguments-valid?
+  "Pure existing MCP call-shape check. Visibility requests have no :args KEY;
+   present nil args are calls, not visibility. This grants no authority."
+  [principal {:keys [op args] :as request}]
+  (or (not (and (:principal/mcp? principal) (contains? request :args)))
+      (and (m/validate (dops/malli-schema op) args)
+           (m/validate [:map [:limit {:optional true} [:int {:min 1 :max 1000}]]]
+                       args))))
+
 (defn authorize
   "Shared authority with runtime argument validation for external MCP calls.
    Dvergr advertises schemas but does not validate them in invoke. Visibility
    filter requests have no :args and still use the normal resource predicate."
-  [principal {:keys [op args] :as request}]
-  (if (and (:principal/mcp? principal) (contains? request :args)
-           (not (and (m/validate (dops/malli-schema op) args)
-                     (m/validate [:map [:limit {:optional true} [:int {:min 1 :max 1000}]]]
-                                 args))))
+  [principal {:keys [op] :as request}]
+  (if-not (external-arguments-valid? principal request)
     {:allow? false :reason "Invalid operation arguments"}
     (cond
       (= :worker (:principal/kind principal))
