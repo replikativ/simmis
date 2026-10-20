@@ -82,6 +82,24 @@
       (throw (ex-info "Schedule target failed its content identity" {:type ::corrupt})))
     value))
 
+(def max-managed-target-bytes
+  ;; Two separately bounded 2MiB text payloads (source and explicit inputs)
+  ;; can expand sixfold in EDN, plus params/manifest/policy metadata. Oversized
+  ;; historical targets hold visibly; never fall back to unbounded decoding.
+  (* 32 1024 1024))
+
+(defn managed-target
+  "Fixed bounded SAME-store UUID target read. Required before legacy dispatch
+   can classify v2; no version column or unbounded detection/fallback. Direct
+   legacy target remains unchanged for its existing callers."
+  [conn row]
+  (let [envelope (artifact/get-bounded-value (artifact/datahike-store conn)
+                                             (:schedule.activation/target-ref row) max-managed-target-bytes)
+        value (:value envelope)]
+    (when-not (and envelope (map? value) (= (:schedule.activation/revision row) (hasch/uuid value)))
+      (throw (ex-info "Schedule managed target failed its content identity" {:type ::corrupt})))
+    value))
+
 (defn- create-tx [db row]
   (if-let [prior (pull-row db :schedule.activation/id (:schedule.activation/id row))]
     (do (when-not (= (:schedule.activation/revision prior) (:schedule.activation/revision row))

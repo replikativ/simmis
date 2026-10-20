@@ -2,6 +2,8 @@
   "Pinned scheduled work through canonical admission. No new wallet, evaluator
    or execution status; finite allowance is the existing shared room allowance."
   (:require [datahike.api :as d]
+            [datahike.blob :as blob]
+            [dvergr.artifact :as artifact]
             [dvergr.agent.attempt :as attempt]
             [dvergr.agent.episode :as episode]
             [dvergr.agent.experiment.runner :as runner]
@@ -11,21 +13,29 @@
             [dvergr.model.registry :as models]
             [dvergr.resource :as resource]
             [dvergr.room.store :as room-store]
+            [dvergr.catalog.room :as catalog]
+            [dvergr.rooms.files :as native-files]
             [dvergr.scheduler.cron :as cron]
             [hasch.core :as hasch]
             [is.simm.model.access :as access]
             [is.simm.model.work-requests :as requests]
             [is.simm.model.workflow-schedules :as schedules]
+            [is.simm.model.knowledge-publication :as publication]
             [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.dvergr :as principals]
             [is.simm.ops.knowledge-publish :as knowledge-publish]
+            [is.simm.ops.owned-reads :as reads]
+            [is.simm.ops.owned-workflows :as owned-sources]
+            [is.simm.ops.owned-workspace :as owned-workspace]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflows-run]
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.simple :as simple]
-            [taoensso.telemere :as log]))
+            [taoensso.telemere :as log])
+  (:import [java.nio CharBuffer]
+           [java.nio.charset CodingErrorAction StandardCharsets]))
 
 (def cadence-schema
   [:map {:closed true}
@@ -136,6 +146,188 @@
               now (java.util.Date.)]
           (schedules/create! conn {:id id :room room-id :by party :target target :now now
                                    :next-fire (java.util.Date/from (cron/next-fire-time spec (.toInstant now)))}))))))
+
+;; These LOCAL schemas do not widen existing transports or execution DTOs.
+(defn- owned-execution-schema [schema]
+  (into [:map {:closed true}]
+        (concat (remove #(= :request-id (first %)) (drop 2 schema))
+                [[:expected-owned-source :uuid]])))
+(def ^:private owned-workflow-schema (owned-execution-schema workflows-run/schema))
+(def ^:private owned-benchmark-schema (owned-execution-schema benchmarks/schema))
+(def ^:private retained-entry-schema
+  [:map {:closed true} [:path [:string {:min 1 :max 512}]] [:content :uuid]
+   [:size [:int {:min 0 :max workflows/max-file-bytes}]] [:mode [:int {:min 0 :max Integer/MAX_VALUE}]]])
+(def ^:private owned-target-schema
+  [:map {:closed true}
+   [:version [:= 2]] [:kind [:enum :workflow :benchmark]] [:room :uuid] [:by :uuid]
+   [:cadence :map] [:execution :map] [:host-policy :map]
+   [:model-policy [:map-of {:max 4} [:string {:min 1 :max 200}] :uuid]]
+   [:creation-channel [:enum :host :mcp]]
+   [:snapshot [:map {:closed true}
+               [:files [:map-of {:max workflows/max-files} [:string {:min 1 :max 512}]
+                        [:string {:max workflows/max-file-bytes}]]]
+               [:manifest [:vector {:max workflows/max-files} retained-entry-schema]]]]
+   [:source-origin [:map {:closed true} [:revision :uuid] [:target-stamp :uuid]
+                    [:target publication/target-schema]
+                    [:manifest [:vector {:max workflows/max-files} retained-entry-schema]]]]])
+
+(defn- owned-unavailable! []
+  (throw (ex-info "Owned schedule admission unavailable; inspect activation before retrying"
+                  {:type ::owned-unavailable})))
+(defn- causal-interruption? [error]
+  (loop [cause error seen #{}]
+    (cond (nil? cause) false (instance? InterruptedException cause) true
+          (contains? seen cause) false
+          :else (recur (.getCause ^Throwable cause) (conj seen cause)))))
+(defn- owned-storage! [f]
+  (try (f)
+       (catch Throwable error
+         (when (causal-interruption? error) (.interrupt (Thread/currentThread)))
+         (owned-unavailable!))))
+(defn- owned-action! [db principal room kind]
+  ((if (= kind :benchmark) benchmarks/authorize-in! work/authorize-in!) db principal room))
+(defn- owned-preflight! [host principal handle kind]
+  (owned-storage!
+   #(let [{:keys [control-db room-id] :as current} (reads/preflight-host-read! host principal handle)]
+      (owned-action! control-db principal room-id kind)
+      current)))
+(defn- owned-current! [host principal handle kind original binding]
+  (let [current (owned-preflight! host principal handle kind)]
+    (when-not (= (select-keys original [:room-id :party]) (select-keys current [:room-id :party]))
+      (owned-unavailable!))
+    (when binding
+      (owned-storage! #(owned-workspace/validate! (:control-db current) principal :merge
+                                                  (:room-id original) (:room binding) binding)))
+    current))
+
+(defn- owned-existing? [row id original]
+  (let [allowed (into #{:db/id} (keep #(when (= "schedule.activation" (namespace (:db/ident %))) (:db/ident %))) schedules/schema)]
+    (and (map? row) (every? allowed (keys row))
+         (integer? (:db/id row))
+         (= id (:schedule.activation/id row))
+         (= (:room-id original) (:schedule.activation/room row))
+         (= (:party original) (:schedule.activation/by row))
+         (uuid? (:schedule.activation/revision row))
+         (uuid? (:schedule.activation/target-ref row))
+         (boolean? (:schedule.activation/enabled? row))
+         (instance? java.util.Date (:schedule.activation/created-at row))
+         (instance? java.util.Date (:schedule.activation/next-fire row))
+         (every? #(or (not (contains? row %)) (uuid? (get row %)))
+                 [:schedule.activation/last-occurrence :schedule.activation/active-occurrence :schedule.activation/last-processed-input])
+         (or (not (contains? row :schedule.activation/reason)) (keyword? (:schedule.activation/reason row))))))
+
+(defn- owned-target! [row target]
+  ;; Pure retained structure/provenance; NEVER installed models, current policy,
+  ;; hydration, current source, provider preparation or retained authority.
+  (when-not (and (m/validate owned-target-schema target)
+                 (= (:room target) (:schedule.activation/room row))
+                 (= (:by target) (:schedule.activation/by row))
+                 (= :owned-retained-source-v2 (get-in target [:host-policy :source]))
+                 (= (:cadence target) (cron/normalize-spec (:cadence target)))
+                 (m/validate (if (= :benchmark (:kind target)) owned-benchmark-schema owned-workflow-schema) (:execution target))
+                 (re-matches #"[a-z0-9][a-z0-9-]{0,63}" (get-in target [:execution :name])))
+    (owned-unavailable!))
+  (let [{:keys [execution snapshot source-origin kind]} target
+        {:keys [files manifest]} snapshot
+        expected-models (if (= :benchmark kind) (:models execution) [(:model execution)])
+        _ (when-not (and (= (set expected-models) (set (keys (:model-policy target))))
+                         (= (:manifest source-origin) manifest)
+                         (= (mapv :path manifest) (vec (sort (keys files))))
+                         (publication/host-target? (:target source-origin)))
+            (owned-unavailable!))
+        sizes
+        (mapv (fn [{:keys [path size mode content]}]
+                (let [encoder (doto (.newEncoder StandardCharsets/UTF_8)
+                                (.onMalformedInput CodingErrorAction/REPORT)
+                                (.onUnmappableCharacter CodingErrorAction/REPORT))
+                      ;; EDN publication must not replace a malformed path's
+                      ;; surrogate and silently change retained file identity.
+                      _ (.encode encoder (CharBuffer/wrap ^String path))
+                      buffer (.encode encoder (CharBuffer/wrap ^String (get files path)))
+                      bytes (byte-array (.remaining buffer))
+                      full-path (str "/workflows/" (:name execution) "/" path)]
+                  (.get buffer bytes)
+                  (when-not (and (= full-path (native-files/workspace-path full-path))
+                                 (<= (count full-path) 512)
+                                 (= 0x8000 (bit-and mode 0xF000))
+                                 (= size (alength ^bytes bytes)) (= content (blob/blob-id bytes)))
+                    (owned-unavailable!))
+                  size)) manifest)
+        source-id (owned-sources/source-id {:room-id (:room target) :target-stamp (:target-stamp source-origin)}
+                                           (:name execution) manifest)]
+    (when-not (and (<= (reduce + 0 sizes) workflows/max-bundle-bytes)
+                   (uuid? source-id)
+                   (= source-id (:revision source-origin) (:expected-owned-source execution))
+                   (= (:expected-bundle execution) (:id (catalog/bundle (:name execution) files))))
+      (owned-unavailable!)))
+  target)
+
+(defn create-owned!
+  "INACTIVE fixed human HOST schedule activation. Retains inspected code only;
+   no LIVE input capture, Job, occurrence dispatch, runtime or transport flip."
+  [host principal original-handle input]
+  (when-not (and (m/validate create-schema input)
+                 (m/validate (if (= "benchmark" (:kind input)) owned-benchmark-schema owned-workflow-schema) (:execution input))
+                 (re-matches #"[a-z0-9][a-z0-9-]{0,63}" (get-in input [:execution :name])))
+    (throw (ex-info "Invalid owned schedule request" {:type ::invalid})))
+  (let [kind (keyword (:kind input)) original (owned-preflight! host principal original-handle kind)
+        {:keys [control-conn execution-ctx]} (::reads/owner host)]
+    (binding [ec/*execution-context* execution-ctx]
+      (let [spec (owned-storage! #(cadence! (:cadence input)))
+            id (owned-storage! #(hasch/uuid [:simmis/schedule-activation-v1 (:party original) (:room-id original) (:request-id input)]))
+            _ (when-not (uuid? id) (owned-unavailable!))
+            existing (owned-storage! #(schedules/activation control-conn id))
+            _ (when-not (or (nil? existing) (owned-existing? existing id original)) (owned-unavailable!))]
+        (if (some? existing)
+          (let [_ (when-not (= {:schedule.activation/id id :schedule.activation/room (:room-id original)
+                                :schedule.activation/by (:party original)}
+                               (select-keys existing [:schedule.activation/id :schedule.activation/room :schedule.activation/by]))
+                    (owned-unavailable!))
+                prior (owned-storage! #(schedules/managed-target control-conn existing))
+                _ (case (:version prior) 1 nil 2 (owned-storage! #(owned-target! existing prior)) (owned-unavailable!))]
+            (when-not (and (= 2 (:version prior))
+                           (= {:kind kind :cadence spec :execution (:execution input)}
+                              (select-keys prior [:kind :cadence :execution])))
+              (throw (ex-info "Schedule request identity names different work" {:type ::conflict})))
+            (owned-current! host principal original-handle kind original nil)
+            existing)
+          (let [binding (owned-storage! #(reads/resolve-host-read! host principal original-handle))
+                _ (when-not (= (select-keys original [:room-id :party]) (select-keys binding [:room-id :party])) (owned-unavailable!))
+                _ (owned-storage! #(owned-action! (:control-db binding) principal (:room-id binding) kind))
+                execution (:execution input)
+                manifest (owned-storage! #(workflows/manifest-in (:db binding) (:name execution)))
+                revision (owned-storage! #(owned-sources/source-id binding (:name execution) manifest))
+                _ (when-not (uuid? revision) (owned-unavailable!))]
+            (when-not (= revision (:expected-owned-source execution))
+              (throw (ex-info "Workflow source changed; reload metadata" {:type ::conflict})))
+            (let [snapshot (owned-storage! #(workflows/snapshot-in (:db binding) (:name execution)))
+                  _ (when-not (= manifest (:manifest snapshot)) (owned-unavailable!))
+                  _ (owned-current! host principal original-handle kind original binding)
+                  legacy (dissoc execution :expected-owned-source)
+                  _ (owned-storage! #(execution! kind legacy))
+                  _ (owned-storage!
+                     #(if (= kind :benchmark)
+                        (benchmarks/prepare snapshot (assoc legacy :request-id id))
+                        (let [selected (select-keys legacy workflows-run/source-fields)
+                              planned (workflows-run/plan-source snapshot selected)]
+                          (when (contains? (:inputs planned) "/in/knowledge/manifest.edn")
+                            (workflows-run/prepare-source snapshot selected)))))
+                  target {:version 2 :room (:room-id original) :by (:party original) :kind kind :cadence spec
+                          :execution execution :snapshot snapshot
+                          :host-policy (owned-storage! #(assoc (host-policy) :source :owned-retained-source-v2))
+                          :model-policy (owned-storage! #(model-policy kind legacy))
+                          :creation-channel (if (:principal/mcp? principal) :mcp :host)
+                          :source-origin {:revision revision :target-stamp (:target-stamp binding)
+                                          :target (:target binding) :manifest manifest}}
+                  _ (owned-storage! #(owned-target! {:schedule.activation/room (:room-id original)
+                                                     :schedule.activation/by (:party original)} target))
+                  ;; Enforce ACTUAL encoded size before the GC-guarded publisher.
+                  _ (owned-storage! #(artifact/prepare-value target schedules/max-managed-target-bytes))
+                  now (java.util.Date.)
+                  next-fire (owned-storage! #(java.util.Date/from (cron/next-fire-time spec (.toInstant now))))]
+              (owned-current! host principal original-handle kind original binding)
+              (owned-storage! #(schedules/create! control-conn {:id id :room (:room-id original) :by (:party original)
+                                                                :target target :now now :next-fire next-fire})))))))))
 
 (defn set-enabled! [conn ctx principal room-id id enabled?]
   (binding [ec/*execution-context* ctx]
@@ -402,6 +594,13 @@
       (when (.isInterrupted (Thread/currentThread))
         (throw (InterruptedException. "Workflow dispatcher stopped")))
       (try
+        ;; Classify with the bounded SAME-store reader BEFORE even completion
+        ;; release can hydrate a Room. Legacy dispatch cannot execute v2.
+        (let [target (schedules/managed-target conn row)]
+          (case (:version target)
+            1 nil
+            2 (throw (ex-info "Owned schedule dispatch is not activated" {:type ::owned-dispatch-unavailable}))
+            (throw (ex-info "Schedule target version is unsupported" {:type ::target-version-unavailable}))))
         (release-settled! conn row resolve-room)
         (when (:schedule.activation/enabled? row)
           (let [target (schedules/target conn row)]
