@@ -71,8 +71,9 @@
   [db]
   (when (some #(seq (d/datoms db :avet :geschichte.work/path %)) ["out" "out/wiki"])
     (refuse! :file-at-output-ancestor))
-  (let [rows (vec (take (inc (:max-files policy))
-                        (d/index-range db {:attrid :geschichte.work/path :start "out/wiki/" :end "out/wiki0"})))
+  (let [rows (into [] (comp (take (inc (:max-files policy)))
+                            (remove #(= "out/wiki0" (:v %))))
+                   (d/index-range db {:attrid :geschichte.work/path :start "out/wiki/" :end "out/wiki0"}))
         _ (when (> (count rows) (:max-files policy)) (refuse! :too-many-files))
         entries (into (sorted-map)
                       (map (fn [row]

@@ -52,6 +52,34 @@
         (is (thrown? clojure.lang.ExceptionInfo (inputs/publication-before basis "out/wiki/new.md")))
         (is (= basis (inputs/publication-basis db)))))))
 
+(deftest outside-inclusive-endpoints-do-not-enter-publication-occupancy-or-its-cap
+  (with-repository
+    (fn [conn]
+      (write! conn "seed.md" "Seed")
+      (let [db @conn
+            source (document-files/entry db "seed.md")
+            row (fn [path] {:geschichte.work/path path :geschichte.work/size (:size source)
+                            :geschichte.work/mode (:mode source)
+                            :geschichte.work/content [:geschichte.content/id (:content source)]})
+            valid (:db-after (d/with db [(row "wiki/a.md") (row "wiki/b.edn")
+                                         {:geschichte.work-dir/path "wiki"}
+                                         {:geschichte.work-dir/path "wiki/empty"}]))
+            siblings (:db-after (d/with valid [{:geschichte.work/path "wiki0"}
+                                               {:geschichte.work-dir/path "wiki0"}]))
+            overflow (:db-after (d/with siblings [{:geschichte.work-dir/path "wiki/other"}]))]
+        (is (= "wiki0" (:v (last (d/index-range siblings {:attrid :geschichte.work/path
+                                                          :start "wiki/" :end "wiki0"})))))
+        (is (= "wiki0" (:v (last (d/index-range siblings {:attrid :geschichte.work-dir/path
+                                                          :start "wiki/" :end "wiki0"})))))
+        (with-redefs [document-files/max-index-entries 4
+                      content/read-by-id (fn [& _] (throw (AssertionError. "Occupancy is metadata only")))]
+          (is (= (inputs/publication-basis valid) (inputs/publication-basis siblings)))
+          ;; A raw global take5 followed by filtering the two endpoints could
+          ;; hide this fifth REAL row. Bound/filter each prefix first instead.
+          (is (= :too-many-publication-entries
+                 (:reason (ex-data (try (inputs/publication-basis overflow)
+                                        (catch clojure.lang.ExceptionInfo e e)))))))))))
+
 (deftest publication-before-never-refreshes-absence-after-a-human-edit
   (with-repository
     (fn [conn]

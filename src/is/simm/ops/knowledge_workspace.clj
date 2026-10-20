@@ -82,7 +82,12 @@
 
 (defn- owned-rows [db attr root]
   (concat (d/datoms db :avet attr root)
-          (d/index-range db {:attrid attr :start (str root "/") :end (str root "0")})))
+          ;; Filter only the exact inclusive outside endpoint AFTER bounding
+          ;; this prefix; cleanup-state still bounds meaningful rows globally
+          ;; across both roots, independently for files and directories.
+          (remove #(= (str root "0") (:v %))
+                  (take (inc (:max-paths cleanup-policy))
+                        (d/index-range db {:attrid attr :start (str root "/") :end (str root "0")})))))
 
 (defn- cleanup-state [world]
   (binding [ec/*execution-context* (:ctx world)]

@@ -84,7 +84,12 @@
                         :ref (query/current-ref db)} identity)
          rows (fn [attr]
                 (concat (d/datoms db :avet attr "wiki")
-                        (d/index-range db {:attrid attr :start "wiki/" :end "wiki0"})))
+                        ;; Bound EACH native prefix before dropping its exact
+                        ;; inclusive outside endpoint. The outer bound counts
+                        ;; meaningful file/dir occupancy across BOTH streams.
+                        (remove #(= "wiki0" (:v %))
+                                (take (inc files/max-index-entries)
+                                      (d/index-range db {:attrid attr :start "wiki/" :end "wiki0"})))))
          occupancy (vec (take (inc files/max-index-entries)
                               (concat (rows :geschichte.work/path)
                                       (rows :geschichte.work-dir/path))))]

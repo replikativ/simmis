@@ -31,12 +31,12 @@
             original content/read-by-id calls (atom 0)]
         (write! conn "out/wiki/nested/page.md" text)
         (let [captured (with-redefs [content/read-by-id
-                                    (fn [& args]
+                                     (fn [& args]
                                       ;; The two-arity API delegates to its
                                       ;; three-arity implementation; count calls
                                       ;; from the capturer, not that trampoline.
-                                      (when (= 2 (count args)) (swap! calls inc))
-                                      (apply original args))]
+                                       (when (= 2 (count args)) (swap! calls inc))
+                                       (apply original args))]
                          (outputs/capture-db @conn))
               descriptor (get-in captured [:files "wiki/nested/page.md"])]
           (is (= 1 @calls))
@@ -54,9 +54,39 @@
       (let [db @conn]
         (write! conn "out/wiki/page.md" "After")
         (is (= "Before" (markdown/decode (outputs/bytes!
-                                         (get-in (outputs/capture-db db) [:files "wiki/page.md"])))))
+                                          (get-in (outputs/capture-db db) [:files "wiki/page.md"])))))
         (is (= "After" (markdown/decode (outputs/bytes!
-                                        (get-in (outputs/capture-db @conn) [:files "wiki/page.md"])))))))))
+                                         (get-in (outputs/capture-db @conn) [:files "wiki/page.md"])))))))))
+
+(deftest outside-output-endpoint-does-not-consume-a-file-slot-or-read-its-body
+  (with-repository
+    (fn [conn]
+      (write! conn "out/wiki/a.md" "A")
+      (write! conn "out/wiki/b.md" "B")
+      (let [db @conn expected (outputs/capture-db db)
+            siblings (:db-after (d/with db [{:geschichte.work/path "out/wiki0"}]))
+            entry (:db/id (d/entity db [:geschichte.work/path "out/wiki/a.md"]))
+            file (d/pull db '[:geschichte.work/size :geschichte.work/mode
+                              {:geschichte.work/content [:geschichte.content/id]}] entry)
+            overflow (:db-after (d/with siblings [{:geschichte.work/path "out/wiki/c.md"
+                                                   :geschichte.work/content
+                                                   [:geschichte.content/id (get-in file [:geschichte.work/content :geschichte.content/id])]
+                                                   :geschichte.work/size (:geschichte.work/size file)
+                                                   :geschichte.work/mode (:geschichte.work/mode file)}]))
+            original content/read-by-id calls (atom 0)]
+        (is (= "out/wiki0" (:v (last (d/index-range siblings {:attrid :geschichte.work/path
+                                                              :start "out/wiki/" :end "out/wiki0"})))))
+        (with-redefs [outputs/policy (assoc outputs/policy :max-files 2)
+                      content/read-by-id (fn [reader id & options]
+                                           (when (empty? options) (swap! calls inc))
+                                           (apply original reader id options))]
+          (is (= expected (outputs/capture-db siblings)))
+          (is (= 2 @calls)))
+        (with-redefs [outputs/policy (assoc outputs/policy :max-files 2)
+                      content/read-by-id (fn [& _] (throw (AssertionError. "Reject true overflow before bodies")))]
+          (is (= :too-many-files
+                 (:reason (ex-data (try (outputs/capture-db overflow)
+                                        (catch clojure.lang.ExceptionInfo e e)))))))))))
 
 (deftest unsupported-files-and-ancestor-occupancy-refuse-before-body-reads
   (doseq [[path mode] [["out" 33188] ["out/wiki" 40960]
@@ -67,7 +97,7 @@
         (let [canonical (if (= path "out/wiki/../escape.md") "out/wiki/page.md" path)]
           (write! conn canonical "Unsupported")
           (d/transact conn [{:db/id [:geschichte.work/path canonical]
-                            :geschichte.work/path path :geschichte.work/mode mode}]))
+                             :geschichte.work/path path :geschichte.work/mode mode}]))
         (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Preflight read content")))]
           (is (thrown? clojure.lang.ExceptionInfo (outputs/capture-db @conn)) path))))))
 
@@ -129,7 +159,7 @@
 
 (deftest wrapper-preserves-portable-evidence-through-observe-and-versioned-ref
   (let [room (discourse/make-room {:id (keyword (str "output-wrapper-" (random-uuid)))
-                                  :store (memory/make)})
+                                   :store (memory/make)})
         base (evaluation/make-evaluator
               {:id :fixture/completion :version 1 :basis :fixture
                :capture (fn [_] {:files {"/out/wiki/a.md" "Projection"}})
