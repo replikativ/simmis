@@ -3,6 +3,7 @@
    code never evaluates it or changes a participant's SCI interpreter."
   (:require [clojure.string :as str]
             [org.replikativ.spindel.dom.elements :as el]
+            [org.replikativ.spindel.dom.addressing :as addressing]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.effects.track :refer [track]]
             [is.simm.documents.rich-text :as rich]
@@ -20,38 +21,49 @@
 
 (declare model-node)
 
-(defn- children [node] (mapv model-node (:content node)))
+(defn- children [node]
+  ;; Recursive children must be constructed inside their actual parent element,
+  ;; with distinct sibling slots. Prebuilding them aliases per-address caches.
+  (mapv (fn [index child]
+          (addressing/with-slot-fn index #(model-node child)))
+        (range) (:content node)))
 
 (defn- marked-text [node]
-  (reduce (fn [value mark]
-            (case (:type mark)
-              "bold" (el/strong {} value)
-              "italic" (el/em {} value)
-              "strike" (el/span {:style {:text-decoration "line-through"}} value)
-              "code" (el/code {} value)
-              "link" (let [href (get-in mark [:attrs :href])]
-                       (if (rich/safe-link? href)
-                         (el/a {:href href :target "_blank" :rel "noopener noreferrer"} value)
-                         value))
-              value)) (:text node) (:marks node)))
+  ;; Preserve the previous outer-last mark order, but construct each inner
+  ;; wrapper under the outer wrapper's DOM scope, not as a prebuilt value.
+  (letfn [(render [marks]
+            (if-let [mark (peek marks)]
+              (let [remaining (pop marks)]
+                (case (:type mark)
+                  "bold" (el/strong {} (render remaining))
+                  "italic" (el/em {} (render remaining))
+                  "strike" (el/span {:style {:text-decoration "line-through"}} (render remaining))
+                  "code" (el/code {} (render remaining))
+                  "link" (let [href (get-in mark [:attrs :href])]
+                           (if (rich/safe-link? href)
+                             (el/a {:href href :target "_blank" :rel "noopener noreferrer"}
+                                   (render remaining))
+                             (render remaining)))
+                  (render remaining)))
+              (:text node)))]
+    (render (vec (:marks node)))))
 
 (defn- model-node [node]
   ;; Deliberately no innerHTML, scripts, embedded images, or widget execution.
-  (let [content (children node)]
-    (case (:type node)
-      "doc" (el/div {} content)
-      "text" (marked-text node)
-      "paragraph" (el/p {} content)
-      "heading" (case (get-in node [:attrs :level])
-                  1 (el/h1 {} content) 2 (el/h2 {} content) 3 (el/h3 {} content)
-                  4 (el/h4 {} content) 5 (el/h5 {} content) (el/h6 {} content))
-      "bulletList" (el/ul {} content)
-      "orderedList" (el/ol {:start (get-in node [:attrs :start] 1)} content)
-      "listItem" (el/li {} content)
-      "codeBlock" (el/pre {} (el/code {} content))
-      "hardBreak" (el/br {})
-      "horizontalRule" (el/hr {})
-      nil)))
+  (case (:type node)
+    "doc" (el/div {} (children node))
+    "text" (marked-text node)
+    "paragraph" (el/p {} (children node))
+    "heading" (case (get-in node [:attrs :level])
+                1 (el/h1 {} (children node)) 2 (el/h2 {} (children node)) 3 (el/h3 {} (children node))
+                4 (el/h4 {} (children node)) 5 (el/h5 {} (children node)) (el/h6 {} (children node)))
+    "bulletList" (el/ul {} (children node))
+    "orderedList" (el/ol {:start (get-in node [:attrs :start] 1)} (children node))
+    "listItem" (el/li {} (children node))
+    "codeBlock" (el/pre {} (el/code {} (children node)))
+    "hardBreak" (el/br {})
+    "horizontalRule" (el/hr {})
+    nil))
 
 (defn- source-view [path draft a write?]
   (source/view {:id [(:owner a) path] :path path :label "Memory file source"
