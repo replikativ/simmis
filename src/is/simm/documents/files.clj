@@ -56,7 +56,10 @@
     (re-find #"(?i)\.(clj[cs]?|edn|bb|js|jsx|ts|tsx|json|ya?ml|xml|html?|css|sh|py|sql|csv|txt|log)$" path) :text
     :else :file))
 
-(defn- folder-from-db [db folder]
+(defn list-folder-in
+  "Bounded metadata projection from an explicit immutable DB; no authority or
+   workspace resolution. Every Markdown file participates regardless of folder."
+  [db folder]
   (when-not (= "" folder) (path! folder))
   (let [prefix (if (seq folder) (str folder "/") "")
         upper (if (seq folder) (str folder "0") "\uffff")
@@ -86,30 +89,32 @@
   "Metadata only. Every Markdown file is knowledge regardless of folder name.
    A conventional wiki/ folder is organization, not a special storage silo."
   [room folder]
-  (with-workspace room #(folder-from-db @% folder)))
+  (with-workspace room #(list-folder-in @% folder)))
 
-(defn metadata
+(defn metadata-in
   "One immutable, bounded workspace snapshot. No file bodies or content blobs.
    Missing requested paths are explicit nil entries, not failed file reads."
-  [room request]
+  [db request]
   (when-not (and (= #{:folders :paths} (set (keys request)))
                  (vector? (:folders request)) (<= (count (:folders request)) 64)
                  (vector? (:paths request)) (<= (count (:paths request)) 64))
     (refuse! ::invalid "Request at most 64 open folders and 64 files"))
   (doseq [folder (:folders request)] (when-not (= "" folder) (path! folder)))
   (doseq [path (:paths request)] (path! path))
-  (with-workspace room
-    (fn [conn]
-      (let [db @conn repository (query/repository db)
-            workspace {:repository-id (:geschichte.repo/id repository)
-                       :workspace-id (:id (workspace/current-workspace))
-                       :branch (get-in db [:config :branch])
-                       :ref (:geschichte.repo/head repository)
-                       :head (get (query/refs db) (:geschichte.repo/head repository))}
-            folders (into {} (map (fn [folder] [folder (folder-from-db db folder)])) (:folders request))
-            entries (into {} (map (fn [path] [path (entry db path)])) (:paths request))]
-        {:workspace workspace :folders folders :entries entries
-         :revision (hasch/uuid [workspace folders entries])}))))
+  (let [repository (query/repository db)
+        workspace {:repository-id (:geschichte.repo/id repository)
+                   :workspace-id [(get-in db [:config :store :id])
+                                  (get-in db [:config :branch] :db)]
+                   :branch (get-in db [:config :branch] :db)
+                   :ref (:geschichte.repo/head repository)
+                   :head (get (query/refs db) (:geschichte.repo/head repository))}
+        folders (into {} (map (fn [folder] [folder (list-folder-in db folder)])) (:folders request))
+        entries (into {} (map (fn [path] [path (entry db path)])) (:paths request))]
+    {:workspace workspace :folders folders :entries entries
+     :revision (hasch/uuid [workspace folders entries])}))
+
+(defn metadata [room request]
+  (with-workspace room #(metadata-in @% request)))
 
 (defn source-bytes
   "Read exactly one captured content ID, checking metadata before allocation."
@@ -126,20 +131,23 @@
       (refuse! ::corrupt "File content does not match its selected revision"))
     bytes))
 
-(defn search-paths [room term]
+(defn search-paths-in
+  "Search only the bounded path metadata in the supplied immutable DB."
+  [db term]
   (when-not (and (string? term) (<= 1 (count (str/trim term)) 128))
     (refuse! ::invalid "Enter a filename or path, up to 128 characters"))
-  (with-workspace room
-    (fn [conn]
-      (let [rows (vec (take (inc max-index-entries) (d/datoms @conn :avet :geschichte.work/path)))
-            needle (str/lower-case (str/trim term))]
-        (when (> (count rows) max-index-entries) (refuse! ::limit "Workspace exceeds the interactive path index limit"))
-        (let [matches (vec (take 101 (for [row rows :let [path (:v row)]
-                                           :when (and (str/includes? (str/lower-case path) needle)
-                                                      (not (str/ends-with? path "/.keep"))
-                                                      (try (path! path) true (catch Exception _ false)))]
-                                       {:path path :name (last (str/split path #"/")) :kind (file-kind path)})))]
-          {:query term :entries (vec (take 100 matches)) :more? (> (count matches) 100)})))))
+  (let [rows (vec (take (inc max-index-entries) (d/datoms db :avet :geschichte.work/path)))
+        needle (str/lower-case (str/trim term))]
+    (when (> (count rows) max-index-entries) (refuse! ::limit "Workspace exceeds the interactive path index limit"))
+    (let [matches (vec (take 101 (for [row rows :let [path (:v row)]
+                                       :when (and (str/includes? (str/lower-case path) needle)
+                                                  (not (str/ends-with? path "/.keep"))
+                                                  (try (path! path) true (catch Exception _ false)))]
+                                   {:path path :name (last (str/split path #"/")) :kind (file-kind path)})))]
+      {:query term :entries (vec (take 100 matches)) :more? (> (count matches) 100)})))
+
+(defn search-paths [room term]
+  (with-workspace room #(search-paths-in @% term)))
 
 (defn analyze
   "Inert document analysis; never load/require/eval file code or widgets."
@@ -179,66 +187,75 @@
   (path! path)
   (with-workspace room #(read-file-in @% path)))
 
-(defn history
+(defn history-in
   "File changes reachable from the current Geschichte HEAD. Metadata only;
    a bounded window, not a claim to enumerate all history or follow renames."
-  [room path]
+  [db path]
   (path! path)
-  (with-workspace room
-    (fn [conn]
-      (let [captured (atom @conn)
-            commits (vec (repo/log captured {:limit 32}))
-            selected-entry (fn [commit]
-                             (let [tree (repo/tree-at captured commit)]
-                               (when (> (count tree) max-index-entries)
-                                 (refuse! ::limit "History snapshot exceeds the interactive file limit"))
-                               (get tree path)))
-            window (take 31 commits)
-            unavailable (filter #(nil? (:geschichte.commit/snapshot %)) window)
-            changed (for [commit window
-                          :when (:geschichte.commit/snapshot commit)
-                          :let [parents (:geschichte.commit/parents commit)
-                                _ (when (> (count parents) 32) (refuse! ::limit "Too many merge parents for preview"))
-                                known-parents (filter :geschichte.commit/snapshot parents)
-                                boundary? (not= (count parents) (count known-parents))
-                                selected (selected-entry commit)]
-                          :when (or boundary? (if (seq parents)
-                                                (some #(not= selected (selected-entry %)) known-parents)
-                                                (some? selected)))]
-                      {:commit (:geschichte.commit/id commit)
-                       :boundary? boundary?
-                       :parents (mapv :geschichte.commit/id parents)
-                       :time (:geschichte.commit/time commit)
-                       :message (:geschichte.commit/message commit)
-                       :author (:geschichte.commit/author commit) :entry selected})]
-        {:path path :versions (vec changed) :scanned (min 31 (count commits))
-         :unavailable (mapv :geschichte.commit/id unavailable)
-         :more? (> (count commits) 31) :lineage :ancestry}))))
+  ;; Geschichte's log/tree-at/read-at only dereference this local snapshot
+  ;; holder and read immutable checkpoints/content; they never transact it.
+  (let [captured (atom db)
+        commits (vec (repo/log captured {:limit 32}))
+        selected-entry (fn [commit]
+                         (let [tree (repo/tree-at captured commit)]
+                           (when (> (count tree) max-index-entries)
+                             (refuse! ::limit "History snapshot exceeds the interactive file limit"))
+                           (get tree path)))
+        window (take 31 commits)
+        unavailable (filter #(nil? (:geschichte.commit/snapshot %)) window)
+        changed (for [commit window
+                      :when (:geschichte.commit/snapshot commit)
+                      :let [parents (:geschichte.commit/parents commit)
+                            _ (when (> (count parents) 32) (refuse! ::limit "Too many merge parents for preview"))
+                            known-parents (filter :geschichte.commit/snapshot parents)
+                            boundary? (not= (count parents) (count known-parents))
+                            selected (selected-entry commit)]
+                      :when (or boundary? (if (seq parents)
+                                            (some #(not= selected (selected-entry %)) known-parents)
+                                            (some? selected)))]
+                  {:commit (:geschichte.commit/id commit)
+                   :boundary? boundary?
+                   :parents (mapv :geschichte.commit/id parents)
+                   :time (:geschichte.commit/time commit)
+                   :message (:geschichte.commit/message commit)
+                   :author (:geschichte.commit/author commit) :entry selected})]
+    {:path path :versions (vec changed) :scanned (min 31 (count commits))
+     :unavailable (mapv :geschichte.commit/id unavailable)
+     :more? (> (count commits) 31) :lineage :ancestry}))
 
-(defn read-history [room path commit-id]
+(defn history [room path]
+  (with-workspace room #(history-in @% path)))
+
+(defn read-history-in
+  "Validate the visible history window and preview from the SAME frozen DB."
+  [db path commit-id]
   (path! path)
   (when-not (uuid? commit-id) (refuse! ::invalid "Select a saved revision"))
-  (when-not (some #(= commit-id (:commit %)) (:versions (history room path)))
+  (when-not (some #(= commit-id (:commit %)) (:versions (history-in db path)))
     (refuse! ::conflict "Revision is outside the current history window; refresh history"))
-  (with-workspace room
-    (fn [conn]
-      (let [captured (atom @conn) selected (get (repo/tree-at captured commit-id) path)]
-        (if-not selected {:path path :commit commit-id :deleted? true}
-                (do
-                  (when (> (:size selected) markdown/max-source-bytes)
-                    (refuse! ::limit "Historical source exceeds the preview limit"))
-                  (when-not (#{:markdown :text} (file-kind path))
-                    (refuse! ::invalid "Historical preview currently supports text files"))
-                  {:path path :commit commit-id :text (markdown/decode (repo/read-at captured commit-id path))}))))))
+  (let [captured (atom db) selected (get (repo/tree-at captured commit-id) path)]
+    (if-not selected {:path path :commit commit-id :deleted? true}
+            (do
+              (when (> (:size selected) markdown/max-source-bytes)
+                (refuse! ::limit "Historical source exceeds the preview limit"))
+              (when-not (#{:markdown :text} (file-kind path))
+                (refuse! ::invalid "Historical preview currently supports text files"))
+              {:path path :commit commit-id :text (markdown/decode (repo/read-at captured commit-id path))}))))
+
+(defn read-history [room path commit-id]
+  (with-workspace room #(read-history-in @% path commit-id)))
+
+(defn read-binary-in
+  "Download the exact expected entry from an explicit immutable DB."
+  [db path expected]
+  (path! path)
+  (let [selected (entry db path)]
+    (when-not (= expected selected) (refuse! ::conflict "File changed; reload before downloading"))
+    {:path path :entry selected
+     :base64 (.encodeToString (Base64/getEncoder) (source-bytes db path selected))}))
 
 (defn read-binary [room path expected]
-  (path! path)
-  (with-workspace room
-    (fn [conn]
-      (let [db @conn selected (entry db path)]
-        (when-not (= expected selected) (refuse! ::conflict "File changed; reload before downloading"))
-        {:path path :entry selected
-         :base64 (.encodeToString (Base64/getEncoder) (source-bytes db path selected))}))))
+  (with-workspace room #(read-binary-in @% path expected)))
 
 (defn- expected-entry! [value]
   (when-not (or (nil? value)
