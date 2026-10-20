@@ -12,6 +12,7 @@
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.model.system-db :as sdb]
             [is.simm.ops.file-output-plan :as plans]
+            [is.simm.ops.file-output-publication :as native-publication]
             [is.simm.ops.file-output-storage :as storage]
             [is.simm.ops.knowledge-filing :as filing]
             [org.replikativ.spindel.engine.impl.simple :as simple]
@@ -191,3 +192,45 @@
         (when (instance? InterruptedException error) (.interrupt (Thread/currentThread)))
         (throw (ex-info "File adoption claim was not acknowledged; do not publish"
                         {:type ::claim-unacknowledged :operation (:id operation)} error))))))
+
+(defn applying!
+  "INTERNAL original-publisher callback, not a route or recovery operation.
+   Only call with this native invocation's acknowledged claim and exact native
+   pre-dispatch candidate. Recheck the full proof, current authority/target and
+   exact latest token in the SAME writer transaction. No target IO occurs.
+
+   Only THIS transition's acknowledged immutable report permits the caller to
+   return from before-dispatch and let the native writer start. Missing/lost
+   ACK throws and never recovers ownership from readback. It can leave applying
+   without a publication: absence of a receipt must never authorize replay."
+  [conn party room-id room claimed candidate]
+  (host-connection! conn)
+  (when-not (= #{:proof :plan :operation} (set (keys claimed)))
+    (refuse! :invalid-claim))
+  (prepared! (dissoc claimed :operation) party room-id)
+  (let [{:keys [proof plan operation]} claimed
+        _ (when-not (and (= :claimed (:state operation))
+                         (= (:binding proof)
+                            (select-keys operation (keys (:binding proof)))))
+            (refuse! :invalid-claim))
+        _ (native-publication/validate-candidate! operation (:manifest plan) candidate)
+        at (java.util.Date.)
+        expected (adoptions/validate! (assoc operation :state :applying :updated-at at))]
+    (try
+      (let [report (d/transact
+                    conn
+                    [[:db.fn/call
+                      (fn [db]
+                        (when-not (= proof (snapshot db party room-id (get-in proof [:binding :proposal])))
+                          (refuse! :preflight-changed))
+                        (when-not (= (get-in proof [:binding :target]) (filing/current-target db room-id room))
+                          (refuse! :target-changed))
+                        (adoptions/transition-tx-data db (get-in proof [:fork :db/id]) operation
+                                                      :applying {} at))]])]
+        (when-not (:db-after report) (refuse! :applying-report-unavailable))
+        (adoptions/linked-operation! (:db-after report) (get-in proof [:fork :db/id]) expected)
+        (assoc claimed :operation expected))
+      (catch Throwable error
+        (when (instance? InterruptedException error) (.interrupt (Thread/currentThread)))
+        (throw (ex-info "File adoption dispatch transition was not acknowledged; do not publish"
+                        {:type ::applying-unacknowledged :operation (:id operation)} error))))))
