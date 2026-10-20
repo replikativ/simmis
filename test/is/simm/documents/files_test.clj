@@ -1,5 +1,6 @@
 (ns is.simm.documents.files-test
   (:require [clojure.test :refer [deftest is]]
+            [datahike.api :as d]
             [dvergr.catalog.workspace :as workspace]
             [dvergr.discourse :as discourse]
             [dvergr.effects :as effects]
@@ -17,6 +18,50 @@
 
 (defn- save! [room path text expected]
   (files/save-file! room {:path path :text text :expected expected}))
+
+(deftest folder-limit-excludes-only-the-inclusive-outside-sentinel
+  (with-room
+    (fn [room]
+      (save! room "wiki/a.md" "A" nil)
+      (save! room "wiki/b.md" "B" nil)
+      (let [before (files/list-folder room "wiki")
+            db (files/with-workspace room
+                 (fn [conn] (repo/write! conn "wiki0" (.getBytes "outside" "UTF-8")) @conn))]
+        (is (= "wiki0" (:v (last (d/index-range db {:attrid :geschichte.work/path
+                                                    :start "wiki/" :end "wiki0"})))))
+        (with-redefs [files/max-index-entries 2
+                      content/read-by-id (fn [& _] (throw (AssertionError. "Folder metadata loaded a body")))]
+          (is (= before (files/list-folder-in db "wiki"))))
+        (with-redefs [files/max-index-entries 1
+                      d/pull (fn [& _] (throw (AssertionError. "Overflow reached entry projection")))]
+          (let [error (try (files/list-folder-in db "wiki") nil
+                           (catch clojure.lang.ExceptionInfo error error))]
+            (is (= ::files/limit (:type (ex-data error))))))))))
+
+(deftest root-listing-has-no-fabricated-unicode-maximum
+  (with-room
+    (fn [room]
+      (doseq [path ["\uffff.md" "\ufffflater.md" "资料/未来.md"]]
+        (save! room path "# Knowledge" nil))
+      (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Root listing loaded a body")))]
+        (let [entries (:entries (files/list-folder room ""))]
+          (is (= #{"\uffff.md" "\ufffflater.md" "资料"} (set (map :path entries))))
+          (is (= #{:markdown} (set (map :kind (remove #(= :folder (:kind %)) entries))))))))))
+
+(deftest root-and-directory-acquisition-stop-before-entry-projection-on-overflow
+  (doseq [folder ["" "wiki"]]
+    (let [seen (atom 0)
+          rows (fn rows [i]
+                 (lazy-seq (cons (do (swap! seen inc) {:e i :v (str "wiki/" i ".md")})
+                                 (rows (inc i)))))
+          forbidden (fn [& _] (throw (AssertionError. "Overflow reached entry projection")))]
+      (with-redefs [files/max-index-entries 2
+                    d/index-range (fn [& _] (rows 0)) d/datoms (fn [& _] (rows 0))
+                    d/pull forbidden content/read-by-id forbidden]
+        (let [error (try (files/list-folder-in ::immutable-db folder) nil
+                         (catch clojure.lang.ExceptionInfo error error))]
+          (is (= ::files/limit (:type (ex-data error))))
+          (is (= 3 @seen)))))))
 
 (deftest history-is-canonical-metadata-with-an-independent-read-only-preview
   (with-room
@@ -89,9 +134,9 @@
             worktree repo/worktree
             raced? (atom false)]
         (with-redefs [repo/worktree (fn [conn]
-                                     (when (compare-and-set! raced? false true)
-                                       (repo/write! conn "wiki/a.md" (.getBytes "agent edit" "UTF-8")))
-                                     (worktree conn))]
+                                      (when (compare-and-set! raced? false true)
+                                        (repo/write! conn "wiki/a.md" (.getBytes "agent edit" "UTF-8")))
+                                      (worktree conn))]
           (is (thrown? clojure.lang.ExceptionInfo
                        (save! room "wiki/a.md" "stale human" (:entry opened)))))
         (is @raced?)
@@ -147,11 +192,11 @@
     (fn [room]
       (let [write room-files/write!
             saved (with-redefs [room-files/write!
-                               (fn [& args]
-                                 (let [result (apply write args)]
-                                   (files/with-workspace room
-                                     #(repo/write! % "wiki/a.md" (.getBytes "newer agent" "UTF-8")))
-                                   result))]
+                                (fn [& args]
+                                  (let [result (apply write args)]
+                                    (files/with-workspace room
+                                      #(repo/write! % "wiki/a.md" (.getBytes "newer agent" "UTF-8")))
+                                    result))]
                     (save! room "wiki/a.md" "human version" nil))]
         (is (not= (:entry saved) (:entry (files/read-file room "wiki/a.md"))))
         (is (thrown? clojure.lang.ExceptionInfo (save! room "wiki/a.md" "next human" (:entry saved))))

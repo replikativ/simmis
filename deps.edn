@@ -412,7 +412,6 @@
         ;; regressions and all required CI passed. No legacy writer API change.
         ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
-        ;; Use the merged #363 commit: the earlier feature SHA is retired.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
                                :git/sha "4cbd1e2dfaeaa368bb3557be0f11465502eb49e4"
                                ;; Kabel supplies the maintained HTTP-kit fork.

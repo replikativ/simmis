@@ -62,9 +62,15 @@
   [db folder]
   (when-not (= "" folder) (path! folder))
   (let [prefix (if (seq folder) (str folder "/") "")
-        upper (if (seq folder) (str folder "0") "\uffff")
-        rows (vec (take (inc max-index-entries)
-                        (d/index-range db {:attrid :geschichte.work/path :start prefix :end upper})))]
+        upper (when (seq folder) (str folder "0"))
+        ;; No finite string is an upper bound for every valid root filename.
+        ;; A directory's exact inclusive successor is outside that directory;
+        ;; exclude it only AFTER the bounded raw acquisition.
+        index (if upper
+                (d/index-range db {:attrid :geschichte.work/path :start prefix :end upper})
+                (d/datoms db :avet :geschichte.work/path))
+        rows (into [] (comp (take (inc max-index-entries))
+                            (remove #(and upper (= upper (:v %))))) index)]
     (when (> (count rows) max-index-entries)
       (refuse! ::limit "This folder exceeds the bounded metadata listing limit"))
     (let [items
