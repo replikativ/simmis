@@ -962,14 +962,13 @@
         ;; Browser RPC uses the same canonical operations as optional MCP.
         ;; Install before accepting requests, even when MCP is disabled.
         (application-ops/start!)
-        (memory-changes/start!
-         {:resolve-room #(ctx/with-server-context
-                           ((requiring-resolve 'is.simm.agents.room-agents/registered-room) %))
-          :allowed? (fn [party room-id]
-                      (ctx/with-server-context
-                        (access/can? @(system-db/get-conn) party :read {:room room-id})))
-          :publish! (fn [party hint]
-                      (pubsub/publish! server (memory-changes/topic party) hint))})
+        ;; Coherent v2 Memory: observe its explicit owned repository AND
+        ;; control/default/authority changes. Never fall back to the selected
+        ;; sandbox notifier. Generic Room REPL and MCP remain separate scopes.
+        (memory-changes/start-owned!
+         (system-db/get-conn) ctx/server-context
+         (fn [party hint]
+           (pubsub/publish! server (memory-changes/topic party) hint)))
         ((requiring-resolve 'dvergr.room.registry/add-pre-unregister-hook!)
          ::memory-changes memory-changes/unwatch-room!)
         ((requiring-resolve 'dvergr.room.registry/add-register-hook!)

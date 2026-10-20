@@ -20,11 +20,12 @@
    canonical runtime may create physical subscriptions, not a forked UI render.
    on-ready runs after handshake drain; use it for authoritative catch-up.
    Failures remain visible until a new epoch or an explicit retry."
-  [{:keys [state active requested gate]} {:keys [connection peer topic on-message on-ready initial]}]
+  [{:keys [state active requested gate]} {:keys [connection peer topic on-message on-ready initial retry?]}]
   (when (and (identical? (ec/home-context runtime)
                          (ec/home-context ec/*execution-context*))
              peer (epoch/current? connection)
-             (not= connection (:connection @state)))
+             (or (not= connection (:connection @state))
+                 (and retry? (= :error (:status @state)))))
     (let [token (random-uuid)
           current? #(and (= token @requested) (epoch/current? connection))
           update! (fn [f]
@@ -64,3 +65,9 @@
                 (when (instance? js/Error result) (fail! result)))))
           (catch :default e (fail! e))
           (finally (put! gate true)))))))
+
+(defn retry!
+  "Explicit same-epoch error recovery through this SAME owner and disposal
+   gate. Ordinary ensure! never retries an error or replaces a pending strategy."
+  [owner opts]
+  (ensure! owner (assoc opts :retry? true)))

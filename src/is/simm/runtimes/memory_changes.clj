@@ -151,7 +151,7 @@
          (= (:config a) (:config b)))))
 
 (defn open-owned!
-  "INACTIVE alternative notifier, not a startup switch or second active service.
+  "Owned-default notifier used by the Memory v2 runtime.
    The host supplies its canonical control connection/context and transport
    publisher only. Canonical Room, EACL and owned default resolution are FIXED;
    no caller resolver, selected workspace or retained read authority is used.
@@ -428,8 +428,8 @@
       (reset! service (open! options)))))
 
 (defn start-owned!
-  "INACTIVE activation seam: ONE existing service slot, never a parallel or
-   silently reused legacy notifier. The runtime switches only after v2 rollout."
+  "Start the Memory v2 notifier in the ONE existing service slot, never a
+   parallel or silently reused legacy notifier."
   [control-conn host-ctx publish!]
   (locking service
     (if-let [owner @service]

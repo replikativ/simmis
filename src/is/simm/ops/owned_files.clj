@@ -1,5 +1,5 @@
 (ns is.simm.ops.owned-files
-  "Inactive fixed host file actions. No external adapter/routing is installed.
+  "Fixed host file actions used by the authenticated Memory v2 adapter.
    Expected stamps are preconditions, never target selectors or capabilities."
   (:require [hasch.core :as hasch]
             [is.simm.documents.files :as files]

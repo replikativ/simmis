@@ -105,9 +105,20 @@
 (defn loaded [old file]
   (cond
     (nil? old) (draft file)
+    ;; Only observe-target may establish an intentional identity transition.
+    ;; A late/unversioned body cannot erase the known target's incoming copy.
+    (and (uuid? (:current-target-stamp old))
+         (not= (:current-target-stamp old) (:target-stamp file))) old
     (or (dirty? old) (:rich-edit old))
     (if (same-document? file (:source old))
-      (dissoc old :incoming :incoming-entry :remote-deleted?)
+      (cond-> (dissoc old :incoming :incoming-entry :remote-deleted?)
+        ;; An actual current-target body, not identity-only metadata, proves
+        ;; an A→B→A draft's original baseline is available again. Keep typing,
+        ;; rich/XML models and the explicit current marker; never trust late A
+        ;; against a B marker or infer recreation from a missing file.
+        (and (uuid? (:target-stamp file)) (some? (:entry file))
+             (= (:target-stamp file) (:current-target-stamp old)))
+        (dissoc :target-stale?))
       (cond-> (-> old (assoc :incoming file) (dissoc :incoming-entry))
         (not (same-target? file (:source old))) (assoc :target-stale? true)))
     :else (assoc (merge (draft file) (select-keys old [:mode :selection :code-view]))

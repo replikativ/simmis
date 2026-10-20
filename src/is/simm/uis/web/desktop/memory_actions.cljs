@@ -1,6 +1,6 @@
 (ns is.simm.uis.web.desktop.memory-actions
-  "Context/session-owned Memory I/O. Late replies cannot replace another
-   view's draft, and no browser write is sent to a replicated Datahike store."
+  "Context/session-owned stamped Memory I/O. A stamp is a precondition, never
+   authority. Generic Room SCI keeps its separate selected-workspace scope."
   (:require [clojure.string :as str]
             [org.replikativ.spindel.engine.core :as ec]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
@@ -16,313 +16,512 @@
 
 (defn- parent [path] (str/join "/" (butlast (str/split path #"/"))))
 
+(defn verified? [state connection]
+  (and (some? connection) (true? (:target-verified? state))
+       (= connection (:verified-connection state)) (uuid? (:target-stamp state))))
+
+(defn- draft-current? [state path]
+  (let [draft (get-in state [:drafts path])]
+    (and draft (not (:target-stale? draft))
+         (= (:target-stamp state) (get-in draft [:source :target-stamp])))))
+
+(defn- retire-upload [state]
+  (cond-> (dissoc state :upload-token :upload-intent)
+    (:upload-intent state) (assoc :cancelled-upload (:upload-intent state))))
+
+(defn- unverify [state]
+  ;; Invalidation owns retirement of scoped bookkeeping. Their late callbacks
+  ;; must touch nothing, rather than strand still-marked in-flight requests.
+  (let [slots (set (keep (fn [[slot frame]] (when (= :target (:scope frame)) slot))
+                         (:request-contexts state)))]
+    (-> state retire-upload (assoc :target-verified? false)
+        (dissoc :verified-connection :permissions)
+        (update :requests #(apply dissoc % slots))
+        (update :request-contexts #(apply dissoc % slots))
+        (update :loading #(apply dissoc % slots))
+        (update :accepted #(apply dissoc % slots)))))
+
+(defn- retire-reads [state slots]
+  (reduce (fn [s slot]
+            (-> s (update :requests dissoc slot) (update :request-contexts dissoc slot)
+                (update :accepted dissoc slot) (update :finished dissoc slot)
+                (assoc-in [:loading slot] false))) state slots))
+
+(defn- target-bookkeeping [state]
+  (reduce (fn [s k] (update s k #(select-keys % [:repl])))
+          state [:request-contexts :finished :accepted]))
+
 (defn controller [data]
   (let [ctx (or ec/*execution-context* runtime) session (web/current-session)
         room (str (:room-id data)) key (state-key data)
         state-signal (or (:state-signal data) sig/memory-editor-state)
-        current? #(web/current-session? session)
+        current? #(binding [ec/*execution-context* ctx]
+                    (and (:id session) (web/current-session? session)))
         state #(binding [ec/*execution-context* ctx] (get @state-signal key))
+        connection #(binding [ec/*execution-context* ctx] @sig/memory-connection)
         update! (fn [f & args]
                   (binding [ec/*execution-context* ctx]
                     (when (current?) (apply swap! state-signal update key f args))))
-        change! (fn [path f & args] (apply update! update-in [:drafts path] f args))
-        request!
-        (fn [slot invoke consume & [after]]
-          (let [token (str (random-uuid))
-                valid? #(and (:id session) (current?) (editor/response-current? (state) slot token))
-                finish! (fn [f] (binding [ec/*execution-context* ctx] (when (valid?) (update! f))))]
-            (update! #(-> % (assoc-in [:requests slot] token) (assoc-in [:loading slot] true)
-                          (update :errors dissoc slot)))
-            (try
-              (binding [ec/*execution-context* ctx ec/*spin-id* nil]
-                (let [s (invoke)]
-                  (s (fn [reply]
-                       (if-let [error (when-not (editor/evaluation-receipt? slot reply) (rem/result-failure reply))]
-                         (finish! #(-> % (assoc-in [:loading slot] false)
-                                       (assoc-in [:errors slot] (rem/error-text error))))
-                         (try
-                           (when (finish! #(-> (consume % reply)
-                                               (assoc-in [:loading slot] false)
-                                               (cond-> (:permissions reply) (assoc :permissions (:permissions reply)))))
-                             ;; Device/I/O effects are outside the state transform.
-                             (when after (after reply)))
-                           (catch :default e
-                             (finish! #(-> % (assoc-in [:loading slot] false)
-                                           (assoc-in [:errors slot] (rem/error-text e))))))))
-                     (fn [error]
-                       (finish! #(-> % (assoc-in [:loading slot] false)
-                                     (assoc-in [:errors slot] (rem/error-text error))))))))
-              (catch :default error
-                (finish! #(-> % (assoc-in [:loading slot] false)
-                              (assoc-in [:errors slot] (rem/error-text error))))))))]
-    (letfn [(navigation-refresh! []
+        change! (fn [path f & args] (apply update! update-in [:drafts path] f args))]
+    (letfn [(connected! []
+              (let [c (connection)]
+                (when (and (current?) (not= c (:connection (state))))
+                  (update! #(-> % retire-upload (assoc :connection c :target-verified? false)
+                                (update :target-epoch (fnil inc 0))
+                                (assoc :requests {} :request-contexts {} :loading {} :accepted {} :finished {})
+                                (dissoc :verified-connection :permissions :sandbox-permissions
+                                        :watch-connection :sync))))
+                c))
+            (frame-current? [s frame]
+              (and (= (:connection frame) (:connection s))
+                   (or (not= :target (:scope frame))
+                       (and (verified? s (:connection frame))
+                            (= (:stamp frame) (:target-stamp s))
+                            (= (:target-epoch frame) (:target-epoch s))
+                            (or (not (:read? frame)) (= (:read-epoch frame) (:read-epoch s)))))))
+            (invalidate! []
+              (update! unverify))
+            (request! [slot invoke consume after opts]
+              (let [c (connected!) token (random-uuid)
+                    frame {:scope (:scope opts :target) :connection c :stamp (:stamp opts)
+                           :target-epoch (:target-epoch (state)) :read? (:read? opts)
+                           :read-epoch (:read-epoch (state))}
+                    live? #(and (current?) (= c (connection)))
+                    owns? #(and (editor/response-current? % slot token)
+                                (not= token (get-in % [:finished slot])) (frame-current? % frame))
+                    settled! (fn []
+                               (when (and (:on-settled opts) (live?)
+                                          (= token (get-in (state) [:requests slot]))
+                                          (= token (get-in (state) [:finished slot]))
+                                          (frame-current? (state) frame))
+                                 (binding [ec/*execution-context* ctx] ((:on-settled opts)))))
+                    fail! (fn [error]
+                            (when (and (live?) (owns? (state)))
+                              (let [type (:type (rem/error-info error))]
+                                (update! (fn [s]
+                                           (if-not (owns? s) s
+                                                   (if (and (:error-current? opts) (not ((:error-current? opts) s)))
+                                                     (-> s (assoc-in [:loading slot] false) (assoc-in [:finished slot] token))
+                                                     (let [failed (cond-> (-> s (assoc-in [:loading slot] false)
+                                                                              (assoc-in [:finished slot] token)
+                                                                              (assoc-in [:errors slot] (rem/error-text error)))
+                                                                    (= :metadata slot) unverify
+                                                                    (#{:authentication-required :not-authorized} type)
+                                                                    (-> unverify (dissoc :sandbox-permissions)))]
+                                                       (if-let [f (:failure-state opts)] (f failed error) failed))))))
+                                (when (and (= :memory/target-changed type) (not= :metadata slot))
+                                  (invalidate!)
+                                  (discover! true))
+                                (settled!))))]
+                (when (and c (live?) (frame-current? (state) frame))
+                  (update! #(-> % (assoc-in [:requests slot] token)
+                                (assoc-in [:request-contexts slot] frame)
+                                (assoc-in [:loading slot] true)
+                                (update :accepted dissoc slot) (update :finished dissoc slot) (update :errors dissoc slot)))
+                  (try
+                    (binding [ec/*execution-context* ctx ec/*spin-id* nil]
+                      ((invoke)
+                       (fn [reply]
+                         (when (and (live?) (owns? (state)))
+                           (if-let [error (when-not (editor/evaluation-receipt? slot reply)
+                                            (rem/result-failure reply))]
+                             (fail! error)
+                             (try
+                               (when (and (= :target (:scope frame))
+                                          (not= (:stamp frame) (:target-stamp reply)))
+                                 (throw (ex-info "Memory returned a different workspace; Refresh to verify it." {})))
+                               (update! (fn [s]
+                                          (if-not (owns? s) s
+                                                  (if (and (:accept? opts) (not ((:accept? opts) s reply)))
+                                              ;; Still our request, but its draft
+                                              ;; changed: finish bookkeeping only.
+                                                    (-> s (assoc-in [:loading slot] false) (assoc-in [:finished slot] token))
+                                                    (cond-> (-> (consume s reply)
+                                                                (assoc-in [:requests slot] token)
+                                                                (assoc-in [:loading slot] false)
+                                                                (assoc-in [:finished slot] token)
+                                                                (assoc-in [:accepted slot] token))
+                                                      (and (#{:watch :sandbox} (:scope frame)) (:permissions reply))
+                                                      (assoc :sandbox-permissions (:permissions reply)))))))
+                               ;; A truthful acceptance marker, not swap!'s
+                               ;; always-truthy whole signal return value.
+                               (when (and after (live?) (= token (get-in (state) [:accepted slot]))
+                                          (frame-current? (state) frame))
+                                 (try (binding [ec/*execution-context* ctx] (after reply))
+                                      (catch :default error
+                                        (when (and (live?) (= token (get-in (state) [:accepted slot]))
+                                                   (frame-current? (state) frame))
+                                          (update! assoc-in [:errors slot] (rem/error-text error))))))
+                               (settled!)
+                               (catch :default error (fail! error))))))
+                       fail!))
+                    (catch :default error (fail! error))))))
+            (metadata-request [s]
+              (let [request (editor/metadata-request s)]
+                {:folders (vec (sort (set (concat (:folders request) [""]
+                                                  (keep (fn [[p open?]] (when open? p)) (:expanded s))
+                                                  (keys (:folder-intents s))))))
+                 :paths (vec (sort (set (concat (:paths request) (keys (:file-intents s))
+                                                (keys (:create-intents s))
+                                                (when-let [p (:selected s)] [p])))))}))
+            (discover! [force?]
+              (when force? (update! update :discovery-revision (fnil inc 0)))
+              (let [c (connected!) s (state)
+                    request (metadata-request s)
+                    marker [c request (:stream-marker s)
+                            (:discovery-revision s 0)]]
+                (when (and c (current?) (not (get-in s [:loading :metadata]))
+                           (or force? (not= marker (get-in s [:sync :attempted]))))
+                  (update! assoc-in [:sync :attempted] marker)
+                  (if (or (> (count (:folders request)) 64) (> (count (:paths request)) 64))
+                    (do (invalidate!)
+                        (update! assoc-in [:errors :metadata]
+                                 "Memory supports 64 expanded folders and file buffers per view. Collapse folders or close buffers, then Refresh."))
+                    (let [generations (into {} (map (fn [[p d]] [p (:generation d)])) (:drafts s))
+                          revision (:discovery-revision s 0)]
+                      (request!
+                       :metadata #(remote/load-memory-metadata! web/server-id room request)
+                       (fn [current reply]
+                         (when-not (and (= 2 (:protocol-version reply)) (uuid? (:target-stamp reply)))
+                           (throw (ex-info "Memory protocol changed; reload this browser." {})))
+                         (let [stamp (:target-stamp reply) changed? (not= stamp (:target-stamp current))
+                               pending (into {} (filter (fn [[slot loading?]]
+                                                          (and loading? (vector? slot)
+                                                               (#{:file :folder} (first slot))))) (:loading current))
+                               next (cond-> (editor/observe-target current stamp)
+                                      changed? (update :target-epoch (fnil inc 0))
+                                      changed? retire-upload
+                                      changed? target-bookkeeping)
+                               next (retire-reads next (keys pending))
+                               next (reduce-kv
+                                     (fn [s path entry]
+                                       (if (and (some? (get-in s [:drafts path]))
+                                                (or changed?
+                                                    (editor/metadata-generation-current? (get generations path)
+                                                                                         (get-in s [:drafts path :generation]))))
+                                         (update-in s [:drafts path] editor/observed-entry entry stamp) s))
+                                     next (:entries reply))
+                               next (reduce-kv
+                                     (fn [s path {:keys [origin text kind]}]
+                                       (if (get-in s [:drafts path]) s
+                                           (assoc-in s [:drafts path]
+                                                     (cond-> (assoc (editor/draft {:path path :text "" :entry nil
+                                                                                   :kind kind :target-stamp origin})
+                                                                    :text text :mode :source)
+                                                       (not= origin stamp)
+                                                       (assoc :target-stale? true :current-target-stamp stamp)))))
+                                     next (:create-intents current))
+                               next (reduce-kv
+                                     (fn [s path entry]
+                                       (if (some? entry) s
+                                           (cond-> (update s :file-intents dissoc path)
+                                             (nil? (get-in s [:drafts path]))
+                                             (assoc-in [:errors [:file path]] "No file at this path in the current workspace."))))
+                                     next (:entries reply))]
+                           (-> next
+                               (assoc :connection c :target-verified? true :verified-connection c
+                                      :permissions (:permissions reply) :sandbox-permissions (:permissions reply)
+                                      :workspace (:workspace reply) :metadata-followups pending)
+                               (update :read-epoch (fnil inc 0))
+                               (update :observed-entries merge (:entries reply))
+                               (update :folders merge (:folders reply))
+                               (update :file-intents #(apply dissoc % (keys (:create-intents current))))
+                               (dissoc :create-intents)
+                               (assoc-in [:sync :attempted] marker)
+                               (assoc-in [:sync :revision] (:revision reply))
+                               (assoc-in [:sync :completed] marker))))
+                       (fn [reply]
+                         ;; Preserve the browser-proved omitted-path fix: use
+                         ;; CURRENT pending reads, not metadata's old request.
+                         (let [s (state) stamp (:target-stamp reply)
+                               files (set (concat (keys (:file-intents s))
+                                                  (keep (fn [[[kind p] _]] (when (= :file kind) p)) (:metadata-followups s))
+                                                  (keep (fn [[p entry]]
+                                                          (let [d (get-in s [:drafts p])]
+                                                            (when (and entry
+                                                                       (or (nil? d)
+                                                                           (not= [stamp entry] [(get-in d [:source :target-stamp])
+                                                                                                (get-in d [:source :entry])]))
+                                                                       (not= [stamp entry] [(get-in d [:incoming :target-stamp])
+                                                                                            (get-in d [:incoming :entry])])) p)))
+                                                        (:entries reply))))
+                               folders (set (concat (keys (:folder-intents s))
+                                                    (keep (fn [[[kind p] _]] (when (= :folder kind) p)) (:metadata-followups s))))]
+                           (update! dissoc :metadata-followups)
+                           (doseq [p files]
+                             (when-not (and (contains? (:entries reply) p) (nil? (get-in reply [:entries p])))
+                               (open! p true nil true)))
+                           (doseq [p folders] (folder! p))
+                           (when (seq (:query (state))) (search!))
+                           (doseq [p (keys (:history s))] (history! p))))
+                       {:scope :discovery
+                        :accept? (fn [s _] (= revision (:discovery-revision s 0)))
+                        :error-current? (fn [s] (= revision (:discovery-revision s 0)))
+                        :on-settled (fn []
+                                      (when (not= revision (:discovery-revision (state) 0))
+                                        (discover! false)))}))))))
+            (target! [slot]
+              (connected!)
+              (if (verified? (state) (connection)) (:target-stamp (state))
+                  (do (update! assoc-in [:errors slot] "Verify the current workspace with Refresh before this action.")
+                      (discover! false) nil)))
+            (draft-stamp! [path slot]
+              (when (target! slot)
+                (if (draft-current? (state) path) (get-in (state) [:drafts path :source :target-stamp])
+                    (do (update! assoc-in [:errors slot] "This draft belongs to another workspace. Choose its current copy explicitly before publishing.") nil))))
+            (generation? [path generation]
+              (fn [s _] (= generation (get-in s [:drafts path :generation]))))
+            (navigation-refresh! []
               (when-not (= :navigation (:col-id data))
                 ((:refresh (controller {:room-id (:room-id data) :col-id :navigation
                                         :state-signal sig/memory-navigation-state})))))
             (folder! [path]
-              (let [epoch (:read-epoch (state))
-                    connection (binding [ec/*execution-context* ctx] @sig/memory-connection)]
-                (request! [:folder path] #(remote/load-memory-folder! web/server-id room path)
-                          #(if (and (= connection @sig/memory-connection) (= epoch (:read-epoch %1)))
-                             (assoc-in %1 [:folders path] %2) %1))))
-            (analyze! [path]
-              (let [text (get-in (state) [:drafts path :text])]
-                (when (string? text)
-                  (request! [:analysis path] #(remote/analyze-memory-text! web/server-id room path text)
-                            #(update-in %1 [:drafts path] editor/analyzed text %2)))))
+              (update! assoc-in [:folder-intents path] true)
+              (if-let [stamp (when (verified? (state) (connected!)) (:target-stamp (state)))]
+                (request! [:folder path] #(remote/load-memory-folder! web/server-id room
+                                                                      {:folder path :expected-target-stamp stamp})
+                          #(-> %1 (assoc-in [:folders path] %2) (update :folder-intents dissoc path))
+                          nil {:stamp stamp :read? true})
+                (discover! false)))
             (open! [path refresh? & [observed passive?]]
               (when-not (or observed passive?) (update! assoc :selected path))
               (when (or refresh? (nil? (get-in (state) [:drafts path])))
-                (let [generation (get-in (state) [:drafts path :generation]) epoch (:read-epoch (state))
-                      connection (binding [ec/*execution-context* ctx] @sig/memory-connection)]
-                  (request! [:file path] #(remote/load-memory-file! web/server-id room path)
-                            (fn [s reply]
-                              ;; A save/move completed since this read began.
-                              (if (or (not= connection @sig/memory-connection)
-                                      (not= epoch (:read-epoch s))
-                                      (and observed (not= observed (get-in s [:observed-entries path])))) s
-                                  (update-in s [:drafts path] editor/loaded-at-generation generation reply)))))))
+                (update! assoc-in [:file-intents path] true)
+                (if-let [stamp (when (verified? (state) (connected!)) (:target-stamp (state)))]
+                  (let [generation (get-in (state) [:drafts path :generation])]
+                    (request! [:file path] #(remote/load-memory-file! web/server-id room
+                                                                      {:path path :expected-target-stamp stamp})
+                              #(-> %1 (update-in [:drafts path] editor/loaded-at-generation generation %2)
+                                   (update :file-intents dissoc path)) nil
+                              {:stamp stamp :read? true :accept? (generation? path generation)}))
+                  (discover! false))))
+            (analyze! [path]
+              (let [draft (get-in (state) [:drafts path]) text (:text draft)]
+                (when-let [stamp (and (string? text) (draft-stamp! path [:analysis path]))]
+                  (request! [:analysis path] #(remote/analyze-memory-text! web/server-id room
+                                                                           {:path path :text text :expected-target-stamp stamp})
+                            #(update-in %1 [:drafts path] editor/analyzed text %2) nil
+                            {:stamp stamp :accept? (fn [s _] (and (= text (get-in s [:drafts path :text]))
+                                                                  (= (:generation draft) (get-in s [:drafts path :generation]))))}))))
             (save! [path]
-              (let [draft (get-in (state) [:drafts path]) sent (:text draft)]
-                (when (and (not (get-in (state) [:loading [:save path]]))
-                           (not (get-in (state) [:loading [:move path]])))
-                  (request! [:save path]
-                            #(if-let [base (:rich-base draft)]
-                               (remote/save-memory-rich-file! web/server-id room
-                                                              {:path path :expected (get-in draft [:source :entry]) :text sent
-                                                               :source (:text base) :revision (get-in base [:analysis :revision])
-                                                               :edits (editor/rich-edits draft)})
-                               (remote/save-memory-file! web/server-id room
-                                                         {:path path :expected (get-in draft [:source :entry]) :text sent}))
-                            (fn [s reply] (update-in s [:drafts path] editor/saved-at-generation (:generation draft) sent reply))
-                            (fn [_] (folder! (parent path)) (navigation-refresh!))))))
-            (mode! [path mode]
-              (do
-                (change! path #(cond-> (assoc % :mode mode) (= mode :rich) editor/begin-rich))
-                (when (and (not= mode :source) (nil? (get-in (state) [:drafts path :analysis])))
-                  (analyze! path))))
-            (create! [path]
-              (when (and path (not (str/blank? path)))
+              (let [draft (get-in (state) [:drafts path]) sent (:text draft) slot [:save path]]
+                (when (and (not (get-in (state) [:loading slot])) (not (get-in (state) [:loading [:move path]])))
+                  (when-let [stamp (draft-stamp! path slot)]
+                    (let [request {:path path :expected (get-in draft [:source :entry]) :text sent :expected-target-stamp stamp}
+                          base (:rich-base draft)]
+                      (request! slot
+                                #(if base
+                                   (remote/save-memory-rich-file! web/server-id room
+                                                                  (assoc request :source (:text base)
+                                                                         :revision (get-in base [:analysis :revision]) :edits (editor/rich-edits draft)))
+                                   (remote/save-memory-file! web/server-id room request))
+                                #(update-in %1 [:drafts path] editor/saved-at-generation (:generation draft) sent %2)
+                                (fn [_] (folder! (parent path)) (navigation-refresh!))
+                                {:stamp stamp :accept? (generation? path (:generation draft))}))))))
+            (create! [path origin]
+              (if-not (and (string? path) (not (str/blank? path)) (uuid? origin))
+                (do (update! assoc-in [:errors :create] "Verify the initiating workspace before creating a file.") (discover! false))
                 (let [markdown? (re-find #"(?i)\.(md|markdown)$" path)
-                      text (if markdown? (str "---\nsimmis-id: '" (random-uuid) "'\n---\n# Untitled\n\n") "")
-                      file {:path path :text "" :entry nil :kind (if markdown? :markdown :text)}]
-                  (update! assoc :selected path)
-                  (change! path #(or % (assoc (editor/draft file) :text text :mode :source))))))
+                      intent {:origin origin :kind (if markdown? :markdown :text)
+                              :text (if markdown? (str "---\nsimmis-id: '" (random-uuid) "'\n---\n# Untitled\n\n") "")}]
+                  (update! #(-> % (assoc :selected path) (assoc-in [:create-intents path] intent)))
+                  (discover! true))))
             (download! [path]
-              (let [entry (get-in (state) [:drafts path :source :entry])]
-                (request! [:download path]
-                          #(remote/download-memory-file! web/server-id room path entry)
-                          (fn [s reply] (assoc s :download reply)))))
+              (when-let [stamp (draft-stamp! path [:download path])]
+                (let [draft (get-in (state) [:drafts path])]
+                  (request! [:download path] #(remote/download-memory-file! web/server-id room
+                                                                            {:path path :expected (get-in draft [:source :entry]) :expected-target-stamp stamp})
+                            #(assoc %1 :download %2) nil {:stamp stamp :accept? (generation? path (:generation draft))}))))
             (upload! [folder file]
-              (let [path (str (when (seq folder) (str folder "/")) (.-name file))]
-                (if (> (.-size file) (* 8 1024 1024))
-                  (update! assoc-in [:errors :upload] "File exceeds the 8 MiB interactive upload limit.")
-                  (-> (.arrayBuffer file)
-                      (.then (fn [buffer]
-                               (when (current?)
-                                 (let [bytes (js/Uint8Array. buffer)
-                                       chunks (for [from (range 0 (.-length bytes) 16384)]
-                                                (.apply (.-fromCharCode js/String) nil
-                                                        (.subarray bytes from (min (+ from 16384) (.-length bytes)))))
-                                       payload (js/btoa (apply str chunks))]
-                                   (binding [ec/*execution-context* ctx]
-                                     (request! [:upload path]
-                                               #(remote/save-memory-file! web/server-id room
-                                                                          {:path path :expected nil :base64 payload})
-                                               (fn [s _] s)
-                                               (fn [_] (folder! folder) (navigation-refresh!) (open! path true))))))))
-                      (.catch (fn [e] (update! assoc-in [:errors :upload] (rem/error-text e))))))))
+              (when-let [stamp (target! :upload)]
+                (let [path (str (when (seq folder) (str folder "/")) (.-name file))
+                      c (connection) epoch (:target-epoch (state)) token (random-uuid)
+                      valid? #(and (current?) (= c (connection)) (verified? (state) c)
+                                   (= stamp (:target-stamp (state))) (= epoch (:target-epoch (state)))
+                                   (= token (:upload-token (state))))]
+                  (update! #(-> % (assoc :upload-token token :upload-intent {:path path :target-stamp stamp})
+                                (dissoc :cancelled-upload)))
+                  (if (> (.-size file) (* 8 1024 1024))
+                    (update! #(-> % (dissoc :upload-token :upload-intent)
+                                  (assoc-in [:errors :upload] "File exceeds the 8 MiB interactive upload limit.")))
+                    (-> (.arrayBuffer file)
+                        (.then (fn [buffer]
+                                 (when (valid?)
+                                   (let [bytes (js/Uint8Array. buffer)
+                                         chunks (for [from (range 0 (.-length bytes) 16384)]
+                                                  (.apply (.-fromCharCode js/String) nil
+                                                          (.subarray bytes from (min (+ from 16384) (.-length bytes)))))
+                                         payload (js/btoa (apply str chunks))]
+                                     (when (valid?)
+                                       (request! [:upload path]
+                                                 #(remote/save-memory-file! web/server-id room
+                                                                            {:path path :expected nil :base64 payload :expected-target-stamp stamp})
+                                                 (fn [s _] (dissoc s :upload-token :upload-intent))
+                                                 (fn [_] (folder! folder) (navigation-refresh!) (open! path true))
+                                                 {:stamp stamp
+                                                  :accept? (fn [s _] (= token (:upload-token s)))
+                                                  :error-current? (fn [s] (= token (:upload-token s)))
+                                                  :failure-state (fn [s _]
+                                                                   (if (= token (:upload-token s))
+                                                                     (dissoc s :upload-token :upload-intent) s))}))))))
+                        (.catch (fn [error]
+                                  (when (valid?)
+                                    (update! #(-> % (dissoc :upload-token :upload-intent)
+                                                  (assoc-in [:errors :upload] (rem/error-text error))))))))))))
             (office-open! [path part]
-              (let [draft (get-in (state) [:drafts path]) generation (:generation draft)
-                    expected (get-in draft [:source :entry])]
+              (let [draft (get-in (state) [:drafts path])]
                 (if (or (editor/dirty? draft) (get-in (state) [:loading [:office-save path]]))
                   (update! assoc-in [:errors :office] "Save or discard this XML draft before switching parts.")
-                  (request! [:office path]
-                            #(remote/load-memory-office-part! web/server-id room path expected part)
-                            (fn [s reply]
-                              (if (and (= generation (get-in s [:drafts path :generation]))
-                                       (not (editor/dirty? (get-in s [:drafts path]))))
-                                (assoc-in s [:drafts path :office] (assoc reply :saved-text (:text reply))) s))))))
+                  (when-let [stamp (draft-stamp! path [:office path])]
+                    (request! [:office path] #(remote/load-memory-office-part! web/server-id room
+                                                                               {:path path :expected (get-in draft [:source :entry])
+                                                                                :part part :expected-target-stamp stamp})
+                              #(assoc-in %1 [:drafts path :office] (assoc %2 :saved-text (:text %2))) nil
+                              {:stamp stamp :accept? (fn [s _] (and (= (:generation draft) (get-in s [:drafts path :generation]))
+                                                                    (not (editor/dirty? (get-in s [:drafts path])))))})))))
             (office-save! [path]
               (let [draft (get-in (state) [:drafts path]) office (:office draft) sent (:text office)]
-                (when-not (or (get-in (state) [:loading [:office-save path]])
-                              (get-in (state) [:loading [:move path]]))
-                  (request! [:office-save path]
-                            #(remote/save-memory-office-part! web/server-id room
-                                                              {:path path :expected (get-in draft [:source :entry])
-                                                               :part (:part office) :text sent})
-                            (fn [s reply]
-                              (if (= (:part office) (get-in s [:drafts path :office :part]))
-                                (update-in s [:drafts path]
-                                           #(-> % (assoc-in [:source :entry] (:entry reply))
-                                                (assoc-in [:office :saved-text] sent)
-                                                (assoc :last-commit (:commit reply))
-                                                (update :generation inc))) s))
-                            (fn [_] (folder! (parent path)) (navigation-refresh!))))))]
+                (when (and (not (get-in (state) [:loading [:office-save path]])) (not (get-in (state) [:loading [:move path]])))
+                  (when-let [stamp (draft-stamp! path [:office-save path])]
+                    (request! [:office-save path] #(remote/save-memory-office-part! web/server-id room
+                                                                                    {:path path :expected (get-in draft [:source :entry])
+                                                                                     :part (:part office) :text sent :expected-target-stamp stamp})
+                              #(update-in %1 [:drafts path]
+                                          (fn [d] (-> d (assoc-in [:source :entry] (:entry %2))
+                                                      (assoc-in [:office :saved-text] sent)
+                                                      (assoc :last-commit (:commit %2)) (update :generation inc))))
+                              (fn [_] (folder! (parent path)) (navigation-refresh!))
+                              {:stamp stamp :accept? (fn [s _] (and (= (:generation draft) (get-in s [:drafts path :generation]))
+                                                                    (= (:part office) (get-in s [:drafts path :office :part]))))})))))
+            (history! [path]
+              (when-let [stamp (draft-stamp! path [:history path])]
+                (let [generation (get-in (state) [:drafts path :generation])]
+                  (request! [:history path] #(remote/load-memory-history! web/server-id room {:path path :expected-target-stamp stamp})
+                            #(assoc-in %1 [:history path] %2) nil {:stamp stamp :accept? (generation? path generation)}))))
+            (search! []
+              (let [query (:query (state))]
+                (when-let [stamp (and (not (str/blank? query)) (target! :search))]
+                  (request! :search #(remote/search-memory-files! web/server-id room {:query query :expected-target-stamp stamp})
+                            #(assoc %1 :search %2) nil {:stamp stamp :accept? (fn [s _] (= query (:query s)))}))))
+            (ensure-sync! [c stream]
+              (connected!)
+              (when (and c (= c (connection)) (current?))
+                (let [marker [(:connection stream) (:status stream) (get-in stream [:dirty room] 0)]]
+                  (when (not= marker (:stream-marker (state)))
+                    (update! assoc :stream-marker marker)))
+                (when (not= c (:watch-connection (state)))
+                  (update! assoc :watch-connection c)
+                  (request! :watch #(remote/prepare-memory-stream! web/server-id room) (fn [s _] s)
+                            (fn [_]
+                              (if (:retry-stream? (state))
+                                (do (update! dissoc :retry-stream?) (sync/retry! c))
+                                (sync/ensure! c))) {:scope :watch}))
+                ;; Discovery is NOT gated by subscription readiness.
+                (discover! false)))
+            (refresh! []
+              (connected!)
+              (update! #(-> % (assoc :errors {} :retry-stream? true)
+                            (dissoc :watch-connection)))
+              (discover! true)
+              (when-let [c (connection)]
+                (ensure-sync! c (binding [ec/*execution-context* ctx] @sync/state)))
+              (navigation-refresh!))]
       {:owner key :state state :change change! :folder folder! :open #(open! % false) :reload #(open! % true)
+       :verified? #(verified? (state) (connection)) :discover #(discover! false)
        :repl-change (fn [f & args] (apply update! update :repl f args))
        :repl-evaluate
        (fn [syntax]
-         (when-not (get-in (state) [:loading :repl])
+         (when (and (not (get-in (state) [:loading :repl]))
+                    (not (false? (get-in (state) [:sandbox-permissions :evaluate?]))))
            (let [request {:text (editor/repl-input (state) syntax) :syntax syntax
                           :namespace (or (get-in (state) [:repl :namespace]) "user")}]
              (request! :repl #(remote/evaluate-memory-repl! web/server-id room request)
-                       editor/repl-result))))
-       :history (fn [path]
-                  (request! [:history path] #(remote/load-memory-history! web/server-id room path)
-                            #(assoc-in %1 [:history path] %2)))
-       :history-file (fn [path commit-id]
-                       (request! [:history-file path]
-                                 #(remote/load-memory-history-file! web/server-id room path commit-id)
-                                 #(assoc-in %1 [:history-preview path] %2)))
+                       editor/repl-result nil {:scope :sandbox}))))
+       :history history!
+       :history-file (fn [path commit]
+                       (when-let [stamp (draft-stamp! path [:history-file path])]
+                         (request! [:history-file path]
+                                   #(remote/load-memory-history-file! web/server-id room {:path path :commit commit :expected-target-stamp stamp})
+                                   #(assoc-in %1 [:history-preview path] %2) nil
+                                   {:stamp stamp :accept? (generation? path (get-in (state) [:drafts path :generation]))})))
        :evaluate (fn [path scope]
-                   (let [draft (get-in (state) [:drafts path])
-                         {:keys [anchor head]} (:selection draft)
+                   (let [draft (get-in (state) [:drafts path]) {:keys [anchor head]} (:selection draft)
                          request {:path path :text (:text draft) :scope scope
                                   :from (min (or anchor 0) (or head 0)) :to (max (or anchor 0) (or head 0))}]
-                     (when-not (get-in (state) [:loading [:evaluate path]])
+                     (when (and (not (get-in (state) [:loading [:evaluate path]]))
+                                (not (false? (get-in (state) [:sandbox-permissions :evaluate?]))))
                        (request! [:evaluate path] #(remote/evaluate-memory-code! web/server-id room request)
-                                 #(assoc-in %1 [:evaluations path] (assoc %2 :input-text (:text draft)))))))
+                                 #(assoc-in %1 [:evaluations path] (assoc %2 :input-text (:text draft))) nil
+                                 {:scope :sandbox :accept? (generation? path (:generation draft))}))))
        :ensure-path (fn []
                       (when (and (:path data) (not= (:path data) (:opened-path (state))))
                         (update! assoc :opened-path (:path data))
-                        (open! (:path data) false)))
-       :ensure-root (fn []
-                      (when (and (:id session) (current?)
-                                 (nil? (get-in (state) [:folders ""]))
-                                 (not (get-in (state) [:requests [:folder ""]])))
-                        (folder! "")))
-       :ensure-sync
-       (fn [connection stream]
-         (when (and connection (:id session) (current?))
-           (if (not= connection (:watch-connection (state)))
-             (do
-               (update! assoc :watch-connection connection :sync nil)
-               (request! :watch #(remote/prepare-memory-stream! web/server-id room)
-                         (fn [s _] s)
-                         (fn [_]
-                           (binding [ec/*execution-context* ctx]
-                             (sync/ensure! connection)))))
-             (when (and (= connection (:connection stream)) (= :ready (:status stream)))
-               (let [s (state)
-                     request (editor/metadata-request s)
-                     marker [connection (get-in stream [:dirty room] 0) request]]
-                 ;; At most one metadata read at a time. An invalidation while
-                 ;; it is pending changes marker; the next render immediately
-                 ;; performs the remaining reconciliation, without a timer.
-                 (when (and (not= marker (get-in s [:sync :attempted]))
-                            (not (get-in s [:loading :metadata])))
-                   (let [generations (into {} (map (fn [[path draft]] [path (:generation draft)])) (:drafts s))]
-                     (update! assoc-in [:sync :attempted] marker)
-                     (if (or (> (count (:folders request)) 64) (> (count (:paths request)) 64))
-                       (update! assoc-in [:errors :metadata] "Live updates support 64 expanded folders and file buffers per view. Collapse folders or close buffers, then Refresh.")
-                       (request! :metadata #(remote/load-memory-metadata! web/server-id room request)
-                                 (fn [current reply]
-                                   (if (or (not= connection @sig/memory-connection)
-                                           (not= connection (:watch-connection current))) current
-                                       (-> (reduce-kv
-                                            (fn [result path entry]
-                                              (if (editor/metadata-generation-current? (get generations path) (get-in result [:drafts path :generation]))
-                                                (update-in result [:drafts path] editor/observed-entry entry) result))
-                                            current (:entries reply))
-                                           (update :read-epoch (fnil inc 0))
-                                           (update :observed-entries merge (:entries reply))
-                                           (update :folders merge (:folders reply))
-                                           (assoc :workspace (:workspace reply))
-                                           (assoc-in [:sync :revision] (:revision reply))
-                                           (assoc-in [:sync :completed] marker))))
-                                 (fn [reply]
-                                   (when (and (= connection (binding [ec/*execution-context* ctx] @sig/memory-connection))
-                                              (= connection (:watch-connection (state))))
-                                   ;; Metadata captured its paths BEFORE some
-                                   ;; current reads began (e.g. upload finish).
-                                   ;; Its epoch invalidates those reads too:
-                                   ;; replace omitted pending requests, without
-                                   ;; selecting their paths or retrying writes.
-                                     (doseq [[slot loading?] (:loading (state))
-                                             :when (and loading? (vector? slot))
-                                             :let [[kind path] slot]]
-                                       (cond
-                                         (and (= :file kind) (not (contains? (:entries reply) path)))
-                                         (open! path true nil true)
-                                         (and (= :folder kind) (not (contains? (:folders reply) path)))
-                                         (folder! path)))
-                                     (do
-                                       (binding [ec/*execution-context* ctx]
-                                         (when (seq (:query (state))) ((:search (controller data))))
-                                         (doseq [path (keys (:history (state)))]
-                                           (request! [:history path] #(remote/load-memory-history! web/server-id room path)
-                                                     #(assoc-in %1 [:history path] %2))))
-                                       (doseq [[path entry] (:entries reply)
-                                               :let [draft (get-in (state) [:drafts path])]
-                                               :when (and entry
-                                                          (editor/metadata-generation-current? (get generations path) (:generation draft))
-                                                          (not= entry (get-in draft [:source :entry]))
-                                                          (not= entry (get-in draft [:incoming :entry])))]
-                                         (open! path true entry))))))))))))))
-       :analyze analyze! :save save! :mode mode! :create create! :download download! :upload upload!
-       :office-open office-open! :office-save office-save!
-       :select-path #(update! assoc :selected %)
-       :set-query #(update! assoc :query %)
-       :search (fn [] (let [query (:query (state))]
-                        (when-not (str/blank? query)
-                          (request! :search #(remote/search-memory-files! web/server-id room query)
-                                    (fn [s reply] (if (= query (:query s)) (assoc s :search reply) s))))))
+                        (if (and (:create-origin-stamp data)
+                                 (not= (:create-intent-id data) (:created-intent (state))))
+                          (do (update! assoc :created-intent (:create-intent-id data))
+                              (create! (:path data) (:create-origin-stamp data)))
+                          (open! (:path data) false))))
+       :observe-navigation
+       (fn [stamp]
+         (when (and (uuid? stamp) (not= stamp (:target-stamp (state))))
+           ;; Client hint prompts verification, never target adoption.
+           (invalidate!) (discover! true)))
+       :ensure-root #(when-not (get-in (state) [:folders ""]) (folder! ""))
+       :ensure-sync ensure-sync! :refresh refresh!
+       :analyze analyze! :save save! :mode (fn [path mode]
+                                             (change! path #(cond-> (assoc % :mode mode) (= mode :rich) editor/begin-rich))
+                                             (when (and (not= mode :source) (nil? (get-in (state) [:drafts path :analysis]))) (analyze! path)))
+       :create (fn [path & [origin]] (create! path (or origin (when (verified? (state) (connection)) (:target-stamp (state))))))
+       :download download! :upload upload! :office-open office-open! :office-save office-save!
+       :select-path #(update! assoc :selected %) :set-query #(update! assoc :query %) :search search!
        :toggle-root (fn [] (update! update :root-expanded? not) (folder! (or (:focus-folder (state)) "")))
-       :focus-folder (fn [path]
-                       (update! assoc :focus-folder path :current-folder path :query "" :root-expanded? true)
-                       (folder! path))
+       :focus-folder (fn [path] (update! assoc :focus-folder path :current-folder path :query "" :root-expanded? true) (folder! path))
        :rich-change (fn [path base-id from model selection]
                       (try (change! path editor/rich-changed base-id from model selection)
                            (catch :default error (update! assoc-in [:errors [:rich path]] (rem/error-text error)))))
        :root (fn [] (update! assoc :current-folder "") (folder! ""))
        :mkdir (fn [path]
-                (request! [:mkdir path]
-                          #(remote/save-memory-file! web/server-id room
-                                                     {:path (str path "/.keep") :expected nil :text ""})
-                          (fn [s _] (-> s (assoc :current-folder path) (assoc-in [:expanded path] true)))
-                          (fn [_] (folder! (parent path)) (folder! path) (navigation-refresh!))))
+                (when-let [stamp (target! [:mkdir path])]
+                  (request! [:mkdir path] #(remote/save-memory-file! web/server-id room
+                                                                     {:path (str path "/.keep") :expected nil :text "" :expected-target-stamp stamp})
+                            #(-> %1 (assoc :current-folder path) (assoc-in [:expanded path] true))
+                            (fn [_] (folder! (parent path)) (folder! path) (navigation-refresh!)) {:stamp stamp})))
        :toggle (fn [path]
                  (let [expanded (get-in (state) [:expanded path])]
                    (update! assoc-in [:expanded path] (not expanded))
                    (when expanded (update! update :folders dissoc path))
                    (update! assoc :current-folder path)
                    (when (and (not expanded) (nil? (get-in (state) [:folders path]))) (folder! path))))
-       :refresh (fn []
-                  (update! #(-> % (assoc :errors {}) (dissoc :watch-connection :sync)))
-                  (doseq [folder (or (seq (keys (:folders (state)))) [(or (:focus-folder (state)) "")])]
-                    (folder! folder))
-                  (navigation-refresh!)
-                  (when-let [path (:selected (state))] (open! path true)))
        :use-incoming (fn [path]
-                       (when (js/confirm "Replace this local draft with the newer saved version?")
-                         (change! path editor/use-incoming)
-                         (update! update :errors dissoc [:save path] [:file path] [:rich path])))
-       :move
-       (fn [path target]
-         (let [draft (get-in (state) [:drafts path])]
-           (if (or (editor/dirty? draft) (get-in (state) [:loading [:save path]])
-                   (get-in (state) [:loading [:office-save path]])
-                   (get-in (state) [:loading [:move path]]) (get-in (state) [:drafts target]))
-             (update! assoc-in [:errors :move] "Finish pending saves and choose a destination without another open draft before moving.")
-             (request! [:move path]
-                       #(remote/move-memory-file! web/server-id room
-                                                  {:path path :target target :expected (get-in draft [:source :entry])})
-                       (fn [s reply]
-                         (let [moved (editor/moved (get-in s [:drafts path]) reply)]
-                           (if (get-in s [:drafts target])
-                             ;; Never overwrite a separate target draft.
-                             (assoc-in s [:errors :move] "File moved; both local drafts were retained. Refresh before saving either draft.")
-                             (-> s (assoc-in [:drafts target] moved) (update :drafts dissoc path)
-                                 (assoc :selected (:path reply))))))
-                       (fn [_]
-                         (binding [ec/*execution-context* ctx]
-                           (swap! sig/layout-columns
-                                  (fn [columns]
-                                    (mapv (fn [col]
-                                            (if (= (:col-id data) (:id col))
-                                              (update col :tabs (fn [tabs]
-                                                                  (mapv (fn [tab] (if (= (:tab-id data) (:id tab))
-                                                                                    (-> tab (assoc-in [:data :path] target)
-                                                                                        (assoc :title (last (str/split target #"/")))) tab)) tabs))) col)) columns))))
-                         (folder! (parent path)) (folder! (parent target)) (navigation-refresh!) (open! target true))))))})))
+                       (let [incoming (get-in (state) [:drafts path :incoming])]
+                         (when (and (verified? (state) (connection))
+                                    (= (:target-stamp (state)) (:target-stamp incoming))
+                                    (js/confirm "Replace this local draft with the current workspace's saved version?"))
+                           (change! path editor/use-incoming)
+                           (update! update :errors dissoc [:save path] [:file path] [:rich path]))))
+       :move (fn [path target]
+               (let [draft (get-in (state) [:drafts path])]
+                 (if (or (editor/dirty? draft) (get-in (state) [:loading [:save path]])
+                         (get-in (state) [:loading [:office-save path]]) (get-in (state) [:loading [:move path]])
+                         (get-in (state) [:drafts target]))
+                   (update! assoc-in [:errors :move] "Finish pending saves and choose a destination without another open draft before moving.")
+                   (when-let [stamp (draft-stamp! path [:move path])]
+                     (request! [:move path] #(remote/move-memory-file! web/server-id room
+                                                                       {:path path :target target :expected (get-in draft [:source :entry]) :expected-target-stamp stamp})
+                               (fn [s reply]
+                                 (-> s (assoc-in [:drafts target] (editor/moved (get-in s [:drafts path]) reply))
+                                     (update :drafts dissoc path) (assoc :selected (:path reply))))
+                               (fn [_]
+                                 (binding [ec/*execution-context* ctx]
+                                   (swap! sig/layout-columns
+                                          (fn [columns]
+                                            (mapv (fn [col]
+                                                    (if (= (:col-id data) (:id col))
+                                                      (update col :tabs
+                                                              (fn [tabs] (mapv (fn [tab]
+                                                                                 (if (= (:tab-id data) (:id tab))
+                                                                                   (-> tab (assoc-in [:data :path] target)
+                                                                                       (assoc :title (last (str/split target #"/")))) tab)) tabs))) col)) columns))))
+                                 (folder! (parent path)) (folder! (parent target)) (navigation-refresh!) (open! target true))
+                               {:stamp stamp :accept? (fn [s _] (and (= (:generation draft) (get-in s [:drafts path :generation]))
+                                                                     (nil? (get-in s [:drafts target]))))})))))})))

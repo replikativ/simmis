@@ -1,5 +1,5 @@
 (ns is.simm.ops.owned-workspace
-  "Inactive host-only owned-default bindings. No external routing is installed.
+  "Host-only owned-default bindings for Memory and guarded file publication.
    A binding/stamp is neither a capability nor a lease. Callers supply a current
    registry snapshot and transport-authenticated identity for each operation."
   (:require [datahike.api :as d]

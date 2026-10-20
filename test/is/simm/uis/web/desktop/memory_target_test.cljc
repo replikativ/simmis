@@ -7,6 +7,30 @@
   {:path "wiki/page.md" :kind :text :entry {:content :identical} :text "Saved"
    :target-stamp stamp})
 
+(deftest only-a-full-current-original-body-unfences-a-returned-dirty-target
+  (let [a (random-uuid) b (random-uuid)
+        human (assoc (editor/draft (file a)) :text "Human work"
+                     :rich-base {:models {0 :human}} :office {:text "Human XML"})
+        in-b (get-in (editor/observe-target {:target-stamp a :drafts {"wiki/page.md" human}} b)
+                     [:drafts "wiki/page.md"])
+        back-in-a (get-in (editor/observe-target {:target-stamp b :drafts {"wiki/page.md" in-b}} a)
+                          [:drafts "wiki/page.md"])
+        metadata-only (editor/observed-entry back-in-a (:entry (file a)) a)
+        body (editor/loaded metadata-only (file a))
+        with-incoming-b (editor/loaded in-b (file b))]
+    (is (true? (:target-stale? metadata-only)) "Metadata alone does not unfence a draft")
+    (is (true? (:target-stale? (editor/loaded in-b (file a)))) "Late A cannot clear B's marker")
+    (is (identical? with-incoming-b (editor/loaded with-incoming-b (file a)))
+        "Late A cannot erase the full B incoming copy")
+    (is (identical? with-incoming-b (editor/loaded with-incoming-b (dissoc (file b) :target-stamp)))
+        "An unversioned body is equally unable to erase known B")
+    (is (true? (:target-stale? (editor/loaded metadata-only (assoc (file a) :entry nil :deleted? true)))))
+    (is (not (:target-stale? body)))
+    (is (= a (:current-target-stamp body)))
+    (is (= "Human work" (:text body)))
+    (is (= (:rich-base human) (:rich-base body)))
+    (is (= (:office human) (:office body)))))
+
 (deftest identical-bytes-in-another-target-are-not-the-same-document
   (let [a (random-uuid) b (random-uuid)
         opened (editor/draft (file a))

@@ -1020,7 +1020,10 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
+                           (render-tab-content (:type active-tab-data)
+                                               (cond-> (:data active-tab-data)
+                                                 (= :memory (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
+                                               local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1031,7 +1034,8 @@
                            (await tab-result)
                            tab-result)
              memory-context (when (= :memory (:type active-tab-data))
-                              (await (memory-view/render-context (:data active-tab-data))))]
+                              (await (memory-view/render-context (assoc (:data active-tab-data)
+                                                                       :col-id id :tab-id (:id active-tab-data)))))]
          (el/div {:key id
                   :class (vc/class-names "column" (when is-active? "active"))
                   :data-col-id id

@@ -12,24 +12,28 @@
             [is.simm.uis.web.desktop.memory-actions :as actions])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]))
 
-(defn open-file! [room title path & [target-col]]
+(defn open-file! [room title path & [target-col target-stamp]]
   (let [ctx (or ec/*execution-context* runtime)]
     (binding [ec/*execution-context* ctx]
       (let [columns @sig/layout-columns col (or target-col (sig/get-active-column-id columns))]
         (if-let [tab (tree/file-tab columns col room path)]
-          (sig/set-active-tab! col (:id tab))
-          (sig/open-tab! :memory {:room-id room :room-name title :path path}
+          (do (sig/set-active-tab! col (:id tab))
+              ((:observe-navigation (actions/controller {:room-id room :col-id col :tab-id (:id tab)})) target-stamp))
+          (sig/open-tab! :memory {:room-id room :room-name title :path path :navigation-target-stamp target-stamp}
                          {:title (last (str/split path #"/")) :new-tab? true :col-id col}))))))
 
-(defn create-file! [room title path col]
+(defn create-file! [room title path col origin]
   (let [ctx (or ec/*execution-context* runtime)]
     (binding [ec/*execution-context* ctx]
-      (if (tree/file-tab @sig/layout-columns col room path)
-        (open-file! room title path col)
-        (do
-          (open-file! room title path col)
-          (let [column (first (filter #(= col (:id %)) @sig/layout-columns))]
-            ((:create (actions/controller {:room-id room :col-id col :tab-id (:active-tab column)})) path)))))))
+      (if-not (uuid? origin)
+        ((:discover (actions/controller {:room-id room :col-id :navigation :state-signal sig/memory-navigation-state})))
+        (if (tree/file-tab @sig/layout-columns col room path)
+          (open-file! room title path col origin)
+          ;; Origin is present at tab birth, BEFORE a synchronous render may
+          ;; request metadata. The fresh controller must discover independently.
+          (sig/open-tab! :memory {:room-id room :room-name title :path path
+                                  :create-origin-stamp origin :create-intent-id (random-uuid)}
+                         {:title (last (str/split path #"/")) :new-tab? true :col-id col}))))))
 
 (defn controller [room]
   (actions/controller {:room-id room :col-id :navigation :state-signal sig/memory-navigation-state}))
@@ -70,7 +74,10 @@
          states (iv/get-new (track sig/memory-navigation-state))
          id (:room/id room) title (:room/name room) a (controller id)
          state (get states (:owner a)) folder (or (:focus-folder state) "")
-         open! (fn [path] ((:select-path a) path) (open-file! id title path))
+         open! (fn [path]
+                 (if ((:verified? a))
+                   (do ((:select-path a) path) (open-file! id title path nil (:target-stamp ((:state a)))))
+                   ((:discover a))))
          search (when (= (:query state) (get-in state [:search :query])) (:search state))]
      (when (:root-expanded? state) ((:ensure-sync a) connection stream))
      (el/div {:key (str "workspace-" id) :class "nav-subsection memory-navigation"}

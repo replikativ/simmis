@@ -8,16 +8,24 @@
 (def ^:private owner (subscription/owner))
 (def state (:state owner))
 
+(defn- options
+  [connection]
+  {:connection connection :peer (:client (web/current-session))
+   :topic (keyword "memory" (str (:party connection))) :initial {:dirty {}}
+   :on-message (fn [{:keys [kind room-id]}]
+                 (when (= kind :memory-changed)
+                   (swap! state update-in [:dirty (str room-id)] (fnil inc 0))))})
+
 (defn ensure!
   "Call only after prepare-memory-stream! registered the party's private topic.
    Readiness means the handshake callback, not merely subscribe request sent."
   [connection]
-  (subscription/ensure!
-   owner {:connection connection :peer (:client (web/current-session))
-          :topic (keyword "memory" (str (:party connection))) :initial {:dirty {}}
-          :on-message (fn [{:keys [kind room-id]}]
-                        (when (= kind :memory-changed)
-                          (swap! state update-in [:dirty (str room-id)] (fnil inc 0))))}))
+  (subscription/ensure! owner (options connection)))
+
+(defn retry!
+  "Explicit error retry, using the existing owner and exact-strategy disposal."
+  [connection]
+  (subscription/retry! owner (options connection)))
 
 (defn problem [stream]
   (when (= :error (:status stream))
