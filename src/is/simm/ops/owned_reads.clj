@@ -87,3 +87,25 @@
       (when-not (and room (= room-id (:room-id current))) (refuse!))
       (assoc (owned/resolve! after authenticated-human-principal :read room-id room)
              :control-db after))))
+
+(defn host-owner
+  "HOST-only captured owner DATA, not a callback or transferable authority.
+   Never serialize, persist, expose to SCI or attach to fork state."
+  [canonical-control-conn actual-host-context]
+  {:control-conn canonical-control-conn :execution-ctx actual-host-context})
+
+(defn owned-host? [host]
+  ;; Presence is intentional: malformed/expired owners MUST NOT fall back.
+  (contains? host ::owner))
+
+(defn resolve-host-read!
+  "Fixed HOST composition entry. Validate the ORIGINAL host owner, then obtain
+   ONE rich canonical binding. No callback lookup, fresh owner adoption or
+   selected fallback; the explicit principal is authenticated by the caller."
+  [host authenticated-human-principal original-handle]
+  (let [{:keys [control-conn execution-ctx] :as owner} (::owner host)]
+    (when-not (and (map? owner) (= #{:control-conn :execution-ctx} (set (keys owner)))
+                   control-conn execution-ctx
+                   (identical? execution-ctx (:execution-ctx host)))
+      (refuse!))
+    (resolve-read! control-conn execution-ctx authenticated-human-principal original-handle)))

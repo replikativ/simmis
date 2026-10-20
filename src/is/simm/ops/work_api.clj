@@ -10,6 +10,7 @@
             [is.simm.ops.coordinator :as coordinator]
             [is.simm.ops.dvergr :as simmis-ops]
             [is.simm.ops.git-snapshot :as git-snapshot]
+            [is.simm.ops.owned-reads :as owned-reads]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflow-runs]
             [is.simm.ops.workflow-schedules :as workflow-schedules]
@@ -190,6 +191,33 @@
            (ops/op-error! (ex-message e) (:type (ex-data e)) status)
            (throw e)))))
 
+(defn- owned-export-value! [f]
+  ;; This boundary deliberately does NOT interpret Throwable tags/status/text:
+  ;; a native content reader can throw forged op/conflict metadata as well.
+  (try (f)
+       (catch InterruptedException _
+         (.interrupt (Thread/currentThread))
+         (ops/op-error! "Owned workspace export unavailable" ::owned-export-unavailable 503))
+       (catch Throwable _
+         (ops/op-error! "Owned workspace export unavailable" ::owned-export-unavailable 503))))
+
+(defn- owned-export! [host args chunk?]
+  (let [expected (when chunk? (uuid! (:expected-snapshot args)))]
+    (binding [ec/*execution-context* (:execution-ctx host)]
+      (let [{:keys [db room-id target-stamp]}
+            (owned-export-value! #(owned-reads/resolve-host-read! host ops/*principal* (:room args)))]
+        (when chunk?
+        ;; A NORMAL fixed metadata result, not arbitrary exception ex-data,
+        ;; supplies the only trusted revision comparison. No body on conflict.
+          (let [current (owned-export-value! #(git-snapshot/snapshot-id-in db room-id target-stamp))]
+            (when-not (= expected current)
+              (ops/op-error! "Workspace changed; restart the snapshot download" ::owned-export-conflict 409))))
+        (owned-export-value!
+         #(if chunk?
+            (git-snapshot/chunk-in db room-id target-stamp expected (:offset args)
+                                   (get args :length (:chunk-bytes git-snapshot/policy)))
+            (git-snapshot/describe-in db room-id target-stamp)))))))
+
 (def specifications
   (room-specifications
    {:simmis/workflow-schedule-list
@@ -238,15 +266,19 @@
      :doc "Describe a cloneable synthetic Git bundle of CURRENT workspace files (NOT original history or hosted Git). Bounded to512 regular files,1MiB/file,8MiB total; sensitive paths/symlinks refuse the whole export. Does not commit or write anything. Use snapshot and chunk tool to download; changes between chunks require a restart."
      :impl (fn [host args]
              (checked! bundle-schema args)
-             (guarded host #(let [[_ _ room] (room! host (:room args))] (git-snapshot/describe room))))}
+             (if (owned-reads/owned-host? host)
+               (owned-export! host args false)
+               (guarded host #(let [[_ _ room] (room! host (:room args))] (git-snapshot/describe room)))))}
     :simmis/workspace-bundle-chunk
     {:kind :read :schema bundle-chunk-schema :authz {:action :read}
      :doc "Read <=16384 bytes of the exact current synthetic workspace Git bundle as base64. expected-snapshot pins the inspected manifest; workspace changes return conflict, never mixed bytes. Verify offsets, size and full SHA256 before cloning the completed bundle. No retained exports, ancestry or server paths."
      :impl (fn [host args]
              (checked! bundle-chunk-schema args)
-             (guarded host #(let [[_ _ room] (room! host (:room args))]
-                              (git-snapshot/chunk room (uuid! (:expected-snapshot args)) (:offset args)
-                                                  (get args :length (:chunk-bytes git-snapshot/policy))))))}
+             (if (owned-reads/owned-host? host)
+               (owned-export! host args true)
+               (guarded host #(let [[_ _ room] (room! host (:room args))]
+                                (git-snapshot/chunk room (uuid! (:expected-snapshot args)) (:offset args)
+                                                    (get args :length (:chunk-bytes git-snapshot/policy)))))))}
     :simmis/cli-benchmark
     {:kind :write :schema cli-benchmark-schema :authz {:action :merge}
      :doc "Operator-only offline benchmark using Claude Code TEXT inference under Dvergr's SCI loop. Explicit single-use CLI Run admissions, finite steps/deadline, no compaction, resume, delegation or automatic retry. Not HTTP-dispatch accounting. Same frozen fixtures/checker/Attempts/Scorecards; discard only."

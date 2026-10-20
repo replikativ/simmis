@@ -250,3 +250,14 @@
                      content/read-by-id (fn [& _] (throw (AssertionError. "No unsafe body")))]
          (is (thrown? clojure.lang.ExceptionInfo
                       (git/snapshot-in nil (random-uuid) (random-uuid) nil)))))))
+
+(deftest metadata-only-owned-identity-matches-export-without-reading-bodies
+  (@#'fixture/with-workspace
+   (fn [room]
+     (workspace/seed! room {"/file.md" "pinned"})
+     (let [db @(:conn (native/current-workspace)) rid (random-uuid) stamp (random-uuid)
+           expected (:id (git/snapshot-in db rid stamp nil))]
+       (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Metadata identity must not read bodies")))]
+         (is (= expected (git/snapshot-id-in db rid stamp)))
+         (is (not= expected (git/snapshot-id-in db rid (random-uuid))))
+         (is (thrown? clojure.lang.ExceptionInfo (git/snapshot-id-in db rid nil))))))))

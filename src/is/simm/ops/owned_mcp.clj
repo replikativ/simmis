@@ -8,6 +8,7 @@
             [org.replikativ.spindel.engine.core :as ec]))
 
 (def ^:private room-read-ops #{:room/files :room/read :catalog/list})
+(def ^:private export-read-ops #{:simmis/workspace-bundle :simmis/workspace-bundle-chunk})
 (def ^:private denial {:allow? false :reason "Canonical room read refused"})
 
 (defn- refuse! []
@@ -44,14 +45,33 @@
       (let [db (reads/current-control-db! conn host-ctx)]
         (if-not (ops/external-arguments-valid? principal request)
           denial
-          (if (or (not (contains? room-read-ops op)) (global-catalog? request)
-                  (#{:worker :agent} (:principal/kind principal)))
+          (cond
+            ;; This NEW inactive host exports owned human Memory only. Never
+            ;; allow then downgrade a worker/agent to selected repository bytes.
+            (and (contains? export-read-ops op) (#{:worker :agent} (:principal/kind principal))) denial
+            (or (not (contains? (into room-read-ops export-read-ops) op)) (global-catalog? request)
+                (#{:worker :agent} (:principal/kind principal)))
             ;; Preserve worker/agent and all unrelated op authority; NEVER map
             ;; those credentials to their enroller/owner's canonical Memory.
             (ops/authorize principal request)
-            (do (mcp-human! principal)
-                (reads/authorize-read! db principal (original-handle! request))
-                {:allow? true})))))
+            :else (do (mcp-human! principal)
+                      (if (contains? export-read-ops op)
+                  ;; Legacy export descriptors normalize UUID to slug. ONLY
+                  ;; these two reads compare both mappings in ONE control DB;
+                  ;; the original DTO handle remains the sole body selector.
+                        (let [{:keys [action resource args]} request
+                              [kind handle] resource]
+                          (when-not (and (= :read action) (vector? resource) (= 2 (count resource))
+                                         (= :room kind) (bounded-text? handle 1024))
+                            (refuse!))
+                          (let [descriptor (reads/authorize-read! db principal handle)]
+                            (when (contains? request :args)
+                              (when-not (and (map? args)
+                                             (= (:room-id descriptor)
+                                                (:room-id (reads/authorize-read! db principal (:room args)))))
+                                (refuse!)))))
+                        (reads/authorize-read! db principal (original-handle! request)))
+                      {:allow? true})))))
     (catch InterruptedException _
       (.interrupt (Thread/currentThread))
       denial)
@@ -82,9 +102,11 @@
 (defn host
   "Construct an INACTIVE per-host canonical human MCP read binding. Caller owns
    the current canonical connection/context lifetime. Nothing installs it.
-   No global policy, cached allow decision, parent selection or room mutation."
+   Owned exports are human-only; legacy hosts and unrelated worker/agent
+   delegation are unchanged. No cached allow decision or selection mutation."
   [canonical-control-conn host-ctx]
   (-> (ops/host host-ctx)
+      (assoc :is.simm.ops.owned-reads/owner (reads/host-owner canonical-control-conn host-ctx))
       (assoc-in [:config :auth :authorize]
                 (partial authorize canonical-control-conn host-ctx))
       (assoc-in [:config :room-files :resolve-read]

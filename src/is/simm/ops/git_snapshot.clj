@@ -42,10 +42,9 @@
                 (assoc entries path entry)))
             (sorted-map) rows)))
 
-(defn- snapshot* [db identity expected]
+(defn- snapshot-manifest! [db identity expected]
   (let [entries (snapshot-entries! db)
-        id (hasch/uuid (conj identity entries))
-        reader (atom db)]
+        id (hasch/uuid (conj identity entries))]
     (when (and expected (not= expected id))
       (throw (ex-info "Workspace changed; restart the snapshot download" {:type ::conflict})))
     (when (> (count entries) (:max-files policy)) (refuse! "Workspace exceeds snapshot file limit"))
@@ -64,6 +63,11 @@
     (doseq [[_ {:keys [size content]}] entries]
       (when-not (= size (:geschichte.content/size (d/entity db [:geschichte.content/id content])))
         (refuse! "Snapshot content metadata does not match its pinned size")))
+    {:id id :entries entries}))
+
+(defn- snapshot* [db identity expected]
+  (let [{:keys [id entries]} (snapshot-manifest! db identity expected)
+        reader (atom db)]
     {:id id
      :files (into (sorted-map)
                   (map (fn [[path {:keys [size mode] id :content}]]
@@ -72,15 +76,25 @@
                              (refuse! "Snapshot content does not match its pinned size"))
                            [path {:bytes bytes :mode mode}]))) entries)}))
 
+(defn- owned-identity! [room-id target-stamp expected]
+  (when-not (and (uuid? room-id) (uuid? target-stamp)
+                 (or (nil? expected) (uuid? expected)))
+    (refuse! "Invalid owned snapshot identity"))
+  [:simmis/git-snapshot-owned-v1 policy room-id target-stamp])
+
+(defn snapshot-id-in
+  "HOST pure metadata projection: validate the same bounded immutable manifest
+   as snapshot-in and return ONLY its identity, without reading file bodies.
+   Neither the DB nor its room/stamp inputs grant read authority."
+  [db room-id target-stamp]
+  (:id (snapshot-manifest! db (owned-identity! room-id target-stamp nil) nil)))
+
 (defn snapshot-in
   "HOST projection of one immutable DB. Identity binds an authenticated host's
    canonical room UUID and opaque target stamp; neither input grants access.
    No selected lookup, retained read lease, or portable catalog identity."
   [db room-id target-stamp expected]
-  (when-not (and (uuid? room-id) (uuid? target-stamp)
-                 (or (nil? expected) (uuid? expected)))
-    (refuse! "Invalid owned snapshot identity"))
-  (snapshot* db [:simmis/git-snapshot-owned-v1 policy room-id target-stamp] expected))
+  (snapshot* db (owned-identity! room-id target-stamp expected) expected))
 
 (defn snapshot
   "Selected workspace compatibility wrapper. Preserve the existing v1 export
