@@ -879,7 +879,7 @@
    convenience for a live agent."
   [room-uuid agent-uuid scope branch system-type title]
   (boolean
-   (when (and room-uuid agent-uuid scope branch)
+   (when (and (not= :file-output system-type) room-uuid agent-uuid scope branch)
      (let [cell (private-overlay room-uuid agent-uuid)
            o @cell
            ;; REFUSE to reopen into an UNRELATED open proposal.

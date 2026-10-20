@@ -75,12 +75,16 @@
                                                   :force? force?)))))
         (is (empty? @effects))))))
 
-(deftest dismissal-records-resolution-without-deleting-a-branch
+(deftest synthetic-actorless-dismissal-refuses-without-deleting-a-branch
   (with-proposal
     (fn [id scope]
-      (with-redefs [branching/discard-kb-branch!
-                    (fn [& _] (throw (AssertionError. "Retained evidence is not a KB branch")))
-                    branching/discard-repo-branch!
-                    (fn [& _] (throw (AssertionError. "Retained evidence is not a Git branch")))]
-        (is (= :dismissed (:status (proposals/dismiss-fork! id scope :retained))))
-        (is (= :open (:proposal/status (proposals/get-proposal id))))))))
+      (let [before (proposals/get-proposal id)
+            calls (atom [])]
+        (with-redefs [branching/discard-kb-branch!
+                      (fn [& _] (swap! calls conj :kb))
+                      branching/discard-repo-branch!
+                      (fn [& _] (swap! calls conj :repo))]
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (proposals/dismiss-fork! id scope :retained)))
+          (is (= before (proposals/get-proposal id)))
+          (is (empty? @calls)))))))
