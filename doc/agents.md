@@ -262,6 +262,7 @@ alternative submission, not an extra free admission:
 /usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
   --session /private/operator-session.json workflow --request-id REQUEST_UUID \
   --name WORKFLOW_NAME --expected-bundle INSPECTED_BUNDLE_UUID \
+  --expected-owned-source INSPECTED_SOURCE_REVISION_UUID \
   --params '{"subject":"literal parameter"}' --timeout-ms 300000 --settlement review
 ```
 
@@ -340,6 +341,7 @@ zero; subscription incremental and notional list-price costs remain separate.
 /usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
   --session /private/operator-session.json benchmark --request-id REQUEST_UUID \
   --name WORKFLOW_NAME --expected-bundle INSPECTED_BUNDLE_UUID \
+  --expected-owned-source INSPECTED_SOURCE_REVISION_UUID \
   --case CASE_NAME --repetitions 1 --timeout-ms 300000
 ```
 

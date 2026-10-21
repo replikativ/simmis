@@ -229,6 +229,60 @@
           (is (= (:work.request/id request) (:schedule.occurrence/request actual))))
         (is (zero? @calls))))))
 
+(deftest legacy-startup-holds-pending-admitting-and-linked-requests-without-replay
+  (doseq [phase [:pending :admitting :linked-unsettled :linked-settled]]
+    (with-occurrence true saved/source
+      (fn [{:keys [conn w host row due owned attached room]}]
+        (model/set-enabled! conn (:schedule.activation/id row) false)
+        (let [target (-> (model/managed-target conn row)
+                         (assoc :version 1)
+                         (dissoc :room :by :creation-channel :source-origin)
+                         (update :execution dissoc :expected-owned-source))
+              legacy (model/create! conn {:id (random-uuid) :room (:room w) :by (:owner w)
+                                          :target target :now due :next-fire due})
+              id (:schedule.activation/id legacy)
+              _ (model/claim-due! conn legacy (:cadence target) due)
+              o (current-occurrence conn legacy)
+              oid (:schedule.occurrence/id o)
+              request (when-not (= :pending phase)
+                        (model/admit! conn oid)
+                        (:request (requests/claim! conn
+                                                   {:party (:owner w) :room (:room w) :client-id oid :kind :workflow
+                                                    :intent {:submission (assoc (:execution target) :request-id oid)}
+                                                    :limits (update (get-in target [:execution :limits]) :settlement keyword)})))
+              _ (when (#{:linked-unsettled :linked-settled} phase)
+                  ;; Metadata-only legacy request fixture, not a synthetic Run
+                  ;; execution. The dispatcher must never inspect its Job.
+                  (d/transact conn [{:db/id (:db/id request) :work.request/state :submitted
+                                     :work.request/job (random-uuid)
+                                     :work.request/return-pending? (= :linked-unsettled phase)}])
+                  (model/finish-admission! conn oid :linked (:work.request/id request) nil))
+              before (model/activation conn id)
+              before-request (when request (requests/get-request conn (:work.request/id request)))
+              before-owned (state owned) before-other (state attached)
+              balance (resource/balance room) calls (atom 0)
+              forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "Legacy hold touched execution or completion")))]
+          (with-redefs [reads/resolve-host-room! forbidden reads/resolve-host-read! forbidden
+                        rooms/live-room forbidden knowledge/selection forbidden knowledge/capture forbidden
+                        workflow-runs/prepare forbidden work/submit-prepared! forbidden jobs/status forbidden]
+            (schedules/recover-owned! host)
+            (schedules/tick-owned! host due))
+          (let [after (model/activation conn id)]
+            (is (= :owned-dispatch-unavailable (:schedule.activation/reason after)))
+            (is (false? (:schedule.activation/enabled? after)))
+            (is (= (dissoc (assoc before :schedule.activation/enabled? false) :schedule.activation/reason)
+                   (dissoc after :schedule.activation/reason))))
+          (is (= target (model/managed-target conn (model/activation conn id))))
+          (is (= (if (= :admitting phase) :interrupted
+                     (if (= :pending phase) :pending :linked))
+                 (:schedule.occurrence/state (model/occurrence conn oid))))
+          (when request
+            (is (= before-request (requests/get-request conn (:work.request/id request)))))
+          (is (= balance (resource/balance room)))
+          (is (= before-owned (state owned)))
+          (is (= before-other (state attached)))
+          (is (zero? @calls)))))))
+
 (deftest live-capture-is-durable-before-prepare-and-source-and-knowledge-epochs-differ
   (doseq [order [true false]]
     (with-occurrence order saved/knowledge-source

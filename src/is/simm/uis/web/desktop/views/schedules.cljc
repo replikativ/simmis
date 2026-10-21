@@ -64,7 +64,8 @@
                        (catch :default error (fail! error))))))
                (toggle! [row]
                  (ensure!)
-                 (when (and (current?) (not (:updating (state))))
+                 (when (and (current?) (not (:updating (state)))
+                            (or (:enabled? row) (not (:resume-blocked row))))
                    (let [token (str (random-uuid))
                          enabled? (not (:enabled? row))
                          finish! (fn [f]
@@ -122,7 +123,11 @@
                      (el/p {} (str "Workflow bundle: " (:bundle row)))
                      (el/p {} (str "Next due: " (.toLocaleString (js/Date. (:next-fire row)))))
                      (when-let [reason (:reason row)] (el/p {:role "status"} (str "Held: " (name reason))))
-                     (el/button {:disabled (boolean (:updating? row))
+                     (when (= :legacy-recreate (:resume-blocked row))
+                       (el/p {:role "status"}
+                             "This older deployment is held. Recreate it from the workflow editor to run it; existing Runs are unchanged."))
+                     (el/button {:disabled (boolean (or (:updating? row)
+                                                        (and (not (:enabled? row)) (:resume-blocked row))))
                                  :on-click (fn [_] ((:on-toggle row) row))}
                                 (if (:this-updating? row) "Updating…" (if (:enabled? row) "Pause" "Resume")))
                      (for [o (:occurrences row)]

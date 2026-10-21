@@ -16,6 +16,12 @@
 (def policy {:version 1 :startup-ms 35000 :shutdown-ms 35000})
 (defonce ^:private service (atom nil))
 
+(defn held?
+  "Whether any physical service handles remain, including failed startup or
+   failed shutdown. Observational only; lifecycle is application-coordinated."
+  []
+  (some? @service))
+
 (defn- off-engine! []
   (when (simple/on-drain-thread?)
     (throw (ex-info "Scheduled-work lifecycle must run off the engine drain"
@@ -128,7 +134,7 @@
   (start-service! conn ctx resolve-room :legacy nil))
 
 (defn start-owned!
-  "INACTIVE fixed HOST startup over the original canonical owner. Validates
+  "Fixed HOST startup over the original canonical owner. Validates
    current ownership even on an idempotent start. No selected fallback, caller
    resolver, new clock or parallel dispatcher; no startup installation here."
   [host]

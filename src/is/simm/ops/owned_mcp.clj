@@ -1,6 +1,6 @@
 (ns is.simm.ops.owned-mcp
-  "Inactive human MCP host binding for canonical owned Memory and workflow
-   controls. No startup installation, credential widening or agent routing."
+  "Human MCP host binding for canonical owned Memory and workflow controls.
+   Construction does not install it or widen credentials or agent routing."
   (:require [clojure.string :as str]
             [dvergr.rooms.files :as files]
             [is.simm.ops.dvergr :as ops]
@@ -47,7 +47,7 @@
         (if-not (ops/external-arguments-valid? principal request)
           denial
           (cond
-            ;; This NEW inactive host exports owned human Memory only. Never
+            ;; This host exports owned human Memory only. Never
             ;; allow then downgrade a worker/agent to selected repository bytes.
             (and (contains? described-owned-actions op) (#{:worker :agent} (:principal/kind principal))) denial
             (or (not (contains? (into room-read-ops (keys described-owned-actions)) op)) (global-catalog? request)
@@ -91,7 +91,7 @@
     (files/workspace-path (or path "/") (= :list operation))))
 
 (defn host
-  "Construct an INACTIVE per-host canonical human MCP binding. Caller owns
+  "Construct a per-host canonical human MCP binding. Caller owns
    the current canonical connection/context lifetime. Nothing installs it.
    Owned exports/workflow controls are human-only; legacy hosts and unrelated worker/agent
    delegation are unchanged. No cached allow decision or selection mutation."

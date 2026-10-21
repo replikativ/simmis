@@ -165,7 +165,7 @@
                                      (-> (dissoc args :room) (update :request-id uuid!) (update :worker uuid!))))))}
     :simmis/local-worker-workflow
     {:kind :write :schema workflow-route-schema :authz {:action :write}
-     :doc "HUMAN control only: run one inspected saved workflow revision on your enrolled local SCI worker. Pins literal parameters, source and fixture/input bytes. Uses one explicitly funded admission and existing Job/Run/Attempt flow; authored checkers are NOT executed. Exact retries observe the original Job. Review/discard only; no provider login is sent to the server."
+     :doc "HUMAN control only: run one inspected saved workflow revision on your enrolled local SCI worker. Pins literal parameters, source and fixture/input bytes. Uses one explicitly funded admission and existing Job/Run/Attempt flow; authored checkers are NOT executed. Exact retries observe the original Job. Review/discard only; no provider login is sent to the server. On the Simmis owned host, fresh execution also REQUIRES expected-owned-source: copy the source revision UUID from the same workflow-check inspection as expected-bundle. Retain both original guards on retry."
      :impl (fn [host args]
              (when-not (m/validate workflow-route-schema args)
                (ops/op-error! "Invalid local worker control arguments" ::invalid 400))
@@ -181,7 +181,7 @@
                                (update :worker uuid!) (update :expected-bundle uuid!))))))))}
     :simmis/local-worker-benchmark
     {:kind :write :schema benchmark-route-schema :authz {:action :write}
-     :doc "HUMAN control only: benchmark an inspected workflow revision on your enrolled local SCI worker. Requires installation-operator AND current room read/merge authority. At most four cases and two repetitions, serial and discard-only; one explicitly funded admission per cell, no automatic retries or funding. Only clean fixtures reach the guest; checkers and calibration run on the server. Usage remains unreported, not zero. Exact retries observe one Job."
+     :doc "HUMAN control only: benchmark an inspected workflow revision on your enrolled local SCI worker. Requires installation-operator AND current room read/merge authority. At most four cases and two repetitions, serial and discard-only; one explicitly funded admission per cell, no automatic retries or funding. Only clean fixtures reach the guest; checkers and calibration run on the server. Usage remains unreported, not zero. Exact retries observe one Job. On the Simmis owned host, fresh execution also REQUIRES expected-owned-source: copy the source revision UUID from the same workflow-check inspection as expected-bundle. Retain both original guards on retry."
      :impl (fn [host args]
              (when-not (m/validate benchmark-route-schema args)
                (ops/op-error! "Invalid local worker control arguments" ::invalid 400))

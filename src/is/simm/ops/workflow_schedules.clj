@@ -883,7 +883,7 @@
                 (schedules/clear-active! conn row oid)))))))))
 
 (defn recover-owned!
-  "INACTIVE startup reconciliation after the old dispatcher physically exits.
+  "Startup reconciliation after the old dispatcher physically exits.
    Current owner/creator gates first; no missing-request admission is replayed."
   [host]
   (owned-owner! host)
@@ -910,7 +910,7 @@
               (when row (schedules/block! control-conn row :owned-dispatch-unavailable)))))))))
 
 (defn tick-owned!
-  "INACTIVE fixed HOST pass. No callback resolver, startup or selected-source
+  "Fixed HOST pass. No callback resolver, startup or selected-source
    fallback. Exact retries precede hydration, model/policy and funding work."
   [host now]
   (when-not (instance? java.util.Date now) (owned-unavailable!))

@@ -268,14 +268,20 @@ allowance come from the same finite shared room wallet as manual execution;
 scheduling never creates funds. Overlaps are skipped and missed ticks coalesce
 to the latest intended slot. The Schedules view keeps these deployments distinct
 from legacy agent-authored prompt/code tasks.
-Inactive owned control services separately provide bounded schedule metadata,
+Owned control services provide bounded schedule metadata,
 pause/resume and metadata-only request status without hydrating a room or
 resolving its current file default. Inspection and pause do not prepare a
 model. Resume rechecks the stored human creator and policy; its transaction
 rejects changed retained identities and uncertain or foreign active occurrences.
 Legacy activations may be inspected and paused but must be explicitly recreated
-before owned resume. The inactive owned MCP host selects these fixed services;
-ordinary MCP startup remains unchanged. Browser workflow adapters capture a
+before owned resume. Application startup captures one canonical host for MCP
+and the scheduled-work dispatcher. Its connection and execution context must
+remain the original live owner; repeated starts reuse that exact host. The
+optional MCP listener does not own the registrations. A failed scheduler join
+retains a non-ready installation and host until a later successful stop; no
+replacement can start underneath it. Older deployments are explicitly held,
+never silently replayed or upgraded, and their existing Runs are unchanged.
+Browser workflow adapters capture a
 normal-human canonical host, without an MCP marker or a prehydrated file
 default. They share the fixed metadata authorization policy and original save
 acknowledgement service with MCP; the browser projects the saved definition
