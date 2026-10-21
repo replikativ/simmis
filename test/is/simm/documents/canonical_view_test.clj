@@ -6,6 +6,7 @@
             [geschichte.content :as content]
             [geschichte.repo :as repo]
             [is.simm.documents.markdown :as markdown]
+            [is.simm.documents.property-model :as property-model]
             [is.simm.documents.space :as space]
             [is.simm.documents.view :as view]
             [is.simm.model.crud :as crud]
@@ -22,6 +23,11 @@
 
 (defn- write! [conn path text]
   (repo/write! conn path (markdown/source-bytes text)))
+
+(defn- edit-request [model alias value]
+  (assoc (select-keys model [:path :target :expected :revision :scope-revision])
+         :alias alias :property (:id (first (filter #(= alias (:alias %)) (:fields model))))
+         :value value))
 
 (deftest canonical-scalars-use-the-existing-query-model-without-mutating-the-base
   (let [cfg {:store {:backend :memory :id (random-uuid)}
@@ -100,6 +106,54 @@
                 (is (not (view/current? changed options prepared))))
               (let [removed (d/db-with base [[:db/retractEntity [:entity/uuid revenue]]])]
                 (is (not (view/current? removed options prepared)))))
+            (testing "safe property model and scalar commands rederive actual source definitions"
+              (let [page (property-model/inspect-in base "companies/a.md" {:kind :page})
+                    field (first (filter #(= "turnover" (:alias %)) (:fields page)))
+                    title (first (filter #(= (:entity/uuid seed/morphism-Page-title) (:id %)) (:fields page)))
+                    block (property-model/inspect-in base "companies/a.md" {:kind :block :id block-id})
+                    active-field (first (filter #(= "active" (:alias %)) (:fields block)))
+                    request (edit-request page "turnover" 42)
+                    prepared-edit (property-model/prepare-edit-in base options request)
+                    block-edit (property-model/prepare-edit-in base options (edit-request block "active" true))]
+                (is (= 0 (:value field)))
+                (is (:required? field))
+                (is (:editable? field))
+                (is (= :db.type/long (:value-type field)))
+                (is (= "companies/a.md" (:value title)))
+                (is (= :generated-property (:reason title)))
+                (is (false? (:editable? title)))
+                (is (false? (:value active-field)))
+                (is (:editable? active-field))
+                (is (empty? (:diagnostics page)))
+                (is (every? #(not (contains? page %)) [:db :compiled :selection :source]))
+                (is (every? #(not-any? (set (keys %)) [:morphism :computation :validation :schema :compiled]) (:fields page)))
+                (is (= #{:path :expected :text} (set (keys prepared-edit))))
+                (is (= 42 (get-in (markdown/parse (:text prepared-edit)) [:frontmatter :properties "turnover"])))
+                (is (= true (get-in (markdown/parse (:text block-edit))
+                                    [:frontmatter :properties "simmis" "blocks" (str block-id) "values" "active"])))
+                (is (= original (markdown/decode (repo/read-entry conn (get (repo/worktree conn) "companies/a.md")))))
+                (doseq [unsupported [(d/db-with base [{:entity/uuid (:entity/uuid seed/object-Page)
+                                                       :entity/name "S/RenamedPage"}])
+                                     (d/db-with base [{:geschichte.work/path "companies/a.md"
+                                                       :geschichte.work/mode (long 33261)}])]]
+                  (is (thrown? clojure.lang.ExceptionInfo
+                               (property-model/inspect-in unsupported "companies/a.md" {:kind :page}))))
+                (doseq [bad [(assoc request :extra true) (assoc request :property (random-uuid))
+                             (assoc request :alias "not-declared") (assoc request :revision (random-uuid))
+                             (assoc request :scope-revision (random-uuid)) (assoc request :expected nil)
+                             (assoc request :target {:kind :block :id (random-uuid)})
+                             (assoc request :target {:kind :page :id page-a})
+                             (assoc request :value nil) (assoc request :value false)]]
+                  (is (thrown? clojure.lang.ExceptionInfo (property-model/prepare-edit-in base options bad))))
+                (let [changed (d/db-with base [{:entity/uuid revenue :morphism/validation "never execute this descriptor"}])
+                      new-model (property-model/inspect-in changed "companies/a.md" {:kind :page})
+                      new-field (first (filter #(= "turnover" (:alias %)) (:fields new-model)))]
+                  (is (not= (:scope-revision page) (:scope-revision new-model)))
+                  (is (= :property-needs-validator (:reason new-field)))
+                  (is (false? (:editable? new-field)))
+                  (is (thrown? clojure.lang.ExceptionInfo (property-model/prepare-edit-in changed options request)))
+                  (is (thrown? clojure.lang.ExceptionInfo
+                               (property-model/prepare-edit-in changed options (edit-request new-model "turnover" 2)))))))
             (testing "replacement preview shares validation without publishing or pretending bytes are stored"
               (let [selected (get-in prepared [:selection :files "companies/a.md"])
                     candidate (source (assoc raw "turnover" 42) body)
@@ -216,6 +270,15 @@
                       result (view/prepare person-base options)
                       projected (:db result)]
                   (is (= :ready (:status result)) (pr-str (:diagnostics result)))
+                  (let [model (property-model/inspect-in person-base "companies/a.md" {:kind :page})
+                        relation (first (filter #(= "person" (:alias %)) (:fields model)))
+                        optional-edit (property-model/prepare-edit-in person-base options (edit-request model "slug" nil))
+                        uuid-value (str (random-uuid))
+                        uuid-edit (property-model/prepare-edit-in person-base options (edit-request model "external-id" uuid-value))]
+                    (is (= :source-edit-required (:reason relation)) "structured relation map needs structured source codec")
+                    (is (false? (:editable? relation)))
+                    (is (nil? (get-in (markdown/parse (:text optional-edit)) [:frontmatter :properties "slug"])))
+                    (is (= uuid-value (get-in (markdown/parse (:text uuid-edit)) [:frontmatter :properties "external-id"]))))
                   (when projected
                     (is (= person-id (get-in (d/pull projected [{:S.ProjectionCompany/person [:entity/uuid]}]
                                                     [:entity/uuid page-a])

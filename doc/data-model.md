@@ -165,6 +165,24 @@ missing fields and structured values refuse instead of receiving a lossy
 whole-map rewrite. This API neither validates trusted property definitions nor
 publishes files; it is not a schema guard or permission boundary.
 
+`documents.property-model` provides host-only inspection and scalar edit
+preparation over one supplied immutable canonical source DB. It reads the
+actual file, accepts only its page or an explicit paired block target, and
+reuses canonical implicit Page/Block roles and generated-title staging. The
+inspection DTO carries safe field labels, values, actual storage value types,
+rendering hints, editability reasons and exact file/source/scope revisions—not
+executable computation or validation definitions. Reflected/generated fields,
+unsupported validators, structured values and fields without an existing
+editable source token remain read-only.
+
+Its closed edit command names the scope, alias/property UUID and expected
+revisions, not client-supplied definitions. Preparation re-derives the binding,
+checks identity/ownership, patches one scalar and validates the whole prospective
+selection through `validate-replacement`. It returns source for the existing
+writer, never transaction data, a saved receipt or permission. The host must
+still publish with that same fresh snapshot's atomic writer precondition and
+current authorization. This API is not yet wired into Memory UI controls.
+
 ## Existing KB vocabulary
 
 Everything stored in a KB or a room store is described by one small vocabulary.
