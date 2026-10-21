@@ -82,6 +82,36 @@
           ((:ensure-sync a) connection later)
           (is (= 2 @calls)))))))
 
+(deftest intent-ack-and-transport-readiness-catch-up-on-either-side-of-the-worker-hint
+  (doseq [ordering [:hint-before-ready :ready-before-hint]]
+    (binding [ec/*execution-context* runtime]
+      (let [session {:id (random-uuid)} connection {:epoch (random-uuid)} stamp (random-uuid)
+            states (signal runtime {}) pending (atom nil) calls (atom 0) watches (atom 0)]
+        (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
+                      sig/memory-connection (signal runtime connection)
+                      sync/ensure! (fn [_])
+                      remote/prepare-memory-stream! (fn [& _] (fn [ok _] (swap! watches inc) (ok {:watching? true})))
+                      remote/load-memory-metadata! (fn [& _] (fn [ok _] (swap! calls inc) (reset! pending ok)))]
+          (let [a (actions/controller {:room-id "test-room" :col-id ordering :state-signal states})
+                connecting {:connection connection :status :connecting :dirty {}}
+                ready (assoc connecting :status :ready)
+                first-event (if (= ordering :hint-before-ready) (assoc-in connecting [:dirty "test-room"] 1) ready)
+                settled (assoc-in ready [:dirty "test-room"] 1)]
+            ((:ensure-sync a) connection connecting)
+            (is (= 1 @calls))
+            ((:ensure-sync a) connection first-event)
+            (is (= 1 @calls) "Do not race two metadata reads while the first is in flight")
+            (@pending (wire stamp {:folders {} :entries {} :revision :before}))
+            ((:ensure-sync a) connection first-event)
+            (is (= 2 @calls) "The changed stream marker catches up after the old read completes")
+            (@pending (wire stamp {:folders {} :entries {} :revision :first-event}))
+            ((:ensure-sync a) connection settled)
+            (is (= 3 @calls) "Readiness or the later initial hint forces the final catch-up")
+            (@pending (wire stamp {:folders {} :entries {} :revision :current}))
+            ((:ensure-sync a) connection settled)
+            (is (= 3 @calls))
+            (is (= 2 @watches) "Initial target discovery intentionally renews the Room interest once")))))))
+
 (deftest initial-file-reply-before-newer-metadata-does-not-strand-an-old-buffer
   (binding [ec/*execution-context* runtime]
     (let [session {:id (random-uuid)} connection {:epoch (random-uuid)} stamp (random-uuid)

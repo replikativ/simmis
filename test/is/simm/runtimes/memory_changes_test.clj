@@ -13,9 +13,12 @@
   (let [room (discourse/make-room {:id (keyword (str "memory-notify-" (random-uuid)))
                                   :store (memory/make)})
         id (random-uuid) party (random-uuid) current (atom room)
-        allowed (atom true) publications (atom []) received (promise) checked (promise) ready (promise)
+        allowed (atom true) publications (atom []) received (promise) checked (atom (promise)) ready (promise)
         owner (changes/open! {:resolve-room (fn [_] @current)
-                              :allowed? (fn [_ _] (when-not @allowed (deliver checked true)) @allowed)
+                              :allowed? (fn [_ _]
+                                          (let [permitted? @allowed]
+                                            (when-not permitted? (deliver @checked (count @publications)))
+                                            permitted?))
                               :publish! (fn [p hint] (swap! publications conj [p hint])
                                           (if (realized? ready) (deliver received [p hint])
                                               (deliver ready true)))})]
@@ -27,11 +30,17 @@
       (is (= true (deref ready 5000 ::timeout)))
       (files/save-file! room {:path "wiki/test.md" :text "# Private" :expected nil})
       (is (= [party {:kind :memory-changed :room-id id}] (deref received 5000 ::timeout)))
-      (let [before (count @publications)]
-        (reset! allowed false)
-        (files/save-file! room {:path "other.md" :text "Not sent after revoke" :expected nil})
-        (is (= true (deref checked 5000 ::timeout)))
-        (is (= before (count @publications))))
+      (reset! allowed false)
+      (files/save-file! room {:path "other.md" :text "Not sent after revoke" :expected nil})
+      ;; An already-authorized hint may finish before the worker observes the
+      ;; revocation. Two denied worker checks fence completion of the first
+      ;; denied iteration, without assuming globally atomic revoke/publication.
+      (let [denied-at (deref @checked 5000 ::timeout)]
+        (is (integer? denied-at))
+        (reset! checked (promise))
+        (files/save-file! room {:path "after-denied.md" :text "Still not authorized" :expected nil})
+        (is (= denied-at (deref @checked 5000 ::timeout)))
+        (is (= denied-at (count @publications))))
       (is (thrown? Exception ((:watch! owner) id room party)))
       (reset! allowed true)
       (reset! current nil)

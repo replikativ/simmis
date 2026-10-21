@@ -211,8 +211,9 @@
           (with-redefs [changes/register-topic! (fn [_ party] (swap! registrations conj party))
                         changes/watch-owned! (fn [id r party] ((:watch! owner) id r party))]
             (let [reply (:result (inbound :member "prepare-memory-stream!" nil))]
-              (is (true? (:watching? reply)))
-              (is (true? (:available? reply)))
-              (is (= (discover inbound) (:target-stamp reply)))
+              ;; The ACK confirms intent only. Repository discovery belongs to
+              ;; the single worker, not a concurrent transport reconciliation.
+              (is (= {:watching? true :permissions {:write? true :evaluate? false}} reply))
+              (is (uuid? (discover inbound)))
               (is (= [(:member w)] @registrations))))
           (finally ((:close! owner))))))))

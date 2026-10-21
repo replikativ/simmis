@@ -350,7 +350,7 @@
                              ;; Never leave a stale source attached after an
                              ;; unresolvable control owner or listener failure.
                              (locking lock (remove-watch! id))
-                             (log/log! {:level :warn :id ::owned-reconciliation-failed
+                             (log/log! {:level :error :id ::owned-reconciliation-failed
                                         :data {:room-id id :exception-class (.getName (class error))}}))))
                     (when (:control-dirty? before) (publish-control-current!))
                     (when-not (:closed? @state) (recur))))
@@ -407,14 +407,15 @@
                     #(-> (or % {:revision 0 :readers #{}})
                          (update :revision inc) (update :readers conj party)
                          (assoc :native-id (:id room)) (dissoc :retired-room)))))
-         (let [observation (reconcile! id)]
-           (enqueue-room! id)
-           (when-not (and observation (identical? room (:canonical observation))
-                          (contains? (:readers observation) party))
-             (throw (ex-info "Memory binding changed during watch registration; retry discovery"
-                             {:type ::unavailable})))
-           (cond-> {:watching? true :available? (:available? observation)}
-             (:target-stamp observation) (assoc :target-stamp (:target-stamp observation)))))
+         ;; ACK means authorized INTEREST, not installed-source readiness or
+         ;; retained authority. Only the worker reconciles bindings. A concurrent
+         ;; view/control update can invalidate its observation without making
+         ;; this accepted registration fail and strand subscription startup.
+         ;; Listener installation precedes its initial hint: a hint received
+         ;; after transport readiness, or discovery forced by readiness after
+         ;; an earlier hint, closes the initial catch-up gap.
+         (enqueue-room! id)
+         {:watching? true})
        :unwatch-room!
        (fn [room]
          (locking lock

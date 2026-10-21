@@ -320,9 +320,13 @@ hint stream. A watched room receives room-only source/control invalidations;
 the global dashboard registers a separate party interest in the SAME notifier
 without opening room repositories. Its content-free schedule-index hint rechecks
 the current human identity before publication. Neither stream carries a raw
-control database, claims, wallets, files or read authority. Authorized bounded
-RPC snapshots remain the projections' source of truth; this is not a replicated
-control database. Initial observation and subscription-readiness catch-up close
+control database, claims, wallets, files or read authority. Watch registration
+acknowledges authorized interest only, not installed-source readiness or retained
+authority. One worker owns source reconciliation; concurrent views enqueue
+interest without competing to install bindings. It installs a listener before
+publishing the initial hint. Unexpected worker failures are logged as errors.
+Authorized bounded RPC snapshots remain the projections' source of truth; this
+is not a replicated control database. Initial observation and subscription-readiness catch-up close
 the registration race, and new socket epochs force reconciliation. In-flight
 reads coalesce later invalidations without timers; callbacks recheck current
 dependencies even before the render resumes. Normal refresh controls are
