@@ -155,10 +155,12 @@
             (let [owner (changes/open-owned! conn (:ctx room) #(.put hints [%1 %2]))]
               (try
                 (let [ack ((:watch! owner) (:room w) room (:owner w))
+                      _ (is (= [(:owner w) {:kind :memory-changed :room-id (:room w)}] (take-hint hints)))
                       old (first (source-listeners registrations owned))
+                      stamp (:target-stamp (owned/resolve! @conn (:owner w) :read (:room w) room))
                       branch (get-in @owned [:config :branch])]
-                  (is (uuid? (:target-stamp ack)))
-                  (is (= [(:owner w) {:kind :memory-changed :room-id (:room w)}] (take-hint hints)))
+                  (is (= {:watching? true} ack))
+                  (is (uuid? stamp))
                   (is (= 1 ((:watch-count owner))))
                   (is (= 1 (count (source-listeners registrations owned))))
                   (is (empty? (source-listeners registrations attached)))
@@ -178,7 +180,8 @@
                   (let [next (last (source-listeners registrations attached))
                         rebound ((:watch! owner) (:room w) room (:owner w))]
                     (is (some? next))
-                    (is (not= (:target-stamp ack) (:target-stamp rebound)))
+                    (is (= {:watching? true} rebound))
+                    (is (not= stamp (:target-stamp (owned/resolve! @conn (:owner w) :read (:room w) room))))
                     (is (= 1 ((:watch-count owner))))
                     (is (not (contains? @(:commit-listeners (meta owned)) (:key old))))
                     (is (false? ((:callback old) {:branch branch})))
@@ -364,7 +367,7 @@
                           result))]
           (let [owner (changes/open-owned! conn (:ctx room) #(.put hints [%1 %2]))]
             (try
-              (is (thrown? clojure.lang.ExceptionInfo ((:watch! owner) (:room w) room (:owner w))))
+              (is (= {:watching? true} ((:watch! owner) (:room w) room (:owner w))))
               (is (= [(:owner w) {:kind :memory-changed :room-id (:room w)}] (take-hint hints)))
               (let [[old current] (source-listeners registrations owned)]
                 (is (some? old))
@@ -418,6 +421,36 @@
               (finally
                 ((:close! owner))
                 (when @replacement (discourse/close-room! @replacement {:close-context? false}))))))))))
+
+(deftest concurrent-view-registration-only-records-intent-while-one-worker-reconciles
+  (with-fixture
+    true
+    (fn [{:keys [conn w room owned]}]
+      (let [entered (promise) release (promise) resolver-threads (atom [])
+            resolve! owned/resolve! registrations (atom []) hints (LinkedBlockingQueue.)]
+        (with-redefs [d/listen-commits (capture-listeners registrations)
+                      owned/resolve! (fn [& args]
+                                       (swap! resolver-threads conj (.getName (Thread/currentThread)))
+                                       (deliver entered true)
+                                       (join-physically! #(deref release))
+                                       (apply resolve! args))]
+          (let [owner (changes/open-owned! conn (:ctx room) #(.put hints [%1 %2]))
+                initial (future ((:watch! owner) (:room w) room (:owner w)))]
+            (try
+              (is (= {:watching? true} (deref initial 5000 ::timeout)))
+              (is (= true (deref entered 5000 ::timeout)))
+              (let [requests (mapv (fn [_] (future ((:watch! owner) (:room w) room (:owner w)))) (range 8))]
+                (try
+                  (doseq [request requests] (is (= {:watching? true} (deref request 5000 ::timeout))))
+                  (finally (deliver release true)
+                           (doseq [request requests] (join-physically! #(deref request))))))
+              (is (= [(:owner w) {:kind :memory-changed :room-id (:room w)}] (take-hint hints)))
+              (is (every? #(= "simmis-owned-memory-changes" %) @resolver-threads))
+              (is (= 1 ((:watch-count owner))))
+              (is (= 1 (count (source-listeners registrations owned))))
+              (finally (deliver release true)
+                       (join-physically! #(deref initial))
+                       ((:close! owner))))))))))
 
 (deftest activation-seam-never-silently-reuses-another-mode-or-held-owner
   (with-fixture
