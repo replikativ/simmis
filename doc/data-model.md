@@ -55,6 +55,22 @@ Unmatched block metadata, unsupported reserved fields/versions and missing typed
 document identity produce diagnostics without rewriting source or installing
 definitions. Plain imports remain provisional; decoding never inserts IDs.
 
+`documents.properties/compile-scope` binds decoded declarations to one captured
+trusted categorical DB. Types must be existing entity types; property UUIDs
+must have exactly the assigned declaring type and matching category. There is
+no inferred inheritance. The compiler enumerates all outgoing properties, so
+omitting an alias cannot bypass an explicit required definition. Its digest
+includes unaliased properties, their actual storage schema and optionality,
+validation/computation descriptors and ownership. Codomain/category and actual
+storage types must agree, honoring the shared exact `:morphism/attr-type`
+mapping. It never evaluates descriptors. `decode-scope` reuses strict scalar
+decoding and retains unknown values; derived/enum constraints refuse until a
+validator exists. Required owner-managed fields get a separate diagnostic,
+not an instruction to author them in YAML. Shared storage across multiple
+type properties is conservatively unsupported. Relations, unique properties
+and owner-managed/computed values still require separate gates; this compiler
+does not publish canonical instances or activate typed controls in Memory.
+
 ## Existing KB vocabulary
 
 Everything stored in a KB or a room store is described by one small vocabulary.
