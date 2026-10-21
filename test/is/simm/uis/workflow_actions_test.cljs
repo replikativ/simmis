@@ -14,6 +14,8 @@
    :definition {:params {:goal "old"}}
    :inspection {:ok true :bundle "bundle" :cases []}})
 
+(def initial-revision "c1d56a1b-63f9-414c-a6ad-feb35d5e709d")
+
 (defn deferred [requests]
   (fn [& args]
     (fn [ok error] (swap! requests conj {:ok ok :error error :args args}))))
@@ -30,8 +32,8 @@
           (reset! sig/workflow-editor-state {})
           (let [k (actions/state-key "room")]
             (swap! sig/workflow-editor-state assoc k
-                   {:selected "a" :drafts {"a" (editor/draft (source "a" "r1"))
-                                           "b" (editor/draft (source "b" "r1"))}})
+                   {:selected "a" :drafts {"a" (editor/draft (source "a" initial-revision))
+                                           "b" (editor/draft (source "b" initial-revision))}})
             (f (actions/controller {:room-id "room"}) k))))
       (finally (context/close-context! ctx)))))
 
@@ -43,7 +45,7 @@
                       actions/confirm! (fn [text] (swap! confirmations conj text) true)]
           ((:change ui) "a" assoc-in [:source :inspection :cases] ["dev" "held"])
           ((:change ui) "a" assoc-in [:source :inspection :evaluation]
-           {:splits {:development ["dev"] :held-out ["held"]}})
+                        {:splits {:development ["dev"] :held-out ["held"]}})
           ((:change ui) "a" assoc-in [:form :model] "fixture/model")
           ((:change ui) "a" assoc-in [:form :mode] "benchmark")
           ((:change ui) "a" assoc-in [:form :split] "held-out")
@@ -172,7 +174,7 @@
               (binding [ec/*execution-context* nil]
                 ((:ok (first @requests)) (source "a" "r2"))))
             (is (= before @sig/workflow-editor-state))
-            (is (= "r1" (get-in @sig/workflow-editor-state [k :drafts "a" :source :revision])))))))))
+            (is (= initial-revision (get-in @sig/workflow-editor-state [k :drafts "a" :source :revision])))))))))
 
 (deftest local-retries-retain-backend-for-both-submission-and-funding
   (with-state
@@ -244,7 +246,7 @@
                       actions/confirm! (fn [message] (swap! confirmations conj message) true)]
           ((:change ui) "a" update :form editor/set-form-field :backend "local")
           ((:change ui) "a" update :form editor/set-form-field
-           :worker "99999999-9999-4999-8999-999999999999")
+                        :worker "99999999-9999-4999-8999-999999999999")
           ((:submit ui) "a" false)
           (is (= 300000 (get-in (last (:args (first @runs))) [:limits :timeout-ms])))
           (is (re-find #"Wall time: 300000 ms \(includes cold startup\)" (first @confirmations)))
@@ -273,8 +275,8 @@
         ;; CLJS may statically call its variadic entry point, bypassing the
         ;; generic JS argument-packing wrapper.
         (with-redefs [sig/open-tab! (fn [kind data & [options]]
-                                     (swap! opened conj {:args [kind data options]
-                                                        :context ec/*execution-context*}))]
+                                      (swap! opened conj {:args [kind data options]
+                                                          :context ec/*execution-context*}))]
           (binding [ec/*execution-context* nil] ((:open-run ui) "job"))
           (is (= [:run-inspector (assoc data :run-id "job")
                   {:title "Workflow Run" :new-tab? true :col-id "column-a"}]

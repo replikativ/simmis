@@ -15,13 +15,39 @@
             #?(:clj [is.simm.ops.dvergr :as ops])
             #?(:clj [is.simm.ops.owned-reads :as owned-reads])
             #?(:clj [is.simm.ops.owned-workflows :as owned-workflows])
+            #?(:clj [is.simm.ops.owned-workflow-host :as workflow-host])
             #?(:clj [is.simm.ops.work-api :as work-api])
             #?(:clj [is.simm.ops.workflows :as workflows])
             #?(:clj [is.simm.runtimes.context :as context])))
 
 #?(:clj
+   (defn- permissions [db party room-id]
+     {:write? (access/can? db party :write {:room room-id})
+      :merge? (access/can? db party :merge {:room room-id})
+      :fund? (= party (d/q '[:find ?owner . :in $ ?id
+                             :where [?r :room/id ?id] [?r :room/owner ?p] [?p :party/id ?owner]] db room-id))
+      :operator? (= :admin (d/q '[:find ?role . :in $ ?id
+                                  :where [?p :party/id ?id] [?p :party/role ?role]] db party))}))
+
+#?(:clj
+   (defn- read-owned-workflow-on-host [host principal handle operation args]
+     (let [{:keys [data read-context]}
+           (try
+             ((case operation :simmis/workflow-list owned-workflows/list!
+                    :simmis/workflow-source owned-workflows/details!)
+              host principal handle args)
+             (catch Throwable error (work-api/owned-workflow-read-error! error)))
+           {:keys [control-db party room-id]} read-context]
+       (try
+         ;; Hints describe this exact capture, not authority for a later command.
+         (assoc data :permissions (permissions control-db party room-id))
+         (catch Throwable error
+           (work-api/owned-workflow-read-error!
+            (ex-info "Permission projection unavailable" {} error)))))))
+
+#?(:clj
    (defn invoke-owned-workflow-read
-     "DORMANT HOST-only normal-human reader. No remote or action calls this yet.
+     "HOST-only normal-human reader.
       Fixed domain read authority, not an MCP identity or generic op capability."
      [party original-room-handle operation args]
      (when-not (uuid? party)
@@ -40,56 +66,72 @@
                   (catch Throwable error
                     (work-api/owned-workflow-read-error! (ex-info "Host owner unavailable" {} error))))
            principal (ops/party-principal party)]
-       (let [{:keys [data read-context]}
-             (try
-               ((case operation :simmis/workflow-list owned-workflows/list!
-                      :simmis/workflow-source owned-workflows/details!)
-                host principal original-room-handle args)
-               (catch Throwable error (work-api/owned-workflow-read-error! error)))
-             {:keys [control-db party room-id]} read-context]
-         (try
-           ;; Permission hints share the exact immutable control snapshot of
-           ;; this capture. They are not authority for a later write or run.
-           (assoc data :permissions
-                  {:write? (access/can? control-db party :write {:room room-id})
-                   :merge? (access/can? control-db party :merge {:room room-id})
-                   :fund? (= party (d/q '[:find ?owner . :in $ ?id
-                                          :where [?r :room/id ?id] [?r :room/owner ?p] [?p :party/id ?owner]] control-db room-id))
-                   :operator? (= :admin (d/q '[:find ?role . :in $ ?id
-                                               :where [?p :party/id ?id] [?p :party/role ?role]] control-db party))})
-           ;; Permission projection is OUTSIDE the normalized service boundary;
-           ;; arbitrary helper tags here cannot manufacture a public conflict.
-           (catch Throwable error
-             (work-api/owned-workflow-read-error! (ex-info "Permission projection unavailable" {} error))))))))
+       (read-owned-workflow-on-host host principal original-room-handle operation args))))
+
+#?(:clj
+   (def ^:private workflow-operations
+     #{:simmis/workflow-list :simmis/workflow-source :simmis/workflow-write
+       :simmis/workflow-run :simmis/benchmark :simmis/cli-benchmark
+       :simmis/work-allowance :simmis/cli-allowance
+       :simmis/local-worker-list :simmis/local-worker-workflow
+       :simmis/local-worker-benchmark :simmis/local-worker-allowance
+       :simmis/workflow-schedule-create :simmis/workflow-schedule-list
+       :simmis/workflow-schedule-set-enabled}))
+
+#?(:clj
+   (defn- hydrate-control-room! [host principal handle operation wire]
+     ;; Only these four legacy controls require a physical native Room. Fixed
+     ;; metadata authorization precedes hydration; owned retries never enter.
+     (let [before (work-api/owned-helper-value! #(owned-reads/preflight-host-read! host principal handle))]
+       (dops/authorize! host principal operation wire)
+       (work-api/owned-helper-value!
+        (fn []
+          (when-not (rooms/live-room (:room-id before))
+            (throw (ex-info "Native control room unavailable" {})))
+          (let [after (owned-reads/preflight-host-read! host principal handle)]
+            (when-not (= (select-keys before [:party :room-id]) (select-keys after [:party :room-id]))
+              (throw (ex-info "Canonical control room changed" {})))
+            (:room-id before)))))))
 
 #?(:clj
    (defn invoke-workflow [party room-id operation args]
-     (when-not party (throw (ex-info "Authentication required" {:error :authentication-required})))
+     (when-not (uuid? party) (throw (ex-info "Authentication required" {:error :authentication-required})))
      (when (simple/on-drain-thread?)
        (throw (ex-info "Workflow actions require a host worker" {:type :validation-error})))
+     (when-not (and (contains? workflow-operations operation) (map? args)
+                    (not (contains? args :room)) (string? room-id) (<= 1 (count room-id) 200))
+       (dops/op-error! "Invalid workflow arguments" ::invalid 400))
      (context/with-server-context
-       (let [id (java.util.UUID/fromString room-id)
-             room (rooms/live-room id)]
-         (when-not room (throw (ex-info "The room is not live" {:error :room-not-live})))
-         (let [reply (ops/invoke context/server-context (ops/party-principal party)
-                                 operation (assoc args :room (str id)))
-               db @(system-db/get-conn)]
-           (assoc (case operation
-                    :simmis/workflow-source (workflows/details room (:name args))
-                    :simmis/workflow-write
-                    (let [source (try (workflows/details room (:name args)) (catch Exception _ nil))]
-                      (if (and source (:revision source)
-                               (= (:revision source) (get-in reply [:workflow :revision])))
-                        (assoc reply :definition (:definition source) :workflow (:inspection source))
-                        (assoc reply :source-changed? true)))
-                    reply)
-                  :permissions
-                  {:write? (access/can? db party :write {:room id})
-                   :merge? (access/can? db party :merge {:room id})
-                   :fund? (= party (d/q '[:find ?owner . :in $ ?id
-                                          :where [?r :room/id ?id] [?r :room/owner ?p] [?p :party/id ?owner]] db id))
-                   :operator? (= :admin (d/q '[:find ?role . :in $ ?id
-                                               :where [?p :party/id ?id] [?p :party/role ?role]] db party))}))))))
+       (let [ctx context/server-context
+             host (work-api/owned-helper-value! #(workflow-host/host (system-db/get-conn) ctx))
+             principal (ops/party-principal party) wire (assoc args :room room-id)]
+         (case operation
+           (:simmis/workflow-list :simmis/workflow-source)
+           (do (dops/authorize! host principal operation wire)
+               (read-owned-workflow-on-host host principal room-id operation args))
+
+           :simmis/workflow-write
+           (do
+             ;; The canonical registered operation guard runs BEFORE the same
+             ;; fixed save service used by MCP, whose bounded receipt omits the
+             ;; definition needed by this editor. Never call a raw op impl.
+             (dops/authorize! host principal operation wire)
+             (let [saved (work-api/owned-workflow-save! host principal room-id args)]
+               (work-api/owned-helper-value!
+                #(let [{:keys [control-db party room-id]} (owned-reads/preflight-host-read! host principal room-id)]
+                   (assoc (workflows/public-write {:write (:write saved) :workflow (get-in saved [:source :inspection])})
+                          :definition (get-in saved [:source :definition])
+                          :permissions (permissions control-db party room-id))))))
+
+           (let [handle (if (contains? workflow-host/legacy-room-actions operation)
+                          (str (hydrate-control-room! host principal room-id operation wire))
+                          room-id)
+                 reply (dops/invoke host principal operation (assoc args :room handle))]
+             (work-api/owned-helper-value!
+              #(let [{:keys [control-db party room-id]} (owned-reads/preflight-host-read! host principal handle)]
+                 (if (map? reply)
+                   (assoc reply :permissions (permissions control-db party room-id))
+                   reply)))))))))
 
 #?(:clj
    (defn- workflow-on-worker [room-id operation args]

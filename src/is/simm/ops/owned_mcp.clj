@@ -3,23 +3,13 @@
    controls. No startup installation, credential widening or agent routing."
   (:require [clojure.string :as str]
             [dvergr.rooms.files :as files]
-            [is.simm.model.access :as access]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.owned-reads :as reads]
+            [is.simm.ops.owned-workflow-host :as workflow-host]
             [org.replikativ.spindel.engine.core :as ec]))
 
 (def ^:private room-read-ops #{:room/files :room/read :catalog/list})
-(def ^:private described-read-ops
-  #{:simmis/workspace-bundle :simmis/workspace-bundle-chunk
-    :simmis/workflow-list :simmis/workflow-source :simmis/workflow-check
-    :simmis/workflow-schedule-list})
-(def ^:private described-owned-actions
-  (merge (zipmap described-read-ops (repeat :read))
-         {:simmis/workflow-write :write
-          :simmis/workflow-run :merge :simmis/benchmark :merge :simmis/cli-benchmark :merge
-          :simmis/workflow-schedule-create :merge :simmis/workflow-schedule-set-enabled :merge
-          :simmis/work-status :merge
-          :simmis/local-worker-workflow :write :simmis/local-worker-benchmark :write}))
+(def ^:private described-owned-actions workflow-host/owned-actions)
 (def ^:private denial {:allow? false :reason "Canonical room read refused"})
 
 (defn- refuse! []
@@ -70,20 +60,7 @@
                   ;; Legacy host descriptors normalize UUID to slug. ONLY
                   ;; these fixed reads compare both mappings in ONE control DB;
                   ;; the original DTO handle remains the sole body selector.
-                        (let [{:keys [action resource args]} request
-                              [kind handle] resource
-                              required (get described-owned-actions op)]
-                          (when-not (and (= required action) (vector? resource) (= 2 (count resource))
-                                         (= :room kind) (bounded-text? handle 1024))
-                            (refuse!))
-                          (let [descriptor (reads/authorize-read! db principal handle)]
-                            (when-not (access/can? db (:party descriptor) required {:room (:room-id descriptor)})
-                              (refuse!))
-                            (when (contains? request :args)
-                              (when-not (and (map? args)
-                                             (= (:room-id descriptor)
-                                                (:room-id (reads/authorize-read! db principal (:room args)))))
-                                (refuse!)))))
+                        (workflow-host/authorize-in! db principal request)
                         (reads/authorize-read! db principal (original-handle! request)))
                       {:allow? true})))))
     (catch InterruptedException _

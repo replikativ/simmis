@@ -336,6 +336,28 @@
 
       :else (ops/op-error! "Owned workflow operation unavailable" ::owned-transport-unavailable 503))))
 
+(defn owned-workflow-save!
+  "Fixed HOST save shared by authenticated adapters. Returns the ORIGINAL
+   sealed ACK; each adapter projects only its own public result. No reread."
+  [host principal handle edits]
+  (when (and (map? edits) (contains? edits :room))
+    (ops/op-error! "Invalid owned workflow edits" ::owned-transport-invalid 400))
+  (let [args (if (map? edits) (assoc edits :room handle) edits)]
+    (checked! workflow-write-schema args)
+    (let [input (owned-write-transport! args)
+          saved (owned-service-result! #(owned-authoring/write! host principal handle input))]
+      (owned-helper-value!
+       #(do
+          (when-not (and (map? (:write saved)) (contains? (:write saved) :commit)
+                         (let [commit (get-in saved [:write :commit])]
+                           (or (nil? commit) (and (string? commit) (parse-uuid commit))))
+                         (string? (get-in saved [:source :revision]))
+                         (parse-uuid (get-in saved [:source :revision]))
+                         (= (get-in saved [:source :revision]) (get-in saved [:source :inspection :revision]))
+                         (map? (get-in saved [:source :inspection])))
+            (throw (ex-info "Invalid owned save acknowledgement" {})))
+          saved)))))
+
 (defn- owned-schedule-transport! [args]
   (let [schema (if (= "workflow" (:kind args)) workflow-runs/schema benchmarks/schema)
         execution (owned-transport! (conj schema [:expected-owned-source :uuid])
@@ -520,19 +542,9 @@
      :impl (fn [host args]
              (checked! workflow-write-schema args)
              (if (owned-reads/owned-host? host)
-               (let [input (owned-write-transport! args)
-                     saved (owned-service-result! #(owned-authoring/write! host ops/*principal* (:room args) input))]
+               (let [saved (owned-workflow-save! host ops/*principal* (:room args) (dissoc args :room))]
                  (owned-helper-value!
-                  #(do
-                     (when-not (and (map? (:write saved)) (contains? (:write saved) :commit)
-                                    (let [commit (get-in saved [:write :commit])]
-                                      (or (nil? commit) (and (string? commit) (parse-uuid commit))))
-                                    (string? (get-in saved [:source :revision]))
-                                    (parse-uuid (get-in saved [:source :revision]))
-                                    (= (get-in saved [:source :revision]) (get-in saved [:source :inspection :revision]))
-                                    (map? (get-in saved [:source :inspection])))
-                       (throw (ex-info "Invalid owned save acknowledgement" {})))
-                     (workflows/public-write {:write (:write saved) :workflow (get-in saved [:source :inspection])}))))
+                  #(workflows/public-write {:write (:write saved) :workflow (get-in saved [:source :inspection])})))
                (guarded host #(let [[_ _ room] (room! host (:room args))]
                                 (workflows/public-write
                                  (workflows/write! room ops/*principal* (workflows/transport-write (dissoc args :room))))))))}

@@ -275,7 +275,14 @@ model. Resume rechecks the stored human creator and policy; its transaction
 rejects changed retained identities and uncertain or foreign active occurrences.
 Legacy activations may be inspected and paused but must be explicitly recreated
 before owned resume. The inactive owned MCP host selects these fixed services;
-ordinary hosts and startup remain unchanged. Owned execution requires its
+ordinary MCP startup remains unchanged. Browser workflow adapters capture a
+normal-human canonical host, without an MCP marker or a prehydrated file
+default. They share the fixed metadata authorization policy and original save
+acknowledgement service with MCP; the browser projects the saved definition
+while MCP retains its bounded receipt. The four legacy allowance/enrollment
+controls authorize before hydrating their native Room. The Schedules dashboard
+loads retained workflow targets on a host worker through the same owned metadata
+listing. Owned execution requires its
 target-bound source revision separately from the portable bundle identity.
 Worker workflow/benchmark retries inspect canonical metadata before checking
 fresh-admission readiness; only normal absence may enter new admission. Saves
