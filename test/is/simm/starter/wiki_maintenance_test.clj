@@ -1,17 +1,22 @@
 (ns is.simm.starter.wiki-maintenance-test
-  (:require [clojure.java.io :as io]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [datahike.api :as d]
             [datahike.blob :as blob]
             [dvergr.catalog.room :as catalog]
+            [geschichte.repo :as repo]
             [hasch.core :as hasch]
             [is.simm.documents.blocks :as blocks]
             [is.simm.documents.markdown :as markdown]
+            [is.simm.documents.profile :as profile]
+            [is.simm.documents.space :as space]
+            [is.simm.documents.view :as view]
             [is.simm.ops.checkers :as checkers]
             [is.simm.ops.knowledge-inputs :as inputs]
             [is.simm.ops.workflow-runs :as runs]
             [is.simm.ops.workflows :as workflows]
-            [is.simm.starter.wiki-maintenance :as starter]))
+            [is.simm.starter.wiki-maintenance :as starter]
+            [kontor.governance :as governance]))
 
 ;; Synthetic benchmark evidence lives in tests, never the shipped live bundle.
 ;; Construct the same closed byte/hash manifest contract as host capture, then
@@ -71,8 +76,8 @@
     (is (empty? (:cases bundle)))
     (is (nil? (:gold bundle)))
     (is (nil? (:calibration bundle)))
-    (is (= {"/workflow-context/wiki-maintenance.md"
-            (get source "fixtures/workflow-context/wiki-maintenance.md")} (:fixtures bundle)))
+    (is (= {"/workflow-context/wiki-maintenance.txt"
+            (get source "fixtures/workflow-context/wiki-maintenance.txt")} (:fixtures bundle)))
     (is (every? #(not (.contains ^String % "Synthetic rehearsal")) (vals source)))
     (is (= evidence (get-in prepared [:inputs evidence-path])))
     (is (= source (:source prepared)))
@@ -115,16 +120,43 @@
                         [:checks :citations?])))))
 
 (deftest loader-refuses-missing-malformed-or-oversized-resource-bytes
-  (with-redefs [io/resource (constantly nil)]
-    (is (thrown? clojure.lang.ExceptionInfo (starter/source))))
-  (with-redefs [io/input-stream (fn [& _] (java.io.ByteArrayInputStream. (byte-array [(unchecked-byte 0xff)])))]
-    (is (thrown? java.nio.charset.CharacterCodingException (starter/source))))
+  ;; Mock only this loader's resource seams, never JVM-wide io/resource or
+  ;; io/input-stream while another runtime may be reading its own files.
+  (with-redefs-fn {#'starter/packaged-resource (constantly nil)}
+    #(is (thrown? clojure.lang.ExceptionInfo (starter/source))))
+  (with-redefs-fn {#'starter/resource-stream (fn [& _] (java.io.ByteArrayInputStream. (byte-array [(unchecked-byte 0xff)])))}
+    #(is (thrown? java.nio.charset.CharacterCodingException (starter/source))))
   (with-redefs [starter/policy {:max-file-bytes 8 :max-bundle-bytes 32}
-                io/input-stream (fn [& _] (java.io.ByteArrayInputStream. (byte-array 9)))]
+                starter/resource-stream (fn [& _] (java.io.ByteArrayInputStream. (byte-array 9)))]
     (is (thrown? clojure.lang.ExceptionInfo (starter/source))))
   (with-redefs [starter/policy {:max-file-bytes 8 :max-bundle-bytes 2}
-                io/input-stream (fn [& _] (java.io.ByteArrayInputStream. (.getBytes "a" "UTF-8")))]
+                starter/resource-stream (fn [& _] (java.io.ByteArrayInputStream. (.getBytes "a" "UTF-8")))]
     (is (thrown? clojure.lang.ExceptionInfo (starter/source)))))
+
+(deftest installing-the-live-bundle-preserves-the-canonical-knowledge-view
+  (let [cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write
+             :attribute-refs? false :keep-history? false}
+        original "---\nsimmis-id: 1cce4d07-3c56-4678-b348-1af7eb2d49ed\n---\n# Existing knowledge\n"]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (try
+        (space/provision! conn)
+        (repo/write! conn "wiki/existing.md" (markdown/source-bytes original))
+        (is (= :ready (:status (view/prepare @conn profile/selection-options))))
+        (doseq [[path text] (starter/source)]
+          (repo/write! conn (str "workflows/" starter/name "/" path) (markdown/source-bytes text)))
+        (let [prepared (view/prepare @conn profile/selection-options)]
+          (is (= :ready (:status prepared)) (pr-str (:diagnostics prepared)))
+          (is (= ["wiki/existing.md"] (d/q '[:find [?path ...] :where [_ :document/path ?path]] (:db prepared)))))
+        ;; A Markdown prompt fixture really would invalidate this whole view:
+        ;; the fix is its data role/extension, not hiding /workflows globally.
+        (repo/write! conn "workflows/maintain-wiki/fixtures/workflow-context/wiki-maintenance.md"
+                     (markdown/source-bytes "# Not an identified knowledge document\n"))
+        (is (= :invalid (:status (view/prepare @conn profile/selection-options))))
+        (finally
+          (governance/ungovern! conn)
+          (d/release conn true)
+          (d/delete-database cfg))))))
 
 (deftest existing-metadata-and-contradictory-evidence-are-not-silently-discarded
   (let [metadata "---\nsimmis-id: 22137790-33e0-40e2-b2b9-2651de686597\nowner-note: keep me\n---\n"

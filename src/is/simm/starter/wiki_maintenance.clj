@@ -11,7 +11,12 @@
 
 (def ^:private paths
   ["workflow.edn" "input-selection.edn" "checker.clj"
-   "fixtures/workflow-context/wiki-maintenance.md"])
+   "fixtures/workflow-context/wiki-maintenance.txt"])
+
+(defn- packaged-resource [path]
+  (io/resource (str "is/simm/workflows/maintain-wiki/v1/" path)))
+
+(defn- resource-stream [resource] (io/input-stream resource))
 
 (defn source
   "Return the shipped source files relative to /workflows/maintain-wiki/.
@@ -21,10 +26,10 @@
   []
   (:files
    (reduce (fn [{:keys [files size]} path]
-             (let [resource (io/resource (str "is/simm/workflows/maintain-wiki/v1/" path))]
+             (let [resource (packaged-resource path)]
                (when-not resource
                  (throw (ex-info "Missing shipped wiki-maintenance resource" {:path path})))
-               (with-open [stream (io/input-stream resource)]
+               (with-open [stream (resource-stream resource)]
                  (let [bytes (.readNBytes stream (int (inc (:max-file-bytes policy))))
                        length (alength bytes)
                        total (+ size length)]
