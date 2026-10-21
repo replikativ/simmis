@@ -7,6 +7,18 @@ Loading it does not install anything, choose a model, allocate money or enable
 a schedule. Installation must use the existing authorized owned-workflow writer
 and preserve user edits. Automatic installation is a separate integration step.
 
+`is.simm.starter.install-wiki/install!` is an explicit HOST-only inactive
+installer for a selected canonical personal/project/group room. It uses the
+existing room `:admin` policy (currently owner-only), read+write authority and
+the original owned target. These checks are repeated at the native effect
+boundary; a global administrator gains no content bypass. The entire named
+workflow subtree is compared, including modes and extra files. Empty source is
+installed with its inspected target-bound revision and whole-subtree CAS;
+byte/mode-identical source is an authorized read-only repeat; customized source
+is preserved. An uncertain native acknowledgement propagates as pending without
+automatic replay. This operation never discovers/creates rooms, converts legacy
+stores, runs a model, allocates resources or changes any schedule activation.
+
 ```text
 inbox/ + transcripts/ ── evidence ─┐
 wiki/ ──────────────── context ────┴─> frozen manifest + byte copies
@@ -64,8 +76,8 @@ customer facts into a real scheduled Run.
 1. Validate prospective output against canonical Markdown/property rules, then
    integrate guarded file-only adoption and recovery receipts. Preserve the
    distinction between processed input, filed proposal and adopted result.
-2. Add idempotent inactive installation for explicitly eligible personal
-   workspaces. Do not overwrite a customized bundle or convert legacy stores.
+2. Integrate the inactive installer into explicitly eligible personal workspace
+   provisioning. Do not overwrite a customized bundle or convert legacy stores.
 3. Make configuration of an admitted model and finite allowance explicit before
    enabling its ordinary schedule. Expose status, proposals and failures in UI.
 4. Benchmark actual models on retained cases before making quality claims or

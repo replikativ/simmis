@@ -93,11 +93,8 @@
         tree (:tree source)]
     {:files (:files source) :manifest (mapv (fn [[path entry]] (assoc entry :path path)) tree)}))
 
-(defn write!
-  "Fixed HOST writer. REQUIRED inspected owned revision; no retry journal.
-   Success describes the original sealed native ACK, never a later read.
-   Pending is not rollback evidence and NEVER authorizes automatic replay."
-  [host principal original-handle {:keys [name expected-revision files] :as request}]
+(defn- write-with-gates!
+  [resolve! validate! host principal original-handle {:keys [name expected-revision files] :as request}]
   (when-not (and (m/validate request-schema request)
                  (re-matches #"[a-z0-9][a-z0-9-]{0,63}" name)
                  (re-matches #"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" expected-revision))
@@ -106,7 +103,7 @@
         {:keys [prefix entries]} (storage! #(workflows/normalized-edits name files))
         _ (doseq [[absolute _] entries]
             (when-not (and (.startsWith ^String absolute prefix) (<= (count absolute) 512)) (invalid!)))
-        binding (storage! #(reads/resolve-host-write! host principal original-handle))
+        binding (storage! #(resolve! host principal original-handle))
         manifest (storage! #(workflows/manifest-in (:db binding) name))
         revision (storage! #(owned/source-id binding name manifest))]
     (when-not (= (parse-uuid expected-revision) revision)
@@ -124,7 +121,7 @@
           boundary (fn []
                      (update (base) :handlers conj
                              (fn [effect next]
-                               (reads/validate-host-write! host principal original-handle binding)
+                               (validate! host principal original-handle binding)
                                (next effect))))
           _ (when-not (contains? native/write-capabilities :expected-subtree)
               (fail! ::unavailable "Owned workflow save unavailable"))
@@ -139,3 +136,19 @@
                     (fail! ::pending "Workflow save outcome is pending; do not retry automatically"))
         :pending (fail! ::pending "Workflow save outcome is pending; do not retry automatically")
         (fail! ::unavailable "Owned workflow save unavailable")))))
+
+(defn write!
+  "Fixed HOST writer. REQUIRED inspected owned revision; no retry journal.
+   Success describes the original sealed native ACK, never a later read.
+   Pending is not rollback evidence and NEVER authorizes automatic replay."
+  [host principal original-handle request]
+  (write-with-gates! reads/resolve-host-write! reads/validate-host-write!
+                     host principal original-handle request))
+
+(defn install!
+  "Fixed HOST install writer using the SAME native CAS/ACK implementation, with
+   stricter canonical-space and room-governance checks. No transport or runtime
+   activation. Callers cannot supply a gate, callback or authority selector."
+  [host principal original-handle request]
+  (write-with-gates! reads/resolve-host-install! reads/validate-host-install!
+                     host principal original-handle request))

@@ -7,6 +7,7 @@
             [dvergr.room.store :as room-store]
             [dvergr.system.rooms :as native-rooms]
             [is.simm.agents.room-agents :as rooms]
+            [is.simm.documents.space :as space]
             [is.simm.model.access :as access]
             [is.simm.model.system-db :as system-db]
             [is.simm.ops.owned-workspace :as owned]
@@ -81,9 +82,18 @@
     (when-not (access/can? control-db party :write {:room room-id}) (refuse!))
     resolved))
 
+(defn- authorize-install! [db principal handle]
+  (let [{:keys [party room-id] :as resolved} (authorize-write! db principal handle)]
+    ;; Use existing room governance; membership/write permission alone does not
+    ;; authorize installation of the product's managed starter workflow.
+    (when-not (and (access/can? db party :admin {:room room-id})
+                   (#{:personal-ai :project :group} (:room/type (d/entity db [:room/id room-id]))))
+      (refuse!))
+    resolved))
+
 (defn- resolve-action! [conn host-ctx principal handle action]
   (binding [ec/*execution-context* host-ctx]
-    (let [authorize (case action :read authorize-read! :write authorize-write!)
+    (let [authorize (case action :read authorize-read! :write authorize-write! :install authorize-install!)
           before (current-control-db! conn host-ctx)
           original (authorize before principal handle)
           room (rooms/live-room (:room-id original))
@@ -91,8 +101,11 @@
           current (authorize after principal handle)]
       (when-not (and room (= (select-keys original [:room-id :party])
                              (select-keys current [:room-id :party]))) (refuse!))
-      (assoc (owned/resolve! after principal action (:room-id original) room)
-             :control-db after))))
+      (let [binding (assoc (owned/resolve! after principal (if (= :install action) :write action)
+                                           (:room-id original) room)
+                           :control-db after)]
+        (when (and (= :install action) (not (space/provisioned? (:db binding)))) (refuse!))
+        binding))))
 
 (defn resolve-read!
   "ONE ephemeral HOST rich binding from current canonical identity/EACL before
@@ -224,4 +237,24 @@
     (when-not (= (select-keys binding [:room-id :party]) (select-keys current [:room-id :party]))
       (refuse!))
     (owned/validate! db principal :write (:room-id binding) (:room binding) binding)
+    true))
+
+(defn resolve-host-install!
+  "Fixed HOST room-governance + write gate for an explicitly selected canonical
+   workspace. No implicit personal-room discovery or legacy provisioning."
+  [host principal original-handle]
+  (let [{:keys [control-conn execution-ctx]} (original-owner! host)]
+    (resolve-action! control-conn execution-ctx principal original-handle :install)))
+
+(defn validate-host-install!
+  "Recheck original host, current room governance and canonical target at every
+   native install effect boundary. A retained binding is never a permission."
+  [host principal original-handle binding]
+  (let [{:keys [control-conn execution-ctx]} (original-owner! host)
+        db (current-control-db! control-conn execution-ctx)
+        current (authorize-install! db principal original-handle)]
+    (when-not (= (select-keys binding [:room-id :party]) (select-keys current [:room-id :party]))
+      (refuse!))
+    (let [fresh (owned/validate! db principal :write (:room-id binding) (:room binding) binding)]
+      (when-not (space/provisioned? (:db fresh)) (refuse!)))
     true))
