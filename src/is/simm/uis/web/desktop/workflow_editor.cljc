@@ -43,6 +43,37 @@
 (defn reloaded [old source]
   (merge (draft source) (select-keys old [:submission :schedule-submission :fund-request :fund-backend :funded? :fund-reply])))
 
+(defn source-current?
+  "An observation is not a permission grant. This only prevents a local UI
+   from knowingly issuing fresh work against an unverified or changed source."
+  [draft]
+  (and (not (:source-stale? draft)) (nil? (:incoming-source draft))))
+
+(defn unverified [draft]
+  (assoc draft :source-stale? true))
+
+(defn observed
+  "Reconcile an authorized source observation without discarding local intent.
+   Dirty text keeps its original base and exposes an incoming-change conflict.
+   Clean text advances, preserving the selected file where possible, explicit
+   form overrides and all original admission/retry ledgers. No implicit save."
+  [old source]
+  (cond
+    (nil? old) (draft source)
+    (= (get-in old [:source :revision]) (:revision source))
+    (-> old (assoc :source source) (dissoc :source-stale? :incoming-source))
+    (dirty? old) (assoc old :source-stale? true :incoming-source source)
+    :else
+    (let [defaults (parameters source)
+          prior-defaults (parameters (:source old))
+          overrides (into {} (filter (fn [[k v]] (not= v (get prior-defaults k))))
+                          (get-in old [:form :params]))
+          path (if (contains? (:files source) (:path old)) (:path old) (:path (draft source)))]
+      (-> old
+          (assoc :source source :files (:files source) :path path)
+          (assoc-in [:form :params] (merge defaults (select-keys overrides (keys defaults))))
+          (dissoc :source-stale? :incoming-source)))))
+
 (defn saved [draft sent reply]
   (let [defaults (parameters {:definition (:definition reply)})
         previous-defaults (parameters (:source draft))
@@ -59,6 +90,19 @@
                     (:workflow reply)))
         (assoc-in [:source :definition] (:definition reply))
         (assoc-in [:form :params] (merge defaults (select-keys overrides (keys defaults)))))))
+
+(defn acknowledged-save
+  "Advance only the original save base using its sealed ACK and sent bytes.
+   A newer authorized observation must never be rolled back. Any incoming
+   source is reconciled AFTER base advancement, preserving edits made in flight."
+  [draft original-revision sent reply]
+  (let [current (get-in draft [:source :revision])
+        acknowledged (get-in reply [:workflow :revision])]
+    (if (and acknowledged (or (= current original-revision) (= current acknowledged)))
+      (let [incoming (:incoming-source draft)
+            next (-> (saved draft sent reply) (dissoc :incoming-source))]
+        (if incoming (observed next incoming) next))
+      draft)))
 
 (defn edits [draft]
   (into (sorted-map)
@@ -113,6 +157,7 @@
     :else (assoc (select-keys (limits form) [:budget-microdollars :max-dispatches]) :request-id request-id)))
 
 (defn submission [draft request-id]
+  (when-not (source-current? draft) (invalid! "Source changed or is being verified; reconcile it before starting new work"))
   (when (dirty? draft) (invalid! "Save and inspect these changes before running"))
   (let [{:keys [source form]} draft
         inspection (:inspection source)

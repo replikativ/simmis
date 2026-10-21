@@ -6,6 +6,7 @@
             [dvergr.room.store :as room-store]
             [is.simm.model.access :as access]
             [is.simm.model.system-db :as system-db]
+            [is.simm.runtimes.context :as context]
             [is.simm.documents.files :as files]
             [is.simm.ops.owned-workspace :as owned]
             [kabel.pubsub :as pubsub]
@@ -22,8 +23,12 @@
     (parse-uuid (name value))))
 
 (defn register-topic! [peer party]
-  (when-not (pubsub/topic-registered? peer (topic party))
-    (pubsub/register-topic! peer (topic party) {:strategy (proto/pub-sub-only-strategy nil)})))
+  ;; Memory and global dashboards can register concurrently. Kabel registration
+  ;; replaces the topic's subscriber set, so check/install must be ONE operation
+  ;; for this physical peer. No domain state or remote I/O is held by this lock.
+  (locking peer
+    (when-not (pubsub/topic-registered? peer (topic party))
+      (pubsub/register-topic! peer (topic party) {:strategy (proto/pub-sub-only-strategy nil)}))))
 
 (defn open!
   "Create one host transport resource. resolve-room and allowed? must resolve
@@ -123,6 +128,11 @@
   (when-not (and conn (identical? conn (system-db/get-conn)))
     (throw (ex-info "Memory notifier requires the canonical control connection" {:type ::unavailable}))))
 
+(defn- current-human? [db party]
+  (when (uuid? party)
+    (let [entity (d/entity db [:party/id party])]
+      (= :human (or (:actor/kind entity) (:party/type entity))))))
+
 (defn- registered-room [db id]
   (when-let [slug (:room/slug (d/entity db [:room/id id]))]
     (registry/lookup (room-store/slug->room-id slug))))
@@ -167,7 +177,7 @@
   (when-not (and (:fork-id host-ctx) (fn? publish!))
     (throw (ex-info "Memory notifier requires host context and publisher" {:type ::unavailable})))
   (let [lock (Object.) queue (LinkedBlockingQueue. 1)
-        state (atom {:closed? false :control-generation 0 :interests {} :watches {}
+        state (atom {:closed? false :control-generation 0 :interests {} :watches {} :control-readers #{}
                      :pending #{} :control-dirty? false})
         control-branch (get-in @control-conn [:config :branch])
         control-key [::owned-control (random-uuid)]
@@ -307,6 +317,25 @@
                     ;; A missing target still invalidates independently allowed
                     ;; readers. There is no target/content/capability in a hint.
                     (publish! party {:kind :memory-changed :room-id id})))))
+            (publish-control-current! []
+              ;; A global dashboard observes authorized RPC results, NOT room
+              ;; repositories. This private hint contains no room, target,
+              ;; claim, ledger, snapshot or transferable authority.
+              (binding [ec/*execution-context* host-ctx]
+                (doseq [party (:control-readers @state)]
+                  (try
+                    (canonical-control! control-conn)
+                    (let [db @control-conn s @state]
+                      (when (and (not (:closed? s))
+                                 (identical? host-ctx context/server-context)
+                                 (current-human? db party)
+                                 (= (:control-generation s) (:control-generation @state))
+                                 (same-snapshot? db @control-conn))
+                        (publish! party {:kind :schedule-index-changed})))
+                    (catch InterruptedException error (throw error))
+                    (catch Exception error
+                      (log/log! {:level :warn :id ::control-publication-failed
+                                 :data {:exception-class (.getName (class error))}}))))))
             (run-worker! []
               (try
                 (loop []
@@ -323,6 +352,7 @@
                              (locking lock (remove-watch! id))
                              (log/log! {:level :warn :id ::owned-reconciliation-failed
                                         :data {:room-id id :exception-class (.getName (class error))}}))))
+                    (when (:control-dirty? before) (publish-control-current!))
                     (when-not (:closed? @state) (recur))))
                 (catch InterruptedException _ (.interrupt (Thread/currentThread)))))]
       ;; Install control observation BEFORE interests/worker publication. No
@@ -337,6 +367,24 @@
                (throw error))))
       {:mode :owned
        :same-owner? #(and (identical? control-conn %1) (identical? host-ctx %2) (identical? publish! %3))
+       :watch-control!
+       (fn [party]
+         (when (simple/on-drain-thread?)
+           (throw (ex-info "Metadata watch requires a host worker" {:type ::unavailable})))
+         (binding [ec/*execution-context* host-ctx]
+           (canonical-control! control-conn)
+           (when-not (and (identical? host-ctx context/server-context)
+                          (current-human? @control-conn party))
+             (throw (ex-info "Current authenticated human required" {:type :not-authorized}))))
+         (locking lock
+           (let [s @state]
+             (when (or (:closed? s) (not (.isAlive ^Thread @worker)))
+               (throw (ex-info "Memory notifier is stopped" {:type ::closed})))
+             ;; Party interest is additive: closing one view/socket cannot
+             ;; cancel another's. It lives until joined service shutdown;
+             ;; current identity is rechecked before every publication.
+             (swap! state update :control-readers conj party)))
+         {:watching? true})
        :watch!
        (fn [id room party]
          (when (simple/on-drain-thread?)
@@ -399,7 +447,7 @@
            (swap! state assoc :closed? true :pending #{} :control-dirty? false)
            (d/unlisten-commits control-conn control-key)
            (doseq [id (keys (:watches @state))] (remove-watch! id))
-           (swap! state assoc :interests {}))
+           (swap! state assoc :interests {} :control-readers #{}))
          (.interrupt ^Thread @worker)
          (try (.join ^Thread @worker 5000)
               (catch InterruptedException error
@@ -408,6 +456,7 @@
          (when (.isAlive ^Thread @worker)
            (throw (ex-info "Owned Memory notifier has not physically stopped" {:type ::held}))))
        :watch-count #(count (:watches @state))
+       :control-interest-count #(count (:control-readers @state))
        :running? #(and (not (:closed? @state)) (.isAlive ^Thread @worker))
        ;; :readers here are private transport interests, not allowed principals.
        :interests #(get @state :interests)
@@ -451,6 +500,15 @@
     (when-not (= :owned (:mode owner))
       (throw (ex-info "Owned Memory notifier is unavailable" {:type ::unavailable})))
     ((:watch! owner) id room party)))
+
+(defn watch-control-owned!
+  "Host-only authenticated-party registration for content-free schedule-index
+   invalidations. Does not hydrate a room or resolve/read its repository."
+  [party]
+  (let [owner @service]
+    (when-not (= :owned (:mode owner))
+      (throw (ex-info "Owned Memory notifier is unavailable" {:type ::unavailable})))
+    ((:watch-control! owner) party)))
 
 (defn unwatch-room! [room]
   (when-let [owner @service] ((:unwatch-room! owner) room)))

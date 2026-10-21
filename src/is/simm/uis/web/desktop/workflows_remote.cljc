@@ -11,6 +11,8 @@
             #?(:clj [dvergr.ops :as dops])
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.model.system-db :as system-db])
+            #?(:clj [is.simm.model.db :as db])
+            #?(:clj [is.simm.runtimes.memory-changes :as memory-changes])
             #?(:clj [is.simm.agents.room-agents :as rooms])
             #?(:clj [is.simm.ops.dvergr :as ops])
             #?(:clj [is.simm.ops.owned-reads :as owned-reads])
@@ -139,6 +141,23 @@
      ;; derive the caller later on the worker or share/cache a live invocation.
      (let [party (access/authenticated-party-id)]
        (blocking/blocking #(invoke-workflow party room-id operation args)))))
+
+#?(:clj
+   (defn prepare-metadata-stream-for!
+     "Fixed host adapter: caller identity is captured by the authenticated RPC.
+      Registration grants no read or mutation authority and opens no Room."
+     [party]
+     (context/with-server-context
+       (memory-changes/watch-control-owned! party)
+       (memory-changes/register-topic! @db/server-peer party)
+       {:watching? true})))
+
+(defn-spin-remote prepare-workflow-metadata-stream!
+  [server-id]
+  (spin-remote server-id []
+               #?(:clj (let [party (access/authenticated-party-id)]
+                         (await (blocking/blocking #(prepare-metadata-stream-for! party))))
+                  :cljs nil)))
 
 (defn-spin-remote load-workflow-list!
   [server-id room-id-str options]

@@ -6,10 +6,12 @@
             [dvergr.discourse :as discourse]
             [dvergr.room.registry :as registry]
             [geschichte.repo :as repo]
+            [kabel.pubsub :as pubsub]
             [is.simm.documents.markdown :as markdown]
             [is.simm.ops.owned-workspace :as owned]
             [is.simm.ops.owned-workspace-test :as fixture]
             [is.simm.runtimes.memory-changes :as changes]
+            [is.simm.runtimes.context :as context]
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.util.concurrent LinkedBlockingQueue TimeUnit CountDownLatch]))
 
@@ -60,6 +62,65 @@
                        (catch InterruptedException _ (vreset! interrupted? true) false))
           (recur)))
       (finally (when @interrupted? (.interrupt (Thread/currentThread)))))))
+
+(deftest topic-registration-does-not-replace-existing-subscribers
+  (let [peer (atom {}) party (random-uuid) registered (atom #{}) installs (atom 0)]
+    (with-redefs [pubsub/topic-registered?
+                  (fn [p t] (is (identical? p peer)) (is (Thread/holdsLock peer)) (contains? @registered t))
+                  pubsub/register-topic!
+                  (fn [p t _]
+                    (is (identical? p peer)) (is (Thread/holdsLock peer))
+                    (swap! registered conj t) (swap! installs inc))]
+      (changes/register-topic! peer party)
+      (changes/register-topic! peer party)
+      (is (= 1 @installs)))))
+
+(deftest control-interest-is-private-additive-and-never-opens-a-room-source
+  (with-fixture
+    true
+    (fn [{:keys [conn w room]}]
+      (let [hints (LinkedBlockingQueue.)
+            forbidden (fn [& _] (throw (ex-info "Metadata must not open a Room" {})))]
+        (with-redefs [context/server-context (:ctx room)
+                      owned/resolve! forbidden registry/lookup forbidden]
+          (let [owner (changes/open-owned! conn (:ctx room) #(.put hints [%1 %2]))]
+            (try
+              (doseq [party [nil "not-a-party" (random-uuid)]]
+                (is (thrown? clojure.lang.ExceptionInfo ((:watch-control! owner) party))))
+              (doseq [_ (range 2)]
+                (is (= {:watching? true} ((:watch-control! owner) (:owner w)))))
+              (is (= 1 ((:control-interest-count owner))))
+              (is (zero? ((:watch-count owner))))
+              (d/transact conn [{:party/id (:owner w) :party/display-name "Metadata observer"}])
+              (is (= [(:owner w) {:kind :schedule-index-changed}] (take-hint hints)))
+              (is (empty? ((:interests owner))))
+              (is (zero? ((:watch-count owner))))
+              (finally ((:close! owner))))
+            (is (zero? ((:control-interest-count owner))))
+            (is (not ((:running? owner))))))))))
+
+(deftest control-interest-rechecks-human-identity-before-publication
+  (with-fixture
+    true
+    (fn [{:keys [conn w room]}]
+      (let [hints (LinkedBlockingQueue.) checked (promise)
+            human? @#'changes/current-human?]
+        (with-redefs [context/server-context (:ctx room)]
+          (let [owner (changes/open-owned! conn (:ctx room) #(.put hints [%1 %2]))]
+            (try
+              ((:watch-control! owner) (:owner w))
+              ;; A positive authorization observation is the worker barrier;
+              ;; absence of a hint alone is not a synchronization primitive.
+              (with-redefs [changes/current-human?
+                            (fn [db party]
+                              (let [allowed (human? db party)]
+                                (when-not allowed (deliver checked true))
+                                allowed))]
+                (d/transact conn [{:party/id (:owner w) :actor/kind :agent :party/type :agent}])
+                (is (= true (deref checked 5000 ::timeout)))
+                (is (nil? (.poll hints)))
+                (is (thrown? clojure.lang.ExceptionInfo ((:watch-control! owner) (:owner w)))))
+              (finally ((:close! owner))))))))))
 
 (deftest snapshot-basis-fences-shared-writer-wrappers-and-real-basis-changes
   (with-fixture

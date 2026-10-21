@@ -266,6 +266,7 @@
    ;; --- admin / misc ---------------------------------------------------------
    "load-admin-data!"        [(c :none ADMIN)]
    "load-schedules!"         [(c :none AUTH)]
+   "prepare-workflow-metadata-stream!" [(c :none AUTH)]
    "load-unread-counts!"     [(c :none AUTH)]
    "mark-read!"              [(c :none AUTH)]
    "load-notify-prefs!"      [(c :none AUTH)]

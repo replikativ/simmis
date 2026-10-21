@@ -7,6 +7,8 @@
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.chat-remote :as chat]
             [is.simm.uis.web.desktop.workflows-remote :as remote]
+            [is.simm.uis.web.desktop.connection-epoch :as connection]
+            [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.views.schedules :as schedules]))
 
 (def row {:id "activation" :room-id "room" :room-name "Room" :enabled? true})
@@ -21,10 +23,20 @@
     (try
       (with-redefs [runtime/runtime ctx
                     web/current-session (constantly session)
-                    web/current-session? #(= session %)]
+                    web/current-session? #(= session %)
+                    connection/snapshot (constantly {:socket :fixture})
+                    sync/ensure! (fn [& _]) sync/retry! (fn [& _])
+                    remote/prepare-workflow-metadata-stream!
+                    (fn [& _] (fn [ok _] (ok {:watching? true})))]
         (binding [ec/*execution-context* ctx]
           (reset! sig/schedules-data nil)
-          (f (schedules/controller) ctx)))
+          (reset! sig/user-rooms nil)
+          (reset! sync/state nil)
+          (let [ui (schedules/controller)]
+            ;; Model the render pass which consumes the changed signal; no
+            ;; real network or timers are needed for this controller fixture.
+            (f (assoc ui :refresh #(do ((:refresh ui)) ((:observe ui)))
+                      :toggle #(do ((:toggle ui) %) ((:observe ui)))) ctx))))
       (finally (context/close-context! ctx)))))
 
 (deftest older-deployments-may-be-paused-but-not-resumed
@@ -56,6 +68,7 @@
           (is (= 2 (count @loads)))
           (binding [ec/*execution-context* nil]
             ((:ok (first @toggles)) {:id "activation" :enabled? false}))
+          ((:observe ui))
           (is (nil? (:updating @sig/schedules-data)))
           (is (false? (get-in @sig/schedules-data [:workflow-schedules 0 :enabled?])))
           (is (= 3 (count @loads))))))))
@@ -83,7 +96,7 @@
       (with-redefs [chat/load-schedules! (fn [& _] (throw (js/Error. "offline")))
                     remote/set-workflow-schedule-enabled! (fn [& _] (throw (js/Error. "offline")))]
         ((:refresh ui))
-        (is (false? (:loading? @sig/schedules-data)))
+        (is (nil? (get-in @sig/schedules-data [:observations :index :active])))
         (is (string? (:error @sig/schedules-data)))
         ((:toggle ui) row)
         (is (nil? (:updating @sig/schedules-data)))

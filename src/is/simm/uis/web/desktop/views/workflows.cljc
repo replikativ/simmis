@@ -2,8 +2,14 @@
   "Room-native source editing and explicit bounded admission."
   (:require [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.workflow-editor :as editor]
+            #?(:cljs [is.simm.uis.web.desktop.workflow-actions :as actions])
+            #?(:cljs [is.simm.uis.web.desktop.memory-sync :as sync])
+            #?(:cljs [is.simm.uis.web.desktop.signals :as sig])
+            #?(:cljs [org.replikativ.spindel.effects.track :refer [track]])
+            #?(:cljs [org.replikativ.spindel.incremental.interval :as iv])
             #?(:cljs [is.simm.uis.web.desktop.source-editor :as source-editor])
-            [clojure.string :as str]))
+            [clojure.string :as str])
+  #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 
 (defn- field [label value change]
   (el/label {:key label :class "workflow-field"}
@@ -30,17 +36,16 @@
     (el/div {:class "workflow-panel"}
             (el/div {:class "workflow-toolbar"}
                     (el/h2 {} (str room-name " · Workflows"))
-                    (el/button {:on-click (fn [_] ((:refresh actions))) :disabled (:list loading)} "Refresh"))
-     (el/p {:class "workflow-note"} "A workflow is a reusable task saved in this room. Each Run executes it separately and produces results or a proposal to review. Ordinary chat does not require a workflow.")
-     (el/p {:class "workflow-note"} "This is the source editor: instructions and inputs are versioned room files. The optional checker is for benchmarking; inspecting source never executes it.")
+                    (when (seq (:errors state))
+                      (el/button {:on-click (fn [_] ((:refresh actions))) :disabled (:list loading)} "Retry updates")))
+            (el/p {:class "workflow-note"} "A workflow is a reusable task saved in this room. Each Run executes it separately and produces results or a proposal to review. Ordinary chat does not require a workflow.")
+            (el/p {:class "workflow-note"} "This is the source editor: instructions and inputs are versioned room files. The optional checker is for benchmarking; inspecting source never executes it.")
             (for [[slot error] (:errors state)]
               (el/div {:key (pr-str slot) :class "proposal-error" :role "alert"}
                       (str (when (vector? slot) (str (second slot) ": ")) error)))
             (el/div {:class "workflow-layout"}
                     (el/div {:class "workflow-list"}
-                            (when-not (:list state)
-                              (el/button {:on-click (fn [_] ((:refresh actions))) :disabled (:list loading)}
-                                         (if (:list loading) "Loading…" "Load workflows")))
+                            (when-not (:list state) (el/p {} "Loading workflows…"))
                             (for [name (sort (set (concat (get-in state [:list :names]) (keys (:drafts state)))))]
                               (el/button {:key name :class (when (= name selected) "workflow-selected")
                                           :on-click (fn [_] ((:select actions) name))} name))
@@ -59,6 +64,11 @@
                                       (el/h3 {} selected)
                                       (el/div {:class "workflow-toolbar"}
                                               (el/span {} (if (editor/dirty? draft) "Unsaved changes" "Saved source"))
+                                              (when-not (editor/source-current? draft)
+                                                (el/span {:role "status"}
+                                                         (if (:incoming-source draft)
+                                                           "Saved source changed. Your draft is preserved; reconcile before launching."
+                                                           "Verifying saved source…")))
                                               (el/button {:disabled (or (not write?) (:save loading) (not (editor/dirty? draft)))
                                                           :on-click (fn [_] ((:save actions) selected))}
                                                          (if (:save loading) "Saving…" "Save and inspect"))
@@ -164,33 +174,45 @@
                                                 (when benchmark?
                                                   (el/div {}
                                                           (el/p {:class "workflow-note"} "Operator-only: executes the saved checker, uses saved parameter defaults, and discards candidate worlds. Save parameter changes in workflow.edn before benchmarking.")
-                                                          (field "Repetitions (1–2; maximum8 cells total)" (:repetitions form) #(set-form :repetitions %))))
+                                                          (field "Independent trials per case (1–2; at most 8 total)" (:repetitions form) #(set-form :repetitions %))
+                                                          (el/p {:class "workflow-note"} "Benchmark repetitions compare independent executions. They are not an agent's reasoning iterations.")))
+                                                (el/h4 {} "Resources")
                                                 (for [[key label] (cond
-                                                                   cli? [[:cli-runs "Allowance · single-use CLI Runs (1–8)"]
-                                                                         [:max-model-steps "Model steps per cell (1–32)"]
-                                                                         [:timeout-ms "Wall time per cell · milliseconds (1000–600000)"]]
-                                                                   local?
-                                                                   [[:worker-admissions "Allowance · local admissions (1–32)"]
-                                                                    [:timeout-ms "Wall time · milliseconds (1000–600000)"]]
-                                                                   :else [[:budget-microdollars "Budget · microdollars (1–5000000)"]
-                                                                   [:max-dispatches "Model HTTP dispatches (1–32)"]
-                                                                   [:max-model-steps "Model steps (1–32)"]
-                                                                    [:timeout-ms "Wall time · milliseconds (1000–600000)"]])]
+                                                                    cli? [[:cli-runs "Allowance · single-use CLI Runs (1–8)"]]
+                                                                    local? [[:worker-admissions "Allowance · local admissions (1–32)"]]
+                                                                    :else [[:budget-microdollars "Spend ceiling · microdollars (1–5000000)"]])]
                                                   (field label (get form key) #(set-form key %)))
+                                                (when (and (not cli?) (not local?))
+                                                  (el/p {:class "workflow-note"} "1,000,000 microdollars = $1. This caps requested spend; it is not a charge. Provisioning allowance is a separate, explicit action."))
+                                                (el/div {:class "workflow-execution-limits"}
+                                                        (el/button {:type "button" :aria-expanded (str (boolean (:show-execution-limits? draft)))
+                                                                    :on-click (fn [_] (change update :show-execution-limits? not))}
+                                                                   (str (if (:show-execution-limits? draft) "▾ " "▸ ") "Advanced execution ceilings"))
+                                                        (when (:show-execution-limits? draft)
+                                                          (el/div {}
+                                                                  (el/p {:class "workflow-note"} "Upper bounds, not a prescribed number of agents or reasoning iterations. The harness may finish earlier; these limits do not allocate a fixed agent team.")
+                                                                  (for [[key label] (cond
+                                                                                      cli? [[:max-model-steps "Maximum model steps per trial (1–32)"]
+                                                                                            [:timeout-ms "Wall-time ceiling per trial · milliseconds (1000–600000)"]]
+                                                                                      local? [[:timeout-ms "Wall-time ceiling · milliseconds (1000–600000)"]]
+                                                                                      :else [[:max-dispatches "Model-request allowance (1–32)"]
+                                                                                             [:max-model-steps "Maximum model steps (1–32)"]
+                                                                                             [:timeout-ms "Wall-time ceiling · milliseconds (1000–600000)"]])]
+                                                                    (field label (get form key) #(set-form key %))))))
                                                 (when-not benchmark?
                                                   (el/label {:class "workflow-field"}
-                                                            (el/span {} "Settlement")
+                                                            (el/span {} "Results")
                                                             (el/select {:value (:settlement form)
                                                                         :on-change (fn [e] (set-form :settlement #?(:cljs (.. e -target -value) :clj "review")))}
                                                                        (el/option {:value "review"} "Retain for review — no automatic merge")
                                                                        (el/option {:value "discard"} "Capture output and discard work"))))
                                                 (el/p {:class "workflow-note"}
                                                       (cond cli? "Experimental, operator-enabled backend. Dvergr owns the SCI tool loop; Claude Code provides text inference only. One funded admission per cell; finite steps/time, no compaction, resume or automatic retry. Not an internal HTTP-request or dollar cap. Server crashes leave requests pending for manual reconciliation."
-                                                        local?
-                                                        "Local Runs receive pinned workflow inputs only; benchmarks receive clean fixtures without checker/gold. One admission per cell. Run the local driver per queued cell and check Job completion; an empty queue is not completion. Nothing auto-merges or auto-funds."
-                                                        :else "Ordinary Runs inherit room files. Frozen source and input changes appear in the proposed diff. Completion does not prove correctness. Allowance is never provisioned automatically."))
+                                                            local?
+                                                            "Local Runs receive pinned workflow inputs only; benchmarks receive clean fixtures without checker/gold. One admission per cell. Run the local driver per queued cell and check Job completion; an empty queue is not completion. Nothing auto-merges or auto-funds."
+                                                            :else "Ordinary Runs inherit room files. Frozen source and input changes appear in the proposed diff. Completion does not prove correctness. Allowance is never provisioned automatically."))
                                                 (el/div {:class "workflow-toolbar"}
-                                                        (el/button {:disabled (or (:submit loading) uncertain? (editor/dirty? draft) (not (get-in source [:inspection :ok])))
+                                                        (el/button {:disabled (or (:submit loading) uncertain? (editor/dirty? draft) (not (editor/source-current? draft)) (not (get-in source [:inspection :ok])))
                                                                     :on-click (fn [_] ((:submit actions) selected false))} "Confirm and submit")
                                                         (when submission
                                                           (el/button {:disabled (:submit loading) :on-click (fn [_] ((:submit actions) selected true))}
@@ -211,10 +233,10 @@
                                                           (field "Interval · minutes (1–525600)" (:schedule-minutes form) #(set-form :schedule-minutes %))
                                                           (field "Timezone (e.g. Europe/Berlin)" (:schedule-tz form) #(set-form :schedule-tz %))
                                                           (el/p {:class "workflow-note"} "Pins saved source and the execution settings above. Uses the shared room allowance; no automatic funding or merging. Overlapping work is skipped. Manage activations and inspect occurrences in Schedules.")
-                                                          (el/button {:disabled (or (:schedule loading) (editor/dirty? draft)
-                                                                                  (not (get-in source [:inspection :ok]))
-                                                                                  (and (:schedule-submission draft)
-                                                                                       (nil? (get-in draft [:schedule-submission :reply]))))
+                                                          (el/button {:disabled (or (:schedule loading) (editor/dirty? draft) (not (editor/source-current? draft))
+                                                                                    (not (get-in source [:inspection :ok]))
+                                                                                    (and (:schedule-submission draft)
+                                                                                         (nil? (get-in draft [:schedule-submission :reply]))))
                                                                       :on-click (fn [_] ((:schedule actions) selected false))}
                                                                      "Confirm and activate schedule…")
                                                           (when (:schedule-submission draft)
@@ -232,3 +254,25 @@
                                                           (when-let [job (:job reply)]
                                                             (el/button {:on-click (fn [_] ((:open-run actions) job))} "Open Run and results"))))
                                                 (when funded-here? (el/p {} "Execution allowance provisioned for this backend. This is not a payment or evidence of correctness.")))))))))))
+
+#?(:cljs
+   (defn render-workflows [room-data]
+     (spin
+        ;; All tracks precede interval consumption; resumes cannot skip a
+        ;; dependency or reconsume a preceding incremental delta.
+      (let [states-i (track sig/workflow-editor-state)
+            socket-i (track sig/memory-connection)
+            stream-i (track sync/state)
+            roster-i (track sig/user-rooms)
+            states (iv/get-new states-i)
+            _socket (iv/get-new socket-i)
+            _stream (iv/get-new stream-i)
+            _roster (iv/get-new roster-i)
+            controller (actions/controller room-data)
+            state (get states (actions/state-key (:room-id room-data)))]
+        ((:observe controller))
+        (if (:access-denied? state)
+          (el/p {:role "status"} "This room is no longer available to this account.")
+          (view (or (:room-name room-data) "Room")
+                (cond-> state (sync/problem _stream) (assoc-in [:errors :stream] (sync/problem _stream)))
+                controller))))))

@@ -295,6 +295,32 @@ fresh-admission readiness; only normal absence may enter new admission. Saves
 project their original sealed acknowledgement, never a subsequent source read.
 Application startup enables the owned dispatcher, but does not install or
 enable default maintenance workflows.
+The workflow editor's pure reconciliation model advances clean source snapshots
+without resetting explicit form choices or admission ledgers. Dirty drafts keep
+their original base and expose incoming changes; known-stale source cannot
+start fresh work. Observation frames are immutable data scoped to the socket
+and owning execution world, not shared native futures or mutable UI gates.
+Workflow and Schedules views reconcile automatically from the private Memory
+hint stream. A watched room receives room-only source/control invalidations;
+the global dashboard registers a separate party interest in the SAME notifier
+without opening room repositories. Its content-free schedule-index hint rechecks
+the current human identity before publication. Neither stream carries a raw
+control database, claims, wallets, files or read authority. Authorized bounded
+RPC snapshots remain the projections' source of truth; this is not a replicated
+control database. Initial observation and subscription-readiness catch-up close
+the registration race, and new socket epochs force reconciliation. In-flight
+reads coalesce later invalidations without timers; callbacks recheck current
+dependencies even before the render resumes. Normal refresh controls are
+replaced by explicit error retry. Controllers are constructed inside the
+render Spin, binding native callbacks to that rendering world; they are not
+transferable callback handles for an arbitrary ambient fork. Copied worlds
+replace inherited fetch frames rather than awaiting a parent's native reply.
+A rejected observation acknowledges its slot without completing an unpublished
+generation. A save's own durable hint may arrive before its sealed ACK: the
+ACK advances only its original target-bound base and sent bytes, preserving
+subsequent typing and never rolling back a newer observed base. A stale ACK
+does not restore permission or verify the current default; a new authorized
+snapshot reconciles it before fresh execution.
 Separately, an
 exact-revision offline benchmark reuses Dvergr's experiment runner and room
 Attempts/Scorecards; it requires both installation-operator and room merge
