@@ -181,7 +181,7 @@ checks identity/ownership, patches one scalar and validates the whole prospectiv
 selection through `validate-replacement`. It returns source for the existing
 writer, never transaction data, a saved receipt or permission. The host must
 still publish with that same fresh snapshot's atomic writer precondition and
-current authorization. This API is not yet wired into Memory UI controls.
+current authorization.
 
 Internal `ops.owned-files/properties!` and `property-save!` compose that model
 with current room read/write permissions and the same owned-default target
@@ -191,7 +191,26 @@ captures that DB's Dvergr validation precondition and passes it through the
 existing file writer, with current authorization checked again at the native
 effect gates. Source/schema races refuse or remain explicitly uncertain; the
 original target stamp accompanies a successful canonical receipt. These host
-operations do not add an RPC/MCP surface or activate typed UI controls.
+operations also back authenticated `load-memory-properties!` and
+`save-memory-property!` Memory RPCs. The latter accepts only a closed text or
+explicit-null input, decoded on the host against the actual trusted storage
+type. Long integers never roundtrip through JavaScript numbers; booleans,
+empty strings and null remain distinct. Numeric input is not an EDN reader or
+evaluation surface. The receipt includes the exact prepared source and its
+precomputed analysis, avoiding a fallible post-publication read.
+
+The Markdown editor's Show properties action opens scalar page controls from
+that safe inspection model. Controls use exact host-rendered text, never raw
+browser numeric values. Per-field drafts live in the existing context-backed
+Memory signal. Schema/source observations refresh models but retain entered
+values with their original scope/source stamps; stale drafts require explicit
+discard, not automatic rebinding. Removed fields remain visible for copying.
+Property saves and file moves exclude each other, and typing or newer incoming
+file changes observed during publication survive its receipt. Unsaved source
+drafts must be resolved before applying a property. Legacy/provisional
+workspaces explicitly report unavailability rather than pretending to be
+canonical spaces. New typed-space creation, type selection, structured edits
+and MCP property commands are not activated by these controls.
 
 ## Existing KB vocabulary
 

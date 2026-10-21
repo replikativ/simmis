@@ -82,6 +82,12 @@
          {:id id :name (:entity/name m) :label (or alias (last (str/split (:entity/name m) #"/")))
           :declaring-type (get-in m [:morphism/src :entity/uuid]) :alias alias
           :value (if generated? (:path file) (when alias (get values alias)))
+          ;; Exact text for controls: serializing a Long to a browser number
+          ;; before filling an input would already lose precision.
+          :input (let [value (if generated? (:path file) (when alias (get values alias)))]
+                   (if (nil? value) {:null true}
+                       {:text (if (instance? java.util.Date value)
+                                (str (.toInstant ^java.util.Date value)) (str value))}))
           :present? (boolean (or generated? (and alias (contains? values alias))))
           :required? (false? (:morphism/optional? m)) :cardinality (:cardinality binding)
           :value-type (get-in binding [:schema :db/valueType]) :render-hint (:morphism/property-type m)
@@ -99,15 +105,40 @@
      :fields (fields captured)
      :diagnostics (:diagnostics candidate)}))
 
-(defn prepare-edit-in
-  "Closed scalar edit preparation from ONE captured Save-time DB. Re-derive
-   all bindings from its source, compare exact file/source/scope stamps, patch
-   one existing scalar and validate the WHOLE prospective canonical selection.
-   Returns source for the EXISTING writer, never a tx/DB or saved receipt.
-   Host must publish with this SAME snapshot's validated-basis and fresh auth."
-  [db options {:keys [path target alias property expected revision scope-revision value] :as request}]
+(defn input-value
+  "Parse a closed UI input using a HOST-derived storage type. No EDN reader,
+   evaluation or JavaScript numeric roundtrip. Null is distinct from empty text.
+   This is decoding only, not schema validation or publication authority."
+  [value-type input]
+  (when-not (and (map? input)
+                 (or (= {:null true} input)
+                     (and (= #{:text} (set (keys input))) (string? (:text input))
+                          (<= (count (:text input)) (* 1024 1024)))))
+    (refuse! :invalid-property-input))
+  (when-not (= {:null true} input)
+    (let [text (:text input)]
+      (try
+        (case value-type
+          :db.type/string text
+          :db.type/boolean (case text "true" true "false" false (refuse! :invalid-property-input))
+          :db.type/long (if (re-matches #"[+-]?[0-9]+" text) (Long/parseLong text)
+                           (refuse! :invalid-property-input))
+          :db.type/double (if (re-matches #"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?" text)
+                           (let [value (Double/parseDouble text)]
+                             (when-not (Double/isFinite value) (refuse! :invalid-property-input))
+                             value)
+                           (refuse! :invalid-property-input))
+          (:db.type/uuid :db.type/ref)
+          (if (= text (str (java.util.UUID/fromString text))) text (refuse! :invalid-property-input))
+          :db.type/instant (do (java.util.Date/from (java.time.Instant/parse text)) text)
+          (refuse! :unsupported-value-type))
+        (catch IllegalArgumentException _ (refuse! :invalid-property-input))
+        (catch java.time.DateTimeException _ (refuse! :invalid-property-input))))))
+
+(defn- prepare-in
+  [db options payload {:keys [path target alias property expected revision scope-revision] :as request}]
   (when-not (and (map? request)
-                 (= #{:path :target :alias :property :expected :revision :scope-revision :value}
+                 (= (conj #{:path :target :alias :property :expected :revision :scope-revision} payload)
                     (set (keys request)))
                  (string? alias) (uuid? property) (uuid? revision) (uuid? scope-revision))
     (refuse! :invalid-edit))
@@ -120,9 +151,24 @@
       (refuse! :property-binding-changed))
     (when (= property (:title-property canonical/profile)) (refuse! :generated-property))
     (when-let [reason (restriction binding alias values)] (refuse! reason))
-    (let [patched (property-source/replace-scalar (:text file) revision (conj values-path alias) value)
+    (let [value (if (= :input payload) (input-value (get-in binding [:schema :db/valueType]) (:input request))
+                    (:value request))
+          patched (property-source/replace-scalar (:text file) revision (conj values-path alias) value)
           preview (view/validate-replacement db options {:path path :expected expected :source (:source patched)})]
       (when-not (= :valid (:status preview))
         (throw (ex-info "Property edit violates the prospective knowledge selection"
                         {:type ::refused :reason :invalid-selection :diagnostics (:diagnostics preview)})))
       {:path path :expected expected :text (:source patched)})))
+
+(defn prepare-edit-in
+  "Prepare one typed scalar from ONE Save-time DB. Re-derive source bindings,
+   verify source/scope stamps and validate the whole prospective selection.
+   Host must publish using this SAME snapshot's validated-basis and fresh auth."
+  [db options request]
+  (prepare-in db options :value request))
+
+(defn prepare-input-in
+  "UI equivalent of prepare-edit-in. Decode :input only AFTER re-deriving its
+   actual trusted binding; never accept a client value type or EDN program."
+  [db options request]
+  (prepare-in db options :input request))

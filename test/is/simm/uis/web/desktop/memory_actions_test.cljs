@@ -169,6 +169,7 @@
                     remote/load-memory-history! (deferred :history) remote/load-memory-history-file! (deferred :history-file)
                     remote/download-memory-file! (deferred :download) remote/load-memory-office-part! (deferred :office)
                     remote/save-memory-file! (deferred :save) remote/save-memory-rich-file! (deferred :rich-save)
+                    remote/load-memory-properties! (deferred :properties) remote/save-memory-property! (deferred :property-save)
                     remote/evaluate-memory-repl! (deferred :repl)
                     remote/save-memory-office-part! (deferred :office-save) remote/move-memory-file! (deferred :move)]
         (let [a (actions/controller data) state #(get @states (:owner a))
@@ -486,3 +487,98 @@
       (swap! states assoc-in [(:owner a) :sandbox-permissions :evaluate?] false)
       ((:repl-evaluate a) :clojure)
       (is (= 1 (count (:repl @calls))) "Known denial stays disabled; server checks actual attempts"))))
+
+(deftest property-controls-send-exact-text-and-retain-newer-input-after-publication
+  (with-client
+    (fn [{:keys [a states state stamp file seed! last-call calls]}]
+      (seed!)
+      (let [target {:kind :page} scope ["x.clj" target] id (random-uuid)
+            field {:id id :alias "revenue" :editable? true
+                   :value 9007199254740992 :input {:text "9007199254740993"}}
+            model (wire stamp {:path "x.clj" :target target :expected (:entry file)
+                               :revision (random-uuid) :scope-revision (random-uuid) :fields [field]})]
+        ((:open-properties a) "x.clj" target)
+        ((:ok (last-call :properties)) model)
+        ((:property-input a) "x.clj" target field (:input field))
+        ((:property-save a) "x.clj" target field)
+        (is (= {:text "9007199254740993"} (get-in (last-call :property-save) [:request :input])))
+        (is (nil? (get-in (last-call :property-save) [:request :value])))
+        ((:property-input a) "x.clj" target field {:text "9007199254740995"})
+        (swap! states update-in [(:owner a) :drafts "x.clj"] editor/changed "Typing while saving" {:anchor 3 :head 3})
+        (let [reply (wire stamp {:entry {:content :new} :text "Property published" :analysis {}})
+              saved (last-call :property-save)]
+          ((:ok saved) reply)
+          (is (= "Typing while saving" (get-in (state) [:drafts "x.clj" :text])))
+          (is (= (:entry file) (get-in (state) [:drafts "x.clj" :source :entry])))
+          (is (= "Property published" (get-in (state) [:drafts "x.clj" :incoming :text])))
+          (is (= {:text "9007199254740995"} (get-in (state) [:property-drafts scope id :input])))
+          (let [before (state) requests (count (:metadata @calls))]
+            ((:ok saved) reply)
+            (is (= before (state)))
+            (is (= requests (count (:metadata @calls))))))))))
+
+(deftest definition-observation-refreshes-model-without-rebasing-entered-property-drafts
+  (with-client
+    (fn [{:keys [a states state stamp file seed! last-call metadata!]}]
+      (seed!)
+      (let [target {:kind :page} scope ["x.clj" target] id (random-uuid)
+            field {:id id :alias "revenue" :editable? true :input {:text "0"}}
+            model (wire stamp {:path "x.clj" :target target :expected (:entry file)
+                               :revision (random-uuid) :scope-revision (random-uuid) :fields [field]})]
+        ((:open-properties a) "x.clj" target)
+        ((:ok (last-call :properties)) model)
+        ((:property-input a) "x.clj" target field {:text "42"})
+        (let [original (get-in (state) [:property-drafts scope id])]
+          (metadata! stamp)
+          ((:ensure-properties a))
+          ((:ok (last-call :properties)) (assoc model :scope-revision (random-uuid)))
+          (is (= original (get-in (state) [:property-drafts scope id])))
+          (is (not (editor/property-draft-current? (get-in (state) [:property-models scope]) original)))
+          ((:property-input a) "x.clj" target field {:text "43"})
+          (is (= (:baseline original) (get-in (state) [:property-drafts scope id :baseline])))
+          ((:property-save a) "x.clj" target field)
+          (is (nil? (last-call :property-save)))
+          ((:property-discard a) "x.clj" target id)
+          (is (nil? (get-in (state) [:property-drafts scope id]))))))))
+
+(deftest moves-and-property-saves-exclude-each-other-and-late-acks-cannot-resurrect-drafts
+  (doseq [move-first? [true false]]
+    (with-client
+      (fn [{:keys [a states state stamp file seed! last-call calls]}]
+        (seed!)
+        (let [target {:kind :page} field {:id (random-uuid) :alias "revenue" :editable? true :input {:text "0"}}
+              model (wire stamp {:path "x.clj" :target target :expected (:entry file)
+                                 :revision (random-uuid) :scope-revision (random-uuid) :fields [field]})]
+          ((:open-properties a) "x.clj" target)
+          ((:ok (last-call :properties)) model)
+          (when-not move-first? ((:property-input a) "x.clj" target field {:text "42"}))
+          (if move-first?
+            (do ((:move a) "x.clj" "moved.clj")
+                ((:property-save a) "x.clj" target field)
+                (is (= 1 (count (:move @calls))))
+                (is (empty? (:property-save @calls))))
+            (do ((:property-save a) "x.clj" target field)
+                ((:move a) "x.clj" "moved.clj")
+                (is (= 1 (count (:property-save @calls))))
+                (is (empty? (:move @calls)))
+                (swap! states update-in [(:owner a) :drafts] dissoc "x.clj")
+                ((:ok (last-call :property-save)) (wire stamp {:entry {:content :new} :text "Property saved" :analysis {}}))
+                (is (not (contains? (:drafts (state)) "x.clj"))))))))))
+
+(deftest unapplied-property-drafts-refuse-move-instead-of-becoming-hidden
+  (with-client
+    (fn [{:keys [a state seed! last-call stamp file calls]}]
+      (seed!)
+      (let [target {:kind :page} field {:id (random-uuid) :alias "revenue" :editable? true :input {:text "0"}}
+            model (wire stamp {:path "x.clj" :target target :expected (:entry file)
+                               :revision (random-uuid) :scope-revision (random-uuid) :fields [field]})]
+        ((:open-properties a) "x.clj" target)
+        ((:ok (last-call :properties)) model)
+        ((:property-input a) "x.clj" target field {:text "42"})
+        ((:move a) "x.clj" "moved.clj")
+        (is (empty? (:move @calls)))
+        (is (= "x.clj" (:selected (state))))
+        (is (editor/property-drafts? (state) "x.clj"))
+        ((:property-discard a) "x.clj" target (:id field))
+        ((:move a) "x.clj" "moved.clj")
+        (is (= 1 (count (:move @calls))))))))

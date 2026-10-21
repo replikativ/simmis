@@ -181,6 +181,23 @@
 
 (defn property-entries [properties] (sort-by (comp pr-str key) properties))
 
+(defn property-baseline [model]
+  (select-keys model [:path :target :expected :revision :scope-revision :target-stamp]))
+
+(defn property-input
+  "Use exact host-rendered text, never stringify a browser numeric value."
+  [model field draft]
+  (if draft (:input draft) (:input field)))
+
+(defn property-draft [model input]
+  {:baseline (property-baseline model) :input input})
+
+(defn property-draft-current? [model draft]
+  (or (nil? draft) (= (property-baseline model) (:baseline draft))))
+
+(defn property-drafts? [state path]
+  (boolean (some (fn [[[p _] drafts]] (and (= p path) (seq drafts))) (:property-drafts state))))
+
 (defn changed [d text selection]
   (cond-> (assoc d :text text :selection selection)
     (not= text (:text d)) (dissoc :rich-base)
@@ -226,6 +243,26 @@
 (defn saved-at-generation [d generation sent reply]
   (if (and (= generation (:generation d)) (same-target? (:source d) reply)) (saved d sent reply)
       (assoc d :earlier-save-receipt reply)))
+
+(defn property-saved
+  "Update the baseline while retaining typing made during a property write.
+   Never replace a newer file generation."
+  [draft generation reply]
+  (cond
+    (nil? draft) nil
+    (and (= generation (:generation draft)) (same-target? (:source draft) reply))
+    (if (dirty? draft)
+      ;; Do not rebase concurrent typing onto the newer saved descriptor: a
+      ;; later ordinary save would silently overwrite the property change.
+      (assoc (if (or (:incoming draft) (contains? draft :incoming-entry) (:remote-deleted? draft)) draft
+                 (loaded draft (assoc (:source draft) :entry (:entry reply) :text (:text reply)
+                                      :analysis (:analysis reply)))) :property-save-receipt reply)
+      (-> (saved draft (:text reply) reply)
+          (assoc :text (:text reply) :analysis (:analysis reply) :analysis-text (:text reply))
+          (dissoc :rich-base)
+          (cond-> (and (= (:entry reply) (:incoming-entry draft)) (not (:remote-deleted? draft)))
+            (dissoc :incoming-entry))))
+    :else (assoc draft :earlier-save-receipt reply)))
 
 (defn response-current? [state slot token]
   (= token (get-in state [:requests slot])))

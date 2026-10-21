@@ -102,25 +102,44 @@
     (assoc result :target-stamp (:target-stamp binding))))
 
 (defn properties!
-  "INTERNAL authenticated-host inspector, no new transport or definition authority."
+  "Authenticated-host inspector; unavailable legacy/provisional spaces stay
+   readable without falsely exposing canonical typed editing."
   [conn principal room-id room request]
   (project! conn principal room-id room request #{:path :target} true
-            #(property-model/inspect-in % (:path request) (:target request))))
+            #(try (property-model/inspect-in % (:path request) (:target request))
+                  (catch clojure.lang.ExceptionInfo error
+                    (if (and (= :is.simm.documents.property-model/refused (:type (ex-data error)))
+                             (#{:unprovisioned-canonical-space :invalid-or-provisional-document} (:reason (ex-data error))))
+                      {:path (:path request) :target (:target request)
+                       :status :unavailable :reason (:reason (ex-data error))}
+                      (throw error))))))
 
-(defn property-save!
-  "INTERNAL source-property save using ONE fresh owned binding and its exact
-   schema-validation basis. All field declarations are re-derived by the host.
-   No client callback, schema, selection policy or basis is accepted."
-  [conn principal room-id room request]
-  (closed! request #{:path :target :alias :property :expected :revision :scope-revision :value} true)
+(defn- save-property! [conn principal room-id room payload request]
+  (closed! request (conj #{:path :target :alias :property :expected :revision :scope-revision} payload) true)
   (let [binding (binding! conn principal :write room-id room request true)
         source-db (:db binding)
-        prepared (property-model/prepare-edit-in source-db
-                                                {:roots [""] :schema-revision :source-property-model-v1
-                                                 :entity-profile space/profile}
-                                                (dissoc request :expected-target-stamp))
+        prepare (if (= :input payload) property-model/prepare-input-in property-model/prepare-edit-in)
+        prepared (prepare source-db {:roots [""] :schema-revision :source-property-model-v1
+                                     :entity-profile space/profile}
+                          (dissoc request :expected-target-stamp))
+        ;; Compute before physical publication: a fallible post-commit read or
+        ;; analysis must not turn a successful write into an apparent failure.
+        analysis (files/analyze (get-in binding [:target :repository]) (:path prepared) (:text prepared))
         basis (file-tx/capture-basis source-db)]
-    (save-bound! conn principal room-id room binding prepared {:validated-basis basis})))
+    (assoc (save-bound! conn principal room-id room binding prepared {:validated-basis basis})
+           :text (:text prepared) :analysis analysis)))
+
+(defn property-save!
+  "Host typed-scalar save using one fresh owned DB and its atomic validation
+   basis. No client schema, selection policy or writer basis is accepted."
+  [conn principal room-id room request]
+  (save-property! conn principal room-id room :value request))
+
+(defn property-input-save!
+  "Authenticated UI scalar save; text is decoded against the actual trusted
+   storage type on the host, not a client type hint or JavaScript number."
+  [conn principal room-id room request]
+  (save-property! conn principal room-id room :input request))
 
 (defn office-save!
   "Prepare and publish with ONE original binding, never a second target lookup."

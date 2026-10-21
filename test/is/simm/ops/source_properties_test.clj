@@ -9,10 +9,14 @@
             [is.simm.documents.files :as files]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.space :as space]
+            [is.simm.agents.room-agents :as rooms]
+            [is.simm.authority.world :as world]
             [is.simm.model.access :as access]
             [is.simm.model.crud :as crud]
             [is.simm.ops.owned-files :as actions]
             [is.simm.ops.owned-workspace-test :as fixture]
+            [is.simm.runtimes.context :as context]
+            [is.simm.uis.web.desktop.memory-remote]
             [kontor.governance :as governance]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.yggdrasil :as ygg]
@@ -65,6 +69,43 @@
   (dissoc (edit model property value) :target-stamp))
 
 (defn- failure [f] (try (f) nil (catch Throwable error error)))
+
+(deftest actual-inbound-property-input-preserves-long-precision-and-source
+  (with-canonical-fixture true
+    (fn [{:keys [conn w room owned attached]}]
+      (let [{:keys [text property]} (seed-source! owned)
+            other @attached]
+        (with-redefs [context/server-context (:ctx room) rooms/live-room (fn [id] (when (= id (:room w)) room))]
+          (let [call (fn [kind name request]
+                       (world/inbound! (world/principal w kind) name
+                                       {:room-id-str (str (:room w)) :request request}))
+                opened (:result (call :member "load-memory-properties!"
+                                      {:path "wiki/file.md" :target {:kind :page}
+                                       :expected-target-stamp (:target-stamp (model conn w room))}))
+                command (-> (request opened property nil) (dissoc :value)
+                            (assoc :input {:text "9007199254740993"}))]
+            (is (= 0 (:value (first (filter #(= property (:id %)) (:fields opened))))))
+            (doseq [kind [:non-member :admin :anon]]
+              (is (world/refused? (call kind "save-memory-property!" command))))
+            (doseq [extra [{:value 1} {:value-type :db.type/string} {:validated-basis {}}]]
+              (is (:error (call :member "save-memory-property!" (merge command extra)))))
+            (is (:error (call :member "save-memory-property!" (assoc command :input {:text "1.5"}))))
+            (is (= text (:text (files/read-file-in @owned "wiki/file.md"))))
+            (let [saved (:result (call :member "save-memory-property!" command))]
+              (is (:saved? saved))
+              (is (= (:target-stamp opened) (:target-stamp saved)))
+              (is (= (.replace text "revenue: 0" "revenue: 9007199254740993") (:text saved)))
+              (is (= (:text saved) (:text (files/read-file-in @owned "wiki/file.md"))))
+              (is (= :explicit (:identity-status (:analysis saved))))
+              (let [reopened (:result (call :member "load-memory-properties!"
+                                          {:path "wiki/file.md" :target {:kind :page}
+                                           :expected-target-stamp (:target-stamp opened)}))
+                    input (:input (first (filter #(= property (:id %)) (:fields reopened))))
+                    unchanged (-> (request reopened property nil) (dissoc :value) (assoc :input input))]
+                (is (= {:text "9007199254740993"} input))
+                (is (= (:text saved) (get-in (call :member "save-memory-property!" unchanged) [:result :text])))))
+            (is (:error (call :member "save-memory-property!" command)))
+            (is (= other @attached))))))))
 
 (deftest property-saves-use-real-owned-target-and-fresh-atomic-validation
   (doseq [owned-first? [true false]]

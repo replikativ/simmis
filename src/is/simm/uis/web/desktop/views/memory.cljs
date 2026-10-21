@@ -197,6 +197,88 @@
                                                                      :selection (editor/source-selection draft (:from slot) (:to slot))))}
                                            "Open in Source")))))))))))
 
+(defn- retained-properties-view [path state a]
+  (let [orphaned (for [[[p target :as scope] drafts] (:property-drafts state)
+                       :when (= path p)
+                       [id pd] drafts
+                       :let [model (get-in state [:property-models scope])
+                             field (first (filter #(= id (:id %)) (:fields model)))]
+                       :when (or (= :unavailable (:status model)) (nil? field)
+                                 (not= target (get-in state [:property-targets path]))
+                                 (not= (:alias pd) (:alias field)))]
+                   [target id pd])]
+    (when (seq orphaned)
+      (el/div {:class "memory-conflict" :aria-label "Retained property drafts"}
+              (el/h3 {} "Retained field drafts")
+              (el/p {:class "memory-note"} "These fields are no longer available in this view. Their original values are retained for copying; they are never transferred to a different property automatically.")
+              (for [[target id pd] orphaned]
+                (el/div {:key (pr-str [target id])}
+                        (el/label {} (or (:label pd) (:alias pd) (str id))
+                                  (el/textarea {:read-only true :aria-label (str "Retained field " id)
+                                                :value (if (get-in pd [:input :null]) "null (not set)" (get-in pd [:input :text]))}))
+                        (el/button {:on-click (fn [_] ((:property-discard a) path target id))} "Discard retained field draft")))))))
+
+(defn- properties-view [path draft state a write?]
+  (let [target (get-in state [:property-targets path]) scope [path target]
+        model (get-in state [:property-models scope])
+        current? (and model ((:property-current? a) path target model))
+        busy? (or (get-in state [:loading [:property-save path]]) (get-in state [:loading [:save path]]))
+        editable? (and write? current? (not busy?) (not (editor/dirty? draft))
+                       (= (:expected model) (get-in draft [:source :entry])))]
+    (el/div {:class "memory-properties" :aria-label "Typed document properties"}
+            (if-not target
+              (el/button {:on-click (fn [_] ((:open-properties a) path {:kind :page}))} "Show properties")
+              (el/div {}
+                      (el/h3 {} "Properties")
+                      (cond
+                        (not current?) (el/p {:class "memory-note" :role "status"} "Checking saved properties…")
+                        (= :unavailable (:status model))
+                        (el/p {:class "memory-note"}
+                              (if (= :unprovisioned-canonical-space (:reason model))
+                                "Typed properties require a governed knowledge workspace. This existing workspace is unchanged; source metadata remains available below."
+                                "This file needs an explicit identity and valid Markdown declarations before typed properties can be edited."))
+                        :else
+                        (el/div {}
+                                (el/p {:class "memory-note"}
+                                      (str "Types: " (str/join ", " (map :name (:types model)))
+                                           ". Properties edit the saved Markdown source."))
+                                (when (editor/dirty? draft)
+                                  (el/p {:class "memory-note"} "Save or discard your file draft before applying property changes."))
+                                (for [field (:fields model)
+                                      :let [pd (get-in state [:property-drafts scope (:id field)])
+                                            input (editor/property-input model field pd)
+                                            stale? (not (editor/property-draft-current? model pd))
+                                            enabled? (and editable? (:editable? field) (not stale?))]]
+                                  (el/div {:key (str (:id field)) :class "memory-property-field"}
+                                          (el/label {} (str (:label field) (when (:required? field) " *"))
+                                                    (if (= :db.type/boolean (:value-type field))
+                                                      (el/select {:aria-label (:label field) :disabled (not enabled?)
+                                                                  :value (if (:null input) "null" (:text input))
+                                                                  :on-change (fn [event]
+                                                                               (let [value (.. event -target -value)]
+                                                                                 ((:property-input a) path target field
+                                                                                  (if (= value "null") {:null true} {:text value}))))}
+                                                                 (when-not (:required? field) (el/option {:value "null"} "Not set"))
+                                                                 (el/option {:value "true"} "True")
+                                                                 (el/option {:value "false"} "False"))
+                                                      (el/input {:type "text" :aria-label (:label field) :disabled (not enabled?)
+                                                                 :value (or (:text input) "")
+                                                                 :on-input (fn [event]
+                                                                             ((:property-input a) path target field {:text (.. event -target -value)}))})))
+                                          (when (:null input) (el/small {} "Not set"))
+                                          (when-not (:editable? field)
+                                            (el/small {} (str "Read-only · " (name (:reason field)))))
+                                          (when (and (:editable? field) (not (:required? field)))
+                                            (el/button {:disabled (not enabled?)
+                                                        :on-click (fn [_] ((:property-input a) path target field {:null true}))} "Clear"))
+                                          (when (:editable? field)
+                                            (el/button {:disabled (or (not enabled?) (nil? pd))
+                                                        :on-click (fn [_] ((:property-save a) path target field))} "Apply"))
+                                          (when stale?
+                                            (el/p {:class "memory-note" :role "status"} "Saved source or property definitions changed. Your entered value was retained; discard it before editing the current version."))
+                                          (when pd
+                                            (el/button {:on-click (fn [_] ((:property-discard a) path target (:id field)))} "Discard field draft")))))))))))
+
 (defn- view [data state a syntax-pref]
   (let [path (:selected state) draft (get-in state [:drafts path])
         verified? (actions/verified? state @sig/memory-connection)
@@ -267,6 +349,7 @@
                                               (el/span {} (if (editor/dirty? draft) "Unsaved draft" "Saved version"))
                                               (when text?
                                                 (el/button {:disabled (or (not write?) (get-in state [:loading [:save path]])
+                                                                          (get-in state [:loading [:property-save path]])
                                                                           (:remote-deleted? draft)
                                                                           (not (editor/dirty? draft)))
                                                             :on-click (fn [_] ((:save a) path))} "Save"))
@@ -278,7 +361,8 @@
                                                 (download/view [(:owner a) path] (last (str/split path #"/"))
                                                                (get-in state [:download :base64])))
                                               (when write?
-                                                (el/button {:disabled (editor/dirty? draft)
+                                                (el/button {:disabled (or (editor/dirty? draft) (editor/property-drafts? state path)
+                                                                          (get-in state [:loading [:property-save path]]))
                                                             :on-click (fn [_] (ask-path "Move file to" path #((:move a) path %)))} "Move")))
                                       (when (or (:incoming draft) (:incoming-entry draft))
                                         (el/div {:class "memory-conflict" :role "status"}
@@ -291,6 +375,8 @@
                                                             (el/p {:class "memory-note"} "The new revision has not loaded yet. Reload to retry if the read failed."))))))
                                       (when (:earlier-save-receipt draft)
                                         (el/p {:class "memory-note"} "An earlier draft's save completed after this version was selected. This draft was kept unchanged; check the saved version before another save."))
+                                      (when markdown? (properties-view path draft state a write?))
+                                      (retained-properties-view path state a)
                                       (when (and text? (not clojure?))
                                         (el/div {:class "memory-toolbar" :aria-label "Document views"}
                                                 (el/span {} "File view")
@@ -365,6 +451,7 @@
          a (actions/controller data) state (get states (:owner a))]
      ((:ensure-path a))
      ((:ensure-sync a) connection stream)
+     ((:ensure-properties a))
      (view data state a syntax-pref))))
 
 (defn render-context [data]

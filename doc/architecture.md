@@ -27,6 +27,13 @@ automatically installed by an uploaded file. Existing independent KBs
 and drive resources remain accessible while this file-backed surface is
 introduced; they are not silently migrated or deleted.
 
+Markdown's optional Properties panel derives scalar page fields from trusted
+definitions in an explicitly provisioned canonical workspace. Its context-owned
+drafts and model reads share Memory's target/socket/read-epoch fencing. Property
+saves patch source through the same native writer with an atomic fresh schema
+basis; they do not write disposable projection datoms. Existing unprovisioned
+workspaces remain readable and report that typed editing is unavailable.
+
 The experimental source-selected knowledge view derives semantic document/block
 rows from one immutable Geschichte snapshot without writing a second repository.
 Its default selection includes root and nested Markdown, with trusted exact folder

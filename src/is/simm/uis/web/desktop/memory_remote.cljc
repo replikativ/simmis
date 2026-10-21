@@ -36,7 +36,7 @@
      (context/with-server-context
        (let [id (when (string? room-id) (parse-uuid room-id))
              action (cond (#{:evaluate :repl} operation) :merge
-                          (#{:save :move :office-save :rich-save} operation) :write
+                          (#{:save :move :office-save :rich-save :property-save} operation) :write
                           :else :read)
              conn (system-db/get-conn)]
          (when-not (and id (uuid? party)) (throw (ex-info "Invalid room identity" {:type :validation-error})))
@@ -65,6 +65,8 @@
                                        :folder (owned-files/folder! conn party id room args)
                                        :search (owned-files/search! conn party id room args)
                                        :file (owned-files/read! conn party id room args)
+                                       :properties (owned-files/properties! conn party id room args)
+                                       :property-save (owned-files/property-input-save! conn party id room args)
                                        :history (owned-files/history! conn party id room args)
                                        :history-file (owned-files/history-file! conn party id room args)
                                        :evaluate (evaluation/evaluate! room party args
@@ -146,6 +148,20 @@
   (spin-remote server-id [room-id-str request]
                #?(:clj (let [party (access/authenticated-party-id)]
                          (await (blocking/blocking #(invoke-memory party room-id-str :search request))))
+                  :cljs nil)))
+
+(defn-spin-remote load-memory-properties!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (let [party (access/authenticated-party-id)]
+                         (await (blocking/blocking #(invoke-memory party room-id-str :properties request))))
+                  :cljs nil)))
+
+(defn-spin-remote save-memory-property!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (let [party (access/authenticated-party-id)]
+                         (await (blocking/blocking #(invoke-memory party room-id-str :property-save request))))
                   :cljs nil)))
 
 (defn-spin-remote analyze-memory-text!
