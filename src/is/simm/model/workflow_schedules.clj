@@ -146,6 +146,34 @@
   (d/transact conn [[:db.fn/call enabled-tx id enabled?]])
   (activation conn id))
 
+(def ^:private resume-identity-fields
+  [:schedule.activation/room :schedule.activation/by
+   :schedule.activation/revision :schedule.activation/target-ref])
+
+(defn- resume-managed-tx [db id expected]
+  (let [row (pull-row db :schedule.activation/id id)
+        oid (:schedule.activation/active-occurrence row)
+        o (when oid (pull-row db :schedule.occurrence/id oid))]
+    (when-not (and row (= expected (select-keys row resume-identity-fields))
+                   (or (nil? oid)
+                       (and (= oid (:schedule.occurrence/id o))
+                            (= id (:schedule.occurrence/activation o))
+                            (= (:schedule.activation/revision row) (:schedule.occurrence/revision o))
+                            (#{:pending :linked} (:schedule.occurrence/state o)))))
+      (throw (ex-info "Schedule changed or admission requires reconciliation" {:type ::conflict})))
+    (enabled-tx db id true)))
+
+(defn resume-managed!
+  "HOST internal serialized resume after current human/policy checks. A
+   changed retained identity or uncertain/foreign active pointer cannot pass
+   between inspection and the enable transaction. No authority is persisted."
+  [conn row]
+  (let [id (:schedule.activation/id row)]
+    (when-not (uuid? id)
+      (throw (ex-info "Invalid schedule identity" {:type ::conflict})))
+    (d/transact conn [[:db.fn/call resume-managed-tx id (select-keys row resume-identity-fields)]])
+    (activation conn id)))
+
 (defn due-slot
   "Latest intended slot <=now, preserving interval anchoring. Calendar schedules
    reuse Dvergr's zone-aware rules; excessive backlog fails visibly, not loops."

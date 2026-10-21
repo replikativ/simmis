@@ -268,6 +268,14 @@ allowance come from the same finite shared room wallet as manual execution;
 scheduling never creates funds. Overlaps are skipped and missed ticks coalesce
 to the latest intended slot. The Schedules view keeps these deployments distinct
 from legacy agent-authored prompt/code tasks.
+Inactive owned control services separately provide bounded schedule metadata,
+pause/resume and metadata-only request status without hydrating a room or
+resolving its current file default. Inspection and pause do not prepare a
+model. Resume rechecks the stored human creator and policy; its transaction
+rejects changed retained identities and uncertain or foreign active occurrences.
+Legacy activations may be inspected and paused but must be explicitly recreated
+before owned resume. These services are not yet selected by public transports
+or startup; they do not enable the owned scheduler or default maintenance.
 Separately, an
 exact-revision offline benchmark reuses Dvergr's experiment runner and room
 Attempts/Scorecards; it requires both installation-operator and room merge

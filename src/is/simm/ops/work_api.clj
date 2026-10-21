@@ -219,15 +219,18 @@
                                    (get args :length (:chunk-bytes git-snapshot/policy)))
             (git-snapshot/describe-in db room-id target-stamp)))))))
 
-(defn owned-workflow-read-error!
-  "HOST-only constant transport mapping of the fixed owned service's outcomes.
-   Never relay native messages/status metadata. No file authority or callback."
-  [error]
+(defn- preserve-interruption! [error]
   (loop [cause error seen #{}]
     (cond (nil? cause) nil
           (instance? InterruptedException cause) (.interrupt (Thread/currentThread))
           (contains? seen cause) nil
-          :else (recur (.getCause ^Throwable cause) (conj seen cause))))
+          :else (recur (.getCause ^Throwable cause) (conj seen cause)))))
+
+(defn owned-workflow-read-error!
+  "HOST-only constant transport mapping of the fixed owned service's outcomes.
+   Never relay native messages/status metadata. No file authority or callback."
+  [error]
+  (preserve-interruption! error)
   (let [[status kind message]
         (case (:type (ex-data error))
           :is.simm.ops.owned-workflows/invalid
@@ -242,6 +245,28 @@
     (:data ((if source? owned-workflows/source! owned-workflows/list!)
             host ops/*principal* (:room args) (dissoc args :room)))
     (catch Throwable error (owned-workflow-read-error! error))))
+
+(defn owned-status!
+  "Inactive HOST metadata-only request status. No room hydration, source
+   guard synthesis, model preparation, wallet access or fresh admission."
+  [host principal handle id]
+  (when-not (uuid? id)
+    (ops/op-error! "Invalid request identity" ::invalid 400))
+  (try
+    (let [original (owned-reads/preflight-host-read! host principal handle)
+          {:keys [control-conn execution-ctx]} (::owned-reads/owner host)]
+      (binding [ec/*execution-context* execution-ctx]
+        (let [result (work/status control-conn execution-ctx principal (:room-id original) id)
+              current (owned-reads/preflight-host-read! host principal handle)]
+          (when-not (= (select-keys original [:party :room-id]) (select-keys current [:party :room-id]))
+            (throw (ex-info "Request metadata unavailable" {})))
+          (work/authorize-in! (:control-db current) principal (:room-id current))
+          result)))
+    (catch Throwable error
+      ;; Status has no normal source-conflict outcome. Helper exception tags
+      ;; cannot manufacture a 400/409 or relay provider/native diagnostics.
+      (preserve-interruption! error)
+      (ops/op-error! "Owned request status unavailable" ::owned-status-unavailable 503))))
 
 (def specifications
   (room-specifications
