@@ -108,3 +108,24 @@
         (when typed?
           (is (= (:entry file) (get-in saved [:source :entry])))
           (is (= "Human typing" (:text saved))))))))
+
+(deftest property-publication-rebuilds-only-a-clean-rich-baseline
+  (let [model {:type "doc" :content [{:type "paragraph" :content [{:type "text" :text "Company"}]}]}
+        analysis {:revision :before :semantic {:status :ready} :slots [{:from 0 :to 7 :model model}]}
+        opened (editor/draft {:path "wiki/company.md" :kind :markdown :entry {:content :before}
+                              :text "Company" :analysis analysis})
+        text "---\nrevenue: 42\n---\nCompany"
+        updated (assoc analysis :revision :after :slots [{:from 20 :to (count text) :model model}])
+        reply {:entry {:content :after} :text text :analysis updated}
+        saved (editor/property-saved opened (:generation opened) reply)
+        typing (assoc opened :text "Human typing")
+        concurrent (editor/property-saved typing (:generation opened) reply)]
+    (is (= :rich (:mode saved)))
+    (is (not (editor/dirty? saved)))
+    (is (= text (get-in saved [:rich-base :text])))
+    (is (= updated (get-in saved [:rich-base :analysis])))
+    (is (= {20 model} (get-in saved [:rich-base :models])))
+    (is (not= (get-in opened [:rich-base :id]) (get-in saved [:rich-base :id])))
+    (is (= "Human typing" (:text concurrent)))
+    (is (= (:rich-base opened) (:rich-base concurrent)))
+    (is (= text (get-in concurrent [:incoming :text])))))
