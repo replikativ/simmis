@@ -739,6 +739,7 @@
      "load-attempt-files!"     {:action R :resource (room :room-id-str)}
      "load-attempt-file!"      {:action R :resource (room :room-id-str)}
      "load-workflow-list!"     {:action R :resource (room :room-id-str)}
+     "prepare-workflow-metadata-stream!" {:action R :resource (always :authenticated)}
      "load-workflow-source!"   {:action R :resource (room :room-id-str)}
      "save-workflow-source!"   {:action W :resource (room :room-id-str)}
      "submit-workflow-run!"    {:action M :resource (room :room-id-str)}

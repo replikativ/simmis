@@ -149,6 +149,12 @@ join-time topic authorization alone would not revoke an existing subscription.
 Metadata and file bytes still require the ordinary room-scoped authenticated
 RPC gates. This stream does not grant raw Geschichte-store replication or
 expose speculative branch identities.
+The global Schedules dashboard may register a control-only interest on this
+same private topic. Its fixed authenticated adapter accepts no client-supplied
+party or room, requires a current human and opens no room store. The notifier
+rechecks that identity before each content-free schedule-index hint; the
+subsequent snapshot still filters current room authority. This does not extend
+the join-time authorization of raw store replication to private control data.
 
 ### HTTP plane — routes
 

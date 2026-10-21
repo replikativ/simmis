@@ -11,10 +11,12 @@
 (defn- options
   [connection]
   {:connection connection :peer (:client (web/current-session))
-   :topic (keyword "memory" (str (:party connection))) :initial {:dirty {}}
+   :topic (keyword "memory" (str (:party connection))) :initial {:dirty {} :control-dirty 0}
    :on-message (fn [{:keys [kind room-id]}]
-                 (when (= kind :memory-changed)
-                   (swap! state update-in [:dirty (str room-id)] (fnil inc 0))))})
+                 (case kind
+                   :memory-changed (swap! state update-in [:dirty (str room-id)] (fnil inc 0))
+                   :schedule-index-changed (swap! state update :control-dirty (fnil inc 0))
+                   nil))})
 
 (defn ensure!
   "Call only after prepare-memory-stream! registered the party's private topic.

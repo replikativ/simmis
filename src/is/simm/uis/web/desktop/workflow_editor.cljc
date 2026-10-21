@@ -91,6 +91,19 @@
         (assoc-in [:source :definition] (:definition reply))
         (assoc-in [:form :params] (merge defaults (select-keys overrides (keys defaults)))))))
 
+(defn acknowledged-save
+  "Advance only the original save base using its sealed ACK and sent bytes.
+   A newer authorized observation must never be rolled back. Any incoming
+   source is reconciled AFTER base advancement, preserving edits made in flight."
+  [draft original-revision sent reply]
+  (let [current (get-in draft [:source :revision])
+        acknowledged (get-in reply [:workflow :revision])]
+    (if (and acknowledged (or (= current original-revision) (= current acknowledged)))
+      (let [incoming (:incoming-source draft)
+            next (-> (saved draft sent reply) (dissoc :incoming-source))]
+        (if incoming (observed next incoming) next))
+      draft)))
+
 (defn edits [draft]
   (into (sorted-map)
         (keep (fn [path]

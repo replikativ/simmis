@@ -44,7 +44,6 @@
             #?(:cljs [is.simm.uis.web.desktop.views.agent-inspector :as agent-inspector])
             [is.simm.uis.web.desktop.views.run-history :as run-history]
             [is.simm.uis.web.desktop.views.workflows :as workflows-view]
-            #?(:cljs [is.simm.uis.web.desktop.workflow-actions :as workflow-actions])
             [is.simm.uis.web.desktop.attempt-board :as attempt-board]
             [is.simm.uis.web.desktop.views.attempt-board :as attempt-board-view]
             [is.simm.uis.web.desktop.views.leaderboard :as leaderboard-view]
@@ -1287,9 +1286,7 @@
                         proposal-data col-id notify-prefs captured-results workflow-state)
 
     :workflows
-    #?(:cljs (workflows-view/view (or (:room-name data) "Room")
-                                  (get workflow-state (workflow-actions/state-key (:room-id data)))
-                                  (workflow-actions/controller data))
+    #?(:cljs (workflows-view/render-workflows data)
        :clj (el/p {} "Workflows"))
 
     :run-history

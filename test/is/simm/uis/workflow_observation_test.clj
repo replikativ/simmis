@@ -54,3 +54,16 @@
     (is (= "workflow.edn" (:path result)))
     (is (= {"added" "new"} (get-in result [:form :params])))
     (is (= (editor/draft before) (editor/observed nil before)))))
+
+(deftest sealed-save-acknowledgement-never-rolls-back-a-newer-observed-base
+  (let [old (editor/draft after)
+        reply {:workflow {:revision "ack"} :definition {}}]
+    (is (= old (editor/acknowledged-save old "source-before" {"workflow.edn" "sent"} reply)))
+    (is (= "ack" (get-in (editor/acknowledged-save (editor/draft before) "source-before"
+                                                   {"workflow.edn" "sent"} reply) [:source :revision])))
+    ;; A no-op ACK may have the original revision; do not build a duplicate
+    ;; evaluated set literal or treat it as a second source transition.
+    (is (= "source-before"
+           (get-in (editor/acknowledged-save (editor/draft before) "source-before" (:files before)
+                                             {:workflow {:revision "source-before"} :definition {}})
+                   [:source :revision])))))

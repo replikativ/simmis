@@ -10,6 +10,9 @@
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
             #?(:cljs [is.simm.uis.web.desktop.workflows-remote :as workflows-remote])
+            #?(:cljs [is.simm.uis.web.desktop.observation-io :as observation-io])
+            #?(:cljs [is.simm.uis.web.desktop.connection-epoch :as connection])
+            #?(:cljs [is.simm.uis.web.desktop.memory-sync :as sync])
             #?(:cljs [is.simm.uis.web.desktop.views.mermaid :as mmd])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -38,38 +41,44 @@
                         (update! (constantly {:session-id session-id}))))
            matches? (fn [slot token]
                       (and (current?) (= session-id (:session-id (state)))
-                           (= token (get-in (state) [:requests slot]))))]
-       (letfn [(load! []
+                           (= token (get-in (state) [:requests slot]))))
+           observe! (observation-io/controller ctx session state update!)
+           generation #(binding [rtc/*execution-context* ctx]
+                         (let [stream @sync/state]
+                           [(:connection stream) (:status stream) (:control-dirty stream)
+                            @sig/user-rooms (:retry (state)) (:updating (state))
+                            (:stream-registered (state))]))]
+       (letfn [(observe-all! []
                  (ensure!)
-                 (when (and (current?) (not (:loading? (state))) (not (:updating (state))))
-                   (let [token (str (random-uuid))
-                         finish! (fn [f]
-                                   (when (matches? :load token)
-                                     (update! #(-> (f %) (assoc :loading? false)
-                                                   (update :requests dissoc :load)))))
-                         fail! (fn [_] (finish! #(assoc % :error "Could not load schedules. Check access and refresh.")))]
-                     (update! #(-> % (assoc :loading? true) (dissoc :error)
-                                   (assoc-in [:requests :load] token)))
-                     (try
-                       ;; A render-triggered load is a root I/O observation,
-                       ;; not a child of the render Spin it will invalidate.
-                       (binding [rtc/*execution-context* ctx rtc/*spin-id* nil]
-                         (let [s (chat-remote/load-schedules! web/server-id)]
-                           (s (fn [reply]
-                                (try
-                                  (finish! #(merge % (select-keys reply [:schedules :workflow-schedules :diagrams :shapes])
-                                                   {:loaded-at (js/Date.now)}))
-                                  (catch :default error (fail! error))))
-                              fail!)))
-                       (catch :default error (fail! error))))))
+                 (let [socket (connection/snapshot)
+                       owner [socket (:fork-id (rtc/home-context ctx))]]
+                   (when (not= owner (:observation-owner (state)))
+                     (update! #(-> % (assoc :observation-owner owner :requests {})
+                                   (dissoc :updating :loading?))))
+                   (observe! :stream #(vector (:retry (state)))
+                             #(workflows-remote/prepare-workflow-metadata-stream! web/server-id)
+                             (fn [s _] (-> s (dissoc :stream-error)
+                                           (update :stream-registered (fnil inc 0))))
+                             (fn [s error] (assoc s :stream-error error))
+                             (fn [_] (sync/ensure! socket)))
+                   (when-not (:updating (state))
+                     (observe! :index generation
+                               #(chat-remote/load-schedules! web/server-id)
+                               (fn [s reply] (-> (merge s (select-keys reply [:schedules :workflow-schedules :diagrams :shapes]))
+                                                 (assoc :loaded-at (js/Date.now)) (dissoc :error)))
+                               (fn [s error] (-> s (dissoc :schedules :workflow-schedules :diagrams :shapes)
+                                                 (assoc :error error)))))))
+               (load! []
+                 (ensure!)
+                 (update! update :retry (fnil inc 0)))
                (toggle! [row]
                  (ensure!)
-                 (when (and (current?) (not (:updating (state)))
+                 (when (and (current?) (connection/snapshot) (not (:updating (state)))
                             (or (:enabled? row) (not (:resume-blocked row))))
-                   (let [token (str (random-uuid))
+                   (let [token (str (random-uuid)) socket (connection/snapshot)
                          enabled? (not (:enabled? row))
                          finish! (fn [f]
-                                   (when (matches? :toggle token)
+                                   (when (and (connection/current? socket) (matches? :toggle token))
                                      (update! #(-> (f %) (dissoc :updating)
                                                    (update :requests dissoc :toggle)))
                                      true))
@@ -95,7 +104,9 @@
                                   (catch :default error (fail! error))))
                               fail!)))
                        (catch :default error (fail! error))))))]
-         {:session-id session-id :refresh load! :toggle toggle!
+         {:session-id session-id :observe observe-all!
+          :refresh #(do (load!) (binding [rtc/*execution-context* ctx] (sync/retry! (connection/snapshot))))
+          :toggle toggle!
           :open-run (fn [row job event]
                       (binding [rtc/*execution-context* ctx]
                         (when (current?)
@@ -206,76 +217,86 @@
      "Agenda tab content. Spin tracking sig/schedules-data; triggers a
       load when the signal is still empty (idempotent via loading?)."
      []
-     (let [actions (controller)]
-       (spin
-        (let [raw-data (iv/get-new (track sig/schedules-data))
-              data (when (and (:session-id actions)
-                              (= (:session-id actions) (:id (web/current-session)))
-                              (= (:session-id actions) (:session-id raw-data))) raw-data)
-              _ (when (nil? data) ((:refresh actions)))
-              schedules (vec (sort-by #(or (:next-fire %) js/Number.MAX_SAFE_INTEGER)
-                                      (:schedules data)))
-              groups (->> schedules
-                          (group-by #(day-key (:next-fire %)))
-                          (sort-by (fn [[k _]] (if (nil? k) 9999999 k)))
-                          vec)
-              workflow-rows (mapv #(assoc % :updating? (boolean (:updating data))
-                                          :this-updating? (= (:id %) (:updating data))
-                                          :on-toggle (:toggle actions) :on-open-run (:open-run actions))
-                                  (:workflow-schedules data))]
-          (el/div {:class "content-schedules"}
-                  (el/div {:class "schedules-header"}
-                          (el/h2 {} "Schedules")
+     (spin
+      (let [data-i (track sig/schedules-data)
+            socket-i (track sig/memory-connection)
+            stream-i (track sync/state)
+            roster-i (track sig/user-rooms)
+            raw-data (iv/get-new data-i)
+            _socket (iv/get-new socket-i)
+            _stream (iv/get-new stream-i)
+            _roster (iv/get-new roster-i)
+            actions (controller)
+            data (when (and (:session-id actions)
+                            (= (:session-id actions) (:id (web/current-session)))
+                            (= (:session-id actions) (:session-id raw-data))) raw-data)
+            _ ((:observe actions))
+            schedules (vec (sort-by #(or (:next-fire %) js/Number.MAX_SAFE_INTEGER)
+                                    (:schedules data)))
+            groups (->> schedules
+                        (group-by #(day-key (:next-fire %)))
+                        (sort-by (fn [[k _]] (if (nil? k) 9999999 k)))
+                        vec)
+            workflow-rows (mapv #(assoc % :updating? (boolean (:updating data))
+                                        :this-updating? (= (:id %) (:updating data))
+                                        :on-toggle (:toggle actions) :on-open-run (:open-run actions))
+                                (:workflow-schedules data))]
+        (el/div {:class "content-schedules"}
+                (el/div {:class "schedules-header"}
+                        (el/h2 {} "Schedules")
+                        (when (or (:error data) (:stream-error data) (= :error (:status _stream)))
                           (el/button {:class "schedules-refresh"
                                       :disabled (boolean (or (:loading? data) (:updating data)))
-                                      :title "Refresh"
+                                      :title "Retry updates"
                                       :on-click (fn [_] ((:refresh actions)))}
-                                     (vc/icon "refresh-cw")))
-                  (when-let [error (:error data)] (el/p {:role "alert"} error))
-                  (el/h3 {} "Pinned workflow deployments")
-                  (el/p {} "Create an activation from a saved workflow. These use the shared room allowance and never merge automatically.")
-                  (if (seq workflow-rows)
-                    (ifor-each :id workflow-rows workflow-row)
-                    (el/p {} "No pinned workflow schedules yet."))
-                  (el/h3 {} "Legacy agent tasks")
+                                     "Retry updates")))
+                (when-let [error (:error data)] (el/p {:role "alert"} error))
+                (when-let [error (or (:stream-error data) (sync/problem _stream))]
+                  (el/p {:role "alert"} error))
+                (el/h3 {} "Pinned workflow deployments")
+                (el/p {} "Create an activation from a saved workflow. These use the shared room allowance and never merge automatically.")
+                (if (seq workflow-rows)
+                  (ifor-each :id workflow-rows workflow-row)
+                  (el/p {} "No pinned workflow schedules yet."))
+                (el/h3 {} "Legacy agent tasks")
            ;; Per-room workflow topology diagrams (katzen → mermaid). The map
            ;; view above the agenda: one node per background workflow → the KB
            ;; it feeds — so you see WHAT is running at a glance, not per-line.
-                  (when-let [diagrams (seq (:diagrams data))]
-                    (let [shapes  (:shapes data)
-                          by-room (group-by :room-name (:schedules data))]
-                      (el/div {:class "workflow-diagrams"}
-                              (el/div {:class "workflow-diagrams-title"} "Workflows")
-                              (ifor-each first (vec diagrams)
-                                         (fn [[room-name code]]
-                                           (el/div {:key (str "wf-" room-name) :class "workflow-room"}
-                                                   (el/div {:class "workflow-room-label"} room-name)
-                                                   (mmd/diagram code)
+                (when-let [diagrams (seq (:diagrams data))]
+                  (let [shapes  (:shapes data)
+                        by-room (group-by :room-name (:schedules data))]
+                    (el/div {:class "workflow-diagrams"}
+                            (el/div {:class "workflow-diagrams-title"} "Workflows")
+                            (ifor-each first (vec diagrams)
+                                       (fn [[room-name code]]
+                                         (el/div {:key (str "wf-" room-name) :class "workflow-room"}
+                                                 (el/div {:class "workflow-room-label"} room-name)
+                                                 (mmd/diagram code)
                        ;; agent-authored per-workflow shapes (design B): the
                        ;; actual steps of each workflow that has declared one
-                                                   (ifor-each :id
-                                                              (vec (filter #(contains? shapes (:id %)) (get by-room room-name)))
-                                                              (fn [s]
-                                                                (el/div {:key (str "shape-" (:id s)) :class "workflow-shape"}
-                                                                        (el/div {:class "workflow-shape-label"}
-                                                                                (or (:description s) (:task s)))
-                                                                        (mmd/diagram (get shapes (:id s))))))))))))
-                  (cond
-                    (nil? data)
-                    (el/p {:class "schedules-empty"} "Loading schedules…")
+                                                 (ifor-each :id
+                                                            (vec (filter #(contains? shapes (:id %)) (get by-room room-name)))
+                                                            (fn [s]
+                                                              (el/div {:key (str "shape-" (:id s)) :class "workflow-shape"}
+                                                                      (el/div {:class "workflow-shape-label"}
+                                                                              (or (:description s) (:task s)))
+                                                                      (mmd/diagram (get shapes (:id s))))))))))))
+                (cond
+                  (nil? data)
+                  (el/p {:class "schedules-empty"} "Loading schedules…")
 
-                    (empty? schedules)
-                    (el/div {:class "schedules-empty"}
-                            (el/p {} "No legacy agent tasks.")
-                            (el/p {:class "schedules-hint"}
-                                  "Ask an agent to schedule a recurring task — e.g. “run the research flow every morning at 9”."))
+                  (empty? schedules)
+                  (el/div {:class "schedules-empty"}
+                          (el/p {} "No legacy agent tasks.")
+                          (el/p {:class "schedules-hint"}
+                                "Ask an agent to schedule a recurring task — e.g. “run the research flow every morning at 9”."))
 
-                    :else
-                    (el/div {:class "schedules-groups"}
-                            (ifor-each first groups
-                                       (fn [[days ss]]
-                                         (el/div {:key (str "day-" days) :class "schedule-group"}
-                                                 (el/div {:class "schedule-day-label"}
-                                                         (day-label days (:next-fire (first ss))))
-                                                 (el/div {:class "schedule-group-rows"}
-                                                         (ifor-each :id (vec ss) schedule-row)))))))))))))
+                  :else
+                  (el/div {:class "schedules-groups"}
+                          (ifor-each first groups
+                                     (fn [[days ss]]
+                                       (el/div {:key (str "day-" days) :class "schedule-group"}
+                                               (el/div {:class "schedule-day-label"}
+                                                       (day-label days (:next-fire (first ss))))
+                                               (el/div {:class "schedule-group-rows"}
+                                                       (ifor-each :id (vec ss) schedule-row))))))))))))

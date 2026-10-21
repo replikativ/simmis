@@ -35,9 +35,14 @@
 
 (defn finish
   "Acknowledge only the original frame. A pending newer generation remains
-   wanted and can start on the next offer. Failure also finishes that frame;
-   explicit retry or a new invalidation, not rendering, requests another one."
-  [state frame]
-  (if (owns? state frame)
-    (-> state (dissoc :active) (assoc :completed (:generation frame)))
-    state))
+   wanted and can start on the next offer. Only a published observation (or
+   current failure) completes its generation. Unpublished replies must not
+   suppress a later A→B→A fetch. Explicit retry or a new invalidation, not
+   rendering, retries a current failure."
+  ([state frame] (finish state frame (current? state frame)))
+  ([state frame published?]
+   (if (owns? state frame)
+     (cond-> (dissoc state :active)
+       published? (assoc :completed (:generation frame))
+       (not published?) (dissoc :completed))
+     state)))
