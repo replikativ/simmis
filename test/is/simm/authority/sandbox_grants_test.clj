@@ -23,6 +23,7 @@
             [dvergr.rooms :as drooms]
             [dvergr.room.registry :as rreg]
             [dvergr.room.store :as rstore]
+            [dvergr.search.secondary :as secondary]
             [dvergr.substrate.paths :as paths]
             [dvergr.system.db :as sdb]
             [dvergr.system.rooms :as srooms]
@@ -34,7 +35,8 @@
             [is.simm.uis.web.desktop.sandbox-remote :as sandbox-remote]
             [kontor.governance :as governance]
             [org.replikativ.spindel.engine.context :as context]
-            [org.replikativ.spindel.engine.core :as rtc]))
+            [org.replikativ.spindel.engine.core :as rtc]
+            [org.replikativ.spindel.yggdrasil :as ygg]))
 
 ;; =============================================================================
 ;; The hook agrees with can?
@@ -81,6 +83,7 @@
 ;; =============================================================================
 
 (def ^:private world (atom nil))
+(def ^:private retained-fixture (atom nil))
 
 (defn- delete-tree! [path]
   (when (.exists (io/file path))
@@ -90,16 +93,44 @@
   (some #(when (= :kb (get-in % [:system :system/type])) (:system %))
         (sdb/systems-for-room room-id)))
 
-(defn- with-rooms [f]
+(defn- cleanup-if-safe! [uncertain? cleanup!]
+  (when-not @uncertain? (cleanup!)))
+
+(defn- release-before-cold-hydration! [rooms uncertain? owner]
+  ;; Exclusive fixture stores, with secondary-index work disabled below and no
+  ;; live discourse Rooms yet. Propagate release failure: the best-effort
+  ;; release-room-stores! helper is not positive evidence of shutdown.
+  (reset! uncertain? true)
+  (let [contexts (mapv (comp srooms/room-ctx-for :room-id) rooms)
+        _ (swap! owner assoc :contexts contexts)
+        connections (vec (concat (:declaration-leases @owner)
+                                 (for [ctx contexts
+                                       [_ system] (binding [rtc/*execution-context* ctx] (ygg/registered-systems))
+                                       :when (:conn system)] (:conn system))))
+        _ (swap! owner assoc :connections connections)
+        seen (java.util.IdentityHashMap.)]
+    (doseq [conn connections
+            :when (and conn (not (.containsKey seen conn)))]
+      (.put seen conn true)
+      (governance/ungovern! conn)
+      ;; Legacy provisioning acquires additional leases for these same
+      ;; private stores. There are no other fixture/runtime users here.
+      (d/release conn true)))
+  (srooms/clear-room-ctxs!)
+  (reset! uncertain? false))
+
+(defn- with-rooms* [f owner]
   (let [original-home (paths/home)
         original-conn @system-db/conn
         home (str (io/file (System/getProperty "java.io.tmpdir")
                            (str "simmis-sandbox-grants-" (random-uuid))))
         agent-uuid (random-uuid)
+        uncertain? (atom false)
         ;; a root context of its own (the server's, in production): the live
         ;; rooms registered here go when it is closed
         root (daemon/create-shared-context :with-git? false)
         slug (let [n (subs (str (random-uuid)) 0 8)] #(str "sg-" % "-" n))]
+    (swap! owner assoc :home home :root root)
     (try
       (paths/set-home! home)
       (sdb/reset-conn!)
@@ -113,6 +144,14 @@
         ;; attach as simmis does (`kbs/attach-kb-to-room!` is this call)
         (sdb/attach! (:room-id a) (:system/id b-kb) :read)
         (sdb/attach! (:room-id a) (:system/id c-kb) :merge)
+        ;; This fixture exercises BOOT with persisted grants, not a live
+        ;; attachment refresh. Provisioning already opened contexts; release
+        ;; their native stores before hydration, while no discourse.Room,
+        ;; agent, sandbox or reader can hold those contexts. Repeated hydrate
+        ;; intentionally preserves live contexts rather than refreshing them.
+        ;; Live attachment needs its own explicit additive adapter operation.
+        (swap! owner assoc :control (sdb/get-conn))
+        (release-before-cold-hydration! [a b c] uncertain? owner)
         ;; the boot order of `web/start-server!`: the hook, then hydration
         (web/install-grant-permits!)
         (binding [rtc/*execution-context* root]
@@ -130,23 +169,60 @@
                          :agent agent-uuid})
           (f)))
       (finally
-        (srooms/set-grant-permits! nil)
-        (when-let [{:keys [a b c agent room]} @world]
-          (swap! @#'ra/joined disj [(:room-id a) agent])
-          (room-ctx/drop-room! (:id room))
-          (doseq [{:keys [room-id]} [a b c]]
-            (try (binding [rtc/*execution-context* (srooms/room-ctx-for room-id)]
-                   (some-> (srooms/room-msgs-conn room-id) governance/ungovern!))
-                 (catch Throwable _))))
-        (reset! world nil)
-        (srooms/release-room-stores!)
-        (sdb/reset-conn!)
-        (reset! system-db/conn original-conn)
-        (try (context/close-context! root) (catch Throwable _))
-        (paths/set-home! original-home)
-        (delete-tree! home)))))
+        (when @uncertain?
+          ;; Test-only native owner, not application/fork state. Never blindly
+          ;; retry a release whose outcome is unknown or delete its store.
+          (reset! retained-fixture @owner))
+        (cleanup-if-safe! uncertain?
+                          (fn []
+                            (srooms/set-grant-permits! nil)
+                            (when-let [{:keys [a b c agent room]} @world]
+                              (swap! @#'ra/joined disj [(:room-id a) agent])
+                              (room-ctx/drop-room! (:id room))
+                              (doseq [{:keys [room-id]} [a b c]]
+                                (try (binding [rtc/*execution-context* (srooms/room-ctx-for room-id)]
+                                       (some-> (srooms/room-msgs-conn room-id) governance/ungovern!))
+                                     (catch Throwable _))))
+                            (reset! world nil)
+                            (srooms/release-room-stores!)
+                            (sdb/reset-conn!)
+                            (reset! system-db/conn original-conn)
+                            (try (context/close-context! root) (catch Throwable _))
+                            (paths/set-home! original-home)
+                            (delete-tree! home)))))))
+
+(defn- with-rooms [f]
+  ;; Fulltext is irrelevant to the grant boundary and would start background
+  ;; index writers during legacy provisioning. Retain their extra connection
+  ;; leases until the positively checked exclusive-store cold shutdown above;
+  ;; do not introduce another earlier release/uncertain-outcome path.
+  (when @retained-fixture
+    (throw (ex-info "Resolve retained grant-test fixture ownership before rerunning" {})))
+  (let [owner (atom {})
+        without-index (fn [conn _scope] (swap! owner update :declaration-leases (fnil conj []) conn) nil)]
+    (with-redefs [secondary/declare-kb-fulltext! without-index
+                  secondary/declare-message-fulltext! without-index]
+      (with-rooms* f owner))))
 
 (use-fixtures :once with-rooms)
+
+(deftest failed-cold-release-neither-clears-nor-retries-or-deletes
+  (let [uncertain? (atom false)
+        calls (atom [])
+        conn (Object.)
+        owner (atom {})]
+    (with-redefs [srooms/room-ctx-for (constantly nil)
+                  ygg/registered-systems (constantly {"fixture" {:conn conn}})
+                  governance/ungovern! (fn [_] (swap! calls conj :ungovern))
+                  d/release (fn [& _] (swap! calls conj :release)
+                              (throw (ex-info "Uncertain native release" {})))
+                  srooms/clear-room-ctxs! #(swap! calls conj :clear)]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (try (release-before-cold-hydration! [{:room-id (random-uuid)}] uncertain? owner)
+                        (finally (cleanup-if-safe! uncertain? #(swap! calls conj :retry-or-delete))))))
+      (is @uncertain?)
+      (is (= [conn] (:connections @owner)))
+      (is (= [:ungovern :release] @calls)))))
 
 (defn- ev
   "Evaluate `code` in room A's sandbox through the `eval-in-room!` handler, as

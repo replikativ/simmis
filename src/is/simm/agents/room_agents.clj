@@ -39,6 +39,7 @@
             [is.simm.runtimes.context :as ctx]
             [is.simm.runtimes.branching :as branching]
             [dvergr.system.db :as sdb]
+            [dvergr.system.rooms :as system-rooms]
             [is.simm.model.rooms :as rooms]
             [is.simm.agents.dispatch :as dispatch]
             [is.simm.agents.tool-authorization :as tool-auth]
@@ -315,25 +316,22 @@
   "Read-only canonical lookup. Unlike live-room, never hydrates a missing room."
   [room-uuid]
   (when-let [slug (:room/slug (rooms/get-room room-uuid))]
-    (rreg/lookup (rstore/slug->room-id slug))))
+    ;; Even an existing registry entry may belong to an uncertain constructor.
+    ;; Consult the native owner gate before returning a supposedly usable Room.
+    (when-let [canonical (system-rooms/room-ctx-for room-uuid)]
+      (when-let [room (rreg/lookup (rstore/slug->room-id slug))]
+        (when (identical? canonical (:ctx room)) room)))))
 
 (defn live-room
   "The live dvergr discourse Room for a simmis room uuid. Rooms created by
    `rooms/create-room!` are registered at provision time; after a JVM
-   restart the registry re-hydrates lazily here via drooms/create-room!
-   (idempotent on slug)."
+   restart native preparation belongs to startup hydration. This lookup can
+   register an already-prepared Room, never reprovision or rewrite its metadata."
   [room-uuid]
-  (when-let [{:room/keys [slug name type]} (rooms/get-room room-uuid)]
+  (when-let [slug (:room/slug (rooms/get-room room-uuid))]
     (when slug
-      (let [room-id (rstore/slug->room-id slug)]
-        (or (rreg/lookup room-id)
-            (binding [rtc/*execution-context* ctx/server-context]
-              (drooms/create-room! {:title (or name slug)
-                                    :slug slug
-                                    :type (or type :internal)
-                                    :parent-id false
-                                    :ctx ctx/server-context})
-              (rreg/lookup room-id)))))))
+      (binding [rtc/*execution-context* ctx/server-context]
+        (drooms/register-prepared-room! room-uuid)))))
 
 ;; =============================================================================
 ;; Interim content-DB persistence (client render path — removed in Stage 5)

@@ -795,7 +795,10 @@
     ;; dvergr's daemon uses at boot.
     (try
       (ctx/with-server-context
-        ((requiring-resolve 'dvergr.system.rooms/hydrate-rooms!))
+        ((requiring-resolve 'dvergr.system.rooms/hydrate-rooms!)
+         {:repository-profiles
+          ((requiring-resolve 'is.simm.documents.profile/policies)
+           ((requiring-resolve 'is.simm.documents.starter-bundle/read-packaged!)))})
         ((requiring-resolve 'dvergr.rooms/hydrate-registry!) ctx/server-context))
       (log/log! {:level :info :id ::rooms-hydrated
                  :msg "dvergr rooms hydrated (ctxs + live registry)"})

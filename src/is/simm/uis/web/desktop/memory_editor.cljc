@@ -261,7 +261,8 @@
           (assoc :text (:text reply) :analysis (:analysis reply) :analysis-text (:text reply))
           (dissoc :rich-base)
           (cond-> (and (= (:entry reply) (:incoming-entry draft)) (not (:remote-deleted? draft)))
-            (dissoc :incoming-entry))))
+            (dissoc :incoming-entry))
+          (cond-> (= :rich (:mode draft)) begin-rich)))
     :else (assoc draft :earlier-save-receipt reply)))
 
 (defn response-current? [state slot token]

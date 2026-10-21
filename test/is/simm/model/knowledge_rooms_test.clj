@@ -1,0 +1,101 @@
+(ns is.simm.model.knowledge-rooms-test
+  (:require [clojure.test :refer [deftest is]]
+            [datahike.api :as d]
+            [datahike.db :as value-db]
+            [dvergr.system.db :as registry]
+            [dvergr.system.room-intent :as intent]
+            [dvergr.system.rooms :as native]
+            [dvergr.room.registry :as live-registry]
+            [is.simm.agents.room-agents :as agents]
+            [is.simm.documents.space :as space]
+            [is.simm.documents.starter-bundle :as starter]
+            [is.simm.model.knowledge-rooms :as rooms]
+            [is.simm.model.rooms :as legacy]
+            [is.simm.model.system-db :as system-db]
+            [org.replikativ.spindel.engine.core :as ec]))
+
+(defn- fixture []
+  (let [creator (random-uuid) member (random-uuid) id (random-uuid)
+        systems (mapv (fn [type]
+                        (cond-> {:system/id (random-uuid) :system/type type
+                                 :system/name (str "fixture-" (name type))
+                                 :system/scope (str "/virtual/" (name type))
+                                 :system/owner [:party/id creator]}
+                          (= :repo type) (assoc :system/repository-profile space/profile))) [:repo :msgs :kb])
+        by-type (into {} (map (juxt :system/type identity)) systems)
+        schema (vals (into {} (map (juxt :db/ident identity)) (concat registry/schema system-db/schema)))
+        db (d/db-with (value-db/empty-db schema {:schema-flexibility :write})
+                      (into [{:party/id creator} {:party/id member}]
+                            (concat systems
+                                    [{:room/id id :room/slug "fixture" :room/name "Fixture" :room/type :project
+                                      :room/owner [:party/id creator] :room/provisioning-state :ready
+                                      :room/provisioning-version 1
+                                      :room/default-repository [:system/id (get-in by-type [:repo :system/id])]}]
+                                    (map (fn [system]
+                                           {:grant/id (random-uuid) :grant/room [:room/id id]
+                                            :grant/system [:system/id (:system/id system)] :grant/permission :owner}) systems))))
+        provisioned (reduce (fn [out [type id-key path-key]]
+                              (assoc out id-key (get-in by-type [type :system/id])
+                                     path-key (get-in by-type [type :system/scope])))
+                            {:room-id id} [[:repo :repo-id :repo-path] [:msgs :msgs-id :msgs-path] [:kb :kb-id :kb-path]])]
+    {:db db :creator creator :member member :id id :provisioned provisioned :systems by-type}))
+
+(deftest final-publication-is-one-pure-control-transaction
+  (let [{:keys [db creator member id provisioned]} (fixture)
+        expected (@#'rooms/prepared-basis! db provisioned creator) scope (random-uuid)]
+    (with-redefs [native/store-id (fn [& _] (throw (AssertionError. "No native IO in transaction")))]
+      (let [after (d/db-with db [[:db.fn/call @#'rooms/publish-tx expected creator #{creator member} scope]])
+            row (d/pull after [:room/created-by :room/content-db-scope {:room/parties [:party/id]}] [:room/id id])]
+        (is (= creator (:room/created-by row)))
+        (is (= scope (:room/content-db-scope row)))
+        (is (= #{creator member} (set (map :party/id (:room/parties row)))))
+        (is (nil? (:room/content-db-scope (d/pull db [:room/content-db-scope] [:room/id id]))))
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (@#'rooms/publish-tx after expected creator #{creator member} scope)))))))
+
+(deftest stale-preparation-and-membership-are-refused-before-visibility
+  (let [{:keys [db creator member id provisioned systems]} (fixture)
+        expected (@#'rooms/prepared-basis! db provisioned creator)
+        grant (:grant/id (first (:attachments expected)))
+        scope (random-uuid)]
+    (doseq [tx [[[:db/add [:room/id id] :room/owner [:party/id member]]]
+                [[:db/add [:room/id id] :room/provisioning-state :pending]]
+                [[:db/add [:room/id id] :room/archived-at (java.util.Date.)]]
+                [[:db/add [:system/id (get-in systems [:repo :system/id])] :system/repository-profile :foreign/profile]]
+                [[:db/add [:system/id (get-in systems [:msgs :system/id])] :system/scope "/virtual/foreign"]]
+                [[:db/add [:grant/id grant] :grant/permission :read]]
+                [[:db/add [:room/id id] :room/parties [:party/id member]]]
+                [[:db/retractEntity [:party/id member]]]]]
+      (let [changed (d/db-with db tx)]
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (@#'rooms/publish-tx changed expected creator #{creator member} scope)))))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (@#'rooms/prepared-basis! db (assoc provisioned :repo-id (random-uuid)) creator)))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (@#'rooms/prepared-basis! db (assoc provisioned :msgs-path "/virtual/foreign") creator)))))
+
+(deftest invalid-members-never-acquire-a-bundle-or-record-intent
+  (let [{:keys [db creator member]} (fixture)]
+    (with-redefs [system-db/get-conn (constantly (atom db))
+                  starter/read-packaged! (fn [] (throw (AssertionError. "No bundle before member validation")))
+                  native/provision-profiled-room! (fn [& _] (throw (AssertionError. "No invalid intent")))]
+      (doseq [members [[(random-uuid)] [nil] (repeat 257 member)]]
+        (is (thrown? clojure.lang.ExceptionInfo (rooms/create! creator "Fixture" members)))))))
+
+(deftest already-selected-child-cannot-be-promoted-to-server-root
+  (with-redefs [system-db/get-conn (fn [] (throw (AssertionError. "No acquisition before host validation")))]
+    (binding [ec/*execution-context* {:parent-ctx {}}]
+      (is (= :requires-host-root
+             (try (rooms/create! (random-uuid) "Child" [])
+                  (catch clojure.lang.ExceptionInfo error (:reason (ex-data error)))))))))
+
+(deftest quarantined-native-owner-is-not-bypassed-by-a-cached-room
+  (let [{:keys [db id]} (fixture) failure (ex-info "Constructor ownership uncertain" {})]
+    (with-redefs [legacy/get-room (constantly {:room/slug "fixture"})
+                  registry/get-conn (constantly (atom db))
+                  native/room-ctx-for (fn [_] (throw failure))
+                  live-registry/lookup (fn [_] (throw (AssertionError. "Do not bypass owner gate")))]
+      (is (identical? failure (try (agents/registered-room id)
+                                   (catch Throwable error error))))
+      (is (identical? failure (try (agents/live-room id)
+                                   (catch Throwable error error)))))))

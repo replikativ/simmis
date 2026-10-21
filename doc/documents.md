@@ -217,6 +217,67 @@ schema/widget declarations and existing KB property integration are not
 implemented here. There is no new independent authorization boundary: callers
 must own/authorize the connection, and no remote caller can invoke this API.
 
+## Explicit governed knowledge repositories
+
+`documents.profile/policies` constructs a trusted host lifecycle map over an
+already acquired immutable starter bundle for `:simmis/canonical-knowledge-v1`,
+not a policy or source bundle supplied by room content. Its
+initializer requires a pristine unpublished store, installs the existing
+shared Simmis/accounting model and Dvergr chat schema, and creates a small
+Markdown-backed wiki plus an ordinary code file. Stable document/block UUIDs
+and explicit property/type bindings are in Markdown; definitions are the real
+governed categorical entities, not copied YAML definitions. The complete starter
+projection is validated and the whole file tree committed before publication.
+Sandbox source libraries and guidance are packaged from one exact upstream
+commit as a namespaced inert EDN resource, not a runtime dependency exposing
+`user.clj`. The offline packaging script reads Git objects at that commit, not
+live checkout files. Loading checks a reviewed manifest digest, individual
+hashes/modes/lengths, strict UTF-8 and finite byte/file bounds. The host acquires
+this bundle before native Room creation intent; no Git clone/network request
+or source execution happens inside initialization.
+
+Code and license bytes remain unchanged. Bundled Markdown receives
+repository-scoped UUIDs and explicit modification notices; installed
+`AGENTS.md` and `README.md` prominently correct the upstream auto-load claim.
+Original and installed hashes are retained in `code/starter-provenance.edn`.
+Pre-existing template frontmatter is refused rather than silently replaced.
+Custom host bundles own their provenance claims: self-consistent content hashes
+alone do not attest that arbitrary supplied bytes came from the claimed commit.
+Markdown outside `wiki/` is also included in the same canonical selection used
+by guarded property saves; the folder is navigation, not a semantic boundary.
+
+Reopening validates the actual mandatory schema shapes and repository singleton
+with its matching profile, then reattaches accounting and Attempt governance.
+It performs no seed/schema/source transaction and starts no asynchronous worker.
+An invalid authored Markdown file withholds the derived canonical query view,
+not the whole Room: raw source remains repairable. An invalid mandatory schema
+or missing/mismatched profile instead refuses repository preparation.
+
+This host policy does not classify, migrate or replace an existing wiki. It is
+not enabled merely by opening a file, and is not a new unauthenticated room
+creation API. Portable definition export/import is distinct from preserving
+Markdown values and identities; the policy does not claim an arbitrary Git clone
+alone recreates the categorical type definitions.
+
+`model.knowledge-rooms/create!` is an explicit HOST-only project creation path,
+separate from legacy chat room creation. It validates member identities and
+acquires the packaged source before durable intent. After native preparation,
+it installs Simmis's messages schema on the exact messages connection and
+registers the prepared live Room without reprovisioning. Only then does one
+guarded control transaction publish creator, membership and content sync scope.
+The transaction rechecks the exact ready Room metadata and three owned systems,
+current identities and absence of an archive or prior membership publication.
+The sync scope remains the messages store; repository source is not silently
+substituted for the existing conversation replica.
+
+Failure preserves prepared resources and reports the known Room UUID rather
+than deleting stores or retrying creation. A lost final acknowledgement may
+already have committed membership. Startup supplies the fixed trusted profile
+policy when hydrating these rooms. Live Room lookup consumes only an already
+prepared context and respects the native recovery gate, even if an uncertain
+constructor left a registry entry behind. This does not enable a new transport
+endpoint or convert existing rooms.
+
 ## Generic source editor
 
 The Workflows panel uses `uis/web/desktop/source_editor.cljs`, a controlled
