@@ -159,6 +159,8 @@
    "save-workflow-source!"   [(c :room MEMBERS)]
    "submit-workflow-run!"    [(c :room OWNER)]
    "submit-workflow-benchmark!" [(c :room OWNER)]
+   "submit-cli-workflow-benchmark!" [(c :room OWNER)]
+   "provision-cli-workflow-allowance!" [(c :room OWNER)]
    "provision-workflow-allowance!" [(c :room OWNER)]
    "load-local-workflow-workers!" [(c :room OWNER)]
    "submit-local-workflow-run!" [(c :room OWNER)]

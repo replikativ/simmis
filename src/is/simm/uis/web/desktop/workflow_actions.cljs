@@ -14,6 +14,7 @@
 
 (defn- submitter [backend mode]
   (case [backend mode]
+    ["cli" "benchmark"] remote/submit-cli-workflow-benchmark!
     ["local" "benchmark"] remote/submit-local-workflow-benchmark!
     ["local" "run"] remote/submit-local-workflow-run!
     ["hosted" "benchmark"] remote/submit-workflow-benchmark!
@@ -110,15 +111,22 @@
                     (when-not (or retry?
                                   (confirm!
                                    (str "Submit " (:name payload) " at bundle " (:expected-bundle payload)
-                                        "?\n" (if (= backend "local")
+                                        "?\n" (cond (= backend "cli")
+                                                    (str "Claude Code text under Dvergr SCI; "
+                                                         (get-in payload [:limits :max-cli-runs]) " CLI Run admissions; "
+                                                         (get-in payload [:limits :max-model-steps]) " steps per cell. No resume/compaction. Not an HTTP or dollar cap.\n")
+                                                    (= backend "local")
                                                     (str "Local worker " (:worker payload) "; "
                                                          (* (max 1 (count (:cases payload))) (get payload :repetitions 1))
                                                          " cells/admissions. Usage unreported.\n")
-                                                    (str "Budget: " (get-in payload [:limits :budget-microdollars])
+                                                    :else (str "Budget: " (get-in payload [:limits :budget-microdollars])
                                                          " microdollars; " (get-in payload [:limits :max-dispatches]) " dispatches.\n"))
                                         (if (= mode "benchmark") "Wall time per cell: " "Wall time: ")
                                         (get-in payload [:limits :timeout-ms]) " ms"
                                         (when (= backend "local") " (includes cold startup)") ".\n"
+                                        (when-let [split (:split payload)]
+                                          (str "Evaluation split: " split
+                                               (when (= split "held-out") " — acceptance evaluation, not prompt tuning") ".\n"))
                                         (if (= mode "benchmark")
                                           "Operator benchmark: executes the saved checker, uses saved parameter defaults and discards candidate worlds."
                                           (if (= backend "local")
@@ -141,12 +149,16 @@
                       payload (or (when-not (:funded? draft) (:fund-request draft))
                                   (editor/allowance (:form draft) (str (random-uuid))))]
                   (when (confirm! (str "Provision execution allowance (not a payment): "
-                                       (if (= backend "local")
+                                       (if (= backend "cli")
+                                         (str (:max-cli-runs payload) " single-use CLI Run admissions (not HTTP dispatches or dollars)?")
+                                         (if (= backend "local")
                                          (str (:max-worker-admissions payload) " local worker admissions (not dollars/tokens)?")
                                          (str (:budget-microdollars payload) " microdollars and "
-                                              (:max-dispatches payload) " dispatches?"))))
+                                              (:max-dispatches payload) " dispatches?")))))
                     (change! name assoc :fund-request payload :fund-backend backend :funded? false)
-                    (request! :fund name #((if (= backend "local") remote/provision-local-workflow-allowance!
+                    (request! :fund name #((case backend
+                                              "cli" remote/provision-cli-workflow-allowance!
+                                              "local" remote/provision-local-workflow-allowance!
                                               remote/provision-workflow-allowance!) web/server-id room payload)
                               (fn [s reply] (-> s (assoc-in [:drafts name :funded?] true)
                                                 (assoc-in [:drafts name :fund-reply] reply))))))

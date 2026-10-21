@@ -250,7 +250,54 @@ the pinned workflow source and fixture/input overlays, not all room files.
 Authored checkers are not executed by this ordinary workflow control.
 
 To measure that workflow, an installation operator with current room read/merge
-authority can use the separate bounded benchmark control:
+authority can use the separate bounded benchmark control.
+
+A workflow may declare `benchmark.edn` with a versioned case partition, for
+example `{:version 1 :splits {:development ["example"] :held-out ["acceptance"]}}`.
+Every named case must occur exactly once; development is required. Such bundles
+require an explicit `split` in benchmark requests (`--split` in the local driver).
+Omitted cases expand only within that split; cross-split selections fail before
+provider preparation. The editor defaults to development, clears the case when
+switching splits, and identifies held-out submissions in confirmation. Legacy
+bundles without this file keep their original behavior. This is an experiment
+protocol, not an access-control barrier against the workflow's human author.
+Experiment metadata records the split, selected cases and a dataset identity
+covering the partition, fixtures and gold. Workflow and evaluator identities
+remain separately pinned. The example in `examples/workflows/market-discovery-eval`
+includes real vendor-documentation excerpts, a source-disjoint held-out group,
+negative calibration examples and a human review rubric. Its automated score
+does not measure market viability; correlated cases are not independent samples.
+The completed leaderboard shows the frozen split and dataset identity alongside
+the workflow bundle; its tooltip lists the selected cases. No split is invented
+for older experiments.
+
+Claude Code text benchmarks use the separate `simmis_cli-allowance` and
+`simmis_cli-benchmark` controls. They retain Dvergr's SCI tool loop and the same
+clean fixture/checker/result machinery. An operator explicitly provisions
+`max-cli-runs` (1–8), then submits an inspected bundle with models, repetitions,
+split/cases and limits `{:max-cli-runs N :max-model-steps S :timeout-ms T
+:settlement "discard"}`. Each cell consumes one conserved CLI Run admission,
+with at most 32 model steps and 600000 ms per cell. Automatic compaction,
+Run resume, delegation and automatic resubmission are disabled. These are not
+HTTP-dispatch or dollar-spend caps. The ordinary native benchmark contract
+continues to enforce its existing HTTP-dispatch accounting unchanged.
+
+The workflow editor exposes this as “This server · Claude Code text benchmark”.
+It uses the server's trusted, existing Claude login—not an uploaded credential.
+This experimental backend is disabled by default. A trusted operator enables it
+with JVM properties `simmis.cli-benchmarks.enabled=true`,
+`simmis.cli-benchmarks.unit=YOUR.service` and (optionally)
+`simmis.cli-benchmarks.manager=user` (`system` for a system service). Admission
+requires Linux cgroup v2 and verifies that the JVM is the service's main process, belongs to its cgroup,
+and has bounded whole-cgroup termination enabled. One service must exclusively
+own its runtime data directory. This is trusted CLI inference, not a sandbox
+for hostile native code. Abrupt crashes leave CLI requests pending for manual
+reconciliation: no automatic resumption, allowance return or cross-invocation
+recovery is claimed. Ordinary native benchmarks are unaffected.
+
+Initial text CLI execution also requires Linux process-session ownership. The results
+retain CLI/model/mode provenance and distinguish unknown usage from measured
+zero; subscription incremental and notional list-price costs remain separate.
 
 ```bash
 /usr/bin/python3 scripts/worker_driver.py --state /private/room-worker \
@@ -259,7 +306,7 @@ authority can use the separate bounded benchmark control:
   --case CASE_NAME --repetitions 1 --timeout-ms 300000
 ```
 
-Omit `--case` for all cases (at most four); repeat it to select cases. One or
+Omit `--case` for all cases in the selected split (at most four); repeat it to select cases. One or
 two repetitions allow at most eight serial cells. Fund the required admissions
 explicitly before submission; this command never funds or retries work. Run the
 local driver once per queued cell. Each cell is discarded after evaluation.

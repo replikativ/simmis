@@ -73,6 +73,18 @@
                #?(:clj (invoke-workflow (access/authenticated-party-id) room-id-str :simmis/work-allowance request)
                   :cljs nil)))
 
+(defn-spin-remote submit-cli-workflow-benchmark!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (invoke-workflow (access/authenticated-party-id) room-id-str :simmis/cli-benchmark request)
+                  :cljs nil)))
+
+(defn-spin-remote provision-cli-workflow-allowance!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (invoke-workflow (access/authenticated-party-id) room-id-str :simmis/cli-allowance request)
+                  :cljs nil)))
+
 (defn-spin-remote load-local-workflow-workers!
   [server-id room-id-str options]
   (spin-remote server-id [room-id-str options]

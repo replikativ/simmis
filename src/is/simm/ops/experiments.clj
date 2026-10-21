@@ -145,6 +145,25 @@
       (cond-> {:name name :bundle (str bundle-id)}
         (and (string? title) (seq title)) (assoc :title (subs title 0 (min 256 (count title))))))))
 
+(defn- evaluation-info
+  "Bounded frozen dataset provenance; never infer a split for old experiments."
+  [definition]
+  (let [{:keys [id version split cases]} (get-in definition [:experiment/metadata :simmis/evaluation])
+        dataset-id (when (and (string? id) (= 36 (count id))) (parse-uuid id))]
+    (when (and dataset-id (= 1 version) (#{"development" "validation" "held-out"} split)
+               (vector? cases) (<= 1 (count cases) 100)
+               (every? #(and (string? %) (<= 1 (count %) 100)) cases)
+               (= (count cases) (count (set cases))))
+      {:id (str dataset-id) :version version :split split :cases cases})))
+
+(defn- execution-info [definition]
+  (let [execution (get-in definition [:experiment/metadata :simmis/execution])]
+    (when (and (= :claude-cli (:adapter execution)) (= :text (:mode execution))
+               (= :cli-run-admission (:accounting execution)))
+      {:adapter :claude-cli :mode :text :accounting :cli-run-admission
+       :cli-version (let [v (get-in execution [:provider-policy :cli-version])]
+                      (when (and (string? v) (<= 1 (count v) 100)) v))})))
+
 (defn- frontier
   "Presentation evidence from the authorized Scorecard: frozen workflow
    identity and the report's tokens/time rows, keyed by candidate id."
@@ -158,6 +177,8 @@
                                           (assoc :attempt/id id)))
                                 (:scorecard/entries sc)))]
         {:workflow (workflow-info (:scorecard/experiment sc))
+         :evaluation (evaluation-info (:scorecard/experiment sc))
+         :execution (execution-info (:scorecard/experiment sc))
          :resources (into {}
                           (map (fn [r] [(id-str (:candidate r))
                                         (select-keys r [:tokens-per-attempt :input-per-attempt :output-per-attempt
@@ -169,11 +190,13 @@
    comparisons, with the frontier's tokens and time."
   [room principal scorecard-id]
   (let [detail (op room principal :scorecard/detail {:id (str scorecard-id)})
-        {:keys [resources workflow]} (frontier room scorecard-id)
+        {:keys [resources workflow evaluation execution]} (frontier room scorecard-id)
         exp (:experiment detail)]
     {:experiment (:content-id exp)
      :experiment-id (:id exp)
      :workflow workflow
+     :evaluation evaluation
+     :execution execution
      :complete? true
      :scorecard (:id detail)
      :environments (:environments exp)

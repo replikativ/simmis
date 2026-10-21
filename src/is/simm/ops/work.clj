@@ -123,6 +123,7 @@
                           :work.request/return-pending? :work.request/budget-microdollars
                           :work.request/max-dispatches :work.request/max-model-steps
                           :work.request/max-worker-admissions
+                          :work.request/max-cli-runs
                           :work.request/timeout-ms :work.request/settlement])))
 
 (defn provision-prepared!
@@ -195,7 +196,7 @@
         (let [job-ctx (if-let [context! (:job-context! prepared)]
                         (context! request) (:ctx room))]
           (jobs/start!
-           room {:kind (if (#{:benchmark :local-worker-benchmark} (:request-kind prepared)) :experiment :workflow)
+           room {:kind (if (#{:benchmark :cli-benchmark :local-worker-benchmark} (:request-kind prepared)) :experiment :workflow)
                  :ctx job-ctx :actor (:principal/actor principal)}
            (fn [job-id]
              (let [row (journal #(requests/record-job! conn id (:work.request/claim request) job-id))]

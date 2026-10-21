@@ -1,0 +1,1 @@
+{:status :ready-for-review :facts {"slack-doc" #{"Slack documents custom workflow steps using the Deno SDK or Bolt frameworks."} "n8n-doc" #{"n8n documents self-hosting on a user's own infrastructure."}} :required-facts #{"Slack documents custom workflow steps using the Deno SDK or Bolt frameworks." "n8n documents self-hosting on a user's own infrastructure."}}

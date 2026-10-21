@@ -15,6 +15,16 @@
             [is.simm.ops.experiments :as experiments]
             [org.replikativ.spindel.engine.core :as ec]))
 
+(deftest cli-label-uses-the-admitted-policy-not-an-independent-runtime-probe
+  (let [execution {:adapter :claude-cli :mode :text :accounting :cli-run-admission
+                   :provider-policy {:cli-version "pinned-version"}}
+        definition {:experiment/metadata {:claude-cli "different-probe" :simmis/execution execution}}]
+    (is (= "pinned-version" (:cli-version (#'experiments/execution-info definition))))
+    (is (nil? (#'experiments/execution-info (assoc-in definition [:experiment/metadata :simmis/execution :mode] :agent))))
+    (is (nil? (:cli-version (#'experiments/execution-info
+                             (assoc-in definition [:experiment/metadata :simmis/execution :provider-policy :cli-version]
+                                       (apply str (repeat 101 "x")))))))))
+
 (def ^:private exact-evaluator
   (evaluation/make-evaluator
    {:id :simmis-test/exact :version 1 :basis "simmis-experiments-test:v1"
@@ -33,6 +43,16 @@
     :world {:isolation :ctx :settlement :discard}}))
 
 (def ^:private cases 8)
+
+(deftest evaluation-projection-only-exposes-bounded-frozen-provenance
+  (let [info {:id (str (random-uuid)) :version 1 :split "development" :cases ["a" "b"]}
+        project #(@#'experiments/evaluation-info {:experiment/metadata {:simmis/evaluation %}})]
+    (is (= info (project (assoc info :private "not public"))))
+    (doseq [bad [nil (assoc info :id "not-a-uuid") (assoc info :split "secret")
+                 (assoc info :cases ["a" "a"]) (assoc info :cases [])
+                 (assoc info :cases [(apply str (repeat 101 "x"))])
+                 (assoc info :version 2)]]
+      (is (nil? (project bad))))))
 
 (deftest completeness-flags-survive-both-leaderboard-projections
   (let [flags {:priced? false :notional-priced? false :usage-reported? false
@@ -78,7 +98,9 @@
                      :candidates [(roster/agent team :right) (roster/agent team :wrong)]
                      :repetitions 1
                      :metadata {:simmis/workflow {:name "saved-review" :title "Frozen review title"
-                                                  :bundle "12345678-1234-1234-1234-123456789abc"}}})
+                                                  :bundle "12345678-1234-1234-1234-123456789abc"}
+                                :simmis/evaluation {:id "87654321-4321-4321-4321-cba987654321"
+                                                    :version 1 :split "held-out" :cases ["acceptance"]}}})
         room (d/make-room {:id :simmis-experiments-test :store (memory/make)})]
     (try
       (binding [ec/*execution-context* (:ctx room)]
@@ -100,6 +122,9 @@
             [e :as es] experiments]
         (is (= 1 (count es)))
         (is (= 0 running))
+        (is (= {:id "87654321-4321-4321-4321-cba987654321"
+                :version 1 :split "held-out" :cases ["acceptance"]}
+               (:evaluation e)))
         (testing "the Scorecard's leaderboard, in dvergr's order"
           (is (true? (:complete? e)))
           (is (= "simmis-test/exp" (:experiment-id e)))

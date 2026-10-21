@@ -10,7 +10,7 @@
 
 (def defaults
   {:backend "hosted" :worker "" :worker-admissions "1"
-   :model "" :case "" :mode "run" :repetitions "1"
+   :model "" :case "" :mode "run" :split "development" :repetitions "1" :cli-runs "2"
    :budget-microdollars "100000" :max-dispatches "4"
    :max-model-steps "4" :timeout-ms "120000" :timeout-default? true :settlement "review"})
 
@@ -22,7 +22,9 @@
   (let [updated (assoc form key value)
         timeout (get {"hosted" "120000" "local" "300000"} value)]
     (cond
+      (and (= :backend key) (= "cli" value)) (assoc updated :mode "benchmark")
       (= :timeout-ms key) (assoc updated :timeout-default? false)
+      (= :split key) (assoc updated :case "")
       (and (= :backend key) (true? (:timeout-default? form)) timeout)
       (assoc updated :timeout-ms timeout)
       :else updated)))
@@ -80,23 +82,34 @@
       n)))
 
 (defn local? [form] (= "local" (:backend form)))
+(defn cli? [form] (= "cli" (:backend form)))
+
+(defn benchmark-cases [inspection form]
+  (if-let [splits (get-in inspection [:evaluation :splits])]
+    (get splits (keyword (get form :split "development")))
+    (:cases inspection)))
 
 (defn limits [form]
-  (when-not (#{"hosted" "local"} (get form :backend "hosted"))
+  (when-not (#{"hosted" "local" "cli"} (get form :backend "hosted"))
     (invalid! "Choose an execution backend"))
   (cond-> {:timeout-ms (bounded-integer form :timeout-ms 1000 600000)
            :settlement (if (= "benchmark" (:mode form)) "discard"
                            (if (#{"review" "discard"} (:settlement form)) (:settlement form)
                                (invalid! "Choose review or discard settlement")))}
-    (not (local? form))
+    (cli? form)
+    (assoc :max-cli-runs (bounded-integer form :cli-runs 1 8)
+           :max-model-steps (bounded-integer form :max-model-steps 1 32))
+    (and (not (local? form)) (not (cli? form)))
     (assoc :budget-microdollars (bounded-integer form :budget-microdollars 1 5000000)
    :max-dispatches (bounded-integer form :max-dispatches 1 32)
            :max-model-steps (bounded-integer form :max-model-steps 1 32))))
 
 (defn allowance [form request-id]
-  (if (local? form)
+  (cond
+    (cli? form) {:request-id request-id :max-cli-runs (bounded-integer form :cli-runs 1 8)}
+    (local? form)
     {:request-id request-id :max-worker-admissions (bounded-integer form :worker-admissions 1 32)}
-    (assoc (select-keys (limits form) [:budget-microdollars :max-dispatches]) :request-id request-id)))
+    :else (assoc (select-keys (limits form) [:budget-microdollars :max-dispatches]) :request-id request-id)))
 
 (defn submission [draft request-id]
   (when (dirty? draft) (invalid! "Save and inspect these changes before running"))
@@ -109,6 +122,7 @@
         local? (local? form)
         model (str/trim (:model form))]
     (when-not (:ok inspection) (invalid! "Repair this workflow before running"))
+    (when (and (cli? form) (not benchmark?)) (invalid! "CLI text execution currently supports benchmarks only"))
     (when (and (not local?) (or (str/blank? model) (> (count model) 200))) (invalid! "Enter an explicit model id"))
     (when (and local? (not (re-matches #"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}" (str (:worker form)))))
       (invalid! "Select an explicitly enrolled local worker"))
@@ -119,11 +133,17 @@
                  local? (assoc :worker (:worker form)))]
       (if benchmark?
         (let [repetitions (bounded-integer form :repetitions 1 2)
-              cell-cases (if (seq selected) [selected] cases)]
+              allowed (benchmark-cases inspection form)
+              split (get form :split "development")
+              cell-cases (if (seq selected) [selected] allowed)]
+          (when (and (:evaluation inspection)
+                     (or (empty? allowed) (not-every? (set allowed) cell-cases)))
+            (invalid! "Choose cases from the selected evaluation split"))
           (when (not= params (parameters source)) (invalid! "Benchmarking uses saved defaults; save parameter changes in workflow.edn first"))
           (when (or (> (count cell-cases) 4) (> (* (max 1 (count cell-cases)) repetitions) 8))
             (invalid! "Choose fewer benchmark cases (maximum eight cells)"))
           (cond-> (assoc base :repetitions repetitions)
+            (:evaluation inspection) (assoc :split split)
             (not local?) (assoc :models [model])
             (seq cell-cases) (assoc :cases (vec cell-cases))))
         (do

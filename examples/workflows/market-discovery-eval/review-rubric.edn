@@ -1,0 +1,11 @@
+{:version 1
+ :automated-scope [:output-contract :source-id-integrity :exact-fact-extraction :empty-evidence-abstention]
+ :human-dimensions
+ [{:id :evidence-boundaries :question "Are vendor assertions, independent observations and customer evidence distinguished?"}
+  {:id :alternative-analysis :question "Does the analysis relate alternatives to the same customer job, rather than feature-counting?"}
+  {:id :discriminating-experiments :question "Could the proposed question/experiment change a product decision; does it seek disconfirmation?"}
+  {:id :uncertainty :question "Are unsupported inferences, conflicting evidence and missing demand/pricing clearly identified?"}]
+ :rating {:scale [0 1 2] :meaning {0 "Unsupported or absent" 1 "Partially useful" 2 "Specific, supported and actionable"}}
+ :policy "Retain component ratings and reviewer identity; do not conflate automated pass rate with business quality."
+ :holdout "Use development cases for iteration. Held-out vendors/documents are disjoint from development. Adversarial and automation holdout cases share documents and are correlated; they are not independent samples."
+ :limitations "Four small evidence-discipline cases are a development benchmark, not a representative market survey or calibrated product-demand model."}

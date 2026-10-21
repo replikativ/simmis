@@ -9,6 +9,7 @@
             [geschichte.content :as content]
             [geschichte.query :as query]
             [hasch.core :as hasch]
+            [is.simm.ops.benchmark-dataset :as dataset]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.nio ByteBuffer]
@@ -112,15 +113,17 @@
     (if (seq problems)
       {:ok false :name name :checker-executed? false :problems problems}
       (try
-        (let [bundle (catalog/bundle name (:files snapshot))]
+        (let [bundle (catalog/bundle name (:files snapshot))
+              evaluation (dataset/manifest (:files snapshot) (keys (:cases bundle)))]
           (when-not (m/validate catalog/Definition (:definition bundle))
             (invalid! "workflow.edn must be a valid workflow definition map"))
-          {:ok true :name name :bundle (str (:id bundle))
-           :title (get-in bundle [:definition :title])
-           :files (count (:manifest snapshot))
-           :bytes (reduce + 0 (map :size (:manifest snapshot)))
-           :cases (vec (keys (:cases bundle)))
-           :checker-executed? false})
+          (cond-> {:ok true :name name :bundle (str (:id bundle))
+                   :title (get-in bundle [:definition :title])
+                   :files (count (:manifest snapshot))
+                   :bytes (reduce + 0 (map :size (:manifest snapshot)))
+                   :cases (vec (keys (:cases bundle)))
+                   :checker-executed? false}
+            evaluation (assoc :evaluation evaluation)))
         (catch Exception e
           {:ok false :name name :checker-executed? false :problems [(ex-message e)]})))))
 
@@ -174,7 +177,7 @@
   "Bound diagnostics and metadata for MCP's finite JSON result envelope.
    Full source and case filenames remain available through source pages."
   [inspection]
-  (cond-> (select-keys inspection [:ok :name :bundle :revision :files :bytes :checker-executed?])
+  (cond-> (select-keys inspection [:ok :name :bundle :revision :files :bytes :checker-executed? :evaluation])
     (:title inspection) (assoc :title (subs (:title inspection) 0 (min 256 (count (:title inspection)))))
     (contains? inspection :problems)
     (assoc :problems (mapv #(subs % 0 (min 256 (count %))) (take 10 (:problems inspection)))

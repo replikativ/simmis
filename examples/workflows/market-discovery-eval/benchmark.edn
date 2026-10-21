@@ -1,0 +1,2 @@
+{:version 1 :splits {:development ["dev-empty" "dev-notes"]
+                     :held-out ["holdout-automation" "holdout-source-instructions"]}}

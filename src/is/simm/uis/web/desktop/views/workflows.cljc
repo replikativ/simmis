@@ -17,7 +17,10 @@
                         {:list (boolean (get-in state [:loading :list]))} [:source :save :submit :fund])
         write? (:write? permissions) merge? (:merge? permissions)
         benchmark? (= "benchmark" (:mode form))
+        display-cases (if benchmark? (editor/benchmark-cases (:inspection source) form)
+                          (get-in source [:inspection :cases]))
         local? (editor/local? form)
+        cli? (editor/cli? form)
         funded-here? (and (:funded? draft) (= (:fund-backend draft "hosted") (:backend form "hosted")))
         change #(apply (:change actions) selected %&)
         set-form (fn [key value] (change update :form editor/set-form-field key value))
@@ -103,8 +106,13 @@
                                                           (el/span {} "Execution backend")
                                                           (el/select {:value (get form :backend "hosted")
                                                                       :on-change (fn [e] (set-form :backend #?(:cljs (.. e -target -value) :clj "hosted")))}
-                                                                     (el/option {:value "hosted"} "Hosted provider")
+                                                                     (el/option {:value "hosted"} "This Simmis server")
+                                                                     (when (:operator? permissions)
+                                                                       (el/option {:value "cli"} "This server · Claude Code text benchmark"))
                                                                      (el/option {:value "local"} "My enrolled local SCI worker")))
+                                                (when-not local?
+                                                  (el/p {:class "workflow-note"}
+                                                        "Runs on this Simmis instance, including when it runs on your computer. Model inference uses its configured provider."))
                                                 (if local?
                                                   (el/div {}
                                                           (el/button {:disabled (get-in state [:loading :workers])
@@ -121,18 +129,26 @@
                                                             (el/button {:disabled (get-in state [:loading :workers])
                                                                         :on-click (fn [_] ((:more-workers actions)))} "More workers"))
                                                           (el/p {:class "workflow-note"} "Enrollment is not liveness. Start the private local driver separately; no login is uploaded. Allowance uses admissions, not measured dollars or tokens. Wall time includes cold JVM/interpreter startup; new local forms default to 300000 ms."))
-                                                  (field "Model id (explicit native provider)" (:model form) #(set-form :model %)))
+                                                  (field (if cli? "Model id (Claude Code text)" "Model id (explicit native provider)") (:model form) #(set-form :model %)))
                                                 (el/label {:class "workflow-field"}
                                                           (el/span {} "Mode")
                                                           (el/select {:value (:mode form) :on-change (fn [e] (set-form :mode #?(:cljs (.. e -target -value) :clj "run")))}
-                                                                     (el/option {:value "run"} "Ordinary Run")
+                                                                     (when-not cli? (el/option {:value "run"} "Ordinary Run"))
                                                                      (when (:operator? permissions) (el/option {:value "benchmark"} "Operator benchmark"))))
-                                                (when (seq (get-in source [:inspection :cases]))
+                                                (when (and benchmark? (get-in source [:inspection :evaluation]))
+                                                  (el/label {:class "workflow-field"}
+                                                            (el/span {} "Evaluation split")
+                                                            (el/select {:value (get form :split "development")
+                                                                        :on-change (fn [e] (set-form :split #?(:cljs (.. e -target -value) :clj "development")))}
+                                                                       (for [split ["development" "validation" "held-out"]
+                                                                             :when (get-in source [:inspection :evaluation :splits (keyword split)])]
+                                                                         (el/option {:key split :value split} split)))))
+                                                (when (seq display-cases)
                                                   (el/label {:class "workflow-field"}
                                                             (el/span {} "Case")
                                                             (el/select {:value (:case form) :on-change (fn [e] (set-form :case #?(:cljs (.. e -target -value) :clj "")))}
-                                                                       (el/option {:value ""} (if benchmark? "All cases (up to4)" "Choose a case"))
-                                                                       (for [case (get-in source [:inspection :cases])]
+                                                                       (el/option {:value ""} (if benchmark? "All selected-split cases (up to4)" "Choose a case"))
+                                                                       (for [case display-cases]
                                                                          (el/option {:key case :value case} case)))))
                                                 (for [[name value] (:params form)]
                                                   (field (str "Parameter · " name) (str value) #(change assoc-in [:form :params name] %)))
@@ -140,10 +156,14 @@
                                                   (el/div {}
                                                           (el/p {:class "workflow-note"} "Operator-only: executes the saved checker, uses saved parameter defaults, and discards candidate worlds. Save parameter changes in workflow.edn before benchmarking.")
                                                           (field "Repetitions (1–2; maximum8 cells total)" (:repetitions form) #(set-form :repetitions %))))
-                                                (for [[key label] (if local?
+                                                (for [[key label] (cond
+                                                                   cli? [[:cli-runs "Allowance · single-use CLI Runs (1–8)"]
+                                                                         [:max-model-steps "Model steps per cell (1–32)"]
+                                                                         [:timeout-ms "Wall time per cell · milliseconds (1000–600000)"]]
+                                                                   local?
                                                                    [[:worker-admissions "Allowance · local admissions (1–32)"]
                                                                     [:timeout-ms "Wall time · milliseconds (1000–600000)"]]
-                                                                   [[:budget-microdollars "Budget · microdollars (1–5000000)"]
+                                                                   :else [[:budget-microdollars "Budget · microdollars (1–5000000)"]
                                                                    [:max-dispatches "Model HTTP dispatches (1–32)"]
                                                                    [:max-model-steps "Model steps (1–32)"]
                                                                     [:timeout-ms "Wall time · milliseconds (1000–600000)"]])]
@@ -156,9 +176,10 @@
                                                                        (el/option {:value "review"} "Retain for review — no automatic merge")
                                                                        (el/option {:value "discard"} "Capture output and discard work"))))
                                                 (el/p {:class "workflow-note"}
-                                                      (if local?
+                                                      (cond cli? "Experimental, operator-enabled backend. Dvergr owns the SCI tool loop; Claude Code provides text inference only. One funded admission per cell; finite steps/time, no compaction, resume or automatic retry. Not an internal HTTP-request or dollar cap. Server crashes leave requests pending for manual reconciliation."
+                                                        local?
                                                         "Local Runs receive pinned workflow inputs only; benchmarks receive clean fixtures without checker/gold. One admission per cell. Run the local driver per queued cell and check Job completion; an empty queue is not completion. Nothing auto-merges or auto-funds."
-                                                        "Ordinary Runs inherit room files. Frozen source and input changes appear in the proposed diff. Completion does not prove correctness. Allowance is never provisioned automatically."))
+                                                        :else "Ordinary Runs inherit room files. Frozen source and input changes appear in the proposed diff. Completion does not prove correctness. Allowance is never provisioned automatically."))
                                                 (el/div {:class "workflow-toolbar"}
                                                         (el/button {:disabled (or (:submit loading) uncertain? (editor/dirty? draft) (not (get-in source [:inspection :ok])))
                                                                     :on-click (fn [_] ((:submit actions) selected false))} "Confirm and submit")

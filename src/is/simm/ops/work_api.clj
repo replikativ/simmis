@@ -25,6 +25,8 @@
 
 (def task-schema (external-schema work/task-schema))
 (def benchmark-schema (external-schema benchmarks/schema))
+(def cli-benchmark-schema (external-schema benchmarks/cli-schema))
+(def cli-allowance-schema (external-schema benchmarks/cli-allowance-schema))
 (def allowance-schema (external-schema work/allowance-schema))
 (def status-schema [:map {:closed true} room-entry [:id uuid-string]])
 (def post-schema
@@ -111,6 +113,8 @@
                                :is.simm.ops.benchmarks/conflict 409
                                :is.simm.ops.benchmarks/busy 409
                                :is.simm.ops.benchmarks/unavailable 503
+                               :is.simm.ops.cli-owner/disabled 503
+                               :is.simm.ops.cli-owner/unavailable 503
                                :is.simm.ops.worker-control/disabled 503
                                :is.simm.ops.worker-control/invalid 400
                                :is.simm.ops.worker-service/invalid 400
@@ -165,6 +169,23 @@
              (guarded host #(let [[_ _ room] (room! host (:room args))]
                               (git-snapshot/chunk room (uuid! (:expected-snapshot args)) (:offset args)
                                                   (get args :length (:chunk-bytes git-snapshot/policy))))))}
+    :simmis/cli-benchmark
+    {:kind :write :schema cli-benchmark-schema :authz {:action :merge}
+     :doc "Operator-only offline benchmark using Claude Code TEXT inference under Dvergr's SCI loop. Explicit single-use CLI Run admissions, finite steps/deadline, no compaction, resume, delegation or automatic retry. Not HTTP-dispatch accounting. Same frozen fixtures/checker/Attempts/Scorecards; discard only."
+     :impl (fn [host args]
+             (checked! cli-benchmark-schema args)
+             (guarded host #(let [[conn id room] (room! host (:room args))]
+                              (benchmarks/submit-cli! conn (:execution-ctx host) ops/*principal* id room
+                                                      (-> (dissoc args :room) (update :request-id uuid!)
+                                                          (update :expected-bundle uuid!))))))}
+    :simmis/cli-allowance
+    {:kind :write :schema cli-allowance-schema :authz {:action :merge}
+     :doc "Explicit finite operator allowance for single-use Claude CLI Runs. One admission per benchmark cell, not one internal HTTP request; no dollar-spend-cap claim. Stable request-id; no automatic funding."
+     :impl (fn [host args]
+             (checked! cli-allowance-schema args)
+             (guarded host #(let [[conn id room] (room! host (:room args))]
+                              (benchmarks/provision-cli! conn (:execution-ctx host) ops/*principal* id room
+                                                        (-> (dissoc args :room) (update :request-id uuid!))))))}
     :simmis/benchmark
     {:kind :write :schema benchmark-schema :authz {:action :merge}
      :doc "Admit an exact inspected workflow bundle as an OFFLINE benchmark. Requires installation operator AND current room merge authority: checker code is trusted-operator SCI, cooperatively bounded, NOT hard OS isolation. Maximum eight cells, one at a time, native providers only, explicit aggregate money/dispatch allowance, /out capture, discard settlement. Optional calibration.edn runs reference/damaged answers before each candidate without exposing them to it. Results use the room's existing Attempts, Scorecards and experiment reports. request-id retries observe the same job; expected-bundle pins the reviewed revision. No judge, live web, arbitrary eval or automatic checker promotion."

@@ -9,6 +9,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.model.workers :as workers]
             [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.benchmark-dataset :as dataset]
             [is.simm.ops.checkers :as checkers]
             [is.simm.ops.work :as work]
             [is.simm.ops.worker-files :as files]
@@ -23,6 +24,7 @@
   [:map {:closed true} [:request-id :uuid] [:worker :uuid]
    [:name workflows/name-schema] [:expected-bundle :uuid]
    [:repetitions [:int {:min 1 :max 2}]]
+   [:split {:optional true} dataset/split-schema]
    [:cases {:optional true} [:vector {:min 1 :max 4} [:string {:min 1 :max 100}]]]
    [:limits files/limits-schema]])
 
@@ -62,7 +64,8 @@
     (refuse! "Local benchmarks require finite discard-only limits"))
   (let [inspection (workflows/inspect-snapshot name snapshot)
         available (set (:cases inspection))
-        selected (if (seq available) (or cases (vec (sort available))) [nil])]
+        selection (dataset/select-cases (:files snapshot) available input)
+        selected (if (seq available) (:cases selection) [nil])]
     (when-not (and (:ok inspection) (= (str expected-bundle) (:bundle inspection))
                    (<= (count selected) (:max-cases policy))
                    (= (count selected) (count (set selected)))
@@ -114,8 +117,11 @@
                 :team team :environments environments :repetitions repetitions :parallelism 1
                 :dataset {:id (keyword "simmis.local-benchmark" name)}
                 :capabilities {:world-setup setup :evaluator evaluator}
-                :metadata {:worker-policy policy :usage-measurement :unreported-local-subscription
-                           :operator-admitted-bundle (str expected-bundle)}}
+                :metadata (cond-> {:worker-policy policy :usage-measurement :unreported-local-subscription
+                                   :simmis/execution {:adapter :local-sci-worker :program :protocol
+                                                      :model (:model config)}
+                                   :operator-admitted-bundle (str expected-bundle)}
+                            (:metadata selection) (assoc :simmis/evaluation (:metadata selection)))}
           experiment (runner/experiment-def plan)]
       {:request-kind :local-worker-benchmark :bundle bundle :plan (assoc plan :experiment experiment)
        :resources {local/admission-unit (bigdec (* repetitions (count selected)))} :resource-units local/units
