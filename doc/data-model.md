@@ -140,6 +140,17 @@ the exact immutable DB produced by the view is supported; that does not make
 it an admissible source for another preparation. These host-side experimental
 views do not migrate the existing wiki or activate typed Memory controls.
 
+`documents.property-source` is a separate pure token-replacement codec for
+existing scalar frontmatter leaves. It checks the exact source revision,
+uses the same bounded safe YAML policy as the Markdown parser, and converts
+parser code-point marks to original UTF-16 source positions. Only the selected
+token changes; comments, unrelated metadata, line endings and the body remain
+intact. A semantic no-op retains every byte. Reparsing verifies the complete
+intended metadata delta. Anchors/aliases, explicit tags, multiline tokens,
+missing fields and structured values refuse instead of receiving a lossy
+whole-map rewrite. This API neither validates trusted property definitions nor
+publishes files; it is not a schema guard or permission boundary.
+
 ## Existing KB vocabulary
 
 Everything stored in a KB or a room store is described by one small vocabulary.

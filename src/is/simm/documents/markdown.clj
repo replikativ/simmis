@@ -65,6 +65,13 @@
 
 (defn revision [source] (hasch/uuid (source-bytes source)))
 
+(defn yaml-options
+  "One safe YAML policy for semantic parsing and source-span composition."
+  []
+  {:keywords false :unsafe false :allow-duplicate-keys false
+   :allow-recursive-keys false :max-aliases-for-collections 0
+   :nesting-depth-limit 30 :code-point-limit max-source-bytes})
+
 (defn- frontmatter [source]
   (when-let [opening (re-find #"\A\uFEFF?---[ \t]*(?:\r\n|\n|\r)" source)]
     (let [start (count opening)
@@ -75,12 +82,7 @@
               raw (subs source start end)]
           (merge {:from 0 :to (.end matcher) :value-from start :value-to end :raw raw}
                  (try
-                   (let [value (yaml/parse-string raw :keywords false :unsafe false
-                                                  :allow-duplicate-keys false
-                                                  :allow-recursive-keys false
-                                                  :max-aliases-for-collections 0
-                                                  :nesting-depth-limit 30
-                                                  :code-point-limit max-source-bytes)]
+                   (let [value (apply yaml/parse-string raw (mapcat identity (yaml-options)))]
                      (if (or (nil? value) (map? value))
                        {:properties (or value {}) :diagnostics []}
                        {:properties nil :diagnostics [{:kind :frontmatter/not-a-map}]}))
