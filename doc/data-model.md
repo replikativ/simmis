@@ -71,6 +71,16 @@ type properties is conservatively unsupported. Relations, unique properties
 and owner-managed/computed values still require separate gates; this compiler
 does not publish canonical instances or activate typed controls in Memory.
 
+`decode-candidate` is a separate, versioned staging API for later canonical
+validation. It always returns `:status :pending`, normalized `:candidate-values`
+(not final `:values`), and explicit reference/uniqueness claims. Only trusted
+reference-typed properties interpret canonical UUID strings or `{id, path}`
+maps; the optional bounded path is an inert hint. Scalar UUIDs and unknown
+metadata do not become relations. Targets are not resolved, uniqueness is not
+certified and no queries, stubs or transaction data are produced. The strict
+two-argument decoders retain their refusals. This candidate API is not wired
+into the scalar view profile described below.
+
 ### Opt-in canonical scalar views
 
 `documents.space/provision!` explicitly provisions a new, privately owned,
