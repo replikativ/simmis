@@ -435,10 +435,10 @@
                                ;; profiles before Room publication. #384 adds
                                ;; targeted live registration and admits ordinary
                                ;; agent ChatContexts when checking canonical
-                               ;; messages identity. Public immutable PR head;
-                               ;; adopt its permanent squash after upstream CI.
+                               ;; messages identity. Permanent main squash,
+                               ;; tree-identical to the reviewed, green PR head.
                                ;; Adopt only in a fresh runtime, never hot reload.
-                               :git/sha "5cae78cd988b15fff929eb08da4dcf070ad788b0"
+                               :git/sha "7bb754597ff1c364c2983b7801f04864bd706e4e"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.
