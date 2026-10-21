@@ -11,11 +11,14 @@
             [geschichte.repo :as repo]
             [hasch.core :as hasch]
             [is.simm.documents.blocks :as blocks]
+            [is.simm.documents.canonical :as canonical]
             [is.simm.documents.files :as files]
             [is.simm.documents.identity :as identity]
             [is.simm.documents.markdown :as markdown]
+            [is.simm.documents.metadata :as metadata]
             [is.simm.documents.properties :as properties]
-            [is.simm.documents.repository :as documents]))
+            [is.simm.documents.repository :as documents]
+            [is.simm.documents.space :as space]))
 
 (def ^:private max-files 200)
 (def ^:private max-scanned-entries 20000)
@@ -48,6 +51,11 @@
        :or {roots [""] exclude-prefixes [] property-bindings {}} :as options}]
   ;; The experimental singular spelling must not silently widen to all files.
   (when (contains? options :root) (refuse! :invalid-selection-policy))
+  (when (and (contains? options :entity-profile) (not= space/profile (:entity-profile options)))
+    (refuse! :unsupported-entity-profile))
+  (when (:entity-profile options)
+    (when-not (space/provisioned? db) (refuse! :unprovisioned-canonical-space))
+    (when (seq property-bindings) (refuse! :mixed-property-profiles)))
   (when (nil? schema-revision) (refuse! :missing-schema-revision))
   (let [prefixes (policy-prefixes! roots)
         excluded (policy-prefixes! exclude-prefixes)
@@ -82,17 +90,63 @@
           (refuse! :unsupported-file)))
       (when (> (reduce + 0 (map :size (vals files))) max-total-bytes)
         (refuse! :too-many-source-bytes))
-      {:repository-id repository-id :selection-kind :worktree
+      (cond-> {:repository-id repository-id :selection-kind :worktree
        :roots prefixes :exclude-prefixes excluded :projection-version 3
        :files files :codec markdown/syntax-profile :block-codec blocks/profile
        :property-schema (:revision (properties/compile-schema db property-bindings))
-       :schema-revision schema-revision})))
+       :schema-revision schema-revision}
+        (:entity-profile options)
+        (assoc :entity-profile space/profile :canonical-codec canonical/profile
+               :metadata-codec metadata/profile :typed-property-codec properties/typed-profile)))))
+
+(declare canonical-base! projection-schema!)
 
 (defn current?
   "Whether this view still matches the selected source and trusted schema.
    A true answer is as-of this DB snapshot, not a lock on subsequent writes."
   [db options view]
-  (= (:selection view) (selection db options)))
+  (try
+    (and (= (:selection view) (selection db options))
+         (or (nil? (:entity-profile options))
+             (let [own-derived? (identical? db (:db view))]
+               (canonical-base! db own-derived?)
+               (and (canonical/current? db (:typed-scopes view))
+                    (or own-derived? (canonical/source-available? db (:documents view)))))))
+    (catch clojure.lang.ExceptionInfo error
+      (if (and (:entity-profile options) (= ::refused (:type (ex-data error))))
+        false
+        (throw error)))))
+
+(defn- canonical-base!
+  ([db] (canonical-base! db false))
+  ([db own-derived?]
+  (let [schema (d/schema db)]
+    (doseq [[attr expected]
+            {:entity/uuid {:db/valueType :db.type/uuid :db/cardinality :db.cardinality/one
+                           :db/unique :db.unique/identity}
+             :instance/of-role {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many}}]
+      (when-not (= expected (select-keys (get schema attr) (keys expected)))
+        (refuse! :incompatible-canonical-identity-schema)))
+    (when-not (every? #(contains? schema (:db/ident %)) documents/schema)
+      (refuse! :missing-canonical-document-schema))
+    (projection-schema! db)
+    (when-not (= {:db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                  :db/unique :db.unique/value}
+                 (select-keys (:S.Page/title schema) [:db/valueType :db/cardinality :db/unique]))
+      (refuse! :incompatible-canonical-page-title))
+    (when (and (not own-derived?)
+               (some #(seq (d/datoms db :aevt (:db/ident %))) documents/schema))
+      (refuse! :derived-db-is-not-canonical-source)))))
+
+(defn- projection-schema! [db]
+  (let [schema (d/schema db)]
+    (doseq [expected documents/schema
+            :let [actual (get schema (:db/ident expected))]
+            :when actual]
+      (when-not (and (= expected (select-keys actual (keys expected)))
+                     (= (boolean (:db/isComponent expected)) (boolean (:db/isComponent actual)))
+                     (= (:db/unique expected) (:db/unique actual)))
+        (refuse! :incompatible-projection-schema)))))
 
 (defn- projection-ownership!
   "Only our disposable schema/entities may be replaced in a derived view.
@@ -101,13 +155,7 @@
   [db]
   (let [schema (d/schema db)
         allowed (set (map :db/ident documents/schema))]
-    (doseq [expected documents/schema
-            :let [actual (get schema (:db/ident expected))]
-            :when actual]
-      (when-not (and (= expected (select-keys actual (keys expected)))
-                     (= (boolean (:db/isComponent expected)) (boolean (:db/isComponent actual)))
-                     (= (:db/unique expected) (:db/unique actual)))
-        (refuse! :incompatible-projection-schema)))
+    (projection-schema! db)
     (when (or (contains? schema :document/id) (contains? schema :document.node/kind)
               (contains? schema :document.block/id))
       (let [roots (when (contains? schema :document/id)
@@ -155,6 +203,8 @@
    Invalid documents return diagnostics without a queryable partial DB."
   [source-db options]
   (let [selected (selection source-db options)
+        canonical? (some? (:entity-profile options))
+        _ (when canonical? (canonical-base! source-db))
         _ (projection-ownership! source-db)
         property-schema (properties/compile-schema source-db (get options :property-bindings {}))
         docs (:documents
@@ -185,6 +235,7 @@
                                                                             (concat (:diagnostics identity)
                                                                                     (:diagnostics property-values))))))})))
                       {:documents [] :node-count 0} (:files selected)))
+        canonical-result (when canonical? (canonical/prepare source-db docs))
         duplicate-ids (->> docs (keep :id) frequencies (keep (fn [[id n]] (when (> n 1) id))) set)
         semantic-ids (mapcat (fn [doc]
                               (cons {:id (:id doc) :path (:path doc)}
@@ -194,28 +245,33 @@
         duplicate-semantic-ids (->> semantic-ids (keep :id) frequencies
                                     (keep (fn [[id n]] (when (> n 1) id))) set)
         diagnostics (into (vec (mapcat :diagnostics docs))
-                          (concat (for [doc docs :when (contains? duplicate-ids (:id doc))]
+                          (concat (:diagnostics canonical-result)
+                                  (for [doc docs :when (contains? duplicate-ids (:id doc))]
                                     {:kind :duplicate-document-id :path (:path doc)})
                                   (for [{:keys [id path from]} semantic-ids
                                         :when (and (some? from) (contains? duplicate-semantic-ids id))]
                                     {:kind :duplicate-semantic-id :path path :from from})))
-        base {:id (hasch/uuid selected) :selection selected
-              :documents docs :diagnostics diagnostics}]
+        base (cond-> {:id (hasch/uuid selected) :selection selected
+                      :documents docs :diagnostics diagnostics}
+               canonical? (assoc :id (hasch/uuid [selected (:scopes canonical-result)])
+                                 :typed-scopes (:scopes canonical-result)))]
     (if (seq diagnostics)
       (assoc base :status :invalid)
       (let [installed (set (d/q '[:find [?a ...] :where [_ :db/ident ?a]] source-db))
             missing (remove #(contains? installed (:db/ident %)) documents/schema)
             old (when (contains? installed :document/id)
                   (d/q '[:find [?e ...] :where [?e :document/id]] source-db))
-            projection (map (fn [{:keys [id path content revision nodes properties semantic]}]
+            projection (map (fn [{:keys [id path content revision nodes properties semantic] :as document}]
                               (merge (:values properties)
                                {:document/id id :document/path path
                                :document/source-content [:geschichte.content/id content]
                                :document/revision revision :document/projection-version 3
                                :document/valid? true
                                :document/blocks (mapv blocks/entity-tx (:blocks semantic))
-                               :document/nodes (mapv documents/syntax-node-tx (range) nodes)})) docs)
-            tx (vec (concat missing (map #(vector :db/retractEntity %) old) projection))]
+                               :document/nodes (mapv documents/syntax-node-tx (range) nodes)}
+                               (when canonical? (canonical/document-tx document))))
+                            (if canonical? (:documents canonical-result) docs))
+            tx (vec (concat missing (when-not canonical? (map #(vector :db/retractEntity %) old)) projection))]
         (assoc base :status :ready :db (if (seq tx) (d/db-with source-db tx) source-db))))))
 
 (defn current-view

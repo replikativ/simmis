@@ -71,6 +71,43 @@ type properties is conservatively unsupported. Relations, unique properties
 and owner-managed/computed values still require separate gates; this compiler
 does not publish canonical instances or activate typed controls in Memory.
 
+### Opt-in canonical scalar views
+
+`documents.space/provision!` explicitly provisions a new, privately owned,
+unpublished connection. It accepts only non-attribute-ref, write-schema
+Datahike genesis: empty schema/datoms and unchanged genesis counters. It reuses
+the Geschichte/document initializer and the shared `model.store/install!`,
+including the categorical seed and accounting governor. A repository profile
+is recorded last. Existing or partly provisioned stores refuse; this is not a
+migration or document-open callback. The marker indicates readiness, not
+permission, exclusivity or continued process-local governor registration.
+
+Passing that profile as `:entity-profile` to the existing `documents.view`
+pipeline enables a bounded, immutable canonical scalar projection. Roots need
+explicit document IDs and acquire the trusted Page role; explicit semantic
+blocks acquire the Block role. Additional declared types use the same
+`:entity/uuid`, `:instance/of-role` and canonical property attributes as existing
+queries. Provisional groups and syntax nodes remain noncanonical. Scope
+compilation is deduplicated per view and bounded across the whole selection.
+
+The generated Page title is the full repository-relative path. Its fixed
+trusted property definition is validated and its path value goes through
+strict scalar decoding and requiredness checks. File aliases cannot target
+that generated storage, even with a nil value. Existing title/UUID collisions
+refuse rather than upsert. Other unique fields and relation values remain
+unsupported by this scalar profile and produce diagnostics without a partial
+queryable DB. Changed owner/validator/computation constraints are not bypassed.
+
+The canonical source may contain unrelated authored/domain facts but no
+materialized document projection datoms. Preparation never retracts canonical
+entities or reuses a derived DB as a new source. It only applies `db-with` to a
+captured base, leaving source bytes, the connection and original stores intact.
+Freshness checks source selection, codecs, actual compiled definitions and
+relevant new UUID/title collisions, not unrelated transaction counts. Checking
+the exact immutable DB produced by the view is supported; that does not make
+it an admissible source for another preparation. These host-side experimental
+views do not migrate the existing wiki or activate typed Memory controls.
+
 ## Existing KB vocabulary
 
 Everything stored in a KB or a room store is described by one small vocabulary.
