@@ -295,7 +295,7 @@
         ;; Add optional fields
         morphism-entity (cond-> morphism-entity
                           property-type (assoc :morphism/property-type property-type)
-                          optional? (assoc :morphism/optional? optional?)
+                          (some? optional?) (assoc :morphism/optional? optional?)
                           computation (assoc :morphism/computation computation)
                           validation (assoc :morphism/validation validation)
                           attr-type (assoc :morphism/attr-type attr-type)

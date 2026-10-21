@@ -60,6 +60,10 @@ definitions. Plain imports remain provisional; decoding never inserts IDs.
 Everything stored in a KB or a room store is described by one small vocabulary.
 You cannot read the wiki, type or property code without it.
 
+Property definitions preserve an explicit `:morphism/optional? false` (required)
+separately from true (optional) and absence (unspecified). The shared morphism
+writer does not turn a required declaration into an unspecified one.
+
 Host-side work admission is control-plane data in the system DB, separate from
 the speculative KB/room worlds. `model/work_requests.clj` declares typed
 `:work.request/*` identities, ownership, limits, lifecycle and job-pointer
