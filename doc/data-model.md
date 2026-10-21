@@ -18,6 +18,43 @@ source-selected disposable query view do not install untrusted schema or
 execute imported code/widgets. Existing legacy KB entities are retained; this
 surface is not a completed migration of their identity or widget semantics.
 
+### Portable typed declarations
+
+`documents.metadata` provides a separate inert declaration codec, identified by
+`:simmis/markdown-metadata` version 1. It does not replace the existing trusted
+scalar-property decoder or activate types in the Memory editor. Its `:ready`
+status means declarations parsed, not that schema, relations or ownership have
+been validated. The codec performs no database reads, writes or evaluation.
+
+Typed documents retain `simmis-id`; ordinary values remain ordinary YAML:
+
+```yaml
+simmis-id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+simmis:
+  version: 1
+  types: ["11111111-1111-4111-8111-111111111111"]
+  properties:
+    revenue:
+      id: "44444444-4444-4444-8444-444444444444"
+      type: "11111111-1111-4111-8111-111111111111"
+revenue: 120000
+tags: [research]
+```
+
+A binding names a property UUID and its declaring type UUID, never a storage
+attribute. File aliases do not rename canonical morphisms. Multiple types are
+explicit; tags alone assign none. `simmis.blocks` maps explicit paired block
+UUIDs to independent `types`, `properties` and `values` scopes. A block alias
+does not collide with the same alias on its page. Within one scope, duplicate
+types or aliases targeting the same property diagnose ambiguity.
+
+Raw values, unknown ordinary fields and reference-shaped data remain intact.
+A UUID string is not inferred to be a relation; `{id, path}` is also just data
+until trusted definitions establish a reference. Paths cannot select identity.
+Unmatched block metadata, unsupported reserved fields/versions and missing typed
+document identity produce diagnostics without rewriting source or installing
+definitions. Plain imports remain provisional; decoding never inserts IDs.
+
 ## Existing KB vocabulary
 
 Everything stored in a KB or a room store is described by one small vocabulary.
