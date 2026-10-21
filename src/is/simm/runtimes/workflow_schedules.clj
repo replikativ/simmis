@@ -4,6 +4,7 @@
    The atom below owns I/O resources, never forkable application state."
   (:require [dvergr.runtime.clock :as clock]
             [dvergr.runtime.ctx :as rctx]
+            [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.workflow-schedules :as schedules]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.simple :as simple]
@@ -35,17 +36,19 @@
         (.poll ^ArrayBlockingQueue queue)
         (.offer ^ArrayBlockingQueue queue now)))))
 
-(defn start!
+(defn- start-service!
   "Start after canonical orphan/resource recovery. Recovery runs once on the
    owned worker before any admission; failure/timeout leaves ownership held
    and no ready service. Call stop! before retrying. Never starts the shared
    clock itself. Repeated starts are allowed only for the same live owner."
-  [conn ctx resolve-room]
+  [conn ctx resolve-room mode host]
   (off-engine!)
   (locking service
     (if-let [prior @service]
-      (if (and (running?) (identical? conn (:conn prior))
-               (identical? (ec/home-context ctx) (ec/home-context (:ctx prior))))
+      (if (and (running?) (= mode (:mode prior)) (identical? conn (:conn prior))
+               (if (= :owned mode)
+                 (identical? ctx (:ctx prior))
+                 (identical? (ec/home-context ctx) (ec/home-context (:ctx prior)))))
         :started
         (throw (ex-info "Prior scheduled-work resource must be stopped first" {:type ::held})))
       (let [root (rctx/root-ctx ctx)
@@ -56,7 +59,7 @@
                         (newThread [_ runnable]
                           (doto (Thread. runnable "simmis-workflow-schedules") (.setDaemon true)))))
             ready (promise)
-            owned {:conn conn :ctx ctx :root root :signal signal :watch-key key
+            owned {:conn conn :ctx ctx :mode mode :root root :signal signal :watch-key key
                    :executor executor :queue (ArrayBlockingQueue. 1)
                    :accepting (AtomicBoolean. true) :ready? false}]
         ;; Retain handles even after failed setup; only joined stop releases.
@@ -81,13 +84,17 @@
                                               ec/*spin-id* nil
                                               simple/*in-drain?* false]
                                       (try
-                                        (schedules/recover! conn ctx)
+                                        (case mode
+                                          :owned (schedules/recover-owned! host)
+                                          :legacy (schedules/recover! conn ctx))
                                         (deliver ready [:ready])
                                         (loop []
                                           (when (.get ^AtomicBoolean (:accepting owned))
                                             (let [now (.take ^ArrayBlockingQueue (:queue owned))]
                                               (when (.get ^AtomicBoolean (:accepting owned))
-                                                (schedules/tick! conn ctx resolve-room now)))
+                                                (case mode
+                                                  :owned (schedules/tick-owned! host now)
+                                                  :legacy (schedules/tick! conn ctx resolve-room now))))
                                             (recur)))
                                         (catch InterruptedException _
                                           (deliver ready [:failed])
@@ -113,6 +120,22 @@
           (catch Throwable error
             (.set ^AtomicBoolean (:accepting owned) false)
             (throw error)))))))
+
+(defn start!
+  "Legacy startup. Shares the single physical service slot with start-owned!;
+   changing mode or owner requires an explicit physically joined stop."
+  [conn ctx resolve-room]
+  (start-service! conn ctx resolve-room :legacy nil))
+
+(defn start-owned!
+  "INACTIVE fixed HOST startup over the original canonical owner. Validates
+   current ownership even on an idempotent start. No selected fallback, caller
+   resolver, new clock or parallel dispatcher; no startup installation here."
+  [host]
+  (off-engine!)
+  (reads/current-host-control-db! host)
+  (let [{:keys [control-conn execution-ctx]} (::reads/owner host)]
+    (start-service! control-conn execution-ctx nil :owned host)))
 
 (defn stop!
   "Unsubscribe, interrupt and physically join before releasing ownership. A

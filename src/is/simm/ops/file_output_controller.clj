@@ -1,7 +1,8 @@
 (ns is.simm.ops.file-output-controller
   "INTERNAL inactive fixed host orchestration. No route/schema/default change.
    Original ACK values are invocation-local witnesses, never readback tokens or
-   client capabilities. Recovery/abort are deliberately not implemented here."
+   client capabilities. Only original sealed no-entry cleanup is supported;
+   positive recovery remains a separate currently authorized operation."
   (:require [dvergr.rooms.files :as files]
             [is.simm.model.file-adoptions :as adoptions]
             [is.simm.model.system-db :as sdb]
@@ -18,7 +19,7 @@
   ;; Resolve a fixed native function, not a caller-provided hook or execution lane.
   (when (every? files/write-capabilities
                 #{:explicit-workspace :durable-publication :expected-worktree :file-modes :applied-receipt})
-    (when-let [writer (ns-resolve 'dvergr.rooms.files 'write-to!)]
+    (when-let [writer (ns-resolve 'dvergr.rooms.files 'write-to-completion!)]
       (when (fn? @writer) @writer))))
 
 (defn- pending [operation]
@@ -38,10 +39,12 @@
    checks, OUTSIDE this operation's writers. No force, bytes, target, claim token
    or arbitrary callback is accepted. Public adapters remain disabled.
 
-   Only a NORMAL native physical result with applied? true, a winning receipt,
+   Only a NORMAL native returned completion with applied? true, a winning receipt,
    and THIS invocation's applying ACK reaches original-publisher finalization.
    Throwable :publication data is NEVER receipt evidence. Every postclaim error
-   stays pending; no abort, recovery read, native retry or generic acceptance.
+   stays pending UNLESS the direct fixed-native sealed not-started return permits
+   a strictly authorized exact original claimed->aborted cleanup. Applying never
+   aborts. No recovery read, native retry or generic acceptance.
    Pure/mock tests of this composition are NOT native ownership evidence."
   [conn party room-id room proposal-id]
   (when (simple/on-drain-thread?) (refuse! :requires-host-worker))
@@ -72,17 +75,32 @@
                   (let [ack (adoption/bound-applying! conn party room-id room claimed candidate binding)]
                     (vreset! applying ack)
                     true))
-                result (write! room (:system binding) files
-                               (assoc options :publication {:identity identity :authorize! authorize!
-                                                            :before-dispatch! before-dispatch!}))]
-            (when-not (and (true? (:applied? result)) @applying)
+                completion (write! room (:system binding) files
+                                   (assoc options :publication {:identity identity :authorize! authorize!
+                                                                :before-dispatch! before-dispatch!}))]
+            (when-not (and (map? completion)
+                           (= #{:completion :result :error} (set (keys completion)))
+                           (or (nil? (:error completion)) (instance? Throwable (:error completion))))
               (refuse! :physical-result-unavailable))
-            (publication/validate-receipt! (:operation @applying) (get-in claimed [:plan :manifest])
-                                           (:publication result))
-            ;; Only the fixed native function's normal winning result is trusted
-            ;; here. Error recovery must later authorize and query scoped DB truth.
-            (adoption/finalize! conn @applying (:publication result)))
+            (case (:completion completion)
+              :returned
+              (let [result (:result completion)]
+                (when-not (and (true? (:applied? result)) @applying)
+                  (refuse! :physical-result-unavailable))
+                (publication/validate-receipt! (:operation @applying) (get-in claimed [:plan :manifest])
+                                               (:publication result))
+                ;; Native private positive evidence wins even if a handler
+                ;; subsequently threw. Error data itself is never a receipt.
+                (adoption/finalize! conn @applying (:publication result)))
+              :not-started
+              (do
+                (when (or @applying (.isInterrupted (Thread/currentThread)))
+                  (refuse! :cleanup-unavailable))
+                (adoption/bound-not-started! conn party room-id room claimed binding completion))
+              ;; Includes pending and unknown categories. No negative inference
+              ;; from result/error maps or absence of a local applying ACK.
+              (refuse! :physical-result-unavailable)))
           (catch Throwable error
-            (when (instance? InterruptedException error) (.interrupt (Thread/currentThread)))
+            (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)))
             (throw (ex-info "Retained-file adoption remains pending; do not replay publication"
                             (assoc (pending operation) :type ::pending) error))))))))

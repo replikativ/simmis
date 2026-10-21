@@ -275,6 +275,74 @@
   (when-not (map? owned-binding) (refuse! :missing-owned-binding))
   (applying-with-binding! conn party room-id room claimed candidate owned-binding))
 
+(defn causal-interruption?
+  "INTERNAL diagnostic predicate. Inspect actual Throwable causes cycle-safely;
+   exception data is never native completion or journal-transition authority."
+  [error]
+  (let [seen (java.util.IdentityHashMap.)]
+    (loop [cause error]
+      (cond
+        (not (instance? Throwable cause)) false
+        (.containsKey seen cause) false
+        (instance? InterruptedException cause) true
+        :else (do (.put seen cause true) (recur (.getCause ^Throwable cause)))))))
+
+(defn bound-not-started!
+  "INTERNAL original publisher cleanup, never an endpoint/recovery operation.
+   The controller supplies ONLY its direct normal fixed-native completion and
+   ORIGINAL acknowledged claim/binding. This map validation cannot authenticate
+   provenance: neither clients nor stored/Throwable maps supply a witness.
+
+   Strict current authority, original target/stamp and complete filing proof
+   recheck in the SAME writer as exact claimed->aborted. Applying NEVER aborts.
+   Only the ORIGINAL before/after report ACK establishes returned success; lost
+   ACK remains pending even if an abort committed. No readback, dispatch, body IO,
+   target mutation or automatic retry. Interrupted callers do not submit cleanup."
+  [conn party room-id room claimed owned-binding completion]
+  (host-connection! conn)
+  (when (.isInterrupted (Thread/currentThread)) (refuse! :interrupted-cleanup))
+  (when-not (and (= #{:proof :plan :operation} (set (keys claimed)))
+                 (map? owned-binding) (map? completion)
+                 (= #{:completion :result :error} (set (keys completion)))
+                 (= :not-started (:completion completion))
+                 (or (nil? (:error completion)) (instance? Throwable (:error completion))))
+    (refuse! :invalid-not-started))
+  (prepared! (dissoc claimed :operation) party room-id)
+  (let [{:keys [proof operation]} claimed
+        _ (adoptions/validate! operation)
+        _ (when-not (and (= :claimed (:state operation))
+                         (= (:binding proof) (select-keys operation (keys (:binding proof)))))
+            (refuse! :invalid-claim))
+        at (java.util.Date.)
+        expected (adoptions/validate! (assoc operation :state :aborted
+                                             :reason :native-not-started :updated-at at))
+        fork-eid (get-in proof [:fork :db/id])]
+    (try
+      (let [report (d/transact
+                    conn
+                    [[:db.fn/call
+                      (fn [db]
+                        (when-not (identical? conn (sdb/get-conn)) (refuse! :noncanonical-connection))
+                        (when-not (= proof (snapshot db party room-id (:proposal operation)))
+                          (refuse! :preflight-changed))
+                        (let [current (owned-workspace/validate! db party :merge room-id room owned-binding)]
+                          (when-not (= (get-in proof [:binding :target]) (:target current))
+                            (refuse! :target-changed)))
+                        (adoptions/transition-tx-data db fork-eid operation :aborted
+                                                      {:reason :native-not-started} at))]])]
+        (when-not (and (:db-before report) (:db-after report)) (refuse! :abort-report-unavailable))
+        ;; Never substitute @conn. Both snapshots must describe THIS exact
+        ;; transition, the unique latest owner, and the same still-open filing.
+        (doseq [[db value] [[(:db-before report) operation] [(:db-after report) expected]]]
+          (when-not (= proof (snapshot db party room-id (:proposal operation)))
+            (refuse! :abort-report-mismatch))
+          (adoptions/linked-operation! db fork-eid value))
+        {:status :aborted :operation (:id operation) :reason :native-not-started})
+      (catch Throwable error
+        (when (causal-interruption? error) (.interrupt (Thread/currentThread)))
+        (throw (ex-info "File adoption cleanup was not acknowledged; do not replay publication"
+                        {:type ::abort-unacknowledged :operation (:id operation)} error))))))
+
 (defn- terminal-facts!
   "Terminal integrity only, not dispatch ownership. The host separately owns
    current authorization or its original native invocation's ACK obligation."

@@ -39,7 +39,7 @@
   (fn [f]
     ;; Tests may run inside a live dev server; own the physical capacity cell.
     (with-redefs-fn {#'benchmarks/checker-slot (java.util.concurrent.Semaphore. 1)
-                    #'cli-owner/ownership! (constantly {:version 1 :unit "fixture.service" :boot "fixture" :invocation "fixture"})} f)))
+                     #'cli-owner/ownership! (constantly {:version 1 :unit "fixture.service" :boot "fixture" :invocation "fixture"})} f)))
 
 (defn snapshot [files]
   {:files files :manifest (mapv (fn [[path text]] {:path path :size (count (.getBytes text "UTF-8"))}) files)})
@@ -80,7 +80,7 @@
              (get-in result [:plan :experiment :experiment/metadata :simmis/execution])))
       (is (string? (:id data)))
       (is (= ["a"] (mapv #(get-in % [:environment/metadata :case])
-                          (get-in result [:plan :environments])))))))
+                         (get-in result [:plan :environments])))))))
 
 (deftest cli-text-benchmarks-have-a-distinct-single-use-admission-contract
   (let [files fixture/fixture
@@ -128,25 +128,25 @@
            (resource/install-unit! control {:symbol "cli-run-admission" :name "CLI Run admissions" :precision 0})
            (resource/mint! control {:id (random-uuid) :resources {"cli-run-admission" 1M}})
            (with-redefs-fn {#'providers/providers (atom {:claude-code provider})
-                           #'claude-code/execution-policy (constantly {:version 1 :mode :text :cli-version "fixture"})
-                           #'runner/runtime-identity (constantly {:claude-cli "fixture"})
-                           #'benchmarks/fixture-room! (fn [& _] clean)
-                           #'benchmarks/retire-fixture! (fn [& _] (swap! retired inc))
-                           #'model-chat/chat
-                           (fn [messages opts]
-                             (swap! calls conj {:messages messages :opts opts})
-                             (if (= 1 (count @calls))
-                               {:content "" :stop-reason :tool-use :usage {:input-tokens 20 :output-tokens 5}
-                                :tool-calls [{:id "write" :name "clojure_eval"
-                                              :input {:code "(do (babashka.fs/create-dirs \"/out\") (spit \"/out/result.md\" \"interpreter output\"))"}}]}
+                            #'claude-code/execution-policy (constantly {:version 1 :mode :text :cli-version "fixture"})
+                            #'runner/runtime-identity (constantly {:claude-cli "fixture"})
+                            #'benchmarks/fixture-room! (fn [& _] clean)
+                            #'benchmarks/retire-fixture! (fn [& _] (swap! retired inc))
+                            #'model-chat/chat
+                            (fn [messages opts]
+                              (swap! calls conj {:messages messages :opts opts})
+                              (if (= 1 (count @calls))
+                                {:content "" :stop-reason :tool-use :usage {:input-tokens 20 :output-tokens 5}
+                                 :tool-calls [{:id "write" :name "clojure_eval"
+                                               :input {:code "(do (babashka.fs/create-dirs \"/out\") (spit \"/out/result.md\" \"interpreter output\"))"}}]}
                                ;; A later missing usage report must invalidate
                                ;; completeness, not retain the first turn's sum.
-                               (case failure-mode
-                                 :provider-error (throw (ex-info "Fixture provider timed out" {:status 504}))
-                                 :cancel (throw (java.util.concurrent.CancellationException. "Fixture cancellation"))
-                                 :malformed-usage {:content "Finished" :stop-reason :end-turn
-                                                   :usage {:input-tokens "invalid" :output-tokens 0}}
-                                 {:content "Finished" :stop-reason :end-turn :usage nil})))}
+                                (case failure-mode
+                                  :provider-error (throw (ex-info "Fixture provider timed out" {:status 504}))
+                                  :cancel (throw (java.util.concurrent.CancellationException. "Fixture cancellation"))
+                                  :malformed-usage {:content "Finished" :stop-reason :end-turn
+                                                    :usage {:input-tokens "invalid" :output-tokens 0}}
+                                  {:content "Finished" :stop-reason :end-turn :usage nil})))}
              (fn []
                (let [principal (ops/party-principal (:owner w))
                      submission (benchmarks/submit-cli! conn host-ctx principal (:room w) control request)
@@ -366,6 +366,37 @@
                    (benchmarks/authorize! conn (ops/party-principal party) (:room w)))))
     (d/transact conn [{:party/id (:owner w) :party/role :admin}])
     (is (= (:owner w) (benchmarks/authorize! conn (ops/party-principal (:owner w)) (:room w))))))
+
+(deftest pure-checker-authority-uses-only-the-supplied-control-snapshot
+  (world/with-world [conn w]
+    (let [before @conn principal (ops/party-principal (:owner w))]
+      (d/transact conn [{:party/id (:owner w) :party/role :admin}])
+      (is (thrown? clojure.lang.ExceptionInfo (benchmarks/authorize-in! before principal (:room w))))
+      (is (= (:owner w) (benchmarks/authorize-in! @conn principal (:room w))))
+      (is (= (:owner w) (benchmarks/authorize! conn principal (:room w)))))))
+
+(deftest normal-benchmark-retry-extraction-preserves-generic-observation-and-conflicts
+  (world/with-world [conn w]
+    (d/transact conn [{:party/id (:owner w) :party/role :admin}])
+    (let [principal (ops/party-principal (:owner w)) request (input fixture/fixture)
+          ctx ec/*execution-context*]
+      (is (= {:status :absent} (benchmarks/retry-request :benchmark conn (:owner w) (:room w) request)))
+      (let [{:keys [request]} (requests/claim! conn {:party (:owner w) :room (:room w)
+                                                     :client-id (:request-id request) :kind :benchmark
+                                                     :intent {:submission request :provenance :retained}
+                                                     :limits (update (:limits request) :settlement keyword)})
+            id (:work.request/id request)
+            original (get-in (requests/payload conn request) [:input :submission])
+            calls (atom 0) forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "Retry prepared new work")))]
+        (is (= {:status :retry :id id} (benchmarks/retry-request :benchmark conn (:owner w) (:room w) original)))
+        (is (= {:status :conflict :id id} (benchmarks/retry-request :cli-benchmark conn (:owner w) (:room w) original)))
+        (with-redefs [benchmarks/prepare forbidden workflows/snapshot forbidden]
+          (is (= id (:id (benchmarks/submit! conn ctx principal (:room w) nil original))))
+          (is (= ::benchmarks/conflict
+                 (:type (ex-data (try (benchmarks/submit! conn ctx principal (:room w) nil
+                                                          (assoc original :expected-bundle (random-uuid)))
+                                      (catch clojure.lang.ExceptionInfo error error))))))
+          (is (zero? @calls)))))))
 
 (deftest experiment-adapter-keeps-records-in-control-room-and-refunds-after-cleanup
   (world/with-world [conn w]

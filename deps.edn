@@ -71,10 +71,11 @@
         ;; Keep the direct UI/runtime pin aligned with Dvergr's reviewed
         ;; independent-session and funding-recovery foundation (spindel#146),
         ;; plus the reviewed stable-reference SCI replacement API (#147).
+        ;; Historical forks own their workspace and join native disposal (#148).
         ;; Use the public squash commit, not a local-only development commit:
         ;; the worker package resolves this same basis on clean machines.
         org.replikativ/spindel {:git/url "https://github.com/replikativ/spindel.git"
-                                :git/sha "0cda03449d853f32c13d4087b1f9abbc19400db5"}
+                                :git/sha "2e394753b9871b0c705d21e6aef1784b2b74d6b0"}
         ;; spindel 0.1.53 brings anglican 1.1.0 (its inference methods), which
         ;; brings timbre 4.10.0, whose ClojureScript no longer compiles
         ;; ("Can't redefine a constant"). A current timbre serves anglican's
@@ -231,7 +232,10 @@
         ;; (#27), so an overlay swap's mutator may run MORE THAN ONCE. Every
         ;; function simmis hands to an overlay or swap! must be pure — side
         ;; effects go before or after the swap, never inside it.
-        org.replikativ/yggdrasil {:mvn/version "0.3.49"}
+        ;; Match the new historical-overlay contract (#29). An old direct Maven
+        ;; pin would override the compatible transitive dependency.
+        org.replikativ/yggdrasil {:git/url "https://github.com/replikativ/yggdrasil"
+                                  :git/sha "dee7438acbf428323779e6d59fc18db4aa9d7556"}
         ;; Keep the direct Geschichte dependency aligned with dvergr: nearest
         ;; wins, and Simmis also relies on Yggdrasil's Geschichte adapter and
         ;; its content-level merge API.
@@ -410,10 +414,27 @@
         ;; #372 seals explicit-target completion at native boundaries; reviewed
         ;; head and permanent squash have identical trees, 76/595 fresh-JVM
         ;; regressions and all required CI passed. No legacy writer API change.
+        ;; #373 adds optional immutable host file reads for MCP tools/resources.
+        ;; Pin its permanent main squash: tree-identical to the reviewed head,
+        ;; 113/1746 local regressions and all required CI passed. Simmis's owned
+        ;; host remains inactive until catalog/export/source routing is coherent.
+        ;; #374 also projects room catalog entries from that same immutable
+        ;; binding. Its permanent squash is tree-identical to the reviewed
+        ;; source; 137/2037 local regressions and all required CI passed.
+        ;; #375 refuses incomplete catalog rows and handles inclusive prefix
+        ;; endpoints after bounded acquisition. Its permanent squash matches
+        ;; the reviewed tree; focused and 11-namespace regressions plus all
+        ;; four upstream CI checks passed. Owned host activation remains off.
+        ;; #376 permanent squash adds full subtree CAS and joined native
+        ;; stage/commit/cleanup ACKs. Its tree matches the reviewed public head;
+        ;; local140/1145 and all required CI passed. Authoring remains inactive.
         ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "4cbd1e2dfaeaa368bb3557be0f11465502eb49e4"
+                               ;; Merged #378: bounded retained conversations,
+                               ;; original native completion and typed GC roots.
+                               ;; Adopt only in a fresh runtime, never hot reload.
+                               :git/sha "15c4723908a8aafb6df190abf334e6444d21c367"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.

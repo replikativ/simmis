@@ -203,6 +203,26 @@
     (cond-> (assoc planned :inputs entries :world-setup (setup (:name input) bundle source entries (some? resolved)))
       provenance (assoc-in [:workflow :input-selection] provenance))))
 
+(defn- with-live-selection [db identity selection-policy publication? f]
+  (let [selected (knowledge-inputs/selection db selection-policy)]
+    (f (dissoc selected :manifest-text)
+       #(hash-map :captured (knowledge-inputs/capture db selection-policy)
+                  :publication-basis (when publication?
+                                       (knowledge-inputs/publication-basis db identity))))))
+
+(defn resolve-admission-in
+  "HOST fixed immutable-DB source resolution. Caller supplies the validated
+   owned DB and registry/runtime identity; no authority or ambient lookup."
+  [db target-identity snapshot input]
+  (let [{:keys [selection-policy inputs]} (plan-source snapshot input)]
+    (if selection-policy
+      (if (contains? inputs "/in/knowledge/manifest.edn")
+        (do (knowledge-inputs/from-inputs selection-policy inputs)
+            {:captured nil :publication-basis nil})
+        (with-live-selection db target-identity selection-policy true
+          (fn [_ resolve] (resolve))))
+      {:captured nil :publication-basis nil})))
+
 (defn- with-selection
   "Host admission only, after authorization. Callback receives a metadata-only
    selection and a zero-argument resolution function over that SAME immutable DB.
@@ -221,11 +241,7 @@
                 conn (if publication? (:conn target)
                          (:conn ((requiring-resolve 'dvergr.substrate.geschichte/current-workspace))))]
             (when-not conn (invalid! "Room has no knowledge source workspace"))
-            (let [db @conn selected (knowledge-inputs/selection db selection-policy)]
-              (f (dissoc selected :manifest-text)
-                 #(hash-map :captured (knowledge-inputs/capture db selection-policy)
-                            :publication-basis (when publication?
-                                                 (knowledge-inputs/publication-basis db (:identity target)))))))))
+            (with-live-selection @conn (:identity target) selection-policy publication? f))))
       (f nil (constantly {:captured nil :publication-basis nil})))))
 
 (defn with-admission-selection
@@ -302,6 +318,18 @@
            :basis (assoc (:basis prepared) :submission input :environment env
                          :source source :inputs inputs :workflow workflow))))
 
+(defn retry-request
+  "HOST workflow journal comparison only. NORMAL conflict is data, not an
+   exception classification. No authorization, source, provider or hydration."
+  [conn party room-id input]
+  (let [id (requests/request-id party room-id (:request-id input))]
+    (if-let [row (requests/get-request conn id)]
+      {:status (if (and (= :workflow (:work.request/kind row))
+                        (= input (get-in (requests/payload conn row) [:input :submission])))
+                 :retry :conflict)
+       :id id}
+      {:status :absent})))
+
 (defn submit!
   "Submit current source, or a host-retained immutable snapshot. Exact retries
    are resolved before either source read or provider preparation. A host-retained
@@ -311,13 +339,11 @@
   (when-not (m/validate schema input) (invalid! "Invalid workflow execution"))
   (binding [ec/*execution-context* host-ctx]
     (let [party (work/authorize! conn principal room-id)
-          id (requests/request-id party room-id (:request-id input))]
-      (if-let [row (requests/get-request conn id)]
-        (do
-          (when-not (and (= :workflow (:work.request/kind row))
-                         (= input (get-in (requests/payload conn row) [:input :submission])))
-            (throw (ex-info "Request identity was used for different work" {:type ::conflict})))
-          (work/status conn host-ctx principal room-id id))
+          {:keys [status id]} (retry-request conn party room-id input)]
+      (when (= :conflict status)
+        (throw (ex-info "Request identity was used for different work" {:type ::conflict})))
+      (if (= :retry status)
+        (work/status conn host-ctx principal room-id id)
         (let [snapshot (or snapshot (workflows/snapshot room (:name input)))
               selected (select-keys input source-fields)
               resolution (if resolution

@@ -6,15 +6,21 @@
             [dvergr.mcp.server :as server]
             [dvergr.ops :as dops]
             [dvergr.room.store :as store]
+            [geschichte.repo :as repo]
             [is.simm.agents.room-agents :as rooms]
             [is.simm.authority.world :as world]
+            [is.simm.model.access :as access]
+            [is.simm.model.system-db :as system-db]
             [is.simm.ops.dvergr :as ops]
+            [is.simm.ops.owned-mcp-test :as owned-fixture]
+            [is.simm.ops.owned-reads :as owned-reads]
+            [is.simm.ops.owned-workflows :as owned-workflows]
             [is.simm.ops.work-api :as api]
             [is.simm.ops.work-test]
             [is.simm.ops.workflows :as workflows]
             [is.simm.ops.workflows-test :as fixture]
             [is.simm.runtimes.context :as context]
-            [is.simm.uis.web.desktop.workflows-remote]))
+            [is.simm.uis.web.desktop.workflows-remote :as remote]))
 
 (defn- with-api [f]
   (let [previous (dops/operations)]
@@ -141,3 +147,93 @@
                  (is (world/refused?
                       (world/inbound! (world/principal w kind) op
                                       {:room-id-str (str (:room w)) arg {:eval true}}))))))))))))
+
+(defn- owned-source! [conn files]
+  (doseq [[path text] files]
+    (repo/write! conn (str "workflows/echo/" path) (.getBytes ^String text "UTF-8"))))
+
+(defn- owned-failure [f]
+  (try (f) nil (catch clojure.lang.ExceptionInfo error error)))
+
+(deftest dormant-owned-browser-reads-use-one-normal-human-capture
+  (doseq [owned-first? [true false]]
+    (@#'owned-fixture/with-fixture
+     owned-first?
+     (fn [{:keys [w owned attached hydrations]}]
+       (owned-source! owned fixture/fixture)
+       (owned-source! attached (assoc fixture/fixture "gold.edn" "{:answer :OTHER}"))
+       (let [resolve owned-reads/resolve-host-read! captures (atom [])
+             expected (:data (owned-workflows/details!
+                              {:execution-ctx context/server-context
+                               ::owned-reads/owner (owned-reads/host-owner (system-db/get-conn) context/server-context)}
+                              (ops/party-principal (:member w)) (str (:room w)) {:name "echo"}))]
+         (reset! hydrations [])
+         (with-redefs [owned-reads/resolve-host-read!
+                       (fn [host principal handle]
+                         (swap! captures conj principal)
+                         (is (not (:principal/mcp? principal)))
+                         (resolve host principal handle))
+                       ops/invoke (fn [& _] (throw (AssertionError. "No MCP or selected op dispatch")))
+                       workflows/details (fn [& _] (throw (AssertionError. "No second selected details read")))
+                       workflows/source-page (fn [& _] (throw (AssertionError. "No selected page read")))]
+           (let [listing (remote/invoke-owned-workflow-read (:member w) (str (:room w)) :simmis/workflow-list {})
+                 result (remote/invoke-owned-workflow-read (:member w) (str (:room w)) :simmis/workflow-source {:name "echo"})]
+             (is (= ["echo"] (:names listing)))
+             (is (= expected (dissoc result :permissions)))
+             (is (= fixture/fixture (:files result)))
+             (is (true? (get-in result [:permissions :write?])))
+             (is (false? (get-in result [:permissions :merge?])))
+             (is (not (contains? result :read-context)))))
+         (is (= 2 (count @captures)))
+         (is (= [(:room w) (:room w)] @hydrations)))))))
+
+(deftest owned-browser-permissions-use-the-exact-captured-control-db
+  (@#'owned-fixture/with-fixture
+   false
+   (fn [{:keys [conn w owned]}]
+     (owned-source! owned fixture/fixture)
+     (let [details owned-workflows/details! can? access/can? get-conn system-db/get-conn
+           after? (atom false) captured (atom nil) permission-dbs (atom [])]
+       (with-redefs [owned-workflows/details!
+                     (fn [& args]
+                       (let [envelope (apply details args)]
+                         (reset! captured (get-in envelope [:read-context :control-db]))
+                         (d/transact conn [{:room/id (:room w) :room/owner [:party/id (:member w)]}])
+                         (reset! after? true)
+                         envelope))
+                     system-db/get-conn (fn [] (when @after? (throw (AssertionError. "No post-capture control read"))) (get-conn))
+                     access/can? (fn [db party action resource]
+                                   (when @after? (swap! permission-dbs conj db))
+                                   (can? db party action resource))]
+         (let [result (remote/invoke-owned-workflow-read (:owner w) (str (:room w)) :simmis/workflow-source {:name "echo"})]
+           (is (true? (get-in result [:permissions :fund?])))
+           (is (true? (get-in result [:permissions :merge?])))
+           (is (= 2 (count @permission-dbs)))
+           (is (every? #(identical? @captured %) @permission-dbs))))
+       (is (not= (:owner w) (d/q '[:find ?p . :in $ ?id :where [?r :room/id ?id] [?r :room/owner ?o] [?o :party/id ?p]] @conn (:room w))))))))
+
+(deftest owned-browser-refuses-retargeting-and-sanitizes-unknown-permission-errors
+  (@#'owned-fixture/with-fixture
+   true
+   (fn [{:keys [w owned hydrations]}]
+     (owned-source! owned fixture/fixture)
+     (let [invoke #(remote/invoke-owned-workflow-read %1 (str (:room w)) %2 %3)]
+       (doseq [[party op args status]
+               [[nil :simmis/workflow-list {} 403]
+                [(:member w) :simmis/workflow-write {} 400]
+                [(:member w) :simmis/workflow-list {:room (str (:room w))} 400]
+                [(:member w) :simmis/workflow-source {:name "echo" :room "other"} 400]
+                [(:member w) :simmis/workflow-list {:eval true} 400]
+                [(:non-member w) :simmis/workflow-list {} 503]]]
+         (let [error (owned-failure #(invoke party op args))]
+           (is (= status (dops/error-status error)))))
+       (is (empty? @hydrations))
+       (let [can? access/can?]
+         (with-redefs [access/can?
+                       (fn [db party action resource]
+                         (if (= :write action)
+                           (throw (ex-info "SECRET/permission" {:type ::owned-workflows/conflict}))
+                           (can? db party action resource)))]
+           (let [error (owned-failure #(invoke (:member w) :simmis/workflow-list {}))]
+             (is (= 503 (dops/error-status error)))
+             (is (not (re-find #"SECRET" (pr-str [(ex-message error) (ex-data error)])))))))))))

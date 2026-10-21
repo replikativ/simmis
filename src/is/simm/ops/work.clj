@@ -65,20 +65,23 @@
 (defn- invalid! [message]
   (throw (ex-info message {:type ::invalid})))
 
-(defn authorize!
-  "Current room membership AND merge authority, including for named work.
-   Adapters call this before reading source or resolving a model, and the
-   canonical admission repeats it before publishing a request."
-  [conn principal room-id]
-  (let [party (access/actor->party-uuid (:principal/id principal))
-        db @conn]
-    ;; Generic code is the same privileged boundary as the existing eval UI.
-    ;; Approved named workflows can later admit narrower capabilities.
+(defn authorize-in!
+  "HOST pure existing generic-work read+merge gate on one control snapshot."
+  [db principal room-id]
+  (let [party (access/actor->party-uuid (:principal/id principal))]
     (when-not (and party (access/can? db party :read {:room room-id})
                    (access/can? db party :merge {:room room-id}))
       (throw (ex-info "Room membership and merge authority are required for generic work"
                       {:type ::denied})))
     party))
+
+(defn authorize!
+  "Current room membership AND merge authority, including for named work.
+   Adapters call this before reading source or resolving a model, and the
+   canonical admission repeats it before publishing a request."
+  [conn principal room-id]
+  ;; Generic code retains the same privileged boundary as the eval UI.
+  (authorize-in! @conn principal room-id))
 
 (defn resources [limits]
   {resource/microdollars (bigdec (:budget-microdollars limits))

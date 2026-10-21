@@ -10,6 +10,8 @@
             [is.simm.ops.coordinator :as coordinator]
             [is.simm.ops.dvergr :as simmis-ops]
             [is.simm.ops.git-snapshot :as git-snapshot]
+            [is.simm.ops.owned-reads :as owned-reads]
+            [is.simm.ops.owned-workflows :as owned-workflows]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflow-runs]
             [is.simm.ops.workflow-schedules :as workflow-schedules]
@@ -190,6 +192,57 @@
            (ops/op-error! (ex-message e) (:type (ex-data e)) status)
            (throw e)))))
 
+(defn- owned-export-value! [f]
+  ;; This boundary deliberately does NOT interpret Throwable tags/status/text:
+  ;; a native content reader can throw forged op/conflict metadata as well.
+  (try (f)
+       (catch InterruptedException _
+         (.interrupt (Thread/currentThread))
+         (ops/op-error! "Owned workspace export unavailable" ::owned-export-unavailable 503))
+       (catch Throwable _
+         (ops/op-error! "Owned workspace export unavailable" ::owned-export-unavailable 503))))
+
+(defn- owned-export! [host args chunk?]
+  (let [expected (when chunk? (uuid! (:expected-snapshot args)))]
+    (binding [ec/*execution-context* (:execution-ctx host)]
+      (let [{:keys [db room-id target-stamp]}
+            (owned-export-value! #(owned-reads/resolve-host-read! host ops/*principal* (:room args)))]
+        (when chunk?
+        ;; A NORMAL fixed metadata result, not arbitrary exception ex-data,
+        ;; supplies the only trusted revision comparison. No body on conflict.
+          (let [current (owned-export-value! #(git-snapshot/snapshot-id-in db room-id target-stamp))]
+            (when-not (= expected current)
+              (ops/op-error! "Workspace changed; restart the snapshot download" ::owned-export-conflict 409))))
+        (owned-export-value!
+         #(if chunk?
+            (git-snapshot/chunk-in db room-id target-stamp expected (:offset args)
+                                   (get args :length (:chunk-bytes git-snapshot/policy)))
+            (git-snapshot/describe-in db room-id target-stamp)))))))
+
+(defn owned-workflow-read-error!
+  "HOST-only constant transport mapping of the fixed owned service's outcomes.
+   Never relay native messages/status metadata. No file authority or callback."
+  [error]
+  (loop [cause error seen #{}]
+    (cond (nil? cause) nil
+          (instance? InterruptedException cause) (.interrupt (Thread/currentThread))
+          (contains? seen cause) nil
+          :else (recur (.getCause ^Throwable cause) (conj seen cause))))
+  (let [[status kind message]
+        (case (:type (ex-data error))
+          :is.simm.ops.owned-workflows/invalid
+          [400 ::owned-workflow-invalid "Invalid owned workflow read"]
+          :is.simm.ops.owned-workflows/conflict
+          [409 ::owned-workflow-conflict "Workflow source changed; reload metadata"]
+          [503 ::owned-workflow-unavailable "Owned workflow read unavailable"])]
+    (ops/op-error! message kind status)))
+
+(defn- owned-workflow-read! [host args source?]
+  (try
+    (:data ((if source? owned-workflows/source! owned-workflows/list!)
+            host ops/*principal* (:room args) (dissoc args :room)))
+    (catch Throwable error (owned-workflow-read-error! error))))
+
 (def specifications
   (room-specifications
    {:simmis/workflow-schedule-list
@@ -222,31 +275,39 @@
      :doc "List25 room-local workflow names, including invalid drafts, without loading file contents. Scans at most20000 workflow path entries; refuses larger indices. expected-revision pins the sorted name set across pages. Never executes checker source."
      :impl (fn [host args]
              (checked! workflow-list-schema args)
-             (guarded host #(let [[_ _ room] (room! host (:room args))]
-                              (workflows/list-page room (cond-> (dissoc args :room)
-                                                          (:expected-revision args)
-                                                          (update :expected-revision uuid!))))))}
+             (if (owned-reads/owned-host? host)
+               (owned-workflow-read! host args false)
+               (guarded host #(let [[_ _ room] (room! host (:room args))]
+                                (workflows/list-page room (cond-> (dissoc args :room)
+                                                            (:expected-revision args)
+                                                            (update :expected-revision uuid!)))))))}
     :simmis/workflow-source
     {:kind :read :schema workflow-source-schema :authz {:action :read}
      :doc "Read source metadata in10-file pages, or <=8192 bytes of one file as base64 with path/offset/expected-revision. Source snapshots are bounded100 regular UTF8 files,512KiB/file,2MiB total. Chunks REQUIRE the inspected source revision; any source change refuses. Invalid drafts remain readable; no checker/calibration execution. Use revision for guarded writes and validated bundle id for execution."
      :impl (fn [host args]
              (checked! workflow-source-schema args)
-             (guarded host #(let [[_ _ room] (room! host (:room args))]
-                              (workflows/source-page room (dissoc args :room)))))}
+             (if (owned-reads/owned-host? host)
+               (owned-workflow-read! host args true)
+               (guarded host #(let [[_ _ room] (room! host (:room args))]
+                                (workflows/source-page room (dissoc args :room))))))}
     :simmis/workspace-bundle
     {:kind :read :schema bundle-schema :authz {:action :read}
      :doc "Describe a cloneable synthetic Git bundle of CURRENT workspace files (NOT original history or hosted Git). Bounded to512 regular files,1MiB/file,8MiB total; sensitive paths/symlinks refuse the whole export. Does not commit or write anything. Use snapshot and chunk tool to download; changes between chunks require a restart."
      :impl (fn [host args]
              (checked! bundle-schema args)
-             (guarded host #(let [[_ _ room] (room! host (:room args))] (git-snapshot/describe room))))}
+             (if (owned-reads/owned-host? host)
+               (owned-export! host args false)
+               (guarded host #(let [[_ _ room] (room! host (:room args))] (git-snapshot/describe room)))))}
     :simmis/workspace-bundle-chunk
     {:kind :read :schema bundle-chunk-schema :authz {:action :read}
      :doc "Read <=16384 bytes of the exact current synthetic workspace Git bundle as base64. expected-snapshot pins the inspected manifest; workspace changes return conflict, never mixed bytes. Verify offsets, size and full SHA256 before cloning the completed bundle. No retained exports, ancestry or server paths."
      :impl (fn [host args]
              (checked! bundle-chunk-schema args)
-             (guarded host #(let [[_ _ room] (room! host (:room args))]
-                              (git-snapshot/chunk room (uuid! (:expected-snapshot args)) (:offset args)
-                                                  (get args :length (:chunk-bytes git-snapshot/policy))))))}
+             (if (owned-reads/owned-host? host)
+               (owned-export! host args true)
+               (guarded host #(let [[_ _ room] (room! host (:room args))]
+                                (git-snapshot/chunk room (uuid! (:expected-snapshot args)) (:offset args)
+                                                    (get args :length (:chunk-bytes git-snapshot/policy)))))))}
     :simmis/cli-benchmark
     {:kind :write :schema cli-benchmark-schema :authz {:action :merge}
      :doc "Operator-only offline benchmark using Claude Code TEXT inference under Dvergr's SCI loop. Explicit single-use CLI Run admissions, finite steps/deadline, no compaction, resume, delegation or automatic retry. Not HTTP-dispatch accounting. Same frozen fixtures/checker/Attempts/Scorecards; discard only."

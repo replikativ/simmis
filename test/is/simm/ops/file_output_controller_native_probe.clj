@@ -127,6 +127,7 @@
             before @owned
             forbidden (fn [& _] (throw (AssertionError. "Recovery attempted native publication or body IO")))
             recovered (with-redefs [native-files/write-to! forbidden
+                                    native-files/write-to-completion! forbidden
                                     native-publication/publish! forbidden
                                     storage/read-file forbidden
                                     storage/read-file-in forbidden]
@@ -138,6 +139,7 @@
         (is (= reconciler (:reconciled-by accepted)))
         (is (= before @owned))
         (let [repeated (with-redefs [native-files/write-to! forbidden
+                                     native-files/write-to-completion! forbidden
                                      native-publication/publish! forbidden
                                      storage/read-file forbidden
                                      storage/read-file-in forbidden]
@@ -159,7 +161,7 @@
   [owned-first? recovery?]
   (when-not (and (boolean? owned-first?)
                  (contains? native-files/write-capabilities :explicit-workspace)
-                 (ns-resolve 'dvergr.rooms.files 'write-to!))
+                 (ns-resolve 'dvergr.rooms.files 'write-to-completion!))
     (throw (ex-info "Native adoption diagnostic requires the actual explicit native writer"
                     {:type ::unavailable})))
   (let [configs (atom []) room-store-conn (atom nil)]
@@ -285,3 +287,151 @@
    trusted producer remains separate from prior agent certification evidence."
   [owned-first?]
   (native-probe* owned-first? true))
+
+(defn- durable-state [conn]
+  (let [db @conn]
+    {:config (:config db) :commit (:datahike/commit-id (meta db))
+     :max-tx (:max-tx db) :tree (tree db) :refs (query/refs db)}))
+
+(defn- join-native! [^Thread thread]
+  (loop [interrupted? false]
+    (let [done? (try (.join thread) true (catch InterruptedException _ false))]
+      (if done?
+        (when interrupted? (.interrupt (Thread/currentThread)))
+        (recur true)))))
+
+(defn native-completion-probe
+  "OPT-IN actual fixed completion -> original controller handling. Run BOTH
+   registration orders for each closed mode. Synthetic producer only; native
+   gate, journal, EACL/default binding and publication remain real. No workers,
+   providers or scheduled/default activation. A saved continuation is invoked
+   only synchronously after the native envelope sealed, never detached."
+  [owned-first? mode]
+  (when-not (and (boolean? owned-first?)
+                 (#{:stale :skip :post-entry :positive-error :replacement :interrupt :lost-applying} mode))
+    (throw (ex-info "Unknown native completion diagnostic" {})))
+  (let [configs (atom []) chat (atom nil) completed? (atom false)
+        result
+        (try
+          (let [result
+                (@#'fixture/with-fixture
+                 owned-first?
+                 (fn [{:keys [conn w room owned attached attached-descriptor] :as state}]
+                   (let [room-conn (:conn (:store room))
+                         cfg (assoc workspace/repository-options :store {:backend :memory :id (random-uuid)})]
+                     (reset! chat room-conn)
+                     (swap! configs into (map #(get @% :config) [conn owned attached room-conn]))
+                     (d/create-database cfg)
+                     (swap! configs conj cfg)
+                     (let [output (d/connect cfg)]
+                       (try
+                         (repo/init! output {:name "Sealed completion fixture"})
+                         (repo/write! output "out/wiki/file.md" (markdown/source-bytes after-text))
+                         (d/transact conn adoptions/schema)
+                         (let [{:keys [plan disposition]} (synthetic-file! state output)
+                               _ (when (= :stale mode)
+                                   ;; Real stale opened-version failure, before
+                                   ;; schema/write/journal callback entry.
+                                   (repo/write! owned "wiki/file.md" (markdown/source-bytes human-text)))
+                               before (durable-state owned) other-before (durable-state attached)
+                               selected (workspace/selected-system-id)
+                               native native-files/write-to-completion!
+                               applying! adoption/bound-applying!
+                               saved (atom nil) envelopes (atom [])
+                               run!
+                               (fn []
+                                 (with-redefs [adoption/bound-applying!
+                                               (fn [& args]
+                                                 (let [ack (apply applying! args)]
+                                                   (when (= :lost-applying mode)
+                                                     ;; REAL applying committed,
+                                                     ;; but the controller has
+                                                     ;; not received its ACK.
+                                                     (throw (ex-info "Lost actual applying callback ACK" {})))
+                                                   ack))
+                                               native-files/write-to-completion!
+                                               (fn [r system batch opts]
+                                                 (let [boundary
+                                                       (case mode
+                                                         (:skip :replacement :interrupt)
+                                                         (constantly {:handlers [(fn [effect next]
+                                                                                   (reset! saved #(next effect))
+                                                                                   (when (= :interrupt mode)
+                                                                                     (.interrupt (Thread/currentThread)))
+                                                                                   {:applied? true :publication {:publication/id (random-uuid)}})]})
+                                                         :post-entry
+                                                         (constantly {:handlers [(fn [effect next]
+                                                                                   (let [value (next effect)]
+                                                                                     (when (= :fs/write (:effect effect))
+                                                                                       (throw (ex-info "After actual native write entry" {})))
+                                                                                     value))]})
+                                                         :positive-error
+                                                         (constantly {:handlers [(fn [effect next]
+                                                                                   (let [value (next effect)]
+                                                                                     (when (= :git/commit (:effect effect))
+                                                                                       (throw (ex-info "After actual winning publication" {})))
+                                                                                     value))]})
+                                                         nil)
+                                                       closed (native r system batch (cond-> opts boundary (assoc :boundary boundary)))]
+                                                   (swap! envelopes conj closed)
+                                                   (when (= :replacement mode)
+                                                     (d/transact conn [{:room/id (:room w)
+                                                                        :room/default-repository
+                                                                        [:system/id (:registry-system attached-descriptor)]}]))
+                                                   closed))]
+                                   (try (controller/adopt! conn (:owner w) (:room w) room (:proposal plan))
+                                        (catch clojure.lang.ExceptionInfo error (ex-data error)))))
+                               ;; Interruption executes synchronously on an
+                               ;; owned joined thread; never poison REPL caller.
+                               answer (if (= :interrupt mode)
+                                        (let [answer (promise)
+                                              t (Thread. ^Runnable
+                                                 (bound-fn []
+                                                   (try (deliver answer {:result (run!)
+                                                                         :interrupted? (.isInterrupted (Thread/currentThread))})
+                                                        (catch Throwable error (deliver answer {:error error})))))]
+                                          (.start t)
+                                          (try (join-native! t)
+                                               (let [value (deref answer 1000 ::missing-after-physical-exit)]
+                                                 (is (true? (:interrupted? value)))
+                                                 (when-let [error (:error value)] (throw error))
+                                                 (:result value))
+                                               (finally (join-native! t))))
+                                        (run!))
+                               operation (:operation answer)
+                               op (adoptions/operation @conn (if (map? operation) (:id operation) operation))
+                               expected (case mode (:stale :skip) :aborted :positive-error :accepted
+                                              :lost-applying :applying :claimed)]
+                           (is (= 1 (count @envelopes)))
+                           (is (= (case mode (:post-entry :lost-applying) :pending :positive-error :returned :not-started)
+                                  (:completion (first @envelopes))))
+                           (is (= expected (:state op)))
+                           (is (= (if (= :accepted expected) :accepted (if (= :aborted expected) :aborted :pending))
+                                  (:status answer)))
+                           (when (#{:stale :skip :replacement :interrupt} mode)
+                             (is (= before (durable-state owned))))
+                           (is (= other-before (durable-state attached)))
+                           (is (= selected (workspace/selected-system-id)))
+                           (is (= disposition (dispositions/disposition
+                                               (requests/get-request conn (:request disposition)))))
+                           (when @saved
+                             (is (= :dvergr.rooms.files/closed-forwarding
+                                    (try (@saved) nil (catch clojure.lang.ExceptionInfo error (:type (ex-data error))))))
+                             (is (= before (durable-state owned))))
+                           (when-not (= :accepted expected)
+                             (is (= :open (:proposal/status (d/entity @conn [:proposal/id (:proposal plan)])))))
+                           {:owned-first? owned-first? :mode mode :state (:state op)
+                            :completion (:completion (first @envelopes))})
+                         (finally (d/release output)))))))]
+            (reset! completed? true)
+            result)
+          (finally
+            ;; Preserve diagnostics instead of releasing/deleting stores when
+            ;; the shared physical Room teardown did not return normally.
+            (when @completed?
+              (when-let [c @chat] (d/release c))
+              (doseq [cfg (distinct @configs)]
+                (when-not (and (= :memory (get-in cfg [:store :backend])) (uuid? (get-in cfg [:store :id])))
+                  (throw (ex-info "Refuse non-fixture cleanup" {})))
+                (d/delete-database cfg)))))]
+    result))
