@@ -253,24 +253,25 @@
                       (el/label {} (str (:label field) (when (:required? field) " *")))
                       (if (:new? field)
                         (let [input (get-in draft [:inputs (:id field)])]
-                          (if (= :db.type/boolean (:value-type field))
-                            (el/select {:aria-label (str "New " (:label field))
-                                        :disabled (or (not enabled?) (not (:editable? field)))
-                                        :value (if (:null input) "null" (:text input))
-                                        :on-change (fn [event]
-                                                     (let [value (.. event -target -value)]
-                                                       ((:declaration-input a) path target (:id field)
-                                                                               (if (= value "null") {:null true} {:text value}))))}
-                                       (el/option {:value "null"} (if (:required? field) "Choose…" "Not set"))
-                                       (el/option {:value "true"} "True")
-                                       (el/option {:value "false"} "False"))
-                            (el/input {:type "text" :aria-label (str "New " (:label field))
-                                       :disabled (or (not enabled?) (not (:editable? field)))
-                                       :value (or (:text input) "")
-                                       :on-input (fn [event] ((:declaration-input a) path target (:id field) {:text (.. event -target -value)}))}))
-                          (when-not (:editable? field) (el/small {} (str "Read-only · " (name (:reason field)))))
-                          (el/button {:disabled (not enabled?)
-                                      :on-click (fn [_] ((:declaration-unbind a) path target (:id field)))} "Remove new binding"))
+                          (el/div {}
+                                  (if (= :db.type/boolean (:value-type field))
+                                    (el/select {:aria-label (str "New " (:label field))
+                                                :disabled (or (not enabled?) (not (:editable? field)))
+                                                :value (if (:null input) "null" (:text input))
+                                                :on-change (fn [event]
+                                                             (let [value (.. event -target -value)]
+                                                               ((:declaration-input a) path target (:id field)
+                                                                                       (if (= value "null") {:null true} {:text value}))))}
+                                               (el/option {:value "null"} (if (:required? field) "Choose…" "Not set"))
+                                               (el/option {:value "true"} "True")
+                                               (el/option {:value "false"} "False"))
+                                    (el/input {:type "text" :aria-label (str "New " (:label field))
+                                               :disabled (or (not enabled?) (not (:editable? field)))
+                                               :value (or (:text input) "")
+                                               :on-input (fn [event] ((:declaration-input a) path target (:id field) {:text (.. event -target -value)}))}))
+                                  (when-not (:editable? field) (el/small {} (str "Read-only · " (name (:reason field)))))
+                                  (el/button {:disabled (not enabled?)
+                                              :on-click (fn [_] ((:declaration-unbind a) path target (:id field)))} "Remove new binding")))
                         (el/button {:disabled (not enabled?)
                                     :on-click (fn [_] ((:declaration-bind a) path target field (:label field)))}
                                    (str "Add " (:label field) " field")))))
