@@ -64,7 +64,10 @@ includes unaliased properties, their actual storage schema and optionality,
 validation/computation descriptors and ownership. Codomain/category and actual
 storage types must agree, honoring the shared exact `:morphism/attr-type`
 mapping. It never evaluates descriptors. `decode-scope` reuses strict scalar
-decoding and retains unknown values; derived/enum constraints refuse until a
+decoding. The captured digest also retains trusted UI rendering hints and
+declared uniqueness; explicit uniqueness must agree with installed storage.
+Rendering hints never override the actual storage value type. The decoder's
+raw/unknown values remain intact; derived/enum constraints refuse until a
 validator exists. Required owner-managed fields get a separate diagnostic,
 not an instruction to author them in YAML. Shared storage across multiple
 type properties is conservatively unsupported. Relations, unique properties

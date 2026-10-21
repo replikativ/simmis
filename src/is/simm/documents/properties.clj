@@ -22,7 +22,7 @@
     (some #(or (= ns %) (str/starts-with? ns (str % "."))) system-namespaces)))
 (def ^:private binding-keys
   [:entity/uuid :entity/name :morphism/storage-attr :morphism/computation :morphism/validation
-   :morphism/cardinality :morphism/optional? :morphism/attr-type
+   :morphism/cardinality :morphism/optional? :morphism/attr-type :morphism/unique :morphism/property-type
    {:morphism/of-category [:entity/uuid :entity/name]}
    {:morphism/src [:entity/uuid :entity/name]}
    {:morphism/dst [:entity/uuid :entity/name :object/primitive? :object/enum-values
@@ -56,6 +56,11 @@
                                  (= cardinality (:morphism/cardinality m)))
                     (throw (ex-info "Property binding does not match installed schema"
                                     {:type ::invalid-schema :property name})))
+                  (when-let [declared (:morphism/unique m)]
+                    (when-not (and (#{:db.unique/value :db.unique/identity} declared)
+                                   (= declared (:db/unique attr-schema)))
+                      (throw (ex-info "Property uniqueness does not match installed schema"
+                                      {:type ::invalid-schema :property name}))))
                   ;; An apparent ordinary morphism must not smuggle values into
                   ;; source/projection/identity/authority internals. Reflected
                   ;; properties are retained for an explicit owner-managed
