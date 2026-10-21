@@ -5,6 +5,7 @@ Write /out/brief.md for human review and /out/analysis.edn with:
  :unknowns ["..."] :questions ["..."] :next-actions ["..."]}
 Use literal EDN. Every fact and inference needs supplied source IDs.
 Copy each supplied :facts statement EXACTLY as a fact. Hypotheses may be uncited but must be labelled.
+Every claim must include :source-ids as a vector. For an uncited hypothesis, use :source-ids []; do not omit the field.
 No sources means :insufficient-evidence, no claims, and explicit gaps/questions.
 Always give nonempty unknowns, questions and next-actions.
 Discuss current alternatives, prospective customer jobs, differentiation hypotheses and how to falsify them.

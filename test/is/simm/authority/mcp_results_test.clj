@@ -86,6 +86,23 @@
                 (is (= "captured attempt output"
                        (get-in before [:evidence :files (keyword "/out/result.md")])))
                 (is (= (:id attempt) (:id before)))
+                (testing "canonical room UUIDs resolve at both authorization gates"
+                  (let [uuid-args (assoc detail-args :room (str (:room w)))]
+                    (doseq [[tool input] [["simmis_attempt-files" uuid-args]
+                                          ["simmis_attempt-file" (assoc uuid-args :path "/out/result.md")]]]
+                      (is (= (result (call member tool (assoc input :room slug)))
+                             (result (call member tool input))))
+                      (doseq [context [stranger admin]]
+                        (is (refused? (call context tool input)))))))
+                (testing "unknown UUIDs never fall back to UUID-shaped slugs"
+                  (let [unknown (str (random-uuid))]
+                    (dh/transact conn [{:room/id (:room w) :room/slug unknown}])
+                    (try
+                      (doseq [handle [unknown (str (random-uuid))]
+                              [tool input] [["simmis_attempt-files" detail-args]
+                                            ["simmis_attempt-file" (assoc detail-args :path "/out/result.md")]]]
+                        (is (refused? (call member tool (assoc input :room handle)))))
+                      (finally (dh/transact conn [{:room/id (:room w) :room/slug slug}])))))
                 (testing "discovery exactly matches each credential's ceiling"
                   (doseq [[context ceiling] [[member mcp/read-tools]
                                              [(session (:member w) :legacy) mcp/legacy-read-tools]
@@ -146,6 +163,32 @@
                                                   {:jsonrpc "2.0" :id 4 :method "resources/read"
                                                    :params {:uri (str "room://" slug "/files/out/result.md")}}))))))
             (finally (work-api/uninstall!) (results/uninstall!) (server/set-host! nil))))))))
+
+(deftest uuid-shaped-slugs-cannot-impersonate-canonical-room-identities
+  (world/with-world [conn w]
+    (let [unknown (str (random-uuid))
+          make-room discourse/make-room]
+      (with-redefs [discourse/make-room
+                    (fn [opts]
+                      (make-room (cond-> opts
+                                   (= :simmis-experiments-test (:id opts))
+                                   (assoc :id (keyword unknown)))))]
+        (with-experiment-room
+          (fn [room]
+            (is (= unknown (store/room-id->slug (:id room))))
+            (dh/transact conn [{:room/id (:room w) :room/slug unknown}])
+            (server/set-host! (ops/host (:ctx room)))
+            (try
+              (results/install!)
+              (with-redefs [auth/get-auth-config (constantly {:jwt {:secret "mcp-results-collision-key"}})]
+                (let [member (session (:member w))
+                      attempt (first (result (call member "attempt_list" {:room unknown})))
+                      args {:room (str (:room w)) :id (:id attempt)}]
+                  (doseq [[tool input] [["simmis_attempt-files" args]
+                                        ["simmis_attempt-file" (assoc args :path "/out/result.md")]]]
+                    (is (map? (result (call member tool input))))
+                    (is (refused? (call member tool (assoc input :room unknown)))))))
+              (finally (results/uninstall!) (server/set-host! nil)))))))))
 
 (deftest job-discovery-and-known-job-ids-are-room-authorized
   (world/with-world [conn w]

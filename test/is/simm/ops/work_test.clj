@@ -354,43 +354,44 @@
             (finally (.countDown release))))))))
 
 (deftest boot-recovery-reclaims-dead-descendant-wallets-but-not-held-exposure
-  (world/with-world [conn w]
-    (with-room
-      (fn [room]
-        (let [[input prepared] (fixture)
-              host-ctx ec/*execution-context*
-              grant (work/resources (:limits input))
-              row (:request (requests/claim! conn {:party (:owner w) :room (:room w)
-                                                   :client-id (:request-id input) :kind :task
-                                                   :intent (:basis prepared)
-                                                   :limits (update (:limits input) :settlement keyword)}))
-              job (:run/id (run/start! room :test (random-uuid) nil {:kind :workflow}))
-              child (:run/id (run/start! room :test (random-uuid) nil {:parent job}))]
-          (resource/mint! room {:id (random-uuid) :resources grant})
-          (requests/record-job! conn (:work.request/id row) (:work.request/claim row) job)
-          (resource/allocate-run! room job nil grant)
-          (resource/allocate-run! room child job grant)
+  (doseq [kind [:task :coordinator]]
+    (world/with-world [conn w]
+      (with-room
+        (fn [room]
+          (let [[input prepared] (fixture)
+                host-ctx ec/*execution-context*
+                grant (work/resources (:limits input))
+                row (:request (requests/claim! conn {:party (:owner w) :room (:room w)
+                                                     :client-id (:request-id input) :kind kind
+                                                     :intent (:basis prepared)
+                                                     :limits (update (:limits input) :settlement keyword)}))
+                job (:run/id (run/start! room :test (random-uuid) nil {:kind :workflow}))
+                child (:run/id (run/start! room :test (random-uuid) nil {:parent job}))]
+            (resource/mint! room {:id (random-uuid) :resources grant})
+            (requests/record-job! conn (:work.request/id row) (:work.request/claim row) job)
+            (resource/allocate-run! room job nil grant)
+            (resource/allocate-run! room child job grant)
           ;; A held external exposure has left the Run wallet. Simulate a
           ;; committed dispatch debit; recovery must never mint that back.
-          (resource/consume! room child {:id (random-uuid)
-                                         :resources {resource/model-dispatches 1M}})
-          (let [reservation (binding [resource/*model-scope* (resource/model-scope room child)
-                                      resource/*spend-wallet* {:payer {:room room :wallet child}}
-                                      resource/*dispatch-bound* 2500M
-                                      resource/*dispatches* (atom [])]
-                              (resource/reserve-dispatch!))]
-            (run/finish! child :failed {:reason :orphaned})
-            (run/finish! job :failed {:reason :orphaned})
-            (work/recover! conn host-ctx (constantly room))
-            (is (= {resource/microdollars 7500M resource/model-dispatches 1M}
-                   (resource/balance room)))
-            (is (= {resource/microdollars 2500M}
-                   (resource/balance room [:kontor.resource-account/id (:wallet reservation)])))
-            (is (false? (:return-pending? (work/status conn host-ctx (ops/party-principal (:owner w))
-                                                       (:room w) (:work.request/id row)))))
-            (work/recover! conn host-ctx (constantly room))
-            (is (= {resource/microdollars 7500M resource/model-dispatches 1M}
-                   (resource/balance room)))))))))
+            (resource/consume! room child {:id (random-uuid)
+                                           :resources {resource/model-dispatches 1M}})
+            (let [reservation (binding [resource/*model-scope* (resource/model-scope room child)
+                                        resource/*spend-wallet* {:payer {:room room :wallet child}}
+                                        resource/*dispatch-bound* 2500M
+                                        resource/*dispatches* (atom [])]
+                                (resource/reserve-dispatch!))]
+              (run/finish! child :failed {:reason :orphaned})
+              (run/finish! job :failed {:reason :orphaned})
+              (work/recover! conn host-ctx (constantly room))
+              (is (= {resource/microdollars 7500M resource/model-dispatches 1M}
+                     (resource/balance room)))
+              (is (= {resource/microdollars 2500M}
+                     (resource/balance room [:kontor.resource-account/id (:wallet reservation)])))
+              (is (false? (:return-pending? (work/status conn host-ctx (ops/party-principal (:owner w))
+                                                         (:room w) (:work.request/id row)))))
+              (work/recover! conn host-ctx (constantly room))
+              (is (= {resource/microdollars 7500M resource/model-dispatches 1M}
+                     (resource/balance room))))))))))
 
 (deftest speculative-work-denies-irreversible-and-undeclared-effects
   (let [{:keys [specs release]} (effects/environment-handlers! work/effects)
@@ -446,18 +447,20 @@
               (is (= grant (resource/balance room))))))))))
 
 (deftest pointerless-boot-admission-is-interrupted-not-restarted
-  (world/with-world [conn w]
-    (with-room
-      (fn [room]
-        (let [[input prepared] (fixture)
-              host-ctx ec/*execution-context*
-              owner (ops/party-principal (:owner w))]
-          (requests/claim! conn {:party (:owner w) :room (:room w)
-                                 :client-id (:request-id input) :kind :task
-                                 :intent (:basis prepared)
-                                 :limits (update (:limits input) :settlement keyword)})
-          (work/recover! conn host-ctx (constantly room))
-          (let [retry (work/submit-prepared! conn host-ctx owner (:room w) room input prepared)]
-            (is (= :interrupted (:state retry)))
-            (is (nil? (:job retry)))
-            (is (empty? (jobs/jobs room)))))))))
+  (doseq [kind [:task :coordinator]]
+    (world/with-world [conn w]
+      (with-room
+        (fn [room]
+          (let [[input prepared] (fixture)
+                host-ctx ec/*execution-context*
+                owner (ops/party-principal (:owner w))]
+            (requests/claim! conn {:party (:owner w) :room (:room w)
+                                   :client-id (:request-id input) :kind kind
+                                   :intent (:basis prepared)
+                                   :limits (update (:limits input) :settlement keyword)})
+            (work/recover! conn host-ctx (constantly room))
+            (let [retry (work/submit-prepared! conn host-ctx owner (:room w) room input
+                                               (assoc prepared :request-kind kind))]
+              (is (= :interrupted (:state retry)))
+              (is (nil? (:job retry)))
+              (is (empty? (jobs/jobs room))))))))))

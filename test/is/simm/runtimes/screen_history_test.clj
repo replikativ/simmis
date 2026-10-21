@@ -130,3 +130,30 @@
     (let [[desc failed] (#'intake/describe-frame (byte-array 1) "image/png")]
       (is (nil? desc))
       (is (re-find #"returned no description" failed)))))
+
+(deftest provider-exceptions-become-recordable-failures-without-secret-text
+  (doseq [failure [(ex-info "Configure vision, token=do-not-store" {:type :dvergr.media.vision/configuration})
+                   (ex-info "secret token=do-not-store" {:type :task-model-unavailable})
+                   (java.io.IOException. "provider rejected secret credential")]]
+    (with-redefs [task-models/model-opts (constantly {})
+                  dvergr.media.vision/describe (fn [& _] (throw failure))]
+      (let [[desc failed] (#'intake/describe-frame (byte-array 1) "image/png")]
+        (is (nil? desc))
+        (is (re-find #"configured vision model" failed))
+        (is (not (re-find #"secret|do-not-store" failed)))))))
+
+(deftest provider-exception-retains-the-frame-in-the-owner-gallery
+  (let [owner (random-uuid) done (promise)]
+    (with-redefs [blobs/store! (fn [_ _] {:blob/id "provider-failed-frame"})
+                  task-models/model-opts (constantly {})
+                  dvergr.media.vision/describe
+                  (fn [& _] (throw (ex-info "secret provider diagnostic" {:type :task-model-unavailable})))
+                  intake/persist-frame! (let [persist @#'intake/persist-frame!]
+                                          (fn [p f] (persist p f) (deliver done f)))]
+      (is (= 200 (:status (intake/handle-frame! owner (byte-array 4) "image/png"))))
+      (is (not= ::timeout (deref done 10000 ::timeout))))
+    (let [[frame] (intake/search-own owner "" 10)]
+      (is (= "provider-failed-frame" (:blob-id frame)))
+      (is (nil? (:text frame)))
+      (is (re-find #"configured vision model" (:failed frame)))
+      (is (not (re-find #"secret" (:failed frame)))))))

@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is]]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.set :as set]
             [dvergr.catalog.room :as catalog]
             [is.simm.ops.benchmark-dataset :as dataset]
@@ -52,3 +53,20 @@
     (is (= #{:output-contract? :known-source-ids? :fixture-facts-grounded?
              :required-fixture-facts? :honest-status?}
            (set (keys (:checks (verdict good))))))))
+
+(deftest uncited-hypotheses-use-an-explicit-empty-source-vector
+  (let [files (example-files)
+        bundle (catalog/bundle "market-discovery-eval" files)
+        good (get-in bundle [:calibration :reference])
+        gold (get-in bundle [:cases "dev-notes" :gold])
+        analysis (edn/read-string (get good "/out/analysis.edn"))
+        verdict (fn [claim]
+                  (checkers/run-checker
+                   (:checker bundle)
+                   {:files (assoc good "/out/analysis.edn"
+                                  (pr-str (update analysis :claims conj claim)))
+                    :gold gold}))
+        hypothesis {:kind :hypothesis :statement "A falsifiable possibility, not a fact."}]
+    (is (str/includes? (get files "fixtures/inputs/contract.md") ":source-ids []"))
+    (is (= 1.0 (:reward (verdict (assoc hypothesis :source-ids [])))))
+    (is (false? (get-in (verdict hypothesis) [:checks :output-contract?])))))

@@ -2151,6 +2151,13 @@ body {
 .run-section--diagnostic { padding: var(--spacing-md); border-color: color-mix(in srgb, var(--danger) 35%, var(--mono-border)); }
 
 .run-result-identity { overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--mono-text-tertiary); }
+.chat-recorded-results { flex: 0 0 auto; min-height: 0; border-bottom: 1px solid var(--mono-border); padding: var(--spacing-sm) var(--spacing-md); font-size: var(--text-sm); }
+.chat-recorded-results summary { cursor: pointer; overflow-wrap: anywhere; }
+.chat-recorded-results-body { max-height: 40vh; overflow: auto; padding-top: var(--spacing-sm); }
+.chat-recorded-results-body > p { color: var(--mono-text-secondary); }
+.chat-recorded-result { padding: var(--spacing-sm) 0; border-top: 1px solid var(--mono-border); }
+.chat-recorded-result > summary { margin-bottom: var(--spacing-sm); }
+.chat-recorded-result .run-section { padding: var(--spacing-sm) 0; margin: 0; }
 .run-result-files { display: flex; flex-direction: column; gap: var(--spacing-sm); margin: var(--spacing-md) 0; }
 .run-result-file { display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap; }
 .run-result-file code { flex: 1; overflow-wrap: anywhere; min-width: 120px; }

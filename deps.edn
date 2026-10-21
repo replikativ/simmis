@@ -68,7 +68,11 @@
         ;; execution-state writes on resume.
         ;; 0.1.131 includes singleton authority partitions, nil DOM attribute
         ;; cleanup and read-only cross-catalog fork diffs (#141–143).
-        org.replikativ/spindel {:mvn/version "0.1.131"}
+        ;; Keep the direct UI/runtime pin aligned with Dvergr's reviewed
+        ;; independent-session and funding-recovery foundation (spindel#146).
+        ;; Public squash has the identical source tree as retired 5a34810.
+        org.replikativ/spindel {:git/url "https://github.com/replikativ/spindel.git"
+                                :git/sha "f123bd80073ba6b5a6fe9cf0f04e65c968dbfb0b"}
         ;; spindel 0.1.53 brings anglican 1.1.0 (its inference methods), which
         ;; brings timbre 4.10.0, whose ClojureScript no longer compiles
         ;; ("Can't redefine a constant"). A current timbre serves anglican's
@@ -368,10 +372,13 @@
         ;; evaluation read models without rewriting certified Scorecards (#353).
         ;; 0.1.312 keeps model/broker loading independent of Datahike and the
         ;; agent runtime, preserving trusted installation boundaries (#355).
-        ;; Temporary immutable upstream pin for explicit text/single-use Runs
-        ;; (dvergr#357); switch back to Maven after its release.
+        ;; Temporary immutable upstream pin for scoped coordinators, owned Run
+        ;; sessions, world-spend attribution and subscription image input
+        ;; (dvergr#357–361, #363). Alpha stores
+        ;; must use the classified wallet schema; no legacy migration is implied.
+        ;; Use the merged #363 commit: the earlier feature SHA is retired.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               :git/sha "09735172ba989fa325ec18dafb7ba1f1b1af3d24"}}
+                               :git/sha "ddad276352f1b9b28fcc75c6e9294359ed57ad09"}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
            ;; the Maven ones exactly so each override REPLACES the release instead
@@ -400,13 +407,13 @@
                                 is.simm/distributed-scope {:local/root "../distributed-scope"
                                                            :exclusions [io.replikativ/hasch
                                                                         io.replikativ/kabel]}
-                                 org.replikativ/sci {:local/root "../sci"}
+                                org.replikativ/sci {:local/root "../sci"}
                                  ;; ../konserve pins fress 0.4.312, but local
                                  ;; datahike (8f6d1e43, cljs :db.type/bigdec)
                                  ;; requires fress.impl.bigdec — 0.4.317 only.
                                  ;; Without this the CLJS build dies with
                                  ;; "namespace fress.impl.bigdec is not available".
-                                 com.github.pkpkpk/fress {:mvn/version "0.4.317"}}
+                                com.github.pkpkpk/fress {:mvn/version "0.4.317"}}
                    ;; Local datahike keeps its kabel-writer client (datahike.kabel.*)
                    ;; under src-kabel and the secondary-index adapters
                    ;; (datahike.index.secondary.* — scriptum/proximum/stratum,

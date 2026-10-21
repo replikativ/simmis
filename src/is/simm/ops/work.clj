@@ -211,7 +211,7 @@
                      (start! job-id)
                      (evaluation/evaluate room (:team prepared) (:agent prepared)
                                           (:environment prepared) (:evaluator prepared)
-                                          (merge (select-keys prepared [:protocol :world-setup])
+                                          (merge (select-keys prepared [:protocol :world-setup :experiment-capabilities :delegation-policy])
                                                  {:parent-run job-id :cleanup-group job-id
                                                   :from (:principal/actor principal)
                                                   :metrics {:requester-party party
@@ -264,7 +264,7 @@
   [conn host-ctx resolve-room]
   (binding [ec/*execution-context* host-ctx]
     (doseq [row (requests/requests conn)
-            :when (contains? #{:task :workflow :benchmark} (:work.request/kind row))]
+            :when (contains? #{:task :workflow :benchmark :coordinator} (:work.request/kind row))]
       (if-let [job (:work.request/job row)]
         (when (:work.request/return-pending? row)
           (when-let [room (resolve-room (:work.request/room row))]

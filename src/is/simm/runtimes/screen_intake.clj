@@ -169,26 +169,34 @@ screenshot for a colleague who cannot see it:
   the user is working on over chrome/menus.
 - End with one line: what the user appears to be doing.")
 
+(defn- failed-description [e]
+  (log/log! {:level :warn :id ::description-exception
+             :data {:exception (.getName (class e)) :type (:type (ex-data e))}})
+  [nil "Screen description failed. Check the configured vision model and server diagnostics."])
+
 (defn- describe-frame
   "Describe one frame: [description nil] or [nil reason]. The reason names
-   the model when one was configured (`:models {:vision …}`); dvergr's
-   `describe` answers nil on failure and logs the provider error itself
-   (`:dvergr.media.vision/vision-failed`)."
+   the model when one was configured (`:models {:vision …}`). Exceptions also
+   become recorded failures, without putting raw provider diagnostics/secrets
+   into the user's searchable screen archive."
   [^bytes bytes mime]
   (try
-    (let [opts (task-models/model-opts :vision)
-          desc ((requiring-resolve 'dvergr.media.vision/describe)
-                bytes (or mime "image/jpeg")
-                (merge {:prompt describe-prompt :max-tokens 8000} opts))]
-      (if (str/blank? desc)
-        [nil (str "The vision model "
-                  (if-let [m (:model opts)] m "(dvergr's default)")
-                  " returned no description.")]
-        [desc nil]))
-    (catch clojure.lang.ExceptionInfo e
+    (let [opts (task-models/model-opts :vision)]
+      ;; Only our own resolver supplies trusted user-facing diagnostics.
+      (try
+        (let [desc ((requiring-resolve 'dvergr.media.vision/describe)
+                    bytes (or mime "image/jpeg")
+                    (merge {:prompt describe-prompt :max-tokens 8000} opts))]
+          (if (str/blank? desc)
+            [nil (str "The vision model "
+                      (if-let [m (:model opts)] m "(dvergr's default)")
+                      " returned no description.")]
+            [desc nil]))
+        (catch Exception e (failed-description e))))
+    (catch Exception e
       (if (= :task-model-unavailable (:type (ex-data e)))
         [nil (ex-message e)]
-        (throw e)))))
+        (failed-description e)))))
 
 (defn handle-frame!
   "Accept a posted frame for `party-uuid` (the authenticated sharer). Stores it

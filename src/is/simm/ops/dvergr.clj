@@ -17,12 +17,23 @@
    in simmis — while simmis gives a room's agents their sandbox by design
    (doc/authority.md, \"The sandbox and eval\"). Putting agents' tool calls
    behind `can?` is P2's (plan §2.4), not a side effect of this."
-  (:require [dvergr.ops :as dops]
+  (:require [datahike.api :as d]
+            [dvergr.ops :as dops]
             [dvergr.principal :as principal]
             [malli.core :as m]
             [is.simm.model.access :as access]
             [is.simm.model.system-db :as system-db]
             [is.simm.ops.worker-credentials :as worker-credentials]))
+
+(defn room-handle
+  "Translate a canonical Simmis UUID through its current system-db row.
+   UUID-shaped handles never fall back to a slug with the same spelling."
+  [arg]
+  (if-let [id (when (string? arg) (parse-uuid arg))]
+    (when-let [conn (system-db/get-conn)]
+      (d/q '[:find ?slug . :in $ ?id
+             :where [?r :room/id ?id] [?r :room/slug ?slug]] @conn id))
+    arg))
 
 (defn authorize
   "Shared authority with runtime argument validation for external MCP calls.
