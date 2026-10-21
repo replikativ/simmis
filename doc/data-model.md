@@ -140,6 +140,17 @@ the exact immutable DB produced by the view is supported; that does not make
 it an admissible source for another preparation. These host-side experimental
 views do not migrate the existing wiki or activate typed Memory controls.
 
+`documents.view/validate-replacement` is a distinct, host-only validation
+preview for one existing selected Markdown file. It verifies the opened
+descriptor against one captured canonical source DB, recalculates aggregate
+byte limits and runs the same whole-selection parser, identity, type, relation
+and uniqueness stages as `prepare`, with replacement bytes held only in memory.
+It never stores a candidate blob, invents content entities or materializes a
+queryable DB. Its `:replacement-preview` result has `:valid`/`:invalid` status,
+candidate revision and diagnostics, not an actual-source selection or current
+view; `current?` explicitly refuses it. A valid preview is neither permission
+nor a publication receipt or lease on later schema changes.
+
 `documents.property-source` is a separate pure token-replacement codec for
 existing scalar frontmatter leaves. It checks the exact source revision,
 uses the same bounded safe YAML policy as the Markdown parser, and converts

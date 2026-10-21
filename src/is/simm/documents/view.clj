@@ -106,7 +106,8 @@
    A true answer is as-of this DB snapshot, not a lock on subsequent writes."
   [db options view]
   (try
-    (and (= (:selection view) (selection db options))
+    (and (not= :replacement-preview (:kind view))
+         (= (:selection view) (selection db options))
          (or (nil? (:entity-profile options))
              (let [own-derived? (identical? db (:db view))]
                (canonical-base! db own-derived?)
@@ -197,23 +198,37 @@
                               :document/blocks :document.block/children} attr))
               (refuse! :authored-reference-to-projection))))))))
 
-(defn prepare
-  "Build a historical/as-of view from ONE immutable DB snapshot. Does not
-   transact, write source, execute file declarations or install global state.
-   Invalid documents return diagnostics without a queryable partial DB."
-  [source-db options]
+(defn- replacement-bytes! [selected {:keys [path expected source] :as replacement}]
+  (when-not (and (map? replacement) (= #{:path :expected :source} (set (keys replacement))))
+    (refuse! :invalid-replacement))
+  (files/path! path)
+  (let [entry (get-in selected [:files path])]
+    (when-not (and entry (= expected entry)) (refuse! :stale-or-unselected-replacement))
+    (let [bytes (markdown/source-bytes source)]
+      (when (> (+ (- (reduce + 0 (map :size (vals (:files selected)))) (:size entry))
+                  (alength ^bytes bytes)) max-total-bytes)
+        (refuse! :too-many-source-bytes))
+      bytes)))
+
+(defn- analyze
+  "One bounded selection/acquisition/parser/canonical pipeline. An optional
+   in-memory replacement is validation input, NEVER a stored content identity."
+  [source-db options replacement]
   (let [selected (selection source-db options)
+        replacement-bytes (when replacement (replacement-bytes! selected replacement))
         canonical? (some? (:entity-profile options))
         _ (when canonical? (canonical-base! source-db))
         _ (projection-ownership! source-db)
         property-schema (properties/compile-schema source-db (get options :property-bindings {}))
         docs (:documents
               (reduce (fn [{:keys [documents node-count]} [path {:keys [content size]}]]
-                        (let [logical-size (:geschichte.content/size
+                        (let [replaced? (and replacement (= path (:path replacement)))
+                              logical-size (:geschichte.content/size
                                             (d/entity source-db [:geschichte.content/id content]))
                               _ (when-not (= size logical-size) (refuse! :content-size-mismatch))
-                              bytes (content/read-by-id (atom source-db) content)]
-                          (when-not (and bytes (= size (alength ^bytes bytes)))
+                              bytes (if replaced? replacement-bytes
+                                        (content/read-by-id (atom source-db) content))]
+                          (when-not (and bytes (or replaced? (= size (alength ^bytes bytes))))
                             (refuse! :content-size-mismatch))
                           (let [parsed (markdown/parse (markdown/decode bytes))
                                 identity (identity/document (:repository-id selected) path parsed)
@@ -228,7 +243,7 @@
                             {:node-count n
                              :documents (conj documents
                                               (-> (merge parsed (dissoc identity :diagnostics))
-                                                  (assoc :path path :content content :semantic semantic
+                                                  (assoc :path path :content (when-not replaced? content) :semantic semantic
                                                          :properties property-values
                                                          :diagnostics (into (or (:diagnostics semantic)
                                                                                 (:diagnostics parsed))
@@ -250,7 +265,33 @@
                                     {:kind :duplicate-document-id :path (:path doc)})
                                   (for [{:keys [id path from]} semantic-ids
                                         :when (and (some? from) (contains? duplicate-semantic-ids id))]
-                                    {:kind :duplicate-semantic-id :path path :from from})))
+                                    {:kind :duplicate-semantic-id :path path :from from})))]
+    {:selection selected :documents docs :canonical-result canonical-result :diagnostics diagnostics}))
+
+(defn validate-replacement
+  "HOST validation-only preview over ONE immutable canonical source DB.
+   Replaces exactly one existing selected Markdown file in memory and runs the
+   SAME whole-selection parser/type/relation/uniqueness checks as prepare.
+   No blob/entity publication, queryable DB, as-of selection or freshness lease.
+   This neither authorizes publication nor proves a later schema is unchanged."
+  [source-db options replacement]
+  (when-not (= space/profile (:entity-profile options))
+    (refuse! :replacement-requires-canonical-profile))
+  (when-not (map? replacement) (refuse! :invalid-replacement))
+  (let [{:keys [documents diagnostics]} (analyze source-db options replacement)]
+    {:kind :replacement-preview :status (if (seq diagnostics) :invalid :valid)
+     :path (:path replacement) :expected (:expected replacement)
+     :revision (:revision (first (filter #(= (:path replacement) (:path %)) documents)))
+     :diagnostics diagnostics}))
+
+(defn prepare
+  "Build a historical/as-of view from ONE immutable DB snapshot. Does not
+   transact, write source, execute file declarations or install global state.
+   Invalid documents return diagnostics without a queryable partial DB."
+  [source-db options]
+  (let [{selected :selection docs :documents :keys [canonical-result diagnostics]}
+        (analyze source-db options nil)
+        canonical? (some? (:entity-profile options))
         base (cond-> {:id (hasch/uuid selected) :selection selected
                       :documents docs :diagnostics diagnostics}
                canonical? (assoc :id (hasch/uuid [selected (:scopes canonical-result) (:dependencies canonical-result)])

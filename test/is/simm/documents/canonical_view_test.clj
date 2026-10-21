@@ -2,6 +2,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clj-yaml.core :as yaml]
             [datahike.api :as d]
+            [datahike.blob :as blob]
+            [geschichte.content :as content]
             [geschichte.repo :as repo]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.space :as space]
@@ -98,6 +100,47 @@
                 (is (not (view/current? changed options prepared))))
               (let [removed (d/db-with base [[:db/retractEntity [:entity/uuid revenue]]])]
                 (is (not (view/current? removed options prepared)))))
+            (testing "replacement preview shares validation without publishing or pretending bytes are stored"
+              (let [selected (get-in prepared [:selection :files "companies/a.md"])
+                    candidate (source (assoc raw "turnover" 42) body)
+                    request {:path "companies/a.md" :expected selected :source candidate}
+                    before (:max-tx @conn)
+                    result (view/validate-replacement base options request)]
+                (is (= :replacement-preview (:kind result)))
+                (is (= :valid (:status result)) (pr-str (:diagnostics result)))
+                (is (= (markdown/revision candidate) (:revision result)))
+                (is (= selected (:expected result)))
+                (is (every? #(not (contains? result %)) [:db :selection :documents :document/source-content]))
+                (is (not (view/current? base options result)))
+                (is (not (view/current? base options (assoc result :selection (:selection prepared)))))
+                (is (nil? (:db/id (d/entity base [:geschichte.content/id (blob/blob-id (markdown/source-bytes candidate))]))))
+                (is (= before (:max-tx @conn)))
+                (is (= selected (get (repo/worktree conn) "companies/a.md")))
+                (let [reads (atom []) read-content content/read-by-id]
+                  (with-redefs [content/read-by-id (fn [conn id & args]
+                                                    (swap! reads conj id)
+                                                    (apply read-content conn id args))]
+                    (is (= :valid (:status (view/validate-replacement base options request)))))
+                  (is (= #{(get-in prepared [:selection :files "research/a.md" :content])} (set @reads))))
+                (is (= :valid (:status (view/validate-replacement base options (assoc request :source original)))))
+                (is (= :invalid (:status (view/validate-replacement base options
+                                           (assoc request :source (source (dissoc raw "turnover") body))))))
+                (is (= :invalid (:status (view/validate-replacement base options
+                                           (assoc request :source (source (assoc raw "simmis-id" (str page-b)) body))))))
+                (let [changed (d/db-with base [{:entity/uuid revenue :morphism/validation "never execute"}])]
+                  (is (= :invalid (:status (view/validate-replacement changed options request)))))
+                (doseq [invalid [nil false {} (assoc request :extra true)
+                                  (assoc request :path "absent.md")
+                                  (assoc request :expected (assoc selected :size (inc (:size selected))))]]
+                  (is (thrown? clojure.lang.ExceptionInfo (view/validate-replacement base options invalid))))
+                (is (thrown? clojure.lang.ExceptionInfo
+                             (view/validate-replacement base (assoc options :roots ["research"]) request)))
+                (is (thrown? clojure.lang.ExceptionInfo
+                             (view/validate-replacement base (dissoc options :entity-profile) request)))
+                (let [size (reduce + 0 (map :size (vals (get-in prepared [:selection :files]))))]
+                  (with-redefs-fn {(ns-resolve 'is.simm.documents.view 'max-total-bytes) (inc size)}
+                    #(is (thrown? clojure.lang.ExceptionInfo
+                                  (view/validate-replacement base options (assoc request :source (str original "\nExtra candidate bytes\n")))))))))
             (testing "generated path satisfies explicit required title, never arbitrary YAML"
               (let [required (d/db-with base [{:entity/uuid (:entity/uuid seed/morphism-Page-title)
                                               :morphism/optional? false}])]
@@ -197,6 +240,14 @@
                 (let [invalid (view/current-view conn options)]
                   (is (= :invalid (:status invalid)) "stable constraint errors are not perpetual pending")
                   (is (nil? (:db invalid))))
+                (let [db @conn
+                      preview (view/validate-replacement
+                               db options {:path "companies/a.md"
+                                           :expected (get (repo/worktree conn) "companies/a.md")
+                                           :source (source (assoc person-raw "turnover" 99) body)})]
+                  (is (= :invalid (:status preview)) "the entire selection, not just the edited file, is checked")
+                  (is (some #(= :invalid-selection-constraints (:kind %)) (:diagnostics preview)))
+                  (is (nil? (:db preview))))
                 (write! conn "research/a.md" (source (-> raw (assoc "simmis-id" (str page-b) "turnover" 10)
                                                           (update "simmis" dissoc "blocks")) "# Another company\n"))))
             (testing "relations use explicit UUIDs, not path hints or forward lookup refs"
