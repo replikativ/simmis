@@ -48,8 +48,11 @@
 (defn- pull-row [db attr id]
   ;; A missing lookup ref throws in Datahike's pull; absence is normal for
   ;; idempotent creation and must be distinguished from storage failures.
-  (when-let [eid (:e (first (d/datoms db :avet attr id)))]
-    (d/pull db '[*] eid)))
+  ;; nil is an unbound index component, NOT an absent identity. Never let an
+  ;; unlinked occurrence borrow the first unrelated request (or activation).
+  (when (some? id)
+    (when-let [eid (:e (first (d/datoms db :avet attr id)))]
+      (d/pull db '[*] eid))))
 
 (defn activation [conn id]
   (pull-row @conn :schedule.activation/id id))

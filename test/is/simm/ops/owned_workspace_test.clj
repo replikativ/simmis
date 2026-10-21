@@ -57,10 +57,12 @@
              ;; or upstream filesystem-alias integration claim.
              (with-redefs [rooms/room-ctx-for #(when (= (:room w) %) (:ctx room))
                            rooms/default-workspace
-                           (fn [db id]
-                             (is (= (:room w) id))
-                             (or (get descriptors (:system/id (registry-db/default-repository db id)))
-                                 (throw (ex-info "No owned default" {}))))]
+                           (fn resolve-default
+                             ([id] (resolve-default @conn id))
+                             ([db id]
+                              (is (= (:room w) id))
+                              (or (get descriptors (:system/id (registry-db/default-repository db id)))
+                                  (throw (ex-info "No owned default" {})))))]
                (f {:conn conn :w w :room room :owned own :attached attached
                    :own-descriptor own-desc :attached-descriptor attached-desc})))
            (finally (doseq [c @opened] (d/release c)))))))))

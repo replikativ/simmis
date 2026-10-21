@@ -131,6 +131,14 @@
       (let [db (current-control-db! control-conn execution-ctx)]
         (assoc (authorize-read! db principal original-handle) :control-db db)))))
 
+(defn current-host-control-db!
+  "Fixed HOST owner/liveness guard before scheduler traversal. No principal,
+   hydration, target lookup or retained authority; callers authorize each row."
+  [host]
+  (let [{:keys [control-conn execution-ctx]} (original-owner! host)]
+    (binding [ec/*execution-context* execution-ctx]
+      (current-control-db! control-conn execution-ctx))))
+
 (defn- authorize-room! [db principal handle]
   (let [{:keys [room-id party] :as current} (authorize-read! db principal handle)]
     (when-not (access/can? db party :merge {:room room-id}) (refuse!))

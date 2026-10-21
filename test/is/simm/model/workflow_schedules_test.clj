@@ -48,6 +48,20 @@
               :input-id input-id
               :file! #(d/transact conn [[:db.fn/call dispositions/tx-data request receipt]])}))))))
 
+(deftest absent-identities-cannot-select-unrelated-filed-rows
+  (with-filed-input
+    (fn [{:keys [conn file!]}]
+      (file!)
+      (let [a (create conn)]
+        (schedules/claim-due! conn a {:interval-ms 60000} (java.util.Date. 60000))
+        (let [o (first (schedules/occurrences conn (:schedule.activation/id a)))]
+          (is (uuid? (:schedule.occurrence/id o)))
+          (is (nil? (:schedule.occurrence/request o)))
+          (is (nil? (schedules/processing-proof conn (:schedule.occurrence/id o))))
+          (is (nil? (schedules/activation conn nil)))
+          (is (nil? (schedules/occurrence conn nil)))
+          (is (nil? (schedules/processing-proof conn nil))))))))
+
 (deftest knowledge-cursor-requires-the-already-durable-filing
   (with-filed-input
     (fn [{:keys [conn activation oid file! input-id]}]
