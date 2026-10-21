@@ -5,6 +5,7 @@
   (:require [clojure.string :as str]
             [datahike.api :as d]
             [hasch.core :as hasch]
+            [is.simm.documents.identity :as identity]
             [is.simm.model.morphism :as morphism]
             [is.simm.model.schema :as model-schema]))
 
@@ -88,42 +89,73 @@
                                             (catch java.time.format.DateTimeParseException _ nil)))
     nil))
 
-(defn decode
-  "Preserve all raw/unknown metadata. Only well-typed, host-bound ordinary
-   property values become facts. No string-to-number/boolean guessing, lookup
-   queries, formula evaluation or reflected-domain writes occur here."
-  [compiled raw]
+(defn- reference-id [raw]
+  (cond
+    (string? raw) (identity/canonical-uuid raw)
+    (and (map? raw) (every? #{"id" "path"} (keys raw))
+         (or (not (contains? raw "path"))
+             (and (string? (get raw "path")) (<= (count (get raw "path")) 512)
+                  (not (re-find #"[\p{Cntrl}]" (get raw "path"))))))
+    (identity/canonical-uuid (get raw "id"))))
+
+(defn- field [binding value candidate?]
+  (let [{:keys [schema cardinality owned? morphism]} binding
+        type (:db/valueType schema)
+        reference? (= type :db.type/ref)
+        items (if (= :many cardinality) (when (sequential? value) value) [value])
+        bounded? (and items (<= (count (take 1001 items)) 1000))
+        decoded (when bounded?
+                  (if (and candidate? reference?)
+                    (mapv #(when-let [id (reference-id %)] {:value id}) items)
+                    (mapv #(scalar type %) items)))
+        problem (cond
+                  (not owned?) :owner-managed-property
+                  (:db/isComponent schema) :component-property
+                  (and (:db/unique schema) (not candidate?)) :unique-property-needs-validation
+                  (:morphism/validation morphism) :property-needs-validator
+                  (get-in morphism [:morphism/dst :object/base-type]) :property-needs-validator
+                  (seq (get-in morphism [:morphism/dst :object/enum-values])) :property-needs-validator
+                  (and reference? (not candidate?)) :unresolved-property-reference
+                  (and items (not bounded?)) :too-many-property-values
+                  (or (nil? decoded) (some nil? decoded))
+                  (if reference? :invalid-property-reference :invalid-property-value))]
+    {:problem problem :reference? reference? :items (mapv :value decoded)}))
+
+(defn- decode* [compiled raw candidate?]
   (reduce-kv
    (fn [result name value]
-     (if-let [{:keys [attr schema cardinality owned? morphism]} (get-in compiled [:bindings name])]
+     (if-let [{:keys [attr schema cardinality morphism] :as binding} (get-in compiled [:bindings name])]
        (if (nil? value)
          result
-         (let [type (:db/valueType schema)
-               items (if (= :many cardinality) (when (sequential? value) value) [value])
-               bounded? (and items (<= (count (take 1001 items)) 1000))
-               decoded (when bounded? (mapv #(scalar type %) items))
-               problem (cond
-                         (not owned?) :owner-managed-property
-                         (:db/isComponent schema) :component-property
-                         (:db/unique schema) :unique-property-needs-validation
-                         (:morphism/validation morphism) :property-needs-validator
-                         (get-in morphism [:morphism/dst :object/base-type]) :property-needs-validator
-                         (seq (get-in morphism [:morphism/dst :object/enum-values])) :property-needs-validator
-                         (= type :db.type/ref) :unresolved-property-reference
-                         (and items (not bounded?)) :too-many-property-values
-                         (or (nil? decoded) (some nil? decoded)) :invalid-property-value)]
+         (let [{:keys [problem reference? items]} (field binding value candidate?)]
            (if problem
              (update result :diagnostics conj {:kind problem :property name})
-             (assoc-in result [:values attr]
-                       (if (= :many cardinality) (mapv :value decoded) (:value (first decoded)))))))
+             (cond-> result
+               (not reference?)
+               (assoc-in [:values attr] (if (= :many cardinality) items (first items)))
+               (and candidate? reference?)
+               (update :claims conj {:kind :property-reference :property name :attribute attr
+                                     :property-id (:entity/uuid morphism) :cardinality cardinality
+                                     :codomain (get-in morphism [:morphism/dst :entity/uuid]) :targets items})
+               (and candidate? (:db/unique schema))
+               (update :claims conj {:kind :unique-property :property name :attribute attr
+                                     :property-id (:entity/uuid morphism) :reference? reference?
+                                     :uniqueness (:db/unique schema) :items items})))))
        (assoc-in result [:unknown name] value)))
-   {:raw raw :unknown {} :values {}
+   (cond-> {:raw raw :unknown {} :values {}
     :diagnostics (vec (for [[name binding] (:bindings compiled)
                             :when (and (false? (get-in binding [:morphism :morphism/optional?]))
                                        (let [v (get raw name)]
                                          (or (nil? v) (and (sequential? v) (empty? v)))))]
                         {:kind :missing-required-property :property name}))}
+     candidate? (assoc :claims []))
    (or raw {})))
+
+(defn decode
+  "Preserve raw/unknown metadata; strictly decode ordinary scalar properties.
+   References/unique values still refuse here. No queries, evaluation or writes."
+  [compiled raw]
+  (decode* compiled raw false))
 
 (def typed-profile {:id :simmis/markdown-typed-properties :version 1})
 
@@ -212,16 +244,9 @@
     {:profile typed-profile :types type-rows :properties definitions :bindings compiled
      :revision (hasch/uuid [typed-profile type-rows definitions compiled])}))
 
-(defn decode-scope
-  "Decode ordinary scalar values using existing strict decoding. Requiredness
-   also covers properties absent from the alias map; a file cannot evade a
-   required definition by omitting its binding. Relations, unique values,
-   computations and validators still require their separate trusted gates."
-  [compiled raw]
-  (when-not (and (= typed-profile (:profile compiled)) (map? raw))
-    (invalid-scope! :invalid-typed-values))
+(defn- scope-diagnostics [compiled decoded]
   (let [bound (set (map #(get-in % [:morphism :entity/uuid]) (vals (:bindings compiled))))]
-    (update (decode compiled raw) :diagnostics
+    (update decoded :diagnostics
             (fn [diagnostics]
               (into (mapv (fn [diagnostic]
                             (if (and (= :missing-required-property (:kind diagnostic))
@@ -233,3 +258,28 @@
                                      (not (contains? bound id)))]
                       {:kind (if (:owned? binding) :missing-required-property :required-owner-managed-property)
                        :property-id id}))))))
+
+(defn- scope-input! [compiled raw]
+  (when-not (and (= typed-profile (:profile compiled)) (map? raw))
+    (invalid-scope! :invalid-typed-values)))
+
+(defn decode-scope
+  "Strict scalar decoding, including required properties absent from aliases.
+   References, unique values and unsupported constraints remain refusals."
+  [compiled raw]
+  (scope-input! compiled raw)
+  (scope-diagnostics compiled (decode compiled raw)))
+
+(def candidate-profile {:id :simmis/markdown-property-candidate :version 1})
+
+(defn decode-candidate
+  "Stage values for canonical preflight, NEVER final facts. Always :pending;
+   :candidate-values excludes references, and explicit bounded :claims retain
+   logical target UUIDs/unique values for the later whole-selection validator.
+   No DB queries, target resolution, stubs, transaction data or allow-unique
+   escape hatch. Unknown source stays intact; paths are bounded inert hints."
+  [compiled raw]
+  (scope-input! compiled raw)
+  (let [decoded (scope-diagnostics compiled (decode* compiled raw true))]
+    (-> decoded (dissoc :values)
+        (assoc :profile candidate-profile :status :pending :candidate-values (:values decoded)))))

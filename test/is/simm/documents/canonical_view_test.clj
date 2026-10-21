@@ -2,6 +2,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clj-yaml.core :as yaml]
             [datahike.api :as d]
+            [datahike.blob :as blob]
+            [geschichte.content :as content]
             [geschichte.repo :as repo]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.space :as space]
@@ -35,6 +37,16 @@
                                                    :src "S/ProjectionCompany" :dst "S/Number" :optional? false})
               active (crud/create-morphism! conn {:name "S/ProjectionResearch/active"
                                                   :src "S/ProjectionResearch" :dst "S/Boolean"})
+              person-property (crud/create-morphism! conn {:name "S/ProjectionCompany/person"
+                                                           :src "S/ProjectionCompany" :dst "S/Person"})
+              slug-property (crud/create-morphism! conn {:name "S/ProjectionCompany/slug"
+                                                         :src "S/ProjectionCompany" :dst "S/String" :unique :db.unique/identity})
+              number-property (crud/create-morphism! conn {:name "S/ProjectionCompany/tax-number"
+                                                           :src "S/ProjectionCompany" :dst "S/Number" :unique :db.unique/value})
+              uuid-property (crud/create-morphism! conn {:name "S/ProjectionCompany/external-id"
+                                                         :src "S/ProjectionCompany" :dst "S/UUID"})
+              person-type (:entity/uuid (d/pull @conn [:entity/uuid] [:entity/name "S/Person"]))
+              person-id (random-uuid)
               raw {"simmis-id" (str page-a)
                    "simmis" {"version" 1 "types" [(str company) (str research)]
                              "properties" {"turnover" {"id" (str revenue) "type" (str company)}}
@@ -45,6 +57,7 @@
                    "turnover" 0 "tags" ["business"] "unknown" {"keep" [1 2]}}
               body (str "# Company\n\n<!-- simmis:block " block-id " -->\n\nResearch\n\n<!-- /simmis:block -->\n")
               original (source raw body)]
+          (d/transact conn [{:entity/uuid person-id :instance/of-role [[:entity/uuid person-type]]}])
           (write! conn "companies/a.md" original)
           (write! conn "research/a.md" (source (-> raw (assoc "simmis-id" (str page-b) "turnover" 10)
                                                      (update "simmis" dissoc "blocks")) "# Another company\n"))
@@ -70,6 +83,9 @@
                                               (d/pull projected [{:instance/of-role [:entity/uuid]}]
                                                       [:entity/uuid block-id]))))))
                 (is (= 2 (count (:typed-scopes prepared))) "identical page scopes compile only once")
+                (is (empty? (d/q '[:find ?id :where [?e :entity/uuid ?id] [?e :document.node/kind]] projected)))
+                (is (empty? (d/q '[:find ?id :where [?e :entity/uuid ?id]
+                                  [?e :document.block/identity-status :provisional]] projected)))
                 (is (= original (get-in prepared [:documents 0 :source]))))
               (testing "immutable only; a derived value cannot be reused as canonical input"
                 (is (= tx (:max-tx @conn)))
@@ -84,6 +100,47 @@
                 (is (not (view/current? changed options prepared))))
               (let [removed (d/db-with base [[:db/retractEntity [:entity/uuid revenue]]])]
                 (is (not (view/current? removed options prepared)))))
+            (testing "replacement preview shares validation without publishing or pretending bytes are stored"
+              (let [selected (get-in prepared [:selection :files "companies/a.md"])
+                    candidate (source (assoc raw "turnover" 42) body)
+                    request {:path "companies/a.md" :expected selected :source candidate}
+                    before (:max-tx @conn)
+                    result (view/validate-replacement base options request)]
+                (is (= :replacement-preview (:kind result)))
+                (is (= :valid (:status result)) (pr-str (:diagnostics result)))
+                (is (= (markdown/revision candidate) (:revision result)))
+                (is (= selected (:expected result)))
+                (is (every? #(not (contains? result %)) [:db :selection :documents :document/source-content]))
+                (is (not (view/current? base options result)))
+                (is (not (view/current? base options (assoc result :selection (:selection prepared)))))
+                (is (nil? (:db/id (d/entity base [:geschichte.content/id (blob/blob-id (markdown/source-bytes candidate))]))))
+                (is (= before (:max-tx @conn)))
+                (is (= selected (get (repo/worktree conn) "companies/a.md")))
+                (let [reads (atom []) read-content content/read-by-id]
+                  (with-redefs [content/read-by-id (fn [conn id & args]
+                                                    (swap! reads conj id)
+                                                    (apply read-content conn id args))]
+                    (is (= :valid (:status (view/validate-replacement base options request)))))
+                  (is (= #{(get-in prepared [:selection :files "research/a.md" :content])} (set @reads))))
+                (is (= :valid (:status (view/validate-replacement base options (assoc request :source original)))))
+                (is (= :invalid (:status (view/validate-replacement base options
+                                           (assoc request :source (source (dissoc raw "turnover") body))))))
+                (is (= :invalid (:status (view/validate-replacement base options
+                                           (assoc request :source (source (assoc raw "simmis-id" (str page-b)) body))))))
+                (let [changed (d/db-with base [{:entity/uuid revenue :morphism/validation "never execute"}])]
+                  (is (= :invalid (:status (view/validate-replacement changed options request)))))
+                (doseq [invalid [nil false {} (assoc request :extra true)
+                                  (assoc request :path "absent.md")
+                                  (assoc request :expected (assoc selected :size (inc (:size selected))))]]
+                  (is (thrown? clojure.lang.ExceptionInfo (view/validate-replacement base options invalid))))
+                (is (thrown? clojure.lang.ExceptionInfo
+                             (view/validate-replacement base (assoc options :roots ["research"]) request)))
+                (is (thrown? clojure.lang.ExceptionInfo
+                             (view/validate-replacement base (dissoc options :entity-profile) request)))
+                (let [size (reduce + 0 (map :size (vals (get-in prepared [:selection :files]))))]
+                  (with-redefs-fn {(ns-resolve 'is.simm.documents.view 'max-total-bytes) (inc size)}
+                    #(is (thrown? clojure.lang.ExceptionInfo
+                                  (view/validate-replacement base options (assoc request :source (str original "\nExtra candidate bytes\n")))))))))
             (testing "generated path satisfies explicit required title, never arbitrary YAML"
               (let [required (d/db-with base [{:entity/uuid (:entity/uuid seed/morphism-Page-title)
                                               :morphism/optional? false}])]
@@ -145,7 +202,55 @@
                 (is (empty? (d/datoms (:db deleted) :avet :entity/uuid page-a))))
               (is (= 0 (:S.ProjectionCompany/revenue
                          (d/pull (:db prepared) [:S.ProjectionCompany/revenue] [:entity/uuid page-a])))))
-            (testing "a relation declaration is inert until the separate relation gate exists"
+            (testing "real Person targets, UUID scalars and unique fields share final preflight"
+              (let [person-raw (-> raw
+                                   (update-in ["simmis" "properties"] merge
+                                              {"person" {"id" (str person-property) "type" (str company)}
+                                               "slug" {"id" (str slug-property) "type" (str company)}
+                                               "tax-number" {"id" (str number-property) "type" (str company)}
+                                               "external-id" {"id" (str uuid-property) "type" (str company)}})
+                                   (assoc "person" {"id" (str person-id) "path" "research/a.md"}
+                                          "slug" "unique-company" "tax-number" 0 "external-id" (str page-b)))]
+                (write! conn "companies/a.md" (source person-raw body))
+                (let [person-base @conn
+                      result (view/prepare person-base options)
+                      projected (:db result)]
+                  (is (= :ready (:status result)) (pr-str (:diagnostics result)))
+                  (when projected
+                    (is (= person-id (get-in (d/pull projected [{:S.ProjectionCompany/person [:entity/uuid]}]
+                                                    [:entity/uuid page-a])
+                                             [:S.ProjectionCompany/person :entity/uuid])))
+                    (is (= page-b (:S.ProjectionCompany/external-id
+                                  (d/pull projected [:S.ProjectionCompany/external-id] [:entity/uuid page-a]))))
+                    (is (view/current? projected options result)))
+                  (let [removed (d/db-with person-base [[:db/retract [:entity/uuid person-id] :instance/of-role [:entity/uuid person-type]]])
+                        target-type-changed (d/db-with person-base [[:db/retract [:entity/uuid person-type]
+                                                                   :instance/of-role [:entity/name "S/EntityType"]]])]
+                    (is (not (view/current? removed options result)))
+                    (is (not (view/current? target-type-changed options result)))
+                    (is (= :invalid (:status (view/prepare removed options)))))
+                  (doseq [[attr value] [[:S.ProjectionCompany/slug "unique-company"] [:S.ProjectionCompany/tax-number 0]]]
+                    (let [collision (d/db-with person-base [{:entity/uuid (random-uuid) attr value}])]
+                      (is (not (view/current? collision options result)))
+                      (is (= :invalid (:status (view/prepare collision options))))))
+                  (let [unrelated (d/db-with person-base [{:entity/uuid (random-uuid) :entity/name "Unrelated after typed view"}])]
+                    (is (view/current? unrelated options result))))
+                (write! conn "research/a.md" (source (-> person-raw (assoc "simmis-id" (str page-b))
+                                                         (update "simmis" dissoc "blocks")) "# Duplicate unique fields\n"))
+                (let [invalid (view/current-view conn options)]
+                  (is (= :invalid (:status invalid)) "stable constraint errors are not perpetual pending")
+                  (is (nil? (:db invalid))))
+                (let [db @conn
+                      preview (view/validate-replacement
+                               db options {:path "companies/a.md"
+                                           :expected (get (repo/worktree conn) "companies/a.md")
+                                           :source (source (assoc person-raw "turnover" 99) body)})]
+                  (is (= :invalid (:status preview)) "the entire selection, not just the edited file, is checked")
+                  (is (some #(= :invalid-selection-constraints (:kind %)) (:diagnostics preview)))
+                  (is (nil? (:db preview))))
+                (write! conn "research/a.md" (source (-> raw (assoc "simmis-id" (str page-b) "turnover" 10)
+                                                          (update "simmis" dissoc "blocks")) "# Another company\n"))))
+            (testing "relations use explicit UUIDs, not path hints or forward lookup refs"
               (let [founder (crud/create-morphism! conn {:name "S/ProjectionCompany/founder"
                                                         :src "S/ProjectionCompany" :dst "S/ProjectionResearch"})
                     relation (-> raw
@@ -154,7 +259,9 @@
                                  (assoc "founder" {"id" (str page-b) "path" "research/a.md"}))]
                 (write! conn "companies/a.md" (source relation body))
                 (let [result (view/prepare @conn options)]
-                  (is (= :invalid (:status result)))
-                  (is (nil? (:db result)))
-                  (is (some #(= :unresolved-property-reference (:kind %)) (:diagnostics result))))))))
+                  (is (= :ready (:status result)) (pr-str (:diagnostics result)))
+                  (is (= page-b (get-in (d/pull (:db result) [{:S.ProjectionCompany/founder [:entity/uuid]}]
+                                               [:entity/uuid page-a])
+                                       [:S.ProjectionCompany/founder :entity/uuid])))
+                  (is (view/current? (:db result) options result)))))))
         (finally (governance/ungovern! conn) (d/release conn) (d/delete-database cfg))))))

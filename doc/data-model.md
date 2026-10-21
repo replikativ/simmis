@@ -71,7 +71,35 @@ type properties is conservatively unsupported. Relations, unique properties
 and owner-managed/computed values still require separate gates; this compiler
 does not publish canonical instances or activate typed controls in Memory.
 
-### Opt-in canonical scalar views
+`decode-candidate` is a separate, versioned staging API for later canonical
+validation. It always returns `:status :pending`, normalized `:candidate-values`
+(not final `:values`), and explicit reference/uniqueness claims. Only trusted
+reference-typed properties interpret canonical UUID strings or `{id, path}`
+maps; the optional bounded path is an inert hint. Scalar UUIDs and unknown
+metadata do not become relations. Targets are not resolved, uniqueness is not
+certified and no queries, stubs or transaction data are produced. The strict
+two-argument decoders retain their refusals. Canonical preparation consumes
+these candidates through the whole-selection validator before publication.
+
+The separate `documents.constraints` stage validates a whole selection of
+trusted candidates against the **same immutable DB** used by their compiler
+and decoder. Candidate profile/status tags are not provenance and must not be
+accepted as certification from an external caller. Before target lookup it
+checks duplicate IDs and aggregate entity/type/value/claim work. Planned
+entities receive explicit tempids; relations resolve only to these entities
+or existing UUID-addressed entities with the exact entity-type codomain role.
+No missing target creates a stub, and paths never choose identity.
+
+Both uniqueness modes are checked across owners and the base before any
+transaction is assembled. Reference uniqueness compares logical target UUIDs
+within the selection and real target EIDs against the base, never a nil
+lookup. The result includes bounded codomain, external-target and unique-value
+dependencies for freshness. A disappeared target, changed role or newly
+conflicting unique value invalidates it; unrelated writes need not. This stage
+constructs no transaction or DB; canonical preparation consumes its result
+before constructing the immutable projection. This activates no Memory UI.
+
+### Opt-in canonical typed views
 
 `documents.space/provision!` explicitly provisions a new, privately owned,
 unpublished connection. It accepts only non-attribute-ref, write-schema
@@ -83,7 +111,7 @@ migration or document-open callback. The marker indicates readiness, not
 permission, exclusivity or continued process-local governor registration.
 
 Passing that profile as `:entity-profile` to the existing `documents.view`
-pipeline enables a bounded, immutable canonical scalar projection. Roots need
+pipeline enables a bounded, immutable canonical typed projection. Roots need
 explicit document IDs and acquire the trusted Page role; explicit semantic
 blocks acquire the Block role. Additional declared types use the same
 `:entity/uuid`, `:instance/of-role` and canonical property attributes as existing
@@ -94,19 +122,45 @@ The generated Page title is the full repository-relative path. Its fixed
 trusted property definition is validated and its path value goes through
 strict scalar decoding and requiredness checks. File aliases cannot target
 that generated storage, even with a nil value. Existing title/UUID collisions
-refuse rather than upsert. Other unique fields and relation values remain
-unsupported by this scalar profile and produce diagnostics without a partial
-queryable DB. Changed owner/validator/computation constraints are not bypassed.
+refuse rather than upsert. Ordinary unique fields and relation values use the
+same pending-candidate/whole-selection preflight, including explicit tempids
+for forward and cyclic references. Missing/wrong-type targets, unique conflicts
+or other diagnostics produce no partial queryable DB. Changed owner/validator/
+computation constraints are not bypassed, and unsupported owner-managed writes
+or validators still refuse rather than execute.
 
 The canonical source may contain unrelated authored/domain facts but no
 materialized document projection datoms. Preparation never retracts canonical
 entities or reuses a derived DB as a new source. It only applies `db-with` to a
 captured base, leaving source bytes, the connection and original stores intact.
-Freshness checks source selection, codecs, actual compiled definitions and
-relevant new UUID/title collisions, not unrelated transaction counts. Checking
+Freshness checks source selection, codecs, actual compiled definitions,
+external target types/existence and unique-value dependencies, including new
+UUID/title collisions—not unrelated transaction counts. Checking
 the exact immutable DB produced by the view is supported; that does not make
 it an admissible source for another preparation. These host-side experimental
 views do not migrate the existing wiki or activate typed Memory controls.
+
+`documents.view/validate-replacement` is a distinct, host-only validation
+preview for one existing selected Markdown file. It verifies the opened
+descriptor against one captured canonical source DB, recalculates aggregate
+byte limits and runs the same whole-selection parser, identity, type, relation
+and uniqueness stages as `prepare`, with replacement bytes held only in memory.
+It never stores a candidate blob, invents content entities or materializes a
+queryable DB. Its `:replacement-preview` result has `:valid`/`:invalid` status,
+candidate revision and diagnostics, not an actual-source selection or current
+view; `current?` explicitly refuses it. A valid preview is neither permission
+nor a publication receipt or lease on later schema changes.
+
+`documents.property-source` is a separate pure token-replacement codec for
+existing scalar frontmatter leaves. It checks the exact source revision,
+uses the same bounded safe YAML policy as the Markdown parser, and converts
+parser code-point marks to original UTF-16 source positions. Only the selected
+token changes; comments, unrelated metadata, line endings and the body remain
+intact. A semantic no-op retains every byte. Reparsing verifies the complete
+intended metadata delta. Anchors/aliases, explicit tags, multiline tokens,
+missing fields and structured values refuse instead of receiving a lossy
+whole-map rewrite. This API neither validates trusted property definitions nor
+publishes files; it is not a schema guard or permission boundary.
 
 ## Existing KB vocabulary
 

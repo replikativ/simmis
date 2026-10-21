@@ -1,13 +1,15 @@
 (ns is.simm.documents.canonical
-  "Canonical scalar stage of the existing immutable document-view pipeline.
+  "Canonical typed stage of the existing immutable document-view pipeline.
    No source reads/writes, schema installation, relation guessing or deletion."
   (:require [datahike.api :as d]
             [is.simm.documents.blocks :as blocks]
+            [is.simm.documents.constraints :as constraints]
             [is.simm.documents.metadata :as metadata]
             [is.simm.documents.properties :as properties]
             [is.simm.model.seed :as seed]))
 
-(def profile {:id :simmis/canonical-markdown-scalars :version 1
+(def profile {:id :simmis/canonical-markdown :version 1
+              :candidate-codec properties/candidate-profile :constraint-codec constraints/profile
               :page-role (:entity/uuid seed/object-Page)
               :block-role (:entity/uuid seed/object-Block)
               :title-property (:entity/uuid seed/morphism-Page-title)})
@@ -33,7 +35,7 @@
           (when-not (= name (:entity/name row)) (refuse! :changed-structural-role)))
         [compiled (assoc cache declarations compiled)]))))
 
-(defn- page-values [db compiled raw path]
+(defn- page-candidate [compiled raw path]
   (let [id (:title-property profile)
         title (get-in compiled [:properties id])
         m (:morphism title)]
@@ -51,14 +53,42 @@
       (refuse! :unsupported-generated-title-definition))
     (when (some #(= :S.Page/title (:attr %)) (vals (:bindings compiled)))
       (refuse! :file-binding-targets-generated-title))
-    (when (seq (d/datoms db :avet :S.Page/title path))
-      (refuse! :existing-page-title-collision))
-    (let [slot [::generated id]
-          ;; Only this generated property is admitted past scalar decoding's
-          ;; unique gate, after checking base + selected path uniqueness.
-          generated (update title :schema dissoc :db/unique)]
-      (properties/decode-scope (update compiled :bindings #(assoc (into {} %) slot generated))
+    (let [slot [::generated id]]
+      ;; The generated title now carries the same pending uniqueness claim as
+      ;; every ordinary unique property. No schema constraint is stripped.
+      (properties/decode-candidate (update compiled :bindings #(assoc (into {} %) slot title))
                                (assoc (into {} raw) slot path)))))
+
+(defn- resolve-values [db result]
+  (if (seq (:diagnostics result))
+    result
+    (try
+      (let [entities (vec (mapcat (fn [document]
+                                   (let [canonical (:canonical document)]
+                                     (cons {:id (:id document) :types (set (keys (:types canonical)))
+                                            :candidate (:candidate canonical)}
+                                           (for [[id block] (:blocks canonical)]
+                                             {:id id :types (set (keys (:types block))) :candidate (:candidate block)}))))
+                                 (:documents result)))
+            resolved (constraints/resolve-selection db entities)
+            by-id (into {} (map (juxt :id identity) (:entities resolved)))
+            resolved-scope (fn [id scope]
+                             (-> scope (dissoc :candidate)
+                                 (merge (select-keys (get by-id id) [:tempid :values]))))]
+        (-> result
+            (assoc :dependencies (:dependencies resolved))
+            (update :documents
+                    (fn [documents]
+                      (mapv (fn [document]
+                              (update document :canonical
+                                      (fn [scope]
+                                        (-> (resolved-scope (:id document) scope)
+                                            (update :blocks #(into {} (for [[id block] %] [id (resolved-scope id block)])))))))
+                            documents)))))
+      (catch clojure.lang.ExceptionInfo error
+        (if (= :is.simm.documents.constraints/refused (:type (ex-data error)))
+          (update result :diagnostics conj {:kind :invalid-selection-constraints :reason (:reason (ex-data error))})
+          (throw error))))))
 
 (defn- entity! [db id]
   (when (seq (d/datoms db :avet :entity/uuid id))
@@ -113,16 +143,16 @@
                    page (:page decoded)
                    declarations (declaration (:page-role profile) page)
                    [compiled cache] (compile-once db cache declarations)
-                   values (page-values db compiled (:values page) (:path document))
+                   values (page-candidate compiled (:values page) (:path document))
                    blocks-result
                    (reduce (fn [{:keys [cache] :as state} block]
                              (let [scope (get (:blocks decoded) (:id block) {})
                                    declarations (declaration (:block-role profile) scope)
                                    [compiled cache] (compile-once db cache declarations)
-                                   values (properties/decode-scope compiled (:values scope {}))]
+                                   values (properties/decode-candidate compiled (:values scope {}))]
                                (-> state (assoc :cache cache)
                                    (assoc-in [:blocks (:id block)]
-                                             {:types (:types compiled) :values (:values values)})
+                                             {:types (:types compiled) :candidate values})
                                    (update :diagnostics into (:diagnostics values)))))
                            {:cache cache :blocks {} :diagnostics []} explicit)
                    diagnostics (into (:diagnostics values) (:diagnostics blocks-result))]
@@ -130,7 +160,7 @@
                    (assoc :cache (:cache blocks-result) :count count)
                    (update :documents conj (assoc document :metadata decoded
                                                    :canonical {:types (:types compiled)
-                                                               :values (:values values)
+                                                               :candidate values
                                                                :blocks (:blocks blocks-result)}))
                    (update :diagnostics into (map #(assoc % :path (:path document)) diagnostics))))
              (catch clojure.lang.ExceptionInfo error
@@ -144,16 +174,17 @@
                                                 :reason (or (:reason (ex-data error)) :invalid-schema)}))
                  (throw error))))))
          {:documents [] :cache {} :count 0 :diagnostics []} documents)]
-    (-> result
+    (-> (resolve-values db result)
         (assoc :scopes (mapv (fn [[declarations compiled]]
                               {:declarations declarations :revision (:revision compiled)})
                             (sort-by (comp pr-str key) (:cache result))))
         (dissoc :cache :count))))
 
-(defn current? [db scopes]
+(defn current? [db scopes dependencies own-derived?]
   (try
-    (every? (fn [{:keys [declarations revision]}]
-              (= revision (:revision (properties/compile-scope db declarations)))) scopes)
+    (and (every? (fn [{:keys [declarations revision]}]
+                   (= revision (:revision (properties/compile-scope db declarations)))) scopes)
+         (constraints/current? db dependencies own-derived?))
     (catch clojure.lang.ExceptionInfo error
       (if (= :is.simm.documents.properties/invalid-schema (:type (ex-data error)))
         false
@@ -163,7 +194,7 @@
   (let [tx (blocks/entity-tx (dissoc block :children))
         own (get-in canonical [:blocks (:id block)])]
     (cond-> (dissoc tx :document.block/children)
-      own (merge (:values own) {:entity/uuid (:id block)
+      own (merge (:values own) {:db/id (:tempid own) :entity/uuid (:id block)
                                 :instance/of-role (mapv :db/id (vals (:types own)))})
       (seq (:children block))
       (assoc :document.block/children (mapv #(block-tx canonical %) (:children block))))))
@@ -171,6 +202,6 @@
 (defn document-tx [document]
   (let [canonical (:canonical document)]
     (merge (:values canonical)
-           {:entity/uuid (:id document)
+           {:db/id (:tempid canonical) :entity/uuid (:id document)
             :instance/of-role (mapv :db/id (vals (:types canonical)))
             :document/blocks (mapv #(block-tx canonical %) (get-in document [:semantic :blocks]))})))
