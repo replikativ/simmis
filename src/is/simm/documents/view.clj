@@ -34,7 +34,7 @@
                  (not (re-find #"[\\\p{Cntrl}]" root))
                  (or (= "" root)
                      (every? #(and (not (str/blank? %))
-                               (not (#{"." ".." ".git" ".geschichte"} %)))
+                                   (not (#{"." ".." ".git" ".geschichte"} %)))
                              (str/split root #"/" -1))))
     (refuse! :invalid-root))
   (if (= "" root) "" (str root "/")))
@@ -69,9 +69,9 @@
     (let [files (into (sorted-map)
                       (keep (fn [datom]
                               (let [row (d/pull db '[:geschichte.work/path
-                                                    :geschichte.work/size :geschichte.work/mode
-                                                    {:geschichte.work/content
-                                                       [:geschichte.content/id]}]
+                                                     :geschichte.work/size :geschichte.work/mode
+                                                     {:geschichte.work/content
+                                                      [:geschichte.content/id]}]
                                                 (:e datom))
                                     path (:geschichte.work/path row)]
                                 (when (and (some #(str/starts-with? path %) prefixes)
@@ -91,10 +91,10 @@
       (when (> (reduce + 0 (map :size (vals files))) max-total-bytes)
         (refuse! :too-many-source-bytes))
       (cond-> {:repository-id repository-id :selection-kind :worktree
-       :roots prefixes :exclude-prefixes excluded :projection-version 3
-       :files files :codec markdown/syntax-profile :block-codec blocks/profile
-       :property-schema (:revision (properties/compile-schema db property-bindings))
-       :schema-revision schema-revision}
+               :roots prefixes :exclude-prefixes excluded :projection-version 3
+               :files files :codec markdown/syntax-profile :block-codec blocks/profile
+               :property-schema (:revision (properties/compile-schema db property-bindings))
+               :schema-revision schema-revision}
         (:entity-profile options)
         (assoc :entity-profile space/profile :canonical-codec canonical/profile
                :metadata-codec metadata/profile :typed-property-codec properties/typed-profile)))))
@@ -106,7 +106,7 @@
    A true answer is as-of this DB snapshot, not a lock on subsequent writes."
   [db options view]
   (try
-    (and (not= :replacement-preview (:kind view))
+    (and (not (#{:replacement-preview :changes-preview} (:kind view)))
          (= (:selection view) (selection db options))
          (or (nil? (:entity-profile options))
              (let [own-derived? (identical? db (:db view))]
@@ -121,23 +121,23 @@
 (defn- canonical-base!
   ([db] (canonical-base! db false))
   ([db own-derived?]
-  (let [schema (d/schema db)]
-    (doseq [[attr expected]
-            {:entity/uuid {:db/valueType :db.type/uuid :db/cardinality :db.cardinality/one
-                           :db/unique :db.unique/identity}
-             :instance/of-role {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many}}]
-      (when-not (= expected (select-keys (get schema attr) (keys expected)))
-        (refuse! :incompatible-canonical-identity-schema)))
-    (when-not (every? #(contains? schema (:db/ident %)) documents/schema)
-      (refuse! :missing-canonical-document-schema))
-    (projection-schema! db)
-    (when-not (= {:db/valueType :db.type/string :db/cardinality :db.cardinality/one
-                  :db/unique :db.unique/value}
-                 (select-keys (:S.Page/title schema) [:db/valueType :db/cardinality :db/unique]))
-      (refuse! :incompatible-canonical-page-title))
-    (when (and (not own-derived?)
-               (some #(seq (d/datoms db :aevt (:db/ident %))) documents/schema))
-      (refuse! :derived-db-is-not-canonical-source)))))
+   (let [schema (d/schema db)]
+     (doseq [[attr expected]
+             {:entity/uuid {:db/valueType :db.type/uuid :db/cardinality :db.cardinality/one
+                            :db/unique :db.unique/identity}
+              :instance/of-role {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many}}]
+       (when-not (= expected (select-keys (get schema attr) (keys expected)))
+         (refuse! :incompatible-canonical-identity-schema)))
+     (when-not (every? #(contains? schema (:db/ident %)) documents/schema)
+       (refuse! :missing-canonical-document-schema))
+     (projection-schema! db)
+     (when-not (= {:db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                   :db/unique :db.unique/value}
+                  (select-keys (:S.Page/title schema) [:db/valueType :db/cardinality :db/unique]))
+       (refuse! :incompatible-canonical-page-title))
+     (when (and (not own-derived?)
+                (some #(seq (d/datoms db :aevt (:db/ident %))) documents/schema))
+       (refuse! :derived-db-is-not-canonical-source)))))
 
 (defn- projection-schema! [db]
   (let [schema (d/schema db)]
@@ -191,42 +191,86 @@
             (refuse! :authored-projection-entity)))
         (when (seq owned)
           (doseq [[source attr] (d/q '[:find ?e ?a :in $ [?target ...]
-                                      :where [?e ?a ?target]] db (vec owned))
+                                       :where [?e ?a ?target]] db (vec owned))
                   :when (= :db.type/ref (:db/valueType (get schema attr)))]
             (when-not (and (contains? owned source)
                            (#{:document/nodes :document.node/children
                               :document/blocks :document.block/children} attr))
               (refuse! :authored-reference-to-projection))))))))
 
-(defn- replacement-bytes! [selected {:keys [path expected source] :as replacement}]
-  (when-not (and (map? replacement) (= #{:path :expected :source} (set (keys replacement))))
-    (refuse! :invalid-replacement))
-  (files/path! path)
-  (let [entry (get-in selected [:files path])]
-    (when-not (and entry (= expected entry)) (refuse! :stale-or-unselected-replacement))
-    (let [bytes (markdown/source-bytes source)]
-      (when (> (+ (- (reduce + 0 (map :size (vals (:files selected)))) (:size entry))
-                  (alength ^bytes bytes)) max-total-bytes)
-        (refuse! :too-many-source-bytes))
-      bytes)))
+(defn- selected-path? [selected path]
+  (and (re-find #"(?i)\.(md|markdown)$" path)
+       (some #(str/starts-with? path %) (:roots selected))
+       (not-any? #(str/starts-with? path %) (:exclude-prefixes selected))))
+
+(defn- change-inputs!
+  "Build an in-memory input overlay, never worktree/content transaction data."
+  [db selected changes]
+  (when-not (and (map? changes) (<= 1 (count changes) max-files))
+    (refuse! :invalid-changes))
+  (let [file-paths (mapv :v (take (inc max-scanned-entries)
+                                  (d/datoms db :avet :geschichte.work/path)))
+        dir-paths (when (contains? (d/schema db) :geschichte.work-dir/path)
+                    (mapv :v (take (inc max-scanned-entries)
+                                   (d/datoms db :avet :geschichte.work-dir/path))))
+        _ (when (> (+ (count file-paths) (count dir-paths)) max-scanned-entries)
+            (refuse! :too-many-worktree-entries))
+        occupied (set (concat file-paths dir-paths))
+        prospective-paths (set (concat file-paths (keys changes)))
+        _ (when (> (count (into (set (keys (:files selected))) (keys changes))) max-files)
+            (refuse! :too-many-files))]
+    (let [result (reduce-kv
+                  (fn [{:keys [total submitted] :as result} path {:keys [expected source] :as change}]
+                    (files/path! path)
+                    (when-not (and (map? change) (= #{:expected :source} (set (keys change)))
+                                   (selected-path? selected path))
+                      (refuse! :invalid-change))
+                    (let [entry (get-in selected [:files path])]
+                      (when-not (if (nil? expected)
+                                  (and (nil? entry) (not (contains? occupied path)))
+                                  (and entry (= expected entry)))
+                        (refuse! :stale-or-unselected-change))
+         ;; A new file cannot replace an explicit/implicit directory or sit
+         ;; below a file, including another proposed creation in this batch.
+                      (when (or (some #(str/starts-with? path (str % "/")) prospective-paths)
+                                (some #(str/starts-with? % (str path "/"))
+                                      (concat prospective-paths dir-paths)))
+                        (refuse! :file-directory-collision))
+                      (let [bytes (markdown/source-bytes source)
+                            total (+ (- total (or (:size entry) 0)) (alength ^bytes bytes))
+                            submitted (+ submitted (alength ^bytes bytes))]
+                        (when (> submitted max-total-bytes) (refuse! :too-many-source-bytes))
+                        (-> result
+                            (assoc :total total :submitted submitted)
+                            (assoc-in [:bytes path] bytes)
+                            (assoc-in [:files path] {:content nil :size (alength ^bytes bytes)
+                                                     :mode repo/default-mode})))))
+                  {:files (:files selected) :bytes {} :submitted 0
+                   :total (reduce + 0 (map :size (vals (:files selected))))}
+                  changes)]
+      (when (> (:total result) max-total-bytes) (refuse! :too-many-source-bytes))
+      result)))
 
 (defn- analyze
   "One bounded selection/acquisition/parser/canonical pipeline. An optional
-   in-memory replacement is validation input, NEVER a stored content identity."
-  [source-db options replacement]
+   in-memory change set is validation input, NEVER stored content identities."
+  [source-db options changes]
   (let [selected (selection source-db options)
-        replacement-bytes (when replacement (replacement-bytes! selected replacement))
+        inputs (when changes (change-inputs! source-db selected changes))
         canonical? (some? (:entity-profile options))
         _ (when canonical? (canonical-base! source-db))
         _ (projection-ownership! source-db)
         property-schema (properties/compile-schema source-db (get options :property-bindings {}))
         docs (:documents
               (reduce (fn [{:keys [documents node-count]} [path {:keys [content size]}]]
-                        (let [replaced? (and replacement (= path (:path replacement)))
-                              logical-size (:geschichte.content/size
-                                            (d/entity source-db [:geschichte.content/id content]))
-                              _ (when-not (= size logical-size) (refuse! :content-size-mismatch))
-                              bytes (if replaced? replacement-bytes
+                        (let [replaced? (contains? (:bytes inputs) path)
+                              original (get-in selected [:files path])
+                              logical-size (when original
+                                             (:geschichte.content/size
+                                              (d/entity source-db [:geschichte.content/id (:content original)])))
+                              _ (when (and original (not= (:size original) logical-size))
+                                  (refuse! :content-size-mismatch))
+                              bytes (if replaced? (get-in inputs [:bytes path])
                                         (content/read-by-id (atom source-db) content))]
                           (when-not (and bytes (or replaced? (= size (alength ^bytes bytes))))
                             (refuse! :content-size-mismatch))
@@ -249,14 +293,14 @@
                                                                                 (:diagnostics parsed))
                                                                             (concat (:diagnostics identity)
                                                                                     (:diagnostics property-values))))))})))
-                      {:documents [] :node-count 0} (:files selected)))
+                      {:documents [] :node-count 0} (or (:files inputs) (:files selected))))
         canonical-result (when canonical? (canonical/prepare source-db docs))
         duplicate-ids (->> docs (keep :id) frequencies (keep (fn [[id n]] (when (> n 1) id))) set)
         semantic-ids (mapcat (fn [doc]
-                              (cons {:id (:id doc) :path (:path doc)}
-                                    (for [block (mapcat #(tree-seq (comp seq :children) :children %)
-                                                        (get-in doc [:semantic :blocks]))]
-                                      {:id (:id block) :path (:path doc) :from (:from block)}))) docs)
+                               (cons {:id (:id doc) :path (:path doc)}
+                                     (for [block (mapcat #(tree-seq (comp seq :children) :children %)
+                                                         (get-in doc [:semantic :blocks]))]
+                                       {:id (:id block) :path (:path doc) :from (:from block)}))) docs)
         duplicate-semantic-ids (->> semantic-ids (keep :id) frequencies
                                     (keep (fn [[id n]] (when (> n 1) id))) set)
         diagnostics (into (vec (mapcat :diagnostics docs))
@@ -277,12 +321,76 @@
   [source-db options replacement]
   (when-not (= space/profile (:entity-profile options))
     (refuse! :replacement-requires-canonical-profile))
-  (when-not (map? replacement) (refuse! :invalid-replacement))
-  (let [{:keys [documents diagnostics]} (analyze source-db options replacement)]
+  (when-not (and (map? replacement) (= #{:path :expected :source} (set (keys replacement)))
+                 (some? (:expected replacement)))
+    (refuse! :invalid-replacement))
+  (let [{:keys [documents diagnostics]}
+        (analyze source-db options {(:path replacement) (select-keys replacement [:expected :source])})]
     {:kind :replacement-preview :status (if (seq diagnostics) :invalid :valid)
      :path (:path replacement) :expected (:expected replacement)
      :revision (:revision (first (filter #(= (:path replacement) (:path %)) documents)))
      :diagnostics diagnostics}))
+
+(defn- retained-identities [repository-id path parsed]
+  (let [document (identity/document repository-id path parsed)
+        semantic (when (:id document) (blocks/project (:id document) parsed))]
+    {:document (when (= :explicit (:identity-status document)) (:id document))
+     :blocks (into #{} (comp (mapcat #(tree-seq (comp seq :children) :children %))
+                             (filter #(= :explicit (:identity-status %))) (map :id))
+                   (:blocks semantic))}))
+
+(defn- preservation-diagnostics [db selected changes documents]
+  (let [candidates (into {} (map (juxt :path identity)) documents)]
+    (:diagnostics
+     (reduce
+      (fn [state [path {:keys [expected]}]]
+        (if expected
+          (let [bytes (content/read-by-id (atom db) (:content expected))
+                _ (when-not (and bytes (= (:size expected) (alength ^bytes bytes)))
+                    (refuse! :content-size-mismatch))
+                parsed (markdown/parse (markdown/decode bytes))
+                node-count (+ (:node-count state)
+                              (count (tree-seq (comp seq :children) :children {:children (:nodes parsed)})))
+                _ (when (> node-count max-total-nodes) (refuse! :too-many-syntax-nodes))
+                old (retained-identities (:repository-id selected) path
+                                         parsed)
+                new (retained-identities (:repository-id selected) path (get candidates path))]
+            (-> state (assoc :node-count node-count)
+                (update :diagnostics into (concat
+                                           (when (and (:document old) (not= (:document old) (:document new)))
+                                             [{:kind :changed-document-identity :path path}])
+                                           (when-not (every? (:blocks new) (:blocks old))
+                                             [{:kind :removed-explicit-block-identity :path path}])))))
+          state))
+      {:diagnostics [] :node-count 0} changes))))
+
+(defn validate-changes
+  "HOST-only pure preview of bounded Markdown creations/replacements against
+   ONE immutable canonical destination. Expected nil means certified absence
+   from its complete worktree, not absence from the selected Markdown subset.
+   Unchanged files participate in the same parser/type/relation/uniqueness pass.
+   Existing explicit document/block identities cannot be removed or reassigned.
+   This is NOT a preservation policy for optional properties, declarations or
+   unknown frontmatter; wiki adoption needs its own conservative policy too.
+
+   Returns bounded validation data, never a queryable DB, published blob,
+   permission, native receipt or reusable certification. A later writer must
+   validate against its exact publication snapshot and retain an atomic guard;
+   touched-path compare-and-write alone does NOT make this preview current."
+  [source-db options changes]
+  (when-not (= space/profile (:entity-profile options))
+    (refuse! :changes-require-canonical-profile))
+  (when-not (and (map? changes) (seq changes)) (refuse! :invalid-changes))
+  (let [{:keys [selection documents canonical-result diagnostics]} (analyze source-db options changes)
+        diagnostics (into diagnostics (preservation-diagnostics source-db selection changes documents))
+        revisions (into (sorted-map)
+                        (for [document documents :when (contains? changes (:path document))]
+                          [(:path document) {:expected (get-in changes [(:path document) :expected])
+                                             :revision (:revision document)}]))]
+    {:kind :changes-preview :status (if (seq diagnostics) :invalid :valid)
+     :basis {:selection selection :typed-scopes (:scopes canonical-result)
+             :constraint-dependencies (:dependencies canonical-result)}
+     :changes revisions :diagnostics diagnostics}))
 
 (defn prepare
   "Build a historical/as-of view from ONE immutable DB snapshot. Does not
@@ -305,13 +413,13 @@
                   (d/q '[:find [?e ...] :where [?e :document/id]] source-db))
             projection (map (fn [{:keys [id path content revision nodes properties semantic] :as document}]
                               (merge (:values properties)
-                               {:document/id id :document/path path
-                               :document/source-content [:geschichte.content/id content]
-                               :document/revision revision :document/projection-version 3
-                               :document/valid? true
-                               :document/blocks (mapv blocks/entity-tx (:blocks semantic))
-                               :document/nodes (mapv documents/syntax-node-tx (range) nodes)}
-                               (when canonical? (canonical/document-tx document))))
+                                     {:document/id id :document/path path
+                                      :document/source-content [:geschichte.content/id content]
+                                      :document/revision revision :document/projection-version 3
+                                      :document/valid? true
+                                      :document/blocks (mapv blocks/entity-tx (:blocks semantic))
+                                      :document/nodes (mapv documents/syntax-node-tx (range) nodes)}
+                                     (when canonical? (canonical/document-tx document))))
                             (if canonical? (:documents canonical-result) docs))
             tx (vec (concat missing (when-not canonical? (map #(vector :db/retractEntity %) old)) projection))]
         (assoc base :status :ready :db (if (seq tx) (d/db-with source-db tx) source-db))))))

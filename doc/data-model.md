@@ -154,6 +154,23 @@ candidate revision and diagnostics, not an actual-source selection or current
 view; `current?` explicitly refuses it. A valid preview is neither permission
 nor a publication receipt or lease on later schema changes.
 
+`documents.view/validate-changes` shares that pipeline for a bounded batch of
+Markdown creations and replacements. Each path carries exact `:expected`
+metadata, or nil for a creation. Creations must be absent from the complete
+worktree, including explicit/implicit directories and file ancestors; roots and
+exclusions do not certify physical absence. Unchanged selected Markdown still
+participates in relation, identity and uniqueness checks. Existing explicit
+page/block identities must survive a replacement. Candidate bytes remain in
+memory with no persisted content identity, source mutation or queryable DB.
+The `:changes-preview` result carries source selection, compiled-definition and
+constraint data plus candidate revisions, not authority or a complete native
+publication witness. `current?` refuses it. Publication still needs physical
+target binding and semantic validation against its exact guarded snapshot;
+checks of touched paths alone are insufficient. Canonical validity and identity
+preservation also do not guarantee preservation of optional properties,
+declarations or unknown frontmatter; automatic wiki adoption needs a separate
+conservative preservation policy. No adoption path is activated by this API.
+
 `documents.property-source` is a separate pure token-replacement codec for
 existing scalar frontmatter leaves. It checks the exact source revision,
 uses the same bounded safe YAML policy as the Markdown parser, and converts
