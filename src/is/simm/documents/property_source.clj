@@ -135,7 +135,7 @@
               (cond
                 (map? v)
                 (do (when-not (and (<= (count v) 64)
-                                  (every? #(and (string? %) (<= 1 (count %) 128)) (keys v)))
+                                   (every? #(and (string? %) (<= 1 (count %) 128)) (keys v)))
                       (refuse! :unsupported-new-mapping))
                     (emit! "{")
                     (doseq [[index [k item]] (map-indexed vector (sort-by key v))]
@@ -230,7 +230,7 @@
             (refuse! :unsupported-type-sequence))
           (doseq [^Node child (.getValue ^SequenceNode node)]
             (when (str/starts-with? (subs raw (utf16 raw (.getStartMark child))
-                                            (utf16 raw (.getEndMark child))) "!")
+                                          (utf16 raw (.getEndMark child))) "!")
               (refuse! :commented-or-tagged-type-sequence)))
           (let [from (+ value-from (utf16 raw (.getStartMark ^Node node)))
                 end (+ value-from (utf16 raw (.getEndMark ^Node node)))

@@ -2,6 +2,7 @@
   "HOST read/preparation model for source-backed properties. Reads ONE supplied
    immutable native DB; no target resolution, authority, callbacks or writes."
   (:require [clojure.string :as str]
+            [datahike.api :as d]
             [geschichte.repo :as repo]
             [is.simm.documents.canonical :as canonical]
             [is.simm.documents.files :as files]
@@ -35,8 +36,8 @@
       (refuse! :invalid-or-provisional-document))
     (let [blocks (into {} (for [block (mapcat #(tree-seq (comp seq :children) :children %)
                                               (get-in analysis [:semantic :blocks]))
-                               :when (= :explicit (:identity-status block))]
-                           [(:id block) block]))
+                                :when (= :explicit (:identity-status block))]
+                            [(:id block) block]))
           decoded (metadata/decode (get-in analysis [:frontmatter :properties]) (set (keys blocks)))
           _ (when (= :invalid (:status decoded)) (refuse! :invalid-declarations))
           _ (when (and (= :block (:kind target)) (not (contains? blocks (:id target))))
@@ -69,7 +70,7 @@
 
 (defn- fields [{:keys [file target compiled values values-path]}]
   (let [aliases (into {} (for [[alias binding] (:bindings compiled)]
-                          [(get-in binding [:morphism :entity/uuid]) alias]))
+                           [(get-in binding [:morphism :entity/uuid]) alias]))
         parsed (assoc (:analysis file) :source (:text file))]
     (mapv
      (fn [[id binding]]
@@ -123,12 +124,12 @@
           :db.type/string text
           :db.type/boolean (case text "true" true "false" false (refuse! :invalid-property-input))
           :db.type/long (if (re-matches #"[+-]?[0-9]+" text) (Long/parseLong text)
-                           (refuse! :invalid-property-input))
+                            (refuse! :invalid-property-input))
           :db.type/double (if (re-matches #"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?" text)
-                           (let [value (Double/parseDouble text)]
-                             (when-not (Double/isFinite value) (refuse! :invalid-property-input))
-                             value)
-                           (refuse! :invalid-property-input))
+                            (let [value (Double/parseDouble text)]
+                              (when-not (Double/isFinite value) (refuse! :invalid-property-input))
+                              value)
+                            (refuse! :invalid-property-input))
           (:db.type/uuid :db.type/ref)
           (if (= text (str (java.util.UUID/fromString text))) text (refuse! :invalid-property-input))
           :db.type/instant (do (java.util.Date/from (java.time.Instant/parse text)) text)
@@ -199,10 +200,25 @@
                            (assoc bindings alias {:id property :declaring-type declaring-type}))
                          (:bindings scope {}) additions)
         compiled (canonical/compile-declaration db (canonical/declaration (:kind target)
-                                                                         {:types types :bindings bindings}))]
+                                                                          {:types types :bindings bindings}))]
     ;; Compilation refuses orphaned/duplicate bindings after type removal. No
     ;; deletion of aliases or values is smuggled into an assignment operation.
     compiled))
+
+(defn- type-choices [db]
+  (let [meta-type (:db/id (d/pull db [:db/id] [:entity/name "S/EntityType"]))
+        _ (when-not meta-type (refuse! :missing-categorical-schema))
+        ;; Bound acquisition BEFORE metadata pulls. This is a small-room picker,
+        ;; not an unbounded cross-repository schema search.
+        rows (vec (take 129 (d/datoms db :avet :instance/of-role meta-type)))]
+    (when (> (count rows) 128) (refuse! :too-many-type-choices))
+    (->> rows
+         (map #(d/pull db [:entity/uuid :entity/name :object/primitive?] (:e %)))
+         (filter #(and (uuid? (:entity/uuid %)) (string? (:entity/name %))
+                       (not (:object/primitive? %))
+                       (not (#{(:page-role canonical/profile) (:block-role canonical/profile)} (:entity/uuid %)))))
+         (sort-by (juxt :entity/name :entity/uuid))
+         (mapv #(hash-map :id (:entity/uuid %) :name (subs (:entity/name %) 0 (min 256 (count (:entity/name %)))))))))
 
 (defn preview-declaration-in
   "Prepare inert field DTOs and an actual prospective definition digest from
@@ -217,6 +233,7 @@
      :revision (get-in file [:analysis :revision]) :scope-revision (:revision compiled)
      :proposed-scope-revision (:revision proposed)
      :types types :additions additions
+     :type-choices (type-choices db)
      :fields
      (mapv (fn [field]
              (if (some #(= (:property %) (:id field)) additions)

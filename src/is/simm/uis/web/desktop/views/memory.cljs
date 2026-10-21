@@ -10,6 +10,7 @@
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.memory-actions :as actions]
             [is.simm.uis.web.desktop.memory-editor :as editor]
+            [is.simm.uis.web.desktop.memory-declarations :as declarations]
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.source-editor :as source]
             [is.simm.uis.web.desktop.rich-editor :as rich-editor]
@@ -166,6 +167,9 @@
                                   (el/details {:class "memory-properties"}
                                               (el/summary {} "Block identity")
                                               (el/code {} (str (name (:identity-status block)) " · " (:id block))))
+                                  (when (= :explicit (:identity-status block))
+                                    (el/button {:on-click (fn [_] ((:open-properties a) path {:kind :block :id (:id block)}))}
+                                               "Block properties"))
                                   (for [node (:syntax block)]
                                     (if-let [model (or (get-in base [:models (:from node)]) (rich/model node))]
                                       (model-node model)
@@ -218,18 +222,107 @@
                                                 :value (if (get-in pd [:input :null]) "null (not set)" (get-in pd [:input :text]))}))
                         (el/button {:on-click (fn [_] ((:property-discard a) path target id))} "Discard retained field draft")))))))
 
+(defn- declaration-view [path target draft a enabled? busy?]
+  (let [preview (:preview draft)
+        fields (if preview (:fields preview)
+                   (mapv (fn [{:keys [property alias]}]
+                           {:id property :label alias :new? true :editable? false :reason :preview-required})
+                         (:additions draft)))
+        names (into {} (map (juxt :id :name)) (:type-choices draft))]
+    (el/div {:class "memory-properties" :aria-label "Type assignment"}
+            (el/p {:class "memory-note"} "Choose existing types. Required fields and values are saved together in Markdown; the structural Page or Block role is always retained.")
+            (for [id (:types draft)]
+              (el/span {:key (str id)}
+                       (get names id (str id)) " "
+                       (when (contains? names id)
+                         (el/button {:disabled (not enabled?) :aria-label (str "Remove type " (get names id))
+                                     :on-click (fn [_] ((:declaration-types a) path target (filterv #(not= id %) (:types draft))))} "×"))))
+            (el/select {:aria-label "Add a type" :value "" :disabled (not enabled?)
+                        :on-change (fn [event]
+                                     (when-let [id (parse-uuid (.. event -target -value))]
+                                       ((:declaration-types a) path target (conj (:types draft) id))))}
+                       (el/option {:value ""} "Add an existing type…")
+                       (for [{:keys [id name]} (:type-choices draft) :when (not (some #{id} (:types draft)))]
+                         (el/option {:key (str id) :value (str id)} name)))
+            (when (:conflict? draft)
+              (el/p {:class "memory-conflict" :role "status"} "Source or definitions changed. Your choices are retained; cancel this assignment and reopen it against the current version."))
+            (when (and (not preview) (not (:conflict? draft)))
+              (el/p {:class "memory-note" :role "status"} "Checking type definitions…"))
+            (for [field fields :when (or (:needs-binding? field) (:new? field))]
+              (el/div {:key (str (:id field)) :class "memory-property-field"}
+                      (el/label {} (str (:label field) (when (:required? field) " *")))
+                      (if (:new? field)
+                        (let [input (get-in draft [:inputs (:id field)])]
+                          (if (= :db.type/boolean (:value-type field))
+                            (el/select {:aria-label (str "New " (:label field))
+                                        :disabled (or (not enabled?) (not (:editable? field)))
+                                        :value (if (:null input) "null" (:text input))
+                                        :on-change (fn [event]
+                                                     (let [value (.. event -target -value)]
+                                                       ((:declaration-input a) path target (:id field)
+                                                                               (if (= value "null") {:null true} {:text value}))))}
+                                       (el/option {:value "null"} (if (:required? field) "Choose…" "Not set"))
+                                       (el/option {:value "true"} "True")
+                                       (el/option {:value "false"} "False"))
+                            (el/input {:type "text" :aria-label (str "New " (:label field))
+                                       :disabled (or (not enabled?) (not (:editable? field)))
+                                       :value (or (:text input) "")
+                                       :on-input (fn [event] ((:declaration-input a) path target (:id field) {:text (.. event -target -value)}))}))
+                          (when-not (:editable? field) (el/small {} (str "Read-only · " (name (:reason field)))))
+                          (el/button {:disabled (not enabled?)
+                                      :on-click (fn [_] ((:declaration-unbind a) path target (:id field)))} "Remove new binding"))
+                        (el/button {:disabled (not enabled?)
+                                    :on-click (fn [_] ((:declaration-bind a) path target field (:label field)))}
+                                   (str "Add " (:label field) " field")))))
+            (el/button {:disabled (or (not enabled?) (not (declarations/ready? draft)))
+                        :on-click (fn [_] ((:declaration-save a) path target))} "Apply types and fields")
+            (el/button {:disabled busy? :on-click (fn [_] ((:declaration-discard a) path target))} "Cancel assignment"))))
+
+(defn- retained-declarations-view [path state a]
+  (for [[[p target] draft] (:declaration-drafts state)
+        :when (and (= path p) draft (not= target (get-in state [:property-targets path])))]
+    (el/div {:key (pr-str target) :class "memory-conflict" :aria-label "Retained type assignment"}
+            (el/h3 {} (str "Retained " (name (:kind target)) " type assignment"))
+            (el/p {:class "memory-note"} "This assignment belongs to another property scope. Its choices and entered values are retained, not transferred to the selected scope.")
+            (declaration-view path target draft a false (declarations/busy? state path)))))
+
 (defn- properties-view [path draft state a write?]
   (let [target (get-in state [:property-targets path]) scope [path target]
+        blocks (->> (editor/outline (get-in draft [:analysis :semantic :blocks]))
+                    (filter #(= :explicit (:identity-status %))) (take 65) vec)
         model (get-in state [:property-models scope])
+        declaration-draft (get-in state [:declaration-drafts scope])
         current? (and model ((:property-current? a) path target model))
-        busy? (or (get-in state [:loading [:property-save path]]) (get-in state [:loading [:save path]]))
-        editable? (and write? current? (not busy?) (not (editor/dirty? draft))
+        busy? (declarations/busy? state path)
+        editable? (and write? current? (not busy?) (not (editor/dirty? draft)) (not (declarations/drafts? state path))
                        (= (:expected model) (get-in draft [:source :entry])))]
     (el/div {:class "memory-properties" :aria-label "Typed document properties"}
             (if-not target
               (el/button {:on-click (fn [_] ((:open-properties a) path {:kind :page}))} "Show properties")
               (el/div {}
                       (el/h3 {} "Properties")
+                      (when (seq blocks)
+                        (el/label {} "Property scope "
+                                  (el/select {:aria-label "Property scope"
+                                              :value (if (= :block (:kind target)) (str (:id target)) "page")
+                                              :on-change (fn [event]
+                                                           (let [value (.. event -target -value)]
+                                                             (if (= value "page")
+                                                               ((:open-properties a) path {:kind :page})
+                                                               (when-let [id (parse-uuid value)]
+                                                                 ((:open-properties a) path {:kind :block :id id})))))}
+                                             (el/option {:value "page"} "Whole document")
+                                             (when (and (= :block (:kind target))
+                                                        (not (some #(= (:id target) (:id %)) (take 64 blocks))))
+                                               (el/option {:value (str (:id target))}
+                                                          (str "Selected block " (subs (str (:id target)) 0 8))))
+                                             (for [block (take 64 blocks)]
+                                               (el/option {:key (str (:id block)) :value (str (:id block))}
+                                                          (str "Block " (subs (str (:id block)) 0 8)))))))
+                      (when (> (count blocks) 64)
+                        (el/p {:class "memory-note"} "Showing the first 64 explicit blocks; use Outline to inspect another block."))
+                      (when (and declaration-draft (or (not current?) (= :unavailable (:status model))))
+                        (declaration-view path target declaration-draft a false busy?))
                       (cond
                         (not current?) (el/p {:class "memory-note" :role "status"} "Checking saved properties…")
                         (= :unavailable (:status model))
@@ -242,6 +335,13 @@
                                 (el/p {:class "memory-note"}
                                       (str "Types: " (str/join ", " (map :name (:types model)))
                                            ". Properties edit the saved Markdown source."))
+                                (if declaration-draft
+                                  (declaration-view path target declaration-draft a
+                                                    (and write? current? (not busy?)
+                                                         (not (editor/dirty? draft)) (not (editor/property-drafts? state path))
+                                                         (declarations/current? declaration-draft model)) busy?)
+                                  (el/button {:disabled (or (not editable?) (editor/property-drafts? state path))
+                                              :on-click (fn [_] ((:declaration-open a) path target))} "Edit types and fields"))
                                 (when (editor/dirty? draft)
                                   (el/p {:class "memory-note"} "Save or discard your file draft before applying property changes."))
                                 (for [field (:fields model)
@@ -257,7 +357,7 @@
                                                                   :on-change (fn [event]
                                                                                (let [value (.. event -target -value)]
                                                                                  ((:property-input a) path target field
-                                                                                  (if (= value "null") {:null true} {:text value}))))}
+                                                                                                      (if (= value "null") {:null true} {:text value}))))}
                                                                  (when-not (:required? field) (el/option {:value "null"} "Not set"))
                                                                  (el/option {:value "true"} "True")
                                                                  (el/option {:value "false"} "False"))
@@ -350,6 +450,7 @@
                                               (when text?
                                                 (el/button {:disabled (or (not write?) (get-in state [:loading [:save path]])
                                                                           (get-in state [:loading [:property-save path]])
+                                                                          (declarations/drafts? state path)
                                                                           (:remote-deleted? draft)
                                                                           (not (editor/dirty? draft)))
                                                             :on-click (fn [_] ((:save a) path))} "Save"))
@@ -362,6 +463,7 @@
                                                                (get-in state [:download :base64])))
                                               (when write?
                                                 (el/button {:disabled (or (editor/dirty? draft) (editor/property-drafts? state path)
+                                                                          (declarations/drafts? state path)
                                                                           (get-in state [:loading [:property-save path]]))
                                                             :on-click (fn [_] (ask-path "Move file to" path #((:move a) path %)))} "Move")))
                                       (when (or (:incoming draft) (:incoming-entry draft))
@@ -377,6 +479,7 @@
                                         (el/p {:class "memory-note"} "An earlier draft's save completed after this version was selected. This draft was kept unchanged; check the saved version before another save."))
                                       (when markdown? (properties-view path draft state a write?))
                                       (retained-properties-view path state a)
+                                      (retained-declarations-view path state a)
                                       (when (and text? (not clojure?))
                                         (el/div {:class "memory-toolbar" :aria-label "Document views"}
                                                 (el/span {} "File view")

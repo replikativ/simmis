@@ -6,6 +6,7 @@
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.memory-editor :as editor]
+            [is.simm.uis.web.desktop.memory-declarations :as declarations]
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.memory-remote :as remote]
             [is.simm.uis.web.desktop.remote :as rem]
@@ -315,7 +316,7 @@
                            (not= marker (get-in s [:property-attempts scope])))
                   (update! assoc-in [:property-attempts scope] marker)
                   (request! slot #(remote/load-memory-properties! web/server-id room
-                                                                 {:path path :target target :expected-target-stamp (:target-stamp s)})
+                                                                  {:path path :target target :expected-target-stamp (:target-stamp s)})
                             #(assoc-in %1 [:property-models scope] (assoc %2 :request-marker marker)) nil
                             {:stamp (:target-stamp s) :read? true}))))
             (property-save! [path target field]
@@ -324,7 +325,7 @@
                     slot [:property-save path] input (editor/property-input model field pd)]
                 (when (and (not (get-in s [:loading slot])) (not (get-in s [:loading [:save path]]))
                            (not (get-in s [:loading [:move path]]))
-                           (:editable? field) (not (editor/dirty? draft))
+                           (:editable? field) (not (editor/dirty? draft)) (not (declarations/drafts? s path))
                            (= (:request-marker model) (property-marker s path target))
                            (= (:expected model) (get-in draft [:source :entry]))
                            (editor/property-draft-current? model pd))
@@ -340,10 +341,42 @@
                                     (= pd (get-in current [:property-drafts scope (:id field)]))
                                     (update-in [:property-drafts scope] dissoc (:id field))))
                                 (fn [_] (discover! true) (navigation-refresh!)) {:stamp stamp}))))))
+            (declaration-preview! [path target]
+              (let [s (state) scope [path target] dd (get-in s [:declaration-drafts scope])
+                    model (get-in s [:property-models scope]) generation (:generation dd)]
+                (when (and dd (verified? s (connected!)) (declarations/current? dd model)
+                           (= (:request-marker model) (property-marker s path target)))
+                  (request! [:declaration-preview path target]
+                            #(remote/preview-memory-declaration! web/server-id room (declarations/preview-request dd))
+                            (fn [current reply]
+                              (if-let [draft (get-in current [:declaration-drafts scope])]
+                                (assoc-in current [:declaration-drafts scope] (declarations/previewed draft generation reply))
+                                current))
+                            nil {:stamp (get-in dd [:baseline :target-stamp]) :read? true}))))
+            (declaration-save! [path target]
+              (let [s (state) scope [path target] dd (get-in s [:declaration-drafts scope])
+                    model (get-in s [:property-models scope]) draft (get-in s [:drafts path])
+                    slot [:property-save path] command (declarations/command dd)]
+                (when (and command (declarations/current? dd model)
+                           (= (:request-marker model) (property-marker s path target))
+                           (= (:expected model) (get-in draft [:source :entry]))
+                           (not (editor/dirty? draft)) (not (editor/property-drafts? s path))
+                           (not (declarations/busy? s path)))
+                  (when-let [stamp (draft-stamp! path slot)]
+                    (request! slot #(remote/save-memory-declaration! web/server-id room command)
+                              (fn [current reply]
+                                (cond-> (-> current (update :property-models dissoc scope)
+                                            (update :property-attempts dissoc scope))
+                                  (some? (get-in current [:drafts path]))
+                                  (update-in [:drafts path] editor/property-saved (:generation draft) reply)
+                                  (= dd (get-in current [:declaration-drafts scope]))
+                                  (update :declaration-drafts dissoc scope)))
+                              (fn [_] (discover! true) (navigation-refresh!)) {:stamp stamp})))))
             (save! [path]
               (let [draft (get-in (state) [:drafts path]) sent (:text draft) slot [:save path]]
                 (when (and (not (get-in (state) [:loading slot])) (not (get-in (state) [:loading [:move path]]))
-                           (not (get-in (state) [:loading [:property-save path]])))
+                           (not (get-in (state) [:loading [:property-save path]]))
+                           (not (declarations/drafts? (state) path)))
                   (when-let [stamp (draft-stamp! path slot)]
                     (let [request {:path path :expected (get-in draft [:source :entry]) :text sent :expected-target-stamp stamp}
                           base (:rich-base draft)]
@@ -467,7 +500,7 @@
       {:owner key :state state :change change! :folder folder! :open #(open! % false) :reload #(open! % true)
        :open-properties (fn [path target] (update! assoc-in [:property-targets path] target) (properties! path target))
        :ensure-properties (fn [] (let [s (state) path (:selected s)]
-                                  (when-let [target (get-in s [:property-targets path])] (properties! path target))))
+                                   (when-let [target (get-in s [:property-targets path])] (properties! path target))))
        :property-input (fn [path target field input]
                          (let [scope [path target] model (get-in (state) [:property-models scope])]
                            (update! update-in [:property-drafts scope (:id field)]
@@ -477,6 +510,27 @@
        :property-discard (fn [path target id] (update! update-in [:property-drafts [path target]] dissoc id))
        :property-current? (fn [path target model] (= (:request-marker model) (property-marker (state) path target)))
        :property-save property-save!
+       :declaration-open
+       (fn [path target]
+         (let [s (state) scope [path target] model (get-in s [:property-models scope])]
+           (when (and (declarations/openable? s path model) (verified? s (connected!))
+                      (= (:request-marker model) (property-marker s path target)))
+             (update! assoc-in [:declaration-drafts scope] (declarations/draft model))
+             (declaration-preview! path target))))
+       :declaration-types (fn [path target types]
+                            (update! update-in [:declaration-drafts [path target]] declarations/set-types types)
+                            (declaration-preview! path target))
+       :declaration-bind (fn [path target field alias]
+                           (update! update-in [:declaration-drafts [path target]] declarations/add-binding field alias)
+                           (declaration-preview! path target))
+       :declaration-unbind (fn [path target id]
+                             (update! update-in [:declaration-drafts [path target]] declarations/remove-binding id)
+                             (declaration-preview! path target))
+       :declaration-input (fn [path target id input]
+                            (update! update-in [:declaration-drafts [path target]]
+                                     #(when % (assoc-in % [:inputs id] input))))
+       :declaration-discard (fn [path target] (update! declarations/discard path target))
+       :declaration-save declaration-save!
        :verified? #(verified? (state) (connection)) :discover #(discover! false)
        :repl-change (fn [f & args] (apply update! update :repl f args))
        :repl-evaluate
@@ -551,7 +605,7 @@
                            (update! update :errors dissoc [:save path] [:file path] [:rich path]))))
        :move (fn [path target]
                (let [draft (get-in (state) [:drafts path])]
-                 (if (or (editor/dirty? draft) (editor/property-drafts? (state) path)
+                 (if (or (declarations/move-blocked? (state) path)
                          (get-in (state) [:loading [:save path]])
                          (get-in (state) [:loading [:office-save path]]) (get-in (state) [:loading [:move path]])
                          (get-in (state) [:loading [:property-save path]])

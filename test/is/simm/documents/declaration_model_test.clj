@@ -21,8 +21,8 @@
 
 (defn- request [db target types additions]
   (let [preview (model/preview-declaration-in db "wiki/a.md" target
-                                            {:types types :additions (mapv #(dissoc % :input) additions)})]
-    (-> preview (dissoc :fields) (assoc :additions additions))))
+                                              {:types types :additions (mapv #(dissoc % :input) additions)})]
+    (-> preview (dissoc :fields :type-choices) (assoc :additions additions))))
 
 (defn- reason [f]
   (try (f) nil (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))
@@ -72,11 +72,11 @@
               (is (false? (get-in parsed [:frontmatter :properties "active"])))
               (is (= (str person-id) (get-in parsed [:frontmatter :properties "founder"])))
               (is (= :valid (:status (view/validate-replacement db options
-                                                              {:path "wiki/a.md" :expected (:expected req)
-                                                               :source (:text prepared)})))))
+                                                                {:path "wiki/a.md" :expected (:expected req)
+                                                                 :source (:text prepared)})))))
             (testing "explicit block scope and distinct structural role"
               (is (false? (get-in (markdown/parse (:text block-prepared))
-                                 [:frontmatter :properties "simmis" "blocks" (str block-id) "values" "active"])))
+                                  [:frontmatter :properties "simmis" "blocks" (str block-id) "values" "active"])))
               (rejects :incompatible-structural-role
                        #(request db block-target [(:id (first (:types (model/inspect-in db "wiki/a.md" target))))] [])))
             (testing "required values, duplicate aliases, exact relation UUIDs"
@@ -94,6 +94,19 @@
               (rejects :invalid-declaration-edit #(model/prepare-declaration-in db options (assoc req :schema {}))))
             (testing "a no-op does not add empty reserved metadata"
               (is (= original (:text (model/prepare-declaration-in db options (request db target [] []))))))
+            (testing "picker bounds acquisition before any type metadata pulls"
+              (let [meta-type (:db/id (d/pull db [:db/id] [:entity/name "S/EntityType"]))
+                    crowded (d/db-with db (mapv (fn [i] {:entity/uuid (random-uuid)
+                                                         :entity/name (str "S/PickerAmplification" i)
+                                                         :instance/of-role [meta-type]}) (range 129)))
+                    pull d/pull metadata-pulls (atom 0)
+                    result (with-redefs [d/pull (fn [db pattern eid]
+                                                  (when-not (= eid [:entity/name "S/EntityType"])
+                                                    (swap! metadata-pulls inc))
+                                                  (pull db pattern eid))]
+                             (reason #(@#'model/type-choices crowded)))]
+                (is (= :too-many-type-choices result))
+                (is (zero? @metadata-pulls))))
             (testing "no source, definition or capability payload leaks through preview"
               (let [p (model/preview-declaration-in db "wiki/a.md" target
                                                     {:types [company] :additions [(dissoc revenue-input :input)]})
@@ -105,6 +118,8 @@
                 (is (:editable? field))
                 (is (nil? (:reason field)))
                 (is (:required? field))
+                (is (some #(= company (:id %)) (:type-choices p)))
+                (is (every? #(= #{:id :name} (set (keys %))) (:type-choices p)))
                 (is (:needs-binding? unbound))
                 (is (false? (:editable? unbound)))))
             (write! conn "wiki/a.md" (:text prepared))
@@ -113,7 +128,19 @@
               (rejects :existing-binding-or-value
                        #(request @conn target [company research] [(assoc active-input :alias "unknown")])))
             (testing "source changed since preview"
-              (rejects :stale-property-source-or-schema #(model/prepare-declaration-in @conn options req)))))
+              (rejects :stale-property-source-or-schema #(model/prepare-declaration-in @conn options req)))
+            (testing "actual starter-style block YAML retains its unrelated declarations"
+              (let [generated (str "---\n"
+                                   ((requiring-resolve 'clj-yaml.core/generate-string)
+                                    {"simmis-id" (str page-id)
+                                     "simmis" {"version" 1 "types" [(str research)]}
+                                     "unknown" {"keep" ["one" "two"]}})
+                                   "---\n# Same body\n")]
+                (write! conn "wiki/a.md" generated)
+                (let [request (request @conn target [research company] [revenue-input])
+                      prepared (model/prepare-declaration-in @conn options request)]
+                  (is (= ["one" "two"] (get-in (markdown/parse (:text prepared)) [:frontmatter :properties "unknown" "keep"])))
+                  (is (str/ends-with? (:text prepared) "---\n# Same body\n")))))))
         (finally
           (governance/ungovern! conn)
           (d/release conn true)

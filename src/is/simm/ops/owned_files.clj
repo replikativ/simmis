@@ -114,11 +114,17 @@
                        :status :unavailable :reason (:reason (ex-data error))}
                       (throw error))))))
 
-(defn- save-property! [conn principal room-id room payload request]
-  (closed! request (conj #{:path :target :alias :property :expected :revision :scope-revision} payload) true)
+(defn declaration-preview!
+  "Authenticated prospective declaration DTOs; same owned snapshot and target
+   stamp as ordinary property inspection. No schema or authority payload."
+  [conn principal room-id room request]
+  (project! conn principal room-id room request #{:path :target :types :additions} true
+            #(property-model/preview-declaration-in % (:path request) (:target request)
+                                                    (select-keys request [:types :additions]))))
+
+(defn- save-property-command! [conn principal room-id room prepare request]
   (let [binding (binding! conn principal :write room-id room request true)
         source-db (:db binding)
-        prepare (if (= :input payload) property-model/prepare-input-in property-model/prepare-edit-in)
         prepared (prepare source-db {:roots [""] :schema-revision :source-property-model-v1
                                      :entity-profile space/profile}
                           (dissoc request :expected-target-stamp))
@@ -128,6 +134,19 @@
         basis (file-tx/capture-basis source-db)]
     (assoc (save-bound! conn principal room-id room binding prepared {:validated-basis basis})
            :text (:text prepared) :analysis analysis)))
+
+(defn- save-property! [conn principal room-id room payload request]
+  (closed! request (conj #{:path :target :alias :property :expected :revision :scope-revision} payload) true)
+  (save-property-command! conn principal room-id room
+                          (if (= :input payload) property-model/prepare-input-in property-model/prepare-edit-in)
+                          request))
+
+(defn declaration-save!
+  "Publish an existing-definition assignment using the same immutable source
+   preparation, native validation basis and fresh authority gate as scalars."
+  [conn principal room-id room request]
+  (closed! request #{:path :target :expected :revision :scope-revision :proposed-scope-revision :types :additions} true)
+  (save-property-command! conn principal room-id room property-model/prepare-declaration-in request))
 
 (defn property-save!
   "Host typed-scalar save using one fresh owned DB and its atomic validation

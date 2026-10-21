@@ -29,8 +29,18 @@ metadata automatically. Preview DTOs distinguish new supported inputs from
 unbound or owner-managed properties. Preparation is read-only: publication
 still requires the native writer's fresh validated basis and current room
 authority. Arbitrary definition/schema datoms are not assumed to travel with
-Geschichte file proposals. These preparation functions are not yet exposed as
-Memory RPCs or type-assignment controls.
+Geschichte file proposals. Memory's **Edit types and fields** control selects
+existing definitions and adds explicit source bindings and values. Whole-page
+and explicitly identified block scopes remain separate; Outline and the
+Property scope selector open block properties. Assignment drafts are
+context-owned and retain their inputs across scope, source and definition
+changes. In-flight file/property saves and moves exclude assignment admission
+and cancellation; stale/hidden assignments remain inspectable and cancellable
+after those operations settle. Authenticated Memory declaration preview/save RPCs
+use the same owned-target stamps, current room permissions, blocking-worker
+boundary and atomic native validated-basis writer as scalar property edits.
+The type picker descriptor is bounded before metadata pulls and contains only
+trusted type UUIDs and names, not executable definitions or capabilities.
 
 The Markdown layer keeps original UTF-8 source, including BOM, comments,
 frontmatter spelling, line endings and unknown syntax. Flexmark supplies a

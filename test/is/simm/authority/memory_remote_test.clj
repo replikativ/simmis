@@ -116,6 +116,9 @@
       (doseq [kind [:non-member :admin :anon]
               [name args] [["load-memory-metadata!" {:folders [""] :paths []}]
                            ["prepare-memory-stream!" nil]
+                           ["preview-memory-declaration!" {:path "wiki/file.md" :target {:kind :page}
+                                                            :types [] :additions [] :expected-target-stamp (random-uuid)}]
+                           ["save-memory-declaration!" {:path "wiki/file.md" :expected-target-stamp (random-uuid)}]
                            ["load-memory-file!" {:path "wiki/file.md" :expected-target-stamp (random-uuid)}]
                            ["save-memory-file!" {:path "bad.md" :expected nil :text "bad" :expected-target-stamp (random-uuid)}]]]
         (is (world/refused? (inbound kind name args))))

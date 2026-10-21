@@ -112,19 +112,19 @@
   (doseq [newline ["\n" "\r\n" "\r"]
           sequence ["[one, two]" "\n  - one\n  - two"]]
     (let [source (str/replace (str "---\nsimmis:\n  version: 1 # keep\n  types: " sequence
-                                        "\nunknown: 0 # stay\n---\nbody 😀\n") "\n" newline)
+                                   "\nunknown: 0 # stay\n---\nbody 😀\n") "\n" newline)
           changed (property-source/set-types source (markdown/revision source) ["simmis" "types"] ["three"])]
       (is (= ["three"] (get-in changed [:frontmatter :properties "simmis" "types"])))
       (is (str/includes? (:source changed) (str "unknown: 0 # stay" newline "---" newline "body 😀")))
       (is (str/includes? (:source changed) "version: 1 # keep"))))
   (let [source "---\nsimmis: {version: 1, types: [one, two]} # keep\n---\nbody\n"]
     (is (= source (:source (property-source/set-types source (markdown/revision source)
-                                                     ["simmis" "types"] ["one" "two"]))))
+                                                      ["simmis" "types"] ["one" "two"]))))
     (is (= (.replace source "[one, two]" "[]")
            (:source (property-source/set-types source (markdown/revision source) ["simmis" "types"] [])))))
   (let [source "---\nsimmis-id: stable\n---\nbody\n"]
     (is (= ["type-id"] (get-in (property-source/set-types source (markdown/revision source)
-                                                         ["simmis" "types"] ["type-id"])
+                                                          ["simmis" "types"] ["type-id"])
                                [:frontmatter :properties "simmis" "types"])))))
 
 (deftest declaration-source-edits-refuse-unsafe-or-lossy-forms
