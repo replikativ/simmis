@@ -35,6 +35,17 @@
             [is.simm.uis.web.desktop.views.history-subway :as subway]
             [is.simm.uis.web.desktop.views.proposals :as proposals]))
 
+(defn catch-up!
+  "After subscriptions and the current roster are ready, refresh only views
+   already requested in this session, including requests lost with the socket."
+  []
+  (feed/refresh-loaded!)
+  (tasks/refresh-loaded!)
+  (accounting/refresh-loaded!)
+  (proposals/refresh-loaded!)
+  (book/reload-all!)
+  (subway/reload-loaded!))
+
 (defn- refresh-tasks! []
   (tasks/load-tasks! (boolean (:include-done? @sig/tasks-data))))
 

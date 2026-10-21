@@ -46,6 +46,18 @@
      [v]
      (instance? js/Error v)))
 
+(def ^:private client-error-types
+  #{:not-authorized :authentication-required :validation-error
+    :memory/target-changed
+    :dispatch/invalid-mentions :proposal/merge-failed :dvergr.principal/denied})
+
+(defn- error-map [value]
+  (cond
+    (map? value) value
+    (and (string? value) (<= (count value) 4096) (str/starts-with? value "{"))
+    (try (let [m (edn/read-string value)] (when (map? m) m))
+         (catch #?(:clj Exception :cljs :default) _ nil))))
+
 (defn error-info
   "The server's account of a failed remote call, as a map, or nil when `err`
    carries none.
@@ -58,13 +70,18 @@
    correlation id is what to quote in a report: the server logged the full
    exception under it."
   [err]
-  (let [e (:error (ex-data err))]
-    (cond
-      (map? e) e
-      (and (string? e) (str/starts-with? e "{"))
-      (let [m (try (edn/read-string e)
-                   (catch #?(:clj Exception :cljs :default) _ nil))]
-        (when (map? m) m)))))
+  (let [data (ex-data err)
+        ;; Legacy distributed-scope sends a printed safe map; Kabel remote
+        ;; carries its fields in :data with the classified type outside it.
+        info (or (error-map (:error data))
+                 (when-let [m (error-map (:data data))]
+                   (assoc m :type (:type data))))]
+    (when (and (map? info) (string? (:error info))
+               (<= (count (:error info)) 201))
+      (cond-> {:error (:error info)}
+        (contains? client-error-types (:type info)) (assoc :type (:type info))
+        (and (string? (:correlation-id info)) (<= (count (:correlation-id info)) 64))
+        (assoc :correlation-id (:correlation-id info))))))
 
 (defn error-text
   "Short, human-readable form of a remote failure: the server's message, and

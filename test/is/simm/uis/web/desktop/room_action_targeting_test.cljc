@@ -11,7 +11,7 @@
           [[:settings :room-settings {:room-id room-a} "A Settings"]
            [:screens :screens {:room-id room-a :room-name "A"} "A Screens"]
            [:video :video {:room-id room-a :room-name "A"} "A Call"]
-           [:files :files {:room-id room-a} "A Files"]]]
+           [:files :memory {:room-id room-a :room-name "A"} "A Memory"]]]
     (testing (name action)
       (let [[actual-type actual-data opts]
             (room-actions/room-header-tab col-a action room-a "A")]

@@ -10,13 +10,17 @@
             [hasch.core :as hasch]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.work :as work]
+            [is.simm.ops.knowledge-inputs :as knowledge-inputs]
+            [is.simm.ops.knowledge-admission :as knowledge-admission]
+            [is.simm.model.knowledge-publication :as publication]
+            [is.simm.ops.knowledge-outputs :as knowledge-outputs]
+            [is.simm.ops.knowledge-workspace :as knowledge-workspace]
+            [is.simm.ops.workflow-policy :as source-policy]
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]))
 
-(def policy {:version 1 :max-params 32 :max-param-bytes 65536
-             :max-task-bytes 16000 :max-input-files 100 :max-input-bytes 2097152
-             :source :pinned-bundle :checker :not-executed :parent :room-fork})
+(def policy source-policy/policy)
 (def parameter-name [:re #"^[A-Za-z][A-Za-z0-9_-]{0,63}$"])
 (def parameters [:map-of {:max 32} parameter-name [:string {:max 4000}]])
 (def inputs [:map-of {:max 100} [:string {:min 1 :max 512}]
@@ -116,12 +120,13 @@
       (invalid! "Workflow input files exceed the total byte limit"))
     entries))
 
-(defn- setup [name bundle source entries]
+(defn- setup [name bundle source entries collector?]
   (let [prefix (str "/workflows/" name "/")
         digest (str (hasch/uuid entries))]
     (evaluation/make-world-setup
-     {:id :simmis/workflow-inputs :version 1
-      :basis {:name name :bundle (str (:id bundle)) :inputs digest :policy policy}
+     {:id :simmis/workflow-inputs :version (if collector? 2 1)
+      :basis (cond-> {:name name :bundle (str (:id bundle)) :inputs digest :policy policy}
+               collector? (assoc :cleanup knowledge-workspace/cleanup-policy))
       :prepare
       (fn [{world :room}]
         ;; This is the RUN WORLD, never the source room. Replace the entire
@@ -131,15 +136,26 @@
         (let [inherited (:files (workflows/snapshot world name))
               edits (merge (zipmap (map #(str prefix %) (keys inherited)) (repeat nil))
                            (into {} (map (fn [[p text]] [(str prefix p) {:text text}])) source))]
+          (when (> (count edits) files/max-batch-files)
+            (invalid! "Pinned workflow subtree exceeds the canonical writer batch limit"))
+          (when collector? (knowledge-workspace/clear-owned! world))
           (files/write! world edits {:message (str "Pin workflow " name " at " (:id bundle))}))
         (when (seq entries) (workspace/seed! world entries))
         {:bundle (str (:id bundle)) :inputs digest :files (count entries)
          :checker-executed? false :source-pinned? true})})))
 
-(defn prepare-source
-  "Validate and render ONE immutable workflow revision without resolving a
-   model or executing checker source. Shared by execution backends; the source
-   pin, literal parameter rendering and input overlay rules are identical."
+(defn- supported-definition? [definition]
+  (and (contains? #{nil "developer"} (:profile definition))
+       (contains? #{nil ["/out"]} (:capture definition))
+       (not-any? #(contains? definition %)
+                 [:judge :web :fetched :allowed-sources :blocked-sources
+                  ;; Saved workflows do not yet propagate retained-world
+                  ;; adoption policy. Never silently accept these declarations.
+                  :review :workflow/writes])))
+
+(defn plan-source
+  "Provider-independent source validation/rendering. A declared live input
+   policy is returned as data here; execution must resolve it before setup."
   [snapshot {:keys [name expected-bundle case params inputs] :as input}]
   (when-not (m/validate source-schema input) (invalid! "Invalid workflow source selection"))
   (let [inspection (workflows/inspect-snapshot name snapshot)]
@@ -149,11 +165,8 @@
                       {:type ::conflict}))))
   (let [bundle (catalog/bundle name (:files snapshot))
         definition (:definition bundle)]
-    (when-not (and (contains? #{nil "developer"} (:profile definition))
-                   (contains? #{nil ["/out"]} (:capture definition))
-                   (not-any? #(contains? definition %)
-                             [:judge :web :fetched :allowed-sources :blocked-sources]))
-      (invalid! "Ordinary workflows require the developer profile, /out capture and no web/judge policy"))
+    (when-not (supported-definition? definition)
+      (invalid! "Ordinary workflows require developer /out capture and no web, judge or adoption policy"))
     (when-not (if (seq (:cases bundle)) (contains? (:cases bundle) case) (nil? case))
       (invalid! "Select an explicit existing case for a case-pack workflow, and no case otherwise"))
     (let [params (effective-parameters definition params)
@@ -161,18 +174,122 @@
           prefix (str "/workflows/" name "/")
           entries (input-files prefix (merge (:fixtures bundle) (get-in bundle [:cases case :fixtures])) inputs)
           provenance {:name name :bundle (str expected-bundle) :case case :params params :policy policy}]
+      (when (knowledge-inputs/declaration (:files snapshot))
+        (knowledge-workspace/validate-inputs! entries))
       {:bundle bundle :task task :inputs entries :source (:files snapshot)
-       :world-setup (setup name bundle (:files snapshot) entries) :workflow provenance})))
+       :selection-policy (knowledge-inputs/declaration (:files snapshot)) :workflow provenance})))
+
+(defn prepare-source
+  "Prepare one immutable source revision, never a live selector. Host callers
+   supply captured inputs explicitly; retained benchmark fixtures use the same
+   verified frozen manifest. Unresolved declarations refuse, not empty runs."
+  [snapshot input & [captured]]
+  (let [{:keys [bundle inputs source selection-policy] :as planned} (plan-source snapshot input)
+        resolved (when selection-policy
+                   (if captured
+                     (do
+                       (when (some #(str/starts-with? % "/in/knowledge/") (keys inputs))
+                         (invalid! "Workflow inputs collide with the collector-owned namespace"))
+                       (knowledge-inputs/verify-capture selection-policy captured))
+                     (knowledge-inputs/from-inputs selection-policy inputs)))
+        _ (when (and captured (nil? selection-policy))
+            (invalid! "Workflow does not declare a knowledge input selection"))
+        entries (if resolved
+                  (input-files (str "/workflows/" (:name input) "/") inputs (:inputs resolved)) inputs)
+        provenance (when resolved
+                     {:kind :knowledge :policy selection-policy
+                      :trigger-id (:trigger-id resolved) :execution-id (:execution-id resolved)
+                      :manifest-id (hasch/uuid (:manifest resolved))})]
+    (cond-> (assoc planned :inputs entries :world-setup (setup (:name input) bundle source entries (some? resolved)))
+      provenance (assoc-in [:workflow :input-selection] provenance))))
+
+(defn- with-selection
+  "Host admission only, after authorization. Callback receives a metadata-only
+   selection and a zero-argument resolution function over that SAME immutable DB.
+   It can skip unchanged work without loading bodies. Retained fixture inputs
+   need no live capture; ordinary pure preparation verifies them again. Never
+   persist the callback/DB, only its captured byte data."
+  [room-id room snapshot input publication? f]
+  (let [{:keys [selection-policy inputs]} (plan-source snapshot input)]
+    (if selection-policy
+      (if (contains? inputs "/in/knowledge/manifest.edn")
+        (let [retained (knowledge-inputs/from-inputs selection-policy inputs)]
+          (f (select-keys retained [:trigger-id :execution-id :empty? :manifest])
+             (constantly {:captured nil :publication-basis nil})))
+        (binding [ec/*execution-context* (:ctx room)]
+          (let [target (when publication? (knowledge-admission/default-target room-id room))
+                conn (if publication? (:conn target)
+                         (:conn ((requiring-resolve 'dvergr.substrate.geschichte/current-workspace))))]
+            (when-not conn (invalid! "Room has no knowledge source workspace"))
+            (let [db @conn selected (knowledge-inputs/selection db selection-policy)]
+              (f (dissoc selected :manifest-text)
+                 #(hash-map :captured (knowledge-inputs/capture db selection-policy)
+                            :publication-basis (when publication?
+                                                 (knowledge-inputs/publication-basis db (:identity target)))))))))
+      (f nil (constantly {:captured nil :publication-basis nil})))))
+
+(defn with-admission-selection
+  "Host-only same-snapshot input and publication resolution, after authorization."
+  [room-id room snapshot input f]
+  (with-selection room-id room snapshot input true f))
+
+(defn with-source-selection
+  "Compatibility projection for callers that only need frozen model inputs."
+  [room snapshot input f]
+  (with-selection nil room snapshot input false
+    (fn [selection resolve] (f selection #(:captured (resolve))))))
+
+(defn resolve-admission
+  "Host-only resolution. Fixture/model-authored inputs never supply a basis."
+  [room-id room snapshot input]
+  (with-admission-selection room-id room snapshot input (fn [_ resolve] (resolve))))
+
+(defn resolve-source
+  "Resolve declared sources after authorization, without submission or spend."
+  [room snapshot input]
+  (with-source-selection room snapshot input (fn [_ capture] (capture))))
+
+(defn bind-publication
+  "Bind host-only target occupancy to the canonical request, never model inputs.
+   This retains historical evidence, not permission to publish an output."
+  [prepared {:keys [publication-basis captured]}]
+  (if publication-basis
+    (do
+      (when-not (and (publication/host-target? (:target publication-basis))
+                     (uuid? (:execution-id captured))
+                     (= (:execution-id captured)
+                        (get-in prepared [:basis :workflow :input-selection :execution-id])))
+        (invalid! "Publication basis has no matching frozen knowledge execution"))
+      (publication/validate! publication-basis)
+      (let [target (:target publication-basis)
+            setup (knowledge-workspace/with-publication-target (:world-setup prepared) target)
+            evaluator (knowledge-outputs/with-publication-target (:evaluator prepared) target)
+            verifier (evaluation/evaluator-ref evaluator)
+            old (environment/validate-environment (:environment prepared))
+            env (environment/make-environment
+                 (cond-> {:id (:environment/id old) :version (:environment/version old)
+                          :task (:environment/task old) :limits (:environment/limits old)
+                          :verifier {:id (:verifier/id verifier) :version (:verifier/version verifier)
+                                     :basis (:verifier/basis verifier)}
+                          :world (assoc (:environment/world old) :setup (evaluation/world-setup-ref setup))}
+                   (contains? old :environment/metadata) (assoc :metadata (:environment/metadata old))))]
+        (-> prepared
+            (assoc :environment env :world-setup setup :evaluator evaluator)
+            (assoc-in [:basis :environment] env)
+            (assoc-in [:basis :knowledge/publication-basis] publication-basis))))
+    prepared))
 
 (defn prepare
   "Construct from ONE immutable source snapshot. The bundle is task data;
    provider, tool/effect surface, limits and evaluator remain host policy."
-  [snapshot {:keys [model limits] :as input}]
+  [snapshot {:keys [model limits] :as input} & [captured]]
   (when-not (m/validate schema input) (invalid! "Invalid workflow execution"))
-  (let [{:keys [task inputs source world-setup workflow]} (prepare-source snapshot (select-keys input source-fields))
+  (let [{:keys [task inputs source world-setup workflow]} (prepare-source snapshot (select-keys input source-fields) captured)
         prepared (work/prepare {:request-id (:request-id input) :task task :model model :limits limits})
         base (:environment prepared)
-        verifier (:environment/verifier base)
+        evaluator (cond-> (:evaluator prepared)
+                    (:input-selection workflow) knowledge-outputs/with-capture)
+        verifier (evaluation/evaluator-ref evaluator)
         env (environment/make-environment
              {:id :simmis/saved-workflow :task task
               :verifier {:id (:verifier/id verifier) :version (:verifier/version verifier)
@@ -181,14 +298,16 @@
               :world (assoc (:environment/world base) :setup (evaluation/world-setup-ref world-setup))
               :metadata {:workflow workflow}})]
     (assoc prepared :request-kind :workflow :execution-kind :saved-workflow
-           :environment env :world-setup world-setup
+           :environment env :evaluator evaluator :world-setup world-setup
            :basis (assoc (:basis prepared) :submission input :environment env
                          :source source :inputs inputs :workflow workflow))))
 
 (defn submit!
   "Submit current source, or a host-retained immutable snapshot. Exact retries
-   are resolved before either source read or provider preparation."
-  [conn host-ctx principal room-id room input & [snapshot]]
+   are resolved before either source read or provider preparation. A host-retained
+   resolution supplies :captured (possibly nil for already-frozen fixtures) and
+   explicitly prevents collecting different live inputs."
+  [conn host-ctx principal room-id room input & [snapshot resolution]]
   (when-not (m/validate schema input) (invalid! "Invalid workflow execution"))
   (binding [ec/*execution-context* host-ctx]
     (let [party (work/authorize! conn principal room-id)
@@ -199,5 +318,15 @@
                          (= input (get-in (requests/payload conn row) [:input :submission])))
             (throw (ex-info "Request identity was used for different work" {:type ::conflict})))
           (work/status conn host-ctx principal room-id id))
-        (work/submit-prepared! conn host-ctx principal room-id room input
-                               (prepare (or snapshot (workflows/snapshot room (:name input))) input))))))
+        (let [snapshot (or snapshot (workflows/snapshot room (:name input)))
+              selected (select-keys input source-fields)
+              resolution (if resolution
+                           (do (when-not (contains? resolution :captured)
+                                 (invalid! "Retained resolution has no captured input decision"))
+                               resolution)
+                           (resolve-admission room-id room snapshot selected))
+              captured (:captured resolution)]
+          (work/submit-prepared! conn host-ctx principal room-id room input
+                                 (bind-publication
+                                  (if captured (prepare snapshot input captured) (prepare snapshot input))
+                                  resolution)))))))

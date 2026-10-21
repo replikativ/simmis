@@ -8,6 +8,7 @@
             [dvergr.catalog.workspace :as workspace]
             [dvergr.rooms.files :as room-files]
             [dvergr.sandbox :as sandbox]
+            [is.simm.ops.knowledge-workspace :as knowledge-workspace]
             [sci.core :as sci])
   (:import [java.util.concurrent.atomic AtomicBoolean]))
 
@@ -126,25 +127,33 @@
 
 (defn world-setup
   "Calibrate before candidate execution, on Dvergr's physically owned
-   admission worker. Gold and calibration never enter the candidate workspace."
-  [bundle]
-  (validate-calibration! bundle)
-  (let [base (catalog/world-setup bundle)]
-    (if-not (:calibration bundle)
-      base
-      (evaluation/make-world-setup
-       {:id :simmis.workflow/calibrated-fixtures :version 1
-        :basis {:fixtures (evaluation/world-setup-ref base) :calibration-policy calibration-policy :checker-policy policy
-                :case (get-in bundle [:calibration :case])}
-        :prepare (fn [context]
-                   (let [report (calibrate bundle)]
-                     (when-not (:ok? report)
-                       (refuse! (str "Checker calibration failed; candidate was not started: "
-                                     (if-not (every? true? (vals (get-in report [:reference :checks])))
-                                       "reference checks"
-                                       (str "damaged answers "
-                                            (mapv (comp str key) (remove (comp :ok? val) (:damaged report))))))))
-                     (assoc ((:prepare base) context) :calibration report)))}))))
+   admission worker. Gold and calibration never enter the candidate workspace.
+   Knowledge selection is explicit host-admitted metadata, not an assumption
+   that a catalog bundle retains its source files."
+  ([bundle] (world-setup bundle nil))
+  ([bundle selection-policy]
+   (validate-calibration! bundle)
+   (when selection-policy
+     (knowledge-workspace/validate-inputs! (:fixtures bundle))
+     (doseq [case (vals (:cases bundle))]
+       (knowledge-workspace/validate-inputs! (:fixtures case))))
+   (let [base (cond-> (catalog/world-setup bundle)
+                selection-policy knowledge-workspace/with-frozen-staging)]
+     (if-not (:calibration bundle)
+       base
+       (evaluation/make-world-setup
+        {:id :simmis.workflow/calibrated-fixtures :version 1
+         :basis {:fixtures (evaluation/world-setup-ref base) :calibration-policy calibration-policy :checker-policy policy
+                 :case (get-in bundle [:calibration :case])}
+         :prepare (fn [context]
+                    (let [report (calibrate bundle)]
+                      (when-not (:ok? report)
+                        (refuse! (str "Checker calibration failed; candidate was not started: "
+                                      (if-not (every? true? (vals (get-in report [:reference :checks])))
+                                        "reference checks"
+                                        (str "damaged answers "
+                                             (mapv (comp str key) (remove (comp :ok? val) (:damaged report))))))))
+                      (assoc ((:prepare base) context) :calibration report)))})))))
 
 (defn evaluator
   "An ad-hoc evaluator for one pinned offline bundle. No judge calls,

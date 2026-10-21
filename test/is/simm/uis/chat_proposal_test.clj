@@ -5,6 +5,32 @@
 (defn- model [proposal]
   (proposal-card/action-model {:status :open :proposal proposal}))
 
+(deftest retained-evidence-is-review-only-not-a-lost-capability
+  (let [fork {:system-type :file-output :may-merge? true}
+        action (model {:forks [fork] :diffs []})]
+    (is (= :files (:kind (proposal-card/fork-diff-model fork))))
+    (is (= "Review only" (:accept-label action)))
+    (is (:accept-disabled? action))
+    (is (false? (:dismiss-disabled? action)))
+    (is (nil? (:capability-live? fork)))
+    (is (:accept-disabled? (model {:forks [{:system-type :kb :may-merge? true} fork] :diffs []})))
+    (is (false? (:accept-disabled? (model {:forks [{:system-type :kb :may-merge? true}
+                                                   (assoc fork :status :dismissed)] :diffs []}))))))
+
+(deftest retained-file-replies-cannot-overwrite-newer-or-hidden-comparisons
+  (let [begin proposal-card/begin-file-request apply-result proposal-card/apply-file-result
+        old (begin {} "scope" "wiki/a.md" :old)
+        current (begin old "scope" "wiki/a.md" :new)
+        body {:path "wiki/a.md" :before nil :after "A"}]
+    (is (= current (apply-result current "scope" "wiki/a.md" :old body nil)))
+    (is (= :ready (get-in (apply-result current "scope" "wiki/a.md" :new body nil)
+                          [:file-bodies ["scope" "wiki/a.md"] :status])))
+    (is (= {} (apply-result {} "scope" "wiki/a.md" :new body nil)))
+    (is (= :error (get-in (apply-result current "scope" "wiki/a.md" :new (assoc body :path "wiki/b.md") nil)
+                          [:file-bodies ["scope" "wiki/a.md"] :status])))
+    (is (nil? (get-in (apply-result current "scope" "wiki/a.md" :new body "Denied")
+                      [:file-bodies ["scope" "wiki/a.md"] :body])))))
+
 (deftest adopted-world-diffs-count-their-actual-substrate
   (let [present proposal-card/fork-diff-model]
     (is (= {:kind :files :label "Run files" :changed 1}
@@ -103,6 +129,21 @@
     (is (= "temporary fetch failure" (:action-error m)))
     (is (:retry? m))
     (is (:accept-disabled? m))))
+
+(deftest retained-audit-responses-are-exact-and-do-not-repopulate-replaced-state
+  (let [pid "closed" request (random-uuid)
+        waiting (proposal-card/begin-audit-request {:proposals []} pid request)
+        result {:id pid :status :dismissed :forks [{:system-type :file-output}]}
+        ready (proposal-card/apply-audit-result waiting pid request result nil)]
+    (is (= :ready (get-in ready [:retained-audits pid :state])))
+    (is (= result (get-in ready [:retained-audits pid :proposal])))
+    (is (= {:proposals []} (proposal-card/apply-audit-result {:proposals []} pid request result nil)))
+    (is (= waiting (proposal-card/apply-audit-result waiting pid (random-uuid) result nil)))
+    (is (= :unavailable (get-in (proposal-card/apply-audit-result waiting pid request nil nil)
+                                [:retained-audits pid :state])))
+    (doseq [invalid [(assoc result :id "other") (assoc result :status :open) (assoc result :forks [])]]
+      (is (= :error (get-in (proposal-card/apply-audit-result waiting pid request invalid nil)
+                            [:retained-audits pid :state]))))))
 
 (deftest overlapping-diff-results-only-apply-the-latest-request
   (let [a #uuid "00000000-0000-0000-0000-00000000000a"

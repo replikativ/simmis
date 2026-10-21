@@ -15,7 +15,8 @@
             ["highlight.js/lib/languages/diff" :as diff-lang]
             ["highlight.js/lib/languages/yaml" :as yaml-lang]
             ["highlight.js/lib/languages/markdown" :as md-lang]
-            ["./superficie_hljs.js" :as sup-hljs]))
+            ["./superficie_hljs.js" :as sup-hljs]
+            [is.simm.uis.web.desktop.sanitize :as sanitize]))
 
 ;; Register languages
 (.registerLanguage hljs "clojure" clojure-lang)
@@ -38,22 +39,22 @@
 (def marked-instance
   (let [m (Marked.)]
     (.use m (markedHighlight
-              #js {:emptyLangClass "hljs"
-                   :langPrefix "hljs language-"
-                   :highlight (fn [code lang]
-                                (if (and lang (.getLanguage hljs lang))
-                                  (.-value (.highlight hljs code #js {:language lang}))
-                                  (.-value (.highlightAuto hljs code))))}))
+             #js {:emptyLangClass "hljs"
+                  :langPrefix "hljs language-"
+                  :highlight (fn [code lang]
+                               (if (and lang (.getLanguage hljs lang))
+                                 (.-value (.highlight hljs code #js {:language lang}))
+                                 (.-value (.highlightAuto hljs code))))}))
     ;; Configure for GFM (tables, strikethrough, etc.)
     (.use m #js {:gfm true
                  :breaks true})
     m))
 
 (defn render-markdown
-  "Render markdown string to HTML string."
+  "Render untrusted Markdown to sanitized HTML, after highlighting finishes."
   [text]
   (when (and text (seq text))
-    (.parse marked-instance text)))
+    (sanitize/html (.parse marked-instance text))))
 
 (defn highlight-code
   "Highlight code with hljs and return the highlighted HTML string.

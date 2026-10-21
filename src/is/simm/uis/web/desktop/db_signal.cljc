@@ -13,10 +13,12 @@
                      [datahike.kabel.connector :as kc]
                      [datahike.optimistic :as opt]
                      [konserve.indexeddb]  ;; Register :indexeddb store backend
-                     [clojure.core.async :refer [go <! alts! put! promise-chan timeout] :include-macros true]
+                     [clojure.core.async :refer [go <! alts! put! chan close! sliding-buffer promise-chan] :include-macros true]
                      [org.replikativ.spindel.engine.core :as rtc]
                      [org.replikativ.spindel.signal :refer [->SignalRef]]
                      [is.simm.uis.web.desktop.runtime :refer [runtime]]
+                     [is.simm.uis.web.desktop.connection-epoch :as epoch]
+                     [is.simm.uis.web.desktop.replica-io :as replica-io]
                      [is.simm.uis.web.desktop.chat-remote :as chat-remote]))
   #?(:cljs (:require-macros [org.replikativ.spindel.signal :refer [signal]])))
 
@@ -46,14 +48,114 @@
 #?(:cljs (def local-conn
            "Atom holding the shared DB's replica conn: for reads and watches.
             NEVER transact on it (nor on any replica conn here): its writer is
-            datahike's KabelWriter, which waits forever for a `kabel.remote`
-            route this app does not serve — the write is never sent and never
-            fails. Writes are RPCs; see `optimistic-write`."
+            datahike's KabelWriter. Raw database RPCs are explicitly denied;
+            they are not application writes and cannot enforce room operations.
+            Writes are authorized application RPCs; see `optimistic-write`."
            (atom nil)))
 
 #?(:cljs (def local-overlay
            "Atom holding the explicit optimistic overlay for the shared DB."
            (atom nil)))
+
+#?(:cljs
+   (declare room-states room-connecting kb-conns kb-overlays kb-db-signals
+            kb-connecting kb-roster kb-heads replica-sync authorized-roster
+            ensure-kb-db-signal! evict-view-db-for-scope! note-kb-head! update-signals! prepare-store))
+
+#?(:cljs
+   (defn replica-config [kind scope kabel-peer]
+     (let [scope-id (if (uuid? scope) scope (uuid (str scope)))
+           name (case kind :system "simmis-client"
+                           :room (str "simmis-room-" scope)
+                           :kb (str "simmis-kb-" scope))]
+       {:store {:backend :tiered
+                :frontend-config {:backend :memory :id scope-id}
+                :backend-config {:backend :indexeddb :name name :id scope-id}
+                :id scope-id}
+        :writer {:backend :kabel :peer-id server-peer-id :local-peer kabel-peer}
+        :branch :db :schema-flexibility :write :keep-history? true})))
+
+#?(:cljs
+   (defn- replica-key [kind scope]
+     (if (= kind :system) [:system] [kind (str scope)])))
+
+#?(:cljs
+   (defn- canonical? []
+     (identical? (rtc/home-context runtime)
+                 (rtc/home-context (or rtc/*execution-context* runtime)))))
+
+#?(:cljs
+   (defn- live-replica [kind scope]
+     (binding [rtc/*execution-context* runtime]
+       (case kind :system @local-conn
+                  :room (get-in @room-states [(str scope) :conn])
+                  :kb (get @kb-conns (str scope))))))
+
+#?(:cljs
+   (defn- forget-replica! [kind scope {:keys [conn] :as handle}]
+     (replica-io/close-overlay! handle)
+     (binding [rtc/*execution-context* runtime]
+       (when (identical? conn (live-replica kind scope))
+         (case kind
+           :system (do (reset! local-conn nil) (reset! local-overlay nil)
+                       (reset! local-db nil) (reset! local-db-signal nil))
+           :room (swap! room-states dissoc (str scope))
+           :kb (let [scope (str scope)]
+                 (swap! kb-conns dissoc scope)
+                 (swap! kb-overlays dissoc scope)
+                 (when-let [s (get @kb-db-signals scope)] (reset! s nil))
+                 (swap! kb-db-signals dissoc scope)
+                 (swap! kb-roster disj scope)
+                 (swap! kb-heads dissoc scope)
+                 (evict-view-db-for-scope! scope)))
+         (let [key (replica-key kind scope)]
+           (swap! replica-sync #(if (identical? conn (get-in % [key :conn])) (dissoc % key) %)))))))
+
+#?(:cljs
+   (defn- publish-replica! [kind scope {:keys [conn] :as handle} current?]
+     (binding [rtc/*execution-context* runtime]
+       (when (current?)
+         (let [overlay (replica-io/overlay! handle)
+               scope (str scope)
+               live? #(identical? conn (live-replica kind scope))]
+           (opt/listen! overlay ::replica-state
+                        (fn [{:keys [db-after revision base-max-tx]}]
+                          (binding [rtc/*execution-context* runtime]
+                            (when (live?)
+                              (case kind
+                                :system (update-signals! db-after live?)
+                                :room (swap! room-states update scope assoc :db db-after :rev revision)
+                                :kb (do (reset! (ensure-kb-db-signal! scope) db-after)
+                                        (when (live?) (swap! kb-heads assoc scope base-max-tx))))))))
+           (opt/listen-status! overlay ::replica-status
+                               (fn [{:keys [status error]}]
+                                 (when (live?)
+                                   (case status
+                                     :rejected (js/console.error "[replica] Optimistic write rejected:" error)
+                                     :reconciliation-stalled (js/console.warn "[replica] Committed write is waiting for sync")
+                                     nil))))
+           (case kind
+             :system (do (reset! local-conn conn)
+                         (when (current?) (reset! local-overlay overlay))
+                         (when (current?) (update-signals! (opt/db overlay) live?)))
+             :room (swap! room-states assoc scope {:conn conn :overlay overlay :db (opt/db overlay) :rev 0})
+             :kb (do
+                   (swap! kb-conns assoc scope conn)
+                   (when (current?) (swap! kb-overlays assoc scope overlay))
+                   (when (current?) (reset! (ensure-kb-db-signal! scope) (opt/db overlay)))
+                   (when (current?) (note-kb-head! scope @conn))
+                   (when (current?) (swap! kb-roster conj scope)))))))))
+
+#?(:cljs
+   (defn- open-replica! [kind scope kabel-peer connection generation valid?]
+     (binding [rtc/*execution-context* runtime]
+       (swap! replica-sync assoc (replica-key kind scope) {:connection connection :status :pending}))
+     (replica-io/open!
+      (replica-config kind scope kabel-peer)
+      {:generation generation :valid? valid?
+       :prepare! (when-not (= kind :system) #(prepare-store (str scope)))
+       :publish! #(publish-replica! kind scope %1 %2)
+       :unpublish! #(forget-replica! kind scope %)})))
 
 ;; ============================================================================
 ;; Convenience Accessors
@@ -95,11 +197,12 @@
 #?(:cljs
    (defn- update-signals!
      "Update both signals with a new database state."
-     [db]
+     [db current?]
      (binding [rtc/*execution-context* runtime]
-       (reset! local-db db)
-       (reset! local-db-signal {:max-tx (:max-tx db)
-                                :timestamp (js/Date.now)}))))
+       (when (current?) (reset! local-db db))
+       (when (current?)
+         (reset! local-db-signal {:max-tx (:max-tx db)
+                                 :timestamp (js/Date.now)})))))
 
 #?(:cljs
    (defn refresh-db!
@@ -107,161 +210,63 @@
       Call this after local transactions to ensure UI updates immediately."
      []
      (when-let [overlay @local-overlay]
-       (update-signals! (opt/db overlay)))))
+       (let [conn @local-conn]
+         (update-signals! (opt/db overlay) #(and conn (identical? conn @local-conn)))))))
 
 ;; ============================================================================
 ;; Connection Initialization
 ;; ============================================================================
 
-;; How long to keep waiting for a delete that has reported itself BLOCKED.
-;; This bounds a pathological wait, not a legitimate one — see wipe-idb!.
-#?(:cljs (def ^:private blocked-wipe-grace-ms 15000))
-
-#?(:cljs
-   (defn- wipe-idb!
-     "Delete a client IndexedDB database. Returns a channel yielding
-      :ok, :error or :blocked.
-
-      `deleteDatabase` has three callbacks but only two of them END the
-      request. `onsuccess` and `onerror` are terminal; `onblocked` means the
-      delete is PENDING because some other connection — another tab, or a
-      handle this page never closed — still holds the database open. The
-      request stays live and `onsuccess` follows once those connections close.
-
-      Reporting `blocked` as if it were an answer is what made the self-heal a
-      no-op: the caller carried on and reconnected to a database that had not
-      been deleted. So blocking is logged and then WAITED OUT, and only a
-      terminal event resolves the channel.
-
-      A delete that is merely slow is given all the time it needs. Only once
-      the request has declared itself blocked do we bound the wait, and then
-      only to turn a permanent block (a second tab nobody is going to close)
-      into a loud :blocked rather than a hang."
-     [db-name]
-     (let [ch         (promise-chan)
-           blocked-ch (promise-chan)
-           req        (.deleteDatabase js/indexedDB db-name)]
-       (set! (.-onsuccess req) (fn [_] (put! ch :ok)))
-       (set! (.-onerror req) (fn [_] (put! ch :error)))
-       (set! (.-onblocked req) (fn [_] (put! blocked-ch :blocked)))
-       (go
-         (let [[v port] (alts! [ch blocked-ch])]
-           (if (= port ch)
-             v
-             (do (js/console.warn "[DB-SIGNAL] IndexedDB delete of" db-name
-                                  "is blocked — another tab or an unclosed handle"
-                                  "still holds it. Waiting for it to be released.")
-                 (let [[v' _] (alts! [ch (timeout blocked-wipe-grace-ms)])]
-                   (or v' :blocked)))))))))
-
-#?(:cljs
-   (defn connect-with-recovery
-     "connect-kabel with a one-shot self-heal: when the connect fails —
-      typically a stale/incompatible local replica (the `-blob-exists?
-      requires async` class: a sync-mode read cold-misses the memory
-      frontend and falls through to async-only IndexedDB, or a store
-      layout that no longer matches the server) — wipe the store's
-      IndexedDB database and reconnect once for a fresh full sync.
-      Returns a channel yielding the conn or the final error.
-
-      The retry happens only if the wipe actually succeeded. Reconnecting to a
-      replica we failed to delete just reproduces the original failure, and
-      reporting the second error would name the wrong cause — so a failed wipe
-      surfaces the ORIGINAL connect error instead."
-     [config idb-name]
-     (go
-       (let [conn (<! (kc/connect-kabel config {:sync? false}))]
-         (if-not (instance? js/Error conn)
-           conn
-           (do (js/console.warn "[DB-SIGNAL] connect failed for" idb-name
-                                "— wiping local replica and resyncing:"
-                                (.-message conn))
-               (let [wiped (<! (wipe-idb! idb-name))]
-                 (if-not (= :ok wiped)
-                   (do (js/console.error
-                        "[DB-SIGNAL] self-heal ABORTED for" idb-name
-                        "— the local replica could not be deleted (" (name wiped) ")."
-                        (if (= :blocked wiped)
-                          "Close other tabs on this origin and reload."
-                          "The original connect error stands.")
-                        "Original error:" (.-message conn))
-                       conn)
-                   (let [conn2 (<! (kc/connect-kabel config {:sync? false}))]
-                     (when (instance? js/Error conn2)
-                       (js/console.error "[DB-SIGNAL] resync after wipe also failed for"
-                                         idb-name ":" (.-message conn2)))
-                     conn2)))))))))
-
 #?(:cljs
    (defn init-reactive-db!
-     "Initialize the reactive database system on the client.
-      Call this after connecting to server (kabel peer must be started).
-
-      kabel-peer: The kabel client peer atom (from is.simm.runtimes.web/client)
-      Returns a channel that yields :ready when complete."
+     "Bootstrap the shared replica through a physical store owner. If the SAME
+      peer authenticates a new epoch during initial sync, follow that desired
+      generation; never wipe IndexedDB or overlap the older constructor."
      [kabel-peer]
-     (js/console.log "[DB-SIGNAL] Starting init-reactive-db!...")
+     (let [initial (epoch/snapshot) session-id (:session-id initial)
+           changes (chan (sliding-buffer 1)) key (random-uuid)
+           request! (fn [connection]
+                      (open-replica! :system simmis-store-id kabel-peer connection (:epoch connection)
+                                     #(epoch/current? connection)))]
+       (binding [rtc/*execution-context* runtime]
+         (add-watch epoch/connection key
+                    (fn [_ _ _ connection]
+                      (when (canonical?) (put! changes {:connection connection})))))
+       (go
+         (try
+           (if-not (:epoch initial)
+             (ex-info "Shared replica bootstrap requires authentication" {})
+             (loop [connection initial result (request! initial)]
+               (let [[value port] (alts! [changes result] :priority true)
+                     next-connection (if (= port changes) (:connection value) (epoch/snapshot))]
+                 (cond
+                   (or (nil? next-connection) (not= session-id (:session-id next-connection)))
+                   (ex-info "Shared replica bootstrap belongs to a retired session" {})
 
-     (go
-       (let [;; Build config for connect-kabel
-             ;; Uses tiered store: memory frontend for fast reads, IndexedDB backend for persistence
-             ;; Note: Uses :frontend-config/:backend-config to avoid collision with :backend :tiered
-             ;; Store :id is used as the sync topic for konserve-sync
-             config {:store {:backend :tiered
-                             :frontend-config {:backend :memory :id simmis-store-id}
-                             :backend-config {:backend :indexeddb :name "simmis-client" :id simmis-store-id}
-                             :id simmis-store-id}
-                     :writer {:backend :kabel
-                              :peer-id server-peer-id
-                              :local-peer kabel-peer}
-                     :schema-flexibility :write
-                     :keep-history? true}
+                   (not= connection next-connection)
+                   (recur next-connection (request! next-connection))
 
-             _ (js/console.log "[DB-SIGNAL] Calling connect-kabel...")
-             conn (<! (connect-with-recovery config "simmis-client"))
-             _ (js/console.log "[DB-SIGNAL] connect-kabel returned:" (some? conn))]
+                   (= port changes)
+                   (recur connection result)
 
-         ;; Store the replica conn (reads and watches; never transacted on)
-         (reset! local-conn conn)
-         (js/console.log "[DB-SIGNAL] Replica connection stored")
+                   (and (= :ready (:status value)) (epoch/current? connection)
+                        (identical? (get-in value [:resource :conn]) @local-conn))
+                   (do
+                     (binding [rtc/*execution-context* runtime]
+                       (swap! replica-sync assoc [:system]
+                              {:connection connection :conn @local-conn :status :ready}))
+                     :ready)
 
-         ;; Wire the conn into datahike.optimistic. The listener fires on:
-         ;;   - overlay add (a prediction, `opt/predict!`)
-         ;;   - overlay drop (after dispatch resolves or rejects)
-         ;;   - @conn advance (the konserve-sync echo of a server write)
-         ;; Each fire delivers the *effective* db (overlay applied on top
-         ;; of @conn). Pushing that into local-db means UI spins see the
-         ;; optimistic state immediately and the durable state once the
-         ;; server confirms — same signal, no flicker.
-         (let [overlay (opt/open conn)]
-           (when-let [old-overlay @local-overlay]
-             (opt/close! old-overlay))
-           (reset! local-overlay overlay)
-           (opt/listen! overlay ::db-signal
-                        (fn [{:keys [db-after]}]
-                          (when-not (= (:max-tx db-after)
-                                       (:max-tx (binding [rtc/*execution-context* runtime]
-                                                  @local-db)))
-                            (js/console.log "[DB-SIGNAL] effective-db update, max-tx:"
-                                            (:max-tx db-after)))
-                          (update-signals! db-after)))
-           (opt/listen-status! overlay ::db-status
-                               (fn [{:keys [status error ov-id]}]
-                                 (case status
-                                   :rejected
-                                   (js/console.error "[DB-SIGNAL] optimistic write rejected:"
-                                                     (str ov-id) error)
-                                   :reconciliation-stalled
-                                   (js/console.warn "[DB-SIGNAL] optimistic write is committed but sync is stalled:"
-                                                    (str ov-id))
-                                   nil)))
-
-           ;; Initialize signals with current effective-db (= @conn at boot).
-           (update-signals! (opt/db overlay))
-           (js/console.log "[DB-SIGNAL] Initialized with max-tx:"
-                           (:max-tx (opt/db overlay))))
-
-         :ready))))
+                   :else
+                   (let [error (if (instance? js/Error value) value
+                                   (ex-info "Shared replica did not confirm readiness" {}))]
+                     (binding [rtc/*execution-context* runtime]
+                       (swap! replica-sync assoc [:system]
+                              {:connection connection :status :error :error (ex-message error)}))
+                     error)))))
+           (finally
+             (binding [rtc/*execution-context* runtime] (remove-watch epoch/connection key))
+             (close! changes)))))))
 
 ;; ============================================================================
 ;; Per-Room Database Connections
@@ -276,7 +281,7 @@
            (signal runtime {})))
 
 ;; Atom for idempotent connection tracking
-#?(:cljs (defonce room-connecting (atom #{})))
+#?(:cljs (defonce room-connecting (atom {})))
 
 #?(:cljs
    (defn- prepare-store
@@ -292,59 +297,37 @@
        ch)))
 
 #?(:cljs
+   (defn- connect-scope! [kind scope-uuid kabel-peer]
+     (let [scope (str scope-uuid) connection (epoch/snapshot)
+           attempts (case kind :room room-connecting :kb kb-connecting)
+           token (random-uuid)
+           current? #(and (epoch/current? connection) (= token (get-in @attempts [scope :token])))]
+       (when (and (canonical?) (:epoch connection)
+                  (= connection (:connection @authorized-roster))
+                  (contains? (get @authorized-roster (case kind :room :rooms :kb :kbs)) scope)
+                  (not (live-replica kind scope)) (not (contains? @attempts scope)))
+         (swap! attempts assoc scope {:token token :connection connection :phase :pending})
+         (let [result (open-replica! kind scope kabel-peer connection token current?)]
+           (go
+             (let [value (<! result)]
+               (binding [rtc/*execution-context* runtime]
+                 (when (= token (get-in @attempts [scope :token]))
+                   (let [conn (get-in value [:resource :conn]) ready? (and (current?) (= :ready (:status value))
+                                                                         (identical? conn (live-replica kind scope)))]
+                     (swap! attempts assoc-in [scope :phase] (if ready? :ready :error))
+                     (when (epoch/current? connection)
+                       (swap! replica-sync assoc (replica-key kind scope)
+                              (if ready?
+                                {:connection connection :conn conn :status :ready}
+                                {:connection connection :status :error
+                                 :error (or (ex-message value) "Replica open was superseded")})))))))))))))
+
+#?(:cljs
    (defn connect-room!
-     "Lazily connect to a room's Datahike database.
-      Idempotent — won't connect if already connected or in progress.
-      Connection result is stored in room-states signal."
+     "Lazy, idempotent open. Per-store ownership fences stale constructors and
+      serializes physical retirement before a replacement can open."
      [scope-uuid kabel-peer]
-     (let [scope-str (str scope-uuid)]
-       (when-not (or (get (binding [rtc/*execution-context* runtime] @room-states) scope-str)
-                     (contains? @room-connecting scope-str))
-         (swap! room-connecting conj scope-str)
-         (go
-           (try
-             (if-let [prepare-error (:error (<! (prepare-store scope-str)))]
-               (js/console.error "[ROOM-CONN] Server preparation failed for room:"
-                                 scope-str prepare-error)
-               (let [scope-id (if (uuid? scope-uuid) scope-uuid (uuid scope-str))
-                   config {:store {:backend :tiered
-                                   :frontend-config {:backend :memory :id scope-id}
-                                   :backend-config {:backend :indexeddb
-                                                    :name (str "simmis-room-" scope-str)
-                                                    :id scope-id}
-                                   :id scope-id}
-                           :writer {:backend :kabel
-                                    :peer-id server-peer-id
-                                    :local-peer kabel-peer}
-                           :schema-flexibility :write
-                           :keep-history? true}
-                   conn (<! (connect-with-recovery config (str "simmis-room-" scope-str)))]
-                 (if (instance? js/Error conn)
-                   (js/console.error "[ROOM-CONN] connect-kabel failed for room:" scope-str (.-message conn))
-                   (do
-                   (js/console.log "[ROOM-CONN] Connected to room:" scope-str "max-tx:" (:max-tx (d/db conn)))
-                   ;; Wire into datahike.optimistic. The listener fires on
-                   ;; overlay add (a prediction), overlay drop (server reply),
-                   ;; and @conn advance — pushing the effective-db into the
-                   ;; signal each time. Subsumes the prior conn-watch.
-                   ;;
-                   ;; Keep the overlay revision beside the snapshot so even an
-                   ;; effective no-op transition has explicit signal identity.
-                   (let [overlay (opt/open conn)]
-                   ;; Overlay listeners receive ordered snapshot transitions,
-                   ;; not Datahike TxReports. `:db-after` is authoritative.
-                     (opt/listen! overlay ::room-state
-                                  (fn [{:keys [db-after revision]}]
-                                    (binding [rtc/*execution-context* runtime]
-                                      (swap! room-states update scope-str
-                                             (fn [s] (assoc s :db db-after
-                                                            :rev revision))))))
-                     (binding [rtc/*execution-context* runtime]
-                       (swap! room-states assoc scope-str
-                              {:conn conn :overlay overlay :db (opt/db overlay) :rev 0})))))))
-             (catch :default e
-               (js/console.error "[ROOM-CONN] Error connecting to room:" scope-str e)))
-           (swap! room-connecting disj scope-str))))))
+     (connect-scope! :room scope-uuid kabel-peer)))
 
 #?(:cljs
    (defn get-room-db
@@ -356,16 +339,16 @@
 
 #?(:cljs
    (defn disconnect-room!
-     "Disconnect from a room's database. Cleans up overlay state."
+     "Withdraw this scope immediately; its slot retains native ownership until
+      drain completes. A queued replacement cannot overtake that retirement."
      [scope-uuid]
-     (let [scope-str (str scope-uuid)]
-       (when-let [{:keys [conn overlay]} (get (binding [rtc/*execution-context* runtime] @room-states)
-                                              scope-str)]
-         (js/console.log "[ROOM-CONN] Disconnecting room:" scope-str)
-         (opt/close! overlay)
-         (d/release conn)
-         (binding [rtc/*execution-context* runtime]
-           (swap! room-states dissoc scope-str))))))
+     (let [scope (str scope-uuid)
+           old (get (binding [rtc/*execution-context* runtime] @room-states) scope)]
+       (swap! room-connecting dissoc scope)
+       (let [drain (replica-io/retire! (replica-config :room scope nil))]
+         (when old (forget-replica! :room scope
+                                   {:conn (:conn old) :overlay (atom (:overlay old))}))
+         drain))))
 
 #?(:cljs
    (defn get-room-conn
@@ -480,124 +463,79 @@
            ;; non-Now ref (as-of / branch / proposal). The Now path never
            ;; touches this — see ensure-view-db-signal!.
            (atom {})))
-#?(:cljs (defonce ^:private view-db-done (atom #{})))  ; keys successfully projected
+#?(:cljs (defonce ^:private view-db-done (atom {}))) ; request ownership, including completed projections
+
+#?(:cljs (def replica-sync
+           "Transport authentication is not data readiness. Entries identify
+            the exact live conn and epoch whose fresh head has been confirmed."
+           (signal runtime {})))
+#?(:cljs (def ^:private authorized-roster (signal runtime nil)))
 
 #?(:cljs
    (defn evict-view-db-for-scope!
      "Drop all (scope, ref) view-db signals for `scope` (on tab close)."
      [scope]
      (let [sk (str scope)
-           stale (filterv (fn [[s _]] (= s sk)) (keys @view-db-signals))]
+           stale (into {} (filter (fn [[[s _] _]] (= s sk))) @view-db-signals)]
        (when (seq stale)
-         (swap! view-db-signals #(apply dissoc % stale))
-         (swap! view-db-done #(reduce disj % stale))))))
+         ;; Remove ownership BEFORE notifying consumers. A synchronous render
+         ;; may create a replacement, which this eviction must never clear.
+         (swap! view-db-signals #(apply dissoc % (keys stale)))
+         (swap! view-db-done #(apply dissoc % (keys stale)))
+         (doseq [[_ s] stale] (reset! s nil))))))
 
 #?(:cljs
    (defn ensure-view-db-signal!
-     "THE (scope, ref) → effective-db signal (doc §5). `ref` is
-      nil / :now → the untouched existing per-KB (or shared) signal, so the
-      hot path is unchanged and regression-free. A non-Now ref mints a
-      per-(scope,ref) signal filled by a projector:
-        {:as-of #inst}  → (d/as-of replica-db T), CLIENT-LOCAL, one-shot
-                          (a past cut is immutable).
-        {:forkset id
-         :branches {…}} → (d/branch-as-db conn branch), the workspace as it
-                          WOULD be if that ForkSet landed.
-      Both retry until the base conn is connected. Drive refs are still remote.
-
-      The forkset ref carries its own `{scope-str → branch-kw}` map, which looks
-      redundant — the ForkSet already knows its forks. It is not: `signals`
-      requires THIS namespace, so this namespace cannot read `sig/proposals-data`
-      where that mapping lives. Passing it in the ref keeps the dependency
-      pointing one way and keeps this function a pure projector rather than
-      something that reaches back into app state."
+     "One projection per (scope, ref). Epoch, connection, request and signal
+      identity fence asynchronous branch reads. Eviction or reconnect cannot
+      let an old result refill a replacement projection. Now reads stay local."
      [scope ref]
-     (cond
-       (or (nil? ref) (= ref :now))
-       (if scope (ensure-kb-db-signal! scope) local-db)
-
-       (:forkset ref)
-       (let [sk (str scope)
-             branch (get (:branches ref) sk)]
-         (if-not branch
-           ;; This ForkSet does not touch this scope, so the honest answer is
-           ;; the live one: entering a future that changes the Handbook must not
-           ;; blank every OTHER wiki in the sidebar.
-           (if scope (ensure-kb-db-signal! scope) local-db)
-           (let [k [sk ref]
-                 _ (let [stale (filterv (fn [[s r]] (and (= s sk) (not= r ref)))
-                                        (keys @view-db-signals))]
-                     (when (seq stale)
-                       (swap! view-db-signals #(apply dissoc % stale))
-                       (swap! view-db-done #(reduce disj % stale))))
-                 sig (or (get @view-db-signals k)
-                         (let [s (binding [rtc/*execution-context* runtime] (signal runtime nil))]
-                           (get (swap! view-db-signals
-                                       (fn [m] (if (contains? m k) m (assoc m k s)))) k)))]
-             (when-not (contains? @view-db-done k)
-               (swap! view-db-done conj k)
-               (go
-                 (if-let [conn (get @kb-conns sk)]
-                   (try
-                     ;; async on CLJS — `branch-as-db` returns a channel, and
-                     ;; the branch must be a KEYWORD. Verified against a branch
-                     ;; minted AFTER this client booted: it resolves from the
-                     ;; local replica with no reload and no RPC, because
-                     ;; konserve-sync registers KB stores with no branch
-                     ;; restriction and so ships every branch's head.
-                     (let [bv (<! (dv/branch-as-db conn (keyword branch) {:sync? false}))]
-                       (if bv
-                         (binding [rtc/*execution-context* runtime] (reset! sig bv))
-                         ;; nil = not replicated YET, which is not the same as
-                         ;; empty. Releasing the latch retries rather than
-                         ;; rendering the future as an empty wiki.
-                         (swap! view-db-done disj k)))
-                     (catch :default e
-                       (swap! view-db-done disj k)
-                       (js/console.warn "[view-db] branch-as-db failed" sk branch e)))
-                   (swap! view-db-done disj k))))
-             sig)))
-
-       (:as-of ref)
-       (let [sk (str scope)
-             k [sk ref]
-             ;; Evict any OTHER non-now entry for this scope: one as-of
-             ;; signal per scope at a time. A continuous scrub otherwise
-             ;; mints a signal + engine node + done-marker per tick and
-             ;; never releases them. The evicted signal loses its observer
-             ;; when the view re-tracks to the new ref → spindel GC-reaps
-             ;; its node at quiescence.
-             _ (let [stale (filterv (fn [[s r]] (and (= s sk) (not= r ref)))
-                                    (keys @view-db-signals))]
-                 (when (seq stale)
-                   (swap! view-db-signals #(apply dissoc % stale))
-                   (swap! view-db-done #(reduce disj % stale))))
-             sig (or (get @view-db-signals k)
-                     (let [s (binding [rtc/*execution-context* runtime] (signal runtime nil))]
+     (let [sk (str scope)
+           branch (get (:branches ref) sk)
+           live #(if scope (ensure-kb-db-signal! scope) local-db)]
+       (if (or (nil? ref) (= ref :now)
+               (and (not (:as-of ref)) (not (:forkset ref)))
+               (and (:forkset ref) (not branch)))
+         (live)
+         (let [k [sk ref]
+               stale (into {} (filter (fn [[[s r] _]] (and (= s sk) (not= r ref)))) @view-db-signals)
+               _ (when (seq stale)
+                   (swap! view-db-signals #(apply dissoc % (keys stale)))
+                   (swap! view-db-done #(apply dissoc % (keys stale)))
+                   (doseq [[_ s] stale] (reset! s nil)))
+               s (or (get @view-db-signals k)
+                     (let [new-signal (binding [rtc/*execution-context* runtime] (signal runtime nil))]
                        (get (swap! view-db-signals
-                                   (fn [m] (if (contains? m k) m (assoc m k s)))) k)))]
-         (when-not (contains? @view-db-done k)
-           (swap! view-db-done conj k)
-           ;; Fill ASYNCHRONOUSLY (go block), never synchronously inside the
-           ;; consuming render body: a sync reset! of a signal the body is
-           ;; about to track re-resumes that body immediately after it
-           ;; completes, and the first run's deltas are lost against the
-           ;; advanced dom caches (sharp-edge §1 — consume-once deltas).
-           ;; This mirrors the branch-projection go-block idiom exactly.
-           (go
-             (if-let [conn (get @kb-conns (str scope))]
-               (try
-                 (let [av (d/as-of @conn (:as-of ref))]
-                   (binding [rtc/*execution-context* runtime] (reset! sig av)))
-                 (catch :default e
-                   (swap! view-db-done disj k)
-                   (js/console.warn "[view-db] as-of failed" (str scope) (:as-of ref) e)))
-               (swap! view-db-done disj k))))  ; conn not ready — retry next call
-         sig)
-
-       :else
-       ;; unknown ref kind → fall back to the live signal (never break render)
-       (if scope (ensure-kb-db-signal! scope) local-db))))
+                                   #(if (contains? % k) % (assoc % k new-signal))) k)))
+               live-conn #(if scope (get @kb-conns sk) @local-conn)
+               conn (live-conn)
+               connection (epoch/snapshot)
+               prior (get @view-db-done k)]
+           (when (and conn connection
+                      (not (and (= connection (:connection prior)) (identical? conn (:conn prior)))))
+             (let [token (random-uuid)
+                   current? #(and (epoch/current? connection) (identical? conn (live-conn))
+                                  (identical? s (get @view-db-signals k))
+                                  (= token (:token (get @view-db-done k))))
+                   release! #(swap! view-db-done
+                                    (fn [m] (if (= token (:token (get m k))) (dissoc m k) m)))]
+               (swap! view-db-done assoc k {:token token :connection connection :conn conn})
+               ;; Never fill a tracked signal synchronously inside a render.
+               (go
+                 (try
+                   (let [value (if (:forkset ref)
+                                 (<! (dv/branch-as-db conn (keyword branch) {:sync? false}))
+                                 (d/as-of @conn (:as-of ref)))]
+                     (when (instance? js/Error value) (throw value))
+                     (binding [rtc/*execution-context* runtime]
+                       (when (current?)
+                         (if value (reset! s value) (release!)))))
+                   (catch :default error
+                     (binding [rtc/*execution-context* runtime]
+                       (when (current?)
+                         (release!)
+                         (js/console.warn "[view-db] projection failed:" sk ref error))))))))
+           s)))))
 
 #?(:cljs
    (defn kb-db-signal
@@ -608,80 +546,13 @@
      (get @kb-db-signals (str scope))))
 
 ;; Atom for idempotent connection tracking (prevents double-connect)
-#?(:cljs (defonce kb-connecting (atom #{})))
+#?(:cljs (defonce kb-connecting (atom {})))
 
 #?(:cljs
    (defn connect-kb!
-     "Lazily connect to a KB's Datahike database.
-      Idempotent — won't connect if already connected or in progress.
-      The conn is stored in `kb-conns` and the effective-db value flows
-      into the per-KB signal (`ensure-kb-db-signal!`), driving any spins
-      that track it."
+     "Lazily open a source-selected KB under its physical store owner."
      [scope-uuid kabel-peer]
-     (let [scope-str (str scope-uuid)]
-       (when-not (or (get @kb-conns scope-str)
-                     (contains? @kb-connecting scope-str))
-         (swap! kb-connecting conj scope-str)
-         (go
-           (try
-             (if-let [prepare-error (:error (<! (prepare-store scope-str)))]
-               (js/console.error "[KB-CONN] Server preparation failed for KB:"
-                                 scope-str prepare-error)
-               (let [scope-id (if (uuid? scope-uuid) scope-uuid (uuid scope-str))
-                 config {:store {:backend :tiered
-                                 :frontend-config {:backend :memory :id scope-id}
-                                 :backend-config {:backend :indexeddb
-                                                  :name (str "simmis-kb-" scope-str)
-                                                  :id scope-id}
-                                 :id scope-id}
-                         :writer {:backend :kabel
-                                  :peer-id server-peer-id
-                                  :local-peer kabel-peer}
-                         :schema-flexibility :write
-                         :keep-history? true}
-                 conn (<! (connect-with-recovery config (str "simmis-kb-" scope-str)))]
-                 (if (instance? js/Error conn)
-                   (js/console.error "[KB-CONN] connect-kabel failed for KB:" scope-str (.-message conn))
-                   (do
-             (js/console.log "[KB-CONN] Connected to KB:" scope-str "max-tx:" (:max-tx (d/db conn)))
-             ;; Wire into datahike.optimistic. Listener fires on overlay
-             ;; add/drop and @conn advance. We push the effective-db value
-             ;; directly into the per-KB signal: spindel's `not=` dedup
-             ;; correctly suppresses no-op fires (the db value compares
-             ;; equal when nothing changed), and propagates when the db
-             ;; genuinely differs. No `:rev` counter needed.
-                     (let [overlay (opt/open conn)
-                           db-sig (ensure-kb-db-signal! scope-str)]
-               ;; Overlay listeners receive ordered snapshot transitions.
-               ;; `:db-after` is the effective DB; `:base-max-tx` is the
-               ;; durable synchronization watermark.
-                       (opt/listen! overlay ::kb-state
-                                    (fn [{:keys [db-after base-max-tx]}]
-                                      (binding [rtc/*execution-context* runtime]
-                                        (reset! db-sig db-after)
-                                ;; Track the durable base head, not the
-                                ;; effective DB's synthetic overlay max-tx.
-                                        (swap! kb-heads assoc scope-str base-max-tx))))
-                       (opt/listen-status! overlay ::kb-status
-                                           (fn [{:keys [status error ov-id]}]
-                                             (case status
-                                               :rejected
-                                               (js/console.error "[KB] optimistic write rejected:"
-                                                                 (str ov-id) error)
-                                               :reconciliation-stalled
-                                               (js/console.warn "[KB] committed optimistic write is waiting for sync:"
-                                                                (str ov-id))
-                                               nil)))
-               ;; Seed the per-KB signal and register the conn.
-               (binding [rtc/*execution-context* runtime]
-                 (reset! db-sig (opt/db overlay))
-                 (swap! kb-conns assoc scope-str conn)
-                 (swap! kb-overlays assoc scope-str overlay)
-                 (swap! kb-roster conj scope-str)
-                 (note-kb-head! scope-str @conn)))))))
-             (catch :default e
-               (js/console.error "[KB-CONN] Error connecting to KB:" scope-str e)))
-           (swap! kb-connecting disj scope-str))))))
+     (connect-scope! :kb scope-uuid kabel-peer)))
 
 #?(:cljs
    (defn get-kb-db
@@ -693,28 +564,14 @@
 
 #?(:cljs
    (defn disconnect-kb!
-     "Disconnect from a KB's database. Cleans up overlay state and the
-     per-KB signal. Safe to call multiple times."
+     "Hide projections immediately while owned physical cleanup drains."
      [scope-uuid]
-     (let [scope-str (str scope-uuid)]
-       (when-let [conn (get @kb-conns scope-str)]
-         (js/console.log "[KB-CONN] Disconnecting KB:" scope-str)
-         (when-let [overlay (get @kb-overlays scope-str)]
-           (opt/close! overlay))
-         (d/release conn)
-         ;; Clear the per-KB signal value so any spin still tracking it
-         ;; sees `nil` and can render an unmounted/loading state.
-         (when-let [db-sig (kb-db-signal scope-str)]
-           (binding [rtc/*execution-context* runtime]
-             (reset! db-sig nil)))
-         (swap! kb-db-signals dissoc scope-str)
-         (swap! kb-conns dissoc scope-str)
-         (swap! kb-overlays dissoc scope-str)
-         (binding [rtc/*execution-context* runtime]
-           (swap! kb-roster disj scope-str)
-           ;; Drop the head too, or the rail keeps a disconnected KB's
-           ;; commits on screen with no db behind them to re-read.
-           (swap! kb-heads dissoc scope-str))))))
+     (let [scope (str scope-uuid) conn (get @kb-conns scope)
+           overlay (get @kb-overlays scope)]
+       (swap! kb-connecting dissoc scope)
+       (let [drain (replica-io/retire! (replica-config :kb scope nil))]
+         (when conn (forget-replica! :kb scope {:conn conn :overlay (atom overlay)}))
+         drain))))
 
 #?(:cljs
    (defn get-kb-conn
@@ -727,4 +584,102 @@
      "Get the optimistic overlay for a KB scope."
      [scope-uuid]
      (get @kb-overlays (str scope-uuid))))
+
+#?(:cljs
+   (defn clear-session!
+     "New peer/session retirement, not SAME-peer reconnect. Hide all old account
+      projections; native slots retain exact resources until disposal is joined."
+     []
+     (let [drains (replica-io/retire-all!)]
+       (reset! room-connecting {})
+       (reset! kb-connecting {})
+       (binding [rtc/*execution-context* runtime]
+         (doseq [[scope value] @room-states]
+           (forget-replica! :room scope {:conn (:conn value) :overlay (atom (:overlay value))}))
+         (doseq [[scope conn] @kb-conns]
+           (forget-replica! :kb scope {:conn conn :overlay (atom (get @kb-overlays scope))}))
+         (when-let [conn @local-conn]
+           (forget-replica! :system simmis-store-id {:conn conn :overlay (atom @local-overlay)}))
+         (doseq [[_ s] @view-db-signals] (reset! s nil))
+         (reset! authorized-roster nil)
+         (reset! replica-sync {}))
+       (reset! view-db-signals {})
+       (reset! view-db-done {})
+       drains)))
+
+#?(:cljs
+   (defn resync-open!
+     "After an authoritative roster read, reauthorize only already-open replicas.
+      Preserve exact connections/overlays on SAME-peer reconnect; a new peer must
+      first clear-session!. No cache wipe, write retry, or eager wiki connection."
+     [connection roster kabel-peer]
+     (when (epoch/current? connection)
+       (binding [rtc/*execution-context* runtime]
+         (let [rooms (into #{} (keep #(some-> (:room/content-db-scope %) str)) (:rooms roster))
+               kbs (into #{} (keep #(some-> (:kb/db-scope %) str)) (:knowledge-bases roster))
+               pending-rooms (keep (fn [[scope attempt]] (when (not= connection (:connection attempt)) scope)) @room-connecting)
+               pending-kbs (keep (fn [[scope attempt]] (when (not= connection (:connection attempt)) scope)) @kb-connecting)]
+           (reset! authorized-roster {:connection connection :rooms rooms :kbs kbs})
+           (doseq [scope (keys @room-connecting) :when (and (epoch/current? connection) (not (contains? rooms scope)))]
+             (disconnect-room! scope))
+           (doseq [scope (keys @kb-connecting) :when (and (epoch/current? connection) (not (contains? kbs scope)))]
+             (disconnect-kb! scope))
+           (doseq [scope (keys @room-states) :when (and (epoch/current? connection) (not (contains? rooms scope)))]
+             (disconnect-room! scope))
+           (doseq [scope (keys @kb-conns) :when (and (epoch/current? connection) (not (contains? kbs scope)))]
+             (disconnect-kb! scope))
+           ;; An open begun on a lost epoch must not hold its latch forever.
+           ;; Restart only already-requested scopes authorized by THIS roster.
+           (doseq [scope pending-rooms :when (and (epoch/current? connection) (contains? rooms scope))]
+             (swap! room-connecting dissoc scope)
+             (connect-room! scope kabel-peer))
+           (doseq [scope pending-kbs :when (and (epoch/current? connection) (contains? kbs scope))]
+             (swap! kb-connecting dissoc scope)
+             (connect-kb! scope kabel-peer))
+           (let [entries (concat (when-let [conn @local-conn] [[[:system] conn]])
+                                 (map (fn [[scope s]] [[:room scope] (:conn s)]) @room-states)
+                                 (map (fn [[scope conn]] [[:kb scope] conn]) @kb-conns))]
+             (doseq [[key conn] entries]
+               (let [[kind scope] key
+                     live-conn #(case kind :system @local-conn
+                                             :room (get-in @room-states [scope :conn])
+                                             :kb (get @kb-conns scope))
+                     current? #(and (epoch/current? connection) (identical? conn (live-conn))
+                                    (= connection (:connection @authorized-roster))
+                                    (case kind :system true
+                                               :room (contains? (:rooms @authorized-roster) scope)
+                                               :kb (contains? (:kbs @authorized-roster) scope)))
+                     prior (get @replica-sync key)]
+                 (when (and (current?)
+                            (not (and (= connection (:connection prior)) (identical? conn (:conn prior)))))
+                   (swap! replica-sync assoc key {:connection connection :conn conn :status :pending})
+                   (go
+                     (try
+                       (let [prepared (if (= kind :system) {:ready? true} (<! (prepare-store scope)))]
+                         (when-let [error (:error prepared)] (throw error))
+                         (when-not (identical? kabel-peer (:local-peer (:writer @conn)))
+                           (throw (ex-info "Replica belongs to a different peer; retire it before session replacement" {:scope scope})))
+                         (when (binding [rtc/*execution-context* runtime] (current?))
+                           (let [result (<! (kc/resubscribe! conn {:epoch (:epoch connection)}))]
+                             (binding [rtc/*execution-context* runtime]
+                               (when (current?)
+                                 (if (= :ready (:status result))
+                                   (do
+                                     (swap! replica-sync assoc key {:connection connection :conn conn :status :ready})
+                                     (when (and (current?) (= kind :kb))
+                                       ;; Mutable future projections must read the
+                                       ;; now-confirmed branch heads again.
+                                       (doseq [[[sk ref :as k] s] @view-db-signals
+                                               :when (and (= sk scope) (:forkset ref))]
+                                         (when (and (current?) (identical? s (get @view-db-signals k)))
+                                           (swap! view-db-done dissoc k)
+                                           (when (and (current?) (identical? s (get @view-db-signals k)))
+                                             (reset! s nil))))))
+                                   (throw (if (instance? js/Error result) result
+                                              (ex-info "Replica catch-up did not confirm readiness" {:result result})))))))))
+                       (catch :default error
+                         (binding [rtc/*execution-context* runtime]
+                           (when (current?)
+                             (swap! replica-sync assoc key {:connection connection :conn conn :status :error :error error})
+                             (js/console.error "[DB-SIGNAL] Replica catch-up failed:" key error)))))))))))))))
 

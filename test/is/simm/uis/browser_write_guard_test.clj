@@ -3,12 +3,11 @@
 
    A write the browser makes ITSELF — a `d/transact!` on a replica conn, a
    writer-backed `opt/transact!`, a konserve write into a synced store — has no
-   server half here. The replica's writer is datahike's KabelWriter, which sends
-   through `kabel.remote/invoke`; simmis serves distributed-scope's middleware,
-   not kabel.remote's, so the call waits for a route that never appears: no
-   frame, no error, no timeout. Wiki edits were lost that way from 2026-09-25
+   authorized application half here. The replica's writer is datahike's
+   KabelWriter. Before the shared RPC runtime, those calls waited for a route
+   that never appeared. Wiki edits were lost that way from 2026-09-25
    (#49), and so were widget writes until they became RPCs. Nor should the
-   server ever serve that path: a raw transaction skips `can?`
+   server ever authorize that raw path: a raw transaction skips operation-level `can?`
    (`doc/authority.md`).
 
    So every browser write is an RPC — `block-remote` or a `defn-spin-remote` —
@@ -32,11 +31,11 @@
    (zipmap '[datahike.api/transact datahike.api/transact! datahike.api/load-entities
              datahike.api/create-database datahike.api/delete-database
              datahike.api/gc-storage]
-           (repeat "a raw datahike write on a client replica (KabelWriter, never sent)"))
+           (repeat "an unauthorized raw datahike write on a client replica"))
    ;; a writer-backed overlay entry: the same writer as its durable half
-   {'datahike.optimistic/transact! "a writer-backed overlay write (KabelWriter, never sent)"}
+   {'datahike.optimistic/transact! "an unauthorized writer-backed overlay write"}
    ;; the writer and its transport, called directly
-   {'kabel.remote/invoke "kabel.remote is not served here: the call never leaves"
+   {'kabel.remote/invoke "use the authorized application RPC wrapper, not raw transport calls"
     'datahike.writer/create-writer "a client-side writer"
     'datahike.writer/transact! "a client-side writer"}
    ;; konserve writes into a store the server syncs to us

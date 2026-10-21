@@ -31,6 +31,7 @@ a curated vocabulary, injected as namespaces:
 | Namespace | For |
 |---|---|
 | `wiki` / `kb` | pages, blocks, attributes, typed properties |
+| `memory` | bounded source-selected Markdown descriptors, reads and literal search in the current file world |
 | `kontor` | the room's double-entry book — `entry!`, `balances`, `accounts` |
 | `proposal` | opening, filing and releasing proposals |
 | `sheet` / `office` | spreadsheet and document intake |
@@ -40,6 +41,15 @@ a curated vocabulary, injected as namespaces:
 
 Plus ordinary `datahike.api`, so an agent can query rather than being restricted
 to a hand-built accessor for every question.
+
+`memory/documents`, `memory/read` and `memory/search` address Markdown in the
+room file tree, not legacy KB pages. They return explicit ready/invalid/pending
+status and selection receipts; a source hash is not a promise of archival
+retention. A saved function follows a descendant world's repository or the
+ordinary participant's existing proposal file workspace, never opening a fork
+just to read. Membership, exact repository attachment and the world's read
+effect policy are rechecked on use. The isolated workflow worker does not gain
+live room access through this namespace.
 
 `wiki` and `kb` reach the KBs attached to the agent's room, and only those the
 agent itself may reach through the room's grants (`access/sandbox-kb-allows?`,
@@ -157,6 +167,17 @@ own-worker listing, explicit admission allowance, selected-file task submission,
 pinned saved workflow submission and bounded benchmark submission. Workflow
 submission shares native workflow source/parameter/input
 preparation but uses the enrolled local model, not a server provider credential.
+An optional versioned `input-selection.edn` bundle file declares incoming
+evidence and supporting knowledge folders. Ordinary manual server/local-worker
+admission captures these as normal frozen files under `/in/knowledge/`; no live
+room knowledge capability is injected into the isolated worker. Run provenance
+records trigger, execution and manifest identities. Benchmarks must supply
+retained evidence in their case fixtures and never collect from the live room.
+Scheduled server workflows use the same collector with a durable per-occurrence
+snapshot. Empty initial inputs and unchanged evidence skip without inference;
+supporting wiki edits alone do not trigger a maintenance loop. Failed or
+uncertified attempts pause rather than consume the processed-input cursor.
+Successful processing does not automatically adopt generated files or knowledge.
 Over MCP, human controls
 require a separately requested `worker-control` token. Neither an existing
 read token nor a work token gains them; this operator-helper session should not

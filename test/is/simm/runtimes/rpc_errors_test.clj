@@ -10,6 +10,7 @@
             [clojure.edn :as edn]
             [clojure.test :refer [deftest is testing]]
             [is.simm.authority.world :as world]
+            [is.simm.authority.rpc-wire :as rpc-wire]
             [is.simm.distributed-scope :as ds]
             [is.simm.runtimes.rpc-errors :as rpc-errors]
             [is.simm.uis.web.desktop.remote :as remote]
@@ -68,25 +69,46 @@
    server's gate around `allow?`, and return the reply."
   [fn-name arg-map allow?]
   (rpc-errors/install!)
-  (let [peer-id (random-uuid)
-        router-id (random-uuid)
-        out (a/chan 1)
-        owners @#'ds/invocation-owners]
-    (swap! owners assoc peer-id {:supervisor sv/S
-                                 :authorize-fn (rpc-errors/gate (fn [& _] allow?))
-                                 :router-id router-id})
-    (try
-      (@#'ds/dispatch-invocation! peer-id router-id
-                                  {:fn-name fn-name :arg-map arg-map :scope peer-id
-                                   :request-id (random-uuid) :request-scope peer-id
-                                   :kabel/principal {:sub (str (random-uuid))}
-                                   ::ds/reply-out out})
-      (let [[resp port] (a/alts!! [out (a/timeout 30000)])]
-        (is (= port out) "a reply")
-        resp)
-      (finally (swap! owners dissoc peer-id)))))
+  (rpc-wire/invoke! {:sub (str (random-uuid))} fn-name arg-map
+                    (rpc-errors/gate (fn [& _] allow?))))
 
 (defn- register! [fn-name f] (ds/register-remote-fn! fn-name f))
+
+(deftest shared-registry-supports-values-and-sanitizes-gate-errors
+  (testing "ordinary values and nil are not mistaken for channels"
+    (is (= 42 (a/<!! ((rpc-errors/wrap-handler 'test/value (constantly 42)) {}))))
+    (is (nil? (a/<!! ((rpc-errors/wrap-handler 'test/nil (constantly nil)) {})))))
+  (testing "unexpected policy failures carry no private data to the client"
+    (let [gate (rpc-errors/gate (fn [& _]
+                                  (throw (ex-info "Policy unavailable" {:secret "private-token"}))))
+          error (try (gate {:sub "alice"} 'test/value {}) nil (catch Throwable e e))
+          wire (pr-str error)]
+      (is (rpc-errors/client-error? error))
+      (is (not (re-find #"private-token|:secret|:trace" wire)))
+      (is (parse-uuid (:correlation-id (ex-data error)))))))
+
+(deftest client-normalizes-both-wire-error-formats
+  (let [safe {:error "not authorized" :type :not-authorized
+              :correlation-id (str (random-uuid))}]
+    (is (= safe (remote/error-info (ex-info "legacy" {:error (pr-str safe)}))))
+    (is (= safe (remote/error-info (ex-info "modern" {:type (:type safe)
+                                                      :data (pr-str (dissoc safe :type))}))))
+    (is (= {:error "bad request"}
+           (remote/error-info (ex-info "bounded" {:error {:error "bad request" :secret "x"
+                                                          :type :unreviewed :correlation-id 5}}))))
+    (is (nil? (remote/error-info (ex-info "oversize" {:data (str "{" (apply str (repeat 5000 "x")))}))))))
+
+(deftest memory-target-change-has-one-bounded-public-classification
+  (let [id (random-uuid)
+        error (ex-info "The Memory repository changed; refresh before editing."
+                       {:type :memory/target-changed :reason :target-changed
+                        :target {:store "private-store"} :connection "private-handle"})
+        safe (rpc-errors/client-info error id)]
+    (is (= {:error (ex-message error) :type :memory/target-changed :correlation-id (str id)} safe))
+    (is (= safe (remote/error-info (ex-info "legacy" {:error (pr-str safe)}))))
+    (is (= safe (remote/error-info (ex-info "modern" {:type (:type safe)
+                                                      :data (pr-str (dissoc safe :type))}))))
+    (is (not (re-find #"private-store|private-handle|:reason|:target " (pr-str safe))))))
 
 (deftest a-handler-error-gets-only-its-message
   (let [secret-ex (ex-info "Room not found\nwhile resolving /home/x/.dvergr/systems"
@@ -180,7 +202,7 @@
         (is (= :fine (call 'rpc-errors-test/wire-ok {}))))
       (testing "a handler error: the client's error path, with the message"
         (let [err (call 'rpc-errors-test/wire-throws {})
-              e (:error (ex-data err))]
+              e (pr-str (ex-data err))]
           (is (instance? Throwable err))
           (is (frame-free? e) e)
           (is (not (re-find #"s3cr3t" e)))
@@ -189,7 +211,7 @@
       (testing "a refusal (no principal on this connection: authenticate)"
         (let [err (call 'rpc-errors-test/wire-refused {})]
           (is (instance? Throwable err))
-          (is (frame-free? (:error (ex-data err))))
+          (is (frame-free? (pr-str (ex-data err))))
           (is (= :authentication-required (:type (remote/error-info err))))
           (is (re-matches #"authentication required \(ref [0-9a-f]{8}\)" (remote/error-text err)))))
       (finally

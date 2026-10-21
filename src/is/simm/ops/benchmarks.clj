@@ -17,6 +17,7 @@
             [is.simm.ops.checkers :as checkers]
             [is.simm.ops.cli-owner :as cli-owner]
             [is.simm.ops.benchmark-dataset :as dataset]
+            [is.simm.ops.knowledge-inputs :as knowledge-inputs]
             [is.simm.ops.work :as work]
             [is.simm.ops.work-sandbox :as work-sandbox]
             [is.simm.ops.workflows :as workflows]
@@ -96,6 +97,7 @@
                       {:type ::conflict}))))
   (let [bundle (catalog/bundle name (:files snapshot))
         definition (:definition bundle)
+        selection-policy (knowledge-inputs/declaration (:files snapshot))
         all-cases (set (keys (:cases bundle)))
         selection (dataset/select-cases (:files snapshot) all-cases input)
         selected (:cases selection)
@@ -103,6 +105,12 @@
         cli? (= execution :cli-text)
         dollars (if cli? 1000000 (quot (:budget-microdollars limits) cell-count))
         dispatches (if cli? 1 (quot (:max-dispatches limits) cell-count))]
+    ;; A benchmark never resolves live room knowledge. Every selected case
+    ;; supplies the same retained input contract as ordinary execution.
+    (when selection-policy
+      (doseq [case (if (seq selected) selected [nil])]
+        (knowledge-inputs/from-inputs selection-policy
+                                     (merge (:fixtures bundle) (get-in bundle [:cases case :fixtures])))))
     (when-not (= (count models) (count (set models))) (invalid! "Duplicate models"))
     (when-not (and (= (count selected) (count (set selected)))
                    (every? all-cases selected)
@@ -119,7 +127,7 @@
                    (not-any? #(contains? definition %)
                              [:judge :web :fetched :allowed-sources :blocked-sources]))
       (invalid! "Initial benchmarks require offline developer workflows, /out capture and discard settlement; no judge or web effects"))
-    (let [setup (checkers/world-setup bundle)
+    (let [setup (checkers/world-setup bundle selection-policy)
           evaluator (checkers/evaluator bundle)
           verifier (evaluation/evaluator-ref evaluator)
           cell-limits (assoc limits :budget-microdollars dollars :max-dispatches dispatches)

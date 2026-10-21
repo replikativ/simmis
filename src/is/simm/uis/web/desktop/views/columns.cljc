@@ -28,6 +28,7 @@
             [is.simm.uis.web.desktop.views.new-contact :as new-contact-view]
             [is.simm.uis.web.desktop.views.room-settings :as room-settings-view]
             [is.simm.uis.web.desktop.views.files :as files-view]
+            #?(:cljs [is.simm.uis.web.desktop.views.memory :as memory-view])
             [is.simm.uis.web.desktop.views.mail :as mail-view]
             [is.simm.uis.web.desktop.views.kb-settings :as kb-settings-view]
             [is.simm.uis.web.desktop.views.sandbox-panel :as sandbox-panel]
@@ -634,6 +635,7 @@
     :screens "images"
     :feed "activity"
     :files "folder"
+    :memory "folder"
     :mail "mail"
     :schedules "calendar"
     :proposals "git-pull-request"
@@ -804,7 +806,7 @@
    - :chat -> Members, Pinned
    - :video -> Participants, Recordings
    - :feed -> Filters"
-  [col-id active-tab collapsed? height local-db room-states]
+  [col-id active-tab collapsed? height local-db room-states memory-context]
   (when active-tab
     (let [tab-type (:type active-tab)
           tab-id (:id active-tab)
@@ -853,7 +855,8 @@
         ;; Content
         (el/div {:key (str key-prefix "-content")
                  :class "context-footer-content"}
-          (render-context-content key-prefix tab-type (:data active-tab) local-db room-states))))))
+          (if (= :memory tab-type) memory-context
+              (render-context-content key-prefix tab-type (:data active-tab) local-db room-states)))))))
 
 ;; =============================================================================
 ;; Column
@@ -1017,7 +1020,10 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
+                           (render-tab-content (:type active-tab-data)
+                                               (cond-> (:data active-tab-data)
+                                                 (= :memory (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
+                                               local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1026,7 +1032,10 @@
              ;; Await spins, pass through plain vnodes
              tab-content (if (instance? org.replikativ.spindel.spin.core/Spin tab-result)
                            (await tab-result)
-                           tab-result)]
+                           tab-result)
+             memory-context (when (= :memory (:type active-tab-data))
+                              (await (memory-view/render-context (assoc (:data active-tab-data)
+                                                                       :col-id id :tab-id (:id active-tab-data)))))]
          (el/div {:key id
                   :class (vc/class-names "column" (when is-active? "active"))
                   :data-col-id id
@@ -1048,7 +1057,7 @@
            ;; (per-KB signal for wiki tabs, shared local-db for non-KB).
            (render-context-footer id active-tab-data
                                   footer-collapsed? footer-height
-                                  tab-db room-states)
+                                  tab-db room-states memory-context)
 
            ;; Resize handle (not on last column)
            (when (< index (dec total-columns))
@@ -1108,7 +1117,7 @@
                (vc/icon "layout-grid")
                (el/h3 {} "No content")
                (el/p {} "Open a page from the sidebar."))))
-         (render-context-footer id active-tab-data true nil local-db nil)
+         (render-context-footer id active-tab-data true nil local-db nil nil)
          (when (< index (dec total-columns))
            (el/div {:class "column-resize-handle"
                     :on-mousedown (fn [_] nil)}))))))
@@ -1910,7 +1919,7 @@
                                         :clj nil))}
                (vc/icon "app-window" {:class "chat-settings-icon"}))
              (el/button {:class "chat-settings-btn"
-                         :title "Files"
+                         :title "Memory"
                          :on-click (fn [_]
                                      #?(:cljs
                                         (let [[tab-type tab-data opts]
@@ -2445,6 +2454,10 @@
 
     :files
     (files-view/files-view data)
+
+    :memory
+    #?(:cljs (memory-view/render (assoc data :col-id col-id))
+       :clj (el/p {} "Memory"))
 
     :room-settings
     #?(:cljs

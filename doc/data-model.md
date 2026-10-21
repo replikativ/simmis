@@ -1,5 +1,25 @@
 # The data model
 
+## File-backed room Memory
+
+Room Memory is the room's existing Geschichte repository, not another drive
+or a writable browser store. Folder listings carry worktree path/content/size/
+mode metadata; file contents are fetched by the captured content identity.
+Markdown is recognized by extension at any path. `wiki/` is an organizational
+convention, not a separate database boundary. Room-local source and workflows
+use these same files; the loaded SCI interpreter state is not a file entity.
+
+The Markdown codec retains exact source and derives source-positioned syntax
+nodes separately from semantic Simmis blocks. Explicit paired block markers
+carry stable block identities and child grouping; ordinary unmarked Markdown
+has provisional blocks. A list inside a block does not implicitly become its
+Simmis children. File YAML properties, typed property projections, and the
+source-selected disposable query view do not install untrusted schema or
+execute imported code/widgets. Existing legacy KB entities are retained; this
+surface is not a completed migration of their identity or widget semantics.
+
+## Existing KB vocabulary
+
 Everything stored in a KB or a room store is described by one small vocabulary.
 You cannot read the wiki, type or property code without it.
 

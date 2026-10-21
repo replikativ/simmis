@@ -46,7 +46,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg python3
 
       - name: Run backend tests
-        run: clojure -X:test
+        run: |
+          clojure -X:deps prep
+          clojure -X:test
 
   helper-tests:
     runs-on: ubuntu-latest
@@ -68,6 +70,8 @@ jobs:
       - uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           cli: latest
+      - name: Prepare Git dependency Java interfaces
+        run: clojure -J-Xmx1g -X:deps prep
       - name: Build dedicated local SCI runtime
         run: clojure -J-Xmx1g -T:build worker
       - name: Select the configured JDK for the fixed local bootstrap
@@ -114,7 +118,9 @@ jobs:
         run: npm ci
 
       - name: Build production frontend
-        run: npm run release
+        run: |
+          clojure -X:deps prep
+          npm run release
 
       - name: Execute client lifecycle tests in Chrome
         run: npm run test:browser

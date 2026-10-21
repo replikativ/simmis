@@ -7,6 +7,7 @@
             [dvergr.resource :as resource]
             [dvergr.room.registry :as registry]
             [dvergr.room.store.memory :as memory]
+            [dvergr.rooms.forks :as forks]
             [hasch.core :as hasch]
             [is.simm.authority.world :as world]
             [is.simm.model.work-requests :as requests]
@@ -33,7 +34,8 @@
                                                  :limits (assoc (:limits input) :settlement :discard :max-worker-admissions 2)}))
         job (:run/id (run/start! room (keyword "party" (str (:owner w))) (random-uuid) nil {:kind :experiment}))
         clean (discourse/make-room {:id (benchmarks/fixture-room-id id) :store (memory/make)
-                                    :ctx (:child-ctx (ygg/fork! {:systems :none :purpose :room}))})]
+                                    :ctx (:child-ctx (ygg/fork! {:systems :none :purpose :room}))})
+        opened-worlds (atom [])]
     (try
       (requests/record-job! conn id (:work.request/claim request) job)
       (binding [ec/*execution-context* host-ctx] (registry/register! clean))
@@ -48,6 +50,7 @@
                     (let [child (random-uuid)
                           world (binding [ec/*execution-context* (:ctx clean)]
                                   (run-world/open! clean child :deferred room))
+                          _ (swap! opened-worlds conj world)
                           assignment {:id child :worker (:worker enrolled) :generation 1 :room (:room w)
                                       :request id :job job :cell cell :input frozen}]
                       (run/start! room :local-worker (random-uuid) nil
@@ -66,7 +69,20 @@
           (doseq [entry (run/runs room {:root-run-id job :limit 10})
                   :when (= :running (:run/status entry))]
             (run/finish! (:run/id entry) :failed {})))
-        (binding [ec/*execution-context* (:ctx clean)] (registry/unregister! (:id clean)))
+        ;; A pending recovery deliberately retains its exact worlds and wallets.
+        ;; AFTER those assertions, the test owner really discards its own worlds
+        ;; before closing their fixture/root. No fake lease ACK or wallet refund.
+        (binding [ec/*execution-context* (:ctx clean)]
+          (doseq [world @opened-worlds
+                  :let [work (:work world) current (registry/lookup (:id work))]
+                  :when current]
+            (when-not (identical? work current)
+              (throw (ex-info "Fixture no longer owns its exact Run world" {:world (:id work)})))
+            (let [result (forks/discard-deferred! work :test-fixture-cleanup)]
+              (when-not (true? (:ok? result))
+                (throw (ex-info "Fixture Run world did not physically discard"
+                                {:world (:id work) :result result})))))
+          (registry/unregister! (:id clean)))
         (binding [ec/*execution-context* host-ctx] (registry/unregister! (:id clean)))
         (discourse/close-room! clean)))))
 
@@ -79,18 +95,30 @@
           (finish!)
           (let [retired (atom 0)
                 lookup registry/lookup
+                discard forks/discard-deferred!
+                in-discard? (volatile! false)
+                direct-lookups (atom {})
                 worlds (set (map (fn [child] (:run/world (run/run room (:id child)))) children))]
-            ;; Make registry-context divergence observable even though this
-            ;; fixture shares the real daemon root. Every lookup of a work
-            ;; world must use its fixture's context, including revalidation.
+            ;; The two RECOVERY resolution calls must use the fixture context.
+            ;; The real discard may also validate its own registered incarnation
+            ;; from the child's ctx (retained interpreter cleanup). That nested
+            ;; substrate validation must not be turned into a fake missing Room.
             (with-redefs [benchmarks/retire-fixture! (fn [& _] (swap! retired inc))
+                          forks/discard-deferred!
+                          (fn [& args]
+                            (vreset! in-discard? true)
+                            (try (apply discard args)
+                                 (finally (vreset! in-discard? false))))
                           registry/lookup (fn [id]
-                                            (when (worlds id)
+                                            (when (and (worlds id) (not @in-discard?))
+                                              (swap! direct-lookups update id (fnil inc 0))
                                               (is (identical? (:ctx clean) ec/*execution-context*)))
-                                            (if (and (worlds id) (not (identical? (:ctx clean) ec/*execution-context*)))
+                                            (if (and (worlds id) (not @in-discard?)
+                                                     (not (identical? (:ctx clean) ec/*execution-context*)))
                                               nil (lookup id)))]
               (is (= {:state :returned} (recover!)))
-              (is (= 1 @retired))))
+              (is (= 1 @retired))
+              (is (= (zipmap worlds (repeat 2)) @direct-lookups))))
           (doseq [{:keys [id]} children]
             (is (= :withdrawn (:simmis.worker.assignment/state (workers/assignment conn id))))
             (is (:simmis.worker.assignment/stop-ack-at (workers/assignment conn id))))

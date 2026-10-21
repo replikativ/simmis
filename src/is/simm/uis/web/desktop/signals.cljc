@@ -23,6 +23,7 @@
             [is.simm.uis.web.desktop.room-actions :as room-actions]
             [is.simm.uis.web.desktop.tab-heal :as tab-heal]
             #?(:cljs [is.simm.uis.web.desktop.datahike-query :as dq])
+            #?(:cljs [is.simm.uis.web.desktop.connection-epoch :as connection-epoch])
             #?(:cljs [org.replikativ.spindel.signal :refer [->SignalRef]])
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]]))
@@ -59,9 +60,9 @@
            (signal runtime nil)))
 
 #?(:cljs (def syntax-pref
-           "Signal for preferred code block syntax view: :clojure or :superficie.
+           "Signal for preferred code syntax view: :clojure or :superficie.
             Initialised from :ui-prefs in settings-data after login.
-            Kept separate so toggling it only re-renders the wiki editor, not the whole app."
+            Kept separate for code-file, wiki and chat projections."
            (signal runtime :clojure)))
 
 #?(:cljs (def commit-graph-data
@@ -328,6 +329,20 @@
 #?(:cljs (def workflow-editor-state
            "Session/room keyed source drafts, request fences and immutable admissions."
            (signal runtime {})))
+
+#?(:cljs (def memory-editor-state
+           "Session/room/view keyed file drafts, folders and request fences."
+           (signal runtime {})))
+
+#?(:cljs (def memory-connection
+           "Authenticated socket epoch; alias shared with low-level replicas."
+           connection-epoch/connection))
+
+#?(:cljs (def memory-navigation-state
+           "Room-owned folder expansion, metadata snapshots, focus and search."
+           (signal runtime {})))
+
+#?(:cljs (def sidebar-width (signal runtime 260)))
 
 #?(:cljs
    (defn clear-captured-results!
@@ -1294,3 +1309,28 @@
      (binding [rtc/*execution-context* runtime]
        (reset! drag-state nil))
      :clj nil))
+
+#?(:cljs
+   (defn clear-account-state!
+     "Retire projections and drafts at account/peer replacement, NOT ordinary
+      same-peer socket reconnect. Call after invalidating the old epoch."
+     []
+     (clear-captured-results!)
+     (doseq [s [current-user settings-data admin-data mail-data
+                schedules-data proposals-data feed-data accounting-data tasks-data
+                user-rooms commit-graph-data]]
+       (reset! s nil))
+     (doseq [s [room-details screens-results recordings-results web-captures-results video-call-info
+                drive-data files-upload-status unread-counts notify-prefs
+                block-conflicts orphaned-blocks room-app-status leaderboards
+                books book-ledgers book-ui workflow-editor-state memory-editor-state
+                memory-navigation-state run-server-facts chat-scroll-windows
+                chat-reply-targets active-kb-branch kb-branches projected-branch-dbs]]
+       (reset! s {}))
+     (reset! global-ref :now)
+     (reset! drag-state nil)
+     (reset! layout-columns [{:id initial-col-id :width 1.0
+                              :tabs [{:id initial-tab-id :type :chat :title "Assistants"
+                                      :data {:room-id "personal-ai-placeholder" :room-name "Assistants"}}]
+                              :active-tab initial-tab-id}])
+     (reset! active-column-id initial-col-id)))

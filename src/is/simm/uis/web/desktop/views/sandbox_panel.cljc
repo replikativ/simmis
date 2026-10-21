@@ -7,8 +7,7 @@
    - Databases: room DB and attached KBs with entity counts
 
    Rendered as a collapsible <details> panel at the bottom of the chat.
-   The room's owner also gets a quick REPL input for direct eval without
-   sending a chat message (`:can-eval?` from the server)."
+   Code evaluation belongs to the Memory file editor, not this inspector."
   (:require [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.foreign]
             [is.simm.uis.web.desktop.views.core :as vc]
@@ -314,55 +313,7 @@
                             (.appendChild row nm-el)
                             (.appendChild row cnt-el)
                             (.appendChild db-sec row)))
-                        (.appendChild body-el db-sec))
-                      ;; Quick REPL — only for who may evaluate here (the room's
-                      ;; owner); the server says so in `:can-eval?`
-                      (when (:can-eval? state)
-                        (let [repl-container (js/document.createElement "div")]
-                          (set! (.-className repl-container) "sandbox-repl")
-                          (let [hdr      (doto (js/document.createElement "div")
-                                           (-> .-className (set! "sandbox-repl-header")))
-                                lbl      (doto (js/document.createElement "span")
-                                           (-> .-className (set! "sandbox-repl-label"))
-                                           (-> .-textContent (set! "Quick eval (Ctrl+Enter)")))
-                                textarea (doto (js/document.createElement "textarea")
-                                           (-> .-className (set! "sandbox-repl-input"))
-                                           (-> .-placeholder (set! "(+ 1 2)"))
-                                           (-> .-rows (set! 2)))
-                                result   (doto (js/document.createElement "div")
-                                           (-> .-className (set! "sandbox-repl-result"))
-                                           (-> .-style .-display (set! "none")))]
-                            (.appendChild hdr lbl)
-                            (.appendChild repl-container hdr)
-                            (.appendChild repl-container textarea)
-                            (.appendChild repl-container result)
-                            (set! (.-onkeydown textarea)
-                                  (fn [e]
-                                    (when (and (= (.-key e) "Enter") (.-ctrlKey e))
-                                      (.preventDefault e)
-                                      (let [code (.-value textarea)]
-                                        (when (seq code)
-                                          (set! (.-textContent lbl) "Evaluating…")
-                                          (let [spin (sandbox-remote/eval-in-room-remote!
-                                                       room-uuid code)]
-                                            (spin
-                                              (fn [r]
-                                                (let [code-el (js/document.createElement "code")
-                                                      css (if (:success r)
-                                                            "hljs language-clojure sandbox-result--ok"
-                                                            "hljs language-clojure sandbox-result--err")]
-                                                  (set! (.-className code-el) css)
-                                                  (set! (.-innerHTML code-el)
-                                                        (or (md/highlight-code (:result r)) (:result r)))
-                                                  (set! (.-innerHTML result) "")
-                                                  (.appendChild result code-el)
-                                                  (set! (.-style.display result) "block")
-                                                  (set! (.-textContent lbl) "Quick eval (Ctrl+Enter)")))
-                                              (fn [err]
-                                                (set! (.-textContent result) (str err))
-                                                (set! (.-style.display result) "block")
-                                                (set! (.-textContent lbl) "Quick eval (Ctrl+Enter)"))))))))))
-                          (.appendChild body-el repl-container))))
+                        (.appendChild body-el db-sec)))
 
                     (fetch-state! []
                       (when-not @loading-atom

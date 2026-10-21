@@ -6,7 +6,8 @@
    - Common styling helpers
    - Reusable small components"
   (:require [org.replikativ.spindel.dom.elements :as dom]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            #?(:cljs [is.simm.uis.web.desktop.sanitize :as sanitize]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el])))
 
 ;; =============================================================================
@@ -280,7 +281,9 @@
   "One block's HTML, read-only. The diff never mounts an editor."
   [content extra-class]
   (el/div {:class (str "proposal-block " extra-class)
-           :innerHTML (or content "")}))
+           ;; Proposal content is untrusted even before it is accepted.
+           :innerHTML #?(:cljs (sanitize/html (or content ""))
+                         :clj (or content ""))}))
 
 (defn block-op-view
   "Render one block-level operation: `{:op :before :after}`, where `:before`

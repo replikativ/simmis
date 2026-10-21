@@ -2,6 +2,7 @@
   "Room-native source editing and explicit bounded admission."
   (:require [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.workflow-editor :as editor]
+            #?(:cljs [is.simm.uis.web.desktop.source-editor :as source-editor])
             [clojure.string :as str]))
 
 (defn- field [label value change]
@@ -88,9 +89,17 @@
                                                                                                   #?(:cljs (when (js/confirm (str "Remove " path " from the draft? Save commits the deletion."))
                                                                                                              (change #(-> % (update :files dissoc path) (assoc :path nil)))) :clj nil))}
                                                                                      "Remove file")))
-                                                                (el/textarea {:aria-label "Workflow file source" :spellcheck false :readonly (not write?)
-                                                                              :value (get-in draft [:files path] "")
-                                                                              :on-input (fn [e] (change assoc-in [:files path] #?(:cljs (.. e -target -value) :clj "")))})))))
+                                                                #?(:cljs
+                                                                   (source-editor/view
+                                                                    {:id [(:owner actions) selected path] :path path :label "Workflow file source"
+                                                                     :value (get-in draft [:files path] "")
+                                                                     :selection (get-in draft [:editor-selections path])
+                                                                     :read-only? (not write?)
+                                                                     :on-change (fn [text selection]
+                                                                                  (change #(-> %
+                                                                                               (assoc-in [:files path] text)
+                                                                                               (assoc-in [:editor-selections path] selection))))})
+                                                                   :clj (el/pre {} (get-in draft [:files path] "")))))))
                                       (el/div {:class "workflow-inspection"}
                                               (el/strong {} (if (get-in source [:inspection :ok]) "Structure valid — not checker-tested" "Draft needs repair"))
                                               (when (editor/dirty? draft) (el/p {} "Inspection below is of the saved source. Save before launching."))

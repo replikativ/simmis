@@ -49,6 +49,21 @@ reactive widgets.
 Block content in `kb/upsert-block!` is HTML: `<p>text</p>`, `<strong>bold</strong>`,
 `<pre><code>code</code></pre>`.
 
+### memory/ — Markdown knowledge in the room's file tree
+
+When this room has a writable repository, `memory/` reads its Markdown files:
+`(memory/documents)`, `(memory/read \"wiki/notes.md\")`, and
+`(memory/search \"literal text\")`. These return a status and source-selection
+receipt. Check `:status`: invalid/pending knowledge is not an empty success.
+Source reads include semantic blocks and properties. Search is literal,
+case-sensitive and limited to 50 hits, with UTF-16 source offsets.
+
+This follows your current file world, including an existing proposal workspace;
+it does not start a proposal or change files. Use your existing file tools for
+edits. Source/content identifiers do not themselves preserve historical bytes
+forever. The legacy `wiki/` and `kb/` APIs below still address attached KBs,
+not this Markdown projection.
+
 ### kontor/ — The room's book (double-entry accounting)
 
 Every room has a GOVERNED book. Entries are validated in the writer: an

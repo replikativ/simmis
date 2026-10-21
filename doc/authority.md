@@ -97,13 +97,14 @@ simmis's authorizer about each of them (below, "dvergr ops").
 
 An RPC with no row is **refused**, so forgetting one produces a dead feature
 rather than an open one. `rpc-coverage-test` joins the live registry against
-the table in both directions: a registered fn without a row fails it, and so
-does a row without a registered fn.
+the table in both directions: a registered fn without a row or an explicitly
+reviewed denial fails it, and so does a row without a registered fn.
 
 datahike.kabel's raw store handlers (`dispatch`, `create-database`,
-`delete-database`) are not in that registry. They register in
-`kabel.remote/functions`, which the server does not serve, and they have no
-row, so the gate would refuse them if they became reachable. `dispatch` checks
+`delete-database`) share the `kabel.remote/functions` registry now used by
+distributed-scope. Their exact qualified symbols are explicitly denied, for
+every principal including administrators; they are never permission rows.
+`dispatch` checks
 nothing itself: served behind any row admitting room members, it would let a
 member transact raw datoms, forged messages included, into the room's store.
 So the browser never writes through its replica's writer: wiki edits are
@@ -140,6 +141,14 @@ that entity rather than create a block.
 Subscription to a store scope goes through `can?`. Publication *from* a client
 is refused unconditionally: sync is one-directional here, so an inbound publish
 is either a bug or an attack, whoever sends it.
+
+Memory's separate `:memory/<party-uuid>` invalidation topic admits only that
+authenticated party, not other members or administrators. Before publishing a
+room-only hint, its notifier checks the recipient's current room read authority;
+join-time topic authorization alone would not revoke an existing subscription.
+Metadata and file bytes still require the ordinary room-scoped authenticated
+RPC gates. This stream does not grant raw Geschichte-store replication or
+expose speculative branch identities.
 
 ### HTTP plane — routes
 
@@ -1034,6 +1043,19 @@ behind `can?`.
 
 Code that runs in a room's sandbox holds whatever the sandbox was handed, so
 what it is handed is the authorization.
+
+**Source knowledge.** Participant `memory/*` reads recheck room read authority
+and the exact attached repository grant (`:owner`, `:read-write` or `:read`)
+from one live host snapshot. Saved SCI functions retain an owner/capability
+identity, not a connection. Content is selected in the current descendant world;
+ordinary participants follow their existing proposal workspace, with exact scope
+and repository identity checks. Missing systems, detached grants and unrelated
+caller worlds refuse rather than selecting trunk. Reads run through Dvergr's
+shared agent effect boundary. This namespace exposes no raw DB and is not added
+to the isolated file-worker sandbox, which continues to consume frozen inputs.
+Parent-installed saved capabilities work in descendants; a capability originally
+installed inside a child is not automatically portable to a parent or sibling
+through adoption and requires explicit reinstallation there.
 
 **Screens.** A member's screen capture is theirs; a room sees a slice of it
 only through its own grant windows (`screen-grants/windows-for-room`).

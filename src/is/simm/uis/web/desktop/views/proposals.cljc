@@ -15,6 +15,7 @@
             #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.uis.web.desktop.proposals-remote :as pr])
             #?(:cljs [is.simm.uis.web.desktop.aggregate :as agg])
+            #?(:cljs [is.simm.uis.web.desktop.connection-epoch :as connection-epoch])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.incremental.interval]
@@ -27,6 +28,7 @@
 ;; =============================================================================
 
 #?(:cljs (defonce ^:private gate (agg/gate)))
+#?(:cljs (defn refresh-loaded! [] (agg/refresh! gate)))
 
 #?(:cljs
    (defn- update-proposal!
@@ -40,8 +42,22 @@
          ;; Not in the list: the action came from a chat card for a proposal
          ;; the list has not loaded. An `:action-error` written here would be
          ;; written nowhere, and the refusal would be invisible.
-         (when-let [msg (:action-error (f {}))]
-           (sig/show-error! "The proposal action did not complete." msg :remote))))))
+         (if (= :ready (get-in @sig/proposals-data [:retained-audits pid :state]))
+           (swap! sig/proposals-data update-in [:retained-audits pid :proposal] f)
+           (when-let [msg (:action-error (f {}))]
+             (sig/show-error! "The proposal action did not complete." msg :remote)))))))
+
+#?(:cljs
+   (defn load-retained-audit! [pid]
+     (let [request-id (random-uuid) epoch (connection-epoch/snapshot)]
+       (binding [rtc/*execution-context* runtime]
+         (swap! sig/proposals-data card-model/begin-audit-request pid request-id))
+       (rem/spin! #(pr/proposal-retained-audit! web/server-id pid)
+                  (fn [result error]
+                    (when (connection-epoch/current? epoch)
+                      (binding [rtc/*execution-context* runtime]
+                        (swap! sig/proposals-data card-model/apply-audit-result
+                               pid request-id result (some-> error rem/error-text)))))))))
 
 #?(:cljs
    (defn- current-diff-request? [pid request-id]
@@ -53,11 +69,27 @@
 #?(:cljs (declare load-checks-into-signal!))
 
 #?(:cljs
+   (defn load-retained-file! [pid scope path]
+     (let [request-id (random-uuid) epoch (connection-epoch/snapshot)]
+       (update-proposal! pid #(card-model/begin-file-request % scope path request-id))
+       (rem/spin! #(pr/proposal-file! web/server-id pid scope path)
+                  (fn [result error]
+                    (when (connection-epoch/current? epoch)
+                      (update-proposal! pid #(card-model/apply-file-result
+                                              % scope path request-id result (some-> error rem/error-text)))))))))
+
+#?(:cljs
+   (defn hide-retained-file! [pid scope path]
+     ;; Removing the request token also fences an outstanding reply.
+     (update-proposal! pid #(update % :file-bodies dissoc [scope path]))))
+
+#?(:cljs
    (defn- load-diff-into-signal! [pid]
      ;; A failure has to land on the card. Silently ignoring it left `:diffs`
      ;; nil forever, so a DENIED diff rendered as a permanent "Loading changes…"
      ;; — indistinguishable from a slow one, and invisible in the console.
-     (let [request-id (random-uuid)]
+     (let [request-id (random-uuid)
+           epoch (connection-epoch/snapshot)]
        ;; The token lives in the reactive row it protects. A newer list
        ;; replaces the row and installs its own token before starting its RPC,
        ;; so callbacks from the old list become harmless without a second
@@ -66,15 +98,16 @@
        (rem/spin!
         #(pr/proposal-diff! web/server-id pid)
         (fn [ok err]
-          (update-proposal!
-           pid #(card-model/apply-diff-result
-                 % request-id ok (some-> err rem/error-text)))
+          (when (connection-epoch/current? epoch)
+            (update-proposal!
+             pid #(card-model/apply-diff-result
+                   % request-id ok (some-> err rem/error-text)))
           ;; only the latest diff may start checks. The row token is inspected
           ;; here and again when checks return, fencing both sides of the RPC.
-          (when (and (nil? err)
-                     (current-diff-request? pid request-id)
-                     (some #(= :repo (:system-type %)) (:forks ok)))
-            (load-checks-into-signal! pid request-id)))))))
+            (when (and (nil? err)
+                       (current-diff-request? pid request-id)
+                       (some #(= :repo (:system-type %)) (:forks ok)))
+              (load-checks-into-signal! pid request-id))))))))
 
 #?(:cljs
    (defn- load-checks-into-signal!
@@ -86,15 +119,16 @@
       result), so surfacing an error for it would put a red line on a card whose
      change is fine."
      [pid diff-version]
-     (rem/spin!
-      #(pr/proposal-checks! web/server-id pid)
-      (fn [ok _err]
-        (when ok
-          (update-proposal! pid
-                            (fn [proposal]
-                              (if (= diff-version (:diff-request-id proposal))
-                                (assoc proposal :checks (vec ok))
-                                proposal))))))))
+     (let [epoch (connection-epoch/snapshot)]
+       (rem/spin!
+        #(pr/proposal-checks! web/server-id pid)
+        (fn [ok _err]
+          (when (and ok (connection-epoch/current? epoch))
+            (update-proposal! pid
+                              (fn [proposal]
+                                (if (= diff-version (:diff-request-id proposal))
+                                  (assoc proposal :checks (vec ok))
+                                  proposal)))))))))
 
 ;; --- focus verification ------------------------------------------------------
 ;;
@@ -127,7 +161,7 @@
      []
      (agg/run!
       gate
-      (fn [done]
+      (fn [done current?]
         ;; Snapshot at fetch START, not at completion: these are exactly the ids
         ;; this round trip can speak for. An id requested WHILE it is in flight
         ;; is not in the snapshot, and the gate's pending bit runs another pass
@@ -136,22 +170,23 @@
           (rem/spin!
            #(pr/list-proposals! web/server-id "open")
            (fn [ok err]
-             (binding [rtc/*execution-context* runtime]
+             (when (current?)
+               (binding [rtc/*execution-context* runtime]
                ;; retire the questions BEFORE the signal write — that write is
                ;; what re-renders, and it must not land on a stale "still
                ;; asking" flag. A FAILED fetch retires them too: the error
                ;; branch of the view outranks the resolution message anyway,
                ;; and leaving them open would re-ask on every render.
-               (when (seq answering)
-                 (swap! focus-answered into answering)
-                 (swap! focus-pending #(reduce disj % answering)))
-               (if err
-                 (do (js/console.error "[proposals] load error:" err)
-                     (reset! sig/proposals-data
-                             {:proposals [] :error (rem/error-text err)}))
-                 (do (reset! sig/proposals-data
-                             {:proposals (vec ok) :loaded-at (js/Date.now)})
-                     (doseq [p ok] (load-diff-into-signal! (:id p))))))
+                 (when (seq answering)
+                   (swap! focus-answered into answering)
+                   (swap! focus-pending #(reduce disj % answering)))
+                 (if err
+                   (do (js/console.error "[proposals] load error:" err)
+                       (reset! sig/proposals-data
+                               {:proposals [] :error (rem/error-text err)}))
+                   (do (reset! sig/proposals-data
+                               {:proposals (vec ok) :loaded-at (js/Date.now)})
+                       (doseq [p ok] (load-diff-into-signal! (:id p)))))))
              (done))))))))
 
 ;; Why an id is absent, once the list has spoken: :accepted | :dismissed |
@@ -268,15 +303,15 @@
       (rem/spin!
        #(pr/accept-proposal! web/server-id pid force? note)
        (fn [ok err]
-        (cond
+         (cond
           ;; a refused or broken accept must SAY so on the card — this one
           ;; failed authorization for weeks while the button looked inert
-          err (do (js/console.error "[proposals] accept error:" err)
-                  (update-proposal! pid #(-> % (dissoc :busy?)
-                                             (assoc :action-error (rem/error-text err)))))
-          (:warnings ok)
-          (update-proposal! pid
-                            #(-> % (dissoc :busy?)
+           err (do (js/console.error "[proposals] accept error:" err)
+                   (update-proposal! pid #(-> % (dissoc :busy?)
+                                              (assoc :action-error (rem/error-text err)))))
+           (:warnings ok)
+           (update-proposal! pid
+                             #(-> % (dissoc :busy?)
                                  ;; ARMS the next press. Without this the
                                  ;; button below kept sending force? false, so
                                  ;; "Accept again" repeated this same warning
@@ -288,8 +323,8 @@
                                  ;; press it is arming. `load-proposals!` drops
                                  ;; it on a successful decision, which re-arms
                                  ;; the warning for the next conflicted one.
-                                 (assoc :accept-warned? true)
-                                 (assoc :action-error
+                                  (assoc :accept-warned? true)
+                                  (assoc :action-error
                                         ;; "force" only overrides the WARNING
                                         ;; GATE — it is not a merge strategy.
                                         ;; A datom fork then merges anyway; a
@@ -299,12 +334,12 @@
                                         ;; that cannot happen sends the
                                         ;; reviewer to press Accept twice and
                                         ;; read an exception.
-                                        (str "Conflicts detected ("
-                                             (count (:warnings ok))
-                                             "). Accept again to proceed anyway"
-                                             " — a code fork will still refuse"
-                                             " to merge until the conflict is"
-                                             " resolved on its branch."))))
+                                         (str "Conflicts detected ("
+                                              (count (:warnings ok))
+                                              "). Accept again to proceed anyway"
+                                              " — a code fork will still refuse"
+                                              " to merge until the conflict is"
+                                              " resolved on its branch."))))
 
           ;; A FORK THAT DID NOT LAND IS NOT A SUCCESS. The server already names
           ;; each one and why (`ops.proposals` :failed — "surfaced, not
@@ -322,23 +357,23 @@
           ;; branches already make. Cost: on a PARTIAL landing the forks that
           ;; did land keep their old per-fork status until the next natural
           ;; refresh — stale detail is recoverable, an unreported refusal is not.
-          (seq (:failed ok))
-          (update-proposal! pid
-                            #(-> % (dissoc :busy? :accept-warned?)
-                                 (assoc :action-error
-                                        (str (count (:failed ok))
-                                             (if (= 1 (count (:failed ok)))
-                                               " fork did not land: "
-                                               " forks did not land: ")
-                                             (->> (:failed ok)
-                                                  (map (fn [{:keys [branch error]}]
-                                                         (str branch " — " error)))
-                                                  (interpose "; ")
-                                                  (apply str))
-                                             ". It stays open and can be retried"
-                                             " once the conflict is resolved on"
-                                             " its branch."))))
-          :else (retry-proposal-state! pid)))))))
+           (seq (:failed ok))
+           (update-proposal! pid
+                             #(-> % (dissoc :busy? :accept-warned?)
+                                  (assoc :action-error
+                                         (str (count (:failed ok))
+                                              (if (= 1 (count (:failed ok)))
+                                                " fork did not land: "
+                                                " forks did not land: ")
+                                              (->> (:failed ok)
+                                                   (map (fn [{:keys [branch error]}]
+                                                          (str branch " — " error)))
+                                                   (interpose "; ")
+                                                   (apply str))
+                                              ". It stays open and can be retried"
+                                              " once the conflict is resolved on"
+                                              " its branch."))))
+           :else (retry-proposal-state! pid)))))))
 
 #?(:cljs
    (defn- comment-text
@@ -381,37 +416,37 @@
      ([pid]
       (request-changes! pid (comment-text pid)))
      ([pid body]
-       (if (or (nil? body) (= "" (.trim body)))
-         (update-proposal! pid
-                           #(assoc % :action-error
-                                   "Say what should change — a request with no
+      (if (or (nil? body) (= "" (.trim body)))
+        (update-proposal! pid
+                          #(assoc % :action-error
+                                  "Say what should change — a request with no
                                     reason gives the agent nothing to act on."))
-         (do
-           (update-proposal! pid #(-> % (assoc :busy? true) (dissoc :action-error)))
-           (rem/spin!
-            #(pr/request-changes! web/server-id pid body "")
-            (fn [ok err]
-              (when-not err (clear-comment! pid))
-              (cond
-                err (update-proposal! pid #(-> % (dissoc :busy?)
-                                               (assoc :action-error (rem/error-text err))))
+        (do
+          (update-proposal! pid #(-> % (assoc :busy? true) (dissoc :action-error)))
+          (rem/spin!
+           #(pr/request-changes! web/server-id pid body "")
+           (fn [ok err]
+             (when-not err (clear-comment! pid))
+             (cond
+               err (update-proposal! pid #(-> % (dissoc :busy?)
+                                              (assoc :action-error (rem/error-text err))))
                 ;; The comment landed but no author was put back to work: each
                 ;; one has a proposal of its own open, and an author writes
                 ;; into one overlay at a time. Saying nothing here would show
                 ;; a request for changes that nobody is acting on.
-                (seq (:not-reopened ok))
-                (do (load-proposals!)
-                    (update-proposal!
-                     pid #(assoc % :action-error
-                                 (str "Comment posted, but "
-                                      (count (:not-reopened ok))
-                                      (if (= 1 (count (:not-reopened ok)))
-                                        " fork was" " forks were")
-                                      " not reopened — the author has another"
-                                      " proposal open and writes into one at a"
-                                      " time. Ask again once it has filed that"
-                                      " one; nothing retries on its own."))))
-                :else (load-proposals!)))))))))
+               (seq (:not-reopened ok))
+               (do (load-proposals!)
+                   (update-proposal!
+                    pid #(assoc % :action-error
+                                (str "Comment posted, but "
+                                     (count (:not-reopened ok))
+                                     (if (= 1 (count (:not-reopened ok)))
+                                       " fork was" " forks were")
+                                     " not reopened — the author has another"
+                                     " proposal open and writes into one at a"
+                                     " time. Ask again once it has filed that"
+                                     " one; nothing retries on its own."))))
+               :else (load-proposals!)))))))))
 
 #?(:cljs
    (defn dismiss!
@@ -423,13 +458,13 @@
       (rem/spin!
        #(pr/dismiss-proposal! web/server-id pid note)
        (fn [_ err]
-        (if err
+         (if err
           ;; don't reload on failure — that would drop the card and make a
           ;; refused dismiss look like it worked
-          (do (js/console.error "[proposals] dismiss error:" err)
-              (update-proposal! pid #(-> % (dissoc :busy?)
-                                         (assoc :action-error (rem/error-text err)))))
-          (retry-proposal-state! pid)))))))
+           (do (js/console.error "[proposals] dismiss error:" err)
+               (update-proposal! pid #(-> % (dissoc :busy?)
+                                          (assoc :action-error (rem/error-text err)))))
+           (retry-proposal-state! pid)))))))
 
 #?(:cljs
    (defn- fork-action!
@@ -478,11 +513,11 @@
 
 (defn- page-diff-view [{:keys [title ops]}]
   (el/div {:class "proposal-page"}
-    (el/div {:class "proposal-page-title"}
-      (vc/icon "file-text") (el/span {} (or title "Untitled")))
-    (el/div {:class "proposal-page-ops"}
-      (for [[i o] (map-indexed vector ops)]
-        (el/div {:key (str i)} (vc/block-op-view o))))))
+          (el/div {:class "proposal-page-title"}
+                  (vc/icon "file-text") (el/span {} (or title "Untitled")))
+          (el/div {:class "proposal-page-ops"}
+                  (for [[i o] (map-indexed vector ops)]
+                    (el/div {:key (str i)} (vc/block-op-view o))))))
 
 (defn- entry-date
   "The effective date as a plain ISO day. An accounting entry is dated, and the
@@ -502,11 +537,11 @@
   [{:keys [account side amount commodity]}]
   (let [cell (str amount " " commodity)]
     (el/div {:class "proposal-book-line"}
-      (el/span {:class "proposal-book-account"} (str account))
-      (el/span {:class "proposal-book-amount is-debit"}
-        (if (= :credit side) "" cell))
-      (el/span {:class "proposal-book-amount is-credit"}
-        (if (= :credit side) cell "")))))
+            (el/span {:class "proposal-book-account"} (str account))
+            (el/span {:class "proposal-book-amount is-debit"}
+                     (if (= :credit side) "" cell))
+            (el/span {:class "proposal-book-amount is-credit"}
+                     (if (= :credit side) cell "")))))
 
 (defn- book-entry-view
   "One proposed transaction: what it was for, when it takes effect, and its
@@ -515,27 +550,27 @@
    not balance here is one the reviewer must not press Accept on."
   [{:keys [narration effective-date journal state lines balanced?]}]
   (el/div {:class "proposal-book-entry"}
-    (el/div {:class "proposal-book-head"}
-      (vc/icon "book")
-      (el/span {:class "proposal-book-narration"} (str (or narration "(no narration)")))
-      (el/span {:class "proposal-book-meta"}
-        (str (entry-date effective-date)
-             (when journal (str " · " journal))
-             (when state (str " · " (name state)))
-             (when-not balanced? " · DOES NOT BALANCE"))))
-    (el/div {:class "proposal-book-lines"}
-      (el/div {:class "proposal-book-line proposal-book-header"}
-        (el/span {:class "proposal-book-account"} "Account")
-        (el/span {:class "proposal-book-amount is-debit"} "Debit")
-        (el/span {:class "proposal-book-amount is-credit"} "Credit"))
-      (for [[i l] (map-indexed vector lines)]
-        (el/div {:key (str i)} (book-line-view l))))))
+          (el/div {:class "proposal-book-head"}
+                  (vc/icon "book")
+                  (el/span {:class "proposal-book-narration"} (str (or narration "(no narration)")))
+                  (el/span {:class "proposal-book-meta"}
+                           (str (entry-date effective-date)
+                                (when journal (str " · " journal))
+                                (when state (str " · " (name state)))
+                                (when-not balanced? " · DOES NOT BALANCE"))))
+          (el/div {:class "proposal-book-lines"}
+                  (el/div {:class "proposal-book-line proposal-book-header"}
+                          (el/span {:class "proposal-book-account"} "Account")
+                          (el/span {:class "proposal-book-amount is-debit"} "Debit")
+                          (el/span {:class "proposal-book-amount is-credit"} "Credit"))
+                  (for [[i l] (map-indexed vector lines)]
+                    (el/div {:key (str i)} (book-line-view l))))))
 
 (defn- file-op-view [{:keys [op before after]}]
   (let [n (get (or after before) :name)
         cls (case op :file/add "diff-add" :file/remove "diff-remove" "diff-edit")]
     (el/div {:class (str "proposal-file " cls)}
-      (vc/icon "file") (el/span {} (str (name op) " " n)))))
+            (vc/icon "file") (el/span {} (str (name op) " " n)))))
 
 ;; =============================================================================
 ;; :repo — code
@@ -562,8 +597,8 @@
                          :added "diff-add"
                          :deleted "diff-remove"
                          "diff-mod"))}
-    (vc/icon "file")
-    (el/span {} (str (name (or status :modified)) " " path))))
+          (vc/icon "file")
+          (el/span {} (str (name (or status :modified)) " " path))))
 
 (defn- patch-line-class
   "Colour a unified-diff line by its leading character. `---`/`+++` are FILE
@@ -589,22 +624,22 @@
   [patch truncated?]
   (when (seq patch)
     (el/div {:class "proposal-patch"}
-      (for [[i line] (map-indexed vector (str/split-lines patch))]
-        (el/div {:key (str i) :class (str "patch-line " (patch-line-class line))}
-          (str line)))
-      (when truncated?
-        (el/div {:class "patch-line patch-truncated"}
-          "… patch truncated for display — the file list above is complete.")))))
+            (for [[i line] (map-indexed vector (str/split-lines patch))]
+              (el/div {:key (str i) :class (str "patch-line " (patch-line-class line))}
+                      (str line)))
+            (when truncated?
+              (el/div {:class "patch-line patch-truncated"}
+                      "… patch truncated for display — the file list above is complete.")))))
 
 (defn- conflict-side
   [label text skipped?]
   (el/div {:class "conflict-side"}
-    (el/div {:class "conflict-side-label"} (str label))
-    (el/pre {:class "conflict-side-text"}
-      (cond
-        skipped? "(binary or too large to show)"
-        (nil? text) "(file absent on this side)"
-        :else (str text)))))
+          (el/div {:class "conflict-side-label"} (str label))
+          (el/pre {:class "conflict-side-text"}
+                  (cond
+                    skipped? "(binary or too large to show)"
+                    (nil? text) "(file absent on this side)"
+                    :else (str text)))))
 
 (defn- conflict-view
   "One conflicting path, with what each side actually says.
@@ -617,18 +652,18 @@
    from memory otherwise."
   [{:keys [path base ours theirs base-skipped? ours-skipped? theirs-skipped? branch]}]
   (el/div {:class "proposal-conflict"}
-    (el/div {:class "proposal-conflict-head"}
-      (vc/icon "file")
-      (el/span {:class "proposal-conflict-path"} (str path))
-      (when branch
-        (el/span {:class "proposal-conflict-branch"} (str branch))))
-    (el/div {:class "proposal-conflict-sides"}
-      (conflict-side "On trunk now" ours ours-skipped?)
-      (conflict-side "In this fork" theirs theirs-skipped?))
-    (when (or base base-skipped?)
-      (el/details {:class "proposal-conflict-base"}
-        (el/summary {} "What both started from")
-        (conflict-side "Common ancestor" base base-skipped?)))))
+          (el/div {:class "proposal-conflict-head"}
+                  (vc/icon "file")
+                  (el/span {:class "proposal-conflict-path"} (str path))
+                  (when branch
+                    (el/span {:class "proposal-conflict-branch"} (str branch))))
+          (el/div {:class "proposal-conflict-sides"}
+                  (conflict-side "On trunk now" ours ours-skipped?)
+                  (conflict-side "In this fork" theirs theirs-skipped?))
+          (when (or base base-skipped?)
+            (el/details {:class "proposal-conflict-base"}
+                        (el/summary {} "What both started from")
+                        (conflict-side "Common ancestor" base base-skipped?)))))
 
 (defn- checks-view
   "A code fork's test result, stated as a fact rather than a verdict.
@@ -642,24 +677,24 @@
   [{:keys [status tests passed failed errors output]}]
   (when status
     (el/div {:class (str "proposal-checks proposal-checks--" (name status))}
-      (el/div {:class "proposal-checks-head"}
-        (el/span {:class "proposal-checks-status"}
-          (case status
-            :pass "TESTS PASS"
-            :fail "TESTS FAIL"
-            :error "TESTS DID NOT RUN"
-            :none "NO TESTS"
-            (str status)))
-        (when (and tests (pos? tests))
-          (el/span {:class "proposal-checks-counts"}
-            (str passed " passed"
-                 (when (pos? (or failed 0)) (str " · " failed " failed"))
-                 (when (pos? (or errors 0)) (str " · " errors " errored"))
-                 " · " tests " namespaces"))))
+            (el/div {:class "proposal-checks-head"}
+                    (el/span {:class "proposal-checks-status"}
+                             (case status
+                               :pass "TESTS PASS"
+                               :fail "TESTS FAIL"
+                               :error "TESTS DID NOT RUN"
+                               :none "NO TESTS"
+                               (str status)))
+                    (when (and tests (pos? tests))
+                      (el/span {:class "proposal-checks-counts"}
+                               (str passed " passed"
+                                    (when (pos? (or failed 0)) (str " · " failed " failed"))
+                                    (when (pos? (or errors 0)) (str " · " errors " errored"))
+                                    " · " tests " namespaces"))))
       ;; the report only when it says something a reviewer must act on — a
       ;; passing run's output is noise on a card
-      (when (and (#{:fail :error} status) (seq output))
-        (el/pre {:class "proposal-checks-output"} (str output))))))
+            (when (and (#{:fail :error} status) (seq output))
+              (el/pre {:class "proposal-checks-output"} (str output))))))
 
 (defn- comment-view
   "One remark in the review conversation. A request for changes is marked,
@@ -667,14 +702,14 @@
   [{:keys [body author-name at kind fork-branch]}]
   (el/div {:class (str "proposal-comment"
                        (when (= :changes-requested kind) " proposal-comment--request"))}
-    (el/div {:class "proposal-comment-head"}
-      (el/span {:class "proposal-comment-author"} (str (or author-name "someone")))
-      (when (= :changes-requested kind)
-        (el/span {:class "proposal-comment-tag"} "requested changes"))
-      (when fork-branch
-        (el/span {:class "proposal-comment-scope"} (str "on " fork-branch)))
-      (el/span {:class "proposal-comment-at"} (str (entry-date at))))
-    (el/div {:class "proposal-comment-body"} (str body))))
+          (el/div {:class "proposal-comment-head"}
+                  (el/span {:class "proposal-comment-author"} (str (or author-name "someone")))
+                  (when (= :changes-requested kind)
+                    (el/span {:class "proposal-comment-tag"} "requested changes"))
+                  (when fork-branch
+                    (el/span {:class "proposal-comment-scope"} (str "on " fork-branch)))
+                  (el/span {:class "proposal-comment-at"} (str (entry-date at))))
+          (el/div {:class "proposal-comment-body"} (str body))))
 
 ;; Struck through and dimmed INLINE rather than through core.css: a refused
 ;; fork has to read as refused wherever this renders, and one stylesheet rule is
@@ -694,30 +729,51 @@
       these buttons and the card's own Accept / Dismiss do exactly the same
       thing, and two identical pairs a few lines apart is a choice the reviewer
       has to stop and work out before deciding anything."
-     [pid {:keys [scope branch busy? may-merge? capability-live?]}]
+     [pid {:keys [scope branch busy? may-merge? capability-live?] :as fork}]
      (el/div {:class "proposal-fork-actions"}
        ;; `may-merge?` is resolved server-side per fork scope (see
        ;; ops.proposals/with-merge-authority). Since B1 `:merge` is its own verb,
        ;; so a reviewer can hold write on a KB and still not be allowed to land
        ;; onto its trunk — offering an Accept that is certain to refuse wastes a
        ;; round trip and reads as a bug.
-       (el/button {:class "btn btn-secondary btn-sm"
-                   :disabled (boolean (or busy? (false? may-merge?)
-                                          (false? capability-live?)))
-                   :title (cond
-                            (false? capability-live?)
-                            "This process no longer holds the world capability"
-                            (false? may-merge?)
-                            "You do not have merge rights on this patch's target")
-                   :on-click (fn [_] (accept-fork! pid scope branch))}
-                  (cond
-                    (false? capability-live?) "Unavailable"
-                    (false? may-merge?) "Cannot land"
-                    :else "Accept this"))
-       (el/button {:class "btn btn-secondary btn-sm"
-                   :disabled (boolean (or busy? (false? capability-live?)))
-                   :on-click (fn [_] (dismiss-fork! pid scope branch))}
-                  "Dismiss this"))))
+             (el/button {:class "btn btn-secondary btn-sm"
+                         :disabled (boolean (or busy? (not (card-model/settlement-supported? fork)) (false? may-merge?)
+                                                (false? capability-live?)))
+                         :title (cond
+                                  (not (card-model/settlement-supported? fork)) "Retained evidence is review-only; adoption is unavailable"
+                                  (false? capability-live?)
+                                  "This process no longer holds the world capability"
+                                  (false? may-merge?)
+                                  "You do not have merge rights on this patch's target")
+                         :on-click (fn [_] (accept-fork! pid scope branch))}
+                        (cond
+                          (not (card-model/settlement-supported? fork)) "Review only"
+                          (false? capability-live?) "Unavailable"
+                          (false? may-merge?) "Cannot land"
+                          :else "Accept this"))
+             (el/button {:class "btn btn-secondary btn-sm"
+                         :disabled (boolean (or busy? (false? capability-live?)))
+                         :on-click (fn [_] (dismiss-fork! pid scope branch))}
+                        "Dismiss this"))))
+
+(defn- retained-file-view [pid scope {:keys [path status]} state]
+  (el/div {:class "proposal-retained-file"}
+          (el/div {:class "proposal-file"} (str (name status) " " path))
+          (case (:status state)
+            :loading (el/div {:class "proposal-note-line"} "Loading retained comparison…")
+            :ready (el/div {}
+                           (el/div {:class "proposal-note-line"} "Before — captured at admission")
+                           (el/pre {:class "proposal-retained-source"} (or (get-in state [:body :before]) "(file did not exist)"))
+                           (el/div {:class "proposal-note-line"} "After — retained workflow output")
+                           (el/pre {:class "proposal-retained-source"} (get-in state [:body :after]))
+                           (el/button {:class "btn btn-ghost btn-sm"
+                                       :on-click #?(:cljs (fn [_] (hide-retained-file! pid scope path)) :clj nil)}
+                                      "Hide comparison"))
+            (el/div {}
+                    (when (= :error (:status state)) (el/div {:class "proposal-error"} (:error state)))
+                    (el/button {:class "btn btn-secondary btn-sm"
+                                :on-click #?(:cljs (fn [_] (load-retained-file! pid scope path)) :clj nil)}
+                               (if (= :error (:status state)) "Retry comparison" "Inspect retained file"))))))
 
 (defn- fork-diff-view
   "One fork as its own block: what it changed, and its own decision.
@@ -732,7 +788,7 @@
    dismissed block carries a line saying so instead of an empty change list."
   ([pid fk] (fork-diff-view pid fk true))
   ([pid {:keys [system-type pages files entries counts stat patch patch-truncated?
-                baseless? status author-name checks] :as fk} body?]
+                baseless? status author-name checks file-bodies scope] :as fk} body?]
    (let [resolved? (some? status)
          ;; A campaign puts one fork per AGENT on the same database, so without
          ;; the author two contributions render as two identical rows and the
@@ -748,68 +804,75 @@
      (el/div {:class (str "proposal-fork"
                           (when status (str " proposal-fork--" (name status))))
               :style (when resolved? resolved-style)}
-       (el/div {:class "proposal-fork-head"}
-         (str label
-              (when author-name (str " · " author-name))
+             (el/div {:class "proposal-fork-head"}
+                     (str label
+                          (when author-name (str " · " author-name))
               ;; entries, not datoms, for a book: "3 changed" over a double-entry
               ;; fork counts postings and reads as noise
-              (cond
-                resolved? nil
-                (nil? changed) " · change count unavailable"
-                (zero? changed) " · no changes"
-                (= :book system-type)
-                (str " · " changed (if (= 1 changed) " entry" " entries"))
-                (= :files kind)
-                (str " · " changed (if (= 1 changed) " file" " files"))
-                :else (str " · " changed " changed"))
-              (case status
-                :dismissed " · dismissed"
-                :accepted " · accepted"
-                "")))
+                          (cond
+                            resolved? nil
+                            (nil? changed) " · change count unavailable"
+                            (zero? changed) " · no changes"
+                            (= :book system-type)
+                            (str " · " changed (if (= 1 changed) " entry" " entries"))
+                            (= :files kind)
+                            (str " · " changed (if (= 1 changed) " file" " files"))
+                            :else (str " · " changed " changed"))
+                          (case status
+                            :dismissed " · dismissed"
+                            :accepted " · accepted"
+                            "")))
        ;; A diff without a fork point is compared against trunk's MOVING head, so
        ;; anything trunk did since reads as this branch removing it. Say so — a
        ;; reviewer should know when they are looking at the weaker comparison.
-       (when (and body? (not resolved?) baseless?)
-         (el/div {:class "proposal-error"}
-           "No fork point recorded — compared against trunk's current state, so
+             (when (and body? (not resolved?) baseless?)
+               (el/div {:class "proposal-error"}
+                       "No fork point recorded — compared against trunk's current state, so
             changes made elsewhere since may appear here as removals."))
-       (cond
-         (= :dismissed status)
-         (el/div {:class "proposal-fork-resolved"}
-           "Refused — its branch was discarded, so there is nothing left to show.")
-         (= :accepted status)
-         (el/div {:class "proposal-fork-resolved"} "Landed on its trunk.")
-         (not body?) nil
-         (= :kb system-type) (for [[i pg] (map-indexed vector pages)]
-                               (el/div {:key (str i)} (page-diff-view pg)))
-         (= :fs system-type) (for [[i f] (map-indexed vector files)]
-                               (el/div {:key (str i)} (file-op-view f)))
-         (= :book system-type) (for [[i e] (map-indexed vector entries)]
-                                 (el/div {:key (str i)} (book-entry-view e)))
-         (or (= :repo system-type) (and (= :world system-type) (= :files kind)))
+             (cond
+               (and (= :dismissed status) (not= :file-output system-type))
+               (el/div {:class "proposal-fork-resolved"}
+                       "Refused — its branch was discarded, so there is nothing left to show.")
+               (and (= :accepted status) (not= :file-output system-type))
+               (el/div {:class "proposal-fork-resolved"} "Landed on its trunk.")
+               (not body?) nil
+               (= :file-output system-type)
+               (el/div {:class "proposal-retained-files"}
+                       (el/div {:class "proposal-note-line"}
+                               "Retained evidence, independent of the Run. Current target compatibility is not checked; adoption is unavailable.")
+                       (for [file files]
+                         (el/div {:key (:path file)}
+                                 (retained-file-view pid scope file (get file-bodies [scope (:path file)])))))
+               (= :kb system-type) (for [[i pg] (map-indexed vector pages)]
+                                     (el/div {:key (str i)} (page-diff-view pg)))
+               (= :fs system-type) (for [[i f] (map-indexed vector files)]
+                                     (el/div {:key (str i)} (file-op-view f)))
+               (= :book system-type) (for [[i e] (map-indexed vector entries)]
+                                       (el/div {:key (str i)} (book-entry-view e)))
+               (or (= :repo system-type) (and (= :world system-type) (= :files kind)))
          ;; Files first, then the patch: the path list is the shape of the
          ;; change and fits on a screen, the patch is the detail behind it.
          ;; The check sits above both — whether it runs is the first thing a
          ;; reviewer wants, and it decides how carefully they read the rest.
-         (el/div {:class "proposal-repo"}
-           (checks-view checks)
-           (el/div {:class "proposal-repo-files"}
-             (for [[i f] (map-indexed vector files)]
-               (el/div {:key (str i)} (repo-file-view f))))
-           (when (seq stat)
-             (el/div {:class "proposal-repo-stat"} (str stat)))
-           (repo-patch-view patch patch-truncated?))
-         (= :review-world system-type)
-         (el/div {:class "proposal-repo-files"}
-           (for [[i {:keys [path]}] (map-indexed vector files)]
-             (el/div {:key (str i) :class "proposal-world-file"} (str path)))
-           (when (seq (:other-systems fk))
-             (el/div {:class "proposal-error"}
-               (str "Also changed: " (str/join ", " (:other-systems fk))))))
-         :else (el/div {:class "proposal-counts"} (pr-str counts)))
-       #?(:cljs (when (and (not resolved?) (not (:only-fork? fk)))
-                  (fork-actions pid fk))
-          :clj nil)))))
+               (el/div {:class "proposal-repo"}
+                       (checks-view checks)
+                       (el/div {:class "proposal-repo-files"}
+                               (for [[i f] (map-indexed vector files)]
+                                 (el/div {:key (str i)} (repo-file-view f))))
+                       (when (seq stat)
+                         (el/div {:class "proposal-repo-stat"} (str stat)))
+                       (repo-patch-view patch patch-truncated?))
+               (= :review-world system-type)
+               (el/div {:class "proposal-repo-files"}
+                       (for [[i {:keys [path]}] (map-indexed vector files)]
+                         (el/div {:key (str i) :class "proposal-world-file"} (str path)))
+                       (when (seq (:other-systems fk))
+                         (el/div {:class "proposal-error"}
+                                 (str "Also changed: " (str/join ", " (:other-systems fk))))))
+               :else (el/div {:class "proposal-counts"} (pr-str counts)))
+             #?(:cljs (when (and (not resolved?) (not (:only-fork? fk)))
+                        (fork-actions pid fk))
+                :clj nil)))))
 
 ;; =============================================================================
 ;; Summary hierarchy — read this first, expand into the diff above
@@ -839,26 +902,26 @@
            {:keys [added edited removed]} (section-counts digest pages)
            open? (expanded? pid-set)]
        (el/div {:class "proposal-section"}
-         (el/div {:class "proposal-section-head"
-                  :on-click (fn [_] (on-toggle pid-set))}
-           (el/span {:class "proposal-section-caret"} (if open? "▾" "▸"))
-           (el/span {:class "proposal-section-title"} (or title "Changes"))
-           (el/span {:class "proposal-section-counts"}
-                    (str "+" added " ~" edited " −" removed)))
-         (when summary
-           (el/div {:class "proposal-section-summary"} summary))
-         (when open?
-           (el/div {:class "proposal-section-body"}
-             (for [[i pid] (map-indexed vector pages)]
-               (el/div {:key (str "p" i)}
-                 (if-let [pg (pid->page diffs pid)]
-                   (page-diff-view pg)
-                   (el/div {:class "proposal-loading"} (str "…" pid)))))))
-         (for [[i sub] (map-indexed vector subsections)]
-           (el/div {:key (str "sub" i)}
-             (summary-section-view {:pid-set (str pid-set "/" i) :diffs diffs
-                                    :digest digest :section sub
-                                    :on-toggle on-toggle :expanded? expanded?})))))))
+               (el/div {:class "proposal-section-head"
+                        :on-click (fn [_] (on-toggle pid-set))}
+                       (el/span {:class "proposal-section-caret"} (if open? "▾" "▸"))
+                       (el/span {:class "proposal-section-title"} (or title "Changes"))
+                       (el/span {:class "proposal-section-counts"}
+                                (str "+" added " ~" edited " −" removed)))
+               (when summary
+                 (el/div {:class "proposal-section-summary"} summary))
+               (when open?
+                 (el/div {:class "proposal-section-body"}
+                         (for [[i pid] (map-indexed vector pages)]
+                           (el/div {:key (str "p" i)}
+                                   (if-let [pg (pid->page diffs pid)]
+                                     (page-diff-view pg)
+                                     (el/div {:class "proposal-loading"} (str "…" pid)))))))
+               (for [[i sub] (map-indexed vector subsections)]
+                 (el/div {:key (str "sub" i)}
+                         (summary-section-view {:pid-set (str pid-set "/" i) :diffs diffs
+                                                :digest digest :section sub
+                                                :on-toggle on-toggle :expanded? expanded?})))))))
 
 ;; =============================================================================
 ;; Cards
@@ -876,6 +939,7 @@
                   :trivial "no substantive change"
                   :conflict "conflicts"
                   :reviewable "needs review"
+                  :review-only "review only"
                   (name tier))))
      :clj nil))
 
@@ -929,6 +993,9 @@
 (defn- unavailable-open-forks [forks]
   (filterv #(and (nil? (:status %)) (false? (:capability-live? %))) forks))
 
+(defn- review-only-open-forks [forks]
+  (filterv #(and (nil? (:status %)) (not (card-model/settlement-supported? %))) forks))
+
 (defn- review-notes-view
   "Why an escalated review needs a person: the reviewer's verdict, reasons and
    concerns, each check with its evidence, and — when the world moved after it
@@ -938,38 +1005,38 @@
   (let [items (fn [label xs]
                 (when (seq xs)
                   (el/div {:class "proposal-review-part"}
-                    (el/div {:class "proposal-review-label"} label)
-                    (el/ul {:class "proposal-review-list"}
-                      (for [[i x] (map-indexed vector xs)]
-                        (el/li {:key (str label i)} (str x)))))))]
+                          (el/div {:class "proposal-review-label"} label)
+                          (el/ul {:class "proposal-review-list"}
+                                 (for [[i x] (map-indexed vector xs)]
+                                   (el/li {:key (str label i)} (str x)))))))]
     (el/div {:class (str "proposal-review" (when spot-check? " proposal-review--spot"))}
-      (el/div {:class "proposal-review-head"}
-        (cond
-          spot-check? "Spot check — the reviewer approved this. Do you agree?"
-          (= :escalate verdict) "The reviewer escalated this to you"
-          verdict "The review could not land this on its own"
-          :else "A check failed, so no reviewer was asked")
-        (when workflow (el/span {:class "proposal-review-workflow"} (str workflow))))
-      (items "Reviewer's reasons" reviewer-reasons)
-      (items "Concerns" concerns)
-      (when (empty? reviewer-reasons) (items "Why it needs a person" reasons))
-      (when (seq checks)
-        (el/div {:class "proposal-review-part"}
-          (el/div {:class "proposal-review-label"} "Checks")
-          (el/ul {:class "proposal-review-list proposal-review-checks"}
-            (for [[i {:keys [check pass? evidence]}] (map-indexed vector checks)]
-              (el/li {:key (str "chk" i)
-                      :class (if pass? "proposal-check--pass" "proposal-check--fail")}
-                (str (if pass? "passed " "FAILED ") check)
-                (when (and (not pass?) evidence)
-                  (el/code {:class "proposal-review-evidence"} evidence)))))))
-      (when changed?
-        (el/div {:class "proposal-error"}
-          "The work changed after it was reviewed — Accept will refuse it. Reject it, or have it reviewed again.")))))
+            (el/div {:class "proposal-review-head"}
+                    (cond
+                      spot-check? "Spot check — the reviewer approved this. Do you agree?"
+                      (= :escalate verdict) "The reviewer escalated this to you"
+                      verdict "The review could not land this on its own"
+                      :else "A check failed, so no reviewer was asked")
+                    (when workflow (el/span {:class "proposal-review-workflow"} (str workflow))))
+            (items "Reviewer's reasons" reviewer-reasons)
+            (items "Concerns" concerns)
+            (when (empty? reviewer-reasons) (items "Why it needs a person" reasons))
+            (when (seq checks)
+              (el/div {:class "proposal-review-part"}
+                      (el/div {:class "proposal-review-label"} "Checks")
+                      (el/ul {:class "proposal-review-list proposal-review-checks"}
+                             (for [[i {:keys [check pass? evidence]}] (map-indexed vector checks)]
+                               (el/li {:key (str "chk" i)
+                                       :class (if pass? "proposal-check--pass" "proposal-check--fail")}
+                                      (str (if pass? "passed " "FAILED ") check)
+                                      (when (and (not pass?) evidence)
+                                        (el/code {:class "proposal-review-evidence"} evidence)))))))
+            (when changed?
+              (el/div {:class "proposal-error"}
+                      "The work changed after it was reviewed — Accept will refuse it. Reject it, or have it reviewed again.")))))
 
 (defn- proposal-card [{:keys [id title summary diffs diff-error action-error busy?
                               tier intent conflicts comments checks ai-summary expanded
-                              accept-warned? forks review]}]
+                              accept-warned? forks review file-bodies]}]
   #?(:cljs
      (let [expanded (or expanded #{})
            toggle (fn [k] (update-proposal! id
@@ -978,200 +1045,208 @@
                                                                (if (s k) (disj s k) (conj s k)))))))
            show-all? (contains? expanded :all)]
        (el/div {:key id :class "proposal-card"}
-         (el/div {:class "proposal-card-head"}
-           (el/div {:class "proposal-title"} (or title "Untitled proposal"))
-           (intent-badge intent)
+               (el/div {:class "proposal-card-head"}
+                       (el/div {:class "proposal-title"} (or title "Untitled proposal"))
+                       (intent-badge intent)
            ;; Tier only where it MEANS something. A budget's branch may merge
            ;; cleanly and it still is not landable, so "no substantive change"
            ;; on a plan reads as a verdict the tier is not making.
-           (when (= :change (or intent :change)) (tier-badge tier)))
-         (when review (review-notes-view review))
-         (when (and (not review) (fs/auto-mergeable? intent tier))
-           (el/div {:class "proposal-note-line"}
-             "Nothing substantive to review — this one merges cleanly."))
-         (when (seq conflicts)
-           (el/div {}
-             (el/div {:class "proposal-error"}
-               (str (count conflicts) " conflicting change"
-                    (when (> (count conflicts) 1) "s")
-                    " — must be resolved on the fork's branch before it can land."))
+                       (when (= :change (or intent :change)) (tier-badge tier)))
+               (when review (review-notes-view review))
+               (when (and (not review) (fs/auto-mergeable? intent tier))
+                 (el/div {:class "proposal-note-line"}
+                         "Nothing substantive to review — this one merges cleanly."))
+               (when (seq conflicts)
+                 (el/div {}
+                         (el/div {:class "proposal-error"}
+                                 (str (count conflicts) " conflicting change"
+                                      (when (> (count conflicts) 1) "s")
+                                      " — must be resolved on the fork's branch before it can land."))
              ;; and WHAT conflicts. A count alone leaves refuse as the only
              ;; informed move; seeing the two versions is what lets a reviewer
              ;; say which one was meant.
-             (for [[i c] (map-indexed vector conflicts)]
-               (el/div {:key (str "c" i)} (conflict-view c)))))
+                         (for [[i c] (map-indexed vector conflicts)]
+                           (el/div {:key (str "c" i)} (conflict-view c)))))
          ;; The model's headline wins over the author's blurb when we have one:
          ;; it describes what the diff ACTUALLY does, not what was intended.
-         (when-let [h (:headline ai-summary)]
-           (el/div {:class "proposal-headline"} h))
-         (when (and (:risk-note ai-summary)
-                    (not= "none" (:risk ai-summary)))
-           (el/div {:class (str "proposal-risk proposal-risk--" (or (:risk ai-summary) "low"))}
-             (:risk-note ai-summary)))
+               (when-let [h (:headline ai-summary)]
+                 (el/div {:class "proposal-headline"} h))
+               (when (and (:risk-note ai-summary)
+                          (not= "none" (:risk ai-summary)))
+                 (el/div {:class (str "proposal-risk proposal-risk--" (or (:risk ai-summary) "low"))}
+                         (:risk-note ai-summary)))
          ;; a review's summary is its reasons, which its notes already show
-         (when (and summary (not (:headline ai-summary)) (not review))
-           (el/div {:class "proposal-summary"} summary))
-         (el/div {:class "proposal-diffs"}
-           (cond
-             diff-error (el/div {}
-                          (el/div {:class "proposal-error"}
-                            (str "Couldn't load changes — " diff-error))
-                          (el/button {:class "btn btn-secondary btn-sm"
-                                      :on-click (fn [_]
-                                                  (retry-proposal-state! id))}
-                            "Retry"))
-             (nil? diffs) (el/div {:class "proposal-loading"} "Loading changes…")
+               (when (and summary (not (:headline ai-summary)) (not review))
+                 (el/div {:class "proposal-summary"} summary))
+               (el/div {:class "proposal-diffs"}
+                       (cond
+                         diff-error (el/div {}
+                                            (el/div {:class "proposal-error"}
+                                                    (str "Couldn't load changes — " diff-error))
+                                            (el/button {:class "btn btn-secondary btn-sm"
+                                                        :on-click (fn [_]
+                                                                    (retry-proposal-state! id))}
+                                                       "Retry"))
+                         (nil? diffs) (el/div {:class "proposal-loading"} "Loading changes…")
 
              ;; Summary-first: sections collapse the diff into intents, each
              ;; expanding to the real blocks. Falls back to the flat diff
              ;; whenever summarization was unavailable — the raw change is
              ;; always reachable, never replaced by prose.
-             (and (seq (:sections ai-summary)) (not show-all?))
-             (el/div {}
-               (for [[i sec] (map-indexed vector (:sections ai-summary))]
-                 (el/div {:key (str "sec" i)}
-                   (summary-section-view {:pid-set (str i)
+                         (and (seq (:sections ai-summary)) (not show-all?))
+                         (el/div {}
+                                 (for [[i sec] (map-indexed vector (:sections ai-summary))]
+                                   (el/div {:key (str "sec" i)}
+                                           (summary-section-view {:pid-set (str i)
                                           ;; the digest's "sN" is a position in
                                           ;; the DIFFED forks, and only open
                                           ;; forks are diffed — so resolve it
                                           ;; against the same subsequence, or a
                                           ;; dismissal shifts every page it
                                           ;; addresses by one
-                                          :diffs (filterv (comp nil? :status) diffs)
-                                          :digest (:digest ai-summary)
-                                          :section sec
-                                          :on-toggle toggle
-                                          :expanded? #(contains? expanded %)})))
+                                                                  :diffs (filterv (comp nil? :status) diffs)
+                                                                  :digest (:digest ai-summary)
+                                                                  :section sec
+                                                                  :on-toggle toggle
+                                                                  :expanded? #(contains? expanded %)})))
                ;; the summary collapses the diffs but must not collapse the
                ;; DECISIONS: a reviewer refusing one fork of four should not
                ;; have to expand the full diff to reach its button
-               (when (< 1 (count diffs))
-                 (el/div {:class "proposal-fork-strip"}
-                   (for [[i fk] (map-indexed vector diffs)]
-                     (el/div {:key (str "fs" i)}
-                       (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count diffs))
-                                             :checks (check-for checks fk)
-                                             :may-merge? (may-merge-for forks fk)
-                                             :capability-live?
-                                             (capability-live-for forks fk)) false)))))
-               (el/button {:class "btn btn-ghost btn-sm proposal-showall"
-                           :on-click (fn [_] (toggle :all))}
-                          "Show the full diff"))
+                                 (when (< 1 (count diffs))
+                                   (el/div {:class "proposal-fork-strip"}
+                                           (for [[i fk] (map-indexed vector diffs)]
+                                             (el/div {:key (str "fs" i)}
+                                                     (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count diffs)) :file-bodies file-bodies
+                                                                               :settlement-supported? (and (card-model/settlement-supported? fk)
+                                                                                                           (not (and review (seq (review-only-open-forks forks)))))
+                                                                               :checks (check-for checks fk)
+                                                                               :may-merge? (may-merge-for forks fk)
+                                                                               :capability-live?
+                                                                               (capability-live-for forks fk)) false)))))
+                                 (el/button {:class "btn btn-ghost btn-sm proposal-showall"
+                                             :on-click (fn [_] (toggle :all))}
+                                            "Show the full diff"))
 
-             :else
-             (el/div {}
-               (when (seq (:sections ai-summary))
-                 (el/button {:class "btn btn-ghost btn-sm proposal-showall"
-                             :on-click (fn [_] (toggle :all))}
-                            "Back to summary"))
-               (for [[i fk] (map-indexed vector diffs)]
-                 (el/div {:key (str i)}
-                   (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count diffs))
-                                             :checks (check-for checks fk)
-                                             :may-merge? (may-merge-for forks fk)
-                                             :capability-live?
-                                             (capability-live-for forks fk)) true))))))
-         (when action-error
-           (el/div {:class "proposal-error"} action-error))
+                         :else
+                         (el/div {}
+                                 (when (seq (:sections ai-summary))
+                                   (el/button {:class "btn btn-ghost btn-sm proposal-showall"
+                                               :on-click (fn [_] (toggle :all))}
+                                              "Back to summary"))
+                                 (for [[i fk] (map-indexed vector diffs)]
+                                   (el/div {:key (str i)}
+                                           (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count diffs)) :file-bodies file-bodies
+                                                                     :settlement-supported? (and (card-model/settlement-supported? fk)
+                                                                                                 (not (and review (seq (review-only-open-forks forks)))))
+                                                                     :checks (check-for checks fk)
+                                                                     :may-merge? (may-merge-for forks fk)
+                                                                     :capability-live?
+                                                                     (capability-live-for forks fk)) true))))))
+               (when action-error
+                 (el/div {:class "proposal-error"} action-error))
          ;; Optional, and nothing consumes it yet. It is here so the corpus of
          ;; "what this workspace accepts, refuses, and why" starts accruing now —
          ;; an agent reviewer can be few-shot prompted on it later, and the
          ;; reasoning cannot be recovered after the decision is made.
-         (when (seq comments)
-           (el/div {:class "proposal-comments"}
-             (for [[i c] (map-indexed vector comments)]
-               (el/div {:key (str (:id c) i)} (comment-view c)))))
+               (when (seq comments)
+                 (el/div {:class "proposal-comments"}
+                         (for [[i c] (map-indexed vector comments)]
+                           (el/div {:key (str (:id c) i)} (comment-view c)))))
          ;; ONE box, several buttons — the GitHub shape, and it is right for the
          ;; same reason: what the reviewer types is the same kind of thing
          ;; whether they are asking a question, requesting a change, or
          ;; explaining a decision. Two boxes would make them choose a category
          ;; before they have decided what to do.
-         (el/input {:class "proposal-note"
-                    :type "text"
-                    :data-note-for id
-                    :data-comment-for id
-                    :placeholder "Leave a comment, or say why (optional for a decision)"})
+               (el/input {:class "proposal-note"
+                          :type "text"
+                          :data-note-for id
+                          :data-comment-for id
+                          :placeholder "Leave a comment, or say why (optional for a decision)"})
          ;; Accept lands EVERY open fork, so one patch you may not land makes the
          ;; whole button certain to refuse. Say which, before it is pressed —
          ;; `authorize-forks!` would name them in an error, but an error after
          ;; the fact is a worse place to learn it than the card.
-         (let [blocked (unlandable-open-forks forks)]
-           (when (and (seq blocked) (not review))
-             (el/div {:class "proposal-merge-blocked"}
-                     (str (count blocked)
-                          (if (= 1 (count blocked))
-                            " patch cannot be landed by you: "
-                            " patches cannot be landed by you: ")
-                          (->> blocked (map :branch) (interpose ", ") (apply str))
-                          ". Decide them individually, or ask someone with merge"
-                          " rights on their targets."))))
-         (when (seq (unavailable-open-forks forks))
-           (el/div {:class "proposal-merge-blocked"}
-             (if review
-               "The reviewed work is not available in this server process — gone with a restart, or left unreadable by a merge that failed. Its notes remain; it can no longer be merged or discarded from here."
-               "This process no longer holds the adopted world capability. The durable proposal remains auditable, but settlement requires recovery.")))
+               (let [blocked (unlandable-open-forks forks)]
+                 (when (and (seq blocked) (not review))
+                   (el/div {:class "proposal-merge-blocked"}
+                           (str (count blocked)
+                                (if (= 1 (count blocked))
+                                  " patch cannot be landed by you: "
+                                  " patches cannot be landed by you: ")
+                                (->> blocked (map :branch) (interpose ", ") (apply str))
+                                ". Decide them individually, or ask someone with merge"
+                                " rights on their targets."))))
+               (when (seq (unavailable-open-forks forks))
+                 (el/div {:class "proposal-merge-blocked"}
+                         (if review
+                           "The reviewed work is not available in this server process — gone with a restart, or left unreadable by a merge that failed. Its notes remain; it can no longer be merged or discarded from here."
+                           "This process no longer holds the adopted world capability. The durable proposal remains auditable, but settlement requires recovery.")))
          ;; A reviewed world is decided by whoever may land onto its room —
          ;; its owner. Everyone else sees the notes and may comment; offering
          ;; them buttons that are certain to refuse would read as a bug. And
          ;; there is no "request changes": nobody is holding the world open to
          ;; revise it.
-         (if review
-           (let [decider? (and (seq forks) (every? :may-merge? (filter (comp nil? :status) forks)))
-                 unavailable? (seq (unavailable-open-forks forks))]
-             (el/div {:class "proposal-actions"}
-               (if decider?
-                 (el/div {:class "proposal-actions-group"}
-                   (el/button {:class "btn btn-affirm"
-                               :disabled (boolean (or busy? diff-error (nil? diffs) unavailable?
-                                                      (:changed? review)))
-                               :on-click (fn [_] (accept! id false))}
-                              (cond busy? "Working…"
-                                    unavailable? "Unavailable"
-                                    (:spot-check? review) "Agree — merge"
-                                    :else "Accept"))
-                   (el/button {:class "btn btn-secondary"
-                               :disabled (boolean (or busy? unavailable?))
-                               :on-click (fn [_] (dismiss! id))}
-                              (if (:spot-check? review) "Disagree — discard" "Reject")))
-                 (el/div {:class "proposal-note-line"}
-                   "Only the room's owner decides reviewed work."))
-               (el/button {:class "btn btn-secondary"
-                           :disabled (boolean busy?)
-                           :on-click (fn [_] (comment! id))} "Comment")))
-         (el/div {:class "proposal-actions"}
+               (if review
+                 (let [decider? (and (seq forks) (every? :may-merge? (filter (comp nil? :status) forks)))
+                       unavailable? (seq (unavailable-open-forks forks))]
+                   (el/div {:class "proposal-actions"}
+                           (if decider?
+                             (el/div {:class "proposal-actions-group"}
+                                     (el/button {:class "btn btn-affirm"
+                                                 :disabled (boolean (or busy? diff-error (nil? diffs) unavailable? (seq (review-only-open-forks forks))
+                                                                        (:changed? review)))
+                                                 :on-click (fn [_] (accept! id false))}
+                                                (cond busy? "Working…"
+                                                      (seq (review-only-open-forks forks)) "Review only"
+                                                      unavailable? "Unavailable"
+                                                      (:spot-check? review) "Agree — merge"
+                                                      :else "Accept"))
+                                     (el/button {:class "btn btn-secondary"
+                                                 :disabled (boolean (or busy? unavailable?))
+                                                 :on-click (fn [_] (dismiss! id))}
+                                                (if (:spot-check? review) "Disagree — discard" "Reject")))
+                             (el/div {:class "proposal-note-line"}
+                                     "Only the room's owner decides reviewed work."))
+                           (el/button {:class "btn btn-secondary"
+                                       :disabled (boolean busy?)
+                                       :on-click (fn [_] (comment! id))} "Comment")))
+                 (el/div {:class "proposal-actions"}
            ;; `force?` is whether THIS press follows a conflict warning. It was
            ;; hardcoded false, so the "Accept again to proceed anyway" the
            ;; warning prints could never be obeyed — every press repeated the
            ;; same request and re-rendered the same message.
-           (el/button {:class "btn btn-affirm"
-                       :disabled (boolean (or busy?
-                                              diff-error
-                                              (nil? diffs)
+                         (el/button {:class "btn btn-affirm"
+                                     :disabled (boolean (or busy?
+                                                            (seq (review-only-open-forks forks))
+                                                            diff-error
+                                                            (nil? diffs)
+                                                            (seq (unlandable-open-forks forks))
+                                                            (seq (unavailable-open-forks forks))))
+                                     :title (cond
+                                              (seq (review-only-open-forks forks)) "Retained evidence is review-only; adoption is unavailable"
+                                              (seq (unavailable-open-forks forks))
+                                              "The adopted world capability is unavailable"
                                               (seq (unlandable-open-forks forks))
-                                              (seq (unavailable-open-forks forks))))
-                       :title (cond
-                                (seq (unavailable-open-forks forks))
-                                "The adopted world capability is unavailable"
-                                (seq (unlandable-open-forks forks))
-                                "Some patches in this proposal are not yours to land")
-                       :on-click (fn [_] (accept! id (boolean accept-warned?)))}
-                      (cond busy? "Working…"
-                            diff-error "Review unavailable"
-                            (nil? diffs) "Checking…"
-                            (seq (unavailable-open-forks forks)) "Unavailable"
-                            (seq (unlandable-open-forks forks)) "Cannot land all"
-                            accept-warned? "Accept anyway"
-                            :else "Accept"))
-           (el/button {:class "btn btn-secondary"
-                       :disabled (boolean busy?)
-                       :on-click (fn [_] (request-changes! id))}
-                      "Request changes")
-           (el/button {:class "btn btn-secondary"
-                       :disabled (boolean busy?)
-                       :on-click (fn [_] (comment! id))} "Comment")
-           (el/button {:class "btn btn-secondary"
-                       :disabled (boolean (or busy? (seq (unavailable-open-forks forks))))
-                       :on-click (fn [_] (dismiss! id))} "Dismiss")))))
+                                              "Some patches in this proposal are not yours to land")
+                                     :on-click (fn [_] (accept! id (boolean accept-warned?)))}
+                                    (cond busy? "Working…"
+                                          (seq (review-only-open-forks forks)) "Review only"
+                                          diff-error "Review unavailable"
+                                          (nil? diffs) "Checking…"
+                                          (seq (unavailable-open-forks forks)) "Unavailable"
+                                          (seq (unlandable-open-forks forks)) "Cannot land all"
+                                          accept-warned? "Accept anyway"
+                                          :else "Accept"))
+                         (el/button {:class "btn btn-secondary"
+                                     :disabled (boolean busy?)
+                                     :on-click (fn [_] (request-changes! id))}
+                                    "Request changes")
+                         (el/button {:class "btn btn-secondary"
+                                     :disabled (boolean busy?)
+                                     :on-click (fn [_] (comment! id))} "Comment")
+                         (el/button {:class "btn btn-secondary"
+                                     :disabled (boolean (or busy? (seq (unavailable-open-forks forks))))
+                                     :on-click (fn [_] (dismiss! id))} "Dismiss")))))
      :clj nil))
 
 ;; The two destinations, in the order a reviewer wants them: what can land
@@ -1186,6 +1261,29 @@
    [:unclassified "Checking…"
     "Working out whether these still merge."]])
 
+(defn- retained-audit-view [pid audit]
+  #?(:cljs
+     (case (:state audit)
+       nil (do (load-retained-audit! pid)
+               (el/div {:class "proposal-note-line"} "Checking retained evidence…"))
+       :loading (el/div {:class "proposal-note-line"} "Checking retained evidence…")
+       :unavailable nil
+       :error (el/div {}
+                      (el/div {:class "proposal-error"} (:error audit))
+                      (el/button {:class "btn btn-secondary btn-sm" :on-click (fn [_] (load-retained-audit! pid))}
+                                 "Retry retained evidence"))
+       :ready (let [p (:proposal audit)]
+                (el/div {:class "proposal-card"}
+                        (el/h3 {} (:title p))
+                        (el/p {:class "proposal-note-line"}
+                              "Retained audit — this decision is closed. Inspecting evidence does not reopen it.")
+                        (when (:summary p) (el/p {} (:summary p)))
+                        (for [f (:forks p)]
+                          (el/div {:key (:scope f)}
+                                  (fork-diff-view pid (assoc f :status (or (:status f) (:status p))
+                                                             :file-bodies (:file-bodies p) :only-fork? true)))))))
+     :clj nil))
+
 (defn proposals-view
   "The ForkSet inbox. With `focus-id`, ONE ForkSet — how a Task or Feed row
    opens the proposal it points at instead of the list it was listed in.
@@ -1196,39 +1294,39 @@
   ([focus-id]
    #?(:cljs
       (spin
-        (let [data (iv/get-new (track sig/proposals-data))
-              _ (when (nil? data) (load-proposals!))
-              all (:proposals data)
-              focused (when focus-id
-                        (first (filter #(= (str (:id %)) (str focus-id)) all)))
+       (let [data (iv/get-new (track sig/proposals-data))
+             _ (when (nil? data) (load-proposals!))
+             all (:proposals data)
+             focused (when focus-id
+                       (first (filter #(= (str (:id %)) (str focus-id)) all)))
               ;; Share the compact card's cache invalidation when an open
               ;; row arrives. An earlier :open verification must not outlive
               ;; that row and mask a subsequent accept/dismiss by any client.
-              _ (when focused (proposal-state data focus-id))
+             _ (when focused (proposal-state data focus-id))
               ;; Not in the list is not yet an answer — ask, once.
-              _ (when (and focus-id (nil? focused)) (recheck-focus! focus-id))
+             _ (when (and focus-id (nil? focused)) (recheck-focus! focus-id))
               ;; …and only THEN is an absence worth reporting as a resolution.
-              focus-resolved? (and focus-id (nil? focused) (focus-answered? focus-id))
-              proposals (if focused [focused] all)
-              by-dest (group-by #(fs/destination (:intent %) (:tier %)) proposals)]
-          (el/div {:class "proposals-view"}
-            (el/div {:class "proposals-header"}
-              (el/h2 {} (if focused "Proposal" "Proposals"))
+             focus-resolved? (and focus-id (nil? focused) (focus-answered? focus-id))
+             proposals (if focused [focused] all)
+             by-dest (group-by #(fs/destination (:intent %) (:tier %)) proposals)]
+         (el/div {:class "proposals-view"}
+                 (el/div {:class "proposals-header"}
+                         (el/h2 {} (if focused "Proposal" "Proposals"))
               ;; invalidated by `perspectives-sync` on branch lifecycle events
               ;; and on `:proposal/tx-occurred` (filing / resolution)
-              (when focused
-                (el/button {:class "btn btn-ghost btn-sm"
-                            :on-click (fn [e]
-                                        (binding [rtc/*execution-context* runtime]
-                                          (sig/open-tab! :proposals nil
-                                                         {:title "Proposals"
-                                                          :new-column? (or (.-metaKey e)
-                                                                           (.-ctrlKey e))})))}
-                           "All proposals")))
-            (cond
-              (:error data) (el/div {:class "proposal-error"}
-                              (str "Couldn't load proposals — " (:error data)))
-              (nil? data) (el/div {:class "proposals-empty"} "Loading…")
+                         (when focused
+                           (el/button {:class "btn btn-ghost btn-sm"
+                                       :on-click (fn [e]
+                                                   (binding [rtc/*execution-context* runtime]
+                                                     (sig/open-tab! :proposals nil
+                                                                    {:title "Proposals"
+                                                                     :new-column? (or (.-metaKey e)
+                                                                                      (.-ctrlKey e))})))}
+                                      "All proposals")))
+                 (cond
+                   (:error data) (el/div {:class "proposal-error"}
+                                         (str "Couldn't load proposals — " (:error data)))
+                   (nil? data) (el/div {:class "proposals-empty"} "Loading…")
               ;; THREE states, not two. A focus id missing from a list that was
               ;; fetched after the id was asked about means resolved; missing
               ;; from any older list means only that the list is older. This
@@ -1239,40 +1337,42 @@
               ;; first is false for a shared link AND discloses that someone
               ;; else's proposal exists. `proposal-status!` answers which, and
               ;; refuses to distinguish "no such proposal" from "not yours".
-              focus-resolved?
-              (let [{:keys [status error]} (get @focus-outcome focus-id)]
-                (el/div {:class "proposals-empty"}
-                  (el/p {}
-                    (case status
-                      :accepted "That proposal is no longer open — it was accepted."
-                      :dismissed "That proposal is no longer open — it was dismissed."
-                      :unavailable (str "That proposal isn't available. It may have been "
-                                        "removed, or you may not have access to it.")
-                      :open "That proposal is open, but has not reached this list yet."
-                      :error (str "Couldn't verify this proposal — " error)
-                      "Checking proposal status…"))
-                  (when (#{:open :error} status)
-                    (el/button {:class "btn btn-secondary btn-sm"
-                                :on-click (fn [_]
-                                            (retry-proposal-state! focus-id))}
-                      "Retry"))))
-              (and focus-id (nil? focused))
-              (el/div {:class "proposals-empty"} "Loading…")
-              (empty? proposals)
-              (el/div {:class "proposals-empty"}
-                "No open proposals. Agents file these for big restructurings.")
-              :else
-              (el/div {:class "proposals-list"}
-                (for [[dest label blurb] group-order
-                      :let [ps (get by-dest dest)]
-                      :when (seq ps)]
-                  (el/div {:key (name dest)
-                           :class (str "proposal-group proposal-group--" (name dest))}
+                   focus-resolved?
+                   (let [{:keys [status error]} (get @focus-outcome focus-id)]
+                     (el/div {:class "proposals-empty"}
+                             (el/p {}
+                                   (case status
+                                     :accepted "That proposal is no longer open — it was accepted."
+                                     :dismissed "That proposal is no longer open — it was dismissed."
+                                     :unavailable (str "That proposal isn't available. It may have been "
+                                                       "removed, or you may not have access to it.")
+                                     :open "That proposal is open, but has not reached this list yet."
+                                     :error (str "Couldn't verify this proposal — " error)
+                                     "Checking proposal status…"))
+                             (when (#{:open :error} status)
+                               (el/button {:class "btn btn-secondary btn-sm"
+                                           :on-click (fn [_]
+                                                       (retry-proposal-state! focus-id))}
+                                          "Retry"))
+                             (when (#{:accepted :dismissed} status)
+                               (retained-audit-view focus-id (get-in data [:retained-audits focus-id])))))
+                   (and focus-id (nil? focused))
+                   (el/div {:class "proposals-empty"} "Loading…")
+                   (empty? proposals)
+                   (el/div {:class "proposals-empty"}
+                           "No open proposals. Agents file these for big restructurings.")
+                   :else
+                   (el/div {:class "proposals-list"}
+                           (for [[dest label blurb] group-order
+                                 :let [ps (get by-dest dest)]
+                                 :when (seq ps)]
+                             (el/div {:key (name dest)
+                                      :class (str "proposal-group proposal-group--" (name dest))}
                     ;; a single focused card needs no group heading above it
-                    (when-not focused
-                      (el/div {:class "proposal-group-head"}
-                        (el/span {:class "proposal-group-title"} label)
-                        (el/span {:class "proposal-group-count"} (str (count ps)))))
-                    (when-not focused (el/div {:class "proposal-group-blurb"} blurb))
-                    (for [p ps] (proposal-card p)))))))))
+                                     (when-not focused
+                                       (el/div {:class "proposal-group-head"}
+                                               (el/span {:class "proposal-group-title"} label)
+                                               (el/span {:class "proposal-group-count"} (str (count ps)))))
+                                     (when-not focused (el/div {:class "proposal-group-blurb"} blurb))
+                                     (for [p ps] (proposal-card p)))))))))
       :clj nil)))

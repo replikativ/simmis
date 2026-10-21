@@ -1,14 +1,14 @@
 (ns is.simm.runtimes.rpc-errors
   "What a client learns when one of its remote calls fails.
 
-   distributed-scope (`is.simm.distributed-scope`, `dispatch-invocation!`)
-   answers a failed invocation with `{:error (pr-str e)}`. For a JVM exception
+   distributed-scope delegates to `kabel.remote/serve`: legacy peers receive
+   `{:error (pr-str e)}`, modern peers receive a structured error envelope.
+   For an unsanitized JVM exception
    that is the whole `#error {…}` rendering: every stack frame, the cause
    chain, the class and file names, and all of `ex-data`. A refused call sent
    that to the browser, and so did any handler that threw.
 
-   The library builds that string itself, so simmis decides what the string
-   SAYS: every exception that can reach that `pr-str` is replaced first by a
+   Simmis decides what either representation says: every exception is replaced by a
    client error (`client-error`), whose printed form is only
 
      {:error \"<short message>\" :type <allowlisted ex-data :type> :correlation-id \"<uuid>\"}
@@ -16,7 +16,7 @@
    and the original exception goes to the server log (Telemere) under the same
    correlation id, so a user's report can be matched to the trace.
 
-   Two places can throw into that `pr-str`, and both are simmis's to wrap:
+   Both places that can fail are simmis's to wrap:
 
    - the gate. `gate` wraps `access/authorize-remote`: a refusal throws a
      client error of type `:not-authorized` (or `:authentication-required`
@@ -38,6 +38,7 @@
 
    The client reads it back with `is.simm.uis.web.desktop.remote/error-info`."
   (:require [clojure.core.async :as a]
+            [clojure.core.async.impl.protocols :as async-proto]
             [clojure.string :as str]
             [is.simm.distributed-scope :as ds]
             [taoensso.telemere :as log])
@@ -50,6 +51,7 @@
     :authentication-required
     :validation-error
     :dispatch/invalid-mentions
+    :memory/target-changed
     ;; a merge that refused or failed and landed nothing (the proposal
     ;; stays open), e.g. spindel's ::overlay-lost
     :proposal/merge-failed
@@ -68,7 +70,7 @@
 ;; every `Exception` it takes in a fresh `ex-info` (to keep a trace across
 ;; go blocks) — whose printed form is a frame of superv.async, the class names
 ;; and our map underneath. A Throwable that is not an Exception passes through
-;; `<?` as a value, which is what `dispatch-invocation!` then sends. No stack
+;; `<?` as a value, which is what the remote server then sends. No stack
 ;; trace is recorded (`writableStackTrace` false): there is nothing in it for
 ;; anyone.
 (def ^:private client-error-class
@@ -130,29 +132,34 @@
    keeps working)."
   [authorize]
   (fn [principal fn-name arg-map]
-    (or (authorize principal fn-name arg-map)
-        (let [cid (random-uuid)
-              t (if principal :not-authorized :authentication-required)
-              info {:error (if principal "not authorized" "authentication required")
-                    :type t
-                    :correlation-id (str cid)}]
+    (try
+      (or (authorize principal fn-name arg-map)
+          (let [cid (random-uuid)
+                t (if principal :not-authorized :authentication-required)
+                info {:error (if principal "not authorized" "authentication required")
+                      :type t
+                      :correlation-id (str cid)}]
           ;; the reason (which policy row, which resource) is in authorize's
           ;; own ::rpc-denied entry; this one ties it to what the client got
-          (log/log! {:level :warn :id ::remote-call-refused
-                     :data {:correlation-id (str cid)
-                            :fn (str fn-name)
-                            :sub (:sub principal)
-                            :type t}})
-          (throw (client-error info))))))
+            (log/log! {:level :warn :id ::remote-call-refused
+                       :data {:correlation-id (str cid)
+                              :fn (str fn-name)
+                              :sub (:sub principal)
+                              :type t}})
+            (throw (client-error info))))
+      (catch Throwable e (throw (sanitize e fn-name))))))
 
 (defn wrap-handler
-  "Wrap a registry function (`(f arg-map)` → channel) so that a failure, thrown
-   or delivered on the channel, arrives as a client error."
+  "Wrap a registry function returning a value, nil, or a channel so that a
+   failure, thrown or delivered on the channel, arrives as a client error."
   [fn-name f]
   (with-meta
     (fn [arg-map]
       (a/go
-        (let [r (try (a/<! (f arg-map))
+        (let [r (try (let [result (f arg-map)]
+                       (if (satisfies? async-proto/ReadPort result)
+                         (a/<! result)
+                         result))
                      (catch Throwable e e))]
           (if (instance? Throwable r) (sanitize r fn-name) r))))
     {::wrapped true}))

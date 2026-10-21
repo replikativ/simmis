@@ -32,6 +32,7 @@
    durable identity (`:entity/uuid`, or `:fs.node/id` on drives) before
    anything is compared, and back to a per-db eid only to read it."
   (:require [is.simm.runtimes.branching :as branching]
+            [is.simm.ops.file-output-review :as file-review]
             [yggdrasil.protocols :as yp]
             [datahike.api :as d]
             [clojure.string :as str]))
@@ -394,8 +395,9 @@
 (defn semantic-diff
   "Dispatch on system-type keyword (:kb :fs :book :repo; :room and unknown fall
    back to counts). `base-commit` is the fork point when the caller knows it."
-  [scope branch system-type & {:keys [base-commit]}]
+  [scope branch system-type & {:keys [base-commit principal]}]
   (case system-type
+    :file-output (file-review/summary principal scope)
     :kb (semantic-kb-diff scope branch :base-commit base-commit)
     :fs (semantic-fs-diff scope branch :base-commit base-commit)
     :book (semantic-book-diff scope branch :base-commit base-commit)
@@ -425,10 +427,11 @@
 (defn proposal-diff
   "Semantic diff for every fork of a proposal (ops/proposals row), each against
    the fork point recorded on its `:proposal.fork/base-commit`."
-  [proposal]
+  [proposal & {:keys [principal]}]
   (mapv (fn [f]
           (semantic-diff (:proposal.fork/scope f)
                          (keyword (:proposal.fork/branch f))
                          (or (:proposal.fork/system-type f) :kb)
-                         :base-commit (:proposal.fork/base-commit f)))
+                         :base-commit (:proposal.fork/base-commit f)
+                         :principal principal))
         (:proposal/forks proposal)))

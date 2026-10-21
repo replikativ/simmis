@@ -10,6 +10,181 @@ ClojureScript client holds a real Datahike replica of the ones it may see and
 queries it locally; agents run in a sandbox on the server and write to
 branches rather than to trunk.
 
+## Room files and execution state
+
+The **Memory** tree in the resizable left navigation browses each room's
+Geschichte worktree on demand rather
+than downloading file contents as a browser database replica. Markdown,
+workflow files, and room-local Clojure source share the same hierarchy.
+Filename search and folder-focus breadcrumbs avoid unbounded indentation.
+Files open in independent tabs. Markdown offers Read, directly editable Rich
+text, semantic Outline, and exact Source views; unsupported rich regions remain
+inert source. Rich typing patches supported source spans locally; Save validates
+the complete bounded batch on the server before one canonical publication.
+YAML document properties and explicit document/block identities remain in the
+source; programmable property schemas are separate trusted definitions, not
+automatically installed by an uploaded file. Existing independent KBs
+and drive resources remain accessible while this file-backed surface is
+introduced; they are not silently migrated or deleted.
+
+The experimental source-selected knowledge view derives semantic document/block
+rows from one immutable Geschichte snapshot without writing a second repository.
+Its default selection includes root and nested Markdown, with trusted exact folder
+roots/exclusions, a 20,000-entry metadata scan bound, and separate 200-document,
+8-MiB source and syntax-node bounds. Invalid identities or syntax return diagnostics,
+not a queryable partial view. The resolver-backed `agents.memory-read` vocabulary
+offers document descriptors, exact source reads and bounded literal search; it
+does not expose its backing DB. Participants with a writable room repository get
+this vocabulary beside the unchanged legacy `wiki/*` API. Saved functions resolve
+their selected world and live room/repository authority on every call through
+Dvergr's effect boundary. Whole-world descendants read their exact registered
+repository; an ordinary participant instead follows its existing proposal file
+workspace when one exists. Neither route creates a proposal or hydrates trunk.
+Selection/content identifiers do not pin storage against GC: these read receipts
+explicitly borrow the source lifetime rather than promising archival retention.
+
+`ops.knowledge-inputs` prepares bounded frozen inputs for ordinary saved
+workflows: incoming evidence in declared inbox/transcript folders and supporting
+knowledge in separate folders. A metadata-only trigger fingerprint excludes
+supporting wiki changes; an execution fingerprint includes them. Workflow,
+staging and output folders cannot be selected as inputs. Capture copies exact
+UTF-8 sources plus a content-addressed manifest into the normal workflow input
+map (100 files/2 MiB total, including the manifest). This collector does not
+submit work, spend funds, advance maintenance cursors or install a schedule.
+An inert `input-selection.edn` sidecar pins the declared knowledge policy with
+the ordinary workflow bundle. Server and local-worker submission capture it
+after authorization and request retry lookup; the original submission remains
+the retry identity. Captured bytes and collector provenance are retained with
+the work request. Pure preparation and benchmarks require verified frozen
+inputs instead of resolving a live policy. Setup replaces the collector-owned
+`/in/knowledge/` subtree so inherited stale staging cannot augment the manifest;
+unrelated room files remain. Recurring deployments pin the policy, then select
+one immutable source snapshot per occurrence. An initially empty or unchanged
+trigger set skips before body reads, allowance checks or provider preparation.
+Deleting all previously processed evidence is a change that requires another
+attempt. Selected bytes are retained before submission; uncertain admission is
+held after restart, never recaptured from newer room state. Only a physically
+settled Job whose direct candidate has a successful certified Attempt against
+the request's exact EnvironmentDef advances the processed-input cursor. Job
+completion alone does not. Failed or uncertified work holds the activation for
+explicit resumption. This cursor records processing/proposal, not adoption of
+any generated knowledge.
+
+Fresh host knowledge admission resolves the logical room's explicitly owned
+default repository, not an attachment-order or current-workspace fallback.
+Input selection and complete wiki occupancy use the same immutable database
+value. Retained target metadata includes the registry system and runtime
+system identities alongside the physical repository/store/branch/ref identity.
+These are historical evidence, not permission or a lease over the live target.
+Older unmarked captures remain readable but do not gain publication authority
+by matching today's workspace. Benchmark and supplied frozen inputs remain
+unmarked. A changed host target policy requires explicit schedule redeployment;
+the server does not silently upgrade an existing activation.
+
+Room source and execution state have different lifetimes. A daemon room's
+repository is initially seeded from the sandbox library (or its configured
+import source); participants load source into their own SCI interpreters,
+selected through their Spindel execution contexts/worlds. Saving a file in
+Memory neither evaluates it nor reloads any interpreter. Host-injected
+functions and permissions are capabilities, not editable source files.
+
+Clojure-family files (`.clj`, `.cljc`, `.cljs`, `.bb`) follow the existing user
+Code View preference: editable Clojure or a read-only Superficie projection.
+A per-tab override and Follow preference control do not change the file bytes
+or saved preference. Conversion failures explicitly retain source editing;
+the file writer and evaluator never consume the projected syntax. `.cljs`
+display support does not enable ClojureScript execution on the JVM evaluator.
+
+For `.clj`, `.cljc` and `.bb` files, explicit selection, top-level-form and
+whole-file evaluation targets the authenticated human's separate room-scoped
+SCI world component. It does not borrow an agent interpreter or inject its
+room tools. Definitions persist for that human in the room until its context
+closes; descendant worlds select an independent interpreter. The session index
+is itself a fork-owned non-reactive world component: a following child's index
+must not observe a later parent retirement and lose its existing interpreter.
+Evaluation is
+owner/`:merge` gated, serialized per interpreter and bounded to 64K source
+characters and a ten-second evaluator timeout. Timeout retires the session so
+later requests cannot reuse its unwinding heap. Results, printed output and
+the exact evaluated source are retained in the editor signal, not as a durable
+Run or a deployed workflow. The old chat inspector Quick eval input is removed.
+
+Below the file buffer, the code-file panel includes a dual-input **Room REPL**.
+Separate Clojure and Superficie scratch buffers follow the Code View preference unless locally
+overridden; switching syntax never converts a buffer or changes the file draft.
+Both inputs use the same human SCI world component, with an explicit namespace
+target. A submitted `ns` change updates that target only if the user has not
+changed it while the request was pending. Parsing and evaluation run within
+the existing sandbox evaluator's ten-second boundary, with a 16K-character
+input bound. Clojure and Superficie both parse/evaluate incrementally. Symbol
+and keyword resolution consult the selected SCI interpreter, not JVM host
+namespaces. No host eval or mutable user block/shape registration in global
+Superficie registries is used; ordinary user-defined macros can be called, but
+custom Superficie block-shape registration is not exposed.
+
+The last 20 REPL receipts live in the context-owned editor signal, recording
+original input, syntax, namespace, printed value/output and generated Clojure
+(preview bounded to 64K characters). They are not durable Run receipts. Failed
+evaluation retains a receipt and warns that earlier forms may have executed;
+input is not transactional. A timeout retires the selected interpreter. The
+UI targets the live room's human session; this does not introduce an arbitrary
+world picker or an agent-interpreter attachment. Underlying component-based
+fork isolation is covered by the evaluation tests. Superficie input is a
+separate language input, not an assertion of lossless source-view conversion.
+
+The file tab's Context footer previews changes from a bounded 31-commit window
+of the canonical Geschichte ancestry, including merges. It compares file
+metadata against parent snapshots and loads historical text only on demand.
+Previews are read-only and do not change the draft, current branch or GlobalCut;
+this is not yet the legacy wiki's interactive history subway. Renames appear
+under their respective paths.
+Imported commits without materialized snapshots are reported as unavailable;
+a readable snapshot with an unavailable parent is labelled a boundary, not
+asserted to be a file change.
+
+Folder listings and open buffers follow private workspace invalidation hints.
+An owned host notifier listens to the canonical concrete connection's durable
+Datahike commits, queues/coalesces room identities off the commit loop, and
+rechecks each recipient's current read authority before publishing. Speculative
+connections do not publish to this feed. The private `:memory/<party>` stream
+carries only room identities, never paths, branch IDs or file bytes. It is not
+raw Geschichte-store replication: Datahike store walking can traverse blobs,
+and a trunk-scoped handshake alone does not filter subsequent store writes.
+
+After each authenticated socket handshake, Memory reconciles immutable bounded
+metadata snapshots, even when no hint was received. A hint arriving during a
+read causes a second reconciliation on completion, not a timer. Changed open
+files load on demand; clean buffers adopt them, while dirty text, selections,
+rich regions and Office edits remain with an incoming-revision notice. Deleted
+or externally moved files retain their buffers and cannot be implicitly
+recreated. External renames are deletion/addition, not guessed from equal hashes.
+Per-view read epochs fence old folder/file replies against newer metadata;
+background refresh never changes the selected file. Metadata requests cover up
+to 64 folders and buffers per view; collapsing a folder releases its listing.
+
+The notifier owns routing interests for the process lifetime, not one callback
+per mounted editor. Room shutdown releases concrete listeners; retained party/
+room identities allow rebind after canonical room replacement, followed by
+catch-up. Application shutdown joins its one notifier worker. Local durable
+writer commits, including logical checkout/reset, are observed; independent
+external-process writes to a shared physical store are not a supported feed.
+
+Editor drafts, selections, request tokens, and read/mutation generations live
+in a session/room/column/tab-keyed Spindel signal. Native CodeMirror/Tiptap handles
+and download object URLs belong only to their DOM elements and are released
+on detach. Authenticated RPCs capture the principal before dispatching bounded
+store/parsing work off the FRP drain. Saves use the canonical Dvergr file
+writer's opened-revision precondition, effect gate, and applied entry receipt;
+a late pre-save read cannot replace a new save acknowledgement. A revoked
+room write permission is checked again at the actual effect boundary.
+
+Office containers have a bounded advanced XML-part editor, not a Word/Excel
+layout editor. Each operation reopens the selected immutable file revision;
+there is no retained server document handle. Validation disables DTDs, and an
+edit copies untouched part bytes rather than re-emitting their XML. Exact
+no-ops retain the original container. Saving modified XML does not certify
+Office schema validity or preserve a document signature's validity.
+
 ## Processes and ports
 
 One JVM runs everything in development (`clj -M:dev`):
@@ -139,7 +314,9 @@ saved-workflow preparation as native server execution. It freezes the inspected
 bundle, literal parameters, fixture/input overlays and regular-file modes before
 admission. Only those files reach the guest. Ordinary workflow source may include
 checker/gold files, but authored checkers are not executed and this is not a
-benchmark secrecy boundary. Exact retries observe the original Job; recovery
+benchmark secrecy boundary. Saved workflows reject `:review` and
+`:workflow/writes` declarations: this adapter does not silently enable retained
+world adoption or whole-world auto-merge. Exact retries observe the original Job; recovery
 reconstructs its input only from the stored snapshot, not newer room content.
 `ops/worker-benchmarks.clj` is a host-only local-worker adapter for the same
 experiment runner: one enrolled candidate, up to eight case/repetition cells,
@@ -218,6 +395,33 @@ That gives two distinct channels, and they are authorized separately:
 
 See [authority.md](authority.md) for how each is gated.
 
+Authentication, subscription readiness and replica readiness are separate
+boundaries. Each authenticated socket gets an epoch. The shell reestablishes
+owned invalidation subscriptions, reads an authoritative room/KB roster, and
+reconciles already-open replicas; it does not eagerly open every wiki. Lazy
+opens wait for that roster. Revoked scopes are withdrawn immediately, including
+historical/proposal signals held by mounted views. Subscription replacement
+joins an unsubscribe guarded by the exact old strategy before installing a
+replacement. Old epoch callbacks cannot publish into the current views.
+
+On same-peer reconnect, `datahike.kabel.connector/resubscribe!` confirms a fresh
+server branch head and completed handshake on the existing connection. Its
+optimistic overlay is retained; neither writes nor predictions are replayed.
+The shared replica's initial bootstrap also follows epoch changes while still
+loading. Previously requested aggregate reports catch up with their latest
+options, including requests whose replies were lost with the socket.
+
+`replica-io` owns one native lifecycle slot per Datahike store UUID across peers
+and epochs; a different backend configuration cannot reuse that UUID. Server
+preparation RPCs run outside this physical lease, so a lost RPC cannot block a
+new epoch before construction starts. After construction starts, logical
+cancellation does not release physical ownership: replacement waits for the
+old constructor and confirmed subscription cleanup. Failed cleanup quarantines
+that store with explicit cleanup-only recovery, rather than wiping IndexedDB.
+Joined disposal is supported here for the pinned memory/IndexedDB tiered stores,
+not arbitrary plugin backends. A peer/account replacement retires the old slots
+and clears account projections; same-peer reconnect does not clear editor drafts.
+
 ## Three rules that shape everything else
 
 **Writes go through the server.** The client proposes; the server resolves the
@@ -231,9 +435,10 @@ at once is a datahike.optimistic PREDICTION over the RPC that makes it durable
 head after the write, the prediction is dropped once the replica reaches that
 head, and a refused or failed RPC rejects it and tells the user. `opt/transact!`
 would hand the transaction to the replica's KabelWriter — a raw
-`datahike.kabel/dispatch`, past `can?`, which this server does not serve — and
-such a write never arrives and never fails. The same holds for `d/transact!` on
-any replica conn and for konserve writes into a synced store;
+`datahike.kabel/dispatch`, past the operation-level `can?`. The shared RPC
+runtime now routes that function, but Simmis explicitly denies it for every
+principal. Neither `d/transact!` on a replica nor konserve writes into a synced
+store are authorized application writes;
 `browser-write-guard-test` reads every ClojureScript file (and the `:cljs`
 branch of every `.cljc`) and fails on any of them.
 
@@ -257,6 +462,22 @@ the server refuses it.
 **Aggregates are views over sources.** No persisted aggregate, no denormalised
 index. If an aggregate is slow, cache it on a key derived from the sources' own
 heads, so a stale entry is impossible rather than unlikely.
+
+Client aggregate RPC gates are owned by the authenticated socket epoch. Feed,
+Tasks, Accounting, Proposals and each room's leaderboard coalesce invalidations
+while retaining the latest requested parameters. A replacement epoch can start
+even if its predecessor never completed. Result writes and completion callbacks
+are separately fenced: an old completion cannot release the replacement's gate.
+Proposal diff/check requests retain independent epoch fences alongside their row
+request IDs, since they normally finish after the parent list request completes.
+
+The internal native-resource slot separates logical cancellation from physical
+cleanup. One worker serializes construction, publication and retirement for its
+resource. A superseded constructor must return and be disposed before its
+replacement opens; retirement barriers do not wait for later replacements to
+retire. Failed cleanup quarantines that slot while other stores can progress.
+Explicit recovery retries the retained cleanup only. Unknown constructor errors
+are not proof of cleanup and do not authorize another native open or cache wipe.
 
 **A failure is a value.** `nil` means never attempted, `{:error …}` means it
 broke, a list means it worked. An empty list must never be able to mean

@@ -27,6 +27,7 @@
 ;; =============================================================================
 
 #?(:cljs (defonce ^:private gate (agg/gate)))
+#?(:cljs (defn refresh-loaded! [] (agg/refresh! gate)))
 
 #?(:cljs
    (defn load-tasks!
@@ -36,11 +37,12 @@
      ([include-done?]
       (agg/run!
        gate
-       (fn [done]
+       (fn [done current?]
          (rem/spin!
           #(tr/list-tasks! web/server-id include-done?)
           (fn [ok err]
-            (binding [rtc/*execution-context* runtime]
+            (when (current?)
+             (binding [rtc/*execution-context* runtime]
               ;; A refusal has to reach the screen. An empty list and a denied
               ;; request must not render the same, or a broken principal looks
               ;; like a clear plate.
@@ -50,7 +52,7 @@
                                               (ex-message err) (str err))
                          :include-done? include-done?}
                         {:tasks (vec ok) :include-done? include-done?
-                         :loaded-at (js/Date.now)})))
+                         :loaded-at (js/Date.now)}))))
             (done)))))))) 
 
 #?(:cljs

@@ -15,6 +15,7 @@
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]])
             #?(:cljs [is.simm.uis.web.desktop.experiments-remote :as er])
             #?(:cljs [is.simm.uis.web.desktop.aggregate :as agg])
+            #?(:cljs [is.simm.uis.web.desktop.connection-epoch :as connection-epoch])
             #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el]
@@ -28,6 +29,7 @@
 ;; =============================================================================
 
 #?(:cljs (defonce ^:private gates (atom {})))
+#?(:cljs (defn refresh-loaded! [] (doseq [[_ gate] @gates] (agg/refresh! gate))))
 
 #?(:cljs
    (defonce ^:private requested
@@ -47,22 +49,23 @@
       (`attempt-board/experiment-fingerprint`). Coalesced per room
       by the aggregate gate."
      [room-id attempts]
-     (swap! requested assoc room-id attempts)
+     (swap! requested assoc room-id {:epoch (connection-epoch/snapshot) :attempts attempts})
      (agg/run!
       (gate-for room-id)
-      (fn [done]
+      (fn [done current?]
         (go
           (let [ch (promise-chan)]
             (binding [rtc/*execution-context* runtime]
               (let [s (er/load-leaderboard! web/server-id room-id)]
                 (s (fn [r] (put! ch {:ok r})) (fn [e] (put! ch {:err e})))))
             (let [{:keys [ok err]} (<! ch)]
-              (binding [rtc/*execution-context* runtime]
+              (when (current?)
+               (binding [rtc/*execution-context* runtime]
                 (swap! sig/leaderboards assoc room-id
                        (if err
                          {:error (or (rem/error-text err) (ex-message err) (str err))
                           :attempts attempts}
-                         {:data ok :attempts attempts})))
+                         {:data ok :attempts attempts}))))
               (done))))))))
 
 (defn- percent [x]
@@ -270,10 +273,12 @@
   [{:keys [room-id attempts] :as props}]
   #?(:cljs
      (spin
-       (let [boards (iv/get-new (track sig/leaderboards))
+       (let [epoch (iv/get-new (track sig/memory-connection))
+             boards (iv/get-new (track sig/leaderboards))
              entry (get boards room-id)
-             _ (when (or (not (contains? @requested room-id))
-                         (and attempts (not= attempts (get @requested room-id))))
+             _ (when (or (not= epoch (:epoch (get @requested room-id)))
+                         (not (contains? @requested room-id))
+                         (and attempts (not= attempts (:attempts (get @requested room-id)))))
                  (load-leaderboard! room-id attempts))]
          (view (assoc props
                       :leaderboard entry

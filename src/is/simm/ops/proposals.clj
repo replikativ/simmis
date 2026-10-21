@@ -11,10 +11,13 @@
   (:require [is.simm.model.system-db :as sdb]
             [is.simm.model.access :as access]
             [is.simm.model.forkset :as fs]
+            [is.simm.model.file-outputs :as file-manifests]
+            [is.simm.ops.file-output-plan :as file-plans]
             [is.simm.runtimes.branching :as branching]
             [is.simm.runtimes.context :as ctx]
             [clojure.string :as str]
             [datahike.api :as d]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [taoensso.telemere :as log]))
 
 (defn- conn [] (sdb/get-conn))
@@ -34,13 +37,14 @@
 
 (defn- fork-filing-value
   [{:keys [scope authority-scope branch base-commit system-type
-           world-system-id settlement-id settlement-state descriptor]
+           world-system-id settlement-id settlement-state descriptor file-output]
     fork-author :author}]
   ;; A positional value gives pr-str a stable order independent of map
   ;; implementation. Descriptor is already persisted through pr-str below.
-  [scope authority-scope (name branch) (some-> base-commit str) system-type
-   (some-> world-system-id str) settlement-id settlement-state
-   (some-> descriptor pr-str) fork-author])
+  (cond-> [scope authority-scope (name branch) (some-> base-commit str) system-type
+           (some-> world-system-id str) settlement-id settlement-state
+           (some-> descriptor pr-str) fork-author]
+    file-output (conj (:file-output/id file-output))))
 
 (defn- filing-hash
   [{:keys [title summary author room run adoption forks intent attrs comments]}]
@@ -65,9 +69,10 @@
                        :proposal (:proposal/id entity)})))
     [entity]))
 
-(defn file-proposal!
-  "Record an open proposal. `forks` = [{:scope uuid :branch str
-   :base-commit str :system-type kw :author uuid} …]. Returns the proposal id.
+(defn prepare-filing
+  "Build a canonical open Proposal entity without writing or publishing it.
+   `forks` = [{:scope uuid :branch str
+   :base-commit str :system-type kw :author uuid} …].
 
    `:author` on a FORK is the party who wrote it, which on a campaign is not
    `author` (the filer) — see `:proposal.fork/author`.
@@ -80,11 +85,39 @@
    `attrs` are further `:proposal/*` attributes filed in the same transaction
    (an escalated review's linkage, `is.simm.workflows.review`), and `comments`
    the opening `:proposal.comment/*` rows — both part of the ONE immutable
-   filing, so a retried filing cannot add a second first comment."
+   filing, so a retried filing cannot add a second first comment.
+
+   Typed `:file-output` components are validated here. This is storage entity
+   construction, not certification or authorization. The host must establish
+   both before composing filing-tx-data into a serialized writer transaction."
   [{:keys [id title summary author room run adoption forks intent attrs comments]}]
   {:pre [(string? title) (seq forks)
          (or (nil? intent) (contains? fs/intents intent))]}
-  (let [id (or id (random-uuid))
+  (let [_ (when (some #(contains? attrs %) [:db/id :proposal/id :proposal/title :proposal/summary
+                                            :proposal/status :proposal/created-at :proposal/filing-hash
+                                            :proposal/forks :proposal/room :proposal/author :proposal/run
+                                            :proposal/adoption :proposal/intent :proposal/message-id
+                                            :proposal/message-status :proposal/comments])
+            (throw (ex-info "Proposal extension attributes cannot replace canonical filing fields" {})))
+        _ (doseq [{:keys [file-output scope authority-scope system-type branch]} forks
+                  :when (or file-output (= :file-output system-type))]
+            (when-not (map? file-output)
+              (throw (ex-info "Retained file component requires a typed manifest" {})))
+            (let [manifest (file-plans/validate-manifest! (file-manifests/metadata file-output))
+                  entries (:file-output/entries file-output)
+                  refs (into {} (map (juxt :file-output.entry/path :file-output.entry/body-ref)) entries)]
+              (when-not (and (= :file-output system-type) (= room (:room manifest) authority-scope)
+                             ;; This is a component address, not a Git ref.
+                             ;; `name`/keyword round trips must preserve it.
+                             (or (string? branch)
+                                 (and (keyword? branch) (nil? (namespace branch))))
+                             (re-matches #"[A-Za-z0-9._-]{1,128}" (name branch))
+                             (= scope (:id manifest)) (seq entries)
+                             (= (count entries) (count (:entries manifest)))
+                             (every? #(uuid? (:file-output.entry/body-ref %)) entries)
+                             (= file-output (file-manifests/entity manifest refs)))
+                (throw (ex-info "Retained file component has invalid room, identity or body bindings" {})))))
+        id (or id (random-uuid))
         ;; A proposal's canonical chat identity is reserved in the SAME
         ;; transaction as the proposal. Publication may crash and retry, but it
         ;; must never mint a second card. Roomless legacy/import rows remain
@@ -96,52 +129,74 @@
                                   :attrs attrs :comments comments})
         entity
         (cond-> {:proposal/id id
-                :proposal/title title
-                :proposal/status :open
-                :proposal/created-at (java.util.Date.)
-                :proposal/filing-hash filing-hash
-                :proposal/forks (mapv (fn [{:keys [scope authority-scope branch
-                                                   base-commit system-type
-                                                   world-system-id settlement-id
-                                                   settlement-state descriptor]
-                                            fork-author :author}]
-                                        (cond-> {:proposal.fork/scope scope
-                                                 :proposal.fork/branch (name branch)}
-                                          base-commit (assoc :proposal.fork/base-commit (str base-commit))
-                                          authority-scope (assoc :proposal.fork/authority-scope
-                                                                 authority-scope)
-                                          system-type (assoc :proposal.fork/system-type system-type)
-                                          world-system-id (assoc :proposal.fork/world-system-id
-                                                                 (str world-system-id))
-                                          settlement-id (assoc :proposal.fork/settlement-id settlement-id)
-                                          settlement-state (assoc :proposal.fork/settlement-state
-                                                                  settlement-state)
-                                          descriptor (assoc :proposal.fork/descriptor (pr-str descriptor))
-                                          fork-author (assoc :proposal.fork/author fork-author)))
-                                      forks)}
-         summary (assoc :proposal/summary summary)
-         author  (assoc :proposal/author author)
-         room    (assoc :proposal/room room)
-         room    (assoc :proposal/message-id message-id
-                        :proposal/message-status :pending)
-         run     (assoc :proposal/run run)
-         adoption (assoc :proposal/adoption [:world-adoption/id adoption])
-         (seq attrs) (merge attrs)
-         (seq comments) (assoc :proposal/comments (vec comments))
+                 :proposal/title title
+                 :proposal/status :open
+                 :proposal/created-at (java.util.Date.)
+                 :proposal/filing-hash filing-hash
+                 :proposal/forks (mapv (fn [{:keys [scope authority-scope branch
+                                                    base-commit system-type
+                                                    world-system-id settlement-id
+                                                    settlement-state descriptor file-output]
+                                             fork-author :author}]
+                                         (cond-> {:proposal.fork/scope scope
+                                                  :proposal.fork/branch (name branch)}
+                                           base-commit (assoc :proposal.fork/base-commit (str base-commit))
+                                           authority-scope (assoc :proposal.fork/authority-scope
+                                                                  authority-scope)
+                                           system-type (assoc :proposal.fork/system-type system-type)
+                                           world-system-id (assoc :proposal.fork/world-system-id
+                                                                  (str world-system-id))
+                                           settlement-id (assoc :proposal.fork/settlement-id settlement-id)
+                                           settlement-state (assoc :proposal.fork/settlement-state
+                                                                   settlement-state)
+                                           descriptor (assoc :proposal.fork/descriptor (pr-str descriptor))
+                                           file-output (assoc :proposal.fork/file-output file-output)
+                                           fork-author (assoc :proposal.fork/author fork-author)))
+                                       forks)}
+          summary (assoc :proposal/summary summary)
+          author  (assoc :proposal/author author)
+          room    (assoc :proposal/room room)
+          room    (assoc :proposal/message-id message-id
+                         :proposal/message-status :pending)
+          run     (assoc :proposal/run run)
+          adoption (assoc :proposal/adoption [:world-adoption/id adoption])
+          (seq attrs) (merge attrs)
+          (seq comments) (assoc :proposal/comments (vec comments))
          ;; only when non-default: absent already MEANS :change, and writing
          ;; the default would make old and new rows differ for no reason
-         (and intent (not= fs/default-intent intent))
-         (assoc :proposal/intent intent))]
+          (and intent (not= fs/default-intent intent))
+          (assoc :proposal/intent intent))]
+    entity))
+
+(defn filing-tx-data
+  "INTERNAL storage composition against the serialized writer's DB value.
+   Accept only a host-built prepare-filing entity after authorization. Exact
+   replay is empty; conflicting immutable content refuses. This neither grants
+   authority nor publishes chat, and must not be used to bypass host checks."
+  [db entity]
+  (file-proposal-if-absent db entity))
+
+(defn file-proposal!
+  "Record an open Proposal and publish its reserved canonical chat message.
+   See prepare-filing for the filing fields. Returns the Proposal UUID.
+   Retention callers must use the canonical control connection synchronously;
+   this storage operation does not establish certification or authorization."
+  [{:keys [connection] :as filing}]
+  (let [connection (or connection (conn))
+        _ (when-not (identical? connection (conn))
+            (throw (ex-info "Proposal bodies and filing must use the canonical control connection" {})))
+        entity (prepare-filing filing)
+        id (:proposal/id entity)]
     ;; The existence decision belongs to Datahike's serialized transaction
     ;; snapshot. Concurrent/ambiguous retries cannot append anonymous component
     ;; refs or reset lifecycle fields; a conflicting reuse of the UUID fails.
-    (d/transact (conn) [[:db.fn/call file-proposal-if-absent entity]])
-    (log/log! {:level :info :id ::filed :data {:proposal id :title title
-                                               :forks (count forks)}})
+    (d/transact connection [[:db.fn/call filing-tx-data entity]])
+    (log/log! {:level :info :id ::filed :data {:proposal id :title (:proposal/title entity)
+                                               :forks (count (:proposal/forks entity))}})
     ;; Resolve lazily to keep the proposal store independent of live discourse
     ;; plumbing. publish! records failure and leaves :pending; proposal filing
     ;; itself remains durable and retryable even when the room is unavailable.
-    (when room
+    (when (:proposal/room entity)
       ((requiring-resolve 'is.simm.ops.proposal-publication/publish!) id))
     id))
 
@@ -280,6 +335,7 @@
                     (fn [forks]
                       (mapv (fn [f]
                               (case (:proposal.fork/system-type f)
+                                :file-output (assoc f :proposal.fork/settlement-supported? false)
                                 :world (assoc f :proposal.fork/capability-live?
                                               (live? (:proposal.fork/scope f)))
                                 ;; a reviewed world is a live dvergr fork: after a
@@ -329,6 +385,25 @@
 
 (defn- fork-type [fork] (:proposal.fork/system-type fork))
 
+(defn- retained-proposal? [db id]
+  ;; Route from actual storage, not a caller's possibly stale Proposal map.
+  (boolean (d/q '[:find ?f . :in $ ?id
+                  :where [?p :proposal/id ?id] [?p :proposal/forks ?f]
+                  [?f :proposal.fork/system-type :file-output]] db id)))
+
+(defn- refuse-retained-status! [db id]
+  (when (retained-proposal? db id)
+    (throw (ex-info "Retained file status requires its dedicated decision boundary"
+                    {:error :settlement-unavailable :system-type :file-output}))))
+
+(defn- ensure-supported-landing!
+  "Retained file evidence is review-only until guarded publication is wired.
+   Check the WHOLE selection before any dispatch or landing side effect."
+  [forks]
+  (when (some #(= :file-output (fork-type %)) forks)
+    (throw (ex-info "Retained file proposals are review-only; adoption is not available"
+                    {:error :settlement-unavailable :system-type :file-output}))))
+
 (defn- fork-head-id [fork branch]
   (branching/head-id (:proposal.fork/scope fork) (fork-type fork) branch))
 
@@ -340,12 +415,16 @@
    reads only the summary counts, so `:patch? false` keeps tiering from reading
    every changed blob on both sides of a code fork."
   [fork]
-  (branching/delta (:proposal.fork/scope fork) (fork-type fork)
-                   (fork-branch-kw fork) {:patch? false}))
+  (if (= :file-output (fork-type fork))
+    {:summary {:files-changed (count (get-in fork [:proposal.fork/file-output :file-output/entries]))}
+     :target-compatibility :not-checked :settlement-supported? false}
+    (branching/delta (:proposal.fork/scope fork) (fork-type fork)
+                     (fork-branch-kw fork) {:patch? false})))
 
 (defn- fork-conflict-seq [fork]
-  (branching/conflicts-with-trunk (:proposal.fork/scope fork) (fork-type fork)
-                                  (fork-branch-kw fork)))
+  (when-not (= :file-output (fork-type fork))
+    (branching/conflicts-with-trunk (:proposal.fork/scope fork) (fork-type fork)
+                                    (fork-branch-kw fork))))
 
 (defn fork-heads
   "The current head commit of each fork branch, plus of each fork's TRUNK.
@@ -387,19 +466,22 @@
    commits. Returns nil when summarization fails — the raw diff is always the
    source of truth and renders regardless."
   [p diffs]
-  (ctx/with-server-context
-    (let [heads (mapv (fn [f] (fork-head-id f (fork-branch-kw f))) (open-forks p))
-          k [(:proposal/id p) heads]]
-      (if (contains? @summary-cache k)
-        (get @summary-cache k)
-        (let [s ((requiring-resolve 'is.simm.ops.diff-summary/summarize-diff)
-                 {:title (:proposal/title p)
-                  :rationale (:proposal/summary p)
-                  :diffs diffs})]
+  ;; Retained file inspection must not introduce an unfunded model call.
+  ;; Its filing rationale and exact per-file evidence already render directly.
+  (when-not (some #(= :file-output (fork-type %)) (:proposal/forks p))
+    (ctx/with-server-context
+      (let [heads (mapv (fn [f] (fork-head-id f (fork-branch-kw f))) (open-forks p))
+            k [(:proposal/id p) heads]]
+        (if (contains? @summary-cache k)
+          (get @summary-cache k)
+          (let [s ((requiring-resolve 'is.simm.ops.diff-summary/summarize-diff)
+                   {:title (:proposal/title p)
+                    :rationale (:proposal/summary p)
+                    :diffs diffs})]
           ;; cache negatives too — a proposal whose summary fails should not
           ;; re-attempt (and re-bill) an LLM call on every card render
-          (swap! summary-cache assoc k s)
-          s)))))
+            (swap! summary-cache assoc k s)
+            s))))))
 
 (defn- compute-proposal-review
   "The uncached body of `proposal-review`."
@@ -415,8 +497,12 @@
                       :conflicts (mapv #(assoc % :scope (str scope) :branch (name b))
                                        (fork-conflict-seq f))}))
           conflicts (vec (mapcat :conflicts entries))]
-      {:tier (classify (into {} (map (juxt :system :delta)) entries) conflicts)
-       :conflicts conflicts})))
+      (cond-> {:tier (classify (into {} (map (juxt :system :delta)) entries) conflicts)
+               :conflicts conflicts}
+        (some #(= :file-output (fork-type %)) (open-forks p))
+        ;; Counting retained edits is not a mergeability check against a live
+        ;; target. Keep these out of the existing "Ready to land" projection.
+        (assoc :tier :review-only :settlement-supported? false :target-compatibility :not-checked)))))
 
 (defn proposal-review
   "Tier + conflicts for a proposal, classified by DVERGR's fork classifier so
@@ -439,7 +525,6 @@
           (swap! review-cache assoc k v)
           v)))))
 
-
 (defn- resolution-facts
   "The `who`/`why` half of a resolution, omitted when not supplied. Recorded
    at decision time because it cannot be reconstructed later — see
@@ -458,6 +543,69 @@
           :proposal.fork/status status
           :proposal/resolved-at (java.util.Date.)}
          (resolution-facts note by)))
+
+(defn- file-decision!
+  "Fixed host-only serialized withdrawal/revision decision. Retained files
+   have no branch to delete/reopen. Acceptance remains unavailable here."
+  [id by action {:keys [note body]}]
+  (when (simple/on-drain-thread?)
+    (throw (ex-info "File decisions require a host worker" {:error :requires-host-worker})))
+  (when (and (= :request-changes (:verb action))
+             (or (not (string? body)) (str/blank? body)))
+    (throw (ex-info "a comment needs something in it" {:error :empty-comment})))
+  (let [snapshot! (requiring-resolve 'is.simm.ops.file-output-adoption/decision-snapshot)
+        cid (when (= :request-changes (:verb action)) (random-uuid))
+        at (java.util.Date.)
+        report (d/transact
+                (conn)
+                [[:db.fn/call
+                  (fn [db]
+                    (let [room-id (:proposal/room (d/pull db [:proposal/room] [:proposal/id id]))
+                          {:keys [proposal fork]} (snapshot! db by room-id id action)]
+                      (if cid
+                        [{:db/id (:db/id proposal)
+                          :proposal/comments
+                          [(cond-> {:proposal.comment/id cid :proposal.comment/body (str/trim body)
+                                    :proposal.comment/at at :proposal.comment/kind :changes-requested
+                                    :proposal.comment/author by}
+                             (:branch action) (assoc :proposal.comment/fork-branch (name (:branch action))))]}]
+                        [(assoc (fork-resolution-tx fork :dismissed note by) :proposal/resolved-at at)
+                         (merge {:db/id (:db/id proposal) :proposal/status :dismissed
+                                 :proposal/resolved-at at}
+                                (resolution-facts note by))])))]])]
+    ;; Only THIS acknowledged immutable result can establish success. Do not
+    ;; replace a missing/stale report with a live connection readback.
+    (let [db (:db-after report)
+          _ (when-not db
+              (throw (ex-info "File decision was not acknowledged" {:error :decision-unacknowledged})))
+          p (d/pull db '[:proposal/author :proposal/status :proposal/resolved-by :proposal/resolved-at
+                         {:proposal/forks [:proposal.fork/scope :proposal.fork/branch
+                                           :proposal.fork/status :proposal/resolved-by :proposal/resolved-at]}]
+                    [:proposal/id id])
+          f (first (:proposal/forks p))]
+      (if cid
+        (let [comment-eid (d/q '[:find ?c . :in $ ?pid ?cid
+                                 :where [?p :proposal/id ?pid] [?p :proposal/comments ?c]
+                                 [?c :proposal.comment/id ?cid]] db id cid)
+              comment (when comment-eid (d/pull db '[:proposal.comment/body :proposal.comment/author
+                                                     :proposal.comment/kind :proposal.comment/at
+                                                     :proposal.comment/fork-branch] comment-eid))]
+          (when-not (and (= by (:proposal.comment/author comment))
+                         (= (str/trim body) (:proposal.comment/body comment))
+                         (= :changes-requested (:proposal.comment/kind comment))
+                         (= at (:proposal.comment/at comment))
+                         (= (some-> (:branch action) name) (:proposal.comment/fork-branch comment)))
+            (throw (ex-info "File comment was not acknowledged" {:error :decision-unacknowledged})))
+          {:comment cid :reopened []
+           :not-reopened [{:scope (:proposal.fork/scope f) :branch (:proposal.fork/branch f)
+                           :author (:proposal/author p)}]})
+        (do
+          (when-not (and (= :dismissed (:proposal/status p) (:proposal.fork/status f))
+                         (= by (:proposal/resolved-by p) (:proposal/resolved-by f))
+                         (= at (:proposal/resolved-at p) (:proposal/resolved-at f)))
+            (throw (ex-info "File withdrawal was not acknowledged" {:error :decision-unacknowledged})))
+          (cond-> {:status :dismissed}
+            (= :dismiss-fork (:verb action)) (assoc :proposal :dismissed)))))))
 
 (defn- discard-fork-branch!
   "Delete a fork's branch, surviving a failure. One undiscardable fork must not
@@ -549,16 +697,16 @@
                :data {:proposal proposal-id :forks (count forks)}}
               "landing forks with no acting party — authorization not checked"))
   (when by
-   (let [db (some-> (sdb/get-conn) deref)
-        refused (vec (for [f forks
-                           :let [scope (or (:proposal.fork/authority-scope f)
-                                           (:proposal.fork/scope f))]
-                           :when (not (access/may-merge-proposal-fork? db by f))]
-                       (str scope)))]
-    (when (seq refused)
-      (throw (ex-info "not authorized to write every fork's trunk"
-                      {:error :not-authorized :proposal proposal-id
-                       :scopes refused}))))))
+    (let [db (some-> (sdb/get-conn) deref)
+          refused (vec (for [f forks
+                             :let [scope (or (:proposal.fork/authority-scope f)
+                                             (:proposal.fork/scope f))]
+                             :when (not (access/may-merge-proposal-fork? db by f))]
+                         (str scope)))]
+      (when (seq refused)
+        (throw (ex-info "not authorized to write every fork's trunk"
+                        {:error :not-authorized :proposal proposal-id
+                         :scopes refused}))))))
 
 (defn- settle-proposal!
   "Flip the proposal once no fork is left open, and report what it became.
@@ -567,14 +715,20 @@
    was turned down is not an acceptance of nothing, and the Feed reads this
    status as the decision that was made."
   [id note by]
+  ;; Dedicated file finalization is not implemented. Never infer acceptance
+  ;; from a bare component status or overwrite an unresolved publication.
+  (refuse-retained-status! @(conn) id)
   (let [forks (:proposal/forks (get-proposal id))]
     (when (not-any? fork-open? forks)
       (let [status (if (some #(= :accepted (:proposal.fork/status %)) forks)
                      :accepted :dismissed)]
-        (d/transact (conn) [(merge {:proposal/id id
-                                    :proposal/status status
-                                    :proposal/resolved-at (java.util.Date.)}
-                                   (resolution-facts note by))])
+        (d/transact (conn) [[:db.fn/call
+                             (fn [db]
+                               (refuse-retained-status! db id)
+                               [(merge {:proposal/id id
+                                        :proposal/status status
+                                        :proposal/resolved-at (java.util.Date.)}
+                                       (resolution-facts note by))])]])
         ;; Ordinary ForkSets have no live adoption and this is a no-op. An
         ;; adopted Run world releases its structural Dvergr ancestry only after
         ;; every per-component terminal record is durable.
@@ -590,11 +744,14 @@
    itself — the merge is pinned to the reviewed state, which no branch backend
    here can do."
   [p status note by]
-  (d/transact (conn) (conj (mapv #(fork-resolution-tx % status note by) (open-forks p))
-                           (merge {:proposal/id (:proposal/id p)
-                                   :proposal/status status
-                                   :proposal/resolved-at (java.util.Date.)}
-                                  (resolution-facts note by))))
+  (d/transact (conn) [[:db.fn/call
+                       (fn [db]
+                         (refuse-retained-status! db (:proposal/id p))
+                         (conj (mapv #(fork-resolution-tx % status note by) (open-forks p))
+                               (merge {:proposal/id (:proposal/id p)
+                                       :proposal/status status
+                                       :proposal/resolved-at (java.util.Date.)}
+                                      (resolution-facts note by))))]])
   status)
 
 (defn- review-decision
@@ -655,14 +812,14 @@
         cid (random-uuid)]
     (when-not p (throw (ex-info "unknown proposal" {:id id})))
     (d/transact (conn)
-      [{:proposal/id id
-        :proposal/comments
-        [(cond-> {:proposal.comment/id cid
-                  :proposal.comment/body (str/trim body)
-                  :proposal.comment/at (java.util.Date.)
-                  :proposal.comment/kind (or kind :comment)}
-           author (assoc :proposal.comment/author author)
-           fork-branch (assoc :proposal.comment/fork-branch (name fork-branch)))]}])
+                [{:proposal/id id
+                  :proposal/comments
+                  [(cond-> {:proposal.comment/id cid
+                            :proposal.comment/body (str/trim body)
+                            :proposal.comment/at (java.util.Date.)
+                            :proposal.comment/kind (or kind :comment)}
+                     author (assoc :proposal.comment/author author)
+                     fork-branch (assoc :proposal.comment/fork-branch (name fork-branch)))]}])
     (log/log! {:level :info :id ::commented
                :data {:proposal id :kind (or kind :comment)
                       :fork (some-> fork-branch name)}})
@@ -685,43 +842,45 @@
    longer holds an overlay for — and that is not a failure. The comment is the
    durable part; reopening is a convenience for a live agent."
   [id {:keys [body by fork-branch]}]
-  (let [p (open-proposal! id)
-        forks (cond->> (open-forks p)
-                fork-branch (filter #(= (name fork-branch)
-                                        (:proposal.fork/branch %))))]
-    (when (and fork-branch (empty? forks))
-      (throw (ex-info "unknown fork" {:error :unknown-fork :proposal id
-                                      :branch (name fork-branch)})))
-    (let [cid (add-comment! id {:body body :author by :fork-branch fork-branch
-                                :kind :changes-requested})
-          reopen! (requiring-resolve 'is.simm.agents.room-agents/reopen-fork!)
+  (if (retained-proposal? @(conn) id)
+    (file-decision! id by (cond-> {:verb :request-changes} fork-branch (assoc :branch fork-branch)) {:body body})
+    (let [p (open-proposal! id)
+          forks (cond->> (open-forks p)
+                  fork-branch (filter #(= (name fork-branch)
+                                          (:proposal.fork/branch %))))]
+      (when (and fork-branch (empty? forks))
+        (throw (ex-info "unknown fork" {:error :unknown-fork :proposal id
+                                        :branch (name fork-branch)})))
+      (let [cid (add-comment! id {:body body :author by :fork-branch fork-branch
+                                  :kind :changes-requested})
+            reopen! (requiring-resolve 'is.simm.agents.room-agents/reopen-fork!)
           ;; `reopen-fork!` can decline: the author may have opened a proposal
           ;; of its own since filing, and its overlay is a single slot. Both
           ;; halves are returned — a request for changes that reached nobody
           ;; is a comment on a filed proposal and nothing more, and the
           ;; reviewer has to be told which it was.
-          outcome (group-by
-                   (fn [f]
-                     (if (and (:proposal.fork/author f)
-                              (reopen! (:proposal/room p)
-                                       (:proposal.fork/author f)
-                                       (:proposal.fork/scope f)
-                                       (fork-branch-kw f)
-                                       (:proposal.fork/system-type f)
-                                       (:proposal/title p)))
-                       :reopened :not-reopened))
-                   forks)
-          describe (fn [f] {:scope (:proposal.fork/scope f)
-                            :branch (:proposal.fork/branch f)
-                            :author (:proposal.fork/author f)})
-          reopened (mapv describe (:reopened outcome))
-          not-reopened (mapv describe (:not-reopened outcome))]
-      (log/log! {:level (if (seq not-reopened) :warn :info)
-                 :id ::changes-requested
-                 :data {:proposal id :forks (count forks)
-                        :reopened (count reopened)
-                        :not-reopened (count not-reopened)}})
-      {:comment cid :reopened reopened :not-reopened not-reopened})))
+            outcome (group-by
+                     (fn [f]
+                       (if (and (:proposal.fork/author f)
+                                (reopen! (:proposal/room p)
+                                         (:proposal.fork/author f)
+                                         (:proposal.fork/scope f)
+                                         (fork-branch-kw f)
+                                         (:proposal.fork/system-type f)
+                                         (:proposal/title p)))
+                         :reopened :not-reopened))
+                     forks)
+            describe (fn [f] {:scope (:proposal.fork/scope f)
+                              :branch (:proposal.fork/branch f)
+                              :author (:proposal.fork/author f)})
+            reopened (mapv describe (:reopened outcome))
+            not-reopened (mapv describe (:not-reopened outcome))]
+        (log/log! {:level (if (seq not-reopened) :warn :info)
+                   :id ::changes-requested
+                   :data {:proposal id :forks (count forks)
+                          :reopened (count reopened)
+                          :not-reopened (count not-reopened)}})
+        {:comment cid :reopened reopened :not-reopened not-reopened}))))
 
 (defn accept-proposal!
   "Merge every STILL-OPEN fork into its trunk. First call returns
@@ -740,6 +899,7 @@
   [id & {:keys [force? note by]}]
   (let [p (open-proposal! id)
         forks (open-forks p)]
+    (ensure-supported-landing! (:proposal/forks p))
     (if-let [decide! (review-decision p)]
       (decide! id :accept :note note :by by)
       (do
@@ -818,26 +978,28 @@
    `:proposal/resolved-at`, rewriting the record of a merge that had already
    landed on trunk."
   [id & {:keys [note by]}]
-  (let [p (open-proposal! id)]
-    (if-let [decide! (review-decision p)]
-      (decide! id :reject :note note :by by)
-      (let [forks (open-forks p)]
-        (ctx/with-server-context
-          (doseq [f forks] (discard-fork-branch! id f)))
-        (d/transact (conn) (conj (mapv #(fork-resolution-tx % :dismissed note by) forks)
-                                 (merge {:proposal/id id
-                                         :proposal/status :dismissed
-                                         :proposal/resolved-at (java.util.Date.)}
-                                        (resolution-facts note by))))
+  (if (retained-proposal? @(conn) id)
+    (file-decision! id by {:verb :dismiss-proposal} {:note note})
+    (let [p (open-proposal! id)]
+      (if-let [decide! (review-decision p)]
+        (decide! id :reject :note note :by by)
+        (let [forks (open-forks p)]
+          (ctx/with-server-context
+            (doseq [f forks] (discard-fork-branch! id f)))
+          (d/transact (conn) (conj (mapv #(fork-resolution-tx % :dismissed note by) forks)
+                                   (merge {:proposal/id id
+                                           :proposal/status :dismissed
+                                           :proposal/resolved-at (java.util.Date.)}
+                                          (resolution-facts note by))))
         ;; Whole-Proposal dismissal bypasses settle-proposal!, unlike every
         ;; per-fork decision path. Release adopted-world ancestry only after the
         ;; component and Proposal terminal records above are durable.
-        ((requiring-resolve
-          'is.simm.ops.run-world-proposals/release-proposal!) id)
-        (log/log! {:level :info :id ::dismissed
-                   :data {:proposal id :forks (count forks)
-                          :noted? (not (str/blank? note))}})
-        {:status :dismissed}))))
+          ((requiring-resolve
+            'is.simm.ops.run-world-proposals/release-proposal!) id)
+          (log/log! {:level :info :id ::dismissed
+                     :data {:proposal id :forks (count forks)
+                            :noted? (not (str/blank? note))}})
+          {:status :dismissed})))))
 
   ;; ---------------------------------------------------------------------------
   ;; Per-fork resolution — one contribution at a time
@@ -861,19 +1023,21 @@
    Returns {:status :dismissed :proposal <status-or-nil>}, the second being what
    the proposal became if this was the last open fork."
   [id scope branch & {:keys [note by]}]
-  (let [p (open-proposal! id)
-        f (open-fork! p scope branch)]
-    (if-let [decide! (review-decision p)]
-      (decide! id :reject :note note :by by)
-      (do
-        (ctx/with-server-context (discard-fork-branch! id f))
-        (d/transact (conn) [(fork-resolution-tx f :dismissed note by)])
-        (let [status (settle-proposal! id note by)]
-          (log/log! {:level :info :id ::fork-dismissed
-                     :data {:proposal id :scope (str scope) :branch (str branch)
-                            :proposal-status status
-                            :noted? (not (str/blank? note))}})
-          {:status :dismissed :proposal status})))))
+  (if (retained-proposal? @(conn) id)
+    (file-decision! id by {:verb :dismiss-fork :scope scope :branch branch} {:note note})
+    (let [p (open-proposal! id)
+          f (open-fork! p scope branch)]
+      (if-let [decide! (review-decision p)]
+        (decide! id :reject :note note :by by)
+        (do
+          (ctx/with-server-context (discard-fork-branch! id f))
+          (d/transact (conn) [(fork-resolution-tx f :dismissed note by)])
+          (let [status (settle-proposal! id note by)]
+            (log/log! {:level :info :id ::fork-dismissed
+                       :data {:proposal id :scope (str scope) :branch (str branch)
+                              :proposal-status status
+                              :noted? (not (str/blank? note))}})
+            {:status :dismissed :proposal status}))))))
 
 (defn accept-fork!
   "Land ONE fork on its own trunk, leaving the rest of the ForkSet open.
@@ -886,6 +1050,9 @@
   [id scope branch & {:keys [force? note by]}]
   (let [p (open-proposal! id)
         f (open-fork! p scope branch)]
+    ;; Escalated reviews decide their entire proposal even when entered from
+    ;; a component action. Never let an ordinary sibling bypass whole-set gates.
+    (ensure-supported-landing! (:proposal/forks p))
     (if-let [decide! (review-decision p)]
       (decide! id :accept :note note :by by)
       (do

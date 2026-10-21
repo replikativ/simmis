@@ -34,10 +34,13 @@
     is.simm.uis.web.desktop.experiments-remote
     is.simm.uis.web.desktop.feed-remote
     is.simm.uis.web.desktop.mail-remote
+    is.simm.uis.web.desktop.memory-remote
     is.simm.uis.web.desktop.proposals-remote
+    is.simm.uis.web.desktop.results-remote
     is.simm.uis.web.desktop.sandbox-remote
     is.simm.uis.web.desktop.settings-remote
-    is.simm.uis.web.desktop.tasks-remote])
+    is.simm.uis.web.desktop.tasks-remote
+    is.simm.uis.web.desktop.workflows-remote])
 
 (defn- load-all! [] (doseq [n registering-namespaces] (require n)))
 
@@ -45,6 +48,7 @@
   (load-all!)
   (let [registered (keys @ds/remote-fn-registry)
         unpoliced (->> registered
+                       (remove access/denied-remote?)
                        (remove #(contains? access/rpc-policy
                                            (access/normalize-remote-name %)))
                        (map str) sort vec)]
@@ -58,14 +62,20 @@
           (str "reachable but unpoliced, so refused at runtime and the feature "
                "is dead: " (pr-str unpoliced))))))
 
+(deftest explicit-transport-denials-cannot-be-overridden-by-policy
+  (with-redefs [access/rpc-policy (assoc access/rpc-policy "dispatch"
+                                         {:action :read :resource (constantly :allowed)})
+                access/can? (constantly true)]
+    (doseq [f access/denied-remote-functions spelling [f (str f)]]
+      (is (false? (access/authorize-remote {:sub "owner"} spelling {}))))))
+
 (deftest policy-rows-name-real-fns
   (load-all!)
   (let [live (into #{} (map access/normalize-remote-name) (keys @ds/remote-fn-registry))
         orphans (->> (keys access/rpc-policy) (remove live) sort vec)]
     (testing "every row names a registered fn"
       ;; A row with no fn behind it decides nothing today and admits whatever
-      ;; later registers under its name. datahike.kabel's handlers register in
-      ;; `kabel.remote/functions`, not here, and the server does not serve that
-      ;; registry, so they have no row (authority/raw-paths-test).
+      ;; later registers under its name. Transport-level Datahike handlers now
+      ;; share this registry but are explicitly denied, never policy rows.
       (is (= [] orphans)
           (str "rpc-policy rows with no registered fn: " (pr-str orphans))))))

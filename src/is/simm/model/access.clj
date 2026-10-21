@@ -26,6 +26,7 @@
   (:require [clojure.string :as str]
             [is.simm.distributed-scope :as ds]
             [is.simm.model.system-db :as system-db]
+            [is.simm.model.file-outputs :as file-outputs]
             [datahike.api :as d]
             [dvergr.system.rooms :as registry-rooms]
             [taoensso.telemere :as log]))
@@ -293,7 +294,7 @@
                       db system-id)]
       (boolean
        (some (fn [[room-eid perm]]
-             (and (permission-satisfies? (or perm :read) action)
+               (and (permission-satisfies? (or perm :read) action)
                   ;; REACHABILITY, not permission — hence `:read` and not
                   ;; `action`. The question here is only "is this party in the
                   ;; room that holds the grant", so a grant held by a room the
@@ -301,7 +302,7 @@
                   ;; comes from the grant, checked just above; asking the room
                   ;; for `action` too would require room OWNERSHIP to merge a
                   ;; fork into a repo the room was explicitly granted.
-                  (party-can-access-room? db party-uuid room-eid :read)))
+                    (party-can-access-room? db party-uuid room-eid :read)))
              grants)))))
 
 (defn- drive-eid-by-id [db drive-id]
@@ -332,9 +333,10 @@
   ;; a fork that had it (position-dependent, not a cache), so a decided fork
   ;; would have stayed locked — replikativ/datahike#1116.
   (keep (fn [[f p]]
-          (let [fork (d/pull db [:proposal.fork/author :proposal.fork/authority-scope
+          (let [fork (d/pull db [:db/id :proposal.fork/author :proposal.fork/authority-scope
                                  :proposal.fork/scope :proposal.fork/status
-                                 :proposal.fork/system-type :proposal.fork/world-system-id] f)]
+                                 :proposal.fork/system-type :proposal.fork/world-system-id
+                                 {:proposal.fork/file-output [:file-output/id :file-output/room]}] f)]
             (when (nil? (:proposal.fork/status fork))
               [fork (d/pull db [:proposal/author] p)])))
         rows))
@@ -364,13 +366,27 @@
    The settlement boundary separately rechecks the origin room's write grant."
   [db subject fork]
   (boolean
-   (if (= :world (:proposal.fork/system-type fork))
+   (cond
+     (= :file-output (:proposal.fork/system-type fork))
+     ;; Room governance controls this retained contribution, not a store named
+     ;; by the manifest UUID. This grants no publication capability: the
+     ;; settlement gate independently refuses adoption until it is implemented.
+     (when db
+       (let [scope (:proposal.fork/scope fork)
+             {:keys [room fork-eid] :as owner} (file-outputs/owner db scope)]
+         (and owner (= fork-eid (:db/id fork))
+              (= scope (get-in fork [:proposal.fork/file-output :file-output/id]))
+              (= room (:proposal.fork/authority-scope fork)
+                 (get-in fork [:proposal.fork/file-output :file-output/room]))
+              (can? db subject :read {:room room})
+              (can? db subject :merge {:room room}))))
+     (= :world (:proposal.fork/system-type fork))
      (and db (:proposal.fork/authority-scope fork) (:proposal.fork/world-system-id fork)
           (can? db subject :merge {:room (:proposal.fork/authority-scope fork)})
           (let [target (try (registry-rooms/registry-system-for db (:proposal.fork/world-system-id fork))
                             (catch clojure.lang.ExceptionInfo _ nil))]
             (and target (can? db subject :merge (:system/id target)))))
-     (can? db subject :merge (or (:proposal.fork/authority-scope fork) (:proposal.fork/scope fork))))))
+     :else (can? db subject :merge (or (:proposal.fork/authority-scope fork) (:proposal.fork/scope fork))))))
 
 (defn- fork-controller?
   "Does an open proposal fork belong to `party-uuid`? Its author
@@ -594,11 +610,9 @@
 ;; refused.
 ;;
 ;; datahike.kabel's handlers (`dispatch`, `create-database`,
-;; `delete-database`) are NOT in that registry. They register in
-;; `kabel.remote/functions`, which the server never serves (it composes
-;; distributed-scope's middleware, not `kabel.remote/serve`), so they are
-;; unreachable and have no row: if they ever became reachable through this
-;; gate they would be refused. A raw transact into a room's message store
+;; `delete-database`) now share the served `kabel.remote/functions` registry.
+;; Their exact qualified symbols are explicitly denied before policy lookup.
+;; They must never get application permission rows. A raw room-store transact
 ;; must stay refused (it would forge messages); see raw-paths-test.
 
 (defn normalize-remote-name
@@ -768,6 +782,23 @@
      "close-screen-grant!"     {:action W :resource (room :room-id-str)}
      "screen-grant-heartbeat!" {:action W :resource (room :room-id-str)}
      "load-room-drive!"        {:action R :resource (room :room-id-str)}
+     "load-memory-folder!"     {:action R :resource (room :room-id-str)}
+     "prepare-memory-stream!" {:action R :resource (room :room-id-str)}
+     "load-memory-metadata!"  {:action R :resource (room :room-id-str)}
+     "load-memory-file!"       {:action R :resource (room :room-id-str)}
+     "load-memory-history!"    {:action R :resource (room :room-id-str)}
+     "load-memory-history-file!" {:action R :resource (room :room-id-str)}
+     "evaluate-memory-code!"   {:action M :resource (room :room-id-str)}
+     "evaluate-memory-repl!"   {:action M :resource (room :room-id-str)}
+     "search-memory-files!"    {:action R :resource (room :room-id-str)}
+     "analyze-memory-text!"    {:action R :resource (room :room-id-str)}
+     "apply-memory-rich-edit!" {:action R :resource (room :room-id-str)}
+     "download-memory-file!"   {:action R :resource (room :room-id-str)}
+     "save-memory-file!"       {:action W :resource (room :room-id-str)}
+     "save-memory-rich-file!"  {:action W :resource (room :room-id-str)}
+     "move-memory-file!"       {:action W :resource (room :room-id-str)}
+     "load-memory-office-part!" {:action R :resource (room :room-id-str)}
+     "save-memory-office-part!" {:action W :resource (room :room-id-str)}
      ;; --- room create + rooms list (self) ---
      ;; the initial members pass the same check as `add-room-party!`'s party
      "create-room!"            {:action W :resource (self :creator-id-str)}
@@ -802,9 +833,9 @@
      ;; :merge on each fork's own scope before it lands one
      "accept-fork!"            {:action W :resource (proposal :proposal-id-str)}
      "dismiss-fork!"           {:action W :resource (fn [a] {:proposal-fork
-                                                              {:proposal (:proposal-id-str a)
-                                                               :scope (:scope-str a)
-                                                               :branch (:branch a)}})}
+                                                             {:proposal (:proposal-id-str a)
+                                                              :scope (:scope-str a)
+                                                              :branch (:branch a)}})}
      ;; Commenting is a WRITE on the proposal's room, not a read: it puts words
      ;; on a shared record under the author's name, and `request-changes!` also
      ;; puts a contributor back to work. Room membership is the gate, the same
@@ -819,6 +850,8 @@
      ;; itself and conflates "absent" with "not yours".
      "proposal-status!"        {:action R :resource (always :authenticated)}
      "proposal-diff!"          {:action R :resource (proposal :proposal-id-str)}
+     "proposal-file!"          {:action R :resource (proposal :proposal-id-str)}
+     "proposal-retained-audit!" {:action R :resource (always :authenticated)}
      "proposal-checks!"        {:action R :resource (proposal :proposal-id-str)}
      ;; a room's labels (`is.simm.workflows.review`): reading the room. There
      ;; is no row that writes one — a label is recorded by the decision itself
@@ -865,12 +898,21 @@
      "load-leaderboard!"       {:action R :resource (room :room-id-str)}
      "join-experiment-room!"   {:action A :resource (always :admin)}}))
 
+(def denied-remote-functions
+  "Transport-level database capabilities are not application RPCs. Even room
+   owners and administrators must use the authorized application operations."
+  '#{datahike.kabel/dispatch datahike.kabel/create-database datahike.kabel/delete-database})
+
+(defn denied-remote? [fn-name]
+  (contains? denied-remote-functions (if (string? fn-name) (symbol fn-name) fn-name)))
+
 (defn authorize-remote
   "The `:authorize-fn` for distributed-scope's invoke-on-peer. Consulted for
    every network-inbound remote call before its handler runs. Deny-by-default:
    an unpoliced fn, an unauthenticated principal, or a failed `can?` is refused."
   [principal fn-name arg-map]
-  (if-let [{:keys [action resource]} (get rpc-policy (normalize-remote-name fn-name))]
+  (if-let [{:keys [action resource]} (when-not (denied-remote? fn-name)
+                                       (get rpc-policy (normalize-remote-name fn-name)))]
     (let [fname (normalize-remote-name fn-name)
           ;; RESOLVE ONCE. The denial log below used to call `(resource
           ;; arg-map)` a second time, outside the guard — measured, not
@@ -1081,6 +1123,21 @@
     (refuse! "sandbox may not reach this KB"
              {:action action :room (str room-id) :kb (str kb-id)
               :subject (str (subject->party-uuid subject))})))
+
+(defn sandbox-room-repository-allows?
+  "Live room read authority plus an attached repository grant, from ONE host
+   snapshot. A saved source capability loses access after detach or membership
+   revocation; an unknown permission never grants access."
+  [db subject room-id scope]
+  (boolean
+   (and db subject room-id scope
+        (can? db subject :read {:room room-id})
+        (some #{:owner :read-write :read}
+              (d/q '[:find [?permission ...] :in $ ?room-id ?scope
+                     :where [?r :room/id ?room-id]
+                     [?s :system/id ?scope] [?s :system/type :repo]
+                     [?g :grant/room ?r] [?g :grant/system ?s]
+                     [?g :grant/permission ?permission]] db room-id scope)))))
 
 (defn may-eval-in-room?
   "May `subject` evaluate code in room `room-id`'s sandbox? The `eval-in-room!`

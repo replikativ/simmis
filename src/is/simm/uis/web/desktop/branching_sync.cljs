@@ -22,16 +22,19 @@
    Client-side filtering: we only react to events for KBs in the current
    `user-rooms` data. Long-term this filter belongs on the server (per-KB
    topics + ACL); for v1 it's a hygiene measure here."
-  (:require [clojure.core.async :refer [go <!]]
-            [kabel.pubsub :as pubsub]
-            [kabel.pubsub.protocol :as proto]
-            [org.replikativ.spindel.engine.core :as rtc]
+  (:require [org.replikativ.spindel.engine.core :as rtc]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.branching-remote :as br-remote]
+            [is.simm.uis.web.desktop.aggregate :as aggregate]
+            [is.simm.uis.web.desktop.connection-epoch :as epoch]
+            [is.simm.uis.web.desktop.topic-subscription :as subscription]
             [is.simm.runtimes.web :as web]))
 
 (def ^:private topic :branching/event)
+(def ^:private owner (subscription/owner))
+(def ^:private branch-gates (atom {}))
+(declare refresh-kb-branches!)
 
 ;; --- helpers ----------------------------------------------------------------
 
@@ -125,7 +128,10 @@
 
           ;; Unknown event type — log + skip.
           (js/console.warn "[branching-sync] unknown event type:"
-                           (pr-str (:type event))))))))
+                           (pr-str (:type event))))
+        ;; A snapshot in flight can predate this event. Queue a new snapshot
+        ;; rather than allowing its older branch set to erase the event.
+        (refresh-kb-branches! kb-id)))))
 
 ;; --- initial load -----------------------------------------------------------
 
@@ -138,43 +144,37 @@
    Wraps the spin-remote in a runtime context binding because this runs
    from a DOM/load callback outside any spin."
   [db-scope]
-  (let [kb-id (kb-id-str db-scope)]
-    (binding [rtc/*execution-context* runtime]
-      (let [s (br-remote/list-kb-branches! web/server-id kb-id)]
-        (s (fn [branches]
-             (when (sequential? branches)
-               (binding [rtc/*execution-context* runtime]
-                 (swap! sig/kb-branches update kb-id
-                        (fn [existing]
-                          (reduce (fn [acc b]
-                                    (update acc b
-                                            (fn [row]
-                                              (or row
-                                                  {:parent (when-not (= b :db) :db)
-                                                   :status :open}))))
-                                  (or existing {})
-                                  branches))))))
-           (fn [err]
-             (js/console.error "[branching-sync] list-kb-branches failed:"
-                               kb-id err)))))))
+  (let [kb-id (kb-id-str db-scope)
+        gate (get (swap! branch-gates #(if (contains? % kb-id) % (assoc % kb-id (aggregate/gate)))) kb-id)]
+    (aggregate/run!
+     gate
+     (fn [done current?]
+       (binding [rtc/*execution-context* runtime]
+         (let [s (br-remote/list-kb-branches! web/server-id kb-id)]
+           (s (fn [branches]
+                (try
+                  (when (and (current?) (sequential? branches))
+                    (binding [rtc/*execution-context* runtime]
+                      (when (some #(= kb-id (str (:kb/db-scope %))) (:knowledge-bases @sig/user-rooms))
+                        ;; Replace, do not union: branches deleted while offline
+                        ;; must disappear from the next authoritative snapshot.
+                        (swap! sig/kb-branches update kb-id
+                               (fn [existing]
+                                 (into {} (map (fn [b] [b (assoc (or (get existing b)
+                                                                     {:parent (when-not (= b :db) :db)})
+                                                                 :status :open)]) branches)))))))
+                  (finally (done))))
+              (fn [err]
+                (try (when (current?) (js/console.error "[branching-sync] branch load failed:" kb-id err))
+                     (finally (done)))))))))))
 
 ;; --- subscription -----------------------------------------------------------
 
-(defonce ^:private subscribed? (atom false))
-
 (defn subscribe!
-  "Subscribe to the global `:branching/event` topic. Idempotent — only
-   subscribes once per page load. Call after the client is connected to
-   the server."
+  "One global topic owner per authenticated epoch. Transport readiness is also
+   sent to registered consumers so already-loaded aggregates can catch up."
   []
-  (when-not @subscribed?
-    (reset! subscribed? true)
-    (let [strategy (proto/pub-sub-only-strategy apply-event!)]
-      (go
-        (let [result (<! (pubsub/subscribe! @web/client #{topic}
-                                            {:strategies {topic strategy}}))]
-          (if (:error result)
-            (do (reset! subscribed? false)
-                (js/console.error "[branching-sync] subscribe failed:"
-                                  (pr-str result)))
-            (js/console.log "[branching-sync] subscribed to" topic)))))))
+  (subscription/ensure!
+   owner {:connection (epoch/snapshot) :peer (:client (web/current-session)) :topic topic
+          :on-message apply-event!
+          :on-ready #(notify-extras! {:type :transport/ready})}))

@@ -227,12 +227,8 @@
     (d/connect cfg)))
 
 (deftest a-member-cannot-forge-a-message-in-the-room-store
-  ;; The handler datahike registers lives in `kabel.remote/functions`, and the
-  ;; simmis server composes distributed-scope's middleware, never
-  ;; `kabel.remote/serve`, so the network-inbound path finds no `dispatch` and
-  ;; the forged datom never lands. And `rpc-policy` has no row for it (§2.7,
-  ;; closed: the row admitted members to raw writes on the room's message
-  ;; store), so the gate refuses it too, should it ever become reachable.
+  ;; Transport handlers share the served registry. Their exact symbols are
+  ;; explicitly denied before application policy lookup, for every principal.
   (world/with-world [_ w]
     (let [room-store (schemaless-conn)]
       (dh-handlers/register-global-handlers! (atom {:id (random-uuid)}))
@@ -242,7 +238,7 @@
           (let [resp (world/inbound! (world/principal w :member) 'datahike.kabel/dispatch
                                      {:store-id (:room-scope w)
                                       :arg-map {:op 'transact! :args [{:tx-data [(forged-message w)]}]}})]
-            (is (some? (:error resp)) "no reachable handler")
+            (is (world/refused? resp) "the reachable handler is denied before execution")
             (is (empty? (messages-by room-store (:owner w))) "no forged message landed")))
         (testing "§2.7 (closed): the gate refuses it for every principal, the owner included"
           (doseq [kind world/principal-kinds

@@ -2,12 +2,23 @@
   "The lazy branch sweep runs on a store's first selection after boot, when a
    context forked since may already be working on an overlay branch. It must
    delete the orphans a previous process left, and nothing a live context uses."
-  (:require [clojure.test :refer [deftest is]]
+  (:require [clojure.test :refer [deftest is use-fixtures]]
             [datahike.api :as d]
             [datahike.versioning :as dv]
             [is.simm.runtimes.branching :as branching]
             [is.simm.runtimes.context :as ctx]
-            [konserve.core :as k]))
+            [konserve.core :as k]
+            [org.replikativ.spindel.engine.context :as execution]
+            [org.replikativ.spindel.engine.core :as ec]))
+
+(use-fixtures :each
+  (fn [f]
+    ;; Registering a system then releasing its connection must not leave that
+    ;; dead native handle in the shared server context for later tests to fork.
+    (let [owner (execution/create-execution-context)]
+      (with-redefs [ctx/server-context owner]
+        (binding [ec/*execution-context* owner]
+          (try (f) (finally (execution/close-context! owner))))))))
 
 (deftest the-sweep-spares-a-branch-a-live-context-uses
   (let [scope (random-uuid)

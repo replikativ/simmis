@@ -17,17 +17,26 @@
             [dvergr.rooms.forks :as forks]
             [dvergr.rooms.files :as room-files]
             [dvergr.system.db :as system-db]
+            [dvergr.substrate.geschichte :as geschichte]
             [is.simm.authority.world :as world]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.checkers :as checkers]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.work :as work]
+            [is.simm.ops.knowledge-outputs :as knowledge-outputs]
+            [is.simm.ops.knowledge-admission :as knowledge-admission]
             [is.simm.ops.work-test]
             [is.simm.ops.workflow-runs :as workflow-runs]
             [is.simm.ops.workflows :as workflows]
             [jsonista.core :as json]
             [malli.core :as m]
-            [org.replikativ.spindel.engine.core :as ec]))
+            [org.replikativ.spindel.engine.core :as ec]
+            [yggdrasil.protocols :as protocols]))
+
+(deftest unsupported-adoption-declarations-are-not-silently-accepted
+  (is (#'workflow-runs/supported-definition? {:task "Maintain wiki"}))
+  (doseq [key [:review :workflow/writes] value [nil false {} []]]
+    (is (false? (#'workflow-runs/supported-definition? {key value})))))
 
 (def source
   {"workflow.edn" "{:title \"Reusable document\" :task \"Write {subject} to /out/result.md\" :params {:subject \"default\"} :capture [\"/out\"]}"
@@ -39,6 +48,10 @@
 
 (defn snapshot [files]
   {:files files :manifest (mapv (fn [[p s]] {:path p :size (alength (.getBytes s "UTF-8"))}) files)})
+
+(def knowledge-source
+  (assoc source "input-selection.edn"
+         "{:kind :knowledge :policy {:version 1 :trigger-roots [\"inbox\" \"transcripts\"] :context-roots [\"wiki\"] :exclude-prefixes []}}"))
 
 (defn input
   ([] (input source))
@@ -178,6 +191,16 @@
                             :system/scope (str "/fixture/systems/" (:system/id system))})
                          (filter #(contains? #{:kb :repo} (:system/type %)) (system-db/all-systems)))))
 
+(defn fixture-default-target
+  "Memory-backed test rooms are deliberately not provisioned file repositories.
+   Exercise selection/Run behavior with a pinned host descriptor; canonical
+   registry and runtime rejection is tested separately in knowledge-admission."
+  [room-id room]
+  (binding [ec/*execution-context* (:ctx room)]
+    (let [{:keys [conn system]} (geschichte/current-workspace)]
+      {:conn conn
+       :identity {:registry-system room-id :runtime-system (str (protocols/system-id system))}})))
+
 (defn- response [n]
   (let [events (concat
                 (when (= n 1)
@@ -197,16 +220,20 @@
      (fn [room]
        (workspace/ensure-workspace! room)
        (realistic-locators! conn w room)
-       (workflows/write! room {:principal/id "fixture"} {:name "echo" :files source})
-       (workspace/seed! room {"/docs/input.md" "trunk input"})
-       (let [request (assoc (input) :inputs {"/docs/input.md" "explicit input"})
+       (workflows/write! room {:principal/id "fixture"} {:name "echo" :files knowledge-source})
+       (workspace/seed! room {"/docs/input.md" "trunk input" "/inbox/evidence.md" "Evidence"
+                              "/wiki/context.md" "Prior knowledge"
+                              "/out/wiki/stale.md" "Previous run output"
+                              "/out/keep.edn" "{:keep true}"})
+       (let [request (assoc (input knowledge-source) :inputs {"/docs/input.md" "explicit input"})
              principal (ops/party-principal (:owner w)) host-ctx ec/*execution-context*
              calls (atom 0) changed (atom false) retained (volatile! nil)
              original-snapshot workflows/snapshot
              provider (codex/create {:credentials (gateway/static-credentials :fixture {} #{"https://chatgpt.com"})})]
          (try
            (resource/mint! room {:id (random-uuid) :resources (work/resources (:limits request))})
-           (with-redefs [gateway/*request-fn* (fn [_] (response (swap! calls inc)))
+           (with-redefs [knowledge-admission/default-target fixture-default-target
+                         gateway/*request-fn* (fn [_] (response (swap! calls inc)))
                          providers/providers (atom {:codex-subscription provider})
                          checkers/run-checker (fn [& _] (throw (ex-info "Never grade ordinary work" {})))
                          workflows/snapshot (fn [r name]
@@ -224,10 +251,19 @@
                (vreset! retained (registry/lookup (:run/world child)))
                (is (= :completed (:status status)) (pr-str (select-keys status [:status :error])))
                (is (:settled? status))
+               (is (= :simmis/knowledge-workspace-completion
+                      (get-in (first attempts) [:attempt/environment :environment/verifier :verifier/id])))
+               (is (= :simmis/knowledge-completion
+                      (get-in (first attempts) [:attempt/environment :environment/verifier :verifier/basis :base :verifier/id])))
+               (is (map? (knowledge-outputs/validate!
+                          (get-in (first attempts) [:attempt/evidence :knowledge-output]))))
+               (is (empty? (get-in (first attempts) [:attempt/evidence :knowledge-output :files])))
+               (is (contains? (:files (requests/publication-basis conn (:id admission))) "wiki/context.md"))
                (is (= 2 @calls))
-               (is (= {"/out/result.md" "pinned helper|explicit input|false"}
+               (is (= {"/out/result.md" "pinned helper|explicit input|false" "/out/keep.edn" "{:keep true}"}
                       (get-in (first attempts) [:attempt/evidence :files])))
-               (is (empty? (workspace/read-tree room "/out")))
+               (is (= {"/out/wiki/stale.md" "Previous run output" "/out/keep.edn" "{:keep true}"}
+                      (workspace/read-tree room "/out")))
                (is (= "trunk input" (get (workspace/read-tree room "/docs") "/docs/input.md")))
                (is (= "new helper" (get-in (original-snapshot room "echo") [:files "helpers/data.txt"])))
                (is (= :review (:run/settlement-status child)))
@@ -250,7 +286,8 @@
                  (is (= "explicit input" (get (workspace/read-tree room "/docs") "/docs/input.md")))
                  (is (= "pinned helper" (get-in (original-snapshot room "echo") [:files "helpers/data.txt"])))
                  (is (not (contains? (:files (original-snapshot room "echo")) "helpers/new.txt")))
-                 (is (= {"/out/result.md" "pinned helper|explicit input|false"} (workspace/read-tree room "/out"))))))
+                 (is (= {"/out/result.md" "pinned helper|explicit input|false" "/out/keep.edn" "{:keep true}"}
+                        (workspace/read-tree room "/out"))))))
            (finally
              (when (and @retained (nil? (discourse/settlement @retained))) (forks/discard! @retained)))))))))
 

@@ -78,6 +78,7 @@ authorization boundary, not a query API.
 git clone <this-repo>
 cd simmis
 npm install
+clj -X:deps prep   # compile Java sources in pinned Git dependencies
 clj -M:dev
 ```
 
@@ -161,7 +162,8 @@ enabled. `config.example.edn` documents each.
 Three, selected by alias:
 
 ```bash
-clj -M:dev         # Maven only — START HERE. Needs nothing but this repo.
+clj -X:deps prep   # once after installing/updating pinned Git dependencies
+clj -M:dev         # published/pinned dependencies; no sibling checkouts needed
 clj -M:stack:dev   # + a local ../dvergr checkout, for co-developing the agent substrate
 clj -M:local:dev   # + every replikativ sibling as a local checkout
 ```

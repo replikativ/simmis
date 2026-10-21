@@ -1,12 +1,17 @@
 (ns is.simm.runtimes.storage-gc-test
   "The storage GC loop is OPT-IN: on datahike without #1117 a failed mark
    sweeps the whole store, which is how dev.simm.is lost its system DB. These
-   tests never sweep — `start!` is replaced, so no store is touched."
+   control-loop tests replace sweeps; a separate isolated-store fault test
+   verifies the loaded Datahike never reaches sweep after an incomplete mark."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.core.async :as async]
+            [datahike.api :as d]
             [dvergr.substrate.paths :as paths]
             [dvergr.system.db :as sdb]
             [dvergr.system.rooms :as srooms]
             [is.simm.runtimes.storage-gc :as gc]
+            [konserve.core :as k]
+            [konserve.gc :as kgc]
             [taoensso.telemere :as tel]))
 
 (def ^:private test-home "/tmp/simmis-storage-gc-test-home")
@@ -91,11 +96,69 @@
   (testing "an unknown version (a source checkout) is not assumed safe"
     (is (false? (gc/version-at-least? nil "0.8.1905")))
     (is (false? (gc/version-at-least? "0.8.1905-SNAPSHOT" "0.8.1905"))))
-  (testing "the pinned datahike carries the fix, so an enabled loop does not warn"
-    (is (true? (gc/version-at-least? (gc/datahike-version)
-                                     gc/datahike-fail-closed-gc-version))))
+  ;; Source pins need not ship Maven metadata. Their safety is tested below,
+  ;; not inferred by relabeling an unknown version as a safe release.
   (testing "0.8.1905 shipped without it"
     (is (false? (gc/version-at-least? "0.8.1905" gc/datahike-fail-closed-gc-version)))))
+
+(deftest unknown-source-version-still-warns-when-gc-is-explicitly-enabled
+  (let [signals (atom [])]
+    (with-redefs [gc/datahike-version (constantly nil)]
+      (tel/with-handler :capture (fn [signal] (swap! signals conj signal)) {:async nil}
+        (#'gc/warn-if-unsafe-datahike!)))
+    (is (some #(and (= ::gc/datahike-gc-not-fail-closed (:id %)) (= :warn (:level %))) @signals))))
+
+(deftest loaded-datahike-refuses-an-incomplete-mark-without-entering-sweep
+  (let [attrs (make-array java.nio.file.attribute.FileAttribute 0)
+        root (java.nio.file.Files/createTempDirectory "simmis-gc-mark-refusal-" attrs)
+        cfg {:store {:backend :file :id (random-uuid) :path (str (.resolve root "store"))}
+             :writer {:backend :self :writer-ownership :exclusive}
+             :keep-history? true :schema-flexibility :write}]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg) released? (atom false)]
+      (try
+        (d/transact conn [{:db/ident :fixture/age :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}])
+        (doseq [age (range 3)] (d/transact conn [{:fixture/age age}]))
+        (let [store (:store @conn)
+              keys! #(set (map :key (k/keys store {:sync? true})))
+              before (keys!) get-in k/get-in sweep kgc/sweep!
+              injected (atom 0) swept (atom 0)
+              error (with-redefs [k/get-in
+                                  (fn [s ks & more]
+                                    (if (and (identical? store s)
+                                             (some #(re-find #"datahike\.gc\$reachable_in_branch"
+                                                             (.getClassName ^StackTraceElement %))
+                                                   (.getStackTrace (Throwable.))))
+                                      (do (swap! injected inc) (throw (AssertionError. "Injected mark failure")))
+                                      (apply get-in s ks more)))
+                                  kgc/sweep!
+                                  (fn [s & more]
+                                    (if (identical? store s)
+                                      ;; Keep even a regressed implementation from
+                                      ;; deleting the fixture. Reaching this is a
+                                      ;; test failure, not a simulated success.
+                                      (do (swap! swept inc) (throw (ex-info "Unexpected sweep" {})))
+                                      (apply sweep s more)))]
+                      (try
+                        (let [result (d/gc-storage conn (java.util.Date. 0))
+                              timeout (async/timeout 30000)
+                              [value port] (async/alts!! [result timeout])]
+                          (if (= port timeout) ::timeout value))
+                        (catch Throwable error error)))]
+          (is (pos? @injected) "The real branch mark reached our fault")
+          (is (instance? Throwable error) "The loaded collector returns an explicit failure")
+          (is (= :gc-incomplete-mark (when (instance? Throwable error) (:type (ex-data error)))))
+          (is (zero? @swept) "The actual sweep entrypoint was never invoked")
+          (is (= before (keys!)) "Every stored key survives")
+          (d/release conn)
+          (reset! released? true)
+          (let [reopened (d/connect cfg)]
+            (try (is (= 3 (count (d/q '[:find ?e :where [?e :fixture/age]] @reopened))))
+                 (finally (d/release reopened)))))
+        (finally
+          (when-not @released? (d/release conn))
+          (d/delete-database cfg))))))
 
 (deftest a-failed-sweep-is-not-an-empty-sweep
   (is (= [] (gc/report-problems {:rooms 2 :system-db {:reclaimed 0}} 2)))

@@ -86,11 +86,14 @@
   (let [cfg ((requiring-resolve 'shadow.cljs.devtools.config/load-cljs-edn!))
         {:keys [nrepl-cljs shadow-http http websocket]} (instance/ports)
         ws-define 'is.simm.runtimes.web/development-websocket-port
+        bind-address (instance/development-bind-address)
         dev-http (-> cfg :dev-http vals first
-                     (assoc :proxy-url (str "http://localhost:" websocket)))]
+                     (assoc :proxy-url (str "http://localhost:" websocket))
+                     (cond-> bind-address (assoc :host bind-address)))]
     (-> cfg
         (assoc-in [:nrepl :port] nrepl-cljs)
         (assoc-in [:http :port] shadow-http)
+        (cond-> bind-address (assoc-in [:http :host] bind-address))
         (assoc :dev-http {http dev-http})
         (update :builds update-vals
                 (fn [build]

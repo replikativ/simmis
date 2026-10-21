@@ -3,6 +3,7 @@
    Only the atomic insert winner may schedule. Jobs/Runs own execution status."
   (:require [datahike.api :as d]
             [dvergr.artifact :as artifact]
+            [is.simm.model.knowledge-publication :as publication]
             [hasch.core :as hasch]))
 
 (def schema
@@ -15,6 +16,7 @@
          [:work.request/room :db.type/uuid]
          [:work.request/kind :db.type/keyword]
          [:work.request/intent-id :db.type/uuid]
+         [:work.request/publication-basis-id :db.type/uuid]
          [:work.request/payload-ref :db.type/store-ref]
          [:work.request/claim :db.type/uuid]
          [:work.request/created-at :db.type/instant]
@@ -32,6 +34,15 @@
 
 (defn request-id [party room client-id]
   (hasch/uuid [:simmis/work-request-v1 party room client-id]))
+
+(defn- publication-id
+  "Integrity of host-retained metadata, not a proof of current authorization."
+  [intent]
+  (when (contains? intent :knowledge/publication-basis)
+    (let [basis (publication/validate! (:knowledge/publication-basis intent))]
+      (when-not (uuid? (get-in intent [:workflow :input-selection :execution-id]))
+        (throw (ex-info "Invalid host publication basis" {:type ::invalid-publication-basis})))
+      (:id basis))))
 
 (defn get-request [conn id]
   (let [db @conn]
@@ -60,17 +71,19 @@
   [conn {:keys [party room client-id kind intent limits]}]
   (when-not (and (every? uuid? [party room client-id]) (keyword? kind) (map? intent))
     (throw (ex-info "Invalid work-request identity" {:type ::invalid})))
-  (let [id (request-id party room client-id)
+  (let [basis-id (publication-id intent)
+        id (request-id party room client-id)
         intent {:kind kind :limits (or limits {}) :input intent}
         digest (hasch/uuid intent)]
     (if-let [row (get-request conn id)]
       {:request (same-intent! row digest) :claimed? false}
       (let [claim (random-uuid)
-            base (merge {:db/id -1
+            base (merge (cond-> {:db/id -1
                          :work.request/id id :work.request/client-id client-id
                          :work.request/by party :work.request/room room :work.request/kind kind
                          :work.request/intent-id digest :work.request/claim claim
                          :work.request/created-at (java.util.Date.) :work.request/state :admitting}
+                          basis-id (assoc :work.request/publication-basis-id basis-id))
                         (into {} (for [k [:budget-microdollars :max-dispatches :max-model-steps :max-worker-admissions :max-cli-runs
                                           :timeout-ms :settlement]
                                        :when (contains? limits k)]
@@ -98,6 +111,21 @@
 
 (defn payload [conn request]
   (artifact/get-value (artifact/datahike-store conn) (:work.request/payload-ref request)))
+
+(defn publication-basis
+  "Read the original host binding by canonical request id. No live recapture,
+   no adoption authority, and no trust in a caller-provided request projection."
+  [conn id]
+  (when-let [row (get-request conn id)]
+    (let [retained (payload conn row)
+          basis-id (publication-id (:input retained))]
+      (when-not (and (= id (request-id (:work.request/by row) (:work.request/room row)
+                                       (:work.request/client-id row)))
+                     (= (:work.request/intent-id row) (hasch/uuid retained))
+                     (= (:work.request/kind row) (:kind retained))
+                     (= (:work.request/publication-basis-id row) basis-id))
+        (throw (ex-info "Publication request binding is corrupt" {:type ::invalid-publication-basis})))
+      (get-in retained [:input :knowledge/publication-basis]))))
 
 (defn record-job!
   "Publish the winning request's job pointer BEFORE its evaluation starts.

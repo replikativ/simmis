@@ -13,12 +13,15 @@
             [is.simm.model.workers :as workers]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.work :as work]
+            [is.simm.ops.knowledge-admission :as knowledge-admission]
             [is.simm.ops.work-test :as work-fixture]
             [is.simm.ops.worker-credentials :as credentials]
             [is.simm.ops.worker-files-test :as file-fixture]
             [is.simm.ops.worker-service :as service]
             [is.simm.ops.worker-wait :as wait]
             [is.simm.ops.worker-work :as local]
+            [is.simm.ops.workflow-runs-test :as workflow-fixture]
+            [is.simm.ops.workflows :as workflows]
             [org.replikativ.spindel.engine.core :as ec]))
 
 (defn- observe-assignment [conn]
@@ -55,6 +58,30 @@
 (defn- stored-attempt [room]
   (when-let [entry (first (store/-list-attempts (:store room) (store/conversation-id room) {}))]
     (store/-load-attempt (:store room) (store/conversation-id room) (:attempt/id entry))))
+
+(deftest worker-workflow-retains-host-publication-binding-before-any-execution
+  (world/with-world [conn w]
+    (with-worker conn w
+      (fn [{:keys [room host-ctx principal input]}]
+        (workspace/seed! room {"/inbox/evidence.md" "Evidence" "/wiki/context.md" "Prior knowledge"})
+        (workflows/write! room {:principal/id "fixture"}
+                          {:name "echo" :files workflow-fixture/knowledge-source})
+        (let [request (merge (select-keys input [:request-id :worker :limits])
+                             (select-keys (workflow-fixture/input workflow-fixture/knowledge-source)
+                                          [:name :expected-bundle]))]
+          (with-redefs [knowledge-admission/default-target workflow-fixture/fixture-default-target
+                        work/submit-prepared!
+                        (fn [_ _ _ _ _ admitted prepared]
+                          (:request (requests/claim!
+                                     conn {:party (:owner w) :room (:room w)
+                                           :client-id (:request-id admitted)
+                                           :kind (:request-kind prepared) :intent (:basis prepared)})))]
+            (let [row (local/submit-workflow! conn host-ctx principal (:room w) room request)
+                  basis (requests/publication-basis conn (:work.request/id row))]
+              (is (= :local-worker-workflow (:work.request/kind row)))
+              (is (contains? (:files basis) "wiki/context.md"))
+              (is (= (:id basis) (:work.request/publication-basis-id row)))
+              (is (nil? (:work.request/job row))))))))))
 
 (deftest production-adapter-completes-one-funded-task-and-retries-never-repeat-it
   (world/with-world [conn w]

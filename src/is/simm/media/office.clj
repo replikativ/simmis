@@ -118,31 +118,39 @@
    zip-bomb caps and zip-slip checks against the actual inflated stream. Order
    is preserved (ODF requires `mimetype` first), so a caller writing the parts
    back keeps the original layout."
-  [^bytes bytes]
+  ([bytes] (read-parts bytes {}))
+  ([^bytes bytes limits]
+  (let [entry-cap (min max-entries (get limits :max-entries max-entries))
+        part-cap (min max-entry-uncompressed (get limits :max-entry-uncompressed max-entry-uncompressed))
+        total-cap (min max-total-uncompressed (get limits :max-total-uncompressed max-total-uncompressed))]
+  (when-not (and (every? #{:max-entries :max-entry-uncompressed :max-total-uncompressed} (keys limits))
+                 (every? #(and (integer? %) (pos? %)) [entry-cap part-cap total-cap]))
+    (fail! :invalid-limits "Archive limits must be positive and cannot raise host caps"))
   (with-open [zis (ZipInputStream. (ByteArrayInputStream. bytes))]
     (loop [acc (array-map) n 0 total 0]
       (if-let [e (.getNextEntry zis)]
         (do
-          (when (> n max-entries)
-            (fail! :too-many-entries (str "archive has more than " max-entries " entries")))
+          (when (>= n entry-cap)
+            (fail! :too-many-entries (str "archive has more than " entry-cap " entries")))
           (if (.isDirectory e)
-            (recur acc n total)
+            (do (safe-entry-name (.getName e)) (recur acc (inc n) total))
             (let [nm (safe-entry-name (.getName e))
+                  _ (when (contains? acc nm) (fail! :duplicate-entry "Archive repeats a part name"))
                   buf (byte-array 65536)
                   out (ByteArrayOutputStream.)]
               (loop [read 0]
                 (let [c (.read zis buf)]
                   (cond
                     (neg? c) nil
-                    (> (+ read c) max-entry-uncompressed)
+                    (> (+ read c) part-cap)
                     (fail! :entry-too-large
-                           (str "entry " nm " inflates past " max-entry-uncompressed " bytes"))
-                    (> (+ total read c) max-total-uncompressed)
+                           (str "entry " nm " inflates past " part-cap " bytes"))
+                    (> (+ total read c) total-cap)
                     (fail! :archive-too-large
-                           (str "archive inflates past " max-total-uncompressed " bytes"))
+                           (str "archive inflates past " total-cap " bytes"))
                     :else (do (.write out buf 0 c) (recur (+ read c))))))
               (recur (assoc acc nm (.toByteArray out)) (inc n) (+ total (.size out))))))
-        acc))))
+        acc))))))
 
 (defn write-parts
   "Zip an ordered map {name → ^bytes} back into a container. `mimetype`, if
@@ -203,11 +211,16 @@
    here); OOXML/ODF main parts do not depend on them, and any part that does is
    copied as raw bytes because the agent never parses it."
   [^bytes bs]
+  (when (> (alength bs) max-part-parse-bytes)
+    (fail! :part-too-large "XML part exceeds the parser byte limit"))
   (let [stack (java.util.ArrayDeque.)
+        nodes (volatile! 0)
         root (volatile! nil)
         handler
         (proxy [DefaultHandler] []
           (startElement [_uri _local qname attrs]
+            (when (or (>= (.size stack) 256) (> (vswap! nodes inc) 100000))
+              (fail! :xml-too-complex "XML exceeds the bounded depth or element count"))
             (let [am (persistent!
                        (reduce (fn [m i]
                                  (assoc! m (keyword (.getQName attrs i)) (.getValue attrs i)))

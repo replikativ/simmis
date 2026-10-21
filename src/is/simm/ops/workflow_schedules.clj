@@ -2,11 +2,15 @@
   "Pinned scheduled work through canonical admission. No new wallet, evaluator
    or execution status; finite allowance is the existing shared room allowance."
   (:require [datahike.api :as d]
+            [dvergr.agent.attempt :as attempt]
+            [dvergr.agent.episode :as episode]
             [dvergr.agent.experiment.runner :as runner]
+            [dvergr.agent.run :as run]
             [dvergr.discourse :as discourse]
             [dvergr.jobs :as jobs]
             [dvergr.model.registry :as models]
             [dvergr.resource :as resource]
+            [dvergr.room.store :as room-store]
             [dvergr.scheduler.cron :as cron]
             [hasch.core :as hasch]
             [is.simm.model.access :as access]
@@ -14,11 +18,13 @@
             [is.simm.model.workflow-schedules :as schedules]
             [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.dvergr :as principals]
+            [is.simm.ops.knowledge-publish :as knowledge-publish]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflows-run]
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [taoensso.telemere :as log]))
 
 (def cadence-schema
@@ -39,6 +45,12 @@
 (defn host-policy []
   {:version 1 :libraries (runner/library-versions) :effects work/effects
    :workflow workflows-run/policy :models :explicit-registry-id
+   :input-selection {:version 1 :capture :occurrence :unchanged :skip :failed :hold
+                     ;; Alpha policy change intentionally requires redeploying
+                     ;; old activations (including generic/benchmark ones).
+                     :publication-target :owned-default-v1
+                     :processing :durable-filing-v1
+                     :cursor :processed-not-adopted}
    :overlap :skip :missed :latest :allowance :shared-room})
 
 (defn model-policy [kind execution]
@@ -114,7 +126,10 @@
         (let [snapshot (workflows/snapshot room (:name execution))
               request (assoc execution :request-id id)
               _ (if (= kind :benchmark) (benchmarks/prepare snapshot request)
-                    (workflows-run/prepare-source snapshot (select-keys execution workflows-run/source-fields)))
+                    (let [input (select-keys execution workflows-run/source-fields)
+                          planned (workflows-run/plan-source snapshot input)]
+                      (when (contains? (:inputs planned) "/in/knowledge/manifest.edn")
+                        (workflows-run/prepare-source snapshot input))))
               target {:version 1 :kind kind :cadence spec :execution execution
                       :snapshot snapshot :host-policy (host-policy)}
               target (assoc target :model-policy (model-policy kind execution))
@@ -143,10 +158,15 @@
   (requests/request-id (:schedule.activation/by row) (:schedule.activation/room row)
                        (:schedule.occurrence/id occurrence)))
 
+(defn- off-engine! []
+  (when (simple/on-drain-thread?)
+    (throw (ex-info "Scheduled work must run off the engine drain" {:type ::engine-thread}))))
+
 (defn recover!
   "Startup only, after the previous dispatcher is physically gone and canonical
    orphan recovery ran. A claim without a linked request is NOT replayed."
   [conn ctx]
+  (off-engine!)
   (binding [ec/*execution-context* ctx]
     (doseq [occurrence (schedules/admitting-occurrences conn)]
       (let [row (schedules/activation conn (:schedule.occurrence/activation occurrence))
@@ -180,26 +200,171 @@
       (discourse/post! room (completion-message row occurrence (schedules/target conn row) request job)))
     (schedules/mark-announced! conn (:schedule.occurrence/id occurrence))))
 
+(defn- input-processed? [conn request room]
+  ;; A completed Job means its orchestration returned, not that its candidate
+  ;; passed. Read the canonical certified Attempt, bound to this request's
+  ;; environment and direct candidate Run. Never infer success from a reward
+  ;; or from an unrelated/hired descendant's receipt.
+  (let [expected (get-in (requests/payload conn request) [:input :environment])]
+    (binding [ec/*execution-context* (:ctx room)]
+      (let [job-id (:work.request/job request)
+            rows (run/runs room {:root-run-id job-id :limit 1000})
+            candidates (filter #(= job-id (:run/parent %)) rows)]
+        (when (and expected (< (count rows) 1000) (= 1 (count candidates)))
+          (let [candidate (first candidates)
+                certified (episode/attempt room (:run/id candidate))]
+            (when certified
+              (attempt/validate-attempt certified)
+              (let [receipt (:attempt/receipt certified)
+                    checks (:attempt/checks receipt)]
+                (and (= expected (:attempt/environment certified))
+                     (= (:run/id candidate) (:attempt/run-id certified))
+                     (= :completed (:run/status candidate) (:attempt/status receipt))
+                     (true? (:completed? checks))
+                     (every? true? (vals checks)))))))))))
+
+(defn- publication-required?
+  "Classify the frozen deployment, not a mutable request's truthy marker.
+   Live knowledge cannot silently become an unbound fixture when its journal
+   or retained publication binding is missing/corrupt."
+  [conn target occurrence request]
+  (let [retained (when (:schedule.occurrence/input-ref occurrence)
+                   (schedules/retained-input conn occurrence))
+        planned (when (= :workflow (:kind target))
+                  (workflows-run/plan-source
+                   (:snapshot target) (select-keys (:execution target) workflows-run/source-fields)))
+        live? (and (:selection-policy planned)
+                   (not (contains? (:inputs planned) "/in/knowledge/manifest.edn")))
+        marked? (or (contains? request :work.request/publication-basis-id)
+                    (some? (:publication-basis retained)))]
+    (when (or live? marked?)
+      (let [basis (requests/publication-basis conn (:work.request/id request))]
+        (when-not (and live? retained basis (= basis (:publication-basis retained)))
+          (throw (ex-info "Scheduled knowledge publication binding is unavailable"
+                          {:type ::publication-binding-unavailable}))))
+      true)))
+
+(defn- durable-completion
+  "Restart fallback after the canonical physical-return flag is false. A
+   process-local Job lookup is helpful, not the authority for completed work."
+  [room request target]
+  (binding [ec/*execution-context* (:ctx room)]
+    (let [id (:work.request/job request)
+          r (when (uuid? id) (run/run room id))]
+      (when (and r (false? (:work.request/return-pending? request))
+                 (= (if (= :benchmark (:kind target)) :experiment :workflow) (:run/kind r))
+                 (= (room-store/conversation-id room) (:run/room r))
+                 (= (:work.request/by request) (access/actor->party-uuid (:run/actor r)))
+                 (nil? (:run/parent r))
+                 (contains? #{:completed :failed :cancelled} (:run/status r))
+                 (instance? java.util.Date (:run/ended-at r)))
+        {:id id :status (:run/status r) :finished-at (:run/ended-at r) :settled? true}))))
+
+(defn- file-input! [conn row occurrence request room]
+  ;; The original delegator files, not the scheduler service or whoever
+  ;; resumed the activation. Historical retry does not need the Attempt.
+  (let [value (knowledge-publish/file-completed-request!
+               conn (principals/party-principal (:schedule.activation/by row))
+               (:schedule.activation/room row) room (:work.request/id request))
+        proof (schedules/processing-proof conn (:schedule.occurrence/id occurrence))]
+    ;; Do not adopt a different freshly read, merely self-hashed receipt in
+    ;; place of the exact filing the host just validated. The cursor writer
+    ;; compares this frozen proof again against its own serialized snapshot.
+    (when-not (and proof (= value (:disposition proof)))
+      (throw (ex-info "Scheduled output filing changed" {:type ::filing-unavailable})))
+    (schedules/mark-input-processed! conn (:schedule.occurrence/id occurrence) proof)))
+
+(defn- process-input! [conn row occurrence request job room target]
+  (if (= :completed (:status job))
+    (if (publication-required? conn target occurrence request)
+      (file-input! conn row occurrence request room)
+      (if (input-processed? conn request room)
+        (schedules/mark-input-processed! conn (:schedule.occurrence/id occurrence))
+        (schedules/block! conn row :execution-failed)))
+    (schedules/block! conn row :execution-failed)))
+
 (defn- release-settled! [conn row resolve-room]
   (when-let [oid (:schedule.activation/active-occurrence row)]
     (let [o (schedules/occurrence conn oid)
-          r (when-let [rid (:schedule.occurrence/request o)] (requests/get-request conn rid))
-          job (when-let [id (:work.request/job r)] (jobs/status id))]
-      (when (and (= :linked (:schedule.occurrence/state o)) (:settled? job)
-                 (false? (:work.request/return-pending? r))
-                 (contains? #{:completed :failed :cancelled} (:status job)))
+          r (when-let [rid (:schedule.occurrence/request o)] (requests/get-request conn rid))]
+      (when (and (= :linked (:schedule.occurrence/state o))
+                 (false? (:work.request/return-pending? r)))
         (try
-          (publish-completion! conn row o r job (resolve-room (:schedule.activation/room row)))
-          (schedules/clear-active! conn row oid)
+          (let [room (or (resolve-room (:schedule.activation/room row))
+                         (throw (ex-info "Scheduled result room is unavailable" {:type ::room-unavailable})))
+                target (schedules/target conn row)
+                filed (when (:schedule.occurrence/input-ref o)
+                        (schedules/processing-proof conn oid))]
+            (if (and filed (true? (:schedule.occurrence/announced? o)))
+              (do
+                ;; The already announced immutable completion and exact durable
+                ;; filing survive expiry of Job/Attempt records. Reauthorize via
+                ;; the fixed host writer; never invent a completion timestamp.
+                (when-not (publication-required? conn target o r)
+                  (throw (ex-info "Unexpected scheduled knowledge filing" {:type ::filing-unavailable})))
+                (file-input! conn row o r room)
+                (schedules/clear-active! conn row oid))
+              ;; Hydrate the Room before lookup, including after restart. The
+              ;; fully filed/announced branch above never consults Job/Attempt.
+              (let [job (or (binding [ec/*execution-context* (:ctx room)]
+                              (jobs/status (:work.request/job r)))
+                            (durable-completion room r target))]
+                (when (and filed (nil? job))
+                  (throw (ex-info "Scheduled completion record is unavailable"
+                                  {:type ::completion-record-unavailable})))
+                (when (and (:settled? job) (contains? #{:completed :failed :cancelled} (:status job)))
+                  (publish-completion! conn row o r job room)
+                  (when (:schedule.occurrence/input-ref o)
+                    (process-input! conn row o r job room target))
+                  (schedules/clear-active! conn row oid)))))
           (catch InterruptedException e (throw e))
           (catch Exception e
             ;; Retain the unresolved pointer until its room announcement is
-            ;; durable; retry publication, never the completed execution.
+            ;; durable; retry filing/publication, never the completed execution.
             (log/log! {:level :warn :id ::completion-publication-pending
                        :data {:occurrence oid :exception-class (.getName (class e))}})))))))
 
+(defn- submit-occurrence! [conn ctx principal row room target o resolution]
+  (binding [ec/*execution-context* (:ctx room)]
+    (let [balance (resource/balance room)]
+      (when-not (every? (fn [[unit amount]] (>= (get balance unit 0M) amount))
+                        (work/resources (get-in target [:execution :limits])))
+        (throw (ex-info "Shared room allowance exhausted" {:type ::budget-exhausted})))))
+  (let [oid (:schedule.occurrence/id o) input (assoc (:execution target) :request-id oid)]
+    (if (= :benchmark (:kind target))
+      (benchmarks/submit-snapshot! conn ctx principal (:schedule.activation/room row) room input (:snapshot target))
+      (if resolution
+        (workflows-run/submit! conn ctx principal (:schedule.activation/room row) room input (:snapshot target) resolution)
+        (workflows-run/submit! conn ctx principal (:schedule.activation/room row) room input (:snapshot target))))
+    (schedules/finish-admission! conn oid :linked (request-id row o) nil)))
+
+(defn- dispatch-input! [conn ctx principal row room target o claim]
+  (let [oid (:schedule.occurrence/id o)
+        submit (fn [resolution] (submit-occurrence! conn ctx principal row room target o resolution))]
+    (if-let [retained (schedules/retained-input conn (schedules/occurrence conn oid))]
+      (do
+        (when-not (= (:schedule.activation/revision row) (:target-revision retained))
+          (throw (ex-info "Scheduled capture belongs to another target revision"
+                          {:type :is.simm.model.workflow-schedules/corrupt})))
+        (submit retained))
+      (workflows-run/with-admission-selection
+        (:schedule.activation/room row) room (:snapshot target) (select-keys (:execution target) workflows-run/source-fields)
+        (fn [selection capture]
+          (if-not selection
+            (submit nil)
+            (let [input-id (hasch/uuid [:simmis/scheduled-input-v1 (:schedule.activation/revision row)
+                                        (:trigger-id selection)])]
+              (when (= :capture (schedules/select-input! conn oid claim input-id (:empty? selection)))
+                (schedules/retain-input!
+                 conn oid claim (merge (capture) {:version 1 :input-id input-id
+                                                  :target-revision (:schedule.activation/revision row)
+                                                  :selection selection}))
+               ;; Read the durable artifact, not a transient recapture, even on
+               ;; the first submission. Restart uncertainty remains held.
+                (submit (schedules/retained-input conn (schedules/occurrence conn oid)))))))))))
+
 (defn- dispatch! [conn ctx resolve-room row o]
-  (when (schedules/admit! conn (:schedule.occurrence/id o))
+  (when-let [claim (schedules/admit! conn (:schedule.occurrence/id o))]
     (let [oid (:schedule.occurrence/id o) rid (request-id row o)]
       (try
         (let [target (schedules/target conn row)
@@ -208,17 +373,10 @@
               principal (principals/party-principal (:schedule.activation/by row))
               _ (authorize! conn principal (:schedule.activation/room row) (:kind target))
               room (or (resolve-room (:schedule.activation/room row))
-                       (throw (ex-info "Room is not hydrated" {:type ::room-unavailable})))
-              _ (binding [ec/*execution-context* (:ctx room)]
-                  (let [balance (resource/balance room)]
-                    (when-not (every? (fn [[unit amount]] (>= (get balance unit 0M) amount))
-                                      (work/resources (get-in target [:execution :limits])))
-                      (throw (ex-info "Shared room allowance exhausted" {:type ::budget-exhausted})))))
-              input (assoc (:execution target) :request-id oid)]
+                       (throw (ex-info "Room is not hydrated" {:type ::room-unavailable})))]
           (if (= :benchmark (:kind target))
-            (benchmarks/submit-snapshot! conn ctx principal (:schedule.activation/room row) room input (:snapshot target))
-            (workflows-run/submit! conn ctx principal (:schedule.activation/room row) room input (:snapshot target)))
-          (schedules/finish-admission! conn oid :linked rid nil))
+            (submit-occurrence! conn ctx principal row room target o nil)
+            (dispatch-input! conn ctx principal row room target o claim)))
         (catch Exception e
           ;; An uncertain post-submission response is reconciled from the
           ;; canonical request, never interpreted as permission to resubmit.
@@ -238,6 +396,7 @@
   "Off-engine only. One pass coalesces due times, drains pending occurrences
    through existing admission, and retains overlap until real cleanup settles."
   [conn ctx resolve-room now]
+  (off-engine!)
   (binding [ec/*execution-context* ctx]
     (doseq [row (schedules/activations conn)]
       (when (.isInterrupted (Thread/currentThread))
@@ -275,12 +434,15 @@
                  :bundle (str (get-in target [:execution :expected-bundle]))
                  :by (str (:schedule.activation/by row)) :enabled? (:schedule.activation/enabled? row)
                  :reason (:schedule.activation/reason row) :cadence (:cadence target)
+                 :processed-input (some-> (:schedule.activation/last-processed-input row) str)
                  :next-fire (.getTime ^java.util.Date (:schedule.activation/next-fire row))
                  :occurrences
                  (mapv (fn [o]
                          (let [r (when-let [rid (:schedule.occurrence/request o)] (requests/get-request conn rid))
                                j (when-let [id (:work.request/job r)] (jobs/status id))]
                            {:id (str (:schedule.occurrence/id o)) :state (:schedule.occurrence/state o)
+                            :input-id (some-> (:schedule.occurrence/input-id o) str)
+                            :input-revision (some-> (:schedule.occurrence/input-revision o) str)
                             :intended-at (.getTime ^java.util.Date (:schedule.occurrence/intended-at o))
                             :coalesced (:schedule.occurrence/coalesced o) :reason (:schedule.occurrence/reason o)
                             :job (some-> (:work.request/job r) str) :status (:status j)

@@ -11,6 +11,7 @@
             [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.benchmark-dataset :as dataset]
             [is.simm.ops.checkers :as checkers]
+            [is.simm.ops.knowledge-inputs :as knowledge-inputs]
             [is.simm.ops.work :as work]
             [is.simm.ops.worker-files :as files]
             [is.simm.ops.worker-work :as local]
@@ -88,7 +89,7 @@
           basis {:policy policy :worker (:worker input) :generation (:simmis.worker/generation pinned)
                  :config-id (:simmis.worker/config-id pinned)
                  :inputs (update-vals frozen #(get-in % [:frozen :input-id]))}
-          checker-setup (checkers/world-setup bundle)
+          checker-setup (checkers/world-setup bundle (knowledge-inputs/declaration (:files snapshot)))
           setup (evaluation/make-world-setup
                  {:id :simmis/local-worker-benchmark-inputs :version 1
                   :basis {:worker basis :fixtures (evaluation/world-setup-ref checker-setup)}
