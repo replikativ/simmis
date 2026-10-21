@@ -162,6 +162,14 @@ Per-view read epochs fence old folder/file replies against newer metadata;
 background refresh never changes the selected file. Metadata requests cover up
 to 64 folders and buffers per view; collapsing a folder releases its listing.
 
+Metadata also carries a separate conservative `:definition-basis` token from
+the physical store/branch, commit ID and max-tx. Schema-only native transactions
+change it even when file descriptors and logical HEAD do not. It is an
+invalidation hint, not replicated schema, permission, an opened-file revision or
+a target stamp. Existing draft conflict comparisons still use the file entry
+and target stamp; this token must not turn an unchanged text buffer into a
+source conflict. Typed property UI controls are not yet activated.
+
 The notifier owns routing interests for the process lifetime, not one callback
 per mounted editor. Room shutdown releases concrete listeners; retained party/
 room identities allow rebind after canonical room replacement, followed by

@@ -183,6 +183,16 @@ writer, never transaction data, a saved receipt or permission. The host must
 still publish with that same fresh snapshot's atomic writer precondition and
 current authorization. This API is not yet wired into Memory UI controls.
 
+Internal `ops.owned-files/properties!` and `property-save!` compose that model
+with current room read/write permissions and the same owned-default target
+binding used by ordinary file operations. The save accepts no client schema,
+selection policy or writer basis. It prepares against one fresh immutable DB,
+captures that DB's Dvergr validation precondition and passes it through the
+existing file writer, with current authorization checked again at the native
+effect gates. Source/schema races refuse or remain explicitly uncertain; the
+original target stamp accompanies a successful canonical receipt. These host
+operations do not add an RPC/MCP surface or activate typed UI controls.
+
 ## Existing KB vocabulary
 
 Everything stored in a KB or a room store is described by one small vocabulary.

@@ -119,6 +119,16 @@
         (is (nil? (get-in first-view [:entries "missing.md"])))
         (is (= ["a.md"] (mapv :name (get-in first-view [:folders "wiki" :entries]))))
         (is (= first-view (files/metadata room request)))
+        (let [after (files/with-workspace room
+                      (fn [conn]
+                        (d/transact conn [{:db/ident :fixture/definition-only :db/valueType :db.type/string
+                                           :db/cardinality :db.cardinality/one}])
+                        (files/metadata-in @conn request)))]
+          (is (uuid? (:definition-basis first-view)))
+          (is (not= (:definition-basis first-view) (:definition-basis after)))
+          (is (not= (:revision first-view) (:revision after)))
+          (is (= (select-keys first-view [:workspace :folders :entries])
+                 (select-keys after [:workspace :folders :entries]))))
         (save! room "wiki/a.md" "# Changed" (:entry saved))
         (is (not= (:revision first-view) (:revision (files/metadata room request))))
         (doseq [bad [(assoc request :principal "forged")
