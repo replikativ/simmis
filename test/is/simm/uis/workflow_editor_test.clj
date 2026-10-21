@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest is]]
             [is.simm.uis.web.desktop.workflow-editor :as editor]))
 
-(def source {:name "echo" :revision "source" :files {"workflow.edn" "old"}
+(def source {:name "echo" :revision "c1d56a1b-63f9-414c-a6ad-feb35d5e709d" :files {"workflow.edn" "old"}
              :definition {:params {:goal "old default"}}
              :inspection {:ok true :bundle "bundle" :cases []}})
 
@@ -16,6 +16,7 @@
     (is (= {:interval-ms 3600000 :tz "Europe/Berlin"} (:cadence request)))
     (is (= (dissoc (editor/submission draft "ignored") :request-id) (:execution request)))
     (is (not (contains? (:execution request) :request-id)))
+    (is (= (:revision source) (get-in request [:execution :expected-owned-source])))
     (doseq [bad [(assoc-in draft [:form :backend] "local")
                  (assoc-in draft [:form :backend] "cli")
                  (assoc-in draft [:form :schedule-minutes] "0")
@@ -37,7 +38,7 @@
 
 (deftest benchmark-split-selection-does-not-implicitly-include-held-out-cases
   (let [source (assoc source :inspection {:ok true :bundle "bundle" :cases ["a" "b"]
-                                         :evaluation {:splits {:development ["a"] :held-out ["b"]}}})
+                                          :evaluation {:splits {:development ["a"] :held-out ["b"]}}})
         draft (-> (editor/draft source) (assoc-in [:form :mode] "benchmark")
                   (assoc-in [:form :model] "explicit-model"))]
     (is (= ["a"] (:cases (editor/submission draft "dev"))))
@@ -127,7 +128,7 @@
                   (assoc-in [:form :worker] worker))
         request (editor/submission draft "local")]
     (is (= worker (:worker request)))
-    (is (= #{:request-id :name :expected-bundle :limits :params :worker} (set (keys request))))
+    (is (= #{:request-id :name :expected-bundle :expected-owned-source :limits :params :worker} (set (keys request))))
     (is (= {:timeout-ms 120000 :settlement "review"} (:limits request)))
     (is (= {:request-id "fund" :max-worker-admissions 1} (editor/allowance (:form draft) "fund")))
     (doseq [bad [(assoc-in draft [:form :worker] "")
@@ -135,7 +136,18 @@
                  (assoc-in draft [:form :backend] "unknown")]]
       (is (thrown? clojure.lang.ExceptionInfo (editor/submission bad "bad"))))
     (let [benchmark (editor/submission (assoc-in draft [:form :mode] "benchmark") "bench")]
-      (is (= #{:request-id :name :expected-bundle :limits :worker :repetitions} (set (keys benchmark))))
+      (is (= #{:request-id :name :expected-bundle :expected-owned-source :limits :worker :repetitions} (set (keys benchmark))))
       (is (= "discard" (get-in benchmark [:limits :settlement]))))
     (is (thrown? clojure.lang.ExceptionInfo
                  (editor/allowance (assoc (:form draft) :worker-admissions "33") "too-many")))))
+
+(deftest all-execution-backends-retain-the-inspected-owned-source
+  (doseq [backend ["hosted" "local" "cli"]]
+    (let [draft (-> (editor/draft source)
+                    (update :form editor/set-form-field :backend backend)
+                    (assoc-in [:form :model] "explicit-model")
+                    (assoc-in [:form :worker] "99999999-9999-4999-8999-999999999999"))]
+      (is (= (:revision source) (:expected-owned-source (editor/submission draft "request"))))
+      (doseq [revision [nil "source" ""]]
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (editor/submission (assoc-in draft [:source :revision] revision) "bad")))))))

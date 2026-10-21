@@ -31,10 +31,29 @@ def reply(arguments):
 
 
 class DriverTest(unittest.TestCase):
+    def test_owned_source_guard_is_required_and_validated_before_network(self):
+        for command in ["workflow", "benchmark"]:
+            base = ["worker_driver.py", "--state", "/private/fixture-worker", "--session", "/private/session",
+                    command, "--request-id", str(uuid.uuid4()), "--name", "echo",
+                    "--expected-bundle", str(uuid.uuid4())]
+            with patch.object(sys, "argv", base), patch.object(driver, "operate") as operate, \
+                    patch("sys.stderr", new_callable=io.StringIO):
+                with self.assertRaises(SystemExit):
+                    driver.main()
+                operate.assert_not_called()
+            with patch.object(driver, "enrollment", return_value=({"worker": str(uuid.uuid4()), "endpoint": ENDPOINT},
+                                                                  {"room": ROOM})), \
+                    patch.object(driver, "human_call") as call:
+                with self.assertRaises(ValueError):
+                    driver.operate(Path("/private/fixture-worker"), "private-session", command,
+                                   {"request-id": str(uuid.uuid4()), "expected-bundle": str(uuid.uuid4()),
+                                    "expected-owned-source": "not-a-uuid"})
+                call.assert_not_called()
+
     def test_benchmark_cli_preserves_explicit_evaluation_split(self):
         args = ["worker_driver.py", "--state", "/private/fixture-worker", "--session", "/private/session",
                 "benchmark", "--request-id", str(uuid.uuid4()), "--name", "echo",
-                "--expected-bundle", str(uuid.uuid4()), "--split", "development"]
+                "--expected-bundle", str(uuid.uuid4()), "--expected-owned-source", str(uuid.uuid4()), "--split", "development"]
         with patch.object(sys, "argv", args), \
                 patch.object(driver, "state_root", return_value=Path("/private/fixture-worker")), \
                 patch.object(driver, "operate", return_value={}) as operate, patch("sys.stdout", new_callable=io.StringIO):
@@ -42,15 +61,17 @@ class DriverTest(unittest.TestCase):
             self.assertEqual("development", operate.call_args.args[3]["split"])
 
     def test_benchmark_cli_is_explicit_serial_discard_only_and_finite(self):
-        request, bundle = str(uuid.uuid4()), str(uuid.uuid4())
+        request, bundle, source = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
         args = ["worker_driver.py", "--state", "/private/fixture-worker", "--session", "/private/session",
-                "benchmark", "--request-id", request, "--name", "echo", "--expected-bundle", bundle]
+                "benchmark", "--request-id", request, "--name", "echo", "--expected-bundle", bundle,
+                "--expected-owned-source", source]
         with patch.object(sys, "argv", args + ["--case", "one", "--case", "two", "--repetitions", "2"]), \
                 patch.object(driver, "state_root", return_value=Path("/private/fixture-worker")), \
                 patch.object(driver, "operate", return_value={}) as operate, patch("sys.stdout", new_callable=io.StringIO):
             driver.main()
             self.assertEqual("benchmark", operate.call_args.args[2])
             self.assertEqual({"request-id": request, "name": "echo", "expected-bundle": bundle,
+                              "expected-owned-source": source,
                               "repetitions": 2, "cases": ["one", "two"],
                               "limits": {"timeout-ms": 300000, "settlement": "discard"}},
                              operate.call_args.args[3])
@@ -65,9 +86,10 @@ class DriverTest(unittest.TestCase):
                 operate.assert_not_called()
 
     def test_workflow_cli_uses_exact_bundle_and_literal_string_maps(self):
-        request, bundle = str(uuid.uuid4()), str(uuid.uuid4())
+        request, bundle, source = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
         args = ["worker_driver.py", "--state", "/private/fixture-worker", "--session", "/private/session",
                 "workflow", "--request-id", request, "--name", "echo", "--expected-bundle", bundle,
+                "--expected-owned-source", source,
                 "--params", '{"subject":"literal {subject}"}', "--inputs", '{"/docs/input.md":"text"}']
         with patch.object(sys, "argv", args), patch.object(driver, "state_root", return_value=Path("/private/fixture-worker")), \
                 patch.object(driver, "operate", return_value={}) as operate, patch("sys.stdout", new_callable=io.StringIO):
@@ -75,6 +97,7 @@ class DriverTest(unittest.TestCase):
             self.assertEqual("workflow", operate.call_args.args[2])
             fields = operate.call_args.args[3]
             self.assertEqual(bundle, fields["expected-bundle"])
+            self.assertEqual(source, fields["expected-owned-source"])
             self.assertEqual({"subject": "literal {subject}"}, fields["params"])
             self.assertEqual({"/docs/input.md": "text"}, fields["inputs"])
             self.assertEqual(300000, fields["limits"]["timeout-ms"])
@@ -152,9 +175,11 @@ class DriverTest(unittest.TestCase):
                                            {"request-id": str(uuid.uuid4()), "max-worker-admissions": 1})
                 task = driver.operate(root, "private-session", "task", {"request-id": str(uuid.uuid4()), "task": "fixture"})
                 driver.operate(root, "private-session", "workflow",
-                               {"request-id": str(uuid.uuid4()), "name": "echo", "expected-bundle": str(uuid.uuid4())})
+                               {"request-id": str(uuid.uuid4()), "name": "echo", "expected-bundle": str(uuid.uuid4()),
+                                "expected-owned-source": str(uuid.uuid4())})
                 driver.operate(root, "private-session", "benchmark",
                                {"request-id": str(uuid.uuid4()), "name": "echo", "expected-bundle": str(uuid.uuid4()),
+                                "expected-owned-source": str(uuid.uuid4()),
                                 "repetitions": 2, "cases": ["one", "two"],
                                 "limits": {"timeout-ms": 300000, "settlement": "discard"}})
                 driver.operate(root, "private-session", "revoke", {})

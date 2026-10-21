@@ -52,17 +52,23 @@
 (defn- invalid! [message]
   (throw (ex-info message {:type ::invalid})))
 
+(defn transport-result
+  "Pure normalization with CLOSED normal outcomes, not exception tags. Never
+   includes offending values in invalid results; absent fields stay absent."
+  [schema input]
+  (if-not (m/validate (transport-schema-for schema) input)
+    {:status :invalid :reason :shape}
+    (let [result (workflows/keyed-fields-result input [:params :inputs])]
+      (if (and (= :ok (:status result)) (not (m/validate schema (:input result))))
+        {:status :invalid :reason :shape}
+        result))))
+
 (defn transport-for [schema input]
-  (when-not (m/validate (transport-schema-for schema) input) (invalid! "Invalid workflow execution"))
-  (reduce (fn [input field]
-            (if (contains? input field)
-              (update input field
-                      #(reduce-kv
-                        (fn [out key value]
-                          (let [key (if (keyword? key) (subs (str key) 1) key)]
-                            (when (contains? out key) (invalid! "Duplicate workflow input key"))
-                            (assoc out key value))) {} %))
-              input)) input [:params :inputs]))
+  (let [result (transport-result schema input)]
+    (case (:status result)
+      :ok (:input result)
+      :invalid (invalid! (if (= :duplicate-key (:reason result))
+                           "Duplicate workflow input key" "Invalid workflow execution")))))
 
 (defn transport [input] (transport-for schema input))
 

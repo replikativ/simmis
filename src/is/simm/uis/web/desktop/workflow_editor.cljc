@@ -102,7 +102,7 @@
            :max-model-steps (bounded-integer form :max-model-steps 1 32))
     (and (not (local? form)) (not (cli? form)))
     (assoc :budget-microdollars (bounded-integer form :budget-microdollars 1 5000000)
-   :max-dispatches (bounded-integer form :max-dispatches 1 32)
+           :max-dispatches (bounded-integer form :max-dispatches 1 32)
            :max-model-steps (bounded-integer form :max-model-steps 1 32))))
 
 (defn allowance [form request-id]
@@ -123,6 +123,9 @@
         local? (local? form)
         model (str/trim (:model form))]
     (when-not (:ok inspection) (invalid! "Repair this workflow before running"))
+    (when-not (and (string? (:revision source))
+                   (re-matches #"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}" (:revision source)))
+      (invalid! "Reload this workflow's owned source before running"))
     (when (and (cli? form) (not benchmark?)) (invalid! "CLI text execution currently supports benchmarks only"))
     (when (and (not local?) (or (str/blank? model) (> (count model) 200))) (invalid! "Enter an explicit model id"))
     (when (and local? (not (re-matches #"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}" (str (:worker form)))))
@@ -130,7 +133,8 @@
     (when (and (seq selected) (not (some #{selected} cases))) (invalid! "Select a case from this revision"))
     (when (and (not benchmark?) (seq cases) (str/blank? selected)) (invalid! "Select an explicit case"))
     (let [base (cond-> {:request-id request-id :name (:name source) :expected-bundle (:bundle inspection)
-                       :limits (limits form)}
+                        :expected-owned-source (:revision source)
+                        :limits (limits form)}
                  local? (assoc :worker (:worker form)))]
       (if benchmark?
         (let [repetitions (bounded-integer form :repetitions 1 2)

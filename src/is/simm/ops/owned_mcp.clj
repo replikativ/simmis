@@ -1,16 +1,15 @@
 (ns is.simm.ops.owned-mcp
-  "Inactive human MCP host binding for canonical owned Memory reads.
-   No startup installation, credential widening, agent routing or write API."
+  "Human MCP host binding for canonical owned Memory and workflow controls.
+   Construction does not install it or widen credentials or agent routing."
   (:require [clojure.string :as str]
             [dvergr.rooms.files :as files]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.owned-reads :as reads]
+            [is.simm.ops.owned-workflow-host :as workflow-host]
             [org.replikativ.spindel.engine.core :as ec]))
 
 (def ^:private room-read-ops #{:room/files :room/read :catalog/list})
-(def ^:private described-read-ops
-  #{:simmis/workspace-bundle :simmis/workspace-bundle-chunk
-    :simmis/workflow-list :simmis/workflow-source})
+(def ^:private described-owned-actions workflow-host/owned-actions)
 (def ^:private denial {:allow? false :reason "Canonical room read refused"})
 
 (defn- refuse! []
@@ -48,30 +47,20 @@
         (if-not (ops/external-arguments-valid? principal request)
           denial
           (cond
-            ;; This NEW inactive host exports owned human Memory only. Never
+            ;; This host exports owned human Memory only. Never
             ;; allow then downgrade a worker/agent to selected repository bytes.
-            (and (contains? described-read-ops op) (#{:worker :agent} (:principal/kind principal))) denial
-            (or (not (contains? (into room-read-ops described-read-ops) op)) (global-catalog? request)
+            (and (contains? described-owned-actions op) (#{:worker :agent} (:principal/kind principal))) denial
+            (or (not (contains? (into room-read-ops (keys described-owned-actions)) op)) (global-catalog? request)
                 (#{:worker :agent} (:principal/kind principal)))
             ;; Preserve worker/agent and all unrelated op authority; NEVER map
             ;; those credentials to their enroller/owner's canonical Memory.
             (ops/authorize principal request)
             :else (do (mcp-human! principal)
-                      (if (contains? described-read-ops op)
+                      (if (contains? described-owned-actions op)
                   ;; Legacy host descriptors normalize UUID to slug. ONLY
                   ;; these fixed reads compare both mappings in ONE control DB;
                   ;; the original DTO handle remains the sole body selector.
-                        (let [{:keys [action resource args]} request
-                              [kind handle] resource]
-                          (when-not (and (= :read action) (vector? resource) (= 2 (count resource))
-                                         (= :room kind) (bounded-text? handle 1024))
-                            (refuse!))
-                          (let [descriptor (reads/authorize-read! db principal handle)]
-                            (when (contains? request :args)
-                              (when-not (and (map? args)
-                                             (= (:room-id descriptor)
-                                                (:room-id (reads/authorize-read! db principal (:room args)))))
-                                (refuse!)))))
+                        (workflow-host/authorize-in! db principal request)
                         (reads/authorize-read! db principal (original-handle! request)))
                       {:allow? true})))))
     (catch InterruptedException _
@@ -102,9 +91,9 @@
     (files/workspace-path (or path "/") (= :list operation))))
 
 (defn host
-  "Construct an INACTIVE per-host canonical human MCP read binding. Caller owns
+  "Construct a per-host canonical human MCP binding. Caller owns
    the current canonical connection/context lifetime. Nothing installs it.
-   Owned exports/workflow inspections are human-only; legacy hosts and unrelated worker/agent
+   Owned exports/workflow controls are human-only; legacy hosts and unrelated worker/agent
    delegation are unchanged. No cached allow decision or selection mutation."
   [canonical-control-conn host-ctx]
   (-> (ops/host host-ctx)

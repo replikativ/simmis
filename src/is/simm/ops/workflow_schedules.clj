@@ -883,7 +883,7 @@
                 (schedules/clear-active! conn row oid)))))))))
 
 (defn recover-owned!
-  "INACTIVE startup reconciliation after the old dispatcher physically exits.
+  "Startup reconciliation after the old dispatcher physically exits.
    Current owner/creator gates first; no missing-request admission is replayed."
   [host]
   (owned-owner! host)
@@ -910,7 +910,7 @@
               (when row (schedules/block! control-conn row :owned-dispatch-unavailable)))))))))
 
 (defn tick-owned!
-  "INACTIVE fixed HOST pass. No callback resolver, startup or selected-source
+  "Fixed HOST pass. No callback resolver, startup or selected-source
    fallback. Exact retries precede hydration, model/policy and funding work."
   [host now]
   (when-not (instance? java.util.Date now) (owned-unavailable!))
@@ -940,31 +940,116 @@
             (when (.isInterrupted (Thread/currentThread)) (throw error)))))
       nil)))
 
+(defn- schedule-summary [conn room-id row target]
+  {:id (str (:schedule.activation/id row)) :room-id (str room-id)
+   :name (get-in target [:execution :name]) :kind (:kind target)
+   :revision (str (:schedule.activation/revision row))
+   :bundle (str (get-in target [:execution :expected-bundle]))
+   :by (str (:schedule.activation/by row)) :enabled? (:schedule.activation/enabled? row)
+   :reason (:schedule.activation/reason row) :cadence (:cadence target)
+   :processed-input (some-> (:schedule.activation/last-processed-input row) str)
+   :next-fire (.getTime ^java.util.Date (:schedule.activation/next-fire row))
+   :occurrences
+   (mapv (fn [o]
+           (let [r (when-let [rid (:schedule.occurrence/request o)] (requests/get-request conn rid))
+                 j (when-let [id (:work.request/job r)] (jobs/status id))]
+             {:id (str (:schedule.occurrence/id o)) :state (:schedule.occurrence/state o)
+              :input-id (some-> (:schedule.occurrence/input-id o) str)
+              :input-revision (some-> (:schedule.occurrence/input-revision o) str)
+              :intended-at (.getTime ^java.util.Date (:schedule.occurrence/intended-at o))
+              :coalesced (:schedule.occurrence/coalesced o) :reason (:schedule.occurrence/reason o)
+              :job (some-> (:work.request/job r) str) :status (:status j)
+              :settled? (:settled? j)}))
+         (schedules/recent-occurrences conn (:schedule.activation/id row) 12))})
+
+(defn- owned-control-target! [conn original row]
+  ;; Creation retries are creator-specific; room controls deliberately are not.
+  (when-not (and (uuid? (:schedule.activation/id row))
+                 (uuid? (:schedule.activation/by row))
+                 (owned-existing? row (:schedule.activation/id row)
+                                  (assoc original :party (:schedule.activation/by row))))
+    (owned-unavailable!))
+  (let [target (schedules/managed-target conn row)]
+    (let [cadence (:cadence target)
+          external (cond-> (dissoc cadence :every-ms)
+                     (:every-ms cadence) (assoc :interval-ms (:every-ms cadence))
+                     (keyword? (:every cadence)) (update :every name)
+                     (keyword? (:on cadence)) (update :on name))]
+      (when-not (and (#{:workflow :benchmark} (:kind target))
+                     (map? (:execution target))
+                     (string? (get-in target [:execution :name]))
+                     (re-matches #"[a-z0-9][a-z0-9-]{0,63}" (get-in target [:execution :name]))
+                     (uuid? (get-in target [:execution :expected-bundle]))
+                     (map? cadence)
+                     (every? #{:every-ms :every :tz :at :on :on-day} (keys cadence))
+                     (= cadence (cadence! external)))
+        (owned-unavailable!)))
+    (case (:version target)
+      2 (owned-target! row target)
+      1 nil
+      (owned-unavailable!))
+    target))
+
+(defn list-owned!
+  "Inactive HOST human schedule metadata. No room hydration, current default,
+   live source, provider preparation or execution. Legacy targets stay legacy."
+  [host principal handle]
+  (let [original (owned-storage! #(reads/preflight-host-read! host principal handle))
+        {:keys [control-conn execution-ctx]} (::reads/owner host)]
+    (binding [ec/*execution-context* execution-ctx]
+      (let [rows (owned-storage! #(filterv (fn [row] (= (:room-id original) (:schedule.activation/room row)))
+                                           (schedules/activations control-conn)))
+            result (owned-storage!
+                    #(mapv (fn [row]
+                             (let [target (owned-control-target! control-conn original row)]
+                               (cond-> (schedule-summary control-conn (:room-id original) row target)
+                                 (= 1 (:version target)) (assoc :resume-blocked :legacy-recreate)
+                                 (= 2 (:version target))
+                                 (assoc :source-revision (str (get-in target [:source-origin :revision])))))) rows))
+            current (owned-storage! #(reads/preflight-host-read! host principal handle))]
+        (when-not (= (select-keys original [:party :room-id]) (select-keys current [:party :room-id]))
+          (owned-unavailable!))
+        result))))
+
+(defn set-enabled-owned!
+  "Inactive HOST human pause/resume. Pause withdraws pending work through the
+   existing transaction; resume rechecks the stored creator and pinned policy."
+  [host principal handle id enabled?]
+  (when-not (and (uuid? id) (boolean? enabled?))
+    (throw (ex-info "Invalid schedule control" {:type ::invalid})))
+  (let [original (owned-storage! #(reads/preflight-host-read! host principal handle))
+        {:keys [control-conn execution-ctx]} (::reads/owner host)]
+    (binding [ec/*execution-context* execution-ctx]
+      (let [row (owned-storage! #(schedules/activation control-conn id))
+            target (owned-storage! #(owned-control-target! control-conn original row))
+            kind (:kind target)]
+        (owned-current! host principal handle kind original nil)
+        (when enabled?
+          (when-not (= 2 (:version target))
+            (throw (ex-info "Recreate this legacy schedule before resuming" {:type ::legacy-recreate})))
+          (when-let [oid (:schedule.activation/active-occurrence row)]
+            (let [o (owned-storage! #(schedules/occurrence control-conn oid))]
+              (when-not (and (= oid (:schedule.occurrence/id o))
+                             (= id (:schedule.occurrence/activation o))
+                             (= (:schedule.activation/revision row) (:schedule.occurrence/revision o))
+                             (#{:pending :linked} (:schedule.occurrence/state o)))
+                (throw (ex-info "Uncertain admission requires reconciliation before resuming" {:type ::conflict})))))
+          (owned-preflight! host (principals/party-principal (:schedule.activation/by row)) handle kind)
+          (owned-storage! #(owned-policy-current! target)))
+        (let [current (owned-current! host principal handle kind original nil)]
+          (when enabled?
+            (owned-storage!
+             #(let [creator (principals/party-principal (:schedule.activation/by row))]
+                (reads/authorize-read! (:control-db current) creator handle)
+                (owned-action! (:control-db current) creator (:room-id current) kind))))
+          (owned-storage! #(if enabled?
+                             (schedules/resume-managed! control-conn row)
+                             (schedules/set-enabled! control-conn id false))))))))
+
 (defn list-room [conn ctx principal room-id]
   (binding [ec/*execution-context* ctx]
     (let [party (access/actor->party-uuid (:principal/id principal))]
       (when-not (access/can? @conn party :read {:room room-id})
         (throw (ex-info "Room read authority required" {:type ::denied})))
-      (mapv (fn [row]
-              (let [target (schedules/target conn row)]
-                {:id (str (:schedule.activation/id row)) :room-id (str room-id)
-                 :name (get-in target [:execution :name]) :kind (:kind target)
-                 :revision (str (:schedule.activation/revision row))
-                 :bundle (str (get-in target [:execution :expected-bundle]))
-                 :by (str (:schedule.activation/by row)) :enabled? (:schedule.activation/enabled? row)
-                 :reason (:schedule.activation/reason row) :cadence (:cadence target)
-                 :processed-input (some-> (:schedule.activation/last-processed-input row) str)
-                 :next-fire (.getTime ^java.util.Date (:schedule.activation/next-fire row))
-                 :occurrences
-                 (mapv (fn [o]
-                         (let [r (when-let [rid (:schedule.occurrence/request o)] (requests/get-request conn rid))
-                               j (when-let [id (:work.request/job r)] (jobs/status id))]
-                           {:id (str (:schedule.occurrence/id o)) :state (:schedule.occurrence/state o)
-                            :input-id (some-> (:schedule.occurrence/input-id o) str)
-                            :input-revision (some-> (:schedule.occurrence/input-revision o) str)
-                            :intended-at (.getTime ^java.util.Date (:schedule.occurrence/intended-at o))
-                            :coalesced (:schedule.occurrence/coalesced o) :reason (:schedule.occurrence/reason o)
-                            :job (some-> (:work.request/job r) str) :status (:status j)
-                            :settled? (:settled? j)}))
-                       (schedules/recent-occurrences conn (:schedule.activation/id row) 12))}))
+      (mapv #(schedule-summary conn room-id % (schedules/target conn %))
             (filter #(= room-id (:schedule.activation/room %)) (schedules/activations conn))))))

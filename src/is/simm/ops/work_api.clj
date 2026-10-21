@@ -10,7 +10,10 @@
             [is.simm.ops.coordinator :as coordinator]
             [is.simm.ops.dvergr :as simmis-ops]
             [is.simm.ops.git-snapshot :as git-snapshot]
+            [is.simm.ops.owned-benchmark-admission :as owned-benchmarks]
             [is.simm.ops.owned-reads :as owned-reads]
+            [is.simm.ops.owned-workflow-admission :as owned-admission]
+            [is.simm.ops.owned-workflow-authoring :as owned-authoring]
             [is.simm.ops.owned-workflows :as owned-workflows]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflow-runs]
@@ -41,6 +44,14 @@
 
 (def workflow-write-schema (external-schema workflows/transport-write-schema))
 (def workflow-run-schema (external-schema workflow-runs/transport-schema))
+(defn with-owned-source-wire
+  "Transport-only optional field for host-agnostic tool descriptions. Owned
+   handlers REQUIRE it; legacy handlers reject it before room hydration."
+  [schema]
+  (conj schema [:expected-owned-source {:optional true} uuid-string]))
+(def workflow-run-route-schema (with-owned-source-wire workflow-run-schema))
+(def benchmark-route-schema (with-owned-source-wire benchmark-schema))
+(def cli-benchmark-route-schema (with-owned-source-wire cli-benchmark-schema))
 (defn- scheduled-execution-schema [schema]
   ;; Reuse canonical closed schemas; only transport UUIDs differ, and a
   ;; scheduled occurrence, not its caller, owns each execution request-id.
@@ -50,13 +61,16 @@
                      (update entry (dec (count entry)) #(if (= :uuid %) uuid-string %)))))
         (drop 2 schema)))
 
-(def workflow-schedule-create-schema
+(defn- schedule-create-schema [owned-wire?]
   (into [:multi {:dispatch :kind}]
         (map (fn [[kind execution]]
                [kind [:map {:closed true} room-entry [:request-id uuid-string]
                       [:kind [:= kind]] [:cadence workflow-schedules/cadence-schema]
-                      [:execution (scheduled-execution-schema execution)]]]))
+                      [:execution (cond-> (scheduled-execution-schema execution)
+                                    owned-wire? with-owned-source-wire)]]]))
         [["workflow" workflow-runs/transport-schema] ["benchmark" benchmarks/schema]]))
+(def workflow-schedule-create-schema (schedule-create-schema false))
+(def workflow-schedule-route-schema (schedule-create-schema true))
 (def workflow-schedule-list-schema [:map {:closed true} room-entry])
 (def workflow-schedule-enabled-schema
   [:map {:closed true} room-entry [:id uuid-string] [:enabled? :boolean]])
@@ -99,6 +113,10 @@
 (defn- schedule-receipt [row]
   ;; Raw activation rows contain a GC-tracked frozen target reference. It is
   ;; neither an external capability nor part of the public acknowledgement.
+  (when-not (and (every? #(uuid? (get row %))
+                         [:schedule.activation/id :schedule.activation/room :schedule.activation/revision :schedule.activation/by])
+                 (boolean? (:schedule.activation/enabled? row)))
+    (throw (ex-info "Invalid schedule acknowledgement" {})))
   (cond-> {:id (str (:schedule.activation/id row))
            :room-id (str (:schedule.activation/room row))
            :revision (str (:schedule.activation/revision row))
@@ -219,15 +237,139 @@
                                    (get args :length (:chunk-bytes git-snapshot/policy)))
             (git-snapshot/describe-in db room-id target-stamp)))))))
 
-(defn owned-workflow-read-error!
-  "HOST-only constant transport mapping of the fixed owned service's outcomes.
-   Never relay native messages/status metadata. No file authority or callback."
-  [error]
+(defn- preserve-interruption! [error]
   (loop [cause error seen #{}]
     (cond (nil? cause) nil
           (instance? InterruptedException cause) (.interrupt (Thread/currentThread))
           (contains? seen cause) nil
-          :else (recur (.getCause ^Throwable cause) (conj seen cause))))
+          :else (recur (.getCause ^Throwable cause) (conj seen cause)))))
+
+(defn owned-helper-value!
+  "HOST-only quarantine for normalization/projection, not service-outcome
+   classification. No exception tag can manufacture an adapter outcome."
+  [f]
+  (try (f)
+       (catch Throwable error
+         (preserve-interruption! error)
+         (ops/op-error! "Owned workflow operation unavailable" ::owned-transport-unavailable 503))))
+
+(defn- owned-uuid! [text]
+  (or (owned-helper-value! #(parse-uuid text))
+      (ops/op-error! "Invalid owned workflow identity" ::owned-transport-invalid 400)))
+
+(defn owned-transport!
+  "HOST DTO normalization only. Required guards come from the supplied fixed
+   internal schema, never inferred from ambient source. All thrown helper
+   failures are quarantined; only NORMAL validation outcomes become 400."
+  [schema args]
+  (let [{:keys [input result]}
+        (owned-helper-value!
+         #(let [input (reduce (fn [input field]
+                                (if (contains? input field)
+                                  (update input field (fn [value] (when (string? value) (parse-uuid value)))) input))
+                              (dissoc args :room) [:request-id :worker :expected-bundle :expected-owned-source])]
+            {:input input :result (workflow-runs/transport-result schema input)}))]
+    (cond
+      (and (map? result) (= #{:status :reason} (set (keys result)))
+           (= :invalid (:status result)) (#{:shape :duplicate-key} (:reason result)))
+      (ops/op-error! "Invalid owned workflow arguments" ::owned-transport-invalid 400)
+
+      (and (map? result) (= #{:status :input} (set (keys result))) (= :ok (:status result)))
+      (let [normalized (:input result)]
+        (when-not (and (map? normalized)
+                       (= (dissoc input :params :inputs) (dissoc normalized :params :inputs)))
+          (ops/op-error! "Owned workflow operation unavailable" ::owned-transport-unavailable 503))
+        (when-not (owned-helper-value! #(m/validate schema normalized))
+          (ops/op-error! "Owned workflow operation unavailable" ::owned-transport-unavailable 503))
+        normalized)
+
+      :else (ops/op-error! "Owned workflow operation unavailable" ::owned-transport-unavailable 503))))
+
+(defn owned-service-result!
+  "HOST-only adapter mapping over fixed owned service calls. Normalization and
+   projection MUST remain outside this boundary; native diagnostics stay private."
+  [call]
+  (try (call)
+       (catch Throwable error
+         (preserve-interruption! error)
+         (let [[status kind message]
+               (case (:type (ex-data error))
+                 (:is.simm.ops.owned-workflow-admission/invalid
+                  :is.simm.ops.owned-benchmark-admission/invalid
+                  :is.simm.ops.owned-worker-admission/invalid
+                  :is.simm.ops.owned-workflow-authoring/invalid
+                  :is.simm.ops.owned-workflows/invalid
+                  :is.simm.ops.workflow-schedules/invalid)
+                 [400 ::owned-operation-invalid "Invalid owned workflow arguments"]
+                 (:is.simm.ops.owned-workflow-admission/conflict
+                  :is.simm.ops.owned-benchmark-admission/conflict
+                  :is.simm.ops.owned-worker-admission/conflict
+                  :is.simm.ops.owned-workflow-authoring/conflict
+                  :is.simm.ops.owned-workflows/conflict
+                  :is.simm.ops.workflow-schedules/conflict
+                  :is.simm.ops.workflow-schedules/legacy-recreate)
+                 [409 ::owned-operation-conflict "Work or source changed; inspect metadata before retrying"]
+                 :is.simm.ops.owned-workflow-authoring/pending
+                 [503 ::owned-save-pending "Workflow save outcome is pending; do not retry automatically"]
+                 [503 ::owned-operation-unavailable "Owned workflow operation unavailable"])]
+           (ops/op-error! message kind status)))))
+
+(defn- owned-write-transport! [args]
+  (let [input (dissoc args :room)
+        _ (when-not (and (string? (:expected-revision input))
+                         (owned-helper-value! #(parse-uuid (:expected-revision input))))
+            (ops/op-error! "An inspected owned source revision is required" ::owned-transport-invalid 400))
+        result (owned-helper-value! #(workflows/transport-write-result input))]
+    (cond
+      (and (map? result) (= #{:status :reason} (set (keys result))) (= :invalid (:status result))
+           (#{:shape :duplicate-key :revision} (:reason result)))
+      (ops/op-error! "Invalid owned workflow edits" ::owned-transport-invalid 400)
+
+      (and (map? result) (= #{:status :input} (set (keys result))) (= :ok (:status result))
+           (map? (:input result)))
+      (let [normalized (:input result)]
+        (when-not (and (= (dissoc input :files) (dissoc normalized :files))
+                       (owned-helper-value!
+                        #(m/validate workflows/write-schema (update normalized :expected-revision parse-uuid))))
+          (ops/op-error! "Owned workflow operation unavailable" ::owned-transport-unavailable 503))
+        normalized)
+
+      :else (ops/op-error! "Owned workflow operation unavailable" ::owned-transport-unavailable 503))))
+
+(defn owned-workflow-save!
+  "Fixed HOST save shared by authenticated adapters. Returns the ORIGINAL
+   sealed ACK; each adapter projects only its own public result. No reread."
+  [host principal handle edits]
+  (when (and (map? edits) (contains? edits :room))
+    (ops/op-error! "Invalid owned workflow edits" ::owned-transport-invalid 400))
+  (let [args (if (map? edits) (assoc edits :room handle) edits)]
+    (checked! workflow-write-schema args)
+    (let [input (owned-write-transport! args)
+          saved (owned-service-result! #(owned-authoring/write! host principal handle input))]
+      (owned-helper-value!
+       #(do
+          (when-not (and (map? (:write saved)) (contains? (:write saved) :commit)
+                         (let [commit (get-in saved [:write :commit])]
+                           (or (nil? commit) (and (string? commit) (parse-uuid commit))))
+                         (string? (get-in saved [:source :revision]))
+                         (parse-uuid (get-in saved [:source :revision]))
+                         (= (get-in saved [:source :revision]) (get-in saved [:source :inspection :revision]))
+                         (map? (get-in saved [:source :inspection])))
+            (throw (ex-info "Invalid owned save acknowledgement" {})))
+          saved)))))
+
+(defn- owned-schedule-transport! [args]
+  (let [schema (if (= "workflow" (:kind args)) workflow-runs/schema benchmarks/schema)
+        execution (owned-transport! (conj schema [:expected-owned-source :uuid])
+                                    (assoc (:execution args) :request-id (:request-id args)))]
+    (assoc (dissoc args :room) :request-id (:request-id execution)
+           :execution (dissoc execution :request-id))))
+
+(defn owned-workflow-read-error!
+  "HOST-only constant transport mapping of the fixed owned service's outcomes.
+   Never relay native messages/status metadata. No file authority or callback."
+  [error]
+  (preserve-interruption! error)
   (let [[status kind message]
         (case (:type (ex-data error))
           :is.simm.ops.owned-workflows/invalid
@@ -243,6 +385,28 @@
             host ops/*principal* (:room args) (dissoc args :room)))
     (catch Throwable error (owned-workflow-read-error! error))))
 
+(defn owned-status!
+  "Inactive HOST metadata-only request status. No room hydration, source
+   guard synthesis, model preparation, wallet access or fresh admission."
+  [host principal handle id]
+  (when-not (uuid? id)
+    (ops/op-error! "Invalid request identity" ::invalid 400))
+  (try
+    (let [original (owned-reads/preflight-host-read! host principal handle)
+          {:keys [control-conn execution-ctx]} (::owned-reads/owner host)]
+      (binding [ec/*execution-context* execution-ctx]
+        (let [result (work/status control-conn execution-ctx principal (:room-id original) id)
+              current (owned-reads/preflight-host-read! host principal handle)]
+          (when-not (= (select-keys original [:party :room-id]) (select-keys current [:party :room-id]))
+            (throw (ex-info "Request metadata unavailable" {})))
+          (work/authorize-in! (:control-db current) principal (:room-id current))
+          result)))
+    (catch Throwable error
+      ;; Status has no normal source-conflict outcome. Helper exception tags
+      ;; cannot manufacture a 400/409 or relay provider/native diagnostics.
+      (preserve-interruption! error)
+      (ops/op-error! "Owned request status unavailable" ::owned-status-unavailable 503))))
+
 (def specifications
   (room-specifications
    {:simmis/workflow-schedule-list
@@ -250,26 +414,40 @@
      :doc "List this room's pinned workflow/benchmark schedules and recent occurrence links to canonical Jobs. Requires current room read authority. Does not execute, fund or resume anything."
      :impl (fn [host args]
              (checked! workflow-schedule-list-schema args)
-             (guarded host #(let [[conn id _] (room! host (:room args))]
-                              (workflow-schedules/list-room conn (:execution-ctx host) ops/*principal* id))))}
+             (if (owned-reads/owned-host? host)
+               (owned-service-result! #(workflow-schedules/list-owned! host ops/*principal* (:room args)))
+               (guarded host #(let [[conn id _] (room! host (:room args))]
+                                (workflow-schedules/list-room conn (:execution-ctx host) ops/*principal* id)))))}
     :simmis/workflow-schedule-create
-    {:kind :write :schema workflow-schedule-create-schema :authz {:action :merge}
+    {:kind :write :schema workflow-schedule-route-schema :authz {:action :merge}
      :doc "Explicitly activate a pinned saved workflow or operator-only benchmark on an interval/calendar cadence with an explicit timezone. Stable request-id retries observe the admitted revision. Each occurrence uses its finite execution limits and existing shared room allowance; never auto-funds. Missed slots coalesce; overlapping work is skipped. Execution has no caller request-id, code, credentials or arbitrary hooks."
      :impl (fn [host args]
-             (checked! workflow-schedule-create-schema args)
-             (guarded host #(let [[conn id room] (room! host (:room args))]
-                              (schedule-receipt
-                               (workflow-schedules/create! conn (:execution-ctx host) ops/*principal* id room
-                                                           (workflow-schedule-transport args))))))}
+             (checked! workflow-schedule-route-schema args)
+             (if (owned-reads/owned-host? host)
+               (let [input (owned-schedule-transport! args)
+                     row (owned-service-result! #(workflow-schedules/create-owned! host ops/*principal* (:room args) input))]
+                 (owned-helper-value! #(schedule-receipt row)))
+               (do
+                 (checked! workflow-schedule-create-schema args)
+                 (guarded host #(let [[conn id room] (room! host (:room args))]
+                                  (schedule-receipt
+                                   (workflow-schedules/create! conn (:execution-ctx host) ops/*principal* id room
+                                                               (workflow-schedule-transport args))))))))}
     :simmis/workflow-schedule-set-enabled
     {:kind :write :schema workflow-schedule-enabled-schema :authz {:action :merge}
      :doc "Explicitly pause/resume one pinned schedule in this room. Requires current execution authority (and operator status for benchmarks); resume rechecks the original delegator and pinned host policy. Disabling does not cancel already admitted work or fund new allowance."
      :impl (fn [host args]
              (checked! workflow-schedule-enabled-schema args)
-             (guarded host #(let [[conn id _] (room! host (:room args))]
-                              (schedule-receipt
-                               (workflow-schedules/set-enabled! conn (:execution-ctx host) ops/*principal* id
-                                                                (uuid! (:id args)) (:enabled? args))))))}
+             (if (owned-reads/owned-host? host)
+               (let [id (owned-uuid! (:id args))
+                     row (owned-service-result!
+                          #(workflow-schedules/set-enabled-owned! host ops/*principal* (:room args)
+                                                                  id (:enabled? args)))]
+                 (owned-helper-value! #(schedule-receipt row)))
+               (guarded host #(let [[conn id _] (room! host (:room args))]
+                                (schedule-receipt
+                                 (workflow-schedules/set-enabled! conn (:execution-ctx host) ops/*principal* id
+                                                                  (uuid! (:id args)) (:enabled? args)))))))}
     :simmis/workflow-list
     {:kind :read :schema workflow-list-schema :authz {:action :read}
      :doc "List25 room-local workflow names, including invalid drafts, without loading file contents. Scans at most20000 workflow path entries; refuses larger indices. expected-revision pins the sorted name set across pages. Never executes checker source."
@@ -309,14 +487,18 @@
                                 (git-snapshot/chunk room (uuid! (:expected-snapshot args)) (:offset args)
                                                     (get args :length (:chunk-bytes git-snapshot/policy)))))))}
     :simmis/cli-benchmark
-    {:kind :write :schema cli-benchmark-schema :authz {:action :merge}
-     :doc "Operator-only offline benchmark using Claude Code TEXT inference under Dvergr's SCI loop. Explicit single-use CLI Run admissions, finite steps/deadline, no compaction, resume, delegation or automatic retry. Not HTTP-dispatch accounting. Same frozen fixtures/checker/Attempts/Scorecards; discard only."
+    {:kind :write :schema cli-benchmark-route-schema :authz {:action :merge}
+     :doc "Operator-only offline benchmark using Claude Code TEXT inference under Dvergr's SCI loop. Explicit single-use CLI Run admissions, finite steps/deadline, no compaction, resume, delegation or automatic retry. Not HTTP-dispatch accounting. Same frozen fixtures/checker/Attempts/Scorecards; discard only. On the Simmis owned host, fresh execution also REQUIRES expected-owned-source: copy the source revision UUID from the same workflow-check inspection as expected-bundle. Retain both original guards on retry."
      :impl (fn [host args]
-             (checked! cli-benchmark-schema args)
-             (guarded host #(let [[conn id room] (room! host (:room args))]
-                              (benchmarks/submit-cli! conn (:execution-ctx host) ops/*principal* id room
-                                                      (-> (dissoc args :room) (update :request-id uuid!)
-                                                          (update :expected-bundle uuid!))))))}
+             (checked! cli-benchmark-route-schema args)
+             (if (owned-reads/owned-host? host)
+               (let [input (owned-transport! (conj benchmarks/cli-schema [:expected-owned-source :uuid]) args)]
+                 (owned-service-result! #(owned-benchmarks/submit-cli! host ops/*principal* (:room args) input)))
+               (do (checked! cli-benchmark-schema args)
+                   (guarded host #(let [[conn id room] (room! host (:room args))]
+                                    (benchmarks/submit-cli! conn (:execution-ctx host) ops/*principal* id room
+                                                            (-> (dissoc args :room) (update :request-id uuid!)
+                                                                (update :expected-bundle uuid!))))))))}
     :simmis/cli-allowance
     {:kind :write :schema cli-allowance-schema :authz {:action :merge}
      :doc "Explicit finite operator allowance for single-use Claude CLI Runs. One admission per benchmark cell, not one internal HTTP request; no dollar-spend-cap claim. Stable request-id; no automatic funding."
@@ -326,41 +508,58 @@
                               (benchmarks/provision-cli! conn (:execution-ctx host) ops/*principal* id room
                                                          (-> (dissoc args :room) (update :request-id uuid!))))))}
     :simmis/benchmark
-    {:kind :write :schema benchmark-schema :authz {:action :merge}
-     :doc "Admit an exact inspected workflow bundle as an OFFLINE benchmark. Requires installation operator AND current room merge authority: checker code is trusted-operator SCI, cooperatively bounded, NOT hard OS isolation. Maximum eight cells, one at a time, native providers only, explicit aggregate money/dispatch allowance, /out capture, discard settlement. Optional calibration.edn runs reference/damaged answers before each candidate without exposing them to it. Results use the room's existing Attempts, Scorecards and experiment reports. request-id retries observe the same job; expected-bundle pins the reviewed revision. No judge, live web, arbitrary eval or automatic checker promotion."
+    {:kind :write :schema benchmark-route-schema :authz {:action :merge}
+     :doc "Admit an exact inspected workflow bundle as an OFFLINE benchmark. Requires installation operator AND current room merge authority: checker code is trusted-operator SCI, cooperatively bounded, NOT hard OS isolation. Maximum eight cells, one at a time, native providers only, explicit aggregate money/dispatch allowance, /out capture, discard settlement. Optional calibration.edn runs reference/damaged answers before each candidate without exposing them to it. Results use the room's existing Attempts, Scorecards and experiment reports. request-id retries observe the same job; expected-bundle pins the reviewed revision. No judge, live web, arbitrary eval or automatic checker promotion. On the Simmis owned host, fresh execution also REQUIRES expected-owned-source: copy the source revision UUID from the same workflow-check inspection as expected-bundle. Retain both original guards on retry."
      :impl (fn [host args]
-             (checked! benchmark-schema args)
-             (guarded host #(let [[conn id room] (room! host (:room args))]
-                              (benchmarks/submit! conn (:execution-ctx host) ops/*principal* id room
-                                                  (-> (dissoc args :room)
-                                                      (update :request-id uuid!)
-                                                      (update :expected-bundle uuid!))))))}
+             (checked! benchmark-route-schema args)
+             (if (owned-reads/owned-host? host)
+               (let [input (owned-transport! (conj benchmarks/schema [:expected-owned-source :uuid]) args)]
+                 (owned-service-result! #(owned-benchmarks/submit-native! host ops/*principal* (:room args) input)))
+               (do (checked! benchmark-schema args)
+                   (guarded host #(let [[conn id room] (room! host (:room args))]
+                                    (benchmarks/submit! conn (:execution-ctx host) ops/*principal* id room
+                                                        (-> (dissoc args :room)
+                                                            (update :request-id uuid!)
+                                                            (update :expected-bundle uuid!))))))))}
     :simmis/workflow-run
-    {:kind :write :schema workflow-run-schema :authz {:action :merge}
-     :doc "Run ONE exact inspected saved workflow in an inherited room fork, with explicit case, literal declared string params, optional bounded canonical file inputs and finite limits. Same read/merge authority and file-worker policy as simmis_task. Pinned bundle source and selected inputs are materialized ONLY inside the fork and appear in its proposed diff. Never executes checker/calibration or claims correctness; uses ordinary completion capture under /out. review/discard only, no automatic merge. Identical request-id retries observe the old Job even after source edits; changed intent conflicts. Not benchmark isolation: other inherited room files remain visible."
+    {:kind :write :schema workflow-run-route-schema :authz {:action :merge}
+     :doc "Run ONE exact inspected saved workflow in an inherited room fork, with explicit case, literal declared string params, optional bounded canonical file inputs and finite limits. Same read/merge authority and file-worker policy as simmis_task. Pinned bundle source and selected inputs are materialized ONLY inside the fork and appear in its proposed diff. Never executes checker/calibration or claims correctness; uses ordinary completion capture under /out. review/discard only, no automatic merge. Identical request-id retries observe the old Job even after source edits; changed intent conflicts. Not benchmark isolation: other inherited room files remain visible. On the Simmis owned host, fresh execution also REQUIRES expected-owned-source: copy the source revision UUID from the same workflow-check inspection as expected-bundle. Retain both original guards on retry."
      :impl (fn [host args]
-             (checked! workflow-run-schema args)
-             (guarded host #(let [[conn id room] (room! host (:room args))]
-                              (workflow-runs/submit! conn (:execution-ctx host) ops/*principal* id room
-                                                     (workflow-runs/transport
-                                                      (-> (dissoc args :room)
-                                                          (update :request-id uuid!)
-                                                          (update :expected-bundle uuid!)))))))}
+             (checked! workflow-run-route-schema args)
+             (if (owned-reads/owned-host? host)
+               (let [input (owned-transport! (conj workflow-runs/schema [:expected-owned-source :uuid]) args)]
+                 (owned-service-result! #(owned-admission/submit! host ops/*principal* (:room args) input)))
+               (do (checked! workflow-run-schema args)
+                   (guarded host #(let [[conn id room] (room! host (:room args))]
+                                    (workflow-runs/submit! conn (:execution-ctx host) ops/*principal* id room
+                                                           (workflow-runs/transport
+                                                            (-> (dissoc args :room)
+                                                                (update :request-id uuid!)
+                                                                (update :expected-bundle uuid!)))))))))}
     :simmis/workflow-write
     {:kind :write :schema workflow-write-schema :authz {:action :write}
      :doc "Atomically edit text files ONLY under workflows/<name>/ as one repository commit. Paths are relative to that bundle; null deletes. At most100 files,512KiB/file,2MiB/batch. Optional expected-revision from workflow-check prevents stale saves under the workspace write lock; omitted means unconditional write. Cannot edit the room-root AGENTS.md or paths outside this bundle. Returns commit and shape inspection of the current bundle; never executes checker.clj."
      :impl (fn [host args]
              (checked! workflow-write-schema args)
-             (guarded host #(let [[_ _ room] (room! host (:room args))]
-                              (workflows/public-write
-                               (workflows/write! room ops/*principal* (workflows/transport-write (dissoc args :room)))))))}
+             (if (owned-reads/owned-host? host)
+               (let [saved (owned-workflow-save! host ops/*principal* (:room args) (dissoc args :room))]
+                 (owned-helper-value!
+                  #(workflows/public-write {:write (:write saved) :workflow (get-in saved [:source :inspection])})))
+               (guarded host #(let [[_ _ room] (room! host (:room args))]
+                                (workflows/public-write
+                                 (workflows/write! room ops/*principal* (workflows/transport-write (dissoc args :room))))))))}
     :simmis/workflow-check
     {:kind :read :schema workflow-check-schema :authz {:action :read}
-     :doc "Inspect one pinned current workflow bundle (max100 files/2MiB). Returns source revision even for invalid drafts, plus validated bundle id or structural problems. Source revision guards workflow-write; bundle id pins workflow-run or benchmark. This NEVER executes checker.clj or calibration; no answer/eval argument is accepted."
+     :doc "Inspect one pinned current workflow bundle (max100 files/2MiB). Returns source revision even for invalid drafts, plus validated bundle id or structural problems. Source revision guards workflow-write; bundle id pins workflow-run or benchmark. This NEVER executes checker.clj or calibration; no answer/eval argument is accepted. On the Simmis owned host, fresh execution also REQUIRES expected-owned-source: copy the source revision UUID from the same workflow-check inspection as expected-bundle. Retain both original guards on retry."
      :impl (fn [host args]
              (checked! workflow-check-schema args)
-             (guarded host #(let [[_ _ room] (room! host (:room args))]
-                              (workflows/public-inspection (workflows/inspect room (:name args))))))}
+             (if (owned-reads/owned-host? host)
+               (let [details (owned-service-result! #(owned-workflows/details! host ops/*principal* (:room args) (dissoc args :room)))]
+                 (owned-helper-value! #(let [inspection (get-in details [:data :inspection])]
+                                         (when-not (map? inspection) (throw (ex-info "Invalid owned source metadata" {})))
+                                         (workflows/public-inspection inspection))))
+               (guarded host #(let [[_ _ room] (room! host (:room args))]
+                                (workflows/public-inspection (workflows/inspect room (:name args)))))))}
     :simmis/post
     {:kind :write :schema post-schema :authz {:action :write}
      :doc "Post as your authenticated Simmis account through canonical room dispatch. May wake assigned agents on the ROOM's ongoing budgets. This is conversation, NOT a bounded isolated task. Stable message id deduplicates retries."
@@ -400,8 +599,10 @@
      :doc "Read admission/allowance metadata for one request in a room. The job pointer leads to canonical job_status/run_detail/attempt_list; this is not a second execution status. Requires current generic-work authority."
      :impl (fn [host args]
              (checked! status-schema args)
-             (guarded host #(let [[conn id _] (room! host (:room args))]
-                              (work/status conn (:execution-ctx host) ops/*principal* id (uuid! (:id args))))))}}))
+             (if (owned-reads/owned-host? host)
+               (owned-status! host ops/*principal* (:room args) (owned-uuid! (:id args)))
+               (guarded host #(let [[conn id _] (room! host (:room args))]
+                                (work/status conn (:execution-ctx host) ops/*principal* id (uuid! (:id args)))))))}}))
 
 (defn install! []
   (doseq [[op spec] specifications] (ops/register-op! op spec))

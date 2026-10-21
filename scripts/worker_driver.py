@@ -189,6 +189,7 @@ def operate(root, session, command, arguments):
         inputs.canonical_uuid(fields["request-id"])
     if command in {"workflow", "benchmark"}:
         inputs.canonical_uuid(fields["expected-bundle"])
+        inputs.canonical_uuid(fields["expected-owned-source"])
     response = human_call(intent["endpoint"], session, "simmis_local-worker-" + command, fields)
     # Never print arbitrary server fields or worker credentials. Full execution
     # and captured-file evidence remain available through room MCP/UI surfaces.
@@ -226,6 +227,7 @@ def main():
     workflow.add_argument("--request-id", required=True, help="Stable UUID; reuse on retry")
     workflow.add_argument("--name", required=True)
     workflow.add_argument("--expected-bundle", required=True, help="Exact inspected workflow bundle UUID")
+    workflow.add_argument("--expected-owned-source", required=True, help="Canonical source revision UUID from the same inspection")
     workflow.add_argument("--case")
     workflow.add_argument("--params", default="{}", help="JSON object of declared literal string parameters")
     workflow.add_argument("--inputs", default="{}", help="JSON object of canonical absolute input paths and text")
@@ -235,6 +237,7 @@ def main():
     benchmark.add_argument("--request-id", required=True, help="Stable UUID; reuse on retry")
     benchmark.add_argument("--name", required=True)
     benchmark.add_argument("--expected-bundle", required=True, help="Exact inspected workflow bundle UUID")
+    benchmark.add_argument("--expected-owned-source", required=True, help="Canonical source revision UUID from the same inspection")
     benchmark.add_argument("--case", action="append", default=[], help="Select up to four distinct case names")
     benchmark.add_argument("--split", choices=["development", "validation", "held-out"],
                            help="Required for workflows declaring benchmark.edn evaluation splits")
@@ -272,6 +275,7 @@ def main():
         if not 1000 <= args.timeout_ms <= 600000:
             parser.error("Workflow exceeds finite worker bounds")
         fields = {"request-id": args.request_id, "name": args.name, "expected-bundle": args.expected_bundle,
+                  "expected-owned-source": args.expected_owned_source,
                   "limits": {"timeout-ms": args.timeout_ms, "settlement": args.settlement}}
         for key in ["params", "inputs"]:
             raw = getattr(args, key)
@@ -290,6 +294,7 @@ def main():
                 or any(not 1 <= len(case) <= 100 for case in args.case)):
             parser.error("Benchmark exceeds finite worker bounds")
         fields = {"request-id": args.request_id, "name": args.name, "expected-bundle": args.expected_bundle,
+                  "expected-owned-source": args.expected_owned_source,
                   "repetitions": args.repetitions,
                   "limits": {"timeout-ms": args.timeout_ms, "settlement": "discard"}}
         if args.case:

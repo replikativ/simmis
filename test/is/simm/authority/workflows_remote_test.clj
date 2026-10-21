@@ -2,10 +2,8 @@
   "Browser workflow RPCs cross both the inbound gate and canonical op authority."
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
-            [dvergr.catalog.workspace :as workspace]
             [dvergr.mcp.server :as server]
             [dvergr.ops :as dops]
-            [dvergr.room.store :as store]
             [geschichte.repo :as repo]
             [is.simm.agents.room-agents :as rooms]
             [is.simm.authority.world :as world]
@@ -35,12 +33,14 @@
         (server/sync-op-tools!)))))
 
 (deftest browser-discovery-source-and-saves-use-the-authenticated-room-on-every-call
-  (world/with-world [conn w]
-    (@#'is.simm.ops.work-test/with-room
-     (fn [room]
-       (workspace/ensure-workspace! room)
-       (workflows/write! room {:principal/id "fixture"} {:name "echo" :files fixture/fixture})
-       (d/transact conn [{:room/id (:room w) :room/slug (store/room-id->slug (:id room))}])
+  (doseq [order [true false]]
+    (@#'owned-fixture/with-fixture
+     order
+     (fn [{:keys [conn w room owned]}]
+       (doseq [[path text] fixture/fixture]
+         (repo/write! owned (str "workflows/echo/" path) (.getBytes ^String text "UTF-8")))
+       (repo/stage-all! owned)
+       (repo/commit! owned {:message "Seed canonical workflow baseline"})
        (with-api
          (fn []
            (with-redefs [context/server-context (:ctx room)
@@ -59,9 +59,8 @@
                    (is (= (= kind :owner) (get-in loaded [:permissions :merge?])))))
                ;; A room argument hidden in the options cannot retarget the
                ;; fixed UUID the inbound gate authorized.
-               (is (= ["echo"]
-                      (get-in (inbound :member "load-workflow-list!"
-                                       {:options {:room "different-room"}}) [:result :names])))
+               (is (:error (inbound :member "load-workflow-list!"
+                                    {:options {:room "different-room"}})))
                (doseq [kind [:non-member :admin :anon]]
                  (is (world/refused? (listing kind)))
                  (is (world/refused? (source kind)))
@@ -70,10 +69,10 @@
                                {:edits {:name "echo" :files {"workflow.edn" "forged"}}}))))
                (let [revision (:revision (:result (source :member)))
                      saved (inbound :member "save-workflow-source!"
-                                    {:edits {:room "different-room" :name "echo"
+                                    {:edits {:name "echo"
                                              :expected-revision revision :files {"notes.md" "member edit"}}})]
                  (is (some? (get-in saved [:result :write :commit])))
-                 (is (= "member edit" (get-in (workflows/details room "echo") [:files "notes.md"])))
+                 (is (= "member edit" (String. ^bytes (repo/read owned "workflows/echo/notes.md") "UTF-8")))
                  (is (:error (inbound :member "save-workflow-source!"
                                       {:edits {:name "echo" :expected-revision revision
                                                :files {"notes.md" "stale"}}}))))
@@ -86,26 +85,28 @@
                              {:edits {:name "echo" :files {"notes.md" "revoked"}}})))))))))))
 
 (deftest browser-save-does-not-adopt-a-newer-definition-after-its-write-ack
-  (world/with-world [conn w]
-    (@#'is.simm.ops.work-test/with-room
-     (fn [room]
-       (workspace/ensure-workspace! room)
-       (workflows/write! room {:principal/id "fixture"} {:name "echo" :files fixture/fixture})
-       (d/transact conn [{:room/id (:room w) :room/slug (store/room-id->slug (:id room))}])
+  (doseq [order [true false]]
+    (@#'owned-fixture/with-fixture
+     order
+     (fn [{:keys [w room owned host]}]
+       (doseq [[path text] fixture/fixture]
+         (repo/write! owned (str "workflows/echo/" path) (.getBytes ^String text "UTF-8")))
+       (repo/stage-all! owned)
+       (repo/commit! owned {:message "Seed canonical workflow ACK baseline"})
        (with-api
          (fn []
-           (let [invoke ops/invoke
-                 revision (:revision (workflows/details room "echo"))
+           (let [save api/owned-workflow-save!
+                 before (remote/invoke-workflow (:owner w) (str (:room w)) :simmis/workflow-source {:name "echo"})
+                 revision (:revision before)
                  raced (atom false)]
              (with-redefs [context/server-context (:ctx room)
                            rooms/live-room #(when (= % (:room w)) room)
-                           ops/invoke (fn [ctx principal operation args]
-                                        (let [reply (invoke ctx principal operation args)]
-                                          (when (and (= :simmis/workflow-write operation)
-                                                     (compare-and-set! raced false true))
-                                            (workflows/write! room {:principal/id "other-editor"}
-                                                              {:name "echo" :files {"workflow.edn" "{:title \"Newer\" :task \"Different task\"}"}}))
-                                          reply))]
+                           api/owned-workflow-save! (fn [& args]
+                                                      (let [reply (apply save args)]
+                                                        (when (compare-and-set! raced false true)
+                                                          (repo/write! owned "workflows/echo/workflow.edn"
+                                                                       (.getBytes "{:title \"Newer\" :task \"Different task\"}" "UTF-8")))
+                                                        reply))]
                (let [reply (world/inbound! (world/principal w :owner) "save-workflow-source!"
                                            {:room-id-str (str (:room w))
                                             :edits {:name "echo" :expected-revision revision
@@ -113,28 +114,29 @@
                      result (:result reply)]
                  (is @raced)
                  (is (some? (get-in result [:write :commit])))
-                 (is (true? (:source-changed? result)))
-                 (is (not (contains? result :definition)))
+                 (is (not (:source-changed? result)))
+                 (is (= (:definition before) (:definition result)))
                  (is (string? (get-in result [:workflow :revision])))
-                 (is (not= (get-in result [:workflow :revision]) (:revision (workflows/details room "echo"))))
-                 (is (= "my saved edit" (get-in (workflows/details room "echo") [:files "notes.md"]))))))))))))
+                 (is (not= (get-in result [:workflow :revision])
+                           (get-in (owned-workflows/details! host (ops/party-principal (:owner w))
+                                                             (str (:room w)) {:name "echo"}) [:data :revision])))
+                 (is (= "my saved edit" (String. ^bytes (repo/read owned "workflows/echo/notes.md") "UTF-8"))))))))))))
 
 (deftest canonical-workflow-op-guard-is-not-replaced-by-browser-permission-hints
-  (world/with-world [conn w]
-    (@#'is.simm.ops.work-test/with-room
-     (fn [room]
-       (workspace/ensure-workspace! room)
-       (d/transact conn [{:room/id (:room w) :room/slug (store/room-id->slug (:id room))}])
+  (doseq [order [true false]]
+    (@#'owned-fixture/with-fixture
+     order
+     (fn [{:keys [w room]}]
        (with-api
          (fn []
            (with-redefs [context/server-context (:ctx room)
                          rooms/live-room #(when (= % (:room w)) room)]
              (let [invoke @#'is.simm.uis.web.desktop.workflows-remote/invoke-workflow
                    reads (atom 0)
-                   details workflows/details]
+                   details owned-workflows/details!]
                ;; Even a direct adapter invocation must pass canonical op
                ;; authority before its browser-only full-source read.
-               (with-redefs [workflows/details (fn [& args] (swap! reads inc) (apply details args))]
+               (with-redefs [owned-workflows/details! (fn [& args] (swap! reads inc) (apply details args))]
                  (is (thrown? clojure.lang.ExceptionInfo
                               (invoke (:non-member w) (str (:room w)) :simmis/workflow-source {:name "echo"})))
                  (is (zero? @reads)))

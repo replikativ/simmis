@@ -27,6 +27,17 @@
           (f (schedules/controller) ctx)))
       (finally (context/close-context! ctx)))))
 
+(deftest older-deployments-may-be-paused-but-not-resumed
+  (with-state
+    (fn [ui _]
+      (let [requests (atom []) legacy (assoc row :resume-blocked :legacy-recreate)]
+        (with-redefs [remote/set-workflow-schedule-enabled! (deferred requests)]
+          ((:toggle ui) (assoc legacy :enabled? false))
+          (is (empty? @requests))
+          ((:toggle ui) legacy)
+          (is (= 1 (count @requests)))
+          (is (false? (:enabled? (nth (:args (first @requests)) 2)))))))))
+
 (deftest refresh-cannot-erase-a-pending-toggle-or-restore-its-old-state
   (with-state
     (fn [ui _]

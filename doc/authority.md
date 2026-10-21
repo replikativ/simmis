@@ -768,13 +768,19 @@ named bundle of ordinary files:
 Only room write authority is needed to author this bundle. Call
 `simmis_workflow-check {"room":"ROOM_SLUG","name":"echo"}` to inspect it.
 Neither write nor check executes the checker. Copy the successful inspection's
-`bundle` UUID into `expected-bundle` below; do not invent one.
+`bundle` UUID into `expected-bundle` below; do not invent one. On the Simmis
+owned host, also copy that inspection's `revision` UUID into
+`expected-owned-source`. The latter identifies the canonical source snapshot;
+the bundle content id alone cannot distinguish repository/source generations.
+Both guards are required for a fresh owned workflow, benchmark or scheduled
+submission. Retries retain the original guards, never the ambient current ones.
+Legacy non-owned hosts retain their older wire contract.
 
 To use the saved workflow normally, call `simmis_workflow-run` (room merge
 authority is sufficient; no installation-operator role is required):
 
 ```json
-{"room":"ROOM_SLUG","request-id":"fc5609b0-a2d2-46ed-b7ef-ef5bb60ee5e8","name":"echo","expected-bundle":"BUNDLE_UUID_FROM_INSPECTION","model":"MODEL_ID","inputs":{"/docs/input.md":"An explicit input document\n"},"limits":{"budget-microdollars":25000,"max-dispatches":4,"max-model-steps":4,"timeout-ms":90000,"settlement":"review"}}
+{"room":"ROOM_SLUG","request-id":"fc5609b0-a2d2-46ed-b7ef-ef5bb60ee5e8","name":"echo","expected-bundle":"BUNDLE_UUID_FROM_INSPECTION","expected-owned-source":"SOURCE_REVISION_FROM_INSPECTION","model":"MODEL_ID","inputs":{"/docs/input.md":"An explicit input document\n"},"limits":{"budget-microdollars":25000,"max-dispatches":4,"max-model-steps":4,"timeout-ms":90000,"settlement":"review"}}
 ```
 
 This runs the saved task and captures its output without invoking `checker.clj`.
@@ -788,7 +794,7 @@ An installation operator who ALSO has the room's read/merge authority can
 then call `simmis_benchmark`:
 
 ```json
-{"room":"ROOM_SLUG","request-id":"54c1d794-63e2-49a5-b817-592c8958fdb2","name":"echo","expected-bundle":"BUNDLE_UUID_FROM_INSPECTION","models":["MODEL_ID"],"repetitions":1,"limits":{"budget-microdollars":25000,"max-dispatches":4,"max-model-steps":4,"timeout-ms":90000,"settlement":"discard"}}
+{"room":"ROOM_SLUG","request-id":"54c1d794-63e2-49a5-b817-592c8958fdb2","name":"echo","expected-bundle":"BUNDLE_UUID_FROM_INSPECTION","expected-owned-source":"SOURCE_REVISION_FROM_INSPECTION","models":["MODEL_ID"],"repetitions":1,"limits":{"budget-microdollars":25000,"max-dispatches":4,"max-model-steps":4,"timeout-ms":90000,"settlement":"discard"}}
 ```
 
 Provision a separate finite allowance if the preceding task has consumed the

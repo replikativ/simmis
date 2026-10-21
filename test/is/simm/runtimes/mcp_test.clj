@@ -5,7 +5,10 @@
             [dvergr.mcp.server :as server]
             [dvergr.mcp.surface :as surface]
             [dvergr.ops :as dops]
+            [dvergr.runtime.clock :as clock]
             [is.simm.ops.results :as results]
+            [is.simm.ops.owned-mcp :as owned-mcp]
+            [is.simm.ops.owned-reads :as owned-reads]
             [is.simm.ops.work-api :as work-api]
             [is.simm.ops.worker-api :as worker-api]
             [is.simm.ops.worker-control :as worker-control]
@@ -17,7 +20,9 @@
             [is.simm.runtimes.instance :as instance]
             [is.simm.runtimes.http-auth :as http-auth]
             [is.simm.runtimes.mcp :as mcp]
+            [is.simm.runtimes.memory-changes :as memory-changes]
             [is.simm.runtimes.web :as web]
+            [is.simm.runtimes.workflow-schedules :as workflow-schedules]
             [jsonista.core :as json]
             [reitit.ring :as ring]
             [kabel.auth.jwt :as jwt]))
@@ -31,11 +36,16 @@
 (use-fixtures :each
   (fn [f]
     (with-redefs [auth/get-auth-config (constantly {:jwt {:secret "test-mcp-signing-key"}})
-                  parties/get-party (fn [id] (when (= person id) {:party/id id :party/type :human}))]
+                  parties/get-party (fn [id] (when (= person id) {:party/id id :party/type :human}))
+                  ;; These test listener/token policy, not repository ownership.
+                  ;; Actual canonical host lifecycle has separate integration tests.
+                  owned-mcp/host (fn [_ ctx] {:execution-ctx ctx})
+                  owned-reads/current-host-control-db! (constantly {})]
       ;; Lifecycle tests own a listener cell. Running them in a development
       ;; REPL must neither reuse nor stop that process's real MCP listener.
       (with-redefs-fn {#'mcp/listener (atom nil)
-                       #'application-ops/installed? (atom false)}
+                       #'application-ops/installation (atom nil)
+                       #'workflow-schedules/service (atom nil)}
         (fn []
           (let [previous (dops/operations)
                 previous-host @@#'server/embedded-host]
@@ -315,6 +325,50 @@
                 (installed-ops)))
   (application-ops/start!)
   (is (contains? (dops/operations) :simmis/workflow-list)))
+
+(deftest web-shutdown-cannot-expose-a-ready-host-after-failed-scheduler-join
+  (let [host (application-ops/host!)]
+    (with-redefs [workflow-schedules/stop! (fn [] (throw (ex-info "worker still held" {})))]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"worker still held" (web/stop-server!)))
+      (is (identical? host @@#'server/embedded-host))
+      (is (thrown? clojure.lang.ExceptionInfo (application-ops/host!)))
+      (is (thrown? clojure.lang.ExceptionInfo (application-ops/start!))))))
+
+(deftest ordinary-web-stop-releases-an-installation-left-by-partial-startup
+  (with-redefs-fn {#'web/server-state (atom {:started? false})}
+    (fn []
+      (with-redefs [memory-changes/stop! (constantly :stopped)]
+        (web/stop-server!)
+        (is (nil? @@#'application-ops/installation))
+        (is (nil? @@#'server/embedded-host))
+        (is (not-any? #(contains? (dops/operations) %) (installed-ops)))))))
+
+(deftest mandatory-scheduler-startup-shares-the-host-and-unwinds-on-failure
+  ;; Composition oracle, not a full peer/provisioning boot. Actual physical
+  ;; worker joining and canonical ownership are exercised separately.
+  (let [host (application-ops/host!) events (atom [])]
+    (with-redefs [clock/start! #(swap! events conj :clock)
+                  workflow-schedules/start-owned! (fn [given]
+                                                    (is (identical? host given))
+                                                    (swap! events conj :scheduler))]
+      (@#'web/start-owned-scheduling!)
+      (is (= [:clock :scheduler] @events)))
+    (doseq [phase [:clock :scheduler]]
+      (reset! events [])
+      (let [primary (ex-info "mandatory startup failed" {:phase phase})
+            cleanup (ex-info "cleanup still held" {})]
+        (with-redefs [clock/start! (fn []
+                                     (swap! events conj :clock)
+                                     (when (= :clock phase) (throw primary)))
+                      workflow-schedules/start-owned! (fn [given]
+                                                        (is (identical? host given))
+                                                        (swap! events conj :scheduler)
+                                                        (throw primary))
+                      web/stop-server! (fn [] (swap! events conj :stop) (throw cleanup))]
+          (let [failure (try (@#'web/start-owned-scheduling!) nil (catch Throwable error error))]
+            (is (identical? primary failure))
+            (is (= [cleanup] (vec (.getSuppressed failure))))
+            (is (= (if (= :clock phase) [:clock :stop] [:clock :scheduler :stop]) @events))))))))
 
 (deftest web-login-exchanges-only-its-own-human-identity
   (let [other #uuid "44444444-4444-4444-4444-444444444444"

@@ -723,6 +723,23 @@
   []
   (srooms/set-grant-permits! access/permission-satisfies?))
 
+(declare stop-server!)
+
+(defn- start-owned-scheduling!
+  []
+  (try
+    (ctx/with-server-context
+      ((requiring-resolve 'dvergr.runtime.clock/start!)))
+    ((requiring-resolve 'is.simm.runtimes.workflow-schedules/start-owned!)
+     (application-ops/host!))
+    (catch Throwable error
+      ;; The peer already accepts requests here. Mandatory recovery must
+      ;; either finish, or unwind it with the same joined-stop ordering.
+      (try (stop-server!)
+           (catch Throwable cleanup-error
+             (.addSuppressed error cleanup-error)))
+      (throw error))))
+
 (defn start-server!
   "Start the web server. Idempotent - does nothing if already started."
   []
@@ -965,20 +982,22 @@
         ;; Coherent v2 Memory: observe its explicit owned repository AND
         ;; control/default/authority changes. Never fall back to the selected
         ;; sandbox notifier. Generic Room REPL and MCP remain separate scopes.
-        (memory-changes/start-owned!
-         (system-db/get-conn) ctx/server-context
-         (fn [party hint]
-           (pubsub/publish! server (memory-changes/topic party) hint)))
-        ((requiring-resolve 'dvergr.room.registry/add-pre-unregister-hook!)
-         ::memory-changes memory-changes/unwatch-room!)
-        ((requiring-resolve 'dvergr.room.registry/add-register-hook!)
-         ::memory-changes memory-changes/refresh-room!)
         (try
+          (memory-changes/start-owned!
+           (system-db/get-conn) ctx/server-context
+           (fn [party hint]
+             (pubsub/publish! server (memory-changes/topic party) hint)))
+          ((requiring-resolve 'dvergr.room.registry/add-pre-unregister-hook!)
+           ::memory-changes memory-changes/unwatch-room!)
+          ((requiring-resolve 'dvergr.room.registry/add-register-hook!)
+           ::memory-changes memory-changes/refresh-room!)
           (<? S (peer/start server))
-          (catch Throwable e
-            (memory-changes/stop!)
-            (application-ops/stop!)
-            (throw e)))
+          (catch Throwable error
+            (doseq [cleanup! [memory-changes/stop! application-ops/stop!]]
+              (try (cleanup!)
+                   (catch Throwable cleanup-error
+                     (.addSuppressed error cleanup-error))))
+            (throw error)))
         (swap! server-state assoc :started? true)
         (log/log! {:level :info
                    :id ::server-started
@@ -1020,11 +1039,7 @@
         ;; recovery run on their owned off-engine worker, never in a fork.
         ;; Subsystem startup above is best-effort; unattended work is not.
         ;; Explicitly require this dependency even if another subsystem failed.
-        (ctx/with-server-context
-          ((requiring-resolve 'dvergr.runtime.clock/start!)))
-        ((requiring-resolve 'is.simm.runtimes.workflow-schedules/start!)
-         (system-db/get-conn) ctx/server-context
-         (requiring-resolve 'is.simm.agents.room-agents/live-room))
+        (start-owned-scheduling!)
 
         ;; Telegram channel (Stage 4) — no-op without a configured token.
         (try
@@ -1091,13 +1106,16 @@
   "Stop the web server. Idempotent - does nothing if not started."
   []
   ;; Also release a dispatcher created during a partial startup.
-  ((requiring-resolve 'is.simm.runtimes.workflow-schedules/stop!))
+  (application-ops/quiesce!)
   (memory-changes/stop!)
+  (try
+    (when (:started? @server-state)
+      (try ((requiring-resolve 'is.simm.runtimes.mcp/stop!))
+           (finally ((requiring-resolve 'is.simm.runtimes.worker-maintenance/stop!)))))
+    ;; Failed setup can retain an installation before the peer becomes ready.
+    ;; A later ordinary stop must be able to finish that cleanup too.
+    (finally (application-ops/stop!)))
   (when (:started? @server-state)
-    (try ((requiring-resolve 'is.simm.runtimes.mcp/stop!))
-         (finally
-           (try ((requiring-resolve 'is.simm.runtimes.worker-maintenance/stop!))
-                (finally (application-ops/stop!)))))
     (mail-accounts/close-all!)
     ;; Revokes deleting GC for this home along with the loop.
     (try
