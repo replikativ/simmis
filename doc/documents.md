@@ -20,6 +20,18 @@ editing instead. Aggregate emitted UTF-8 bytes, nesting and node counts are
 bounded before constructing a replacement document. These are pure source
 operations, not authority, schema installation or a UI type-assignment API.
 
+The HOST preparation model also previews and prepares a closed type-assignment
+batch against existing trusted definitions. It stamps both the original scope
+and the prospective definitions, accepts only new alias/value bindings, and
+validates required values and relation UUIDs against the complete prospective
+selection. It refuses orphaned bindings and does not reinterpret unknown
+metadata automatically. Preview DTOs distinguish new supported inputs from
+unbound or owner-managed properties. Preparation is read-only: publication
+still requires the native writer's fresh validated basis and current room
+authority. Arbitrary definition/schema datoms are not assumed to travel with
+Geschichte file proposals. These preparation functions are not yet exposed as
+Memory RPCs or type-assignment controls.
+
 The Markdown layer keeps original UTF-8 source, including BOM, comments,
 frontmatter spelling, line endings and unknown syntax. Flexmark supplies a
 disposable syntax tree with UTF-16 source spans, matching browser editor
