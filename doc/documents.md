@@ -1,12 +1,24 @@
 # Document storage prototype
 
-`is.simm.documents.markdown`, `blocks`, `properties`, `repository` and
-`view` are an isolated
-prototype. They are **not** connected to live KBs, room tools, RPC, user
-provisioning or the document UI. Existing wikis still use their current
-pages/HTML-block model. No existing store is converted by booting this code.
+`is.simm.documents.markdown`, `blocks`, `properties`, `repository` and `view`
+provide the source-backed Memory model. The file/editor UI and authenticated
+room tools read room repositories through their owned-target boundary. New
+canonical knowledge rooms can be prepared explicitly by the host; existing
+independent KBs retain their pages/HTML-block model. No existing store is
+converted by booting this code.
 
 ## Lossless source
+
+The pure `property-source` codec replaces existing scalar leaves, inserts
+missing mapping paths and changes a selected explicit type sequence without
+reserializing the surrounding frontmatter. Inserted values use bounded flow
+syntax; existing unknown fields, comments, BOM, line endings and the Markdown
+body remain intact. Each patch reparses and verifies the exact intended
+metadata change and unchanged body. Anchors, aliases, explicitly tagged type
+items and sequences whose replacement would consume comments require Source
+editing instead. Aggregate emitted UTF-8 bytes, nesting and node counts are
+bounded before constructing a replacement document. These are pure source
+operations, not authority, schema installation or a UI type-assignment API.
 
 The Markdown layer keeps original UTF-8 source, including BOM, comments,
 frontmatter spelling, line endings and unknown syntax. Flexmark supplies a
