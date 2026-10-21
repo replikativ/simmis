@@ -295,6 +295,11 @@ fresh-admission readiness; only normal absence may enter new admission. Saves
 project their original sealed acknowledgement, never a subsequent source read.
 Application startup enables the owned dispatcher, but does not install or
 enable default maintenance workflows.
+The workflow editor's pure reconciliation model advances clean source snapshots
+without resetting explicit form choices or admission ledgers. Dirty drafts keep
+their original base and expose incoming changes; known-stale source cannot
+start fresh work. Observation frames are immutable data scoped to the socket
+and owning execution world, not shared native futures or mutable UI gates.
 Separately, an
 exact-revision offline benchmark reuses Dvergr's experiment runner and room
 Attempts/Scorecards; it requires both installation-operator and room merge
