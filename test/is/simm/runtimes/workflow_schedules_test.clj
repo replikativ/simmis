@@ -13,8 +13,13 @@
 (use-fixtures :each
   (fn [f]
     ;; A diagnostic test must never touch the live demo's worker or clock.
-    (with-redefs-fn {#'runtime/service (atom nil)}
-      #(try (f) (finally (runtime/stop!))))))
+    (let [ctx (execution/create-execution-context)]
+      (with-redefs-fn {#'runtime/service (atom nil) #'context/server-context ctx}
+        #(binding [ec/*execution-context* ctx]
+           (try (f)
+                (finally
+                  (runtime/stop!)
+                  (execution/close-context! ctx))))))))
 
 (defn- await-event [p]
   (let [result (deref p 30000 ::timeout)]
@@ -56,12 +61,14 @@
                                 (deliver committed true))))
           (is (true? (await-event committed))))
         (let [fork (execution/fork-context ctx)]
-          (binding [ec/*execution-context* fork]
-            (reset! clock-signal (java.util.Date. 999000)))
-          ;; Even a stale ancestor home cell cannot grant a repointed
-          ;; backend authority: home-context checks backend ownership too.
-          (binding [ec/*execution-context* (assoc fork :home (:home ctx))]
-            (reset! clock-signal (java.util.Date. 1000000))))
+          (try
+            (binding [ec/*execution-context* fork]
+              (reset! clock-signal (java.util.Date. 999000)))
+            ;; Even a stale ancestor home cell cannot grant a repointed
+            ;; backend authority: home-context checks backend ownership too.
+            (binding [ec/*execution-context* (assoc fork :home (:home ctx))]
+              (reset! clock-signal (java.util.Date. 1000000)))
+            (finally (execution/close-context! fork))))
         (deliver release true)
         (is (= (java.util.Date. 180000) (await-event second-tick)))
         (is (= :stopped (runtime/stop!)))
