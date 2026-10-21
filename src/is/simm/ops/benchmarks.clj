@@ -272,7 +272,7 @@
            :settled! (fn [_] (retire!))
            :abandon! (fn [_] (retire!)))))
 
-(defn- submit-kind! [kind prepare-fn input-schema conn host-ctx principal room-id room input]
+(defn- submit-kind! [kind prepare-fn input-schema conn host-ctx principal room-id room input & [snapshot]]
   (when-not (m/validate input-schema input) (invalid! "Invalid benchmark request"))
   (binding [ec/*execution-context* host-ctx]
     (let [party (authorize! conn principal room-id)
@@ -284,11 +284,16 @@
                            (= input (get-in (requests/payload conn row) [:input :submission])))
               (throw (ex-info "Request identity was used for different work" {:type ::conflict})))
             (work/status conn host-ctx principal room-id id))
-        (let [prepared (prepare-fn (workflows/snapshot room (:name input)) input)]
+        (let [prepared (prepare-fn (or snapshot (workflows/snapshot room (:name input))) input)]
           (work/submit-prepared! conn host-ctx principal room-id room input
                                  (adapter host-ctx room prepared principal)))))))
 
 (defn submit! [& args] (apply submit-kind! :benchmark prepare schema args))
+(defn submit-snapshot!
+  "Host-owned scheduled benchmarks reuse the same checker admission, fixture
+   isolation, exact retry and cleanup, with retained rather than current source."
+  [conn host-ctx principal room-id room input snapshot]
+  (submit-kind! :benchmark prepare schema conn host-ctx principal room-id room input snapshot))
 (defn submit-cli! [& args] (apply submit-kind! :cli-benchmark prepare-cli cli-schema args))
 
 (defn recover-request!

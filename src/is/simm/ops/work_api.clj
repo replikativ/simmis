@@ -12,6 +12,7 @@
             [is.simm.ops.git-snapshot :as git-snapshot]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflow-runs]
+            [is.simm.ops.workflow-schedules :as workflow-schedules]
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]))
@@ -38,6 +39,26 @@
 
 (def workflow-write-schema (external-schema workflows/transport-write-schema))
 (def workflow-run-schema (external-schema workflow-runs/transport-schema))
+(defn- scheduled-execution-schema [schema]
+  ;; Reuse canonical closed schemas; only transport UUIDs differ, and a
+  ;; scheduled occurrence, not its caller, owns each execution request-id.
+  (into [:map {:closed true}]
+        (comp (remove #(= :request-id (first %)))
+              (map (fn [entry]
+                     (update entry (dec (count entry)) #(if (= :uuid %) uuid-string %)))))
+        (drop 2 schema)))
+
+(def workflow-schedule-create-schema
+  (into [:multi {:dispatch :kind}]
+        (map (fn [[kind execution]]
+               [kind [:map {:closed true} room-entry [:request-id uuid-string]
+                      [:kind [:= kind]] [:cadence workflow-schedules/cadence-schema]
+                      [:execution (scheduled-execution-schema execution)]]]))
+        [["workflow" workflow-runs/transport-schema] ["benchmark" benchmarks/schema]]))
+(def workflow-schedule-list-schema [:map {:closed true} room-entry])
+(def workflow-schedule-enabled-schema
+  [:map {:closed true} room-entry [:id uuid-string] [:enabled? :boolean]])
+
 (def workflow-check-schema [:map {:closed true} room-entry [:name workflows/name-schema]])
 (def workflow-source-schema
   [:map {:closed true} room-entry [:name workflows/name-schema]
@@ -61,6 +82,29 @@
 (defn- checked! [schema args]
   (when-not (m/validate schema args)
     (ops/op-error! "Invalid work arguments" ::invalid 400)))
+
+(defn workflow-schedule-transport
+  "Normalize only declared transport fields, preserving exact nested intent."
+  [args]
+  (checked! workflow-schedule-create-schema args)
+  (let [execution (update (:execution args) :expected-bundle uuid!)
+        execution (if (= "workflow" (:kind args))
+                    (dissoc (workflow-runs/transport (assoc execution :request-id (uuid! (:request-id args))))
+                            :request-id)
+                    execution)]
+    (assoc (dissoc args :room) :request-id (uuid! (:request-id args)) :execution execution)))
+
+(defn- schedule-receipt [row]
+  ;; Raw activation rows contain a GC-tracked frozen target reference. It is
+  ;; neither an external capability nor part of the public acknowledgement.
+  (cond-> {:id (str (:schedule.activation/id row))
+           :room-id (str (:schedule.activation/room row))
+           :revision (str (:schedule.activation/revision row))
+           :by (str (:schedule.activation/by row))
+           :enabled? (:schedule.activation/enabled? row)}
+    (:schedule.activation/next-fire row)
+    (assoc :next-fire (.getTime ^java.util.Date (:schedule.activation/next-fire row)))
+    (:schedule.activation/reason row) (assoc :reason (:schedule.activation/reason row))))
 
 (defn room-handle
   "Translate a canonical Simmis UUID through its current system-db row.
@@ -102,6 +146,14 @@
                                :is.simm.ops.workflows/conflict 409
                                :is.simm.ops.workflow-runs/invalid 400
                                :is.simm.ops.workflow-runs/conflict 409
+                               :is.simm.ops.workflow-schedules/invalid 400
+                               :is.simm.ops.workflow-schedules/denied 403
+                               :is.simm.ops.workflow-schedules/missing 404
+                               :is.simm.ops.workflow-schedules/conflict 409
+                               :is.simm.model.workflow-schedules/missing 404
+                               :is.simm.model.workflow-schedules/conflict 409
+                               :is.simm.model.workflow-schedules/capacity 409
+                               :is.simm.model.workflow-schedules/corrupt 503
                                :is.simm.ops.benchmarks/invalid 400
                                :is.simm.ops.checkers/invalid 400
                                :is.simm.ops.git-snapshot/invalid 400
@@ -137,7 +189,32 @@
 
 (def specifications
   (room-specifications
-   {:simmis/workflow-list
+   {:simmis/workflow-schedule-list
+    {:kind :read :schema workflow-schedule-list-schema :authz {:action :read}
+     :doc "List this room's pinned workflow/benchmark schedules and recent occurrence links to canonical Jobs. Requires current room read authority. Does not execute, fund or resume anything."
+     :impl (fn [host args]
+             (checked! workflow-schedule-list-schema args)
+             (guarded host #(let [[conn id _] (room! host (:room args))]
+                              (workflow-schedules/list-room conn (:execution-ctx host) ops/*principal* id))))}
+    :simmis/workflow-schedule-create
+    {:kind :write :schema workflow-schedule-create-schema :authz {:action :merge}
+     :doc "Explicitly activate a pinned saved workflow or operator-only benchmark on an interval/calendar cadence with an explicit timezone. Stable request-id retries observe the admitted revision. Each occurrence uses its finite execution limits and existing shared room allowance; never auto-funds. Missed slots coalesce; overlapping work is skipped. Execution has no caller request-id, code, credentials or arbitrary hooks."
+     :impl (fn [host args]
+             (checked! workflow-schedule-create-schema args)
+             (guarded host #(let [[conn id room] (room! host (:room args))]
+                              (schedule-receipt
+                               (workflow-schedules/create! conn (:execution-ctx host) ops/*principal* id room
+                                                           (workflow-schedule-transport args))))))}
+    :simmis/workflow-schedule-set-enabled
+    {:kind :write :schema workflow-schedule-enabled-schema :authz {:action :merge}
+     :doc "Explicitly pause/resume one pinned schedule in this room. Requires current execution authority (and operator status for benchmarks); resume rechecks the original delegator and pinned host policy. Disabling does not cancel already admitted work or fund new allowance."
+     :impl (fn [host args]
+             (checked! workflow-schedule-enabled-schema args)
+             (guarded host #(let [[conn id _] (room! host (:room args))]
+                              (schedule-receipt
+                               (workflow-schedules/set-enabled! conn (:execution-ctx host) ops/*principal* id
+                                                                (uuid! (:id args)) (:enabled? args))))))}
+    :simmis/workflow-list
     {:kind :read :schema workflow-list-schema :authz {:action :read}
      :doc "List25 room-local workflow names, including invalid drafts, without loading file contents. Scans at most20000 workflow path entries; refuses larger indices. expected-revision pins the sorted name set across pages. Never executes checker source."
      :impl (fn [host args]

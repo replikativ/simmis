@@ -24,6 +24,26 @@ the existing Attempt evidence, not a separate calibration database.
 Restart recovery retires settled fixtures even if the wallet-return write
 completed immediately before a process crash.
 
+Pinned workflow activations and their occurrence outbox also live in the host
+system DB (`model/workflow_schedules.clj`), not copied room worlds. Typed
+`:schedule.activation/*` rows retain the delegator, room, target revision,
+GC-tracked immutable target, enablement, cursor and unresolved occurrence.
+The target retains source bytes, literal execution settings, normalized cadence,
+host policy and concrete model-metadata digests. At most100 activations are
+admitted per host. A serialized writer advances the cursor and inserts one
+deterministically identified occurrence together. An unresolved predecessor
+records an overlap skip instead of allocating another wallet. Occurrences
+record admission facts and canonical request links, not duplicated execution
+state. Reads expose twelve recent occurrences; execution uses the active pointer.
+Pause atomically withdraws pending work but does not cancel admitted Jobs.
+Restart links an existing submitted request or holds an ambiguous admission for
+reconciliation; it does not blindly replay it.
+Settled occurrences reserve a deterministic room-message UUID. Publication uses
+the existing durability-before-visibility room path, followed by a typed
+`:schedule.occurrence/announced?` acknowledgement. A lost acknowledgement retries
+the same envelope, not the execution. The room note links its canonical Job and
+does not wake agents. Its unresolved pointer remains held until publication.
+
 `model/workers.clj` declares the host control-plane vocabulary for separately
 enrolled local workers and external assignment ownership. Enrollment records
 hold the enrolling party/room, generation, credential verifier hash and a

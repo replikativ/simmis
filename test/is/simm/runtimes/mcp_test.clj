@@ -224,14 +224,28 @@
     (is (thrown? clojure.lang.ExceptionInfo (mcp/mint-token! person :admin)))))
 
 (deftest new-controls-do-not-upgrade-an-existing-work-token
-  (let [old-tools (disj mcp/work-tools "simmis_cli-benchmark" "simmis_cli-allowance" "simmis_coordinator")
+  (let [old-tools (disj mcp/work-tools "simmis_cli-benchmark" "simmis_cli-allowance" "simmis_coordinator"
+                        "simmis_workflow-schedule-create" "simmis_workflow-schedule-set-enabled")
         token (with-redefs [mcp/work-tools old-tools] (:token (mcp/mint-token! person :work)))
         old ((mcp/authenticator) {:bearer token})
         fresh ((mcp/authenticator) {:bearer (:token (mcp/mint-token! person :work))})]
     (is (= old-tools (:principal/tools old)))
-    (doseq [tool ["simmis_cli-benchmark" "simmis_cli-allowance" "simmis_coordinator"]]
+    (doseq [tool ["simmis_cli-benchmark" "simmis_cli-allowance" "simmis_coordinator"
+                  "simmis_workflow-schedule-create" "simmis_workflow-schedule-set-enabled"]]
       (is (not (contains? (:principal/tools old) tool)))
       (is (contains? (:principal/tools fresh) tool)))))
+
+(deftest schedule-list-does-not-upgrade-an-existing-read-token
+  (let [tool "simmis_workflow-schedule-list"
+        old-tools (disj mcp/read-tools tool)
+        token (with-redefs [mcp/read-tools old-tools] (:token (mcp/mint-token! person)))
+        old ((mcp/authenticator) {:bearer token})
+        fresh ((mcp/authenticator) {:bearer (:token (mcp/mint-token! person))})]
+    (is (= old-tools (:principal/tools old)))
+    (is (not (contains? (:principal/tools old) tool)))
+    (is (contains? (:principal/tools fresh) tool))
+    (is (not (contains? (:principal/tools fresh) "simmis_workflow-schedule-create")))
+    (is (not (contains? (:principal/tools fresh) "simmis_workflow-schedule-set-enabled")))))
 
 (deftest listener-is-opt-in-private-idempotent-and-transport-only
   (let [events (atom [])

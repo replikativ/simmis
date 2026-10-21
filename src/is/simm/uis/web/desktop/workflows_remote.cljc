@@ -108,3 +108,15 @@
   (spin-remote server-id [room-id-str request]
                #?(:clj (invoke-workflow (access/authenticated-party-id) room-id-str :simmis/local-worker-allowance request)
                   :cljs nil)))
+
+(defn-spin-remote create-workflow-schedule!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (invoke-workflow (access/authenticated-party-id) room-id-str :simmis/workflow-schedule-create request)
+                  :cljs nil)))
+
+(defn-spin-remote set-workflow-schedule-enabled!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (invoke-workflow (access/authenticated-party-id) room-id-str :simmis/workflow-schedule-set-enabled request)
+                  :cljs nil)))

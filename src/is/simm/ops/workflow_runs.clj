@@ -185,7 +185,10 @@
            :basis (assoc (:basis prepared) :submission input :environment env
                          :source source :inputs inputs :workflow workflow))))
 
-(defn submit! [conn host-ctx principal room-id room input]
+(defn submit!
+  "Submit current source, or a host-retained immutable snapshot. Exact retries
+   are resolved before either source read or provider preparation."
+  [conn host-ctx principal room-id room input & [snapshot]]
   (when-not (m/validate schema input) (invalid! "Invalid workflow execution"))
   (binding [ec/*execution-context* host-ctx]
     (let [party (work/authorize! conn principal room-id)
@@ -197,4 +200,4 @@
             (throw (ex-info "Request identity was used for different work" {:type ::conflict})))
           (work/status conn host-ctx principal room-id id))
         (work/submit-prepared! conn host-ctx principal room-id room input
-                               (prepare (workflows/snapshot room (:name input)) input))))))
+                               (prepare (or snapshot (workflows/snapshot room (:name input))) input))))))
