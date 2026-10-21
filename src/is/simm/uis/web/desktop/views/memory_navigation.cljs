@@ -9,7 +9,8 @@
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.memory-tree :as tree]
             [is.simm.uis.web.desktop.memory-sync :as sync]
-            [is.simm.uis.web.desktop.memory-actions :as actions])
+            [is.simm.uis.web.desktop.memory-actions :as actions]
+            [is.simm.uis.web.desktop.views.core :as vc])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn open-file! [room title path & [target-col target-stamp]]
@@ -43,23 +44,30 @@
 (declare folder-tree)
 
 (defn- file-row [item state open! depth]
-  (el/button {:key (:path item) :class (str "memory-tree-item" (when (= (:path item) (:selected state)) " selected"))
-              :style {:padding-left (str (+ 12 (min 72 (* depth 10))) "px")}
-              :title (:path item) :on-click (fn [_] (open! (:path item)))}
-             (:name item)))
+  (let [{:keys [role icon label]} (tree/presentation item)]
+    (el/button {:key (:path item) :class (str "memory-tree-item memory-kind-" (name role)
+                                              (when (= (:path item) (:selected state)) " selected"))
+                :style {:padding-left (str (+ 12 (min 72 (* depth 10))) "px")}
+                :title (str label " · " (:path item)) :on-click (fn [_] (open! (:path item)))}
+               (vc/icon icon {:class "memory-file-kind" :aria-hidden "true"})
+               (el/span {:class "memory-tree-label"} (:name item)))))
 
 (defn- folder-tree [folder state a open! depth]
   (el/div {:class "memory-tree-branch"}
           (for [{:keys [path name kind] :as item} (get-in state [:folders folder :entries]) :when (not= name ".keep")]
             (if (not= :folder kind)
               (file-row item state open! depth)
-              (let [expanded? (get-in state [:expanded path])]
+              (let [expanded? (get-in state [:expanded path])
+                    presentation (tree/presentation item)]
                 (el/div {:key path}
                         (el/div {:class "memory-folder-row"}
-                                (el/button {:class "memory-tree-item" :style {:padding-left (str (+ 8 (min 72 (* depth 10))) "px")}
-                                            :title path :aria-expanded (str (boolean expanded?))
+                                (el/button {:class (str "memory-tree-item memory-kind-" (cljs.core/name (:role presentation)))
+                                            :style {:padding-left (str (+ 8 (min 72 (* depth 10))) "px")}
+                                            :title (str (:label presentation) " · " path) :aria-expanded (str (boolean expanded?))
                                             :on-click (fn [_] ((:toggle a) path))}
-                                           (str (if expanded? "▾ " "▸ ") name))
+                                           (el/span {:aria-hidden "true"} (if expanded? "▾" "▸"))
+                                           (vc/icon (:icon presentation) {:class "memory-file-kind" :aria-hidden "true"})
+                                           (el/span {:class "memory-tree-label"} name))
                                 (el/button {:class "memory-folder-focus" :title (str "Focus folder " path)
                                             :aria-label (str "Focus folder " path)
                                             :on-click (fn [_] ((:focus-folder a) path))} "↳"))

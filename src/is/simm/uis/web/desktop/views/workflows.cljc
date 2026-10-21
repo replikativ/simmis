@@ -174,22 +174,34 @@
                                                 (when benchmark?
                                                   (el/div {}
                                                           (el/p {:class "workflow-note"} "Operator-only: executes the saved checker, uses saved parameter defaults, and discards candidate worlds. Save parameter changes in workflow.edn before benchmarking.")
-                                                          (field "Repetitions (1–2; maximum8 cells total)" (:repetitions form) #(set-form :repetitions %))))
+                                                          (field "Independent trials per case (1–2; at most 8 total)" (:repetitions form) #(set-form :repetitions %))
+                                                          (el/p {:class "workflow-note"} "Benchmark repetitions compare independent executions. They are not an agent's reasoning iterations.")))
+                                                (el/h4 {} "Resources")
                                                 (for [[key label] (cond
-                                                                    cli? [[:cli-runs "Allowance · single-use CLI Runs (1–8)"]
-                                                                          [:max-model-steps "Model steps per cell (1–32)"]
-                                                                          [:timeout-ms "Wall time per cell · milliseconds (1000–600000)"]]
-                                                                    local?
-                                                                    [[:worker-admissions "Allowance · local admissions (1–32)"]
-                                                                     [:timeout-ms "Wall time · milliseconds (1000–600000)"]]
-                                                                    :else [[:budget-microdollars "Budget · microdollars (1–5000000)"]
-                                                                           [:max-dispatches "Model HTTP dispatches (1–32)"]
-                                                                           [:max-model-steps "Model steps (1–32)"]
-                                                                           [:timeout-ms "Wall time · milliseconds (1000–600000)"]])]
+                                                                    cli? [[:cli-runs "Allowance · single-use CLI Runs (1–8)"]]
+                                                                    local? [[:worker-admissions "Allowance · local admissions (1–32)"]]
+                                                                    :else [[:budget-microdollars "Spend ceiling · microdollars (1–5000000)"]])]
                                                   (field label (get form key) #(set-form key %)))
+                                                (when (and (not cli?) (not local?))
+                                                  (el/p {:class "workflow-note"} "1,000,000 microdollars = $1. This caps requested spend; it is not a charge. Provisioning allowance is a separate, explicit action."))
+                                                (el/div {:class "workflow-execution-limits"}
+                                                        (el/button {:type "button" :aria-expanded (str (boolean (:show-execution-limits? draft)))
+                                                                    :on-click (fn [_] (change update :show-execution-limits? not))}
+                                                                   (str (if (:show-execution-limits? draft) "▾ " "▸ ") "Advanced execution ceilings"))
+                                                        (when (:show-execution-limits? draft)
+                                                          (el/div {}
+                                                                  (el/p {:class "workflow-note"} "Upper bounds, not a prescribed number of agents or reasoning iterations. The harness may finish earlier; these limits do not allocate a fixed agent team.")
+                                                                  (for [[key label] (cond
+                                                                                      cli? [[:max-model-steps "Maximum model steps per trial (1–32)"]
+                                                                                            [:timeout-ms "Wall-time ceiling per trial · milliseconds (1000–600000)"]]
+                                                                                      local? [[:timeout-ms "Wall-time ceiling · milliseconds (1000–600000)"]]
+                                                                                      :else [[:max-dispatches "Model-request allowance (1–32)"]
+                                                                                             [:max-model-steps "Maximum model steps (1–32)"]
+                                                                                             [:timeout-ms "Wall-time ceiling · milliseconds (1000–600000)"]])]
+                                                                    (field label (get form key) #(set-form key %))))))
                                                 (when-not benchmark?
                                                   (el/label {:class "workflow-field"}
-                                                            (el/span {} "Settlement")
+                                                            (el/span {} "Results")
                                                             (el/select {:value (:settlement form)
                                                                         :on-change (fn [e] (set-form :settlement #?(:cljs (.. e -target -value) :clj "review")))}
                                                                        (el/option {:value "review"} "Retain for review — no automatic merge")

@@ -2,6 +2,16 @@
   (:require [clojure.test :refer [deftest is]]
             [is.simm.uis.web.desktop.memory-tree :as tree]))
 
+(deftest knowledge-hints-do-not-create-a-second-wiki-drive-or-hide-other-files
+  (doseq [path ["wiki/company.md" "notes/research.MARKDOWN" "context.md"]]
+    (is (= :knowledge (:role (tree/presentation {:path path :kind :file})))))
+  (is (= :knowledge (:role (tree/presentation {:path "wiki" :kind :folder}))))
+  (is (= :folder (:role (tree/presentation {:path "wiki/archive" :kind :folder}))))
+  (doseq [path ["example.clj" "library.cljc" "app.cljs"]]
+    (is (= :code (:role (tree/presentation {:path path :kind :file})))))
+  (doseq [path ["budget.xlsx" "important.unknown" "workflow.edn"]]
+    (is (= {:role :file :icon "file" :label "File"} (tree/presentation {:path path :kind :file})))))
+
 (deftest deep-paths-can-be-focused-without-renaming-them
   (is (= [{:label "wiki" :path "wiki"} {:label "team" :path "wiki/team"} {:label "研究" :path "wiki/team/研究"}]
          (tree/breadcrumbs "wiki/team/研究")))
@@ -12,7 +22,7 @@
 
 (deftest file-tabs-are-room-and-column-specific
   (let [columns [{:id :a :tabs [{:id :one :type :memory :data {:room-id :room1 :path "a.md"}}
-                               {:id :two :type :memory :data {:room-id :room2 :path "a.md"}}]}
+                                {:id :two :type :memory :data {:room-id :room2 :path "a.md"}}]}
                  {:id :b :tabs [{:id :three :type :memory :data {:room-id :room1 :path "a.md"}}]}]]
     (is (= :one (:id (tree/file-tab columns :a :room1 "a.md"))))
     (is (= :two (:id (tree/file-tab columns :a :room2 "a.md"))))
