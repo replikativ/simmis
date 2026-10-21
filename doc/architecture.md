@@ -293,7 +293,8 @@ target-bound source revision separately from the portable bundle identity.
 Worker workflow/benchmark retries inspect canonical metadata before checking
 fresh-admission readiness; only normal absence may enter new admission. Saves
 project their original sealed acknowledgement, never a subsequent source read.
-This does not enable the owned scheduler or default maintenance.
+Application startup enables the owned dispatcher, but does not install or
+enable default maintenance workflows.
 Separately, an
 exact-revision offline benchmark reuses Dvergr's experiment runner and room
 Attempts/Scorecards; it requires both installation-operator and room merge
