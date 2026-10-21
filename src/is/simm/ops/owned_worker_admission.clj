@@ -69,11 +69,46 @@
       (unavailable!))
     {:result result :id id}))
 
-(defn- submit-kind! [kind host principal handle input]
+(defn- validate-input! [kind input]
   (when-not (and (m/validate (case kind :local-worker-workflow workflow-schema
                                    :local-worker-benchmark benchmark-schema) input)
                  (re-matches #"[a-z0-9][a-z0-9-]{0,63}" (:name input)))
-    (fail! ::invalid "Invalid owned local worker request"))
+    (fail! ::invalid "Invalid owned local worker request")))
+
+(defn- observe-retry! [kind host principal handle input]
+  (validate-input! kind input)
+  (let [original (preflight! kind host principal handle)
+        {:keys [control-conn execution-ctx]} (::reads/owner host)]
+    (binding [ec/*execution-context* execution-ctx]
+      (let [{:keys [result id]} (retry! kind control-conn original input)]
+        (when (= :conflict (:status result))
+          (fail! ::conflict "Request identity was used for different work"))
+        (let [observed (if (= :retry (:status result))
+                         (let [request (storage! #(work/status control-conn execution-ctx principal (:room-id original) id))]
+                           (when-not (and (storage! #(m/validate work/public-status-schema request))
+                                          (= {:id id :room (:room-id original) :by (:party original)
+                                              :client-id (:request-id input) :kind kind}
+                                             (select-keys request [:id :room :by :client-id :kind])))
+                             (unavailable!))
+                           {:status :retry :request request})
+                         {:status :absent})]
+          (current! kind host principal handle original nil nil)
+          observed)))))
+
+(defn retry-workflow!
+  "Fixed HOST metadata-only retry observation before fresh-admission gates.
+   Normal absence is not an authorization lease. No source/enrollment access."
+  [host principal handle input]
+  (observe-retry! :local-worker-workflow host principal handle input))
+
+(defn retry-benchmark!
+  "Fixed HOST OFFLINE benchmark retry observation; current operator and room
+   authority still apply. Returns only normal absence or public request status."
+  [host principal handle input]
+  (observe-retry! :local-worker-benchmark host principal handle input))
+
+(defn- submit-kind! [kind host principal handle input]
+  (validate-input! kind input)
   (let [original (preflight! kind host principal handle)
         {:keys [control-conn execution-ctx]} (::reads/owner host)]
     (binding [ec/*execution-context* execution-ctx]

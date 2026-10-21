@@ -1,8 +1,9 @@
 (ns is.simm.ops.owned-mcp
-  "Inactive human MCP host binding for canonical owned Memory reads.
-   No startup installation, credential widening, agent routing or write API."
+  "Inactive human MCP host binding for canonical owned Memory and workflow
+   controls. No startup installation, credential widening or agent routing."
   (:require [clojure.string :as str]
             [dvergr.rooms.files :as files]
+            [is.simm.model.access :as access]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.owned-reads :as reads]
             [org.replikativ.spindel.engine.core :as ec]))
@@ -10,7 +11,15 @@
 (def ^:private room-read-ops #{:room/files :room/read :catalog/list})
 (def ^:private described-read-ops
   #{:simmis/workspace-bundle :simmis/workspace-bundle-chunk
-    :simmis/workflow-list :simmis/workflow-source})
+    :simmis/workflow-list :simmis/workflow-source :simmis/workflow-check
+    :simmis/workflow-schedule-list})
+(def ^:private described-owned-actions
+  (merge (zipmap described-read-ops (repeat :read))
+         {:simmis/workflow-write :write
+          :simmis/workflow-run :merge :simmis/benchmark :merge :simmis/cli-benchmark :merge
+          :simmis/workflow-schedule-create :merge :simmis/workflow-schedule-set-enabled :merge
+          :simmis/work-status :merge
+          :simmis/local-worker-workflow :write :simmis/local-worker-benchmark :write}))
 (def ^:private denial {:allow? false :reason "Canonical room read refused"})
 
 (defn- refuse! []
@@ -50,23 +59,26 @@
           (cond
             ;; This NEW inactive host exports owned human Memory only. Never
             ;; allow then downgrade a worker/agent to selected repository bytes.
-            (and (contains? described-read-ops op) (#{:worker :agent} (:principal/kind principal))) denial
-            (or (not (contains? (into room-read-ops described-read-ops) op)) (global-catalog? request)
+            (and (contains? described-owned-actions op) (#{:worker :agent} (:principal/kind principal))) denial
+            (or (not (contains? (into room-read-ops (keys described-owned-actions)) op)) (global-catalog? request)
                 (#{:worker :agent} (:principal/kind principal)))
             ;; Preserve worker/agent and all unrelated op authority; NEVER map
             ;; those credentials to their enroller/owner's canonical Memory.
             (ops/authorize principal request)
             :else (do (mcp-human! principal)
-                      (if (contains? described-read-ops op)
+                      (if (contains? described-owned-actions op)
                   ;; Legacy host descriptors normalize UUID to slug. ONLY
                   ;; these fixed reads compare both mappings in ONE control DB;
                   ;; the original DTO handle remains the sole body selector.
                         (let [{:keys [action resource args]} request
-                              [kind handle] resource]
-                          (when-not (and (= :read action) (vector? resource) (= 2 (count resource))
+                              [kind handle] resource
+                              required (get described-owned-actions op)]
+                          (when-not (and (= required action) (vector? resource) (= 2 (count resource))
                                          (= :room kind) (bounded-text? handle 1024))
                             (refuse!))
                           (let [descriptor (reads/authorize-read! db principal handle)]
+                            (when-not (access/can? db (:party descriptor) required {:room (:room-id descriptor)})
+                              (refuse!))
                             (when (contains? request :args)
                               (when-not (and (map? args)
                                              (= (:room-id descriptor)
@@ -102,9 +114,9 @@
     (files/workspace-path (or path "/") (= :list operation))))
 
 (defn host
-  "Construct an INACTIVE per-host canonical human MCP read binding. Caller owns
+  "Construct an INACTIVE per-host canonical human MCP binding. Caller owns
    the current canonical connection/context lifetime. Nothing installs it.
-   Owned exports/workflow inspections are human-only; legacy hosts and unrelated worker/agent
+   Owned exports/workflow controls are human-only; legacy hosts and unrelated worker/agent
    delegation are unchanged. No cached allow decision or selection mutation."
   [canonical-control-conn host-ctx]
   (-> (ops/host host-ctx)

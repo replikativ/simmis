@@ -274,8 +274,13 @@ resolving its current file default. Inspection and pause do not prepare a
 model. Resume rechecks the stored human creator and policy; its transaction
 rejects changed retained identities and uncertain or foreign active occurrences.
 Legacy activations may be inspected and paused but must be explicitly recreated
-before owned resume. These services are not yet selected by public transports
-or startup; they do not enable the owned scheduler or default maintenance.
+before owned resume. The inactive owned MCP host selects these fixed services;
+ordinary hosts and startup remain unchanged. Owned execution requires its
+target-bound source revision separately from the portable bundle identity.
+Worker workflow/benchmark retries inspect canonical metadata before checking
+fresh-admission readiness; only normal absence may enter new admission. Saves
+project their original sealed acknowledgement, never a subsequent source read.
+This does not enable the owned scheduler or default maintenance.
 Separately, an
 exact-revision offline benchmark reuses Dvergr's experiment runner and room
 Attempts/Scorecards; it requires both installation-operator and room merge

@@ -38,20 +38,53 @@
 (defn- invalid! [message]
   (throw (ex-info message {:type ::invalid})))
 
-(defn transport-write
-  "Dvergr HTTP keywordizes JSON object keys, including filenames. Normalize
-   only those keys; the internal write path still applies its strict schema."
+(defn keyed-fields-result
+  "Pure keyword/string map-key normalization shared by execution and editing.
+   Callers validate field shapes first. Absent fields and all values survive."
+  [input fields]
+  (let [result
+        (reduce (fn [input field]
+                  (if (contains? input field)
+                    (let [value (reduce-kv
+                                 (fn [out key value]
+                                   (let [key (if (keyword? key) (subs (str key) 1) key)]
+                                     (if (contains? out key)
+                                       (reduced ::duplicate-key)
+                                       (assoc out key value)))) {} (get input field))]
+                      (if (= ::duplicate-key value)
+                        (reduced ::duplicate-key) (assoc input field value)))
+                    input)) input fields)]
+    (if (= ::duplicate-key result)
+      {:status :invalid :reason :duplicate-key}
+      {:status :ok :input result})))
+
+(defn transport-write-result
+  "Pure file-key normalization with normal outcomes. The inspected revision
+   remains its wire STRING; owned authoring consumes that exact representation."
   [input]
-  (when-not (m/validate transport-write-schema input) (invalid! "Invalid workflow edits"))
-  (cond-> (update input :files
-                  (fn [files]
-                    (reduce-kv (fn [out key value]
-                                 (let [path (if (keyword? key) (subs (str key) 1) key)]
-                                   (when (contains? out path) (invalid! "Duplicate workflow filename"))
-                                   (assoc out path value))) {} files)))
-    (:expected-revision input)
-    (assoc :expected-revision (or (parse-uuid (:expected-revision input))
-                                  (invalid! "Invalid workflow source revision")))))
+  (if-not (m/validate transport-write-schema input)
+    {:status :invalid :reason :shape}
+    (let [result (keyed-fields-result input [:files])]
+      (cond
+        (= :invalid (:status result)) result
+        (and (:expected-revision input) (nil? (parse-uuid (:expected-revision input))))
+        {:status :invalid :reason :revision}
+        (not (m/validate write-schema
+                         (cond-> (:input result)
+                           (:expected-revision input) (update :expected-revision parse-uuid))))
+        {:status :invalid :reason :shape}
+        :else result))))
+
+(defn transport-write
+  "Dvergr HTTP keywordizes JSON object keys. Legacy authoring consumes a UUID
+   revision; this wrapper preserves its prior validation messages."
+  [input]
+  (let [{:keys [status reason input]} (transport-write-result input)]
+    (case status
+      :ok (cond-> input (:expected-revision input) (update :expected-revision parse-uuid))
+      :invalid (invalid! (case reason :duplicate-key "Duplicate workflow filename"
+                               :revision "Invalid workflow source revision"
+                               "Invalid workflow edits")))))
 
 (defn- prefix! [name]
   ;; re-matches also rejects a trailing newline (Java's $ alone need not).

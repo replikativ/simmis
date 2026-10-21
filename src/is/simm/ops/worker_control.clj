@@ -8,6 +8,9 @@
             [dvergr.ops :as ops]
             [dvergr.substrate.config :as config]
             [is.simm.ops.work-api :as api]
+            [is.simm.ops.owned-reads :as reads]
+            [is.simm.ops.owned-worker-admission :as owned]
+            [is.simm.ops.work :as bounded-work]
             [is.simm.ops.worker-benchmarks :as benchmarks]
             [is.simm.ops.worker-service :as service]
             [is.simm.ops.worker-work :as work]
@@ -45,7 +48,7 @@
   (workflow-runs/transport-schema-for
    (into [:map {:closed true} room-entry [:request-id uuid-string] [:worker uuid-string]]
          (map (fn [entry] (if (= :expected-bundle (first entry))
-                           [:expected-bundle uuid-string] entry)))
+                            [:expected-bundle uuid-string] entry)))
          (concat (drop 2 workflow-runs/source-schema) [[:limits (nth (last task-schema) 1)]]))))
 
 (def benchmark-schema
@@ -59,9 +62,17 @@
                  :else entry)))
         (drop 2 benchmarks/schema)))
 
+(def workflow-route-schema (api/with-owned-source-wire workflow-schema))
+(def benchmark-route-schema (api/with-owned-source-wire benchmark-schema))
+
+(defn- admission-ready? []
+  (and (true? (admission-open?)) (true? (maintenance/claims-ready?))))
+
+(defn- disabled! []
+  (ops/op-error! "New local worker admission is disabled or recovery is unavailable" ::disabled 503))
+
 (defn- require-admission! []
-  (when-not (and (admission-open?) (maintenance/claims-ready?))
-    (ops/op-error! "New local worker admission is disabled or recovery is unavailable" ::disabled 503)))
+  (when-not (admission-ready?) (disabled!)))
 
 (defn- uuid! [value]
   (or (parse-uuid value) (ops/op-error! "Invalid local worker identity" ::invalid 400)))
@@ -85,6 +96,33 @@
                #(let [[conn room-id room] (api/room! host (:room args))]
                   (when new? (require-admission!))
                   (operation conn room-id room))))
+
+(defn- invoke-owned-work! [host args benchmark?]
+  (let [schema (conj (if benchmark? benchmarks/schema work/workflow-schema) [:expected-owned-source :uuid])
+        input (api/owned-transport! schema args)
+        principal ops/*principal*
+        observed (api/owned-service-result!
+                  #(if benchmark?
+                     (owned/retry-benchmark! host principal (:room args) input)
+                     (owned/retry-workflow! host principal (:room args) input)))]
+    (cond
+      (= {:status :absent} observed)
+      (do
+        ;; Only NORMAL canonical absence reaches new-admission readiness.
+        ;; The submission service repeats all original owner/action/intent gates.
+        (when-not (api/owned-helper-value! admission-ready?) (disabled!))
+        (api/owned-service-result!
+         #(if benchmark?
+            (owned/submit-benchmark! host principal (:room args) input)
+            (owned/submit-workflow! host principal (:room args) input))))
+
+      (and (map? observed) (= #{:status :request} (set (keys observed))) (= :retry (:status observed))
+           (api/owned-helper-value! #(m/validate bounded-work/public-status-schema (:request observed)))
+           (= (:request-id input) (get-in observed [:request :client-id]))
+           (= (if benchmark? :local-worker-benchmark :local-worker-workflow) (get-in observed [:request :kind])))
+      (:request observed)
+
+      :else (ops/op-error! "Owned worker retry unavailable" ::owned-retry-unavailable 503))))
 
 (def specifications
   (api/room-specifications
@@ -126,27 +164,35 @@
                        (work/submit! conn (:execution-ctx host) ops/*principal* id room
                                      (-> (dissoc args :room) (update :request-id uuid!) (update :worker uuid!))))))}
     :simmis/local-worker-workflow
-    {:kind :write :schema workflow-schema :authz {:action :write}
+    {:kind :write :schema workflow-route-schema :authz {:action :write}
      :doc "HUMAN control only: run one inspected saved workflow revision on your enrolled local SCI worker. Pins literal parameters, source and fixture/input bytes. Uses one explicitly funded admission and existing Job/Run/Attempt flow; authored checkers are NOT executed. Exact retries observe the original Job. Review/discard only; no provider login is sent to the server."
      :impl (fn [host args]
-             (invoke host workflow-schema args true
-                     (fn [conn id room]
-                       (work/submit-workflow!
-                        conn (:execution-ctx host) ops/*principal* id room
-                        (workflow-runs/transport-for
-                         work/workflow-schema
-                         (-> (dissoc args :room) (update :request-id uuid!)
-                             (update :worker uuid!) (update :expected-bundle uuid!)))))))}
+             (when-not (m/validate workflow-route-schema args)
+               (ops/op-error! "Invalid local worker control arguments" ::invalid 400))
+             (if (reads/owned-host? host)
+               (invoke-owned-work! host args false)
+               (invoke host workflow-schema args true
+                       (fn [conn id room]
+                         (work/submit-workflow!
+                          conn (:execution-ctx host) ops/*principal* id room
+                          (workflow-runs/transport-for
+                           work/workflow-schema
+                           (-> (dissoc args :room) (update :request-id uuid!)
+                               (update :worker uuid!) (update :expected-bundle uuid!))))))))}
     :simmis/local-worker-benchmark
-    {:kind :write :schema benchmark-schema :authz {:action :write}
+    {:kind :write :schema benchmark-route-schema :authz {:action :write}
      :doc "HUMAN control only: benchmark an inspected workflow revision on your enrolled local SCI worker. Requires installation-operator AND current room read/merge authority. At most four cases and two repetitions, serial and discard-only; one explicitly funded admission per cell, no automatic retries or funding. Only clean fixtures reach the guest; checkers and calibration run on the server. Usage remains unreported, not zero. Exact retries observe one Job."
      :impl (fn [host args]
-             (invoke host benchmark-schema args true
-                     (fn [conn id room]
-                       (benchmarks/submit!
-                        conn (:execution-ctx host) ops/*principal* id room
-                        (-> (dissoc args :room) (update :request-id uuid!)
-                            (update :worker uuid!) (update :expected-bundle uuid!))))))}}))
+             (when-not (m/validate benchmark-route-schema args)
+               (ops/op-error! "Invalid local worker control arguments" ::invalid 400))
+             (if (reads/owned-host? host)
+               (invoke-owned-work! host args true)
+               (invoke host benchmark-schema args true
+                       (fn [conn id room]
+                         (benchmarks/submit!
+                          conn (:execution-ctx host) ops/*principal* id room
+                          (-> (dissoc args :room) (update :request-id uuid!)
+                              (update :worker uuid!) (update :expected-bundle uuid!)))))))}}))
 
 (defn install! []
   (doseq [[op spec] specifications] (ops/register-op! op spec))

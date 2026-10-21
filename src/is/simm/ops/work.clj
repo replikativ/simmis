@@ -117,17 +117,21 @@
     {:team team :agent id :environment env :evaluator completion
      :basis {:candidate agent :environment env :sandbox-policy work-sandbox/policy}}))
 
+(def public-status-schema
+  [:map {:closed true}
+   [:id :uuid] [:client-id :uuid] [:room :uuid] [:by :uuid] [:kind :keyword]
+   [:created-at inst?] [:state :keyword]
+   [:job {:optional true} :uuid] [:incident {:optional true} :uuid]
+   [:return-pending? {:optional true} :boolean]
+   [:budget-microdollars {:optional true} :int]
+   [:max-dispatches {:optional true} :int] [:max-model-steps {:optional true} :int]
+   [:max-worker-admissions {:optional true} :int] [:max-cli-runs {:optional true} :int]
+   [:timeout-ms {:optional true} :int] [:settlement {:optional true} :keyword]])
+
 (defn- public-request [row]
   ;; Never expose the admission ownership token or internal store reference.
   (into {} (map (fn [[k v]] [(keyword (name k)) v]))
-        (select-keys row [:work.request/id :work.request/client-id :work.request/room
-                          :work.request/by :work.request/kind :work.request/created-at
-                          :work.request/state :work.request/job :work.request/incident
-                          :work.request/return-pending? :work.request/budget-microdollars
-                          :work.request/max-dispatches :work.request/max-model-steps
-                          :work.request/max-worker-admissions
-                          :work.request/max-cli-runs
-                          :work.request/timeout-ms :work.request/settlement])))
+        (select-keys row (map #(keyword "work.request" (name (first %))) (drop 2 public-status-schema)))))
 
 (defn provision-prepared!
   "Trusted host seam for an already validated allowance vector and unit
