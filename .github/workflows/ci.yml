@@ -15,7 +15,10 @@ concurrency:
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The full backend gate already takes ~30 minutes including dependency
+    # preparation (PR70: 29m53s). Leave bounded headroom for setup/runtime
+    # variance; do not drop tests or hide individual assertion failures.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v6
