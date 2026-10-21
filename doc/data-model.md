@@ -81,6 +81,23 @@ certified and no queries, stubs or transaction data are produced. The strict
 two-argument decoders retain their refusals. This candidate API is not wired
 into the scalar view profile described below.
 
+The separate `documents.constraints` stage validates a whole selection of
+trusted candidates against the **same immutable DB** used by their compiler
+and decoder. Candidate profile/status tags are not provenance and must not be
+accepted as certification from an external caller. Before target lookup it
+checks duplicate IDs and aggregate entity/type/value/claim work. Planned
+entities receive explicit tempids; relations resolve only to these entities
+or existing UUID-addressed entities with the exact entity-type codomain role.
+No missing target creates a stub, and paths never choose identity.
+
+Both uniqueness modes are checked across owners and the base before any
+transaction is assembled. Reference uniqueness compares logical target UUIDs
+within the selection and real target EIDs against the base, never a nil
+lookup. The result includes bounded codomain, external-target and unique-value
+dependencies for freshness. A disappeared target, changed role or newly
+conflicting unique value invalidates it; unrelated writes need not. This stage
+constructs no transaction or DB, and is not yet connected to the scalar view.
+
 ### Opt-in canonical scalar views
 
 `documents.space/provision!` explicitly provisions a new, privately owned,
