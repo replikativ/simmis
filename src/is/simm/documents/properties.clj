@@ -5,7 +5,8 @@
   (:require [clojure.string :as str]
             [datahike.api :as d]
             [hasch.core :as hasch]
-            [is.simm.model.morphism :as morphism]))
+            [is.simm.model.morphism :as morphism]
+            [is.simm.model.schema :as model-schema]))
 
 (def profile {:id :simmis/markdown-properties :version 1})
 (def ^:private system-namespaces
@@ -20,8 +21,12 @@
     (some #(or (= ns %) (str/starts-with? ns (str % "."))) system-namespaces)))
 (def ^:private binding-keys
   [:entity/uuid :entity/name :morphism/storage-attr :morphism/computation :morphism/validation
-   :morphism/cardinality :morphism/optional? {:morphism/src [:entity/uuid :entity/name]}
-   {:morphism/dst [:entity/uuid :entity/name]}])
+   :morphism/cardinality :morphism/optional? :morphism/attr-type
+   {:morphism/of-category [:entity/uuid :entity/name]}
+   {:morphism/src [:entity/uuid :entity/name]}
+   {:morphism/dst [:entity/uuid :entity/name :object/primitive? :object/enum-values
+                   {:object/base-type [:entity/uuid :entity/name]}
+                   {:object/of-category [:entity/uuid :entity/name]}]}])
 
 (defn compile-schema
   "Bind portable YAML names to existing morphism UUIDs. Bindings are supplied
@@ -102,6 +107,8 @@
                          (:db/isComponent schema) :component-property
                          (:db/unique schema) :unique-property-needs-validation
                          (:morphism/validation morphism) :property-needs-validator
+                         (get-in morphism [:morphism/dst :object/base-type]) :property-needs-validator
+                         (seq (get-in morphism [:morphism/dst :object/enum-values])) :property-needs-validator
                          (= type :db.type/ref) :unresolved-property-reference
                          (and items (not bounded?)) :too-many-property-values
                          (or (nil? decoded) (some nil? decoded)) :invalid-property-value)]
@@ -117,3 +124,112 @@
                                          (or (nil? v) (and (sequential? v) (empty? v)))))]
                         {:kind :missing-required-property :property name}))}
    (or raw {})))
+
+(def typed-profile {:id :simmis/markdown-typed-properties :version 1})
+
+(defn- invalid-scope! [reason]
+  (throw (ex-info "Markdown declarations do not match trusted definitions"
+                  {:type ::invalid-schema :reason reason})))
+
+(defn compile-scope
+  "Compile one already-decoded metadata scope against ONE immutable trusted DB.
+   Assignments are exact categorical entity types, not tags or inheritance.
+   Enumerates ALL outgoing properties, including unaliased required fields.
+   Does not install schema, resolve relation values, evaluate validators or
+   publish entities. :revision includes the actual definitions and storage.
+   Invalid/unavailable definitions refuse, rather than acquire file meaning."
+  [db {:keys [types bindings]}]
+  (when-not (and (vector? types) (<= (count types) 64)
+                 (every? uuid? types) (= (count types) (count (set types)))
+                 (map? bindings) (<= (count bindings) 64)
+                 (every? (fn [[alias {:keys [id declaring-type]}]]
+                           (and (string? alias) (<= 1 (count alias) 128)
+                                (not (str/blank? alias))
+                                (not (#{"simmis" "simmis-id"} alias))
+                                (uuid? id) (uuid? declaring-type))) bindings))
+    (invalid-scope! :invalid-declarations))
+  (let [schema (d/schema db)
+        _ (when-not (every? #(contains? schema %)
+                            [:entity/uuid :entity/name :object/of-category
+                             :instance/of-role :morphism/src :morphism/of-category])
+            (invalid-scope! :missing-categorical-schema))
+        meta-type (:e (first (d/datoms db :avet :entity/name "S/EntityType")))
+        type-rows
+        (into (sorted-map)
+              (for [id types]
+                (let [eid (:e (first (d/datoms db :avet :entity/uuid id)))
+                      _ (when-not eid (invalid-scope! :unknown-or-nonentity-type))
+                      row (d/pull db [:db/id :entity/uuid :entity/name :object/primitive?
+                                     {:object/of-category [:db/id :entity/uuid :entity/name]}
+                                     {:instance/of-role [:db/id]}]
+                                  eid)]
+                  (when-not (and meta-type (:entity/name row)
+                                 (get-in row [:object/of-category :entity/uuid])
+                                 (not (true? (:object/primitive? row)))
+                                 (some #(= meta-type (:db/id %)) (:instance/of-role row)))
+                    (invalid-scope! :unknown-or-nonentity-type))
+                  [id row])))
+        outgoing (vec (take 257 (mapcat (fn [[_ row]]
+                                         (map :e (d/datoms db :avet :morphism/src (:db/id row))))
+                                       type-rows)))
+        _ (when (> (count outgoing) 256) (invalid-scope! :too-many-type-properties))
+        definitions
+        (into (sorted-map)
+              (for [eid outgoing]
+                (let [id (:entity/uuid (d/pull db [:entity/uuid] eid))
+                      _ (when-not (uuid? id) (invalid-scope! :property-without-identity))
+                      binding (get-in (compile-schema db {(str id) id}) [:bindings (str id)])
+                      m (:morphism binding)
+                      src (get-in m [:morphism/src :entity/uuid])
+                      dst (:morphism/dst m)
+                      category (get-in type-rows [src :object/of-category :entity/uuid])
+                      attr-type (:morphism/attr-type m)
+                      expected-type (or (model-schema/attr-type->db-type attr-type)
+                                        (model-schema/codomain->db-type (:entity/name dst)))]
+                  (when-not (= (get-in type-rows [src :object/of-category :entity/uuid])
+                               (get-in m [:morphism/of-category :entity/uuid]))
+                    (invalid-scope! :property-category-mismatch))
+                  (when-not (and (:entity/uuid dst) (:entity/name dst)
+                                 (= category (get-in dst [:object/of-category :entity/uuid])))
+                    (invalid-scope! :invalid-property-codomain))
+                  (when (and attr-type (not (contains? model-schema/attr-type->db-type attr-type)))
+                    (invalid-scope! :unsupported-property-attr-type))
+                  (when-not (= expected-type (get-in binding [:schema :db/valueType]))
+                    (invalid-scope! :property-codomain-storage-mismatch))
+                  [id binding])))
+        compiled
+        (into (sorted-map)
+              (for [[alias {:keys [id declaring-type]}] bindings]
+                (let [binding (get definitions id)]
+                  (when-not (and (contains? type-rows declaring-type) binding
+                                 (= declaring-type (get-in binding [:morphism :morphism/src :entity/uuid])))
+                    (invalid-scope! :property-declaring-type-mismatch))
+                  [alias binding])))]
+    (when-not (= (count compiled) (count (set (map :attr (vals compiled)))))
+      (invalid-scope! :ambiguous-property-alias))
+    (when-not (= (count definitions) (count (set (map :attr (vals definitions)))))
+      (invalid-scope! :ambiguous-type-storage))
+    {:profile typed-profile :types type-rows :properties definitions :bindings compiled
+     :revision (hasch/uuid [typed-profile type-rows definitions compiled])}))
+
+(defn decode-scope
+  "Decode ordinary scalar values using existing strict decoding. Requiredness
+   also covers properties absent from the alias map; a file cannot evade a
+   required definition by omitting its binding. Relations, unique values,
+   computations and validators still require their separate trusted gates."
+  [compiled raw]
+  (when-not (and (= typed-profile (:profile compiled)) (map? raw))
+    (invalid-scope! :invalid-typed-values))
+  (let [bound (set (map #(get-in % [:morphism :entity/uuid]) (vals (:bindings compiled))))]
+    (update (decode compiled raw) :diagnostics
+            (fn [diagnostics]
+              (into (mapv (fn [diagnostic]
+                            (if (and (= :missing-required-property (:kind diagnostic))
+                                     (false? (get-in compiled [:bindings (:property diagnostic) :owned?])))
+                              (assoc diagnostic :kind :required-owner-managed-property)
+                              diagnostic)) diagnostics)
+                    (for [[id binding] (:properties compiled)
+                          :when (and (false? (get-in binding [:morphism :morphism/optional?]))
+                                     (not (contains? bound id)))]
+                      {:kind (if (:owned? binding) :missing-required-property :required-owner-managed-property)
+                       :property-id id}))))))
