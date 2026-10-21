@@ -187,7 +187,7 @@
                          (let [stamp (:target-stamp reply) changed? (not= stamp (:target-stamp current))
                                pending (into {} (filter (fn [[slot loading?]]
                                                           (and loading? (vector? slot)
-                                                               (#{:file :folder} (first slot))))) (:loading current))
+                                                               (#{:file :folder :properties} (first slot))))) (:loading current))
                                next (cond-> (editor/observe-target current stamp)
                                       changed? (update :target-epoch (fnil inc 0))
                                       changed? retire-upload
@@ -221,7 +221,8 @@
                            (-> next
                                (assoc :connection c :target-verified? true :verified-connection c
                                       :permissions (:permissions reply) :sandbox-permissions (:permissions reply)
-                                      :workspace (:workspace reply) :metadata-followups pending)
+                                      :workspace (:workspace reply) :definition-basis (:definition-basis reply)
+                                      :metadata-followups pending)
                                (update :read-epoch (fnil inc 0))
                                (update :observed-entries merge (:entries reply))
                                (update :folders merge (:folders reply))
@@ -303,9 +304,46 @@
                             #(update-in %1 [:drafts path] editor/analyzed text %2) nil
                             {:stamp stamp :accept? (fn [s _] (and (= text (get-in s [:drafts path :text]))
                                                                   (= (:generation draft) (get-in s [:drafts path :generation]))))}))))
+            (property-marker [s path target]
+              [(:connection s) (:target-stamp s) (:read-epoch s) (:definition-basis s)
+               (get-in s [:observed-entries path]) target])
+            (properties! [path target]
+              (let [s (state) marker (property-marker s path target) scope [path target]
+                    slot [:properties path target]]
+                (when (and (verified? s (connected!)) (get-in s [:drafts path :source :entry])
+                           (not (get-in s [:loading slot]))
+                           (not= marker (get-in s [:property-attempts scope])))
+                  (update! assoc-in [:property-attempts scope] marker)
+                  (request! slot #(remote/load-memory-properties! web/server-id room
+                                                                 {:path path :target target :expected-target-stamp (:target-stamp s)})
+                            #(assoc-in %1 [:property-models scope] (assoc %2 :request-marker marker)) nil
+                            {:stamp (:target-stamp s) :read? true}))))
+            (property-save! [path target field]
+              (let [s (state) scope [path target] model (get-in s [:property-models scope])
+                    pd (get-in s [:property-drafts scope (:id field)]) draft (get-in s [:drafts path])
+                    slot [:property-save path] input (editor/property-input model field pd)]
+                (when (and (not (get-in s [:loading slot])) (not (get-in s [:loading [:save path]]))
+                           (not (get-in s [:loading [:move path]]))
+                           (:editable? field) (not (editor/dirty? draft))
+                           (= (:request-marker model) (property-marker s path target))
+                           (= (:expected model) (get-in draft [:source :entry]))
+                           (editor/property-draft-current? model pd))
+                  (when-let [stamp (draft-stamp! path slot)]
+                    (let [command (-> (editor/property-baseline model) (dissoc :target-stamp)
+                                      (assoc :expected-target-stamp stamp :property (:id field) :alias (:alias field) :input input))]
+                      (request! slot #(remote/save-memory-property! web/server-id room command)
+                                (fn [current reply]
+                                  (cond-> (-> current (update :property-models dissoc scope)
+                                              (update :property-attempts dissoc scope))
+                                    (some? (get-in current [:drafts path]))
+                                    (update-in [:drafts path] editor/property-saved (:generation draft) reply)
+                                    (= pd (get-in current [:property-drafts scope (:id field)]))
+                                    (update-in [:property-drafts scope] dissoc (:id field))))
+                                (fn [_] (discover! true) (navigation-refresh!)) {:stamp stamp}))))))
             (save! [path]
               (let [draft (get-in (state) [:drafts path]) sent (:text draft) slot [:save path]]
-                (when (and (not (get-in (state) [:loading slot])) (not (get-in (state) [:loading [:move path]])))
+                (when (and (not (get-in (state) [:loading slot])) (not (get-in (state) [:loading [:move path]]))
+                           (not (get-in (state) [:loading [:property-save path]])))
                   (when-let [stamp (draft-stamp! path slot)]
                     (let [request {:path path :expected (get-in draft [:source :entry]) :text sent :expected-target-stamp stamp}
                           base (:rich-base draft)]
@@ -427,6 +465,18 @@
                 (ensure-sync! c (binding [ec/*execution-context* ctx] @sync/state)))
               (navigation-refresh!))]
       {:owner key :state state :change change! :folder folder! :open #(open! % false) :reload #(open! % true)
+       :open-properties (fn [path target] (update! assoc-in [:property-targets path] target) (properties! path target))
+       :ensure-properties (fn [] (let [s (state) path (:selected s)]
+                                  (when-let [target (get-in s [:property-targets path])] (properties! path target))))
+       :property-input (fn [path target field input]
+                         (let [scope [path target] model (get-in (state) [:property-models scope])]
+                           (update! update-in [:property-drafts scope (:id field)]
+                                    #(if % (assoc % :input input)
+                                         (assoc (editor/property-draft model input)
+                                                :alias (:alias field) :label (:label field))))))
+       :property-discard (fn [path target id] (update! update-in [:property-drafts [path target]] dissoc id))
+       :property-current? (fn [path target model] (= (:request-marker model) (property-marker (state) path target)))
+       :property-save property-save!
        :verified? #(verified? (state) (connection)) :discover #(discover! false)
        :repl-change (fn [f & args] (apply update! update :repl f args))
        :repl-evaluate
@@ -501,10 +551,12 @@
                            (update! update :errors dissoc [:save path] [:file path] [:rich path]))))
        :move (fn [path target]
                (let [draft (get-in (state) [:drafts path])]
-                 (if (or (editor/dirty? draft) (get-in (state) [:loading [:save path]])
+                 (if (or (editor/dirty? draft) (editor/property-drafts? (state) path)
+                         (get-in (state) [:loading [:save path]])
                          (get-in (state) [:loading [:office-save path]]) (get-in (state) [:loading [:move path]])
+                         (get-in (state) [:loading [:property-save path]])
                          (get-in (state) [:drafts target]))
-                   (update! assoc-in [:errors :move] "Finish pending saves and choose a destination without another open draft before moving.")
+                   (update! assoc-in [:errors :move] "Apply or discard field drafts, finish pending saves and choose a destination without another open draft before moving.")
                    (when-let [stamp (draft-stamp! path [:move path])]
                      (request! [:move path] #(remote/move-memory-file! web/server-id room
                                                                        {:path path :target target :expected (get-in draft [:source :entry]) :expected-target-stamp stamp})

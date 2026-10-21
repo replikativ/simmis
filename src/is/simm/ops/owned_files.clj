@@ -2,7 +2,10 @@
   "Fixed host file actions used by the authenticated Memory v2 adapter.
    Expected stamps are preconditions, never target selectors or capabilities."
   (:require [hasch.core :as hasch]
+            [dvergr.rooms.file-tx :as file-tx]
             [is.simm.documents.files :as files]
+            [is.simm.documents.property-model :as property-model]
+            [is.simm.documents.space :as space]
             [is.simm.documents.office :as office]
             [is.simm.documents.rich :as rich]
             [is.simm.model.system-db :as sdb]
@@ -92,11 +95,51 @@
       {:text next :analysis (files/analyze repo-id path next)
        :target-stamp (:target-stamp binding)})))
 
-(defn- save-bound! [conn principal room-id room binding request]
+(defn- save-bound! [conn principal room-id room binding request & [write-options]]
   (let [authorize! #(do (canonical-control! conn)
                         (owned/validate! @conn principal :write room-id room binding) true)
-        result (files/save-file-to! room (:system binding) request {:authorize! authorize!})]
+        result (files/save-file-to! room (:system binding) request (assoc (or write-options {}) :authorize! authorize!))]
     (assoc result :target-stamp (:target-stamp binding))))
+
+(defn properties!
+  "Authenticated-host inspector; unavailable legacy/provisional spaces stay
+   readable without falsely exposing canonical typed editing."
+  [conn principal room-id room request]
+  (project! conn principal room-id room request #{:path :target} true
+            #(try (property-model/inspect-in % (:path request) (:target request))
+                  (catch clojure.lang.ExceptionInfo error
+                    (if (and (= :is.simm.documents.property-model/refused (:type (ex-data error)))
+                             (#{:unprovisioned-canonical-space :invalid-or-provisional-document} (:reason (ex-data error))))
+                      {:path (:path request) :target (:target request)
+                       :status :unavailable :reason (:reason (ex-data error))}
+                      (throw error))))))
+
+(defn- save-property! [conn principal room-id room payload request]
+  (closed! request (conj #{:path :target :alias :property :expected :revision :scope-revision} payload) true)
+  (let [binding (binding! conn principal :write room-id room request true)
+        source-db (:db binding)
+        prepare (if (= :input payload) property-model/prepare-input-in property-model/prepare-edit-in)
+        prepared (prepare source-db {:roots [""] :schema-revision :source-property-model-v1
+                                     :entity-profile space/profile}
+                          (dissoc request :expected-target-stamp))
+        ;; Compute before physical publication: a fallible post-commit read or
+        ;; analysis must not turn a successful write into an apparent failure.
+        analysis (files/analyze (get-in binding [:target :repository]) (:path prepared) (:text prepared))
+        basis (file-tx/capture-basis source-db)]
+    (assoc (save-bound! conn principal room-id room binding prepared {:validated-basis basis})
+           :text (:text prepared) :analysis analysis)))
+
+(defn property-save!
+  "Host typed-scalar save using one fresh owned DB and its atomic validation
+   basis. No client schema, selection policy or writer basis is accepted."
+  [conn principal room-id room request]
+  (save-property! conn principal room-id room :value request))
+
+(defn property-input-save!
+  "Authenticated UI scalar save; text is decoded against the actual trusted
+   storage type on the host, not a client type hint or JavaScript number."
+  [conn principal room-id room request]
+  (save-property! conn principal room-id room :input request))
 
 (defn office-save!
   "Prepare and publish with ONE original binding, never a second target lookup."

@@ -69,6 +69,8 @@
                           {:db/ident :entity/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                           {:db/ident :morphism/cardinality :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
                           {:db/ident :morphism/storage-attr :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+                          {:db/ident :morphism/unique :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+                          {:db/ident :morphism/property-type :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
                           {:db/ident :S.Page/value :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                           {:entity/uuid id :entity/name "S/Page/value" :morphism/cardinality :one}])
         (let [before (:max-tx @conn)
@@ -80,6 +82,20 @@
                        (properties/compile-schema @conn {"a" id "b" id})))
           (is (thrown? clojure.lang.ExceptionInfo
                        (properties/compile-schema @conn {"value" (random-uuid)})))
+          (let [hinted (d/db-with @conn [{:entity/uuid id :morphism/property-type :number}])
+                result (properties/compile-schema hinted {"value" id})]
+            (is (not= (:revision compiled) (:revision result)))
+            (is (= :number (get-in result [:bindings "value" :morphism :morphism/property-type]))))
+          (doseq [uniqueness [:db.unique/value :db.unique/identity :not-uniqueness]]
+            (is (thrown? clojure.lang.ExceptionInfo
+                         (properties/compile-schema
+                          (d/db-with @conn [{:entity/uuid id :morphism/unique uniqueness}]) {"value" id}))))
+          (let [key-db (d/db-with @conn [{:db/ident :S.Page/key :db/valueType :db.type/string
+                                         :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
+                                        {:entity/uuid id :entity/name "S/Page/key" :morphism/unique :db.unique/value}])
+                result (properties/compile-schema key-db {"value" id})]
+            (is (= :db.unique/value (get-in result [:bindings "value" :morphism :morphism/unique])))
+            (is (= :db.unique/value (get-in result [:bindings "value" :schema :db/unique]))))
           (d/transact conn [{:entity/uuid id :morphism/storage-attr :S.Page/value}])
           (let [changed (properties/compile-schema @conn {"value" id})]
             (is (not= (:revision compiled) (:revision changed)))

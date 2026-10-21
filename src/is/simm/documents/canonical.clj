@@ -19,23 +19,38 @@
 (defn- refuse! [reason]
   (throw (ex-info "Canonical knowledge projection refused" {:type ::refused :reason reason})))
 
-(defn- declaration [role scope]
-  {:types (vec (sort (set (conj (:types scope []) role))))
-   :bindings (:bindings scope {})})
+(defn declaration
+  "Shared implicit structural role for a decoded page/explicit-block scope.
+   This constructs declarations only; it does not certify a document or type."
+  [kind scope]
+  (let [role (case kind :page (:page-role profile) :block (:block-role profile)
+                   (refuse! :invalid-scope-kind))]
+    {:types (vec (sort (set (conj (:types scope []) role))))
+     :bindings (:bindings scope {})}))
+
+(defn compile-declaration
+  "Compile against the trusted DB and validate this codec's structural roles.
+   Shared by canonical projection and source-property inspection."
+  [db declarations]
+  (let [compiled (properties/compile-scope db declarations)]
+    (doseq [[id name] {(:page-role profile) "S/Page" (:block-role profile) "S/Block"}
+            :let [row (get-in compiled [:types id])]
+            :when row]
+      (when-not (= name (:entity/name row)) (refuse! :changed-structural-role)))
+    compiled))
 
 (defn- compile-once [db cache declarations]
   (if-let [compiled (get cache declarations)]
     [compiled cache]
     (do
       (when (>= (count cache) max-scopes) (refuse! :too-many-typed-scopes))
-      (let [compiled (properties/compile-scope db declarations)]
-        (doseq [[id name] {(:page-role profile) "S/Page" (:block-role profile) "S/Block"}
-                :let [row (get-in compiled [:types id])]
-                :when row]
-          (when-not (= name (:entity/name row)) (refuse! :changed-structural-role)))
+      (let [compiled (compile-declaration db declarations)]
         [compiled (assoc cache declarations compiled)]))))
 
-(defn- page-candidate [compiled raw path]
+(defn page-candidate
+  "Stage a page scope with its trusted generated path title. Shared by the
+   canonical pipeline and host property inspection; no resolution or writes."
+  [compiled raw path]
   (let [id (:title-property profile)
         title (get-in compiled [:properties id])
         m (:morphism title)]
@@ -141,13 +156,13 @@
                                             (set (map :id explicit)))
                    _ (when (= :invalid (:status decoded)) (refuse! :invalid-typed-declarations))
                    page (:page decoded)
-                   declarations (declaration (:page-role profile) page)
+                   declarations (declaration :page page)
                    [compiled cache] (compile-once db cache declarations)
                    values (page-candidate compiled (:values page) (:path document))
                    blocks-result
                    (reduce (fn [{:keys [cache] :as state} block]
                              (let [scope (get (:blocks decoded) (:id block) {})
-                                   declarations (declaration (:block-role profile) scope)
+                                   declarations (declaration :block scope)
                                    [compiled cache] (compile-once db cache declarations)
                                    values (properties/decode-candidate compiled (:values scope {}))]
                                (-> state (assoc :cache cache)

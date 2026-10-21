@@ -64,7 +64,10 @@ includes unaliased properties, their actual storage schema and optionality,
 validation/computation descriptors and ownership. Codomain/category and actual
 storage types must agree, honoring the shared exact `:morphism/attr-type`
 mapping. It never evaluates descriptors. `decode-scope` reuses strict scalar
-decoding and retains unknown values; derived/enum constraints refuse until a
+decoding. The captured digest also retains trusted UI rendering hints and
+declared uniqueness; explicit uniqueness must agree with installed storage.
+Rendering hints never override the actual storage value type. The decoder's
+raw/unknown values remain intact; derived/enum constraints refuse until a
 validator exists. Required owner-managed fields get a separate diagnostic,
 not an instruction to author them in YAML. Shared storage across multiple
 type properties is conservatively unsupported. Relations, unique properties
@@ -161,6 +164,53 @@ intended metadata delta. Anchors/aliases, explicit tags, multiline tokens,
 missing fields and structured values refuse instead of receiving a lossy
 whole-map rewrite. This API neither validates trusted property definitions nor
 publishes files; it is not a schema guard or permission boundary.
+
+`documents.property-model` provides host-only inspection and scalar edit
+preparation over one supplied immutable canonical source DB. It reads the
+actual file, accepts only its page or an explicit paired block target, and
+reuses canonical implicit Page/Block roles and generated-title staging. The
+inspection DTO carries safe field labels, values, actual storage value types,
+rendering hints, editability reasons and exact file/source/scope revisions—not
+executable computation or validation definitions. Reflected/generated fields,
+unsupported validators, structured values and fields without an existing
+editable source token remain read-only.
+
+Its closed edit command names the scope, alias/property UUID and expected
+revisions, not client-supplied definitions. Preparation re-derives the binding,
+checks identity/ownership, patches one scalar and validates the whole prospective
+selection through `validate-replacement`. It returns source for the existing
+writer, never transaction data, a saved receipt or permission. The host must
+still publish with that same fresh snapshot's atomic writer precondition and
+current authorization.
+
+Internal `ops.owned-files/properties!` and `property-save!` compose that model
+with current room read/write permissions and the same owned-default target
+binding used by ordinary file operations. The save accepts no client schema,
+selection policy or writer basis. It prepares against one fresh immutable DB,
+captures that DB's Dvergr validation precondition and passes it through the
+existing file writer, with current authorization checked again at the native
+effect gates. Source/schema races refuse or remain explicitly uncertain; the
+original target stamp accompanies a successful canonical receipt. These host
+operations also back authenticated `load-memory-properties!` and
+`save-memory-property!` Memory RPCs. The latter accepts only a closed text or
+explicit-null input, decoded on the host against the actual trusted storage
+type. Long integers never roundtrip through JavaScript numbers; booleans,
+empty strings and null remain distinct. Numeric input is not an EDN reader or
+evaluation surface. The receipt includes the exact prepared source and its
+precomputed analysis, avoiding a fallible post-publication read.
+
+The Markdown editor's Show properties action opens scalar page controls from
+that safe inspection model. Controls use exact host-rendered text, never raw
+browser numeric values. Per-field drafts live in the existing context-backed
+Memory signal. Schema/source observations refresh models but retain entered
+values with their original scope/source stamps; stale drafts require explicit
+discard, not automatic rebinding. Removed fields remain visible for copying.
+Property saves and file moves exclude each other, and typing or newer incoming
+file changes observed during publication survive its receipt. Unsaved source
+drafts must be resolved before applying a property. Legacy/provisional
+workspaces explicitly report unavailability rather than pretending to be
+canonical spaces. New typed-space creation, type selection, structured edits
+and MCP property commands are not activated by these controls.
 
 ## Existing KB vocabulary
 

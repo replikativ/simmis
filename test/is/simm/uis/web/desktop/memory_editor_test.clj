@@ -64,3 +64,47 @@
 (deftest an-empty-new-file-still-needs-saving
   (is (editor/dirty? (editor/draft {:path "empty.clj" :entry nil :text ""})))
   (is (not (editor/dirty? nil))))
+
+(deftest property-controls-use-host-text-and-preserve-stale-drafts
+  (let [model {:path "wiki/company.md" :target {:kind :page} :expected {:content :one}
+               :revision (random-uuid) :scope-revision (random-uuid) :target-stamp (random-uuid)}
+        field {:value 9007199254740992 :input {:text "9007199254740993"}}
+        pd (editor/property-draft model {:text "9007199254740995"})]
+    (is (= {:text "9007199254740993"} (editor/property-input model field nil)))
+    (is (= {:text "9007199254740995"} (editor/property-input model field pd)))
+    (is (editor/property-draft-current? model pd))
+    (doseq [key [:expected :revision :scope-revision :target-stamp]]
+      (is (not (editor/property-draft-current? (assoc model key (random-uuid)) pd))))))
+
+(deftest property-publication-never-silently-rebases-concurrent-source-typing
+  (let [opened (editor/draft file)
+        reply {:entry {:content :two} :text "Property changed" :analysis {:revision :new}}
+        clean (editor/property-saved opened (:generation opened) reply)
+        typed (editor/changed opened "Typed during property save" {:anchor 4 :head 4})
+        dirty (editor/property-saved typed (:generation opened) reply)
+        newer (assoc typed :generation 9)
+        late (editor/property-saved newer (:generation opened) reply)]
+    (is (= "Property changed" (:text clean)))
+    (is (= (:entry reply) (get-in clean [:source :entry])))
+    (is (not (editor/dirty? clean)))
+    (is (= "Typed during property save" (:text dirty)))
+    (is (= (:entry file) (get-in dirty [:source :entry])))
+    (is (= "Property changed" (get-in dirty [:incoming :text])))
+    (is (= reply (:property-save-receipt dirty)))
+    (is (= (dissoc late :earlier-save-receipt) newer))
+    (is (= reply (:earlier-save-receipt late)))))
+
+(deftest property-receipts-preserve-newer-incoming-and-deletion-evidence
+  (let [reply {:entry {:content :property} :text "Property changed" :target-stamp nil}
+        newer (assoc file :entry {:content :newer} :text "Human changed after property")]
+    (is (nil? (editor/property-saved nil 0 reply)))
+    (doseq [typed? [true false]
+            evidence [{:incoming newer} {:incoming-entry {:content :newer}}
+                      {:incoming-entry nil :remote-deleted? true}]]
+      (let [draft (merge (editor/draft file) evidence)
+            draft (if typed? (editor/changed draft "Human typing" nil) draft)
+            saved (editor/property-saved draft (:generation draft) reply)]
+        (is (= evidence (select-keys saved (keys evidence))))
+        (when typed?
+          (is (= (:entry file) (get-in saved [:source :entry])))
+          (is (= "Human typing" (:text saved))))))))

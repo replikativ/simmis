@@ -115,9 +115,14 @@
                    :ref (:geschichte.repo/head repository)
                    :head (get (query/refs db) (:geschichte.repo/head repository))}
         folders (into {} (map (fn [folder] [folder (list-folder-in db folder)])) (:folders request))
-        entries (into {} (map (fn [path] [path (entry db path)])) (:paths request))]
-    {:workspace workspace :folders folders :entries entries
-     :revision (hasch/uuid [workspace folders entries])}))
+        entries (into {} (map (fn [path] [path (entry db path)])) (:paths request))
+        definition-basis (hasch/uuid [:simmis/definition-basis-v1
+                                    (get-in db [:config :store :id]) (get-in db [:config :branch])
+                                    (d/commit-id db) (:max-tx db)])]
+    ;; Conservative invalidation token, NOT schema replication, file content
+    ;; identity, a target stamp or an authorization/publication precondition.
+    {:workspace workspace :folders folders :entries entries :definition-basis definition-basis
+     :revision (hasch/uuid [workspace folders entries definition-basis])}))
 
 (defn metadata [room request]
   (with-workspace room #(metadata-in @% request)))
@@ -285,9 +290,12 @@
 (defn- save-file-through!
   "One canonical effect-checked writer with the opened revision included in
    its before snapshot. Editing source does not reload an agent interpreter."
-  [room system {:keys [path expected text base64] :as request} {:keys [authorize!]}]
+  [room system {:keys [path expected text base64] :as request} {:keys [authorize! validated-basis] :as host-options}]
   (when-not (every? room-files/write-capabilities [:expected-worktree :applied-receipt])
     (refuse! ::unavailable "The file writer must support opened-revision preconditions"))
+  (when (and (contains? host-options :validated-basis)
+             (not (contains? room-files/write-capabilities :validated-basis)))
+    (refuse! ::unavailable "The file writer must support atomic validation preconditions"))
   (path! path)
   (when-not (and (contains? request :expected)
                  (or (= #{:path :expected :text} (set (keys request)))
@@ -303,9 +311,10 @@
         _ (when (> (alength ^bytes bytes) max-open-bytes) (refuse! ::limit "File is too large"))
         target (str "/" path)
         batch {target {:base64 (.encodeToString (Base64/getEncoder) bytes)}}
-        options {:expected-worktree {target expected}
-                 :boundary (publication-boundary room authorize!)
-                 :message (str "Edit " path)}
+        options (cond-> {:expected-worktree {target expected}
+                         :boundary (publication-boundary room authorize!)
+                         :message (str "Edit " path)}
+                  (contains? host-options :validated-basis) (assoc :validated-basis validated-basis))
         written (if system
                   (room-files/write-to! room system batch options)
                   (room-files/write! room batch options))

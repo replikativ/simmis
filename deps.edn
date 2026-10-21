@@ -431,10 +431,12 @@
         ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               ;; Merged #378: bounded retained conversations,
-                               ;; original native completion and typed GC roots.
+                               ;; Merged #379: atomic fresh-snapshot preconditions
+                               ;; for single existing-file replacements, sealed
+                               ;; forwarding and conservative uncertainty. All
+                               ;; upstream CI and independent review passed.
                                ;; Adopt only in a fresh runtime, never hot reload.
-                               :git/sha "15c4723908a8aafb6df190abf334e6444d21c367"
+                               :git/sha "456e6d259230163e43a162cff4688d48a042b805"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.

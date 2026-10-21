@@ -27,6 +27,13 @@ automatically installed by an uploaded file. Existing independent KBs
 and drive resources remain accessible while this file-backed surface is
 introduced; they are not silently migrated or deleted.
 
+Markdown's optional Properties panel derives scalar page fields from trusted
+definitions in an explicitly provisioned canonical workspace. Its context-owned
+drafts and model reads share Memory's target/socket/read-epoch fencing. Property
+saves patch source through the same native writer with an atomic fresh schema
+basis; they do not write disposable projection datoms. Existing unprovisioned
+workspaces remain readable and report that typed editing is unavailable.
+
 The experimental source-selected knowledge view derives semantic document/block
 rows from one immutable Geschichte snapshot without writing a second repository.
 Its default selection includes root and nested Markdown, with trusted exact folder
@@ -161,6 +168,14 @@ recreated. External renames are deletion/addition, not guessed from equal hashes
 Per-view read epochs fence old folder/file replies against newer metadata;
 background refresh never changes the selected file. Metadata requests cover up
 to 64 folders and buffers per view; collapsing a folder releases its listing.
+
+Metadata also carries a separate conservative `:definition-basis` token from
+the physical store/branch, commit ID and max-tx. Schema-only native transactions
+change it even when file descriptors and logical HEAD do not. It is an
+invalidation hint, not replicated schema, permission, an opened-file revision or
+a target stamp. Existing draft conflict comparisons still use the file entry
+and target stamp; this token must not turn an unchanged text buffer into a
+source conflict. Typed property UI controls are not yet activated.
 
 The notifier owns routing interests for the process lifetime, not one callback
 per mounted editor. Room shutdown releases concrete listeners; retained party/
