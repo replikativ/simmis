@@ -35,6 +35,16 @@
                                                    :src "S/ProjectionCompany" :dst "S/Number" :optional? false})
               active (crud/create-morphism! conn {:name "S/ProjectionResearch/active"
                                                   :src "S/ProjectionResearch" :dst "S/Boolean"})
+              person-property (crud/create-morphism! conn {:name "S/ProjectionCompany/person"
+                                                           :src "S/ProjectionCompany" :dst "S/Person"})
+              slug-property (crud/create-morphism! conn {:name "S/ProjectionCompany/slug"
+                                                         :src "S/ProjectionCompany" :dst "S/String" :unique :db.unique/identity})
+              number-property (crud/create-morphism! conn {:name "S/ProjectionCompany/tax-number"
+                                                           :src "S/ProjectionCompany" :dst "S/Number" :unique :db.unique/value})
+              uuid-property (crud/create-morphism! conn {:name "S/ProjectionCompany/external-id"
+                                                         :src "S/ProjectionCompany" :dst "S/UUID"})
+              person-type (:entity/uuid (d/pull @conn [:entity/uuid] [:entity/name "S/Person"]))
+              person-id (random-uuid)
               raw {"simmis-id" (str page-a)
                    "simmis" {"version" 1 "types" [(str company) (str research)]
                              "properties" {"turnover" {"id" (str revenue) "type" (str company)}}
@@ -45,6 +55,7 @@
                    "turnover" 0 "tags" ["business"] "unknown" {"keep" [1 2]}}
               body (str "# Company\n\n<!-- simmis:block " block-id " -->\n\nResearch\n\n<!-- /simmis:block -->\n")
               original (source raw body)]
+          (d/transact conn [{:entity/uuid person-id :instance/of-role [[:entity/uuid person-type]]}])
           (write! conn "companies/a.md" original)
           (write! conn "research/a.md" (source (-> raw (assoc "simmis-id" (str page-b) "turnover" 10)
                                                      (update "simmis" dissoc "blocks")) "# Another company\n"))
@@ -70,6 +81,9 @@
                                               (d/pull projected [{:instance/of-role [:entity/uuid]}]
                                                       [:entity/uuid block-id]))))))
                 (is (= 2 (count (:typed-scopes prepared))) "identical page scopes compile only once")
+                (is (empty? (d/q '[:find ?id :where [?e :entity/uuid ?id] [?e :document.node/kind]] projected)))
+                (is (empty? (d/q '[:find ?id :where [?e :entity/uuid ?id]
+                                  [?e :document.block/identity-status :provisional]] projected)))
                 (is (= original (get-in prepared [:documents 0 :source]))))
               (testing "immutable only; a derived value cannot be reused as canonical input"
                 (is (= tx (:max-tx @conn)))
@@ -145,7 +159,47 @@
                 (is (empty? (d/datoms (:db deleted) :avet :entity/uuid page-a))))
               (is (= 0 (:S.ProjectionCompany/revenue
                          (d/pull (:db prepared) [:S.ProjectionCompany/revenue] [:entity/uuid page-a])))))
-            (testing "a relation declaration is inert until the separate relation gate exists"
+            (testing "real Person targets, UUID scalars and unique fields share final preflight"
+              (let [person-raw (-> raw
+                                   (update-in ["simmis" "properties"] merge
+                                              {"person" {"id" (str person-property) "type" (str company)}
+                                               "slug" {"id" (str slug-property) "type" (str company)}
+                                               "tax-number" {"id" (str number-property) "type" (str company)}
+                                               "external-id" {"id" (str uuid-property) "type" (str company)}})
+                                   (assoc "person" {"id" (str person-id) "path" "research/a.md"}
+                                          "slug" "unique-company" "tax-number" 0 "external-id" (str page-b)))]
+                (write! conn "companies/a.md" (source person-raw body))
+                (let [person-base @conn
+                      result (view/prepare person-base options)
+                      projected (:db result)]
+                  (is (= :ready (:status result)) (pr-str (:diagnostics result)))
+                  (when projected
+                    (is (= person-id (get-in (d/pull projected [{:S.ProjectionCompany/person [:entity/uuid]}]
+                                                    [:entity/uuid page-a])
+                                             [:S.ProjectionCompany/person :entity/uuid])))
+                    (is (= page-b (:S.ProjectionCompany/external-id
+                                  (d/pull projected [:S.ProjectionCompany/external-id] [:entity/uuid page-a]))))
+                    (is (view/current? projected options result)))
+                  (let [removed (d/db-with person-base [[:db/retract [:entity/uuid person-id] :instance/of-role [:entity/uuid person-type]]])
+                        target-type-changed (d/db-with person-base [[:db/retract [:entity/uuid person-type]
+                                                                   :instance/of-role [:entity/name "S/EntityType"]]])]
+                    (is (not (view/current? removed options result)))
+                    (is (not (view/current? target-type-changed options result)))
+                    (is (= :invalid (:status (view/prepare removed options)))))
+                  (doseq [[attr value] [[:S.ProjectionCompany/slug "unique-company"] [:S.ProjectionCompany/tax-number 0]]]
+                    (let [collision (d/db-with person-base [{:entity/uuid (random-uuid) attr value}])]
+                      (is (not (view/current? collision options result)))
+                      (is (= :invalid (:status (view/prepare collision options))))))
+                  (let [unrelated (d/db-with person-base [{:entity/uuid (random-uuid) :entity/name "Unrelated after typed view"}])]
+                    (is (view/current? unrelated options result))))
+                (write! conn "research/a.md" (source (-> person-raw (assoc "simmis-id" (str page-b))
+                                                         (update "simmis" dissoc "blocks")) "# Duplicate unique fields\n"))
+                (let [invalid (view/current-view conn options)]
+                  (is (= :invalid (:status invalid)) "stable constraint errors are not perpetual pending")
+                  (is (nil? (:db invalid))))
+                (write! conn "research/a.md" (source (-> raw (assoc "simmis-id" (str page-b) "turnover" 10)
+                                                          (update "simmis" dissoc "blocks")) "# Another company\n"))))
+            (testing "relations use explicit UUIDs, not path hints or forward lookup refs"
               (let [founder (crud/create-morphism! conn {:name "S/ProjectionCompany/founder"
                                                         :src "S/ProjectionCompany" :dst "S/ProjectionResearch"})
                     relation (-> raw
@@ -154,7 +208,9 @@
                                  (assoc "founder" {"id" (str page-b) "path" "research/a.md"}))]
                 (write! conn "companies/a.md" (source relation body))
                 (let [result (view/prepare @conn options)]
-                  (is (= :invalid (:status result)))
-                  (is (nil? (:db result)))
-                  (is (some #(= :unresolved-property-reference (:kind %)) (:diagnostics result))))))))
+                  (is (= :ready (:status result)) (pr-str (:diagnostics result)))
+                  (is (= page-b (get-in (d/pull (:db result) [{:S.ProjectionCompany/founder [:entity/uuid]}]
+                                               [:entity/uuid page-a])
+                                       [:S.ProjectionCompany/founder :entity/uuid])))
+                  (is (view/current? (:db result) options result)))))))
         (finally (governance/ungovern! conn) (d/release conn) (d/delete-database cfg))))))

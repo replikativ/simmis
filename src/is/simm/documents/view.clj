@@ -110,7 +110,7 @@
          (or (nil? (:entity-profile options))
              (let [own-derived? (identical? db (:db view))]
                (canonical-base! db own-derived?)
-               (and (canonical/current? db (:typed-scopes view))
+               (and (canonical/current? db (:typed-scopes view) (:constraint-dependencies view) own-derived?)
                     (or own-derived? (canonical/source-available? db (:documents view)))))))
     (catch clojure.lang.ExceptionInfo error
       (if (and (:entity-profile options) (= ::refused (:type (ex-data error))))
@@ -253,8 +253,9 @@
                                     {:kind :duplicate-semantic-id :path path :from from})))
         base (cond-> {:id (hasch/uuid selected) :selection selected
                       :documents docs :diagnostics diagnostics}
-               canonical? (assoc :id (hasch/uuid [selected (:scopes canonical-result)])
-                                 :typed-scopes (:scopes canonical-result)))]
+               canonical? (assoc :id (hasch/uuid [selected (:scopes canonical-result) (:dependencies canonical-result)])
+                                 :typed-scopes (:scopes canonical-result)
+                                 :constraint-dependencies (:dependencies canonical-result)))]
     (if (seq diagnostics)
       (assoc base :status :invalid)
       (let [installed (set (d/q '[:find [?a ...] :where [_ :db/ident ?a]] source-db))
@@ -274,12 +275,28 @@
             tx (vec (concat missing (when-not canonical? (map #(vector :db/retractEntity %) old)) projection))]
         (assoc base :status :ready :db (if (seq tx) (d/db-with source-db tx) source-db))))))
 
+(defn- same-source? [before after]
+  (or (identical? before after)
+      ;; A connection refresh may return a new wrapper for the SAME stored
+      ;; commit. This is only a stability test on our captured connection,
+      ;; never authority supplied by a caller or a derived-view exemption.
+      (let [cid (get-in before [:meta :datahike/commit-id])]
+        (and (uuid? cid) (= cid (get-in after [:meta :datahike/commit-id]))
+             (= (get-in before [:config :store :id]) (get-in after [:config :store :id]))
+             (= (get-in before [:config :branch]) (get-in after [:config :branch]))
+             (= (select-keys before [:hash :max-tx :max-eid :op-count])
+                (select-keys after [:hash :max-tx :max-eid :op-count]))))))
+
 (defn current-view
   "Prepare and recheck before offering a current view. A racing publication
    yields pending, never a stale DB mislabeled current. Callers still retain
    the returned descriptor for later query/edit/merge authorization checks."
   [conn options]
-  (let [view (prepare @conn options)]
-    (if (current? @conn options view)
+  (let [source @conn
+        view (prepare source options)
+        current @conn]
+    ;; A stable invalid preparation is useful diagnostics, not perpetual
+    ;; pending merely because no resolved-constraint receipt exists for it.
+    (if (or (same-source? source current) (current? current options view))
       view
       {:status :pending :reason :source-changed})))
