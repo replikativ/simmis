@@ -25,7 +25,6 @@
             [is.simm.model.room-databases :as room-dbs]
             [is.simm.model.knowledge-bases :as kbs]
             [is.simm.model.parties :as parties]
-            [is.simm.agents.templates :as templates]
             [is.simm.runtimes.context :as ctx]
             [dvergr.rooms :as drooms]
             [dvergr.system.rooms :as srooms]
@@ -207,42 +206,7 @@
 ;; =============================================================================
 
 (defn ensure-personal-ai-room!
-  "Ensure the party has a :personal-ai room with a Vár agent.
-   Returns the room."
+  "HOST bootstrap facade. Personal provisioning has one owner in
+   personal-rooms; deferred resolution avoids a rooms/knowledge-rooms cycle."
   [owner-party-id owner-display-name]
-  (system-db/require-id! :owner-party-id owner-party-id)
-  (when-let [conn (system-db/get-conn)]
-    (let [existing-id (d/q '[:find ?rid .
-                             :in $ ?pid
-                             :where
-                             [?p :party/id ?pid]
-                             [?e :room/parties ?p]
-                             [?e :room/type :personal-ai]
-                             [?e :room/id ?rid]]
-                           @conn owner-party-id)
-          room (if existing-id
-                 (get-room existing-id)
-                 ;; "<Name>'s Assistants", matching "<Name>'s Wiki" beside it in
-                 ;; the sidebar. Possessive rather than "My …" because the same
-                 ;; room is listed in shared and multi-tenant views, where "My"
-                 ;; is ambiguous about whose. `owner-display-name` may be absent
-                 ;; for a party created without one — fall back rather than
-                 ;; producing "'s Assistants".
-                 (create-room! owner-party-id
-                               (if (str/blank? owner-display-name)
-                                 "My Assistants"
-                                 (str owner-display-name "'s Assistants"))
-                               :personal-ai []))
-          tmpl templates/secretary-template
-          ;; Check if this party already owns a Vár-type agent in this room.
-          agents (->> (get-room-agents (:room/id room))
-                      (filter #(= (:party/template %) (:id tmpl))))
-          has-var? (seq agents)]
-      (when-not has-var?
-        (let [agent (parties/create-agent!
-                     owner-party-id
-                     (assoc (templates/agent-options (:name tmpl) tmpl)
-                            :handle (str "vár-" (subs (str owner-party-id) 0 8))
-                            :avatar "🤖"))]
-          (add-party! (:room/id room) (:party/id agent))))
-      room)))
+  ((requiring-resolve 'is.simm.model.personal-rooms/ensure!) owner-party-id owner-display-name))

@@ -53,6 +53,17 @@
         (is (thrown? clojure.lang.ExceptionInfo
                      (@#'rooms/publish-tx after expected creator #{creator member} scope)))))))
 
+(deftest requested-personal-type-is-a-precondition-not-derived-from-the-row
+  (let [{:keys [db creator id provisioned]} (fixture)
+        personal (d/db-with db [[:db/add [:room/id id] :room/type :personal-ai]])
+        expected (@#'rooms/prepared-basis! personal provisioned creator :personal-ai)
+        scope (random-uuid)]
+    (is (thrown? clojure.lang.ExceptionInfo (@#'rooms/prepared-basis! personal provisioned creator :project)))
+    (is (thrown? clojure.lang.ExceptionInfo (@#'rooms/publish-tx personal expected creator #{creator} scope :project)))
+    (let [after (d/db-with personal [[:db.fn/call @#'rooms/publish-tx expected creator #{creator} scope :personal-ai]])]
+      (is (= :personal-ai (:room/type (d/entity after [:room/id id]))))
+      (is (= creator (:room/created-by (d/entity after [:room/id id])))))))
+
 (deftest stale-preparation-and-membership-are-refused-before-visibility
   (let [{:keys [db creator member id provisioned systems]} (fixture)
         expected (@#'rooms/prepared-basis! db provisioned creator)

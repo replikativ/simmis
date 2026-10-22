@@ -334,9 +334,9 @@
     (doseq [{:keys [email name]} (alpha-parties)]
       (try
         (when-let [party (store/find-user-by-email s email)]
-          (require 'is.simm.model.rooms)
+          (require 'is.simm.model.personal-rooms)
           (require 'is.simm.model.knowledge-bases)
-          (let [room ((resolve 'is.simm.model.rooms/ensure-personal-ai-room!)
+          (let [room ((resolve 'is.simm.model.personal-rooms/ensure!)
                       (:party/id party) (or name email))
                 kb ((resolve 'is.simm.model.knowledge-bases/ensure-default-kb!)
                     (:party/id party) (or name email))]

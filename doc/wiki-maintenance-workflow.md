@@ -4,8 +4,11 @@ The version-1 starter is source data returned by
 `is.simm.starter.wiki-maintenance/source`. It contains the files for
 `/workflows/maintain-wiki/`, not a second agent, scheduler or resource ledger.
 Loading it does not install anything, choose a model, allocate money or enable
-a schedule. Installation must use the existing authorized owned-workflow writer
-and preserve user edits. Automatic installation is a separate integration step.
+a schedule. Installation into an existing room uses the authorized owned-
+workflow writer and preserves user edits. An exclusive new canonical repository
+initializer also includes these same ordinary files before its initial commit
+and Room publication; reopen never reinstalls them. Personal alpha bootstrap
+creates new canonical spaces this way, without enabling or funding execution.
 
 `is.simm.starter.install-wiki/install!` is an explicit HOST-only inactive
 installer for a selected canonical personal/project/group room. It uses the
@@ -111,8 +114,8 @@ customer facts into a real scheduled Run.
 
 Canonical prospective validation, preservation and exact AFTER snapshot guards
 support explicit reviewed file-only acceptance. Processed input, a filed
-proposal and an adopted result remain distinct. The installer
-does not participate in automatic personal workspace provisioning. It neither
+proposal and an adopted result remain distinct. The installer is separate from
+exclusive new-repository initialization. Neither path
 configures an admitted model and finite allowance nor enables a schedule. The
 mechanical fixture checks are not actual-model quality measurements.
 
