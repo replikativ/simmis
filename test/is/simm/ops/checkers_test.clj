@@ -95,6 +95,20 @@
                (checkers/calibrate (assoc calibrated-bundle :checker "(ns checker) (defn check [_] (loop [] (recur)))")
                                    (assoc checkers/calibration-policy :timeout-ms 20)))))
 
+(deftest calibration-budget-is-one-scoring-check-per-answer
+  ;; Each call allocates well over half the per-answer budget: two of them
+  ;; overrun one shared check's budget, not two checks' worth.
+  (let [heavy (str "(ns checker) (defn check [{:keys [files gold]}]"
+                   " (let [ok (= gold (get files \"/out/answer\"))]"
+                   " (count (loop [i 0 acc []] (if (< i 400000) (recur (inc i) (conj acc i)) acc)))"
+                   " {:checks {:correct? ok} :reward (if ok 1 0)}))")
+        bundle (assoc calibrated-bundle :checker heavy)
+        per-answer (* 96 1024 1024)]
+    (is (thrown? Exception (checkers/run-checker heavy {:files {} :gold "answer"}
+                                                 (assoc checkers/policy :max-allocated-bytes (quot per-answer 2))))
+        "a single call needs more than half the per-answer budget")
+    (is (:ok? (checkers/calibrate bundle (assoc checkers/calibration-policy :max-allocated-bytes per-answer))))))
+
 (deftest calibrated-setup-does-not-seed-answers-and-keeps-policy-in-identity
   (let [contexts (atom [])]
     (with-redefs [catalog/world-setup
