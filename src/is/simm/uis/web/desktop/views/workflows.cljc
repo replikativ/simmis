@@ -248,6 +248,17 @@
                                                           (el/h4 {} "Recurring deployment")
                                                           (field "Interval · minutes (1–525600)" (:schedule-minutes form) #(set-form :schedule-minutes %))
                                                           (field "Timezone (e.g. Europe/Berlin)" (:schedule-tz form) #(set-form :schedule-tz %))
+                                                          (when-let [{:keys [pending? payload]} (editor/deployment-preview draft)]
+                                                            (let [execution (:execution payload)
+                                                                  description (editor/deployment-description payload)]
+                                                              (el/div {:class "workflow-note" :role "status"}
+                                                                      (el/strong {} (if pending? "Pending activation · " "Next activation · "))
+                                                                      (el/span {} (str (:model description) " · every "
+                                                                                      (quot (get-in payload [:cadence :interval-ms]) 60000)
+                                                                                      " minutes · " (get-in payload [:cadence :tz])))
+                                                                      (el/p {} (str "Saved revision " (:expected-owned-source execution)))
+                                                                      (el/p {} (:resources description))
+                                                                      (el/p {} (str (:execution-ceilings description) " " (:results description))))))
                                                           (el/p {:class "workflow-note"} "Pins saved source and the execution settings above. Uses the shared room allowance; no automatic funding or merging. Overlapping work is skipped. Manage activations and inspect occurrences in Schedules.")
                                                           (el/button {:disabled (or (:schedule loading) (editor/dirty? draft) (not (editor/source-current? draft))
                                                                                     (not (get-in source [:inspection :ok]))
@@ -260,8 +271,10 @@
                                                                         :on-click (fn [_] ((:schedule actions) selected true))}
                                                                        "Retry identical activation"))
                                                           (when-let [reply (get-in draft [:schedule-submission :reply])]
-                                                            (el/p {} (str "Schedule: " (:id reply) " · "
-                                                                          (if (:enabled? reply) "Active" "Paused"))))))
+                                                            (el/div {}
+                                                                    (el/p {} (str "Created schedule: " (:id reply)
+                                                                                  ". Current status and occurrences are in Schedules."))
+                                                                    (el/button {:on-click (fn [_] ((:open-schedules actions)))} "Open Schedules")))))
                                                 (when submission
                                                   (el/p {} (str "Request: " (get-in submission [:payload :request-id]))))
                                                 (when-let [reply (:reply submission)]
@@ -282,7 +295,7 @@
                                                             :unavailable (el/p {:role "status"}
                                                                                "Output is not available for review. Check that the Run completed and passed its checks, and that you still have permission. Retrying collection does not rerun the workflow.")
                                                             nil)))
-                                                (when funded-here? (el/p {} "Execution allowance provisioned for this backend. This is not a payment or evidence of correctness.")))))))))))
+                                                (when funded-here? (el/p {} "Allowance was provisioned for this backend. This receipt is not its current balance, a payment or evidence of correctness.")))))))))))
 
 #?(:cljs
    (defn render-workflows [room-data]

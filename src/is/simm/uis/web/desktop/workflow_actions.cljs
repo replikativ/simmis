@@ -311,6 +311,12 @@
        :owner k :change change! :save save! :submit submit! :fund fund! :schedule schedule!
        :collect-output collect-output!
        :inspect-wiki-setup inspect-setup! :install-wiki-setup install-setup!
+       :open-schedules (fn []
+                         (binding [ec/*execution-context* ctx]
+                           (when (web/current-session? session)
+                             (sig/open-tab! :schedules {}
+                                            {:title "Schedules" :new-tab? true
+                                             :col-id (:col-id room-data)}))))
        :open-proposal (fn [proposal]
                         (binding [ec/*execution-context* ctx]
                           (when (web/current-session? session)

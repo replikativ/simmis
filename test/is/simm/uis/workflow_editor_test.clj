@@ -80,6 +80,43 @@
                  (assoc draft :files {})]]
       (is (thrown? clojure.lang.ExceptionInfo (editor/scheduled-submission bad "bad"))))))
 
+(deftest deployment-preview-separates-edited-settings-from-unresolved-intent
+  (let [draft (assoc-in (editor/draft source) [:form :model] "original-model")
+        payload (editor/scheduled-submission draft "original-request")
+        pending (-> draft (assoc :schedule-submission {:payload payload})
+                    (assoc-in [:form :model] "edited-model"))
+        resolved (assoc-in pending [:schedule-submission :reply] {:id "activation" :enabled? true})]
+    (is (= {:pending? true :payload payload} (editor/deployment-preview pending)))
+    (is (= "edited-model" (get-in (editor/deployment-preview resolved) [:payload :execution :model])))
+    (is (false? (:pending? (editor/deployment-preview resolved))))
+    (is (not (contains? (:payload (editor/deployment-preview resolved)) :request-id)))
+    (is (nil? (editor/deployment-preview (assoc-in draft [:form :model] ""))))
+    (is (nil? (editor/deployment-preview (assoc draft :files {}))))
+    (is (nil? (editor/deployment-preview (assoc draft :source-stale? true))))
+    (is (nil? (editor/deployment-preview (assoc-in draft [:form :backend] "local"))))))
+
+(deftest benchmark-deployment-descriptions-distinguish-shared-and-per-trial-ceilings
+  (let [draft (-> (editor/draft (assoc-in source [:inspection :cases] ["a" "b"]))
+                  (assoc-in [:form :mode] "benchmark")
+                  (assoc-in [:form :model] "benchmark-model")
+                  (assoc-in [:form :repetitions] "2"))
+        payload (editor/scheduled-submission draft "benchmark-request")
+        pending (-> draft (assoc :schedule-submission {:payload payload})
+                    (assoc-in [:form :model] "changed-model"))
+        description (editor/deployment-description (:payload (editor/deployment-preview pending)))
+        ordinary (editor/deployment-description
+                   (editor/scheduled-submission (assoc-in (editor/draft source) [:form :model] "ordinary-model") nil))]
+    (is (= ["a" "b"] (get-in payload [:execution :cases])))
+    (is (= 2 (get-in payload [:execution :repetitions])))
+    (is (= "benchmark-model" (:model description)))
+    (is (= "one, two" (:model (editor/deployment-description (assoc-in payload [:execution :models] ["one" "two"])))))
+    (is (re-find #"Per occurrence:.*shared across benchmark trials" (:resources description)))
+    (is (re-find #"^Per benchmark trial:" (:execution-ceilings description)))
+    (is (re-find #"^Checker-backed" (:results description)))
+    (is (= "ordinary-model" (:model ordinary)))
+    (is (re-find #"^Per occurrence:" (:execution-ceilings ordinary)))
+    (is (not (re-find #"benchmark" (:resources ordinary))))))
+
 (deftest cli-text-submission-and-allowance-never-claim-http-or-money-bounds
   (let [draft (-> (editor/draft source)
                   (update :form editor/set-form-field :backend "cli")
