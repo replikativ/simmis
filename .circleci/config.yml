@@ -22,7 +22,10 @@ jobs:
       - checkout
       - run:
           name: Install audio and MCP helper dependencies
-          command: timeout 5m bash scripts/install-test-helpers.sh
+          # A cold ffmpeg dependency closure is ~100MB. Circle's Ubuntu mirror
+          # measured 60–123KB/s (14–28 minutes of download alone). Bound setup
+          # separately; do not spend or extend the actual test timeout here.
+          command: timeout 35m bash scripts/install-test-helpers.sh
       - restore_cache:
           keys:
             - deps-v1-{{ checksum "deps.edn" }}
