@@ -9,8 +9,13 @@
             [is.simm.ops.worker-control :as worker-control]
             [is.simm.model.system-db :as system-db]
             [is.simm.runtimes.application-ops :as application]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [is.simm.runtimes.workflow-schedules :as schedules]
-            [org.replikativ.spindel.engine.impl.simple :as simple]))
+            [org.replikativ.spindel.engine.impl.simple :as simple])
+  (:import [java.util.concurrent CountDownLatch]))
+
+(defn- reason [f]
+  (try (f) nil (catch clojure.lang.ExceptionInfo error (:reason (ex-data error)))))
 
 (defn- isolated [f]
   (with-redefs-fn {#'application/installation (atom nil)
@@ -123,3 +128,83 @@
             (application/stop!)
             (is (nil? @@#'application/installation))
             (is (nil? @@#'server/embedded-host)))))))))
+
+(deftest operation-self-lifecycle-refuses-before-coordinator-or-fencing
+  (@#'fixture/with-fixture
+   true
+   (fn [_]
+     (isolated
+      (fn []
+        (application/start!)
+        (application/with-operation!
+          (fn [host]
+            (doseq [f [application/start! application/quiesce! application/stop!]]
+              (is (= :self-drain (reason f))))
+            (is (identical? host (application/host!)))))
+        (is (some? (application/host!))))))))
+
+(deftest shutdown-joins-an-operation-without-holding-the-installation-monitor
+  (@#'fixture/with-fixture
+   true
+   (fn [_]
+     (isolated
+      (fn []
+        (let [host (application/start!) entered (promise) fenced (promise)
+              gate (CountDownLatch. 1)
+              task (future
+                     (application/with-operation!
+                       (fn [actual]
+                         (is (identical? host actual))
+                         (deliver entered true)
+                         (.await gate)
+                        ;; This must return promptly during physical join. A
+                        ;; held installation monitor would deadlock shutdown.
+                         (is (thrown? clojure.lang.ExceptionInfo (application/host!)))
+                         :finished)))]
+          (try
+            (is (= true (deref entered 3000 ::timeout)))
+            (with-redefs [schedules/stop! (fn [] (deliver fenced true))]
+              (let [stopped (future (application/stop!) :stopped)]
+                (try
+                  (is (= true (deref fenced 3000 ::timeout)))
+                  (is (not (realized? stopped)))
+                  (is (identical? host (:host @@#'application/installation)))
+                  (is (= :not-ready (reason #(application/with-operation! (constantly :wrong)))))
+                  (.countDown gate)
+                  (is (= :finished (deref task 3000 ::timeout)))
+                  (is (= :stopped (deref stopped 3000 ::timeout)))
+                  (finally (.countDown gate) (deref stopped 10000 nil)))))
+            (is (nil? @@#'application/installation))
+            (finally (.countDown gate) (deref task 10000 nil)))))))))
+
+(deftest retired-captured-mcp-host-cannot-authorize-against-new-installation
+  (@#'fixture/with-fixture
+   true
+   (fn [_]
+     (isolated
+      (fn []
+        (let [old (application/start!) calls (atom 0)]
+          (application/stop!)
+          (let [replacement (application/start!)]
+            (is (not (identical? old replacement)))
+            (with-redefs [dops/authorize! (fn [& _] (swap! calls inc))]
+              (is (= :not-ready
+                     (reason #(dops/invoke old {:principal/id "queued-human" :principal/kind :human} :model/list {}))))
+              (is (zero? @calls)))
+            (is (identical? replacement (application/with-operation! identity))))))))))
+
+(deftest failed-host-join-retains-the-stopped-owner-and-registrations
+  (@#'fixture/with-fixture
+   true
+   (fn [_]
+     (isolated
+      (fn []
+        (let [host (application/start!) operations (dops/operations)]
+          (with-redefs [lifetime/join! (fn [& _] (throw (ex-info "physical join held" {})))]
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo #"physical join held" (application/stop!)))
+            (is (identical? host @@#'server/embedded-host))
+            (is (= operations (dops/operations)))
+            (is (thrown? clojure.lang.ExceptionInfo (application/host!)))
+            (is (thrown? clojure.lang.ExceptionInfo (application/start!))))
+          (application/stop!)
+          (is (nil? @@#'application/installation))))))))

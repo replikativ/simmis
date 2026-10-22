@@ -63,7 +63,8 @@ updated, including false, zero or explicit null when independent canonical
 validation allows them. Unknown page/block metadata, including nested values,
 must remain equal. Mutable aliases come from BEFORE: adding a binding cannot
 reinterpret a previously unknown field. New types/aliases are allowed, subject
-to separate canonical validation. This policy is not yet wired into adoption.
+to separate canonical validation. The inactive HOST adoption controller applies
+it with canonical preflight; no public or automatic acceptance is enabled.
 
 These restrictions belong to default maintenance, not the general editor.
 Removing stale properties/types, renaming aliases and deleting explicit blocks

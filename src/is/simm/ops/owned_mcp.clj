@@ -6,6 +6,7 @@
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-workflow-host :as workflow-host]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [org.replikativ.spindel.engine.core :as ec]))
 
 (def ^:private room-read-ops #{:room/files :room/read :catalog/list})
@@ -95,15 +96,21 @@
    the current canonical connection/context lifetime. Nothing installs it.
    Owned exports/workflow controls are human-only; legacy hosts and unrelated worker/agent
    delegation are unchanged. No cached allow decision or selection mutation."
-  [canonical-control-conn host-ctx]
-  (-> (ops/host host-ctx)
-      (assoc :is.simm.ops.owned-reads/owner (reads/host-owner canonical-control-conn host-ctx))
-      (assoc-in [:config :auth :authorize]
-                (partial authorize canonical-control-conn host-ctx))
-      (assoc-in [:config :room-files :resolve-read]
-                (fn [principal request]
-                  (read-request! request)
-                  (mcp-human! principal)
-                  (let [{:keys [db target-stamp]}
-                        (reads/resolve-read! canonical-control-conn host-ctx principal (:room request))]
-                    {:db db :target-stamp (str target-stamp)})))))
+  ([canonical-control-conn host-ctx]
+   (-> (ops/host host-ctx)
+       (assoc :is.simm.ops.owned-reads/owner (reads/host-owner canonical-control-conn host-ctx))
+       (assoc-in [:config :auth :authorize]
+                 (partial authorize canonical-control-conn host-ctx))
+       (assoc-in [:config :room-files :resolve-read]
+                 (fn [principal request]
+                   (read-request! request)
+                   (mcp-human! principal)
+                   (let [{:keys [db target-stamp]}
+                         (reads/resolve-read! canonical-control-conn host-ctx principal (:room request))]
+                     {:db db :target-stamp (str target-stamp)})))))
+  ([canonical-control-conn host-ctx owner]
+   ;; Capture this exact owner. An old queued host must never borrow a newer
+   ;; installation after its captured connection/context has been retired.
+   (assoc-in (host canonical-control-conn host-ctx)
+             [:config :host-lifecycle :with-operation]
+             #(lifetime/with-operation! owner %))))

@@ -185,7 +185,13 @@ then does it return literal true. This data is neither authority nor proof of
 an earlier human review or unchanged agent admission context. Atomic native
 checkpoint enforcement, current authority, original publisher ACK ownership
 and historical duplicate-first recovery remain separate required boundaries.
-The helper does not activate the adoption controller or any public endpoint.
+The inactive `ops.file-output-controller/adopt!` composes this preflight before
+claim, binds its manifest and full target to the invocation's retained plan,
+then passes the fixed AFTER guard to native prepared publication. It requires
+the advertised native validation capability and owns an exact Room HOST lease
+through synchronous completion. The caller must own the outer application and
+control-connection lifetime. No public endpoint or automatic acceptance is
+enabled. A fresh HOST preflight still does not certify an earlier human review.
 
 `documents.property-source` is a separate pure token-replacement codec for
 existing scalar frontmatter leaves. It checks the exact source revision,

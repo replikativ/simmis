@@ -10,64 +10,90 @@
             [is.simm.ops.worker-api :as worker-api]
             [is.simm.ops.worker-control :as worker-control]
             [is.simm.runtimes.context :as context]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [is.simm.runtimes.workflow-schedules :as workflow-schedules]
             [org.replikativ.spindel.engine.impl.simple :as simple]))
 
 (defonce ^:private installation (atom nil))
+(defonce ^:private coordinator (Object.))
 
 (defn- off-engine! []
   (when (simple/on-drain-thread?)
     (throw (ex-info "Application lifecycle must run off the engine drain" {:type ::engine-thread}))))
 
 (defn host!
-  "The exact installed host, only while ready and still canonically owned."
+  "Non-owning lookup of the exact ready host. Use with-operation! for native
+   access; the returned map alone does not retain application lifetime."
   []
   (off-engine!)
   (locking installation
-    (let [{:keys [host phase]} @installation]
-      (when-not (= :ready phase)
+    (let [{:keys [host owner]} @installation]
+      (when-not (and owner (lifetime/ready? owner))
         (throw (ex-info "Application operations are not ready" {:type ::held})))
       (reads/current-host-control-db! host)
       host)))
+
+(defn with-operation!
+  "Enter the captured installation BEFORE passing its host to synchronous work.
+   A shutdown between capture and admission refuses, without using old handles."
+  [f]
+  (off-engine!)
+  (let [{:keys [host owner]} (locking installation
+                               (or @installation
+                                   (throw (ex-info "Application operations are not ready" {:type ::held}))))]
+    (lifetime/with-operation! owner
+      #(do (reads/current-host-control-db! host) (f host)))))
+
+(defn- lifecycle-entry! []
+  (off-engine!)
+  ;; Check BEFORE waiting for a lifecycle coordinator: it may already be held
+  ;; by shutdown, which is waiting for this caller's physical operation exit.
+  (when-let [owner (:owner @installation)] (lifetime/assert-not-owner! owner)))
 
 (defn- release-all! [[release! & remaining]]
   (when release!
     (try (release!) (finally (release-all! remaining)))))
 
+(defn- quiesce-owned! []
+  (let [owner (locking installation
+                (when-let [owner (:owner @installation)]
+                  (lifetime/fence! owner)
+                  owner))]
+    ;; Neither physical join holds installation. Operations may finish/reenter
+    ;; short lookups; their final acknowledgement needs no coordinator monitor.
+    (workflow-schedules/stop!)
+    (when owner (lifetime/join! owner 5000))))
+
 (defn quiesce!
-  "Mark the installation non-ready and physically join scheduled admissions.
-   Retain host and registrations until the remaining application shuts down."
+  "Fence admission and physically join schedules and synchronous HOST calls.
+   Retain the original host/registrations on any unconfirmed physical exit."
   []
-  (off-engine!)
-  (locking installation
-    (when @installation
-      (swap! installation assoc :phase :stopping))
-    ;; Lock order is installation -> scheduler. Its worker uses the captured
-    ;; host directly, never host!, so physical join cannot reenter this lock.
-    (workflow-schedules/stop!)))
+  (lifecycle-entry!)
+  (locking coordinator (quiesce-owned!)))
 
 (defn stop!
-  "Join scheduled admissions before releasing their host or registrations.
+  "Join schedules and HOST operations before releasing host or registrations.
    A failed physical join retains a non-ready installation for retry."
   []
-  (off-engine!)
-  (locking installation
-    (quiesce!)
-    (when @installation
+  (lifecycle-entry!)
+  (locking coordinator
+    (quiesce-owned!)
+    (locking installation
+      (when @installation
       ;; Unknown cleanup is not release acknowledgement. Keep the non-ready
       ;; resource for an explicit retry if either unregister or host release
       ;; throws. The unregister functions are idempotent.
-      (release-all! [worker-control/uninstall! worker-api/uninstall!
-                     work-api/uninstall! results/uninstall!])
-      (server/set-host! nil)
-      (reset! installation nil))))
+        (release-all! [worker-control/uninstall! worker-api/uninstall!
+                       work-api/uninstall! results/uninstall!])
+        (server/set-host! nil)
+        (reset! installation nil)))))
 
 (defn start!
   "Install before the web peer accepts requests. A failed installation rolls
    back its registrations; a failed optional transport does not own them."
   []
-  (off-engine!)
-  (locking installation
+  (lifecycle-entry!)
+  (locking coordinator
     (if @installation
       (host!)
       (do
@@ -76,16 +102,17 @@
         ;; that runtime also enforces its own mode and owner checks.
         (when (workflow-schedules/held?)
           (throw (ex-info "Prior scheduled-work resource must be stopped first" {:type ::held})))
-        (let [host (owned-mcp/host (system-db/get-conn) context/server-context)]
+        (let [owner (lifetime/create)
+              host (owned-mcp/host (system-db/get-conn) context/server-context owner)]
           (reads/current-host-control-db! host)
-          (reset! installation {:host host :phase :installing})
+          (reset! installation {:host host :owner owner})
           (try
             (results/install!)
             (work-api/install!)
             (worker-api/install!)
             (worker-control/install!)
             (server/set-host! host)
-            (swap! installation assoc :phase :ready)
+            (lifetime/open! owner)
             host
             (catch Throwable error
               (try (stop!)

@@ -39,7 +39,7 @@
                   parties/get-party (fn [id] (when (= person id) {:party/id id :party/type :human}))
                   ;; These test listener/token policy, not repository ownership.
                   ;; Actual canonical host lifecycle has separate integration tests.
-                  owned-mcp/host (fn [_ ctx] {:execution-ctx ctx})
+                  owned-mcp/host (fn [_ ctx owner] {:execution-ctx ctx :test/lifetime-owner owner})
                   owned-reads/current-host-control-db! (constantly {})]
       ;; Lifecycle tests own a listener cell. Running them in a development
       ;; REPL must neither reuse nor stop that process's real MCP listener.

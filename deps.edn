@@ -431,12 +431,14 @@
         ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               ;; #385 adds owned live KB attachment without
-                               ;; replacing rooms. #386 aligns native cleanup
-                               ;; leases for copied sibling execution worlds.
+                               ;; #385 adds owned live KB attachment, #386 fixes
+                               ;; copied-world cleanup, and #387 adds exact
+                               ;; prepared-snapshot publication validation.
+                               ;; #388 physically owns HOST Room operations and
+                               ;; configured embedding lifetimes through exit.
                                ;; Permanent reviewed, green main squash.
                                ;; Adopt only in a fresh runtime, never hot reload.
-                               :git/sha "30c545e1cbcff36d684daa9419889e2fb4046d24"
+                               :git/sha "6bdb19fa93fbfa369be4c9b57f05916b37af417b"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.
