@@ -859,6 +859,8 @@
      "proposal-status!"        {:action R :resource (always :authenticated)}
      "proposal-diff!"          {:action R :resource (proposal :proposal-id-str)}
      "proposal-file!"          {:action R :resource (proposal :proposal-id-str)}
+     "list-proposal-sources!"  {:action R :resource (proposal :proposal-id-str)}
+     "read-proposal-source!"   {:action R :resource (proposal :proposal-id-str)}
      "proposal-retained-audit!" {:action R :resource (always :authenticated)}
      ;; Fixed service additionally requires current human read+merge, proposal
      ;; write, exact retained single-component shape, and original Room target.

@@ -1,4 +1,5 @@
-(ns is.simm.uis.web.desktop.proposal-card)
+(ns is.simm.uis.web.desktop.proposal-card
+  (:require [is.simm.uis.web.desktop.captured-result :as captured]))
 
 (def proposal-state-key
   "Presentation field embedded in an interval item so keyed rendering observes
@@ -91,6 +92,59 @@
 
 (defn begin-file-request [proposal scope path request-id]
   (assoc-in proposal [:file-bodies [scope path]] {:status :loading :request-id request-id}))
+
+(defn begin-source-list [proposal scope token]
+  (assoc-in proposal [:retained-sources scope] {:status :loading :list-token token}))
+
+(defn hide-sources [proposal scope]
+  (update proposal :retained-sources dissoc scope))
+
+(defn apply-source-list [proposal scope token result error]
+  (if (not= token (get-in proposal [:retained-sources scope :list-token]))
+    proposal
+    (assoc-in proposal [:retained-sources scope]
+              (if (and (nil? error) (= :ok (:status result))
+                       (captured/source-list-valid? (:id proposal) scope (:data result)))
+                {:status :ready :list-token token :listing (:data result)}
+                {:status :unavailable :list-token token}))))
+
+(defn begin-source-read [proposal scope path token]
+  (let [{:keys [status listing]} (get-in proposal [:retained-sources scope])
+        entry (first (filter #(= path (:path %)) (:files listing)))]
+    (if (and (= :ready status) entry)
+      (assoc-in proposal [:retained-sources scope :read]
+                {:status :loading :read-token token :entry entry :bytes []})
+      proposal)))
+
+(defn source-read-current? [proposal scope list-token read-token]
+  (let [state (get-in proposal [:retained-sources scope])]
+    (and (= :ready (:status state)) (= list-token (:list-token state))
+         (= read-token (get-in state [:read :read-token]))
+         (= :loading (get-in state [:read :status])))))
+
+(defn apply-source-chunk [proposal scope list-token read-token result decoded error]
+  (if-not (source-read-current? proposal scope list-token read-token)
+    proposal
+    (let [{:keys [listing read]} (get-in proposal [:retained-sources scope])
+          bytes (:bytes read) chunk (:data result)
+          valid? (and (nil? error) (= :ok (:status result)) (vector? decoded)
+                      (every? #(and (integer? %) (<= 0 % 255)) decoded)
+                      (captured/source-chunk-valid? listing (:entry read) (count bytes) chunk (count decoded)))]
+      (assoc-in proposal [:retained-sources scope :read]
+                (if valid?
+                  (assoc read :bytes (into bytes decoded) :next-offset (:next-offset chunk)
+                         :status (if (:next-offset chunk) :loading :received))
+                  {:status :unavailable :read-token read-token :entry (:entry read)})))))
+
+(defn finish-source-read [proposal scope list-token read-token text]
+  (let [state (get-in proposal [:retained-sources scope]) read (:read state)]
+    (if-not (and (= :ready (:status state)) (= list-token (:list-token state))
+                 (= read-token (:read-token read)) (= :received (:status read)))
+      proposal
+      (assoc-in proposal [:retained-sources scope :read]
+                (cond-> {:status (if (string? text) :ready :unavailable)
+                         :read-token read-token :entry (:entry read)}
+                  (string? text) (assoc :text text))))))
 
 (defn begin-file-action
   "A review/action request belongs to this reactive card and exact component.

@@ -4,17 +4,49 @@
 
 (def max-download-bytes (* 8 1024 1024))
 
-(defn chunk-valid? [attempt-id entry offset chunk decoded-length]
+(defn- byte-chunk-valid? [maximum entry offset chunk decoded-length]
   (let [size (:size entry) n (:length chunk) end (when (and (integer? n) (integer? offset)) (+ offset n))]
-    (and (string? attempt-id) (= attempt-id (get-in chunk [:attempt :id]))
-         (= (:path entry) (:path chunk)) (= (:content-id entry) (:content-id chunk))
-         (= size (:size chunk)) (integer? size) (<= 0 size max-download-bytes)
+    (and (= (:path entry) (:path chunk)) (= (:content-id entry) (:content-id chunk))
+         (= size (:size chunk)) (integer? size) (<= 0 size maximum)
          (= "base64" (:encoding chunk)) (= offset (:offset chunk))
          (integer? offset) (integer? n) (<= 0 n 16384) (= n decoded-length)
          (<= 0 offset end size)
          (if (< end size)
            (and (pos? n) (= end (:next-offset chunk)))
            (nil? (:next-offset chunk))))))
+
+(defn chunk-valid? [attempt-id entry offset chunk decoded-length]
+  (and (string? attempt-id) (= attempt-id (get-in chunk [:attempt :id]))
+       (byte-chunk-valid? max-download-bytes entry offset chunk decoded-length)))
+
+(defn- uuid-text? [value]
+  (and (string? value)
+       (boolean (re-matches #"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" value))))
+
+(def source-identity-keys [:proposal :component :request :selection])
+(def max-source-bytes 524288)
+
+(defn source-list-valid? [proposal component listing]
+  (let [files (:files listing) selection (:selection listing)]
+    (and (map? listing) (map? selection)
+         (= proposal (:proposal listing)) (= component (:component listing))
+         (every? uuid-text? [proposal component (:request listing)])
+         (= #{:trigger-id :execution-id :manifest-id} (set (keys selection)))
+         (every? uuid-text? (vals selection))
+         (vector? files) (<= (count files) 100)
+         (= (count files) (count (set (map :path files))))
+         (every? (fn [{:keys [path source-path role size content-id]}]
+                   (and (string? source-path) (<= 1 (count source-path) 512)
+                        (= path (str "/in/knowledge/sources/" source-path))
+                        (#{:trigger :context} role)
+                        (integer? size) (<= 0 size max-source-bytes)
+                        (uuid-text? content-id))) files))))
+
+(defn source-chunk-valid? [listing entry offset chunk decoded-length]
+  (and (map? listing) (map? chunk)
+       (= (select-keys listing source-identity-keys)
+          (select-keys chunk source-identity-keys))
+       (byte-chunk-valid? max-source-bytes entry offset chunk decoded-length)))
 
 (defn download-name [path]
   (let [leaf (last (str/split (str path) #"[/\\]"))

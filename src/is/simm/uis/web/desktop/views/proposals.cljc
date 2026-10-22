@@ -84,6 +84,77 @@
      (update-proposal! pid #(update % :file-bodies dissoc [scope path]))))
 
 #?(:cljs
+   (defn- current-proposal [pid]
+     (binding [rtc/*execution-context* runtime]
+       (or (some #(when (= pid (:id %)) %) (:proposals @sig/proposals-data))
+           (get-in @sig/proposals-data [:retained-audits pid :proposal])))))
+
+#?(:cljs
+   (defn- source-session []
+     (binding [rtc/*execution-context* runtime] @sig/current-user)))
+
+#?(:cljs
+   (defn- source-context-current? [epoch session]
+     (and (connection-epoch/current? epoch) (= session (source-session)))))
+
+#?(:cljs
+   (defn load-proposal-sources! [pid scope]
+     (let [token (random-uuid) epoch (connection-epoch/snapshot) session (source-session)]
+       (when (source-context-current? epoch session)
+         (update-proposal! pid #(card-model/begin-source-list % scope token))
+         (rem/spin! #(pr/list-proposal-sources! web/server-id pid scope)
+                    (fn [result error]
+                      (when (source-context-current? epoch session)
+                        (update-proposal! pid #(card-model/apply-source-list % scope token result error)))))))))
+
+#?(:cljs
+   (defn hide-proposal-sources! [pid scope]
+     (update-proposal! pid #(card-model/hide-sources % scope))))
+
+#?(:cljs
+   (defn- source-chunk-bytes [result]
+     (try
+       (let [encoded (get-in result [:data :base64])]
+         ;; Reject malformed/noncanonical payloads before allocating a vector.
+         (when (and (string? encoded) (<= (count encoded) 21848))
+           (let [binary (js/atob encoded)]
+             (when (= encoded (js/btoa binary))
+               (mapv #(.charCodeAt binary %) (range (count binary)))))))
+       (catch :default _ nil))))
+
+#?(:cljs
+   (defn load-proposal-source! [pid scope path]
+     (let [token (random-uuid) epoch (connection-epoch/snapshot) session (source-session)
+           list-token (get-in (current-proposal pid) [:retained-sources scope :list-token])]
+       (when (source-context-current? epoch session)
+         (update-proposal! pid #(card-model/begin-source-read % scope path token))
+         (letfn [(current? []
+                   (and (source-context-current? epoch session)
+                        (card-model/source-read-current? (current-proposal pid) scope list-token token)))
+                 (read-next! [offset]
+                   (when (current?)
+                     (rem/spin!
+                      #(pr/read-proposal-source! web/server-id pid scope
+                                                 {:path path :offset offset :length 16384})
+                      (fn [result error]
+                        (when (current?)
+                          (let [decoded (when-not error (source-chunk-bytes result))]
+                            (update-proposal! pid #(card-model/apply-source-chunk
+                                                    % scope list-token token result decoded error)))
+                          (let [read (get-in (current-proposal pid) [:retained-sources scope :read])]
+                            (case (:status read)
+                              :loading (read-next! (:next-offset read))
+                              :received
+                              (let [text (try
+                                           (.decode (js/TextDecoder. "utf-8" #js {:fatal true})
+                                                    (js/Uint8Array. (clj->js (:bytes read))))
+                                           (catch :default _ nil))]
+                                (update-proposal! pid #(card-model/finish-source-read
+                                                        % scope list-token token text)))
+                              nil)))))))]
+           (read-next! 0))))))
+
+#?(:cljs
    (defn- file-proposal-action! [pid scope action revision]
      (let [request-id (random-uuid) epoch (connection-epoch/snapshot)]
        (update-proposal! pid #(card-model/begin-file-action % scope action request-id))
@@ -782,21 +853,21 @@
             (cond
               (not eligible?) (el/div {:class "proposal-note-line"} "Mixed proposals remain review-only.")
               (false? may-merge?) (el/div {:class "proposal-note-line"}
-                                         "You can inspect these files. A reviewer with merge permission must accept them.")
+                                          "You can inspect these files. A reviewer with merge permission must accept them.")
               (= :working status) (el/div {:class "proposal-note-line"}
-                                         (case (:action state)
-                                           :preview "Checking current workspace…"
-                                           :adopt "Accepting reviewed files…"
-                                           :reconcile "Checking recorded completion…"))
+                                          (case (:action state)
+                                            :preview "Checking current workspace…"
+                                            :adopt "Accepting reviewed files…"
+                                            :reconcile "Checking recorded completion…"))
               (= :accepted status) (el/div {:class "proposal-note-line"} "Files accepted.")
               (= :pending status) (el/div {}
-                                         (el/div {:class "proposal-note-line"}
-                                                 "Completion is uncertain. Check its recorded result; do not repeat publication.")
-                                         (button "Check recorded completion" :reconcile nil))
-              (= :reviewed status) (el/div {}
                                           (el/div {:class "proposal-note-line"}
-                                                  "Current files and properties validated. Acceptance will check them again.")
-                                          (button "Accept reviewed files" :adopt (:revision state)))
+                                                  "Completion is uncertain. Check its recorded result; do not repeat publication.")
+                                          (button "Check recorded completion" :reconcile nil))
+              (= :reviewed status) (el/div {}
+                                           (el/div {:class "proposal-note-line"}
+                                                   "Current files and properties validated. Acceptance will check them again.")
+                                           (button "Accept reviewed files" :adopt (:revision state)))
               :else (el/div {}
                             (when (#{:review-changed :unavailable :aborted} status)
                               (el/div {:class "proposal-note-line"}
@@ -825,6 +896,43 @@
                                 :on-click #?(:cljs (fn [_] (load-retained-file! pid scope path)) :clj nil)}
                                (if (= :error (:status state)) "Retry comparison" "Inspect retained file"))))))
 
+(defn- retained-sources-view [pid scope state]
+  (el/div {:class "proposal-retained-files"}
+          (if (nil? state)
+            (el/button {:class "btn btn-secondary btn-sm"
+                        :on-click #?(:cljs (fn [_] (load-proposal-sources! pid scope)) :clj nil)}
+                       "Inspect frozen sources")
+            (el/div {}
+                    (el/div {:class "proposal-note-line"}
+                            "Frozen sources used by this workflow — not today's Memory.")
+                    (el/button {:class "btn btn-secondary btn-sm"
+                                :on-click #?(:cljs (fn [_] (hide-proposal-sources! pid scope)) :clj nil)}
+                               "Hide sources")
+                    (case (:status state)
+                      :loading (el/p {:class "proposal-note-line"} "Loading frozen source list…")
+                      :unavailable (el/p {:class "proposal-note-line"} "Frozen sources are unavailable.")
+                      :ready
+                      (let [{:keys [listing read]} state]
+                        (el/div {}
+                                (el/p {:class "proposal-note-line"} (str "Request " (:request listing)))
+                                (for [file (:files listing)]
+                                  (el/div {:key (:path file)}
+                                          (el/button {:class "btn btn-secondary btn-sm"
+                                                      :on-click #?(:cljs (fn [_] (load-proposal-source! pid scope (:path file))) :clj nil)}
+                                                     (:path file))))
+                                (when (empty? (:files listing))
+                                  (el/p {:class "proposal-note-line"} "No frozen source files."))
+                                (when read
+                                  (el/div {}
+                                          (el/p {:class "proposal-note-line"}
+                                                (str (get-in read [:entry :source-path]) " · content "
+                                                     (get-in read [:entry :content-id])))
+                                          (case (:status read)
+                                            :loading (el/p {} "Loading frozen source…")
+                                            :ready (el/pre {:class "proposal-retained-source"} (:text read))
+                                            (el/p {} "Frozen source is unavailable."))))))
+                      nil)))))
+
 (defn- fork-diff-view
   "One fork as its own block: what it changed, and its own decision.
 
@@ -838,7 +946,7 @@
    dismissed block carries a line saying so instead of an empty change list."
   ([pid fk] (fork-diff-view pid fk true))
   ([pid {:keys [system-type pages files entries counts stat patch patch-truncated?
-                baseless? status author-name checks file-bodies file-adoption scope] :as fk} body?]
+                baseless? status author-name checks file-bodies file-adoption retained-sources scope] :as fk} body?]
    (let [resolved? (some? status)
          ;; A campaign puts one fork per AGENT on the same database, so without
          ;; the author two contributions render as two identical rows and the
@@ -892,6 +1000,7 @@
                                "Retained evidence, independent of the Run. Review current workspace compatibility before accepting.")
                        (when-not resolved?
                          (retained-adoption-actions pid scope file-adoption (:only-fork? fk) (:may-merge? fk)))
+                       (retained-sources-view pid scope (get retained-sources scope))
                        (for [file files]
                          (el/div {:key (:path file)}
                                  (retained-file-view pid scope file (get file-bodies [scope (:path file)])))))
@@ -1088,7 +1197,7 @@
 
 (defn- proposal-card [{:keys [id title summary diffs diff-error action-error busy?
                               tier intent conflicts comments checks ai-summary expanded
-                              accept-warned? forks review file-bodies file-adoption]}]
+                              accept-warned? forks review file-bodies file-adoption retained-sources]}]
   #?(:cljs
      (let [expanded (or expanded #{})
            toggle (fn [k] (update-proposal! id
@@ -1171,7 +1280,7 @@
                                    (el/div {:class "proposal-fork-strip"}
                                            (for [[i fk] (map-indexed vector diffs)]
                                              (el/div {:key (str "fs" i)}
-                                                     (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count forks)) :file-bodies file-bodies :file-adoption file-adoption
+                                                     (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count forks)) :file-bodies file-bodies :file-adoption file-adoption :retained-sources retained-sources
                                                                                :settlement-supported? (and (card-model/settlement-supported? fk)
                                                                                                            (not (and review (seq (review-only-open-forks forks)))))
                                                                                :checks (check-for checks fk)
@@ -1190,7 +1299,7 @@
                                               "Back to summary"))
                                  (for [[i fk] (map-indexed vector diffs)]
                                    (el/div {:key (str i)}
-                                           (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count forks)) :file-bodies file-bodies :file-adoption file-adoption
+                                           (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count forks)) :file-bodies file-bodies :file-adoption file-adoption :retained-sources retained-sources
                                                                      :settlement-supported? (and (card-model/settlement-supported? fk)
                                                                                                  (not (and review (seq (review-only-open-forks forks)))))
                                                                      :checks (check-for checks fk)
@@ -1338,7 +1447,8 @@
                         (for [f (:forks p)]
                           (el/div {:key (:scope f)}
                                   (fork-diff-view pid (assoc f :status (or (:status f) (:status p))
-                                                             :file-bodies (:file-bodies p) :only-fork? true)))))))
+                                                             :file-bodies (:file-bodies p)
+                                                             :retained-sources (:retained-sources p) :only-fork? true)))))))
      :clj nil))
 
 (defn proposals-view

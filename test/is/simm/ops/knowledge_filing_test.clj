@@ -1,6 +1,7 @@
 (ns is.simm.ops.knowledge-filing-test
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
+            [datahike.blob :as blob]
             [dvergr.agent.attempt :as attempt]
             [dvergr.agent.environment :as environment]
             [dvergr.agent.episode :as episode]
@@ -72,7 +73,7 @@
        (d/transact conn system-db/schema)
        (d/transact conn sdb/schema)
        (repo/init! workspace {:name "Canonical knowledge source"})
-       (repo/write! workspace "inbox/evidence.md" (markdown/source-bytes "Source evidence"))
+       (repo/write! workspace "inbox/evidence.md" (markdown/source-bytes (get options :evidence-text "Source evidence")))
        (repo/write! workspace "wiki/existing.md" (markdown/source-bytes "Historical before\r\n"))
        (let [party (random-uuid) logical-room (random-uuid)
              principal {:principal/id (str "party/" party) :principal/actor (keyword "party" (str party))}
@@ -106,6 +107,19 @@
                     {:candidate agent :environment definition :source source
                      :inputs (:inputs prepared) :workflow (:workflow prepared) :submission submission
                      :knowledge/publication-basis basis})
+             input (if (:retain-source-origin? options)
+                     (let [stamp (random-uuid)
+                           manifest (mapv (fn [[path text]]
+                                            (let [bytes (markdown/source-bytes text)]
+                                              {:path path :content (blob/blob-id bytes)
+                                               :size (alength bytes) :mode repo/default-mode}))
+                                          (sort-by key source))
+                           revision (hasch/uuid [:simmis/owned-workflow-source-v1 logical-room stamp "memory" manifest])]
+                       (-> input
+                           (assoc-in [:submission :expected-owned-source] revision)
+                           (assoc :source-origin {:revision revision :target-stamp stamp
+                                                  :target (:target basis) :manifest manifest})))
+                     input)
              _ (d/transact conn [{:party/id party}
                                  {:room/id logical-room :room/owner [:party/id party]
                                   :room/parties [[:party/id party]]}])

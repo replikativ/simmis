@@ -87,8 +87,29 @@ the ordinary workflow bundle. Server and local-worker submission capture it
 after authorization and request retry lookup; the original submission remains
 the retry identity. Captured bytes and collector provenance are retained with
 the work request. Pure preparation and benchmarks require verified frozen
-inputs instead of resolving a live policy. Setup replaces the collector-owned
-`/in/knowledge/` subtree so inherited stale staging cannot augment the manifest;
+inputs instead of resolving a live policy.
+
+The `ops.retained-knowledge-sources` host reader addresses a canonical
+Proposal plus its file-output component, not an arbitrary artifact or current
+workspace path. It verifies the original request, typed filing, source revision,
+publication target and frozen workflow before listing manifest-selected sources
+or returning at most 16 KiB of base64 bytes. Every chunk rechecks current human
+room-read permission. The captured application's original connection, execution
+context and physical operation lifetime cover the full read and projection.
+Its 128-MiB encoded-payload ceiling accommodates bounded duplicated workflow
+metadata; it does not widen admission limits. Missing/corrupt/oversized evidence
+fails closed. It reads no Attempt, live branch or current workspace selector,
+and confers no adoption authority or permanent storage retention guarantee.
+Authenticated proposal-source RPCs capture the caller before moving work off
+the engine drain. Proposal cards, including resolved audits, expose these frozen
+citations as read-only text, separately from current Memory. Client paging is
+bound to the exact proposal/component/request/selection and content identity;
+list/read tokens plus authenticated socket/session fences reject stale replies.
+Bytes stay in immutable signal state until strict UTF-8 decoding after the final
+chunk. Inspection does not execute code, navigate a current file or accept work.
+
+Setup replaces the collector-owned `/in/knowledge/` subtree so inherited stale
+staging cannot augment the manifest;
 unrelated room files remain. Recurring deployments pin the policy, then select
 one immutable source snapshot per occurrence. An initially empty or unchanged
 trigger set skips before body reads, allowance checks or provider preparation.
