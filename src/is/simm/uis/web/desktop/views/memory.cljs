@@ -14,9 +14,11 @@
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.source-editor :as source]
             [is.simm.uis.web.desktop.rich-editor :as rich-editor]
+            [is.simm.uis.web.desktop.rich-controls :as rich-controls]
             [is.simm.uis.web.desktop.markdown :as md]
             [superficie.api :refer [toSup]]
             [is.simm.uis.web.desktop.views.memory-navigation :as navigation]
+            [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.download-link :as download])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]))
 
@@ -69,7 +71,7 @@
 (defn- source-view [path draft a write?]
   (source/view {:id [(:owner a) path] :path path :label "Memory file source"
                 :value (:text draft) :selection (:selection draft) :read-only? (not write?)
-                :on-change (fn [text selection] ((:change a) path editor/changed text selection))}))
+                :on-change (fn [text selection] ((:edit a) path editor/changed text selection))}))
 
 (defn- superficie-view [text]
   (let [result (try (let [converted (when (<= (count text) 65536) (toSup text))]
@@ -132,21 +134,37 @@
                                             (when (:generated-truncated? receipt) (el/p {} "Generated-source preview is truncated."))
                                             (el/pre {} (:generated-clojure receipt)))))))))
 
-(defn- rich-toolbar [write?]
-  (el/div {:class "memory-toolbar memory-document-toolbar"}
-          (for [[op label] [[:bold "Bold"] [:italic "Italic"] [:strike "Strike"]
-                            [:paragraph "Paragraph"] [:heading "Heading"]
-                            [:bullet-list "Bullets"] [:ordered-list "Numbered"] [:code "Code"]]]
-            (el/button {:key op :disabled (not write?)
-                        :on-mousedown #(.preventDefault %)
-                        :on-click #(rich-editor/command! % op)} label))))
+(defn- rich-toolbar [write? selection source!]
+  (let [format (:format selection)
+        first-enabled (:op (first (filter #(get-in format [(:op %) :enabled?]) (mapcat identity rich-controls/groups))))]
+    ;; Visibility/geometry are owned by the attached native controls adapter.
+    ;; A constant rendered data-visible would race its focus/measurement update.
+    (el/div {:class "memory-document-toolbar" :role "toolbar" :aria-label "Block formatting"
+             :on-keydown rich-controls/toolbar-keydown!}
+            (for [[index group] (map-indexed vector rich-controls/groups)]
+              (el/div {:key index :role "group" :class "memory-format-group"
+                       :aria-label (nth ["Text structure" "Text formatting" "Lists"] index)}
+                      (for [{:keys [op label icon]} group]
+                        (el/button {:key op :type "button" :title label :aria-label label
+                                    :aria-pressed (str (boolean (get-in format [op :active?])))
+                                    :disabled (or (not write?) (not (get-in format [op :enabled?])))
+                                    :tabindex (if (= first-enabled op) 0 -1)
+                                    :on-mousedown #(.preventDefault %)
+                                    :on-click #(rich-editor/command! % op)}
+                                   (vc/icon icon {:aria-hidden "true"})))))
+            (el/div {:class "memory-format-group" :role "group" :aria-label "Source editing"}
+                    (el/button {:type "button" :aria-label "Edit local Markdown" :title "Edit selected content as Markdown"
+                                :tabindex (if first-enabled -1 0) :disabled (or (not write?) (nil? (:region selection)))
+                                :on-mousedown #(.preventDefault %)
+                                :on-click (fn [_] (source! (:region selection)))}
+                               (vc/icon :file-code {:aria-hidden "true"}))))))
 
 (defn- document-view [path draft a write?]
-  (let [base (:rich-base draft) analysis (or (:analysis base) (:analysis draft))
-        source (or (:text base) (:text draft))
-        rich? (and (= :rich (:mode draft)) base)]
+  (let [base (:rich-base draft) rich? (and (= :rich (:mode draft)) base)
+        analysis (if rich? (:analysis base) (:analysis draft))
+        source (if rich? (:text base) (:text draft))]
     (el/div {:class "memory-document"}
-            (when rich? (rich-toolbar write?))
+            (when rich? (rich-toolbar write? (:document-selection base) #((:local-source-open a) path %)))
             (when (and (= :rich (:mode draft)) (not base) analysis)
               (el/p {:class "memory-note"} "This document needs Source editing for its size or structure. Its original source is retained."))
             (when (seq (:frontmatter analysis))
@@ -159,6 +177,14 @@
               (el/p {:class "proposal-error"} "Some document structure needs attention. Source preserves it exactly."))
             (if-not analysis
               (el/button {:on-click (fn [_] ((:analyze a) path))} "Analyze current draft")
+              (if (and rich? (:document base))
+                (rich-editor/view {:id [(:owner a) path (:id base) :document]
+                                   :model (or (:document-model base) (get-in base [:document :model]))
+                                   :selection (:document-selection base) :document? true
+                                   :read-only? (or (not write?) (some? (:local-source draft)))
+                                   :on-blocked #((:document-blocked a) path)
+                                   :on-change (fn [model selection]
+                                                ((:document-change a) path (:id base) model selection))})
               (if (= :outline (:mode draft))
                 (el/div {:class "memory-outline"}
                         (for [block (editor/outline (get-in analysis [:semantic :blocks]))]
@@ -171,15 +197,15 @@
                                     (el/button {:on-click (fn [_] ((:open-properties a) path {:kind :block :id (:id block)}))}
                                                "Block properties"))
                                   (for [node (:syntax block)]
-                                    (if-let [model (or (get-in base [:models (:from node)]) (rich/model node))]
+                                    (if-let [model (rich/model node)]
                                       (model-node model)
                                       (el/pre {} (subs source (:from node) (:to node)))))
                                   (el/button {:on-click (fn [_]
                                                           ((:change a) path assoc :mode :source
-                                                                       :selection (editor/source-selection draft (:from block) (:to block))))}
+                                                                       :selection {:anchor (:from block) :head (:to block)}))}
                                              "Edit source"))))
                 (for [slot (:slots analysis)]
-                  (let [model (or (get-in base [:models (:from slot)]) (:model slot))
+                  (let [model (or (when rich? (get-in base [:models (:from slot)])) (:model slot))
                         text (subs source (:from slot) (:to slot))
                         structural? (boolean (re-matches #"(?s)\s*<!-- /?simmis:block[^>]*-->\s*" text))]
                     (when-not structural?
@@ -199,7 +225,7 @@
                                 (el/button {:on-click (fn [_]
                                                         ((:change a) path assoc :mode :source
                                                                      :selection (editor/source-selection draft (:from slot) (:to slot))))}
-                                           "Open in Source")))))))))))
+                                           "Open in Source"))))))))))))
 
 (defn- retained-properties-view [path state a]
   (let [orphaned (for [[[p target :as scope] drafts] (:property-drafts state)
@@ -298,8 +324,7 @@
         editable? (and write? current? (not busy?) (not (editor/dirty? draft)) (not (declarations/drafts? state path))
                        (= (:expected model) (get-in draft [:source :entry])))]
     (el/div {:class "memory-properties" :aria-label "Typed document properties"}
-            (if-not target
-              (el/button {:on-click (fn [_] ((:open-properties a) path {:kind :page}))} "Show properties")
+            (when target
               (el/div {}
                       (el/h3 {} "Properties")
                       (when (seq blocks)
@@ -380,6 +405,121 @@
                                           (when pd
                                             (el/button {:on-click (fn [_] ((:property-discard a) path target (:id field)))} "Discard field draft")))))))))))
 
+(defn- local-source-view [path draft state a write?]
+  (when-let [local (:local-source draft)]
+    (let [busy? (get-in state [:loading [:local-source path]])]
+      (el/section {:class "memory-local-source" :role "dialog" :aria-label "Local Markdown editor"
+                   :on-keydown (fn [event]
+                                 (when (and (= "Escape" (.-key event)) (not (.-defaultPrevented event))
+                                            (not (.-isComposing event)))
+                                   (.preventDefault event)
+                                   (if (= (:text local) (:opened-text local))
+                                     (do (rich-controls/request-editor-focus! event) ((:local-source-cancel a) path))
+                                     ;; Do not discard source on Escape, or
+                                     ;; intercept a completion's handled Escape.
+                                     (when-let [button (.querySelector (.-currentTarget event) "[data-source-cancel]")]
+                                       (.focus button)))))}
+                  (el/div {:class "memory-local-source-heading"}
+                          (el/strong {} "Selected content · Markdown")
+                          (el/button {:type "button" :data-source-cancel "true"
+                                      :on-click (fn [event] (rich-controls/request-editor-focus! event)
+                                                  ((:local-source-cancel a) path))}
+                                     (if (= (:text local) (:opened-text local)) "Close" "Discard edits")))
+                  (el/p {:class "memory-note"} "Valid edits save automatically. Block IDs, children and metadata are protected; incomplete input stays here until it is valid.")
+                  (source/view {:id [(:owner a) path :local-source (:id local)] :path "selection.md"
+                                :label "Local Markdown source" :value (:text local) :selection (:selection local) :auto-focus? true
+                                :read-only? (not write?)
+                                :on-change (fn [text selection] ((:local-source-change a) path text selection))})
+                  (el/div {:class "memory-note" :role "status"}
+                          (cond busy? "Validating…"
+                                (get-in state [:errors [:local-source path]]) "Not applied — source retained"
+                                (= (:text local) (:opened-text local)) "Up to date"
+                                :else "Source retained"))))))
+
+(defn- prompt-path! [label initial action]
+  (when-let [path (js/prompt label initial)]
+    (when-not (str/blank? path) (action path))))
+
+(defn- file-header [data state a draft workspace-write? write? coherent? syntax-pref]
+  (let [path (:selected state) folder (or (:current-folder state) "")
+        text? (string? (:text draft)) markdown? (= :markdown (get-in draft [:source :kind]))
+        clojure? (and text? (re-find #"(?i)\.(clj|cljc|cljs|bb)$" (or path "")))]
+    (el/div {:class "memory-file-header"}
+            (el/nav {:class "memory-breadcrumbs" :aria-label "File path"}
+                    (el/button {:on-click (fn [_] (navigation/focus-folder! (:room-id data) ""))}
+                               (or (:room-name data) "Memory"))
+                    (for [[i part] (map-indexed vector (when path (str/split path #"/")))]
+                      (el/span {:key i :class "memory-path-part"}
+                               (el/span {:aria-hidden "true"} "/")
+                               (if (< i (dec (count (str/split path #"/"))))
+                                 (el/button {:on-click (fn [_] (navigation/focus-folder! (:room-id data)
+                                                                                       (str/join "/" (take (inc i) (str/split path #"/")))))} part)
+                                 (el/span {:class "memory-file-name" :title path} part)))))
+            (when draft
+              (el/span {:class (str "memory-save-state" (when (editor/dirty? draft) " dirty"))
+                        :role "status" :title (if (:office draft) "Office XML parts are saved explicitly."
+                                                 "Changes save automatically to this workspace, not to other branches.")}
+                       (cond (get-in state [:loading [:save path]]) "Saving…"
+                             (or (:incoming draft) (:incoming-entry draft)) "Changed elsewhere"
+                             (get-in state [:autosave-holds path]) "Not saved"
+                             (editor/dirty? draft) "Unsaved"
+                             :else "Saved")))
+            (when (and text? (editor/dirty? draft)
+                       (or (not (get-in state [:autosave path])) (get-in state [:autosave-holds path])))
+              (el/button {:class "memory-save-button"
+                          :disabled (or (not write?) (get-in state [:loading [:save path]])
+                                        (get-in state [:loading [:property-save path]])
+                                        (declarations/drafts? state path) (:remote-deleted? draft)
+                                        (and (:local-source draft)
+                                             (not= (get-in draft [:local-source :text]) (get-in draft [:local-source :opened-text])))
+                                        (not (editor/dirty? draft)))
+                          :on-click (fn [_] ((:save a) path))} "Save"))
+            (when markdown?
+              (el/select {:aria-label "Document view" :value (name (:mode draft)) :disabled (some? (:local-source draft))
+                          :on-change (fn [event] ((:mode a) path (keyword (.. event -target -value))))}
+                         (for [[mode label] [[:rich "Edit"] [:read "Read"] [:source "Markdown"] [:outline "Structure"]]]
+                           (el/option {:key mode :value (name mode)} label))))
+            (when clojure?
+              (el/select {:aria-label "Code syntax view" :value (name (or (:code-view draft) :default))
+                          :on-change (fn [event]
+                                       (let [mode (keyword (.. event -target -value))]
+                                         (if (= :default mode) ((:change a) path dissoc :code-view)
+                                             ((:change a) path assoc :code-view mode))))}
+                         (el/option {:value "default"} (str "Preference: " (name (or syntax-pref :clojure))))
+                         (el/option {:value "clojure"} "Clojure")
+                         (el/option {:value "superficie"} "Superficie")))
+            (el/details {:class "memory-file-menu"}
+                        (el/summary {:aria-label "File and workspace actions" :title "File and workspace actions"} "⋯")
+                        (el/div {:class "memory-file-menu-content"}
+                                (when markdown?
+                                  (el/button {:on-click (fn [_] ((:open-properties a) path {:kind :page}))} "Properties"))
+                                (when draft
+                                  (el/button {:on-click (fn [_] ((:reload a) path))} "Check for changes"))
+                                (when (get-in draft [:source :entry])
+                                  (el/button {:disabled (not coherent?) :on-click (fn [_] ((:download a) path))} "Download"))
+                                (when (and draft write?)
+                                  (el/button {:disabled (or (editor/dirty? draft) (editor/property-drafts? state path)
+                                                            (declarations/drafts? state path) (get-in state [:loading [:property-save path]]))
+                                              :on-click (fn [_] (prompt-path! "Move file to" path #((:move a) path %)))} "Move"))
+                                (el/hr {})
+                                (when workspace-write?
+                                  (el/button {:on-click (fn [_] (prompt-path! "New file path (relative to the room)"
+                                                                            (if (seq folder) (str folder "/note.md") "wiki/note.md")
+                                                                            #(navigation/create-file! (:room-id data) (:room-name data) % (:col-id data) (:target-stamp state))))} "New file"))
+                                (when workspace-write?
+                                  (el/button {:on-click (fn [_] (prompt-path! "New folder path (relative to the room)"
+                                                                            (str (when (seq folder) (str folder "/")) "new-folder") (:mkdir a)))} "New folder"))
+                                (when workspace-write?
+                                  (el/label {:class "memory-upload"} "Upload file"
+                                            (el/input {:type "file" :aria-label "Upload to Memory"
+                                                       :on-change (fn [event]
+                                                                    (when-let [file (aget (.. event -target -files) 0)] ((:upload a) folder file))
+                                                                    (set! (.. event -target -value) ""))})))
+                                (el/button {:on-click (fn [_] ((:refresh a)))} "Refresh workspace")
+                                (when-let [content (get-in draft [:source :entry :content])]
+                                  (el/details {:class "memory-properties"}
+                                              (el/summary {} "Saved file revision") (el/code {} (str content)))))))))
+
 (defn- view [data state a syntax-pref]
   (let [path (:selected state) draft (get-in state [:drafts path])
         verified? (actions/verified? state @sig/memory-connection)
@@ -391,30 +531,9 @@
         text? (string? (:text draft))
         clojure? (and text? (re-find #"(?i)\.(clj|cljc|cljs|bb)$" (or path "")))
         code-view (editor/code-view draft syntax-pref)
-        office? (= :office (get-in draft [:source :kind])) office (:office draft)
-        folder (or (:current-folder state) "")
-        ask-path (fn [label default action]
-                   (when-let [p (js/prompt label default)]
-                     (when-not (str/blank? p) (action p))))]
+        office? (= :office (get-in draft [:source :kind])) office (:office draft)]
     (el/div {:class "memory-panel"}
-            (el/div {:class "memory-toolbar"}
-                    (el/h2 {} (str (or (:room-name data) "Room") " · Memory"))
-                    (el/button {:on-click (fn [_] ((:refresh a)))} "Refresh")
-                    (when workspace-write?
-                      (el/button {:on-click (fn [_] (ask-path "New file path (relative to the room)"
-                                                              (if (seq folder) (str folder "/note.md") "wiki/note.md")
-                                                              #(navigation/create-file! (:room-id data) (:room-name data) % (:col-id data) (:target-stamp state))))} "New file"))
-                    (when workspace-write?
-                      (el/button {:on-click (fn [_] (ask-path "New folder path (relative to the room)"
-                                                              (str (when (seq folder) (str folder "/")) "new-folder")
-                                                              (:mkdir a)))} "New folder"))
-                    (when workspace-write?
-                      (el/label {:class "memory-upload"} "Upload file"
-                                (el/input {:type "file" :aria-label "Upload to Memory"
-                                           :on-change (fn [e]
-                                                        (when-let [file (aget (.. e -target -files) 0)]
-                                                          ((:upload a) folder file))
-                                                        (set! (.. e -target -value) ""))}))))
+            (file-header data state a draft workspace-write? write? coherent? syntax-pref)
             (when-not verified?
               (el/p {:class "memory-note" :role "status"}
                     "Workspace is not verified. Your drafts are retained; Refresh checks the currently authorized workspace without relying on live updates."))
@@ -434,39 +553,10 @@
                             (if-not draft
                               (el/p {:class "memory-note"} "Choose a file under Memory in the left navigation. Markdown is knowledge wherever you put it; wiki/ is just a convenient folder.")
                               (el/div {}
-                                      (el/nav {:class "memory-breadcrumbs" :aria-label "File path"}
-                                              (el/button {:on-click (fn [_] (navigation/focus-folder! (:room-id data) ""))}
-                                                         (str (or (:room-name data) "Room") " / "))
-                                              (for [[i part] (map-indexed vector (str/split path #"/"))]
-                                                (if (< i (dec (count (str/split path #"/"))))
-                                                  (el/button {:key i :on-click (fn [_] (navigation/focus-folder! (:room-id data)
-                                                                                                                 (str/join "/" (take (inc i) (str/split path #"/")))))} (str part " / "))
-                                                  (el/span {:key i} part))))
-                                      (when-let [content (get-in draft [:source :entry :content])]
-                                        (el/details {:class "memory-properties"}
-                                                    (el/summary {} "Saved file revision")
-                                                    (el/code {} (str content))))
-                                      (el/div {:class "memory-toolbar"}
-                                              (el/span {} (if (editor/dirty? draft) "Unsaved draft" "Saved version"))
-                                              (when text?
-                                                (el/button {:disabled (or (not write?) (get-in state [:loading [:save path]])
-                                                                          (get-in state [:loading [:property-save path]])
-                                                                          (declarations/drafts? state path)
-                                                                          (:remote-deleted? draft)
-                                                                          (not (editor/dirty? draft)))
-                                                            :on-click (fn [_] ((:save a) path))} "Save"))
-                                              (el/button {:on-click (fn [_] ((:reload a) path))} "Check for changes")
-                                              (when (get-in draft [:source :entry])
-                                                (el/button {:disabled (not coherent?) :on-click (fn [_] ((:download a) path))} "Download"))
-                                              (when (and coherent? (= (:target-stamp state) (get-in state [:download :target-stamp]))
-                                                         (= path (get-in state [:download :path])))
-                                                (download/view [(:owner a) path] (last (str/split path #"/"))
-                                                               (get-in state [:download :base64])))
-                                              (when write?
-                                                (el/button {:disabled (or (editor/dirty? draft) (editor/property-drafts? state path)
-                                                                          (declarations/drafts? state path)
-                                                                          (get-in state [:loading [:property-save path]]))
-                                                            :on-click (fn [_] (ask-path "Move file to" path #((:move a) path %)))} "Move")))
+                                      (when (and coherent? (= (:target-stamp state) (get-in state [:download :target-stamp]))
+                                                 (= path (get-in state [:download :path])))
+                                        (download/view [(:owner a) path] (last (str/split path #"/"))
+                                                       (get-in state [:download :base64])))
                                       (when (or (:incoming draft) (:incoming-entry draft))
                                         (el/div {:class "memory-conflict" :role "status"}
                                                 (if (:remote-deleted? draft)
@@ -481,21 +571,7 @@
                                       (when markdown? (properties-view path draft state a write?))
                                       (retained-properties-view path state a)
                                       (retained-declarations-view path state a)
-                                      (when (and text? (not clojure?))
-                                        (el/div {:class "memory-toolbar" :aria-label "Document views"}
-                                                (el/span {} "File view")
-                                                (for [[mode label] (if markdown? [[:read "Read"] [:rich "Rich text"] [:outline "Outline"] [:source "Source"]]
-                                                                       [[:source "Code / text"]])]
-                                                  (el/button {:key mode :class (when (= mode (:mode draft)) "selected")
-                                                              :on-click (fn [_] ((:mode a) path mode))} label))))
-                                      (when clojure?
-                                        (el/div {:class "memory-toolbar" :aria-label "Code syntax view"}
-                                                (el/span {} "File view")
-                                                (for [[mode label] [[:clojure "Clojure"] [:superficie "Superficie"]]]
-                                                  (el/button {:key mode :class (when (= mode code-view) "selected")
-                                                              :on-click (fn [_] ((:change a) path assoc :code-view mode))} label))
-                                                (el/button {:class (when (nil? (:code-view draft)) "selected")
-                                                            :on-click (fn [_] ((:change a) path dissoc :code-view))} "Follow preference")))
+                                      (local-source-view path draft state a write?)
                                       (when (and text? (not markdown?))
                                         (el/p {:class "memory-note"} "Saving changes the versioned room file only. It does not evaluate code, reload an agent, or grant capabilities."))
                                       (when (and text? (re-find #"(?i)\.(clj|cljc|bb)$" path))

@@ -2,6 +2,7 @@
   (:require [cljs.test :refer-macros [deftest is]]
             [clojure.string :as str]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as context]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.memory-actions :as actions]
             [is.simm.uis.web.desktop.memory-editor :as editor]
@@ -612,3 +613,222 @@
         ((:property-discard a) "x.clj" target (:id field))
         ((:move a) "x.clj" "moved.clj")
         (is (= 1 (count (:move @calls))))))))
+
+(deftest boundary-notice-survives-selection-and-stale-events-until-content-changes
+  (with-client
+    (fn [{:keys [a state seed! states file]}]
+      (seed!)
+      (let [paragraph {:type "paragraph" :content [{:type "text" :text "Alpha"}]}
+            analysis {:revision :baseline :slots [{:from 0 :to 5 :model {:type "doc" :content [paragraph]}}]
+                      :semantic {:status :ready :blocks [{:identity-status :provisional :syntax [{:from 0 :to 5}]}]}}
+            d (editor/draft (assoc file :kind :markdown :text "Alpha" :analysis analysis))
+            base (:rich-base d) model (get-in base [:document :model])]
+        (swap! states assoc-in [(:owner a) :drafts "x.clj"] d)
+        ((:document-blocked a) "x.clj")
+        (is (string? (get-in (state) [:errors [:rich "x.clj"]])))
+        ((:document-change a) "x.clj" (:id base) model {:from 2 :to 2})
+        (is (string? (get-in (state) [:errors [:rich "x.clj"]])))
+        ((:document-change a) "x.clj" :stale model nil)
+        (is (string? (get-in (state) [:errors [:rich "x.clj"]])))
+        ((:document-change a) "x.clj" (:id base)
+                              (assoc-in model [:content 0 :content 0 :content 0 :text] "Changed") {:from 3 :to 3})
+        (is (nil? (get-in (state) [:errors [:rich "x.clj"]])))
+        (is (= "Changed" (get-in (state) [:drafts "x.clj" :text])))))))
+
+(deftest autosave-serializes-and-coalesces-only-new-text-edits
+  (with-client
+    (fn [{:keys [a state seed! calls last-call stamp file]}]
+      (seed!)
+      ((:change a) "x.clj" editor/changed "Existing draft" nil)
+      (is (empty? (:save @calls)) "Restored/pre-existing drafts are not enrolled")
+      ((:edit a) "x.clj" editor/changed "Existing draft" {:anchor 1 :head 1})
+      (is (empty? (:save @calls)) "Selection changes are not edits")
+      ((:edit a) "x.clj" editor/changed "First" nil)
+      (let [first-save (last-call :save) entry {:content :first}]
+        ((:edit a) "x.clj" editor/changed "Second" nil)
+        ((:edit a) "x.clj" editor/changed "Latest" nil)
+        (is (= 1 (count (:save @calls))))
+        ((:ok first-save) (wire stamp {:entry entry}))
+        (is (= "First" (get-in (state) [:drafts "x.clj" :source :text])))
+        (is (= "Latest" (get-in (state) [:drafts "x.clj" :text])))
+        (is (= 2 (count (:save @calls))))
+        (is (= entry (get-in (last-call :save) [:request :expected])))
+        (is (= "Latest" (get-in (last-call :save) [:request :text])))
+        ((:ok first-save) (wire stamp {:entry (:entry file)}))
+        (is (= 2 (count (:save @calls))) "Duplicate ACK does not dispatch")
+        ((:ok (last-call :save)) (wire stamp {:entry {:content :latest}}))
+        (is (not (editor/dirty? (get-in (state) [:drafts "x.clj"]))))))))
+
+(deftest simulated-ui-edits-never-automatically-publish-through-the-live-host
+  (with-client
+    (fn [{:keys [data seed! state calls]}]
+      (seed!)
+      (let [child (context/fork-context runtime)]
+        (try
+          (binding [ec/*execution-context* child]
+            (let [simulated (actions/controller data)]
+              ((:edit simulated) "x.clj" editor/changed "Simulated text" nil)
+              (is (= "Simulated text" (get-in ((:state simulated)) [:drafts "x.clj" :text])))
+              (is (empty? (:save @calls)))))
+          (is (= "Original" (get-in (state) [:drafts "x.clj" :text])))
+          (finally (context/close-context! child)))))))
+
+(deftest same-home-context-rebinding-still-automatically-saves
+  (with-client
+    (fn [{:keys [data seed! calls]}]
+      (seed!)
+      (binding [ec/*execution-context* (assoc runtime :bindings (assoc (:bindings runtime) :autosave-probe true))]
+        (let [live (actions/controller data)]
+          ((:edit live) "x.clj" editor/changed "Same home" nil)
+          (is (= 1 (count (:save @calls)))))))))
+
+(deftest a-parent-save-callback-does-not-drain-a-child-forks-edits
+  (with-client
+    (fn [{:keys [data a seed! state last-call calls stamp]}]
+      (seed!)
+      ((:edit a) "x.clj" editor/changed "Parent submission" nil)
+      (let [pending (last-call :save) child (context/fork-context runtime)]
+        (try
+          (binding [ec/*execution-context* child]
+            (let [simulated (actions/controller data)]
+              ((:edit simulated) "x.clj" editor/changed "Child-only edit" nil)
+              ((:ok pending) (wire stamp {:entry {:content :parent-submission}}))
+              (is (= "Child-only edit" (get-in ((:state simulated)) [:drafts "x.clj" :text])))))
+          (is (= 1 (count (:save @calls))))
+          (is (= "Parent submission" (get-in (state) [:drafts "x.clj" :source :text])))
+          (finally (context/close-context! child)))))))
+
+(deftest local-source-validation-in-a-fork-cannot-indirectly-publish
+  (with-client
+    (fn [{:keys [data states a seed! state last-call calls file stamp]}]
+      (seed!)
+      (let [child (context/fork-context runtime)
+            analysis (fn [text] {:revision :synthetic
+                                 :semantic {:status :ready :blocks [{:identity-status :provisional
+                                                                    :syntax [{:from 0 :to (count text)}]}]}
+                                 :slots [{:from 0 :to (count text)
+                                          :model {:type "doc" :content [{:type "paragraph" :content [{:type "text" :text text}]}]}}]})]
+        (try
+          (binding [ec/*execution-context* child]
+            (let [simulated (actions/controller data)
+                  d (editor/draft (assoc file :kind :markdown :text "Alpha" :analysis (analysis "Alpha")))
+                  region (first (keys (get-in d [:rich-base :document :regions])))]
+              (swap! states assoc-in [(:owner a) :drafts "x.clj"] d)
+              ((:local-source-open simulated) "x.clj" region)
+              ((:local-source-change simulated) "x.clj" "Simulated source" nil)
+              ((:ok (last-call :analyze)) (wire stamp (analysis "Simulated source")))
+              (is (= "Simulated source" (get-in ((:state simulated)) [:drafts "x.clj" :text])))
+              (is (empty? (:rich-save @calls)))
+              (is (empty? (:save @calls)))))
+          (is (= "Original" (get-in (state) [:drafts "x.clj" :text])))
+          (finally (context/close-context! child)))))))
+
+(deftest autosave-reconciles-only-exact-own-write-observations
+  (doseq [observation [:own-entry :own-body :other-entry :deleted]]
+    (with-client
+      (fn [{:keys [a state seed! calls last-call stamp states]}]
+        (seed!)
+        ((:edit a) "x.clj" editor/changed "First" nil)
+        (let [pending (last-call :save) own {:content :first}
+              observed (case observation :other-entry {:content :other} :deleted nil own)]
+          ((:edit a) "x.clj" editor/changed "Later" nil)
+          (swap! states update-in [(:owner a) :drafts "x.clj"] editor/observed-entry observed stamp)
+          (when (= observation :own-body)
+            (swap! states update-in [(:owner a) :drafts "x.clj"] editor/loaded
+                   (wire stamp {:entry own :text "First"})))
+          ((:ok pending) (wire stamp {:entry own}))
+          (if (#{:own-entry :own-body} observation)
+            (do (is (= 2 (count (:save @calls))))
+                (is (nil? (get-in (state) [:drafts "x.clj" :incoming-entry]))))
+            (do (is (= 1 (count (:save @calls))))
+                (is (or (get-in (state) [:drafts "x.clj" :incoming-entry])
+                        (get-in (state) [:drafts "x.clj" :remote-deleted?]))))))))))
+
+(deftest autosave-failure-is-sticky-across-typing-and-refresh
+  (with-client
+    (fn [{:keys [a state seed! calls last-call stamp]}]
+      (seed!)
+      ((:edit a) "x.clj" editor/changed "First" nil)
+      ((:error (last-call :save)) (ex-info "Connection lost after possible commit" {}))
+      ((:edit a) "x.clj" editor/changed "Later" nil)
+      (is (= 1 (count (:save @calls))))
+      ((:refresh a))
+      ((:ok (last-call :metadata))
+       (wire stamp {:folders {} :entries {} :permissions {:write? true}}))
+      ((:edit a) "x.clj" editor/changed "Even later" nil)
+      (is (= 1 (count (:save @calls))))
+      (is (true? (get-in (state) [:autosave-holds "x.clj"]))))))
+
+(deftest autosave-drain-rechecks-revert-permission-and-target
+  (doseq [stop [:revert :permission :target :staging]]
+    (with-client
+      (fn [{:keys [a seed! state states calls last-call stamp]}]
+        (seed!)
+        ((:edit a) "x.clj" editor/changed "First" nil)
+        (let [pending (last-call :save)]
+          ((:edit a) "x.clj" editor/changed "Later" nil)
+          (case stop
+            :revert ((:edit a) "x.clj" editor/changed "First" nil)
+            :permission (swap! states assoc-in [(:owner a) :permissions :write?] false)
+            :target (swap! states assoc-in [(:owner a) :drafts "x.clj" :target-stale?] true)
+            :staging (swap! states assoc-in [(:owner a) :drafts "x.clj" :local-source] {:text "Incomplete"}))
+          ((:ok pending) (wire stamp {:entry {:content :first}}))
+          (is (= 1 (count (:save @calls))) (str stop))
+          (is (= (if (= stop :revert) "First" "Later") (get-in (state) [:drafts "x.clj" :text]))))))))
+
+(deftest uncertain-autosave-survives-reconnection-and-stale-acknowledgement
+  (with-client
+    (fn [{:keys [a seed! state states calls last-call connection stamp file]}]
+      (seed!)
+      ((:edit a) "x.clj" editor/changed "Submitted" nil)
+      (let [old (last-call :save)]
+        ;; The next connection event retires request tokens, not the durable
+        ;; context-owned hold. A late old callback cannot release it.
+        (swap! states assoc-in [(:owner a) :connection] :retired-connection)
+        ((:ensure-sync a) connection {:connection connection :status :ready :dirty {}})
+        ((:ok old) (wire stamp {:entry {:content :possibly-committed}}))
+        ((:ok (last-call :metadata))
+         (wire stamp {:folders {} :entries {"x.clj" (:entry file)} :permissions {:write? true}}))
+        ((:edit a) "x.clj" editor/changed "Still paused" nil)
+        (is (= 1 (count (:save @calls))))
+        (is (true? (get-in (state) [:autosave-holds "x.clj"])))
+        (is (= "Original" (get-in (state) [:drafts "x.clj" :source :text])))))))
+
+(deftest local-source-validates-and-saves-without-apply-and-retains-newer-input
+  (with-client
+    (fn [{:keys [a state seed! states file last-call calls]}]
+      (seed!)
+      (let [analysis (fn [text]
+                       {:revision (random-uuid) :slots [{:from 0 :to (count text)
+                                                        :model {:type "doc" :content [{:type "paragraph" :content [{:type "text" :text text}]}]}}]
+                        :semantic {:status :ready :blocks [{:identity-status :provisional :syntax [{:from 0 :to (count text)}]}]}})
+            d (editor/draft (assoc file :kind :markdown :text "Alpha" :analysis (analysis "Alpha")))
+            key (first (keys (get-in d [:rich-base :document :regions])))]
+        (swap! states assoc-in [(:owner a) :drafts "x.clj"] d)
+        ((:local-source-open a) "x.clj" key)
+        ((:local-source-change a) "x.clj" "Changed" {:anchor 2 :head 2})
+        ((:save a) "x.clj")
+        (is (empty? (:rich-save @calls)))
+        (is (= "Changed" (get-in (last-call :analyze) [:request :text])))
+        (let [pending (last-call :analyze)]
+          ((:local-source-change a) "x.clj" "Later" {:anchor 2 :head 2})
+          ((:ok pending) (wire (:target-stamp (state)) (analysis "Changed")))
+          (is (= "Alpha" (get-in (state) [:drafts "x.clj" :text])))
+          (is (= "Later" (get-in (state) [:drafts "x.clj" :local-source :text]))))
+        (let [pending (last-call :analyze)]
+          ((:local-source-cancel a) "x.clj")
+          ((:error pending) (ex-info "Cancelled preview failed" {}))
+          (is (nil? (get-in (state) [:errors [:local-source "x.clj"]]))))
+        ((:local-source-open a) "x.clj" key)
+        ((:local-source-change a) "x.clj" "Changed" {:anchor 2 :head 2})
+        ((:local-source-change a) "x.clj" "Changed" {:anchor 5 :head 5})
+        ((:ok (last-call :analyze)) (wire (:target-stamp (state)) (analysis "Changed")))
+        (is (= "Changed" (get-in (state) [:drafts "x.clj" :text])))
+        (is (= "Changed" (get-in (state) [:drafts "x.clj" :local-source :opened-text])))
+        (is (= {:anchor 5 :head 5} (get-in (state) [:drafts "x.clj" :local-source :selection])))
+        (is (= "Changed" (get-in (last-call :rich-save) [:request :source])))
+        ((:local-source-change a) "x.clj" "Incomplete" nil)
+        ((:ok (last-call :analyze)) (wire (:target-stamp (state)) {:semantic {:status :invalid}}))
+        (is (= "Incomplete" (get-in (state) [:drafts "x.clj" :local-source :text])))
+        (is (= "Changed" (get-in (state) [:drafts "x.clj" :text])))
+        (is (= 1 (count (:rich-save @calls))))))))

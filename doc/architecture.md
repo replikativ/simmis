@@ -19,13 +19,41 @@ workflow files, and room-local Clojure source share the same hierarchy.
 Filename search and folder-focus breadcrumbs avoid unbounded indentation.
 Files open in independent tabs. Markdown offers Read, directly editable Rich
 text, semantic Outline, and exact Source views; unsupported rich regions remain
-inert source. Rich typing patches supported source spans locally; Save validates
-the complete bounded batch on the server before one canonical publication.
+inert source. Rich typing patches supported source spans locally; each automatic
+save validates the complete bounded batch on the server before one canonical
+publication. A compact file header carries path, persistence status and view
+selection; secondary file actions and properties live in its overflow menu.
+Formatting controls follow the focused semantic block without taking document
+height. They support keyboard access and cannot bypass protected block topology.
 YAML document properties and explicit document/block identities remain in the
 source; programmable property schemas are separate trusted definitions, not
 automatically installed by an uploaded file. Existing independent KBs
 and drive resources remain accessible while this file-backed surface is
 introduced; they are not silently migrated or deleted.
+
+Actual text edits enroll a file in automatic saving; mounting, selecting text,
+or reopening an existing dirty draft does not publish it. Automatic dispatch is
+restricted to the live browser's home execution context; simulated fork edits
+remain local rather than acquiring implicit host publication. The existing stamped,
+authenticated compare-and-swap writer permits one request per file per view.
+Newer typing coalesces while that request runs, then drains using its accepted
+descriptor without resetting the editor or undo history. Exact own-write
+observations reconcile at acknowledgement; another revision or deletion remains
+a conflict. A context-owned hold survives errors, Refresh and connection changes,
+so uncertain writes never retry automatically. Explicit Save remains available
+for pre-existing drafts and recovery. Automatic saving affects only the selected
+workspace branch, never proposal adoption. There is no typing-delay policy yet:
+coalescing occurs during in-flight requests, not across an entire typing session.
+
+Selected-region Markdown is a continuously validated source presentation, not
+an Apply/Save transaction. Accepted input reprojects the exact span, retaining
+the native source editor and current caret; invalid/intermediate input stays in
+its separate local buffer. Block identities, children and frontmatter remain
+protected. Closing unvalidated edits requires explicit discard; Escape retains
+them. These drafts are execution-context state, not browser-restart recovery.
+Office XML parts and typed-property forms still have explicit publication.
+This gate does not make all explicit host actions simulation-safe; an explicit
+Save retains its existing host publication behavior.
 
 Markdown's optional Properties panel derives scalar page fields from trusted
 definitions in an explicitly provisioned canonical workspace. Its context-owned
@@ -232,11 +260,35 @@ external-process writes to a shared physical store are not a supported feed.
 Editor drafts, selections, request tokens, and read/mutation generations live
 in a session/room/column/tab-keyed Spindel signal. Native CodeMirror/Tiptap handles
 and download object URLs belong only to their DOM elements and are released
-on detach. Authenticated RPCs capture the principal before dispatching bounded
+on detach. ProseMirror JSON crosses a JSON-data boundary before ClojureScript
+conversion: its native attribute objects must not enter draft state or break
+controlled-model equality. Authenticated RPCs capture the principal before dispatching bounded
 store/parsing work off the FRP drain. Saves use the canonical Dvergr file
 writer's opened-revision precondition, effect gate, and applied entry receipt;
 a late pre-save read cannot replace a new save acknowledgement. A revoked
 room write permission is checked again at the actual effect boundary.
+
+Markdown rich editing uses one Tiptap document. Explicit semantic block IDs
+and nesting live in protected editor containers; adjacent supported syntax
+within one owner shares an editable region. Paragraph splits/joins do not
+allocate or delete knowledge-block identities. Unsupported syntax remains an
+inert, source-backed node and is included as text when copied. Selection can
+cross containers, but transactions that remove/reorder protected containers
+are refused with feedback; structural knowledge changes remain Source edits.
+The source map, baseline models and selections live in the context-owned draft.
+Saving sends disjoint original source spans through the existing authenticated
+rich-save path. The host reconstructs supported spans, validates Markdown
+round-tripping and unchanged frontmatter/explicit identity nesting, and uses
+the canonical file writer's revision precondition. Unchanged syntax siblings
+and source outside the changed spans retain their exact spelling and newlines.
+Empty-file/block insertion is allowed only at reconstructed insertion anchors.
+Empty top-level rich paragraphs represent Markdown blank-line layout, not new
+knowledge-block identities. Their blank lines within otherwise nonempty content
+are serialized; an entirely blank insertion remains empty. Semantic
+round-trip comparison ignores only those empty top-level paragraphs, since the
+Markdown AST has no corresponding node. Reopening reconstructs paragraphs from
+source rather than retaining transient empty editor nodes. Nested list shape
+and significant text whitespace remain subject to exact validation.
 
 Office containers have a bounded advanced XML-part editor, not a Word/Excel
 layout editor. Each operation reopens the selected immutable file revision;

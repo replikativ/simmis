@@ -139,6 +139,19 @@
 
 (defn normalize [node] (normalize* (validate-model! node)))
 
+(defn roundtrip-normalize
+  "Semantic comparison after source validation. Empty ROOT paragraphs represent
+   Markdown blank-line layout, not AST nodes. Keep serialization, significant
+   text and nested list structure intact."
+  [model]
+  (let [normalized (normalize model)]
+    (if (= "doc" (:type normalized))
+      (update normalized :content
+              #(filterv (fn [node]
+                          (not (and (= "paragraph" (:type node))
+                                    (empty? (:content node))))) %))
+      normalized)))
+
 (defn- inline-model [node marks]
   (let [children #(vec (mapcat (fn [n] (inline-model n %)) (:children node)))]
     (case (:kind node)

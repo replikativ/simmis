@@ -97,3 +97,45 @@
     (is (thrown? clojure.lang.ExceptionInfo (rich/apply-edits repo-id "test.md" "changed" (:revision analysis) [edit])))
     (is (thrown? clojure.lang.ExceptionInfo (rich/apply-edits repo-id "test.md" source (:revision analysis)
                   [(assoc edit :model {:type "doc" :content [{:type "horizontalRule"} {:type "paragraph" :content [{:type "text" :text "title: injected"}]} {:type "horizontalRule"}]})])))))
+
+(deftest empty-top-level-paragraphs-are-blank-line-layout-not-semantic-blocks
+  (let [source "First\n\nSecond\n"
+        paragraph (fn [text] {:type "paragraph" :content [{:type "text" :text text}]})
+        first-p (paragraph "First") second-p (paragraph "Second") empty-p {:type "paragraph" :content []}
+        baseline {:type "doc" :content [first-p second-p]}]
+    (doseq [[content placement] [[[empty-p first-p second-p] :leading]
+                                 [[first-p empty-p second-p] :middle]
+                                 [[first-p second-p empty-p] :trailing]]]
+      (let [model {:type "doc" :content content}
+            result (rich/apply-edit repo-id "wiki/blank-lines.md" source (markdown/revision source)
+                                    0 (count source) model)
+            reopened {:type "doc" :content (vec (mapcat #(get-in (text/model %) [:content])
+                                                        (:nodes (markdown/parse result))))}]
+        (is (= (text/roundtrip-normalize baseline) (text/roundtrip-normalize model)))
+        (is (= (text/roundtrip-normalize model) (text/roundtrip-normalize reopened)))
+        (is (case placement
+              :leading (str/starts-with? result "\n\nFirst")
+              :middle (str/includes? result "First\n\n\n\nSecond")
+              :trailing (str/ends-with? result "Second\n\n\n")))))
+    (let [list-of (fn [content] {:type "doc" :content [{:type "bulletList"
+                                                       :content [{:type "listItem" :content content}]}]})]
+      (is (not= (text/roundtrip-normalize (list-of [first-p]))
+                (text/roundtrip-normalize (list-of [first-p empty-p])))))
+    (is (not= (text/roundtrip-normalize baseline)
+              (text/roundtrip-normalize (assoc-in baseline [:content 0 :content 0 :text] " First"))))))
+
+(deftest blank-layout-does-not-relax-significant-text-or-nested-structure
+  (doseq [[source model]
+          [["# Heading\n" {:type "doc" :content [{:type "heading" :attrs {:level 1}
+                                                  :content [{:type "text" :text " Heading"}]}]}]
+           ["- First\n" {:type "doc" :content [{:type "bulletList"
+                                                :content [{:type "listItem"
+                                                           :content [{:type "paragraph" :content [{:type "text" :text "First"}]}
+                                                                     {:type "paragraph" :content []}]}]}]}]]]
+    (is (= ::rich/unsupported
+           (try (rich/apply-edit repo-id "wiki/layout-guard.md" source (markdown/revision source)
+                                 0 (count source) model)
+                :unexpected
+                (catch clojure.lang.ExceptionInfo error (:type (ex-data error)))))))
+  (is (= "" (rich/apply-edit repo-id "wiki/empty.md" "" (markdown/revision "") 0 0
+                             {:type "doc" :content [{:type "paragraph"} {:type "paragraph"}]}))))
