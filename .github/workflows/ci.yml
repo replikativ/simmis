@@ -50,7 +50,11 @@ jobs:
         # closure before any tests start. Keep setup separately bounded; apt
         # requests still have their own timeouts/retry limits in the script.
         timeout-minutes: 15
-        run: bash scripts/install-test-helpers.sh
+        run: |
+          # Azure's mirror has repeatedly exhausted setup's transfer budget.
+          # Keep Ubuntu's signed suites/keyring, changing only that exact URI.
+          sudo python3 scripts/ci_ubuntu_mirror.py
+          bash scripts/install-test-helpers.sh
 
       - name: Prepare backend dependencies
         run: clojure -X:deps prep
