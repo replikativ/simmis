@@ -49,6 +49,29 @@
   [draft]
   (and (not (:source-stale? draft)) (nil? (:incoming-source draft))))
 
+(defn collectable-output-request
+  "Pinned submission presentation, not current source or form settings.
+   The server independently checks the actual canonical request and Attempt."
+  [draft]
+  (let [submission (:submission draft) reply (:reply submission)]
+    (when (and (= "run" (:mode submission)) (= "hosted" (:backend submission "hosted")) (:knowledge? submission)
+               (= :workflow (:kind reply)) (:id reply) (:job reply))
+      (str (:id reply)))))
+
+(defn apply-output-result [draft request-id reply]
+  (if (not= request-id (collectable-output-request draft))
+    draft
+    (assoc draft :wiki-output
+           (if (and (= request-id (:request reply))
+                    (or (= :no-op (:status reply))
+                        (and (= :proposed (:status reply)) (string? (:proposal reply)))))
+             (select-keys reply [:status :request :proposal])
+             {:status :unavailable :request request-id}))))
+
+(defn collected-output [draft]
+  (when-let [request-id (collectable-output-request draft)]
+    (when (= request-id (get-in draft [:wiki-output :request])) (:wiki-output draft))))
+
 (defn unverified [draft]
   (assoc draft :source-stale? true))
 

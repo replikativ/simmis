@@ -21,7 +21,7 @@
         source (:source draft) form (:form draft)
         permissions (:permissions state)
         loading (reduce (fn [out slot] (assoc out slot (boolean (get-in state [:loading [slot selected]]))))
-                        {:list (boolean (get-in state [:loading :list]))} [:source :save :submit :fund :schedule])
+                        {:list (boolean (get-in state [:loading :list]))} [:source :save :submit :fund :schedule :output])
         write? (:write? permissions) merge? (:merge? permissions)
         benchmark? (= "benchmark" (:mode form))
         display-cases (if benchmark? (editor/benchmark-cases (:inspection source) form)
@@ -32,6 +32,7 @@
         change #(apply (:change actions) selected %&)
         set-form (fn [key value] (change update :form editor/set-form-field key value))
         submission (:submission draft)
+        wiki-output (editor/collected-output draft)
         uncertain? (and submission (nil? (:reply submission)))]
     (el/div {:class "workflow-panel"}
             (el/div {:class "workflow-toolbar"}
@@ -253,6 +254,19 @@
                                                           (el/p {} (str "Admission: " (:state reply)))
                                                           (when-let [job (:job reply)]
                                                             (el/button {:on-click (fn [_] ((:open-run actions) job))} "Open Run and results"))))
+                                                (when (and merge? (editor/collectable-output-request draft))
+                                                  (el/div {:class "workflow-output-review"}
+                                                          (el/p {:class "workflow-note"}
+                                                                "After the Run completes, collect its mechanically checked wiki output for human review. This never reruns inference or accepts files.")
+                                                          (el/button {:disabled (:output loading)
+                                                                      :on-click (fn [_] ((:collect-output actions) selected))}
+                                                                     (if (:output loading) "Collecting wiki output…" "Review wiki output"))
+                                                          (case (:status wiki-output)
+                                                            :proposed (el/button {:on-click (fn [_] ((:open-proposal actions) (:proposal wiki-output)))} "Open wiki proposal")
+                                                            :no-op (el/p {:role "status"} "No wiki changes were proposed.")
+                                                            :unavailable (el/p {:role "status"}
+                                                                               "Output is not available for review. Check that the Run completed and passed its checks, and that you still have permission. Retrying collection does not rerun the workflow.")
+                                                            nil)))
                                                 (when funded-here? (el/p {} "Execution allowance provisioned for this backend. This is not a payment or evidence of correctness.")))))))))))
 
 #?(:cljs

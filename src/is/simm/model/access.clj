@@ -743,6 +743,7 @@
      "load-workflow-source!"   {:action R :resource (room :room-id-str)}
      "save-workflow-source!"   {:action W :resource (room :room-id-str)}
      "submit-workflow-run!"    {:action M :resource (room :room-id-str)}
+     "collect-workflow-wiki-output!" {:action M :resource (room :room-id-str)}
      "create-workflow-schedule!" {:action M :resource (room :room-id-str)}
      "set-workflow-schedule-enabled!" {:action M :resource (room :room-id-str)}
      "submit-workflow-benchmark!" {:action M :resource (room :room-id-str)}

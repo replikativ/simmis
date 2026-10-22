@@ -6,6 +6,27 @@
              :definition {:params {:goal "old default"}}
              :inspection {:ok true :bundle "bundle" :cases []}})
 
+(deftest wiki-output-belongs-to-the-original-submission-not-the-edited-form
+  (let [id (str (random-uuid)) proposal (str (random-uuid))
+        draft {:submission {:mode "run" :knowledge? true
+                            :reply {:id id :kind :workflow :job (random-uuid)}}
+               :form {:mode "benchmark"}}
+        reply {:status :proposed :request id :proposal proposal :native-handle :secret}]
+    (is (= id (editor/collectable-output-request draft)))
+    (is (= (dissoc reply :native-handle) (:wiki-output (editor/apply-output-result draft id reply))))
+    (is (= (dissoc reply :native-handle) (editor/collected-output (editor/apply-output-result draft id reply))))
+    (is (nil? (editor/collected-output (assoc-in (editor/apply-output-result draft id reply)
+                                                 [:submission :reply :id] (str (random-uuid))))))
+    (is (= draft (editor/apply-output-result draft (str (random-uuid)) reply)))
+    (is (= :unavailable (get-in (editor/apply-output-result draft id (assoc reply :request "other"))
+                                [:wiki-output :status])))
+    (doseq [ineligible [(assoc-in draft [:submission :mode] "benchmark")
+                        (assoc-in draft [:submission :backend] "local")
+                        (assoc-in draft [:submission :knowledge?] false)
+                        (update-in draft [:submission :reply] dissoc :job)
+                        (assoc-in draft [:submission :reply :kind] :benchmark)]]
+      (is (nil? (editor/collectable-output-request ineligible))))))
+
 (deftest recurring-deployments-retain-the-inspected-execution-intent
   (let [draft (-> (editor/draft source) (assoc-in [:form :model] "explicit-model")
                   (assoc-in [:form :schedule-minutes] "60")

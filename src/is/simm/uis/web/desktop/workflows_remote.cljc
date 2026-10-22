@@ -20,6 +20,7 @@
             #?(:clj [is.simm.ops.owned-workflow-host :as workflow-host])
             #?(:clj [is.simm.ops.work-api :as work-api])
             #?(:clj [is.simm.ops.workflows :as workflows])
+            #?(:clj [is.simm.ops.knowledge-output-service :as knowledge-output])
             #?(:clj [is.simm.runtimes.context :as context])))
 
 #?(:clj
@@ -181,6 +182,21 @@
   [server-id room-id-str request]
   (spin-remote server-id [room-id-str request]
                #?(:clj (await (workflow-on-worker room-id-str :simmis/workflow-run request))
+                  :cljs nil)))
+
+#?(:clj
+   (defn- wire-uuid [value]
+     (when (and (string? value)
+                (re-matches #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" value))
+       (parse-uuid value))))
+
+(defn-spin-remote collect-workflow-wiki-output!
+  [server-id room-id-str request-id-str]
+  (spin-remote server-id [room-id-str request-id-str]
+               #?(:clj (let [party (access/authenticated-party-id)
+                             room-id (wire-uuid room-id-str)
+                             request-id (wire-uuid request-id-str)]
+                         (await (blocking/blocking #(knowledge-output/collect! party room-id request-id))))
                   :cljs nil)))
 
 (defn-spin-remote submit-workflow-benchmark!

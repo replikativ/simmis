@@ -112,6 +112,29 @@ customer facts into a real scheduled Run.
 
 ## Current integration boundaries
 
+### Manual output collection
+
+For a newly submitted hosted knowledge workflow, Workflows offers **Review wiki
+output** beside the Run result. Use it after the Run finishes. The action reads
+the original canonical request and its direct certified Attempt, retains the
+exact output, and links an ordinary Proposal. It does not run the checker source,
+repeat inference, recapture today's inputs, or accept the proposed files. A
+verified empty output is reported as no wiki changes, not an empty Proposal.
+
+An unfinished or uncertified Run, revoked permission, a benchmark request, or an
+unavailable historical source is not a reviewable result. Collection may be
+retried: an existing immutable disposition and reserved chat message are reused,
+never a new Job. Inspect the resulting Proposal, check it against the current
+workspace, and explicitly accept its reviewed files. Mechanical certification
+does not establish that the content is factually correct.
+
+This browser action requires the original request author and current room merge
+permission. It is not added to existing signed MCP capabilities. Local-worker
+output certification remains a separate integration; this control is not offered
+for local-worker or benchmark submissions. Existing scheduled knowledge requests
+already use the same filing helper automatically. Neither path advances an
+adopted-memory watermark merely by filing a Proposal.
+
 Canonical prospective validation, preservation and exact AFTER snapshot guards
 support explicit reviewed file-only acceptance. Processed input, a filed
 proposal and an adopted result remain distinct. The installer is separate from
