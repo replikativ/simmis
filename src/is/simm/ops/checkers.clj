@@ -63,7 +63,8 @@
        {:checks (into {} checks) :reward (double reward)}))))
 
 (def calibration-policy
-  {:version 1 :max-damaged 4 :max-files 100 :max-bytes 2097152 :timeout-ms 20000})
+  {:version 2 :budget-scaling :per-answer
+   :max-damaged 4 :max-files 100 :max-bytes 2097152 :timeout-ms 20000})
 
 (defn validate-calibration!
   "Pure shape/bounds validation; never executes source. No fixture HTTP/judge
@@ -105,14 +106,19 @@
 
 (defn calibrate
   "Catalog calibration semantics with bounded inputs and one cumulative
-   deadline/allocation account. Must run on an owned admission/scoring worker."
+   deadline/allocation account. The account holds one scoring check's budget
+   per answer it evaluates (the reference and each damaged answer), so a
+   checker that fits a scoring check also fits its calibration. Must run on an
+   owned admission/scoring worker."
   ([bundle] (calibrate bundle calibration-policy))
   ([{:keys [calibration checker definition id] :as bundle} options]
    (validate-calibration! bundle)
    (when calibration
-     (let [limits (assoc policy
-                         :deadline-nanos (+ (System/nanoTime) (* 1000000 (long (:timeout-ms options))))
-                         :allocation-check (sandbox/make-resource-limits :max-bytes (:max-allocated-bytes policy)))
+     (let [answers (inc (count (:damaged calibration)))
+           per-answer-bytes (or (:max-allocated-bytes options) (:max-allocated-bytes policy))
+           limits (assoc policy
+                         :deadline-nanos (+ (System/nanoTime) (* 1000000 answers (long (:timeout-ms options))))
+                         :allocation-check (sandbox/make-resource-limits :max-bytes (* answers per-answer-bytes)))
            gold (if-let [case-id (:case calibration)] (get-in bundle [:cases case-id :gold]) (:gold bundle))
            check (fn [files] (run-checker checker {:files files :gold gold :params (:params definition)
                                                    :fetched {} :judgements {}} limits))
