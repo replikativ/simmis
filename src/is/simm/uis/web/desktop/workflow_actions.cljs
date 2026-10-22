@@ -245,8 +245,13 @@
             (collect-output! [name]
               (when-let [request-id (editor/collectable-output-request (get-in (state) [:drafts name]))]
                 (when-not (get-in (state) [:loading [:output name]])
-                  (request! :output name #(remote/collect-workflow-wiki-output! web/server-id room request-id)
-                            (fn [s reply] (update-in s [:drafts name] editor/apply-output-result request-id reply))))))
+                  (let [acknowledge #(editor/acknowledge-output %1 name request-id %2)]
+                    ;; Filing publishes a control/room hint before its own ACK.
+                    ;; Retain only that request's receipt across invalidation;
+                    ;; request! still fences changed sessions/rosters and drops
+                    ;; permissions and source verification on the stale path.
+                    (request! :output name #(remote/collect-workflow-wiki-output! web/server-id room request-id)
+                              acknowledge acknowledge)))))
             (fund! [name]
               (try
                 (when (get-in (state) [:loading [:fund name]])

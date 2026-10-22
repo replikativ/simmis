@@ -72,6 +72,14 @@
   (when-let [request-id (collectable-output-request draft)]
     (when (= request-id (get-in draft [:wiki-output :request])) (:wiki-output draft))))
 
+(defn acknowledge-output
+  "Keep a sealed result receipt even when its own filing invalidates metadata.
+   No source, permissions or missing/replaced draft may be restored by this ACK."
+  [state name request-id reply]
+  (if (contains? (:drafts state) name)
+    (update-in state [:drafts name] apply-output-result request-id reply)
+    state))
+
 (defn unverified [draft]
   (assoc draft :source-stale? true))
 

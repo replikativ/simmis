@@ -27,6 +27,24 @@
                         (assoc-in draft [:submission :reply :kind] :benchmark)]]
       (is (nil? (editor/collectable-output-request ineligible))))))
 
+(deftest own-filing-invalidation-keeps-only-the-exact-result-receipt
+  (let [id (str (random-uuid))
+        draft {:source-stale? true :source source :files (:files source)
+               :submission {:mode "run" :knowledge? true
+                            :reply {:id id :kind :workflow :job (random-uuid)}}}
+        state {:drafts {"memory" draft "other" {:files {"a" "unsaved"}}}}
+        reply {:status :proposed :request id :proposal (str (random-uuid))
+               :permissions {:merge? true} :source :untrusted}
+        acknowledged (editor/acknowledge-output state "memory" id reply)]
+    (is (= (select-keys reply [:status :request :proposal])
+           (get-in acknowledged [:drafts "memory" :wiki-output])))
+    (is (true? (get-in acknowledged [:drafts "memory" :source-stale?])))
+    (is (not (contains? acknowledged :permissions)))
+    (is (= source (get-in acknowledged [:drafts "memory" :source])))
+    (is (= (get-in state [:drafts "other"]) (get-in acknowledged [:drafts "other"])))
+    (is (= state (editor/acknowledge-output state "memory" (str (random-uuid)) reply)))
+    (is (= {} (editor/acknowledge-output {} "memory" id reply)))))
+
 (deftest recurring-deployments-retain-the-inspected-execution-intent
   (let [draft (-> (editor/draft source) (assoc-in [:form :model] "explicit-model")
                   (assoc-in [:form :schedule-minutes] "60")
