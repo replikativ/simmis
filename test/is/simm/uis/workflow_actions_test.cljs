@@ -81,6 +81,30 @@
               (is (not (editor/source-current? draft)))
               (when (= :fund operation) (is (true? (:funded? draft)))))))))))
 
+(deftest wiki-filing-hint-before-ack-keeps-only-the-current-request-receipt
+  (doseq [race [:own-hint :changed-roster :replacement-request]]
+    (with-state
+      (fn [ui k]
+        (let [requests (atom []) id (str (random-uuid))
+              reply {:status :proposed :request id :proposal (str (random-uuid))}]
+          (with-redefs [remote/collect-workflow-wiki-output! (deferred requests)]
+            ((:change ui) "a" assoc :submission
+             {:mode "run" :backend "hosted" :knowledge? true
+              :reply {:id id :kind :workflow :job (random-uuid)}})
+            ((:collect-output ui) "a")
+            (is (= 1 (count @requests)))
+            (reset! sync/state {:control-dirty 1})
+            (case race
+              :changed-roster (reset! sig/user-rooms {:rooms []})
+              :replacement-request ((:change ui) "a" assoc-in [:submission :reply :id] (str (random-uuid)))
+              nil)
+            ((:ok (first @requests)) (assoc reply :permissions {:merge? true}))
+            (let [state (get @sig/workflow-editor-state k) draft (get-in state [:drafts "a"])]
+              (is (= (when (= :own-hint race) reply) (editor/collected-output draft)) (pr-str state))
+              (is (false? (get-in state [:loading [:output "a"]])))
+              (is (nil? (:permissions state)))
+              (is (not (editor/source-current? draft))))))))))
+
 (deftest explicit-source-reply-cannot-restore-revoked-room-access
   (with-state
     (fn [ui k]
