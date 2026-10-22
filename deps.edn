@@ -437,9 +437,13 @@
                                ;; #388 physically owns HOST Room operations and
                                ;; configured embedding lifetimes through exit.
                                ;; #389 records personal room type atomically.
+                               ;; #392 joins admission/scoring handoff and late
+                               ;; experiment controllers before cleanup returns.
+                               ;; #390 projects/caches owned MCP operation schemas
+                               ;; without rediscovering host operations per read.
                                ;; Permanent reviewed, green main squash.
                                ;; Adopt only in a fresh runtime, never hot reload.
-                               :git/sha "f2e76ac6d6030e0d36201f075e6edf930b810efa"
+                               :git/sha "49b7ef14cd03512148cf24af801a09fecd1e0d1b"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.

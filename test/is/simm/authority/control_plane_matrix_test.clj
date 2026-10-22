@@ -245,6 +245,8 @@
    "proposal-retained-audit!" [(c :none AUTH)]
    "proposal-diff!"          [(c :proposal MEMBERS)]
    "proposal-file!"          [(c :proposal MEMBERS)]
+   "list-proposal-sources!"  [(c :proposal MEMBERS)]
+   "read-proposal-source!"   [(c :proposal MEMBERS)]
    "preview-file-proposal!"  [(c :proposal MEMBERS)]
    "adopt-reviewed-files!"   [(c :proposal MEMBERS)]
    "reconcile-file-proposal!" [(c :proposal MEMBERS)]

@@ -58,7 +58,10 @@
   ([registry-db room-id room]
    (target-descriptor (admission/default-target registry-db room-id room))))
 
-(defn- frozen-workflow! [input]
+(defn verify-frozen-workflow!
+  "Verify the retained workflow, selection and inert setup/verifier references.
+   No live workspace, provider, Attempt, authorization or settlement access."
+  [input]
   (let [definition (environment/validate-environment (:environment input))
         workflow (:workflow input)
         selection (:input-selection workflow)
@@ -91,7 +94,8 @@
                    (= :ctx (get-in definition [:environment/world :isolation]))
                    (contains? #{:review :discard} (get-in definition [:environment/world :settlement])))
       (refuse! :frozen-workflow-mismatch))
-    {:environment definition :workflow-bundle (get-in prepared [:bundle :id])}))
+    {:environment definition :workflow-bundle (get-in prepared [:bundle :id])
+     :captured captured}))
 
 (defn- certified-candidate! [room row input]
   (when-not (and (:store room) (satisfies? store/PAttemptStore (:store room)))
@@ -178,7 +182,7 @@
         _ (when-not (= (:work.request/intent-id row) (hasch/uuid retained))
             (refuse! :payload-mismatch))
         input (:input retained)
-        {:keys [environment workflow-bundle]} (frozen-workflow! input)
+        {:keys [environment workflow-bundle]} (verify-frozen-workflow! input)
         certified (certified-candidate! room row input)
         _ (workspace/validate-proof! (:target basis)
                                      (get-in certified [:attempt/evidence :knowledge-workspace]))

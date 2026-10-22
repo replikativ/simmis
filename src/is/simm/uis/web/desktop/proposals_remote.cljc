@@ -15,6 +15,7 @@
             #?(:clj [is.simm.ops.semantic-diff :as sdiff])
             #?(:clj [is.simm.ops.file-output-review :as file-review])
             #?(:clj [is.simm.ops.file-output-service :as file-service])
+            #?(:clj [is.simm.ops.retained-knowledge-sources :as retained-sources])
             #?(:clj [is.simm.ops.checks :as checks])
             #?(:clj [is.simm.runtimes.branching :as branching])
             #?(:clj [is.simm.model.access :as access])
@@ -241,6 +242,24 @@
      (when (and (string? value)
                 (re-matches #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" value))
        (parse-uuid value))))
+
+(defn-spin-remote list-proposal-sources!
+  [server-id proposal-id-str component-id-str]
+  (spin-remote server-id [proposal-id-str component-id-str]
+               #?(:clj (let [party (access/authenticated-party-id)]
+                         (await (blocking/blocking
+                                 #(retained-sources/list! party (wire-uuid proposal-id-str)
+                                                          (wire-uuid component-id-str)))))
+                  :cljs nil)))
+
+(defn-spin-remote read-proposal-source!
+  [server-id proposal-id-str component-id-str options]
+  (spin-remote server-id [proposal-id-str component-id-str options]
+               #?(:clj (let [party (access/authenticated-party-id)]
+                         (await (blocking/blocking
+                                 #(retained-sources/read! party (wire-uuid proposal-id-str)
+                                                          (wire-uuid component-id-str) options))))
+                  :cljs nil)))
 
 (defn-spin-remote preview-file-proposal!
   [server-id proposal-id-str]
