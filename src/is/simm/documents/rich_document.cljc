@@ -88,6 +88,7 @@
   (let [models (region-models model)]
     (vec (keep (fn [[key region]]
                  (let [edited (get models key)]
+                   (rich/validate-provenance! (:model region) edited)
                    (when-not (= (rich/normalize (:model region)) (rich/normalize edited))
                      (assoc (select-keys region [:from :to]) :model edited)))) (:regions projection)))))
 
@@ -124,7 +125,9 @@
   "Preserve unchanged syntax bytes while editing inside one semantic owner.
    Source offsets are UTF-16 and stay relative to the frozen draft baseline."
   [source slots model]
-  (let [new (vec (:content (rich/normalize model)))
+  (let [baseline {:type "doc" :content (vec (mapcat #(get-in % [:model :content]) slots))}
+        _ (rich/validate-provenance! baseline model)
+        new (vec (:content (rich/normalize model)))
         newline (or (re-find #"\r\n|\n|\r" source) "\n")]
     (if (= (:from (first slots)) (:to (first slots)))
       (let [text (rich/markdown {:type "doc" :content new}) pos (:from (first slots))]
@@ -142,7 +145,7 @@
            (let [replacement {:type "doc" :content (subvec new c d)}]
              (if (< a b)
                (rich/apply-region text {:from (:from (nth slots a)) :to (:to (nth slots (dec b)))
-                                         :model {:type "doc" :content (subvec old a b)}} replacement)
+                                         :model {:type "doc" :content (subvec old a b)}} replacement baseline)
                (let [next-slot (get slots a) previous (peek slots)
                      pos (if next-slot (:from next-slot) (:to previous))
                      ending (or (re-find #"[\r\n]+$" (subs source (:from previous) (:to previous))) "")

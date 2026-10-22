@@ -75,9 +75,22 @@ establish exact no-op preservation and unchanged academic source when a neighbor
 heading is edited, for both LF and CRLF input. This does not claim formula
 rendering, citation resolution, bibliography loading, or runnable Markdown cells.
 Footnote-reference syntax nodes retain exact raw token spelling separately from
-their trimmed display label, including unresolved and repeated references;
-their containing rich paragraph can still require
-source editing. Parsing and rich editing do not fetch references or execute code.
+their trimmed display label, including unresolved and repeated references.
+Single-line references are inert inline rich-editor atoms: neighboring prose
+remains editable, copying exports the original token, and deletion/undo use
+ordinary document editing. Definitions remain source-backed opaque regions.
+New references and multiline labels use Markdown source editing in this slice.
+Reference numbering, definition editing and automatic resolution are not added.
+
+Each inline reference retains a projection-local source-span key, exact raw
+token and display label. The key is not a persistent knowledge-block ID. Client
+composition and host publication independently check tokens against the frozen
+source-region baseline before normalization: removal and relocation within one
+region are permitted; fabricated, duplicated and foreign-region tokens are not.
+Serialization round-trip comparison ignores only the local span key, after this
+validation. HTML cannot import those keys, and attribute text counts toward the
+bounded model budget. Parsing and rich editing do not fetch references or execute
+code.
 
 `patch` accepts a content revision and non-overlapping edits in that revision's
 coordinates. A stale revision, overlapping edits or a range splitting a UTF-16

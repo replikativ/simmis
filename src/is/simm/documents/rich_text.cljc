@@ -6,6 +6,26 @@
 (defn- invalid! []
   (throw (ex-info "This rich-text structure needs Source editing" {:type ::unsupported})))
 
+(defn- attributes-size [attrs]
+  (when-not (or (nil? attrs)
+                (and (map? attrs) (<= (count attrs) 32)
+                     (every? keyword? (keys attrs))
+                     (every? #(or (nil? %) (string? %) (number? %) (boolean? %)) (vals attrs))))
+    (invalid!))
+  (+ (reduce + 0 (map #(count (str %)) (keys attrs)))
+     (reduce + 0 (map #(if (string? %) (count %) 0) (vals attrs)))))
+
+(defn- footnote-shape! [node]
+  (let [{:keys [sourceKey raw label] :as attrs} (:attrs node)]
+    (when-not (and (= #{:sourceKey :raw :label} (set (keys attrs)))
+                   (string? sourceKey) (<= (count sourceKey) 64)
+                   (re-matches #"^footnote:[0-9]+:[0-9]+$" sourceKey)
+                   (string? raw) (<= 4 (count raw) 2048)
+                   (not (re-find #"[\r\n]" raw))
+                   (string? label) (<= 1 (count label) 2048)
+                   (not (seq (:content node))) (nil? (:text node)))
+      (invalid!))))
+
 (defn validate-model!
   "Bound the whole input before recursive normalization or serialization,
    including nodes such as list items and code text consumed by special cases."
@@ -16,7 +36,10 @@
                      (or (nil? (:content node)) (sequential? (:content node)))
                      (or (nil? (:marks node)) (and (sequential? (:marks node)) (<= (count (:marks node)) 8))))
         (invalid!))
-      (let [text (:text node) chars (+ chars (if (string? text) (count text) 0))]
+      (when (= "footnoteReference" (:type node)) (footnote-shape! node))
+      (let [text (:text node) chars (+ chars (if (string? text) (count text) 0)
+                                      (attributes-size (:attrs node))
+                                      (reduce + 0 (map #(attributes-size (:attrs %)) (:marks node))))]
         (when (> chars 2097152) (invalid!))
         (recur (concat (map #(vector % (inc depth)) (:content node)) (rest todo)) (inc nodes) chars))))
   model)
@@ -49,30 +72,43 @@
   (let [[_ before body after] (re-matches #"^(\s*)([\s\S]*?)(\s*)$" s)]
     (if (seq body) (str before marker body marker after) s)))
 
+(defn- marked [initial marks]
+  (reduce (fn [s mark]
+            (case (:type mark)
+              "code" s
+              "bold" (delimited "**" s)
+              "italic" (delimited "*" s)
+              "strike" (delimited "~~" s)
+              "link" (let [url (get-in mark [:attrs :href]) title (get-in mark [:attrs :title])]
+                       (when-not (safe-link? url) (invalid!))
+                       (str "[" s "](<" url ">"
+                            (when (seq title)
+                              (str " \"" (str/replace title #"[\\\"]" #(str "\\" %)) "\"")) ")"))
+              (invalid!))) initial marks))
+
 (defn- inline [node depth budget]
   (when (or (> depth 100) (neg? (vswap! budget dec))) (invalid!))
   (case (:type node)
     "hardBreak" "  \n"
+    "footnoteReference" (do (when (some #(= "code" (:type %)) (:marks node)) (invalid!))
+                             (marked (get-in node [:attrs :raw]) (:marks node)))
     "text" (let [text (:text node) marks (:marks node)
                  _ (when-not (string? text) (invalid!))
                  code? (some #(= "code" (:type %)) marks)
                  initial (if code? (code-span text) (escaped text))]
-             (reduce (fn [s mark]
-                       (case (:type mark)
-                         "code" s
-                         "bold" (delimited "**" s)
-                         "italic" (delimited "*" s)
-                         "strike" (delimited "~~" s)
-                         "link" (let [url (get-in mark [:attrs :href]) title (get-in mark [:attrs :title])]
-                                  (when-not (safe-link? url) (invalid!))
-                                  (str "[" s "](<" url ">"
-                                       (when (seq title)
-                                         (str " \"" (str/replace title #"[\\\"]" #(str "\\" %)) "\"")) ")"))
-                         (invalid!))) initial marks))
+             (marked initial marks))
     (invalid!)))
 
 (defn- inlines [node depth budget]
-  (apply str (map #(inline % (inc depth) budget) (:content node))))
+  ;; An emphasized footnote and its adjacent text form ONE marked span. Closing
+  ;; and reopening '*' at each inline atom creates ambiguous adjacent delimiters.
+  (apply str
+         (map (fn [run]
+                (let [marks (:marks (first run))]
+                  (if (some #(= "code" (:type %)) marks)
+                    (apply str (map #(inline % (inc depth) budget) run))
+                    (marked (apply str (map #(inline (dissoc % :marks) (inc depth) budget) run)) marks))))
+              (partition-by #(vec (:marks %)) (:content node)))))
 
 (defn- emit [node depth budget]
   (when (or (> depth 100) (neg? (vswap! budget dec))) (invalid!))
@@ -112,6 +148,14 @@
     (when (> (count result) 2097152) (invalid!))
     result))
 
+(defn- normalized-marks [marks]
+  (vec (sort-by :type
+                (map (fn [mark]
+                       (cond-> {:type (:type mark)}
+                         (= "link" (:type mark))
+                         (assoc :attrs {:href (get-in mark [:attrs :href])
+                                        :title (not-empty (get-in mark [:attrs :title]))}))) marks))))
+
 (defn- normalize*
   "Ignore native editor defaults and merge adjacent equal-mark text. A no-op
    open/selection must not reserialize source because Tiptap added attrs."
@@ -124,14 +168,13 @@
                               (conj (pop out) (update before :text str (:text n)))
                               (conj out n)))) [] (:content node))
         content (if (and (= type "doc") (= content [{:type "paragraph" :content []}])) [] content)]
-    (if (= type "text")
+    (cond
+      (= type "footnoteReference")
+      {:type type :attrs (:attrs node) :marks (normalized-marks (:marks node))}
+      (= type "text")
       {:type type :text (:text node)
-       :marks (vec (sort-by :type
-                           (map (fn [mark]
-                                  (cond-> {:type (:type mark)}
-                                    (= "link" (:type mark))
-                                    (assoc :attrs {:href (get-in mark [:attrs :href])
-                                                   :title (not-empty (get-in mark [:attrs :title]))}))) (:marks node))))}
+       :marks (normalized-marks (:marks node))}
+      :else
       (cond-> {:type type :content content}
         (= type "heading") (assoc :attrs {:level (get-in node [:attrs :level])})
         (= type "orderedList") (assoc :attrs {:start (get-in node [:attrs :start] 1)})
@@ -139,18 +182,39 @@
 
 (defn normalize [node] (normalize* (validate-model! node)))
 
+(defn- footnotes [model]
+  (filter #(= "footnoteReference" (:type %)) (tree-seq #(seq (:content %)) :content model)))
+
+(defn validate-provenance!
+  "Footnote tokens may be removed or moved within this frozen region, never
+   fabricated, duplicated or imported from another region. No registry/authority
+   is accepted from the editor: callers reconstruct the baseline from source."
+  [baseline edited]
+  (validate-model! baseline)
+  (validate-model! edited)
+  (let [original (frequencies (map :attrs (footnotes baseline)))
+        current (frequencies (map :attrs (footnotes edited)))]
+    (doseq [[attrs amount] current]
+      (when (> amount (get original attrs 0)) (invalid!))))
+  edited)
+
 (defn roundtrip-normalize
-  "Semantic comparison after source validation. Empty ROOT paragraphs represent
-   Markdown blank-line layout, not AST nodes. Keep serialization, significant
-   text and nested list structure intact."
+  "Semantic equivalence AFTER frozen-source provenance validation. Ignore only
+   projection-local footnote keys and empty ROOT paragraphs (Markdown blank-line
+   layout). Preserve significant text, token spelling and nested list structure."
   [model]
-  (let [normalized (normalize model)]
-    (if (= "doc" (:type normalized))
-      (update normalized :content
-              #(filterv (fn [node]
-                          (not (and (= "paragraph" (:type node))
-                                    (empty? (:content node))))) %))
-      normalized)))
+  (letfn [(walk [node]
+            (cond-> node
+              (= "footnoteReference" (:type node)) (update :attrs dissoc :sourceKey)
+              (contains? node :content) (update :content #(mapv walk %))))]
+    (let [normalized (normalize model)
+          normalized (if (= "doc" (:type normalized))
+                       (update normalized :content
+                               #(filterv (fn [node]
+                                           (not (and (= "paragraph" (:type node))
+                                                     (empty? (:content node))))) %))
+                       normalized)]
+      (walk normalized))))
 
 (defn- inline-model [node marks]
   (let [children #(vec (mapcat (fn [n] (inline-model n %)) (:children node)))]
@@ -159,6 +223,10 @@
                                     (seq marks) (assoc :marks marks))] [])
       :SoftLineBreak [(cond-> {:type "text" :text " "} (seq marks) (assoc :marks marks))]
       :HardLineBreak [{:type "hardBreak"}]
+      :Footnote [(cond-> {:type "footnoteReference"
+                          :attrs {:sourceKey (str "footnote:" (:from node) ":" (:to node))
+                                  :raw (get-in node [:footnote :raw]) :label (get-in node [:footnote :label])}}
+                   (seq marks) (assoc :marks marks))]
       :Emphasis (children (conj marks {:type "italic"}))
       :StrongEmphasis (children (conj marks {:type "bold"}))
       :Strikethrough (children (conj marks {:type "strike"}))
@@ -199,12 +267,14 @@
 (defn apply-region
   "Replace just the selected syntax span. No-op models preserve exact source;
    changed regions retain their original trailing newlines and newline style."
-  [source {:keys [from to model]} edited]
+  ([source region edited] (apply-region source region edited (:model region)))
+  ([source {:keys [from to model]} edited provenance]
   (when-not (and (integer? from) (integer? to) (<= 0 from to (count source)) model) (invalid!))
+  (validate-provenance! provenance edited)
   (if (= (normalize model) (normalize edited))
     source
     (let [before (subs source from to)
           ending (or (re-find #"[\r\n]+$" before) "")
           newline (or (re-find #"\r\n|\n|\r" before) "\n")
           replacement (-> (markdown (normalize edited)) (str/replace #"\n" newline))]
-      (str (subs source 0 from) replacement ending (subs source to)))))
+      (str (subs source 0 from) replacement ending (subs source to))))))
