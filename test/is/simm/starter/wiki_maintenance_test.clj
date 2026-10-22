@@ -4,6 +4,10 @@
             [datahike.api :as d]
             [datahike.blob :as blob]
             [dvergr.catalog.room :as catalog]
+            [dvergr.agent.experiment.runner :as runner]
+            [dvergr.agent.roster :as roster]
+            [dvergr.agent.workflow :as workflow]
+            [dvergr.resource :as resource]
             [geschichte.repo :as repo]
             [hasch.core :as hasch]
             [is.simm.documents.blocks :as blocks]
@@ -12,6 +16,7 @@
             [is.simm.documents.space :as space]
             [is.simm.documents.view :as view]
             [is.simm.ops.checkers :as checkers]
+            [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.knowledge-inputs :as inputs]
             [is.simm.ops.workflow-runs :as runs]
             [is.simm.ops.workflows :as workflows]
@@ -204,4 +209,66 @@
     (is (= (:checker live) (:checker benchmark)))
     (is (= evidence (get-in prepared [:inputs evidence-path])))
     (is (:ok? (checkers/calibrate benchmark)))
+    (is (= source (starter/source)))))
+
+(deftest ordinary-benchmark-api-pins-the-shipped-maintainer-and-each-frozen-case
+  ;; Integration/preparation evidence, not inference or a model-quality score.
+  ;; This derived evaluation bundle is explicit: never add gold to the live
+  ;; user workflow or silently compare its bundle id with the live revision.
+  (let [source (starter/source)
+        cases {"supported" {:inputs (frozen {"inbox/interview.md" evidence})
+                             :gold (gold {target expected} {evidence-path evidence})}
+               "no-change" {:inputs (frozen {"inbox/interview.md" "Synthetic evidence: no new information."})
+                            :gold (gold {} {})}}
+        fixtures (into {} (for [[id {:keys [inputs]}] cases [path text] inputs]
+                            [(str "cases/" id "/fixtures" path) text]))
+        held (into {} (for [[id {:keys [gold]}] cases] [(str "cases/" id "/gold.edn") (pr-str gold)]))
+        files (merge source fixtures held
+                     {"benchmark.edn" (pr-str {:version 1 :splits {:development ["supported"]
+                                                                 :held-out ["no-change"]}})})
+        bundle (catalog/bundle starter/name files)
+        request {:request-id (random-uuid) :name starter/name :expected-bundle (:id bundle)
+                 :models ["codex-subscription-luna-6" "codex-subscription-sol"]
+                 :repetitions 1 :split "development"
+                 :limits {:budget-microdollars 10000 :max-dispatches 4 :max-model-steps 4
+                          :timeout-ms 30000 :settlement "discard"}}
+        prepare #(benchmarks/prepare {:files files} %)]
+    ;; Resolve fixture policies without credentials/CLI discovery; all normal
+    ;; candidate construction, cases, setup/verifier and experiment construction
+    ;; stay real. Neither prepare nor inspect may make a provider call.
+    (with-redefs [workflow/model-policy (fn [model] {:provider :codex-subscription :model model})
+                  runner/runtime-identity (constantly {:libraries {}})]
+      (doseq [[split case-id] [["development" "supported"] ["held-out" "no-change"]]]
+        (let [result (prepare (assoc request :split split))
+              plan (:plan result)
+              metadata (get-in plan [:experiment :experiment/metadata])]
+          (is (= 2 (:cells result)))
+          (is (= 1 (count (:environments plan))))
+          (is (= 2 (count (roster/agents (:team plan)))))
+          (is (= (set (:models request))
+                 (set (map #(get-in % [:agent/model-policy :model]) (roster/agents (:team plan))))))
+          (is (= [case-id] (get-in metadata [:simmis/evaluation :cases])))
+          (is (= split (get-in metadata [:simmis/evaluation :split])))
+          (is (= (str (:id bundle)) (:operator-admitted-bundle metadata)))
+          (is (= (:definition (catalog/bundle starter/name source)) (:definition (:bundle result))))
+          (is (= (get source "checker.clj") (get-in result [:bundle :checker])))
+          (is (= (get-in cases [case-id :gold]) (get-in result [:bundle :cases case-id :gold])))
+          (is (= (get-in cases [case-id :inputs])
+                 (select-keys (get-in result [:bundle :cases case-id :fixtures])
+                              (keys (get-in cases [case-id :inputs])))))
+          (is (every? #(= case-id (get-in % [:environment/metadata :case])) (:environments plan)))
+          (is (every? #(= :discard (get-in % [:environment/world :settlement])) (:environments plan)))
+          (is (every? #(= 5000M (get-in % [:environment/world :resources resource/microdollars]))
+                      (:environments plan)))
+          (is (every? #(= 2M (get-in % [:environment/world :resources resource/model-dispatches]))
+                      (:environments plan)))))
+      (is (thrown? clojure.lang.ExceptionInfo (prepare (dissoc request :split))))
+      (is (thrown? clojure.lang.ExceptionInfo (prepare (assoc request :cases ["no-change"]))))
+      (is (thrown? clojure.lang.ExceptionInfo (prepare (assoc request :expected-bundle (random-uuid)))))
+      (let [damaged (update files "cases/supported/fixtures/in/knowledge/sources/inbox/interview.md" str " drift")
+            before-candidates (fn [& _] (throw (AssertionError. "Invalid frozen evidence reached candidate construction")))]
+        (with-redefs [workflow/candidates before-candidates]
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (benchmarks/prepare {:files damaged}
+                                           (assoc request :expected-bundle (:id (catalog/bundle starter/name damaged)))))))))
     (is (= source (starter/source)))))
