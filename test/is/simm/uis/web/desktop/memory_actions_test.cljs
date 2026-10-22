@@ -682,6 +682,47 @@
           ((:edit live) "x.clj" editor/changed "Same home" nil)
           (is (= 1 (count (:save @calls)))))))))
 
+(deftest a-parent-save-callback-does-not-drain-a-child-forks-edits
+  (with-client
+    (fn [{:keys [data a seed! state last-call calls stamp]}]
+      (seed!)
+      ((:edit a) "x.clj" editor/changed "Parent submission" nil)
+      (let [pending (last-call :save) child (context/fork-context runtime)]
+        (try
+          (binding [ec/*execution-context* child]
+            (let [simulated (actions/controller data)]
+              ((:edit simulated) "x.clj" editor/changed "Child-only edit" nil)
+              ((:ok pending) (wire stamp {:entry {:content :parent-submission}}))
+              (is (= "Child-only edit" (get-in ((:state simulated)) [:drafts "x.clj" :text])))))
+          (is (= 1 (count (:save @calls))))
+          (is (= "Parent submission" (get-in (state) [:drafts "x.clj" :source :text])))
+          (finally (context/close-context! child)))))))
+
+(deftest local-source-validation-in-a-fork-cannot-indirectly-publish
+  (with-client
+    (fn [{:keys [data states a seed! state last-call calls file stamp]}]
+      (seed!)
+      (let [child (context/fork-context runtime)
+            analysis (fn [text] {:revision :synthetic
+                                 :semantic {:status :ready :blocks [{:identity-status :provisional
+                                                                    :syntax [{:from 0 :to (count text)}]}]}
+                                 :slots [{:from 0 :to (count text)
+                                          :model {:type "doc" :content [{:type "paragraph" :content [{:type "text" :text text}]}]}}]})]
+        (try
+          (binding [ec/*execution-context* child]
+            (let [simulated (actions/controller data)
+                  d (editor/draft (assoc file :kind :markdown :text "Alpha" :analysis (analysis "Alpha")))
+                  region (first (keys (get-in d [:rich-base :document :regions])))]
+              (swap! states assoc-in [(:owner a) :drafts "x.clj"] d)
+              ((:local-source-open simulated) "x.clj" region)
+              ((:local-source-change simulated) "x.clj" "Simulated source" nil)
+              ((:ok (last-call :analyze)) (wire stamp (analysis "Simulated source")))
+              (is (= "Simulated source" (get-in ((:state simulated)) [:drafts "x.clj" :text])))
+              (is (empty? (:rich-save @calls)))
+              (is (empty? (:save @calls)))))
+          (is (= "Original" (get-in (state) [:drafts "x.clj" :text])))
+          (finally (context/close-context! child)))))))
+
 (deftest autosave-reconciles-only-exact-own-write-observations
   (doseq [observation [:own-entry :own-body :other-entry :deleted]]
     (with-client
