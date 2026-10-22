@@ -12,7 +12,7 @@
            [com.vladsch.flexmark.ext.tables TablesExtension TableCell]
            [com.vladsch.flexmark.ext.gfm.tasklist TaskListExtension TaskListItem]
            [com.vladsch.flexmark.ext.gfm.strikethrough StrikethroughExtension]
-           [com.vladsch.flexmark.ext.footnotes FootnoteExtension]
+           [com.vladsch.flexmark.ext.footnotes FootnoteExtension Footnote]
            [com.vladsch.flexmark.ext.wikilink WikiLinkExtension WikiNode WikiImage]
            [com.vladsch.flexmark.util.ast Node]
            [java.nio ByteBuffer CharBuffer]
@@ -105,6 +105,8 @@
            :children (mapv #(syntax-node % offset (inc depth) remaining) (children node))}
     (instance? Heading node) (assoc :heading-level (.getLevel ^Heading node))
     (instance? Text node) (assoc :text (Escaping/unescapeString (.getChars node)))
+    (instance? Footnote node)
+    (assoc :footnote {:raw (str (.getChars node)) :label (str (.getText ^Footnote node))})
     (instance? Code node) (assoc :literal (str (.getText ^Code node)))
     (instance? FencedCodeBlock node)
     (assoc :literal (str (.getContentChars ^FencedCodeBlock node))

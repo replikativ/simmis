@@ -74,7 +74,9 @@ and nested Clojure fences, including literal lookalikes in code. Current tests
 establish exact no-op preservation and unchanged academic source when a neighboring
 heading is edited, for both LF and CRLF input. This does not claim formula
 rendering, citation resolution, bibliography loading, or runnable Markdown cells.
-Footnotes are syntax nodes; their containing rich paragraph can still require
+Footnote-reference syntax nodes retain exact raw token spelling separately from
+their trimmed display label, including unresolved and repeated references;
+their containing rich paragraph can still require
 source editing. Parsing and rich editing do not fetch references or execute code.
 
 `patch` accepts a content revision and non-overlapping edits in that revision's

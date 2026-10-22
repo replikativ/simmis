@@ -49,3 +49,18 @@
     (is (str/includes? (:literal code) "$not-math$ [^not-a-note] [@not-a-citation]"))
     (is (not (contains? (get-in parsed [:syntax-profile :features]) :math)))
     (is (not (contains? (get-in parsed [:syntax-profile :features]) :citations)))))
+
+(deftest footnote-projection-retains-exact-token-separately-from-display-label
+  (doseq [newline ["\n" "\r\n"]]
+    (let [source (str "\uFEFF---" newline "title: '🦋'" newline "---" newline
+                      "A[^ method ] and unresolved[^missing] and repeated[^missing]." newline newline
+                      "`[^literal]` and \\[^escaped]." newline newline
+                      "```clojure" newline "\"[^code]\"" newline "```" newline)
+          parsed (markdown/parse source)
+          nodes (mapcat #(tree-seq (comp seq :children) :children %) (:nodes parsed))
+          refs (filter :footnote nodes)]
+      (is (= ["[^ method ]" "[^missing]" "[^missing]"] (mapv #(get-in % [:footnote :raw]) refs)))
+      (is (= ["method" "missing" "missing"] (mapv #(get-in % [:footnote :label]) refs)))
+      (doseq [ref refs]
+        (is (= (get-in ref [:footnote :raw]) (subs source (:from ref) (:to ref)))))
+      (is (= source (:source parsed))))))
