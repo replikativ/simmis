@@ -46,7 +46,10 @@ jobs:
             clojure-${{ runner.os }}-
 
       - name: Install audio and MCP helper dependencies
-        timeout-minutes: 5
+        # A cold Ubuntu mirror can spend >5m transferring ffmpeg's dependency
+        # closure before any tests start. Keep setup separately bounded; apt
+        # requests still have their own timeouts/retry limits in the script.
+        timeout-minutes: 15
         run: bash scripts/install-test-helpers.sh
 
       - name: Prepare backend dependencies
