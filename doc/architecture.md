@@ -19,13 +19,37 @@ workflow files, and room-local Clojure source share the same hierarchy.
 Filename search and folder-focus breadcrumbs avoid unbounded indentation.
 Files open in independent tabs. Markdown offers Read, directly editable Rich
 text, semantic Outline, and exact Source views; unsupported rich regions remain
-inert source. Rich typing patches supported source spans locally; Save validates
-the complete bounded batch on the server before one canonical publication.
+inert source. Rich typing patches supported source spans locally; each automatic
+save validates the complete bounded batch on the server before one canonical
+publication. A compact file header carries path, persistence status and view
+selection; secondary file actions and properties live in its overflow menu.
+Formatting controls follow the focused semantic block without taking document
+height. They support keyboard access and cannot bypass protected block topology.
 YAML document properties and explicit document/block identities remain in the
 source; programmable property schemas are separate trusted definitions, not
 automatically installed by an uploaded file. Existing independent KBs
 and drive resources remain accessible while this file-backed surface is
 introduced; they are not silently migrated or deleted.
+
+Actual text edits enroll a file in automatic saving; mounting, selecting text,
+or reopening an existing dirty draft does not publish it. The existing stamped,
+authenticated compare-and-swap writer permits one request per file per view.
+Newer typing coalesces while that request runs, then drains using its accepted
+descriptor without resetting the editor or undo history. Exact own-write
+observations reconcile at acknowledgement; another revision or deletion remains
+a conflict. A context-owned hold survives errors, Refresh and connection changes,
+so uncertain writes never retry automatically. Explicit Save remains available
+for pre-existing drafts and recovery. Automatic saving affects only the selected
+workspace branch, never proposal adoption. There is no typing-delay policy yet:
+coalescing occurs during in-flight requests, not across an entire typing session.
+
+Selected-region Markdown is a continuously validated source presentation, not
+an Apply/Save transaction. Accepted input reprojects the exact span, retaining
+the native source editor and current caret; invalid/intermediate input stays in
+its separate local buffer. Block identities, children and frontmatter remain
+protected. Closing unvalidated edits requires explicit discard; Escape retains
+them. These drafts are execution-context state, not browser-restart recovery.
+Office XML parts and typed-property forms still have explicit publication.
 
 Markdown's optional Properties panel derives scalar page fields from trusted
 definitions in an explicitly provisioned canonical workspace. Its context-owned

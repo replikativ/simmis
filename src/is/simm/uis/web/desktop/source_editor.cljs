@@ -82,7 +82,9 @@
 (defn mount! [^js el]
   (when-not (.-simmisEditorView el)
     (set! (.-simmisEditorView el)
-          (EditorView. #js {:state (editor-state! el) :parent el}))))
+          (EditorView. #js {:state (editor-state! el) :parent el}))
+    (when (= "true" (.getAttribute el "data-auto-focus"))
+      (.focus (.-simmisEditorView el)))))
 
 (defn disconnect! [^js el]
   (when-let [^js view (.-simmisEditorView el)]
@@ -144,7 +146,7 @@
 
 (register!)
 
-(defn view [{:keys [id path value selection read-only? on-change on-evaluate label]}]
+(defn view [{:keys [id path value selection read-only? on-change on-evaluate label auto-focus?]}]
   (foreign-node
    {:tag :simmis-source-editor :key id :class "source-editor"
     :data-owner (pr-str [id (:fork-id ec/*execution-context*)])
@@ -153,6 +155,7 @@
     :data-selection (js/JSON.stringify (clj->js (or selection {:anchor 0 :head 0})))
     :data-read-only (str (boolean read-only?))
     :data-evaluate (str (boolean on-evaluate))
+    :data-auto-focus (str (boolean auto-focus?))
     :on-input (fn [^js event]
                 ;; Ignore the contenteditable's native bubbling input event;
                 ;; only our source/selection snapshot is application input.

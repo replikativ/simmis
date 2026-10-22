@@ -158,3 +158,18 @@
             (let [region (first (filter #(= from (:from %)) (vals (:regions projection))))]
               (apply-run text (:slots region) model)))
           source (sort-by :from > (edits projection model))))
+
+(defn region-source
+  "Locate a current editable content region in the frozen map. Adjacent rich
+   edits shift its offsets; semantic children/opaque nodes are never included."
+  [source projection model key]
+  (when-let [region (get-in projection [:regions key])]
+    (let [changes (edits projection model)
+          delta (fn [edit]
+                  (let [original (first (filter #(= (:from edit) (:from %)) (vals (:regions projection))))]
+                    (- (count (apply-run source (:slots original) (:model edit))) (count source))))
+          before (reduce + 0 (map delta (filter #(< (:from %) (:from region)) changes)))
+          own (first (filter #(= (:from %) (:from region)) changes))
+          from (+ (:from region) before) to (+ (:to region) before (if own (delta own) 0))
+          current (apply-model source projection model)]
+      {:region key :from from :to to :text (subs current from to)})))

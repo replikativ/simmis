@@ -119,3 +119,61 @@
   (is (thrown? clojure.lang.ExceptionInfo
                (host/apply-edits repo "wiki/note.md" "Alpha\n" (markdown/revision "Alpha\n")
                                  [{:from 2 :to 2 :model {:type "doc" :content [(paragraph "Forged")]}}]))))
+
+(deftest local-source-follows-shifted-rich-spans-and-protects-identities
+  (let [source (str "<!-- simmis:block " parent-id " -->\n\nAlpha\n\n<!-- /simmis:block -->\n\n"
+                    "<!-- simmis:block " child-id " -->\n\nBeta\n\n<!-- /simmis:block -->\n")
+        d (editor/draft {:kind :markdown :text source :analysis (analysis source) :entry :opened})
+        base (:rich-base d) projection (:document base)
+        regions (sort-by :from (vals (:regions projection)))
+        first-key (get-in (:model projection) [:content 0 :content 0 :attrs :key])
+        second-key (get-in (:model projection) [:content 1 :content 0 :attrs :key])
+        model (change-region (:model projection) first-key #(assoc % :content [(paragraph "Longer first paragraph")]))
+        typed (editor/document-changed d (:id base) model nil)
+        opened (editor/open-local-source typed second-key)
+        local (:local-source opened)]
+    (is (= "Beta\n" (:text local)))
+    (is (= (str/index-of (:text typed) "Beta") (:from local)))
+    (is (not (str/includes? (:text local) "simmis:block")))
+    (let [edited (assoc-in opened [:local-source :text] "New **content**\n")
+          candidate (editor/local-source-candidate edited)
+          applied (editor/local-source-applied edited (:local-source edited) candidate (analysis candidate))]
+      (is (= (str/replace (:text typed) "Beta" "New **content**") (:text applied)))
+      (is (nil? (:local-source applied)))
+      (is (some? (get-in applied [:rich-base :document])))
+      (is (= [parent-id child-id] (mapv #(str (:id %)) (get-in applied [:analysis :semantic :blocks])))))
+    (let [edited (assoc-in opened [:local-source :text] "<!-- /simmis:block -->\n")
+          candidate (editor/local-source-candidate edited)]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (editor/local-source-applied edited (:local-source edited) candidate (analysis candidate)))))
+    (is (thrown? clojure.lang.ExceptionInfo (editor/local-source-candidate (assoc opened :text "Concurrent source edit"))))))
+
+(deftest local-source-buffers-retain-their-state-across-incoming-file-observations
+  (let [source "Alpha\n" file {:kind :markdown :text source :analysis (analysis source) :entry :opened}
+        d (editor/draft file) key (first (keys (get-in d [:rich-base :document :regions])))
+        opened (editor/open-local-source d key)
+        edited (assoc-in opened [:local-source :text] "Local draft\n")
+        incoming (assoc file :text "External version\n" :entry :new)
+        observed (editor/loaded edited incoming)]
+    (is (not (editor/dirty? opened)))
+    (is (editor/dirty? edited))
+    (is (= source (:text observed)))
+    (is (= "Local draft\n" (get-in observed [:local-source :text])))
+    (is (= incoming (:incoming observed)))
+    (is (= (:local-source opened) (:local-source (editor/loaded opened file))))))
+
+(deftest live-source-reprojection-keeps-editor-identity-and-rebases-exact-span
+  (let [source (str "<!-- simmis:block " parent-id " -->\n\nAlpha\n\n<!-- /simmis:block -->\n")
+        d (editor/draft {:kind :markdown :text source :analysis (analysis source) :entry :opened})
+        key (first (keys (get-in d [:rich-base :document :regions])))
+        opened (editor/open-local-source d key)
+        edited (assoc-in opened [:local-source :text] "Longer **text**\n")
+        candidate (editor/local-source-candidate edited)
+        projected (editor/local-source-projected edited (:local-source edited) candidate (analysis candidate))
+        next-edit (assoc-in projected [:local-source :text] "Second edit\n")
+        next-source (editor/local-source-candidate next-edit)]
+    (is (= (get-in opened [:local-source :id]) (get-in projected [:local-source :id])))
+    (is (= candidate (get-in projected [:local-source :basis-text])))
+    (is (= candidate (:text projected)))
+    (is (= (str/replace source "Alpha" "Second edit") next-source))
+    (is (= parent-id (str (get-in projected [:analysis :semantic :blocks 0 :id]))))))

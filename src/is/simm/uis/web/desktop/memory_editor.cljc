@@ -53,6 +53,52 @@
             (assoc-in [:rich-base :document-model] model)
             (assoc-in [:rich-base :document-selection] selection)))))
 
+(declare changed begin-rich)
+
+(defn open-local-source [d key]
+  (if (:local-source d) d
+      (let [base (:rich-base d)
+            model (or (:document-model base) (get-in base [:document :model]))
+            region (document/region-source (:text base) (:document base) model key)]
+        (when-not region (throw (ex-info "Select editable block content first." {})))
+        (assoc d :local-source (assoc region :basis-text (:text d) :opened-text (:text region)
+                                            :selection {:anchor 0 :head 0} :id (random-uuid))))))
+
+(defn local-source-candidate [d]
+  (let [{:keys [basis-text from to text]} (:local-source d)]
+    (when-not (and (string? text) (= basis-text (:text d)))
+      (throw (ex-info "The document changed while local Markdown was open. Keep your source and reopen against the current draft." {})))
+    (str (subs basis-text 0 from) text (subs basis-text to))))
+
+(defn- identity-tree [blocks]
+  (mapv (fn [b] [(:id b) (identity-tree (:children b))])
+        (filter #(= :explicit (:identity-status %)) blocks)))
+
+(defn local-source-applied [d expected text analysis]
+  (when-not (and (= expected (:local-source d)) (= text (local-source-candidate d))
+                 (= :ready (get-in analysis [:semantic :status]))
+                 (= (:frontmatter (:analysis d)) (:frontmatter analysis))
+                 (= (identity-tree (get-in d [:analysis :semantic :blocks]))
+                    (identity-tree (get-in analysis [:semantic :blocks]))))
+    (throw (ex-info "Local Markdown cannot change document metadata or knowledge-block identities. Your source edit is retained." {})))
+  (-> d (changed text {:anchor (:from expected) :head (+ (:from expected) (count (:text expected)))})
+      (dissoc :local-source :rich-base)
+      (assoc :analysis analysis :analysis-text text :mode :rich)
+      begin-rich))
+
+(defn local-source-projected
+  "Accept a validated source buffer without closing it or replacing its native
+   editor. Rebase its exact span so subsequent keystrokes edit the new draft."
+  [d expected text analysis]
+  (let [expected (assoc expected :selection (get-in d [:local-source :selection]))
+        projected (local-source-applied d expected text analysis)]
+    (assoc projected :local-source
+           (assoc expected :basis-text text :opened-text (:text expected)
+                  :to (+ (:from expected) (count (:text expected)))))))
+
+(defn same-source-buffer? [a b]
+  (= (dissoc a :selection) (dissoc b :selection)))
+
 (defn rich-changed [d base-id from model selection]
   (if (not= base-id (get-in d [:rich-base :id])) d
       (let [slots (get-in d [:rich-base :analysis :slots])
@@ -85,7 +131,24 @@
 (defn dirty? [d]
   (or (and (:source d) (nil? (get-in d [:source :entry])))
       (not= (:text d) (get-in d [:source :text]))
-      (not= (get-in d [:office :text]) (get-in d [:office :saved-text]))))
+      (not= (get-in d [:office :text]) (get-in d [:office :saved-text]))
+      (and (:local-source d) (not= (get-in d [:local-source :text]) (get-in d [:local-source :opened-text])))))
+
+(defn autosave-ready?
+  "Automatic writes only follow a new edit, never render/mount. Errors require
+   reconciliation and explicit retry; a lost ACK must not become a retry loop."
+  [state path]
+  (let [d (get-in state [:drafts path])]
+    (and (true? (get-in state [:autosave path]))
+         (not (get-in state [:autosave-holds path]))
+         (string? (:text d)) (not= (:text d) (get-in d [:source :text]))
+         (not (:office d)) (not (:earlier-save-receipt d))
+         (or (not (:local-source d))
+             (= (get-in d [:local-source :text]) (get-in d [:local-source :opened-text])))
+         (not (:target-stale? d))
+         (not (:remote-deleted? d)) (not (:incoming d)) (not (:incoming-entry d))
+         (not (get-in state [:errors [:save path]]))
+         (true? (get-in state [:permissions :write?])))))
 
 (defn same-target? [a b]
   (= (:target-stamp a) (:target-stamp b)))
@@ -124,7 +187,7 @@
     ;; A late/unversioned body cannot erase the known target's incoming copy.
     (and (uuid? (:current-target-stamp old))
          (not= (:current-target-stamp old) (:target-stamp file))) old
-    (or (dirty? old) (:rich-edit old))
+    (or (dirty? old) (:rich-edit old) (:local-source old))
     (if (same-document? file (:source old))
       (cond-> (dissoc old :incoming :incoming-entry :remote-deleted?)
         ;; An actual current-target body, not identity-only metadata, proves
@@ -244,7 +307,9 @@
       (assoc-in [:source :text] sent)
       (assoc :last-commit (:commit reply))
       (update :generation (fnil inc 0))
-      (cond-> (same-document? reply (:incoming d)) (dissoc :incoming))))
+      (cond-> (same-document? reply (:incoming d)) (dissoc :incoming)
+        (and (same-target? reply (:source d)) (= (:entry reply) (:incoming-entry d)))
+        (dissoc :incoming-entry))))
 
 (defn moved
   "Move the saved baseline, retaining any edits made while the move was in flight."

@@ -372,23 +372,69 @@
                                   (= dd (get-in current [:declaration-drafts scope]))
                                   (update :declaration-drafts dissoc scope)))
                               (fn [_] (discover! true) (navigation-refresh!)) {:stamp stamp})))))
+            (apply-local-source! [path]
+              (let [draft (get-in (state) [:drafts path]) local (:local-source draft) slot [:local-source path]]
+                (when-not (get-in (state) [:loading slot])
+                  (try
+                    (let [text (editor/local-source-candidate draft)]
+                      (when-let [stamp (draft-stamp! path slot)]
+                        (request! slot #(remote/analyze-memory-text! web/server-id room
+                                                                    {:path path :text text :expected-target-stamp stamp})
+                                  #(-> %1 (update-in [:drafts path] editor/local-source-projected local text %2)
+                                       (update :errors dissoc [:rich path])
+                                       (assoc-in [:autosave path] true))
+                                  (fn [_] (autosave! path))
+                                  {:stamp stamp :accept? (fn [s _]
+                                                              (and (editor/same-source-buffer? local (get-in s [:drafts path :local-source]))
+                                                                   (= (:text draft) (get-in s [:drafts path :text]))))
+                                                   :error-current? (fn [s] (editor/same-source-buffer? local (get-in s [:drafts path :local-source])))
+                                                   :on-settled (fn []
+                                                                   (let [next (get-in (state) [:drafts path :local-source])]
+                                                                     ;; Drain only a newer buffer. Invalid input
+                                                                     ;; does not repeatedly validate itself.
+                                                                     (when (and next (not (editor/same-source-buffer? local next))
+                                                                                (not= (:text next) (:opened-text next)))
+                                                                       (apply-local-source! path))))})))
+                    (catch :default error (update! assoc-in [:errors slot] (rem/error-text error)))))))
             (save! [path]
               (let [draft (get-in (state) [:drafts path]) sent (:text draft) slot [:save path]]
                 (when (and (not (get-in (state) [:loading slot])) (not (get-in (state) [:loading [:move path]]))
                            (not (get-in (state) [:loading [:property-save path]]))
+                           (or (not (:local-source draft))
+                               (= (get-in draft [:local-source :text]) (get-in draft [:local-source :opened-text])))
                            (not (declarations/drafts? (state) path)))
                   (when-let [stamp (draft-stamp! path slot)]
                     (let [request {:path path :expected (get-in draft [:source :entry]) :text sent :expected-target-stamp stamp}
                           base (:rich-base draft)]
+                      ;; Persist the pause in context state before dispatch. A
+                      ;; disconnect retires request bookkeeping, not this hold.
+                      ;; Only an accepted save receipt releases it.
+                      (update! assoc-in [:autosave-holds path] true)
                       (request! slot
                                 #(if base
                                    (remote/save-memory-rich-file! web/server-id room
                                                                   (assoc request :source (:text base)
                                                                          :revision (get-in base [:analysis :revision]) :edits (editor/document-edits draft)))
                                    (remote/save-memory-file! web/server-id room request))
-                                #(update-in %1 [:drafts path] editor/saved-at-generation (:generation draft) sent %2)
+                                #(-> %1 (update-in [:drafts path] editor/saved-at-generation (:generation draft) sent %2)
+                                     (update :autosave-holds dissoc path))
                                 (fn [_] (folder! (parent path)) (navigation-refresh!))
-                                {:stamp stamp :accept? (generation? path (:generation draft))}))))))
+                                {:stamp stamp :accept? (generation? path (:generation draft))
+                                 :on-settled #(autosave! path)}))))))
+            (autosave! [path]
+              ;; The request slot is the single-flight coordinator. An accepted
+              ;; ACK advances the baseline before draining the latest draft.
+              ;; Failed requests leave an error and cannot automatically retry.
+              (when (and (verified? (state) (connection))
+                         (editor/autosave-ready? (state) path)
+                         (not (editor/property-drafts? (state) path)))
+                (save! path)))
+            (edited! [path f & args]
+              (let [before (get-in (state) [:drafts path :text])]
+                (apply change! path f args)
+                (when (not= before (get-in (state) [:drafts path :text]))
+                  (update! assoc-in [:autosave path] true)
+                  (autosave! path))))
             (create! [path origin]
               (if-not (and (string? path) (not (str/blank? path)) (uuid? origin))
                 (do (update! assoc-in [:errors :create] "Verify the initiating workspace before creating a file.") (discover! false))
@@ -497,7 +543,7 @@
               (when-let [c (connection)]
                 (ensure-sync! c (binding [ec/*execution-context* ctx] @sync/state)))
               (navigation-refresh!))]
-      {:owner key :state state :change change! :folder folder! :open #(open! % false) :reload #(open! % true)
+      {:owner key :state state :change change! :edit edited! :folder folder! :open #(open! % false) :reload #(open! % true)
        :open-properties (fn [path target] (update! assoc-in [:property-targets path] target) (properties! path target))
        :ensure-properties (fn [] (let [s (state) path (:selected s)]
                                    (when-let [target (get-in s [:property-targets path])] (properties! path target))))
@@ -586,20 +632,36 @@
        :toggle-root (fn [] (update! update :root-expanded? not) (folder! (or (:focus-folder (state)) "")))
        :focus-folder (fn [path] (update! assoc :focus-folder path :current-folder path :query "" :root-expanded? true) (folder! path))
        :rich-change (fn [path base-id from model selection]
-                      (try (change! path editor/rich-changed base-id from model selection)
+                      (try (edited! path editor/rich-changed base-id from model selection)
                            (update! update :errors dissoc [:rich path])
                            (catch :default error (update! assoc-in [:errors [:rich path]] (rem/error-text error)))))
        :document-change (fn [path base-id model selection]
-                          (try (update! (fn [s]
+                          (try (let [before (get-in (state) [:drafts path :text])]
+                                 (update! (fn [s]
                                           (let [before (get-in s [:drafts path])
                                                 after (editor/document-changed before base-id model selection)]
                                             (cond-> (assoc-in s [:drafts path] after)
                                               (not= (:text before) (:text after))
                                               (update :errors dissoc [:rich path])))))
+                                 (when (not= before (get-in (state) [:drafts path :text]))
+                                   (update! assoc-in [:autosave path] true)
+                                   (autosave! path)))
                                (catch :default error (update! assoc-in [:errors [:rich path]] (rem/error-text error)))))
        :document-blocked (fn [path]
                            (update! assoc-in [:errors [:rich path]]
                                     "This edit crosses a protected knowledge boundary. Copying is allowed; use Source for structural changes."))
+       :local-source-open (fn [path region]
+                            (if (or (declarations/busy? (state) path) (declarations/drafts? (state) path) (editor/property-drafts? (state) path))
+                              (update! assoc-in [:errors [:rich path]] "Apply or discard property drafts before editing local Markdown.")
+                              (try (change! path editor/open-local-source region)
+                                   (catch :default error (update! assoc-in [:errors [:rich path]] (rem/error-text error))))))
+       :local-source-change (fn [path text selection]
+                              (let [before (get-in (state) [:drafts path :local-source :text])]
+                                (change! path #(if (:local-source %)
+                                                 (update % :local-source assoc :text text :selection selection) %))
+                                (when (not= before text) (apply-local-source! path))))
+       :local-source-cancel (fn [path] (change! path dissoc :local-source)
+                              (update! update :errors dissoc [:local-source path]))
        :root (fn [] (update! assoc :current-folder "") (folder! ""))
        :mkdir (fn [path]
                 (when-let [stamp (target! [:mkdir path])]
