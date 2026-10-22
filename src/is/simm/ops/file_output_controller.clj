@@ -4,10 +4,12 @@
    client capabilities. Only original sealed no-entry cleanup is supported;
    positive recovery remains a separate currently authorized operation."
   (:require [dvergr.rooms.files :as files]
+            [dvergr.runtime.preparation :as preparation]
             [is.simm.model.file-adoptions :as adoptions]
             [is.simm.model.system-db :as sdb]
             [is.simm.ops.file-output-adoption :as adoption]
             [is.simm.ops.file-output-publication :as publication]
+            [is.simm.ops.file-output-validation :as validation]
             [is.simm.ops.owned-workspace :as owned]
             [org.replikativ.spindel.engine.impl.simple :as simple]))
 
@@ -18,12 +20,22 @@
   ;; Older public dependencies remain loadable; no fallback to ambient write!.
   ;; Resolve a fixed native function, not a caller-provided hook or execution lane.
   (when (every? files/write-capabilities
-                #{:explicit-workspace :durable-publication :expected-worktree :file-modes :applied-receipt})
+                #{:explicit-workspace :durable-publication :expected-worktree :file-modes :applied-receipt
+                  :validated-publication-basis})
     (when-let [writer (ns-resolve 'dvergr.rooms.files 'write-to-completion!)]
       (when (fn? @writer) @writer))))
 
 (defn- pending [operation]
   {:status :pending :operation (:id operation) :recovery :unavailable})
+
+(defn- validation-binding! [binding plan witness]
+  ;; Only an invocation-local HOST witness is accepted. Its immutable manifest
+  ;; and FULL target, including registry/runtime markers, must describe exactly
+  ;; this original plan and owned binding. Nothing comes from transport input.
+  (when-not (and (= (:manifest witness) (get-in plan [:manifest :id]))
+                 (= (:target witness) (:target binding) (get-in plan [:manifest :target])))
+    (refuse! :validation-binding-mismatch))
+  witness)
 
 (defn- authorize-original! [conn party room-id room original owned-binding]
   (let [db @conn proof (:proof original)]
@@ -33,7 +45,7 @@
     (owned/validate! db party :merge room-id room owned-binding)
     true))
 
-(defn adopt!
+(defn- adopt-in!
   "INTERNAL ordinary single-component adoption. Caller supplies transport-
    authenticated party and the canonical live Room; hydrate only after authority
    checks, OUTSIDE this operation's writers. No force, bytes, target, claim token
@@ -46,11 +58,12 @@
    a strictly authorized exact original claimed->aborted cleanup. Applying never
    aborts. No recovery read, native retry or generic acceptance.
    Pure/mock tests of this composition are NOT native ownership evidence."
-  [conn party room-id room proposal-id]
+  [conn party room-id room proposal-id lease]
   (when (simple/on-drain-thread?) (refuse! :requires-host-worker))
   (when-not (and conn (identical? conn (sdb/get-conn))
                  (every? uuid? [party room-id proposal-id]))
     (refuse! :invalid-host-input))
+  (preparation/with-host-current! lease (constantly true))
   (let [db @conn binding (owned/resolve! db party :merge room-id room)
         proof (adoption/snapshot db party room-id proposal-id)
         existing (adoptions/current-operation db (get-in proof [:fork :db/id]))]
@@ -61,14 +74,22 @@
             prepared (adoption/prepare conn party room-id room proposal-id)
             _ (when-not (= (:target binding) (get-in prepared [:proof :binding :target]))
                 (refuse! :target-changed))
+            witness (validation-binding! binding (:plan prepared)
+                                         (validation/prepare-in (:db binding) (:plan prepared)))
+            _ (preparation/with-host-current! lease (constantly true))
             claimed (adoption/claim! conn party room-id room prepared)
             operation (:operation claimed)
             applying (volatile! nil)]
         (try
+          (validation-binding! binding (:plan claimed) witness)
           (let [{:keys [identity files options]} (publication/prepare operation (:plan claimed))
-                authorize! #(authorize-original! conn party room-id room claimed binding)
+                authorize! #(do (preparation/with-host-current! lease (constantly true))
+                                (authorize-original! conn party room-id room claimed binding))
                 before-dispatch!
                 (fn [candidate]
+                  ;; Only a short lifetime decision holds the Room monitor.
+                  ;; Never hold it across control transactions or native IO.
+                  (preparation/with-host-current! lease (constantly true))
                   (when @applying (refuse! :duplicate-dispatch-callback))
                   ;; This fixed gate validates ownership WITH the applying CAS
                   ;; against the SAME writer DB. No arbitrary tx callback.
@@ -77,6 +98,7 @@
                     true))
                 completion (write! room (:system binding) files
                                    (assoc options :publication {:identity identity :authorize! authorize!
+                                                                :validate-basis! #(validation/assert-after! % witness)
                                                                 :before-dispatch! before-dispatch!}))]
             (when-not (and (map? completion)
                            (= #{:completion :result :error} (set (keys completion)))
@@ -104,3 +126,12 @@
             (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)))
             (throw (ex-info "Retained-file adoption remains pending; do not replay publication"
                             (assoc (pending operation) :type ::pending) error))))))))
+
+(defn adopt!
+  "INTERNAL inactive adoption, physically owned by the exact Room through exit.
+   Caller must already own the outer application/control-connection lifetime.
+   No public adapter or automatic acceptance is enabled by this function."
+  [conn party room-id room proposal-id]
+  (when (simple/on-drain-thread?) (refuse! :requires-host-worker))
+  (preparation/with-host-operation!
+    room #(adopt-in! conn party room-id room proposal-id %)))

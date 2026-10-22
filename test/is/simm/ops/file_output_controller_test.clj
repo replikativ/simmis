@@ -2,33 +2,44 @@
   "Mocked fixed-host orchestration ONLY. No Room, DB transaction or native
    publication is exercised; real ownership requires separate integration tests."
   (:require [clojure.test :refer [deftest is]]
+            [dvergr.runtime.preparation :as preparation]
             [is.simm.model.file-adoptions :as adoptions]
             [is.simm.model.system-db :as sdb]
             [is.simm.ops.file-output-adoption :as adoption]
             [is.simm.ops.file-output-controller :as controller]
             [is.simm.ops.file-output-publication-test :as fixture]
+            [is.simm.ops.file-output-validation :as validation]
             [is.simm.ops.owned-workspace :as owned]))
 
 (defn- with-host [options f]
   (let [{:keys [operation plan candidate receipt]} (@#'fixture/fixture)
         conn (atom {}) room (Object.) party (:actor operation) rid (:room operation)
-        system (Object.) binding {:system system :target (:target operation)}
+        system (Object.) binding {:system system :target (:target operation) :db {:source :snapshot}}
+        witness {:manifest (get-in plan [:manifest :id]) :target (:target operation)}
         proof {:binding (select-keys operation [:proposal :component :manifest :room :actor :filing :disposition :target])
                :fork {:db/id 1} :proposal {:db/id 2} :retained {:manifest (:manifest plan)}}
         prepared {:proof proof :plan plan}
         claimed (assoc prepared :operation operation)
         journal (atom (:existing options)) calls (atom [])
+        lease (Object.) held (atom false)
         note! #(swap! calls conj %)
         write! (fn [actual-room actual-system files opts]
+                 (is @held "native dispatch remains inside Room resource ownership")
                  (note! :native-write)
                  (is (identical? room actual-room))
                  (is (identical? system actual-system))
                  (is (= #{"/wiki/new.md" "/wiki/old.md"} (set (keys files))))
                  (is (= #{:expected-worktree :file-modes :publication} (set (keys opts))))
                  (let [authorize! (get-in opts [:publication :authorize!])
+                       validate! (get-in opts [:publication :validate-basis!])
                        before! (get-in opts [:publication :before-dispatch!])]
                    (is (= (get-in opts [:publication :identity :publication/id]) (:id operation)))
                    (when-not (#{:skip :not-started :not-started-forged-positive} (:mode options)) (authorize!))
+                   (when-not (#{:skip :not-started :not-started-forged-positive} (:mode options))
+                     ;; Evaluate OUTSIDE is: clojure.test catches exceptions,
+                     ;; which must escape this native stand-in and stop dispatch.
+                     (let [validated (validate! {:source :prepared-after})]
+                       (is (true? validated))))
                    (when-not (#{:skip :not-started :not-started-forged-positive :no-callback :forged-error-before} (:mode options))
                      (before! candidate))
                    (when (= :duplicate-callback (:mode options)) (before! candidate))
@@ -47,11 +58,33 @@
         run! #(controller/adopt! conn party rid room (:proposal operation))]
     (with-redefs-fn
       {#'sdb/get-conn (constantly conn)
+       #'preparation/with-host-operation! (fn [actual-room f]
+                                            (is (identical? room actual-room))
+                                            (reset! held true)
+                                            (try (f lease) (finally (reset! held false))))
+       #'preparation/with-host-current! (fn [actual-lease f]
+                                          (is @held)
+                                          (is (identical? lease actual-lease))
+                                          (f))
        #'owned/resolve! (fn [& _] (note! :resolve) binding)
        #'owned/validate! (fn [& _]
                            (note! :validate-binding)
                            (when (:revoked? options) (throw (ex-info "Revoked" {})))
                            binding)
+       #'validation/prepare-in (fn [db actual-plan]
+                                 (note! :canonical-preflight)
+                                 (is (= (:db binding) db))
+                                 (is (= plan actual-plan))
+                                 (when (:invalid-canonical? options) (throw (ex-info "Invalid canonical output" {})))
+                                 (cond-> witness
+                                   (:wrong-witness? options) (assoc :manifest (random-uuid))))
+       #'validation/assert-after! (fn [db actual-witness]
+                                    (note! :canonical-after)
+                                    (is (= {:source :prepared-after} db))
+                                    (is (= witness actual-witness))
+                                    (when (= :guard-refused (:mode options))
+                                      (throw (ex-info "Prepared source changed" {})))
+                                    true)
        #'adoption/snapshot (fn [& _] (note! :snapshot) proof)
        #'adoptions/current-operation (fn [& _] @journal)
        #'adoptions/linked-operation! (fn [_ _ expected] (is (= expected @journal)) expected)
@@ -117,6 +150,27 @@
       (is (= :explicit-writer-unavailable (:reason (ex-data (error run!)))))
       (is (nil? @journal))
       (is (= [:resolve :snapshot :feature-check] @calls)))))
+
+(deftest canonical-preflight-and-witness-binding-refuse-before-claim
+  (doseq [options [{:invalid-canonical? true} {:wrong-witness? true}]]
+    (with-host options
+      (fn [{:keys [run! calls journal]}]
+        (is (some? (error run!)))
+        (is (nil? @journal))
+        (is (= 1 (count (filter #{:canonical-preflight} @calls))))
+        (is (not-any? #{:claim :native-write :applying :finalize} @calls))))))
+
+(deftest changed-prepared-source-stays-pending-without-applying-or-replaying
+  (with-host {:mode :guard-refused}
+    (fn [{:keys [run! calls journal]}]
+      (is (= ::controller/pending (:type (ex-data (error run!)))))
+      (is (= :claimed (:state @journal)))
+      (is (= 1 (count (filter #{:canonical-preflight} @calls))
+             (count (filter #{:canonical-after} @calls))))
+      (is (not-any? #{:applying :abort :finalize} @calls))
+      (reset! calls [])
+      (is (= :pending (:status (run!))))
+      (is (= [:resolve :snapshot] @calls)))))
 
 (deftest lost-claim-ack-never-reconstructs-a-publisher-from-readback
   (with-host {:lost-claim? true}

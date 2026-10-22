@@ -300,10 +300,23 @@ Legacy activations may be inspected and paused but must be explicitly recreated
 before owned resume. Application startup captures one canonical host for MCP
 and the scheduled-work dispatcher. Its connection and execution context must
 remain the original live owner; repeated starts reuse that exact host. The
-optional MCP listener does not own the registrations. A failed scheduler join
+optional MCP listener does not own the registrations. A native installation
+owner is the single admission-phase authority. Shutdown fences it, then joins
+scheduled work and synchronous HOST operations without holding the installation
+monitor. A failed physical join
 retains a non-ready installation and host until a later successful stop; no
 replacement can start underneath it. Older deployments are explicitly held,
 never silently replayed or upgraded, and their existing Runs are unchanged.
+Installed MCP operation calls and file-resource body reads capture that exact
+owner; an old captured host cannot use a replacement installation. Native
+ownership is not semantic fork state or permission. `application-ops/host!` is
+only a non-owning lookup; `with-operation!` admits before handing its host to a
+synchronous body. Already-admitted same-thread owner-stack nesting may finish
+during shutdown; inherited cross-thread or expired tickets cannot grant access.
+Results must not defer native resource access beyond the owning call. Separate
+Room-specific operations also need an exact Room lease. Manual two-arity MCP
+hosts and older browser adapters still require caller-owned lifetime; this does
+not silently turn every existing adapter into an owned operation.
 Browser workflow adapters capture a
 normal-human canonical host, without an MCP marker or a prehydrated file
 default. They share the fixed metadata authorization policy and original save
