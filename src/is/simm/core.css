@@ -9073,9 +9073,13 @@ body.tab-dragging .column-drop-zone {
 .memory-tree-item { display: block; width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; padding: 6px 10px; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .memory-tree-item.selected, .memory-toolbar .selected { background: rgba(110, 145, 210, .18); }
 .memory-navigation .memory-tree-item { display: flex; align-items: center; gap: 6px; }
+.memory-navigation { color: var(--mono-text-secondary); }
+.memory-navigation .memory-tree-item { color: var(--mono-text-secondary); border-radius: var(--radius-sm); }
+.memory-navigation .memory-tree-item:hover { color: var(--mono-text-primary); background: var(--mono-bg-overlay); }
+.memory-navigation .memory-tree-item.selected { color: var(--mono-text-primary); background: var(--accent-subtle); box-shadow: inset 2px 0 var(--accent); }
 .memory-navigation .memory-file-kind { width: 14px; height: 14px; flex-shrink: 0; }
 .memory-navigation .memory-tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.memory-navigation .memory-kind-knowledge .memory-file-kind { color: var(--text-accent, #8eaddf); }
+.memory-navigation .memory-kind-knowledge .memory-file-kind { color: var(--accent); }
 .memory-detail { min-width: 0; }
 .memory-detail h3 { overflow-wrap: anywhere; }
 .memory-note, .memory-properties, .memory-outline small, .memory-source-region small { font-size: 12px; opacity: .75; }
