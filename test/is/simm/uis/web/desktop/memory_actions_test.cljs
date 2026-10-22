@@ -612,3 +612,24 @@
         ((:property-discard a) "x.clj" target (:id field))
         ((:move a) "x.clj" "moved.clj")
         (is (= 1 (count (:move @calls))))))))
+
+(deftest boundary-notice-survives-selection-and-stale-events-until-content-changes
+  (with-client
+    (fn [{:keys [a state seed! states file]}]
+      (seed!)
+      (let [paragraph {:type "paragraph" :content [{:type "text" :text "Alpha"}]}
+            analysis {:revision :baseline :slots [{:from 0 :to 5 :model {:type "doc" :content [paragraph]}}]
+                      :semantic {:status :ready :blocks [{:identity-status :provisional :syntax [{:from 0 :to 5}]}]}}
+            d (editor/draft (assoc file :kind :markdown :text "Alpha" :analysis analysis))
+            base (:rich-base d) model (get-in base [:document :model])]
+        (swap! states assoc-in [(:owner a) :drafts "x.clj"] d)
+        ((:document-blocked a) "x.clj")
+        (is (string? (get-in (state) [:errors [:rich "x.clj"]])))
+        ((:document-change a) "x.clj" (:id base) model {:from 2 :to 2})
+        (is (string? (get-in (state) [:errors [:rich "x.clj"]])))
+        ((:document-change a) "x.clj" :stale model nil)
+        (is (string? (get-in (state) [:errors [:rich "x.clj"]])))
+        ((:document-change a) "x.clj" (:id base)
+                              (assoc-in model [:content 0 :content 0 :content 0 :text] "Changed") {:from 3 :to 3})
+        (is (nil? (get-in (state) [:errors [:rich "x.clj"]])))
+        (is (= "Changed" (get-in (state) [:drafts "x.clj" :text])))))))

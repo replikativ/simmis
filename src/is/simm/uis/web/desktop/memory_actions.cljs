@@ -384,7 +384,7 @@
                                 #(if base
                                    (remote/save-memory-rich-file! web/server-id room
                                                                   (assoc request :source (:text base)
-                                                                         :revision (get-in base [:analysis :revision]) :edits (editor/rich-edits draft)))
+                                                                         :revision (get-in base [:analysis :revision]) :edits (editor/document-edits draft)))
                                    (remote/save-memory-file! web/server-id room request))
                                 #(update-in %1 [:drafts path] editor/saved-at-generation (:generation draft) sent %2)
                                 (fn [_] (folder! (parent path)) (navigation-refresh!))
@@ -574,7 +574,12 @@
        :ensure-sync ensure-sync! :refresh refresh!
        :analyze analyze! :save save! :mode (fn [path mode]
                                              (change! path #(cond-> (assoc % :mode mode) (= mode :rich) editor/begin-rich))
-                                             (when (and (not= mode :source) (nil? (get-in (state) [:drafts path :analysis]))) (analyze! path)))
+                                             (let [draft (get-in (state) [:drafts path])]
+                                               (when (and (not= mode :source)
+                                                          (or (nil? (:analysis draft))
+                                                              (and (#{:read :outline} mode)
+                                                                   (not= (:text draft) (:analysis-text draft)))))
+                                                 (analyze! path))))
        :create (fn [path & [origin]] (create! path (or origin (when (verified? (state) (connection)) (:target-stamp (state))))))
        :download download! :upload upload! :office-open office-open! :office-save office-save!
        :select-path #(update! assoc :selected %) :set-query #(update! assoc :query %) :search search!
@@ -584,6 +589,17 @@
                       (try (change! path editor/rich-changed base-id from model selection)
                            (update! update :errors dissoc [:rich path])
                            (catch :default error (update! assoc-in [:errors [:rich path]] (rem/error-text error)))))
+       :document-change (fn [path base-id model selection]
+                          (try (update! (fn [s]
+                                          (let [before (get-in s [:drafts path])
+                                                after (editor/document-changed before base-id model selection)]
+                                            (cond-> (assoc-in s [:drafts path] after)
+                                              (not= (:text before) (:text after))
+                                              (update :errors dissoc [:rich path])))))
+                               (catch :default error (update! assoc-in [:errors [:rich path]] (rem/error-text error)))))
+       :document-blocked (fn [path]
+                           (update! assoc-in [:errors [:rich path]]
+                                    "This edit crosses a protected knowledge boundary. Copying is allowed; use Source for structural changes."))
        :root (fn [] (update! assoc :current-folder "") (folder! ""))
        :mkdir (fn [path]
                 (when-let [stamp (target! [:mkdir path])]

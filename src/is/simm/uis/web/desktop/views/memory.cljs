@@ -142,9 +142,9 @@
                         :on-click #(rich-editor/command! % op)} label))))
 
 (defn- document-view [path draft a write?]
-  (let [base (:rich-base draft) analysis (or (:analysis base) (:analysis draft))
-        source (or (:text base) (:text draft))
-        rich? (and (= :rich (:mode draft)) base)]
+  (let [base (:rich-base draft) rich? (and (= :rich (:mode draft)) base)
+        analysis (if rich? (:analysis base) (:analysis draft))
+        source (if rich? (:text base) (:text draft))]
     (el/div {:class "memory-document"}
             (when rich? (rich-toolbar write?))
             (when (and (= :rich (:mode draft)) (not base) analysis)
@@ -159,6 +159,14 @@
               (el/p {:class "proposal-error"} "Some document structure needs attention. Source preserves it exactly."))
             (if-not analysis
               (el/button {:on-click (fn [_] ((:analyze a) path))} "Analyze current draft")
+              (if (and rich? (:document base))
+                (rich-editor/view {:id [(:owner a) path (:id base) :document]
+                                   :model (or (:document-model base) (get-in base [:document :model]))
+                                   :selection (:document-selection base) :document? true
+                                   :read-only? (not write?)
+                                   :on-blocked #((:document-blocked a) path)
+                                   :on-change (fn [model selection]
+                                                ((:document-change a) path (:id base) model selection))})
               (if (= :outline (:mode draft))
                 (el/div {:class "memory-outline"}
                         (for [block (editor/outline (get-in analysis [:semantic :blocks]))]
@@ -171,15 +179,15 @@
                                     (el/button {:on-click (fn [_] ((:open-properties a) path {:kind :block :id (:id block)}))}
                                                "Block properties"))
                                   (for [node (:syntax block)]
-                                    (if-let [model (or (get-in base [:models (:from node)]) (rich/model node))]
+                                    (if-let [model (rich/model node)]
                                       (model-node model)
                                       (el/pre {} (subs source (:from node) (:to node)))))
                                   (el/button {:on-click (fn [_]
                                                           ((:change a) path assoc :mode :source
-                                                                       :selection (editor/source-selection draft (:from block) (:to block))))}
+                                                                       :selection {:anchor (:from block) :head (:to block)}))}
                                              "Edit source"))))
                 (for [slot (:slots analysis)]
-                  (let [model (or (get-in base [:models (:from slot)]) (:model slot))
+                  (let [model (or (when rich? (get-in base [:models (:from slot)])) (:model slot))
                         text (subs source (:from slot) (:to slot))
                         structural? (boolean (re-matches #"(?s)\s*<!-- /?simmis:block[^>]*-->\s*" text))]
                     (when-not structural?
@@ -199,7 +207,7 @@
                                 (el/button {:on-click (fn [_]
                                                         ((:change a) path assoc :mode :source
                                                                      :selection (editor/source-selection draft (:from slot) (:to slot))))}
-                                           "Open in Source")))))))))))
+                                           "Open in Source"))))))))))))
 
 (defn- retained-properties-view [path state a]
   (let [orphaned (for [[[p target :as scope] drafts] (:property-drafts state)

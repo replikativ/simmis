@@ -1,8 +1,10 @@
 (ns is.simm.uis.web.desktop.rich-editor
   "One controlled Tiptap region, no global handles or alternative draft state."
-  (:require ["@tiptap/core" :refer [Editor]]
+  (:require ["@tiptap/core" :refer [Editor Node Extension]]
+            ["@tiptap/pm/state" :refer [Plugin]]
             ["@tiptap/starter-kit" :default StarterKit]
             [is.simm.documents.rich-text :as rich]
+            [is.simm.documents.rich-document :as document]
             [org.replikativ.spindel.dom.foreign]
             [org.replikativ.spindel.engine.core :as ec])
   (:require-macros [org.replikativ.spindel.dom.foreign :refer [foreign-node]]))
@@ -20,6 +22,44 @@
 
 (defn- portable-model [model]
   (js->clj (json-model model) :keywordize-keys true))
+
+(defn- boundary-node [name content]
+  (.create Node
+           #js {:name name :group "block" :content content
+                :atom (= name "memoryOpaque") :isolating true :defining true
+                :renderText (when (= name "memoryOpaque")
+                              (fn [props] (aget (.. props -node -attrs) "label")))
+                :addAttributes (fn [] #js {:key #js {:default nil}
+                                           :blockId #js {:default nil}
+                                           :label #js {:default nil}})
+                ;; Copied HTML may carry text, never another block's identity.
+                :parseHTML (fn [] #js [])
+                :renderHTML (fn [props]
+                              (let [^js attrs (.. props -node -attrs)
+                                    dom-attrs #js {:class (case name "memoryBlock" "memory-semantic-block"
+                                                               "memoryRegion" "memory-continuous-region" "memory-opaque")
+                                                  :data-block-id (.-blockId attrs)}]
+                                (if (= name "memoryOpaque")
+                                  #js ["pre" dom-attrs (or (.-label attrs) "")]
+                                  #js ["div" dom-attrs 0])))}))
+
+(defn- boundary-guard [^js el]
+  (.create Extension
+           #js {:name "memoryBoundaryGuard"
+                :addProseMirrorPlugins
+                (fn []
+                  #js [(Plugin.
+                        #js {:filterTransaction
+                             (fn [^js transaction ^js state]
+                               (if-not (and (= "true" (.getAttribute el "data-document")) (.-docChanged transaction))
+                                 true
+                                 (let [allowed? (try (= (document/topology (portable-model (.toJSON (.-doc state))))
+                                                        (document/topology (portable-model (.toJSON (.-doc transaction)))))
+                                                     (catch :default _ false))]
+                                   (when-not allowed?
+                                     (.dispatchEvent el (js/CustomEvent. "input" #js {:bubbles true :composed true
+                                                                                     :detail #js {:blocked true}})))
+                                   allowed?)))})])}))
 
 (defn disconnect! [^js el]
   (when-let [^js editor (.-simmisRichEditor el)]
@@ -39,7 +79,11 @@
   (when-not (.-simmisRichEditor el)
     (let [^js editor (Editor.
                   #js {:element el :content (data el) :editable (not (read-only? el))
-                       :extensions #js [(.configure StarterKit
+                       :extensions #js [(boundary-node "memoryBlock" "(memoryBlock|memoryRegion|memoryOpaque)*")
+                                        (boundary-node "memoryRegion" "(paragraph|heading|bulletList|orderedList|codeBlock|horizontalRule)+")
+                                        (boundary-node "memoryOpaque" "")
+                                        (boundary-guard el)
+                                        (.configure StarterKit
                                                     #js {:underline false :blockquote false :trailingNode false
                                                          :link #js {:openOnClick false
                                                                    :autolink false :linkOnPaste false
@@ -65,8 +109,8 @@
       (set! (.-simmisApplying el) true)
       (try (case attribute
         "data-owner" (do (disconnect! el) (mount! el))
-        "data-model" (when-not (= (rich/normalize (js->clj (data el) :keywordize-keys true))
-                                  (rich/normalize (portable-model (.getJSON editor))))
+        "data-model" (when-not (= (document/normalized (js->clj (data el) :keywordize-keys true))
+                                  (document/normalized (portable-model (.getJSON editor))))
                        ;; Authoritative source/rollback: a new editor also
                        ;; resets its native undo history.
                        (disconnect! el) (mount! el))
@@ -84,17 +128,20 @@
              static get observedAttributes() { return ['data-owner', 'data-model', 'data-read-only', 'data-selection']; }
            })" mount! disconnect! sync!)))
 
-(defn view [{:keys [id model selection read-only? on-change]}]
+(defn view [{:keys [id model selection read-only? on-change document? on-blocked]}]
   (foreign-node
    {:tag :simmis-rich-editor :key id :class "memory-rich-editor"
     :data-owner (pr-str [id (:fork-id ec/*execution-context*)])
     :data-model (js/JSON.stringify (clj->js model))
     :data-selection (when selection (js/JSON.stringify (clj->js selection)))
     :data-read-only (str (boolean read-only?))
+    :data-document (str (boolean document?))
     :on-input (fn [event]
                 (when (and (= (.-target event) (.-currentTarget event)) (.-detail event) (not read-only?))
-                  (on-change (js->clj (.. event -detail -model) :keywordize-keys true)
-                             (js->clj (.. event -detail -selection) :keywordize-keys true))))}))
+                  (if (aget (.-detail event) "blocked")
+                    (when on-blocked (on-blocked))
+                    (on-change (js->clj (.. event -detail -model) :keywordize-keys true)
+                               (js->clj (.. event -detail -selection) :keywordize-keys true)))))}))
 
 (defn command! [event operation]
   (when-let [container (some-> (.-target event) (.closest ".memory-document, .memory-region-editor"))]

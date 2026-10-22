@@ -240,6 +240,21 @@ writer's opened-revision precondition, effect gate, and applied entry receipt;
 a late pre-save read cannot replace a new save acknowledgement. A revoked
 room write permission is checked again at the actual effect boundary.
 
+Markdown rich editing uses one Tiptap document. Explicit semantic block IDs
+and nesting live in protected editor containers; adjacent supported syntax
+within one owner shares an editable region. Paragraph splits/joins do not
+allocate or delete knowledge-block identities. Unsupported syntax remains an
+inert, source-backed node and is included as text when copied. Selection can
+cross containers, but transactions that remove/reorder protected containers
+are refused with feedback; structural knowledge changes remain Source edits.
+The source map, baseline models and selections live in the context-owned draft.
+Saving sends disjoint original source spans through the existing authenticated
+rich-save path. The host reconstructs supported spans, validates Markdown
+round-tripping and unchanged frontmatter/explicit identity nesting, and uses
+the canonical file writer's revision precondition. Unchanged syntax siblings
+and source outside the changed spans retain their exact spelling and newlines.
+Empty-file/block insertion is allowed only at reconstructed insertion anchors.
+
 Office containers have a bounded advanced XML-part editor, not a Word/Excel
 layout editor. Each operation reopens the selected immutable file revision;
 there is no retained server document handle. Validation disables DTDs, and an

@@ -4,6 +4,7 @@
   (:require [cljs.test :refer-macros [deftest is]]
             [clojure.string :as str]
             [is.simm.documents.rich-text :as rich]
+            [is.simm.documents.rich-document :as document]
             [is.simm.uis.web.desktop.rich-editor]))
 
 (defn paragraph [s]
@@ -69,6 +70,58 @@
         (is (= (rich/normalize specimen) (rich/normalize model)))
         (is (str/includes? (rich/markdown model) "  - Record counterexamples"))
         (is (str/includes? (rich/markdown model) "```clojure\n(map :evidence observations)\n```"))))))
+
+(def protected-specimen
+  {:type "doc"
+   :content [{:type "memoryBlock" :attrs {:key "block:one" :blockId "one"}
+              :content [{:type "memoryRegion" :attrs {:key "region:one" :blockId "one"}
+                         :content [(paragraph "Alpha") (paragraph "Beta")]}]}
+             {:type "memoryBlock" :attrs {:key "block:two" :blockId "two"}
+              :content [{:type "memoryRegion" :attrs {:key "region:two" :blockId "two"}
+                         :content [(paragraph "Gamma")]}]}
+             {:type "memoryOpaque" :attrs {:key "opaque:one" :label "[[Retained source]]"}}]})
+
+(deftest continuous-containers-keep-ids-and-undo-through-a-controlled-echo
+  (with-editor protected-specimen
+    (fn [^js el ^js editor]
+      (.setAttribute el "data-document" "true")
+      (is (= (document/normalized protected-specimen) (document/normalized (native-model editor))))
+      (.. editor -commands (setTextSelection 5))
+      (is (true? (.. editor -commands (splitBlock))))
+      (is (= (document/topology protected-specimen) (document/topology (native-model editor))))
+      (.setAttribute el "data-model" (js/JSON.stringify (.getJSON editor)))
+      (is (identical? editor (.-simmisRichEditor el)))
+      (is (true? (.. editor -commands (undo))))
+      (is (= (document/normalized protected-specimen) (document/normalized (native-model editor)))))))
+
+(deftest copying-selection-can-cross-identities-but-destructive-transactions-cannot
+  (with-editor protected-specimen
+    (fn [^js el ^js editor]
+      (.setAttribute el "data-document" "true")
+      (let [blocked (atom 0) ranges (atom [])]
+        (.addEventListener el "input" (fn [event] (when-let [detail (.-detail event)]
+                                                   (when (aget detail "blocked") (swap! blocked inc)))))
+        (.descendants (.. editor -state -doc)
+                      (fn [^js n pos]
+                        (when (= "paragraph" (.. n -type -name))
+                          (swap! ranges conj {:from (inc pos) :to (+ pos (.-nodeSize n) -1)}))))
+        (.. editor -commands (setTextSelection #js {:from (:from (first @ranges)) :to (:to (last @ranges))}))
+        (is (str/includes? (.textBetween (.. editor -state -doc)
+                                        (.. editor -state -selection -from) (.. editor -state -selection -to) "\n") "Gamma"))
+        (.. editor -commands (deleteSelection))
+        (is (pos? @blocked))
+        (is (= (document/normalized protected-specimen) (document/normalized (native-model editor))))))))
+
+(deftest opaque-source-is-copied-as-inert-text-not-dropped
+  (with-editor protected-specimen
+    (fn [_ ^js editor]
+      (.. editor -commands (selectAll))
+      (let [serialize (.someProp (.-view editor) "clipboardTextSerializer")
+            text (serialize)]
+        (is (str/includes? text "Alpha"))
+        (is (str/includes? text "Gamma"))
+        (is (str/includes? text "[[Retained source]]"))
+        (is (not (str/includes? text "block:one")))))))
 
 (defn positional-projection
   "Deliberately limited experiment: reuses source-local region replacement

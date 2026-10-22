@@ -1,6 +1,7 @@
 (ns is.simm.uis.web.desktop.memory-editor
   "Serializable, execution-context-owned document drafts and conflict rules."
-  (:require [is.simm.documents.rich-text :as rich]))
+  (:require [is.simm.documents.rich-text :as rich]
+            [is.simm.documents.rich-document :as document]))
 
 (def max-rich-regions 200)
 
@@ -29,7 +30,8 @@
         (assoc d :rich-base {:id [(:revision analysis) (:generation d)]
                              :text (:text d) :analysis analysis
                              :models (into {} (keep (fn [slot] (when (:model slot) [(:from slot) (:model slot)]))) (:slots analysis))
-                             :selections {}}))))
+                             :selections {}
+                             :document (document/project (:text d) analysis)}))))
 
 (defn rich-edits [d]
   (let [{:keys [analysis models]} (:rich-base d)]
@@ -37,6 +39,19 @@
                :let [model (get models (:from slot))]
                :when (and (:model slot) (not= (rich/normalize (:model slot)) (rich/normalize model)))]
            {:from (:from slot) :to (:to slot) :model model}))))
+
+(defn document-edits [d]
+  (if-let [model (get-in d [:rich-base :document-model])]
+    (document/edits (get-in d [:rich-base :document]) model)
+    (rich-edits d)))
+
+(defn document-changed [d base-id model selection]
+  (if (not= base-id (get-in d [:rich-base :id])) d
+      (let [base (:rich-base d) projection (:document base)
+            text (document/apply-model (:text base) projection model)]
+        (-> d (assoc :text text)
+            (assoc-in [:rich-base :document-model] model)
+            (assoc-in [:rich-base :document-selection] selection)))))
 
 (defn rich-changed [d base-id from model selection]
   (if (not= base-id (get-in d [:rich-base :id])) d
