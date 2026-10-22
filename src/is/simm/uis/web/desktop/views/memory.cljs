@@ -399,7 +399,7 @@
                                                          (not (editor/dirty? draft)) (not (editor/property-drafts? state path))
                                                          (declarations/current? declaration-draft model)) busy?))
                                 (when (editor/dirty? draft)
-                                  (el/p {:class "memory-note"} "Save or discard your file draft before applying property changes."))
+                                  (el/p {:class "memory-note"} "Property changes are paused while your file draft is saving or has unsaved changes."))
                                 (for [field (:primary groups)]
                                   (el/div {:key (str (:id field))}
                                           (property-field-view path target field model state a editable?)))
