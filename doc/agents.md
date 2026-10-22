@@ -352,6 +352,13 @@ evidence holds without a new request, provider preparation, funding or HTTP
 call. A further manually driven pass must not retry held work. Its retained
 hold reason is evidence, not a promise of automatic resume after funding.
 
+`bash scripts/probe-scheduled-wiki-authority.sh` separately exercises the human
+pause/resume handler, then revokes the stored creator's merge permission while
+retaining room read access. Explicit dispatcher passes must do no fresh room
+hydration, capture, preparation, submission, funding or inference; unauthorized
+resume must refuse without rewriting the activation. Like the other diagnostics,
+its evidence is written only after native shutdown joins.
+
 The experimental Claude Code text backend is disabled by default. A trusted operator enables it
 with JVM properties `simmis.cli-benchmarks.enabled=true`,
 `simmis.cli-benchmarks.unit=YOUR.service` and (optionally)
