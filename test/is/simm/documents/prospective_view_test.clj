@@ -5,6 +5,7 @@
             [datahike.blob :as blob]
             [geschichte.repo :as repo]
             [is.simm.documents.markdown :as markdown]
+            [is.simm.documents.preservation :as preservation]
             [is.simm.documents.space :as space]
             [is.simm.documents.view :as view]
             [is.simm.model.crud :as crud]
@@ -126,3 +127,19 @@
             (is (some #(= :changed-document-identity (:kind %)) (:diagnostics changed)))
             (is (= :invalid (:status removed)))
             (is (some #(= :removed-explicit-block-identity (:kind %)) (:diagnostics removed)))))))))
+
+(deftest conservative-preservation-does-not-replace-real-canonical-validation
+  (with-repository
+    (fn [conn defs]
+      (let [id (random-uuid) text (source defs id {"rank" 0} "Original")
+            before (markdown/parse text)
+            raw (get-in before [:frontmatter :properties])]
+        (write! conn "wiki/original.md" text)
+        (let [db @conn expected (get (repo/worktree conn) "wiki/original.md") tx (:max-tx db)]
+          (doseq [candidate [(assoc raw "rank" false)
+                             (update-in raw ["simmis" "types"] conj (str (random-uuid)))]]
+            (let [after (markdown/parse (str "---\n" (yaml/generate-string candidate) "---\nChanged"))]
+              (is (= :valid (:status (preservation/check {:before before :after after}))))
+              (is (= :invalid (:status (view/validate-changes db options
+                                                              {"wiki/original.md" {:expected expected :source (:source after)}}))))))
+          (is (= tx (:max-tx @conn))))))))

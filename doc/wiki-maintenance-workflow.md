@@ -55,6 +55,25 @@ and scheduled saved-workflow execution uses host completion and exact capture;
 it does **not** execute the authored checker. Do not label every scheduled
 proposal quality-checked on the strength of this file.
 
+`is.simm.documents.preservation/check` is a separate version-1 pure conservative
+policy over bounded parsed BEFORE/AFTER Markdown. It retains existing explicit
+page/block identities, type assignments, alias-to-property/type bindings and
+block metadata scopes. Existing authored values must remain present but may be
+updated, including false, zero or explicit null when independent canonical
+validation allows them. Unknown page/block metadata, including nested values,
+must remain equal. Mutable aliases come from BEFORE: adding a binding cannot
+reinterpret a previously unknown field. New types/aliases are allowed, subject
+to separate canonical validation. This policy is not yet wired into adoption.
+
+These restrictions belong to default maintenance, not the general editor.
+Removing stale properties/types, renaming aliases and deleting explicit blocks
+need explicit editing/review. Ordinary unbound `tags`/aliases are unknown
+metadata too: even append-only
+tagging needs a separate explicit policy exception rather than silent mutation.
+The policy preserves parsed metadata semantics,
+not comments, formatting or body text; it proves neither factual correctness
+nor an unchanged reviewed basis. A new page has no fabricated empty BEFORE.
+
 Evaluator-held gold defines expected output paths, required/preserved/forbidden
 fragments, frozen source text, citations and quotations. Tests exercise actual
 SCI execution and calibration with damaged answers. These checks do not prove
