@@ -22,16 +22,18 @@ jobs:
       - checkout
       - run:
           name: Install audio and MCP helper dependencies
-          command: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg python3
+          command: timeout 5m bash scripts/install-test-helpers.sh
       - restore_cache:
           keys:
             - deps-v1-{{ checksum "deps.edn" }}
             - deps-v1-
       - run:
+          name: Prepare backend dependencies
+          command: clojure -X:deps prep
+          no_output_timeout: 15m
+      - run:
           name: Run JVM tests (Maven baseline)
-          command: |
-            clojure -X:deps prep
-            clojure -X:test
+          command: clojure -X:test :reporter kaocha.report/documentation
           no_output_timeout: 15m
       - save_cache:
           key: deps-v1-{{ checksum "deps.edn" }}
