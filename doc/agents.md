@@ -334,6 +334,17 @@ Ordinary workflow completion remains distinct from checker-backed benchmarking.
 Recurring benchmarks require installation-operator authority as well as room
 merge authority. CLI and local-worker executions are not scheduled by this path.
 
+The opt-in `bash scripts/probe-scheduled-wiki-restart.sh` diagnostic starts two
+sequential capped JVMs against one newly created `/tmp` file-backed home. It
+uses native component startup, room hydration and the owned dispatcher, but
+manually advances the clock and permanently scripts model transport in each
+private process. It checks persisted request/result/input identities, unchanged
+input suppression and a finite allowance across restart. Checkpoints are
+written only after native shutdown joins. It neither starts the web application
+nor uses provider credentials; it is not a wall-clock timing or model-quality
+benchmark. The temporary evidence is retained and its path printed. This
+diagnostic is deliberately outside the default test suite.
+
 The experimental Claude Code text backend is disabled by default. A trusted operator enables it
 with JVM properties `simmis.cli-benchmarks.enabled=true`,
 `simmis.cli-benchmarks.unit=YOUR.service` and (optionally)
