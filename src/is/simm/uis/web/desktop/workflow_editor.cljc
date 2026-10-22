@@ -262,3 +262,30 @@
     (when (or (str/blank? tz) (> (count tz) 100)) (invalid! "Enter an explicit timezone"))
     {:request-id request-id :kind (if (= "benchmark" (get-in draft [:form :mode])) "benchmark" "workflow")
      :cadence {:interval-ms (* 60000 minutes) :tz tz} :execution execution}))
+
+(defn deployment-preview
+  "Presentation only. Unresolved requests display their original immutable
+   intent, never edited form values. A preview is not admission or live status."
+  [draft]
+  (let [pending (:schedule-submission draft)]
+    (if (and (:payload pending) (nil? (:reply pending)))
+      {:pending? true :payload (:payload pending)}
+      (when (and (source-current? draft) (not (dirty? draft)))
+        (try
+          {:pending? false :payload (dissoc (scheduled-submission draft nil) :request-id)}
+          (catch #?(:clj Exception :cljs :default) _ nil))))))
+
+(defn deployment-description [{:keys [kind execution]}]
+  (let [benchmark? (= "benchmark" kind)
+        limits (:limits execution)]
+    {:model (if benchmark? (str/join ", " (:models execution)) (:model execution))
+     :resources (str "Per occurrence: at most " (:budget-microdollars limits)
+                     " microdollars and " (:max-dispatches limits) " dispatches"
+                     (when benchmark? ", shared across benchmark trials") ". "
+                     "Draws from the shared room allowance; it does not replenish it.")
+     :execution-ceilings (str (if benchmark? "Per benchmark trial: " "Per occurrence: ")
+                             "at most " (:max-model-steps limits) " model steps and "
+                             (:timeout-ms limits) " ms.")
+     :results (cond benchmark? "Checker-backed benchmark results; nothing merges automatically."
+                    (= "review" (:settlement limits)) "Retained output requires explicit review; nothing merges automatically."
+                    :else "Work is discarded after output capture; nothing merges automatically.")}))

@@ -57,6 +57,22 @@
           (is (empty? @requests))
           (is (= before @sig/workflow-editor-state)))))))
 
+(deftest schedule-navigation-retains-controller-context-and-rejects-replacement-session
+  (with-state
+    (fn [ui _]
+      (let [opened (atom []) expected ec/*execution-context*]
+        ;; Match open-tab!'s two fixed arguments + optional options ABI:
+        ;; compiled CLJS calls its variadic entry directly.
+        (with-redefs [sig/open-tab! (fn [kind data & [options]]
+                                     (swap! opened conj {:ctx ec/*execution-context*
+                                                         :kind kind :data data :options options}))]
+          (binding [ec/*execution-context* nil] ((:open-schedules ui)))
+          (is (= 1 (count @opened)))
+          (is (identical? expected (:ctx (first @opened))))
+          (is (= :schedules (:kind (first @opened))))
+          (with-redefs [web/current-session? (constantly false)] ((:open-schedules ui)))
+          (is (= 1 (count @opened))))))))
+
 (deftest own-control-hints-do-not-drop-original-command-receipts
   (doseq [[operation receipt-path reply]
           [[:submit [:submission :reply] {:state :submitted :job "job"}]

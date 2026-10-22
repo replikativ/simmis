@@ -323,6 +323,10 @@ The hosted execution backend also supports pinned recurring deployments through
 the workflow editor's “Recurring deployment” controls. Save and inspect source,
 choose the case/model/limits, then explicitly confirm an interval and timezone.
 The activation retains that revision even when authoring files are later edited.
+The deployment preview distinguishes each occurrence's ceilings from the shared
+room allowance. An unresolved activation displays its original request, not
+subsequent edits to the form. A provisioning receipt is historical, not a live
+balance; the created-schedule link opens Schedules for current status.
 Schedules shows activation status and recent occurrences with links to their
 canonical Run/results. Pause withdraws work still queued for admission; already
 admitted work has its normal Run lifecycle. Resume rechecks the original
