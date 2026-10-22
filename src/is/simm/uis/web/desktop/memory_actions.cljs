@@ -425,7 +425,9 @@
               ;; The request slot is the single-flight coordinator. An accepted
               ;; ACK advances the baseline before draining the latest draft.
               ;; Failed requests leave an error and cannot automatically retry.
-              (when (and (verified? (state) (connection))
+              (when (and (some? (ec/home-context ctx))
+                         (identical? (ec/home-context ctx) (ec/home-context runtime))
+                         (verified? (state) (connection))
                          (editor/autosave-ready? (state) path)
                          (not (editor/property-drafts? (state) path)))
                 (save! path)))

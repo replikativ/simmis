@@ -32,7 +32,9 @@ and drive resources remain accessible while this file-backed surface is
 introduced; they are not silently migrated or deleted.
 
 Actual text edits enroll a file in automatic saving; mounting, selecting text,
-or reopening an existing dirty draft does not publish it. The existing stamped,
+or reopening an existing dirty draft does not publish it. Automatic dispatch is
+restricted to the live browser's home execution context; simulated fork edits
+remain local rather than acquiring implicit host publication. The existing stamped,
 authenticated compare-and-swap writer permits one request per file per view.
 Newer typing coalesces while that request runs, then drains using its accepted
 descriptor without resetting the editor or undo history. Exact own-write
@@ -50,6 +52,8 @@ its separate local buffer. Block identities, children and frontmatter remain
 protected. Closing unvalidated edits requires explicit discard; Escape retains
 them. These drafts are execution-context state, not browser-restart recovery.
 Office XML parts and typed-property forms still have explicit publication.
+This gate does not make all explicit host actions simulation-safe; an explicit
+Save retains its existing host publication behavior.
 
 Markdown's optional Properties panel derives scalar page fields from trusted
 definitions in an explicitly provisioned canonical workspace. Its context-owned

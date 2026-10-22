@@ -2,6 +2,7 @@
   (:require [cljs.test :refer-macros [deftest is]]
             [clojure.string :as str]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as context]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.memory-actions :as actions]
             [is.simm.uis.web.desktop.memory-editor :as editor]
@@ -657,6 +658,29 @@
         (is (= 2 (count (:save @calls))) "Duplicate ACK does not dispatch")
         ((:ok (last-call :save)) (wire stamp {:entry {:content :latest}}))
         (is (not (editor/dirty? (get-in (state) [:drafts "x.clj"]))))))))
+
+(deftest simulated-ui-edits-never-automatically-publish-through-the-live-host
+  (with-client
+    (fn [{:keys [data seed! state calls]}]
+      (seed!)
+      (let [child (context/fork-context runtime)]
+        (try
+          (binding [ec/*execution-context* child]
+            (let [simulated (actions/controller data)]
+              ((:edit simulated) "x.clj" editor/changed "Simulated text" nil)
+              (is (= "Simulated text" (get-in ((:state simulated)) [:drafts "x.clj" :text])))
+              (is (empty? (:save @calls)))))
+          (is (= "Original" (get-in (state) [:drafts "x.clj" :text])))
+          (finally (context/close-context! child)))))))
+
+(deftest same-home-context-rebinding-still-automatically-saves
+  (with-client
+    (fn [{:keys [data seed! calls]}]
+      (seed!)
+      (binding [ec/*execution-context* (assoc runtime :bindings (assoc (:bindings runtime) :autosave-probe true))]
+        (let [live (actions/controller data)]
+          ((:edit live) "x.clj" editor/changed "Same home" nil)
+          (is (= 1 (count (:save @calls)))))))))
 
 (deftest autosave-reconciles-only-exact-own-write-observations
   (doseq [observation [:own-entry :own-body :other-entry :deleted]]
