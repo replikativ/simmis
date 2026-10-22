@@ -1,12 +1,46 @@
 # Document storage prototype
 
-`is.simm.documents.markdown`, `blocks`, `properties`, `repository` and
-`view` are an isolated
-prototype. They are **not** connected to live KBs, room tools, RPC, user
-provisioning or the document UI. Existing wikis still use their current
-pages/HTML-block model. No existing store is converted by booting this code.
+`is.simm.documents.markdown`, `blocks`, `properties`, `repository` and `view`
+provide the source-backed Memory model. The file/editor UI and authenticated
+room tools read room repositories through their owned-target boundary. New
+canonical knowledge rooms can be prepared explicitly by the host; existing
+independent KBs retain their pages/HTML-block model. No existing store is
+converted by booting this code.
 
 ## Lossless source
+
+The pure `property-source` codec replaces existing scalar leaves, inserts
+missing mapping paths and changes a selected explicit type sequence without
+reserializing the surrounding frontmatter. Inserted values use bounded flow
+syntax; existing unknown fields, comments, BOM, line endings and the Markdown
+body remain intact. Each patch reparses and verifies the exact intended
+metadata change and unchanged body. Anchors, aliases, explicitly tagged type
+items and sequences whose replacement would consume comments require Source
+editing instead. Aggregate emitted UTF-8 bytes, nesting and node counts are
+bounded before constructing a replacement document. These are pure source
+operations, not authority, schema installation or a UI type-assignment API.
+
+The HOST preparation model also previews and prepares a closed type-assignment
+batch against existing trusted definitions. It stamps both the original scope
+and the prospective definitions, accepts only new alias/value bindings, and
+validates required values and relation UUIDs against the complete prospective
+selection. It refuses orphaned bindings and does not reinterpret unknown
+metadata automatically. Preview DTOs distinguish new supported inputs from
+unbound or owner-managed properties. Preparation is read-only: publication
+still requires the native writer's fresh validated basis and current room
+authority. Arbitrary definition/schema datoms are not assumed to travel with
+Geschichte file proposals. Memory's **Edit types and fields** control selects
+existing definitions and adds explicit source bindings and values. Whole-page
+and explicitly identified block scopes remain separate; Outline and the
+Property scope selector open block properties. Assignment drafts are
+context-owned and retain their inputs across scope, source and definition
+changes. In-flight file/property saves and moves exclude assignment admission
+and cancellation; stale/hidden assignments remain inspectable and cancellable
+after those operations settle. Authenticated Memory declaration preview/save RPCs
+use the same owned-target stamps, current room permissions, blocking-worker
+boundary and atomic native validated-basis writer as scalar property edits.
+The type picker descriptor is bounded before metadata pulls and contains only
+trusted type UUIDs and names, not executable definitions or capabilities.
 
 The Markdown layer keeps original UTF-8 source, including BOM, comments,
 frontmatter spelling, line endings and unknown syntax. Flexmark supplies a

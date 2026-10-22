@@ -163,6 +163,8 @@
    "load-memory-file!"       [(c :room MEMBERS)]
    "load-memory-properties!" [(c :room MEMBERS)]
    "save-memory-property!"   [(c :room MEMBERS)]
+   "preview-memory-declaration!" [(c :room MEMBERS)]
+   "save-memory-declaration!" [(c :room MEMBERS)]
    "load-memory-history!"    [(c :room MEMBERS)]
    "load-memory-history-file!" [(c :room MEMBERS)]
    "evaluate-memory-code!"   [(c :room OWNER)]

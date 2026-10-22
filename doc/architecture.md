@@ -34,6 +34,14 @@ saves patch source through the same native writer with an atomic fresh schema
 basis; they do not write disposable projection datoms. Existing unprovisioned
 workspaces remain readable and report that typed editing is unavailable.
 
+Type assignments select existing trusted definitions for a page or explicit
+block. Required new fields and values form one source edit, checked against
+both original and proposed definition digests and the whole knowledge selection.
+The editor retains declaration drafts across property-scope changes and refuses
+to interleave their admission/publication with a file move or another save.
+Definition creation and arbitrary schema publication are not part of this
+control: Geschichte proposals transfer files, not arbitrary schema datoms.
+
 The experimental source-selected knowledge view derives semantic document/block
 rows from one immutable Geschichte snapshot without writing a second repository.
 Its default selection includes root and nested Markdown, with trusted exact folder

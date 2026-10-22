@@ -1,5 +1,6 @@
 (ns is.simm.ops.source-properties-test
   (:require [clojure.test :refer [deftest is]]
+            [clojure.string :as str]
             [datahike.api :as d]
             [dvergr.catalog.workspace :as catalog]
             [dvergr.rooms.file-tx :as file-tx]
@@ -9,6 +10,7 @@
             [is.simm.documents.files :as files]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.space :as space]
+            [is.simm.documents.view :as view]
             [is.simm.agents.room-agents :as rooms]
             [is.simm.authority.world :as world]
             [is.simm.model.access :as access]
@@ -40,8 +42,8 @@
                             conn))
                         (open! room)))]
         (@#'fixture/with-fixture owned-first?
-         (fn [{:keys [owned] :as context}]
-           (try (f context) (finally (governance/ungovern! owned))))))
+                                 (fn [{:keys [owned] :as context}]
+                                   (try (f context) (finally (governance/ungovern! owned))))))
       (finally (doseq [cfg @configs] (d/delete-database cfg))))))
 
 (defn- seed-source! [conn]
@@ -54,7 +56,124 @@
     (repo/write! conn "wiki/file.md" (markdown/source-bytes text))
     (repo/stage-all! conn)
     (repo/commit! conn {:message "Typed source fixture"})
-    {:text text :property property}))
+    {:text text :property property :type type}))
+
+(defn- declaration-command [preview additions]
+  (assoc (select-keys preview [:path :target :expected :revision :scope-revision :proposed-scope-revision :types])
+         :expected-target-stamp (:target-stamp preview) :additions additions))
+
+(declare model failure)
+
+(deftest actual-inbound-declaration-assignment-preserves-source-and-owned-target
+  (doseq [owned-first? [true false]]
+    (with-canonical-fixture owned-first?
+      (fn [{:keys [conn w room owned attached]}]
+        (let [{:keys [text type]} (seed-source! owned)
+              research (crud/create-type! owned {:name "SourceDeclarationResearch"})
+              active (crud/create-morphism! owned {:name "S/SourceDeclarationResearch/active"
+                                                   :src "S/SourceDeclarationResearch" :dst "S/Boolean" :optional? false})
+              opened (model conn w room) other @attached selected (workspace/selected-system-id)
+              addition {:alias "active" :property active :declaring-type research :input {:text "false"}}
+              preview-request {:path "wiki/file.md" :target {:kind :page} :types [type research]
+                               :additions [(dissoc addition :input)] :expected-target-stamp (:target-stamp opened)}]
+          (with-redefs [context/server-context (:ctx room) rooms/live-room (fn [id] (when (= id (:room w)) room))]
+            (let [call (fn [kind name request]
+                         (world/inbound! (world/principal w kind) name
+                                         {:room-id-str (str (:room w)) :request request}))
+                  preview (:result (call :member "preview-memory-declaration!" preview-request))
+                  command (declaration-command preview [addition])]
+              (is (uuid? (:proposed-scope-revision preview)))
+              (is (some #(= research (:id %)) (:type-choices preview)))
+              (doseq [kind [:non-member :admin :anon]
+                      [name request] [["preview-memory-declaration!" preview-request] ["save-memory-declaration!" command]]]
+                (is (world/refused? (call kind name request))))
+              (doseq [extra [{:schema {}} {:validated-basis {}} {:bindings {}}]]
+                (is (:error (call :member "save-memory-declaration!" (merge command extra)))))
+              (is (:error (call :member "save-memory-declaration!" (assoc command :scope-revision (random-uuid)))))
+              (is (:error (call :member "save-memory-declaration!" (assoc command :proposed-scope-revision (random-uuid)))))
+              (is (= text (:text (files/read-file-in @owned "wiki/file.md"))))
+              (let [saved (:result (call :member "save-memory-declaration!" command))
+                    source (:text (files/read-file-in @owned "wiki/file.md"))
+                    prepared (view/prepare @owned {:roots [""] :schema-revision :declaration-test :entity-profile space/profile})]
+                (is (:saved? saved))
+                (is (= source (:text saved)))
+                (is (= (:target-stamp preview) (:target-stamp saved)))
+                (is (str/includes? source "revenue: 0 # retain this comment"))
+                (is (= :ready (:status prepared)))
+                (is (false? (d/q '[:find ?value . :where [_ :S.SourceDeclarationResearch/active ?value]] (:db prepared))))
+                (is (:error (call :member "save-memory-declaration!" command)))))
+            (is (= other @attached))
+            (is (= selected (workspace/selected-system-id)))))))))
+
+(deftest declaration-save-retains-native-schema-and-revocation-guards
+  (with-canonical-fixture false
+    (fn [{:keys [conn w room owned attached own-descriptor attached-descriptor]}]
+      (let [{:keys [text type]} (seed-source! owned)
+            research (crud/create-type! owned {:name "DeclarationBoundaryResearch"})
+            opened (model conn w room)
+            preview (actions/declaration-preview! conn (:member w) (:room w) room
+                                                  {:path "wiki/file.md" :target {:kind :page} :types [type research]
+                                                   :additions [] :expected-target-stamp (:target-stamp opened)})
+            command (declaration-command preview [])
+            writer native-files/write-to! other @attached]
+        (let [error (with-redefs [native-files/write-to!
+                                  (fn [& args]
+                                    (d/transact owned [{:db/ident :fixture/declaration-race :db/valueType :db.type/string
+                                                        :db/cardinality :db.cardinality/one}])
+                                    (apply writer args))]
+                      (failure #(actions/declaration-save! conn (:member w) (:room w) room command)))]
+          (is (file-tx/native-basis-refusal? error))
+          (is (= text (:text (files/read-file-in @owned "wiki/file.md"))))
+          (is (= other @attached)))
+        (let [error (with-redefs [native-files/write-to!
+                                  (fn [& args]
+                                    (d/transact conn [{:room/id (:room w)
+                                                       :room/default-repository [:system/id (:registry-system attached-descriptor)]}])
+                                    (apply writer args))]
+                      (failure #(actions/declaration-save! conn (:member w) (:room w) room command)))]
+          (is (some? error))
+          (is (= text (:text (files/read-file-in @owned "wiki/file.md"))))
+          (is (= other @attached)))
+        (d/transact conn [{:room/id (:room w) :room/default-repository [:system/id (:registry-system own-descriptor)]}])
+        (let [fresh-model (model conn w room)
+              preview (actions/declaration-preview! conn (:member w) (:room w) room
+                                                    {:path "wiki/file.md" :target {:kind :page} :types [type research]
+                                                     :additions [] :expected-target-stamp (:target-stamp fresh-model)})
+              command (declaration-command preview [])
+              error (with-redefs [native-files/write-to!
+                                  (fn [& args]
+                                    (d/transact conn [[:db/retract [:room/id (:room w)] :room/parties [:party/id (:member w)]]])
+                                    (apply writer args))]
+                      (failure #(actions/declaration-save! conn (:member w) (:room w) room command)))]
+          (is (some? error))
+          (is (= text (:text (files/read-file-in @owned "wiki/file.md"))))
+          (is (= other @attached)))))))
+
+(deftest actual-inbound-block-assignment-preserves-exact-large-integer-input
+  (with-canonical-fixture true
+    (fn [{:keys [conn w room owned]}]
+      (let [{:keys [text type property]} (seed-source! owned)
+            block-id (random-uuid)
+            source (str text "\n<!-- simmis:block " block-id " -->\nResearch\n<!-- /simmis:block -->\n")
+            _ (repo/write! owned "wiki/file.md" (markdown/source-bytes source))
+            opened (model conn w room)
+            addition {:alias "revenue" :property property :declaring-type type :input {:text "9007199254740993"}}]
+        (with-redefs [context/server-context (:ctx room) rooms/live-room (fn [id] (when (= id (:room w)) room))]
+          (let [call (fn [name request]
+                       (:result (world/inbound! (world/principal w :member) name
+                                               {:room-id-str (str (:room w)) :request request})))
+                preview (call "preview-memory-declaration!"
+                              {:path "wiki/file.md" :target {:kind :block :id block-id} :types [type]
+                               :additions [(dissoc addition :input)] :expected-target-stamp (:target-stamp opened)})
+                saved (call "save-memory-declaration!" (declaration-command preview [addition]))
+                prepared (view/prepare @owned {:roots [""] :schema-revision :declaration-test :entity-profile space/profile})]
+            (is (:saved? saved))
+            (is (str/includes? (:text saved) "revenue: 0 # retain this comment"))
+            (is (str/ends-with? (:text saved) (str "<!-- simmis:block " block-id " -->\nResearch\n<!-- /simmis:block -->\n")))
+            (is (= :ready (:status prepared)))
+            (is (= 9007199254740993
+                   (:S.SourcePropertyCompany/revenue (d/pull (:db prepared) [:S.SourcePropertyCompany/revenue]
+                                                            [:entity/uuid block-id]))))))))))
 
 (defn- model [conn w room]
   (let [metadata (actions/metadata! conn (:member w) (:room w) room {:folders [] :paths ["wiki/file.md"]})]
@@ -98,8 +217,8 @@
               (is (= (:text saved) (:text (files/read-file-in @owned "wiki/file.md"))))
               (is (= :explicit (:identity-status (:analysis saved))))
               (let [reopened (:result (call :member "load-memory-properties!"
-                                          {:path "wiki/file.md" :target {:kind :page}
-                                           :expected-target-stamp (:target-stamp opened)}))
+                                            {:path "wiki/file.md" :target {:kind :page}
+                                             :expected-target-stamp (:target-stamp opened)}))
                     input (:input (first (filter #(= property (:id %)) (:fields reopened))))
                     unchanged (-> (request reopened property nil) (dissoc :value) (assoc :input input))]
                 (is (= {:text "9007199254740993"} input))
@@ -118,10 +237,10 @@
           (is (not (access/can? @conn (:member w) :merge {:room (:room w)})))
           (is (true? (:editable? (first (filter #(= property (:id %)) (:fields opened))))))
           (let [error (with-redefs [native-files/write-to!
-                                   (fn [& args]
-                                     (d/transact owned [{:db/ident :fixture/raced-schema :db/valueType :db.type/string
-                                                        :db/cardinality :db.cardinality/one}])
-                                     (apply writer args))]
+                                    (fn [& args]
+                                      (d/transact owned [{:db/ident :fixture/raced-schema :db/valueType :db.type/string
+                                                          :db/cardinality :db.cardinality/one}])
+                                      (apply writer args))]
                         (failure #(actions/property-save! conn (:member w) (:room w) room (request opened property 5))))]
             (is (file-tx/native-basis-refusal? error))
             (is (= text (:text (files/read-file-in @owned "wiki/file.md")))))
@@ -134,7 +253,7 @@
           (is (some? (failure #(actions/property-save! conn (:member w) (:room w) room (request opened property 8)))))
           (doseq [extra [{:validated-basis {}} {:bindings {}} {:options {:roots []}}]]
             (is (some? (failure #(actions/property-save! conn (:member w) (:room w) room
-                                                        (merge (request (model conn w room) property 9) extra))))))
+                                                         (merge (request (model conn w room) property 9) extra))))))
           (is (= other @attached))
           (is (= selected (workspace/selected-system-id))))))))
 

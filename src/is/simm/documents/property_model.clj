@@ -2,6 +2,7 @@
   "HOST read/preparation model for source-backed properties. Reads ONE supplied
    immutable native DB; no target resolution, authority, callbacks or writes."
   (:require [clojure.string :as str]
+            [datahike.api :as d]
             [geschichte.repo :as repo]
             [is.simm.documents.canonical :as canonical]
             [is.simm.documents.files :as files]
@@ -35,8 +36,8 @@
       (refuse! :invalid-or-provisional-document))
     (let [blocks (into {} (for [block (mapcat #(tree-seq (comp seq :children) :children %)
                                               (get-in analysis [:semantic :blocks]))
-                               :when (= :explicit (:identity-status block))]
-                           [(:id block) block]))
+                                :when (= :explicit (:identity-status block))]
+                            [(:id block) block]))
           decoded (metadata/decode (get-in analysis [:frontmatter :properties]) (set (keys blocks)))
           _ (when (= :invalid (:status decoded)) (refuse! :invalid-declarations))
           _ (when (and (= :block (:kind target)) (not (contains? blocks (:id target))))
@@ -47,7 +48,7 @@
           candidate (if (= :page (:kind target))
                       (canonical/page-candidate compiled (:values scope {}) path)
                       (properties/decode-candidate compiled (:values scope {})))]
-      {:file file :target target :compiled compiled :values (:values scope {})
+      {:file file :target target :compiled compiled :scope scope :values (:values scope {})
        :candidate candidate
        :values-path (if (= :page (:kind target)) [] ["simmis" "blocks" (str (:id target)) "values"])})))
 
@@ -69,7 +70,7 @@
 
 (defn- fields [{:keys [file target compiled values values-path]}]
   (let [aliases (into {} (for [[alias binding] (:bindings compiled)]
-                          [(get-in binding [:morphism :entity/uuid]) alias]))
+                           [(get-in binding [:morphism :entity/uuid]) alias]))
         parsed (assoc (:analysis file) :source (:text file))]
     (mapv
      (fn [[id binding]]
@@ -98,9 +99,10 @@
   "Safe field DTOs from actual source/trusted definitions, not executable
    definitions or a permission grant. Host must authorize/own DB and pin blobs."
   [db path target]
-  (let [{:keys [file compiled candidate] :as captured} (capture db path target)]
+  (let [{:keys [file compiled candidate scope] :as captured} (capture db path target)]
     {:profile profile :path path :target target :expected (:entry file)
      :revision (get-in file [:analysis :revision]) :scope-revision (:revision compiled)
+     :assigned-types (:types scope [])
      :types (mapv (fn [[id row]] {:id id :name (:entity/name row)}) (:types compiled))
      :fields (fields captured)
      :diagnostics (:diagnostics candidate)}))
@@ -122,12 +124,12 @@
           :db.type/string text
           :db.type/boolean (case text "true" true "false" false (refuse! :invalid-property-input))
           :db.type/long (if (re-matches #"[+-]?[0-9]+" text) (Long/parseLong text)
-                           (refuse! :invalid-property-input))
+                            (refuse! :invalid-property-input))
           :db.type/double (if (re-matches #"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?" text)
-                           (let [value (Double/parseDouble text)]
-                             (when-not (Double/isFinite value) (refuse! :invalid-property-input))
-                             value)
-                           (refuse! :invalid-property-input))
+                            (let [value (Double/parseDouble text)]
+                              (when-not (Double/isFinite value) (refuse! :invalid-property-input))
+                              value)
+                            (refuse! :invalid-property-input))
           (:db.type/uuid :db.type/ref)
           (if (= text (str (java.util.UUID/fromString text))) text (refuse! :invalid-property-input))
           :db.type/instant (do (java.util.Date/from (java.time.Instant/parse text)) text)
@@ -172,3 +174,125 @@
    actual trusted binding; never accept a client value type or EDN program."
   [db options request]
   (prepare-in db options :input request))
+
+(defn- proposed-scope [db captured types additions input?]
+  (when-not (and (vector? types) (<= (count types) 63) (every? uuid? types)
+                 (= (count types) (count (set types)))
+                 (vector? additions) (<= (count additions) 64)
+                 (every? (fn [item]
+                           (and (map? item)
+                                (= (cond-> #{:alias :property :declaring-type} input? (conj :input))
+                                   (set (keys item)))
+                                (string? (:alias item)) (<= 1 (count (:alias item)) 128)
+                                (not (str/blank? (:alias item)))
+                                (not (#{"simmis" "simmis-id"} (:alias item)))
+                                (uuid? (:property item)) (uuid? (:declaring-type item)))) additions)
+                 (= (count additions) (count (set (map :alias additions)))))
+    (refuse! :invalid-declaration-edit))
+  (let [{:keys [scope target values]} captured
+        opposite-role (if (= :page (:kind target)) (:block-role canonical/profile) (:page-role canonical/profile))
+        _ (when (some #{opposite-role} types) (refuse! :incompatible-structural-role))
+        bindings (reduce (fn [bindings {:keys [alias property declaring-type]}]
+                           ;; Existing unknown metadata cannot silently acquire
+                           ;; new meaning; author an explicit source edit instead.
+                           (when (or (contains? bindings alias) (contains? values alias))
+                             (refuse! :existing-binding-or-value))
+                           (assoc bindings alias {:id property :declaring-type declaring-type}))
+                         (:bindings scope {}) additions)
+        compiled (canonical/compile-declaration db (canonical/declaration (:kind target)
+                                                                          {:types types :bindings bindings}))]
+    ;; Compilation refuses orphaned/duplicate bindings after type removal. No
+    ;; deletion of aliases or values is smuggled into an assignment operation.
+    compiled))
+
+(defn- type-choices [db]
+  (let [meta-type (:db/id (d/pull db [:db/id] [:entity/name "S/EntityType"]))
+        _ (when-not meta-type (refuse! :missing-categorical-schema))
+        ;; Bound acquisition BEFORE metadata pulls. This is a small-room picker,
+        ;; not an unbounded cross-repository schema search.
+        rows (vec (take 129 (d/datoms db :avet :instance/of-role meta-type)))]
+    (when (> (count rows) 128) (refuse! :too-many-type-choices))
+    (->> rows
+         (map #(d/pull db [:entity/uuid :entity/name :object/primitive?] (:e %)))
+         (filter #(and (uuid? (:entity/uuid %)) (string? (:entity/name %))
+                       (not (:object/primitive? %))
+                       (not (#{(:page-role canonical/profile) (:block-role canonical/profile)} (:entity/uuid %)))))
+         (sort-by (juxt :entity/name :entity/uuid))
+         (mapv #(hash-map :id (:entity/uuid %) :name (subs (:entity/name %) 0 (min 256 (count (:entity/name %)))))))))
+
+(defn preview-declaration-in
+  "Prepare inert field DTOs and an actual prospective definition digest from
+   ONE supplied DB. No schema installation, publication, authority or lease.
+   Required values may be absent at preview; Save must supply them together."
+  [db path target {:keys [types additions] :as declaration}]
+  (when-not (and (map? declaration) (= #{:types :additions} (set (keys declaration))))
+    (refuse! :invalid-declaration-edit))
+  (let [{:keys [file compiled] :as captured} (capture db path target)
+        proposed (proposed-scope db captured types additions false)]
+    {:path path :target target :expected (:entry file)
+     :revision (get-in file [:analysis :revision]) :scope-revision (:revision compiled)
+     :proposed-scope-revision (:revision proposed)
+     :types types :additions additions
+     :type-choices (type-choices db)
+     :fields
+     (mapv (fn [field]
+             (if (some #(= (:property %) (:id field)) additions)
+               (let [binding (get-in proposed [:properties (:id field)])
+                     reason (or (when (= (:id field) (:title-property canonical/profile)) :generated-property)
+                                ;; Only the expected missing-value/token state
+                                ;; is bypassed for a newly requested binding.
+                                (restriction binding (:alias field) {(:alias field) nil}))]
+                 (assoc field :new? true :editable? (nil? reason) :reason reason))
+               (cond-> field (= :missing-source-binding (:reason field)) (assoc :needs-binding? true))))
+           (fields (assoc captured :compiled proposed)))}))
+
+(defn prepare-declaration-in
+  "Prepare a closed type-assignment/binding batch from ONE fresh Save-time DB.
+   Both old and prospective actual definitions are stamped. New required values
+   are validated with the whole selection before publication; no schema datoms
+   are written or assumed to travel through a Geschichte proposal."
+  [db options {:keys [path target expected revision scope-revision proposed-scope-revision types additions]
+               :as request}]
+  (when-not (and (map? request)
+                 (= #{:path :target :expected :revision :scope-revision :proposed-scope-revision :types :additions}
+                    (set (keys request)))
+                 (every? uuid? [revision scope-revision proposed-scope-revision]))
+    (refuse! :invalid-declaration-edit))
+  (let [{:keys [file compiled values-path] :as captured} (capture db path target)
+        _ (when-not (and (= expected (:entry file)) (= revision (get-in file [:analysis :revision]))
+                         (= scope-revision (:revision compiled)))
+            (refuse! :stale-property-source-or-schema))
+        proposed (proposed-scope db captured types additions true)
+        _ (when-not (= proposed-scope-revision (:revision proposed))
+            (refuse! :stale-proposed-definitions))
+        scope-path (if (= :page (:kind target)) ["simmis"] ["simmis" "blocks" (str (:id target))])
+        original (:text file)
+        changed? (or (not= types (get-in captured [:scope :types] [])) (seq additions))
+        parsed (:analysis file)
+        parsed (if (or (not changed?) (contains? (get-in parsed [:frontmatter :properties]) "simmis"))
+                 parsed
+                 (property-source/insert-value original revision ["simmis" "version"] 1))
+        typed (if-not changed?
+                parsed
+                (property-source/set-types (or (:source parsed) original) (:revision parsed)
+                                           (conj scope-path "types") (mapv str types)))
+        patched
+        (reduce (fn [parsed {:keys [alias property declaring-type input]}]
+                  (let [binding (get-in proposed [:bindings alias])
+                        ;; Same supported scalar/reference policy as existing
+                        ;; property editing, but the binding/value are NEW.
+                        reason (restriction binding alias {alias nil})]
+                    (when reason (refuse! reason))
+                    (when (= property (:title-property canonical/profile)) (refuse! :generated-property))
+                    (let [value (input-value (get-in binding [:schema :db/valueType]) input)
+                          bound (property-source/insert-value (or (:source parsed) original) (:revision parsed)
+                                                              (conj scope-path "properties" alias)
+                                                              {"id" (str property) "type" (str declaring-type)})]
+                      (property-source/insert-value (:source bound) (:revision bound) (conj values-path alias) value))))
+                typed additions)
+        text (or (:source patched) original)
+        preview (view/validate-replacement db options {:path path :expected expected :source text})]
+    (when-not (= :valid (:status preview))
+      (throw (ex-info "Declaration edit violates the prospective knowledge selection"
+                      {:type ::refused :reason :invalid-selection :diagnostics (:diagnostics preview)})))
+    {:path path :expected expected :text text}))
