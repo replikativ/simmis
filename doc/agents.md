@@ -334,6 +334,38 @@ Ordinary workflow completion remains distinct from checker-backed benchmarking.
 Recurring benchmarks require installation-operator authority as well as room
 merge authority. CLI and local-worker executions are not scheduled by this path.
 
+The opt-in `bash scripts/probe-scheduled-wiki-restart.sh` diagnostic starts two
+sequential capped JVMs against one newly created `/tmp` file-backed home. It
+uses native component startup, room hydration and the owned dispatcher, but
+manually advances the clock and permanently scripts model transport in each
+private process. It checks persisted request/result/input identities, unchanged
+input suppression and a finite allowance across restart. Checkpoints are
+written only after native shutdown joins. It neither starts the web application
+nor uses provider credentials; it is not a wall-clock timing or model-quality
+benchmark. The temporary evidence is retained and its path printed. This
+diagnostic is deliberately outside the default test suite.
+
+The separate `bash scripts/probe-scheduled-wiki-allowance.sh` diagnostic uses
+one fresh private process and the same scripted native dispatcher fixture. It
+consumes three explicitly provisioned dispatches, then checks that changed
+evidence holds without a new request, provider preparation, funding or HTTP
+call. A further manually driven pass must not retry held work. Its retained
+hold reason is evidence, not a promise of automatic resume after funding.
+
+`bash scripts/probe-scheduled-wiki-authority.sh` separately exercises the human
+pause/resume handler, then revokes the stored creator's merge permission while
+retaining room read access. Explicit dispatcher passes must do no fresh room
+hydration, capture, preparation, submission, funding or inference; unauthorized
+resume must refuse without rewriting the activation. Like the other diagnostics,
+its evidence is written only after native shutdown joins.
+
+`bash scripts/probe-scheduled-wiki-failure.sh` scripts a real provider failure
+event after a successful baseline. It checks the direct candidate Run and its
+certified failed Attempt, separately from orchestration Job status, and requires
+no failed-input processing proof, filing or automatic new work. It records the
+held activation's active pointer; it does not claim failed LIVE filing becomes
+resumable or clear that pointer to manufacture a retry.
+
 The experimental Claude Code text backend is disabled by default. A trusted operator enables it
 with JVM properties `simmis.cli-benchmarks.enabled=true`,
 `simmis.cli-benchmarks.unit=YOUR.service` and (optionally)
