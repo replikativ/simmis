@@ -68,6 +68,15 @@ arbitrary legacy semantic-block identity or Simmis widget metadata. The separate
 grouping codec below provides explicit identities for new files. Recognizing syntax is not a claim that the
 semantic codec or rich editor can round-trip every feature.
 
+The synthetic academic source corpus exercises named footnotes, dollar-delimited
+formula source, Pandoc-style citation spelling, a local bibliography filename,
+and nested Clojure fences, including literal lookalikes in code. Current tests
+establish exact no-op preservation and unchanged academic source when a neighboring
+heading is edited, for both LF and CRLF input. This does not claim formula
+rendering, citation resolution, bibliography loading, or runnable Markdown cells.
+Footnotes are syntax nodes; their containing rich paragraph can still require
+source editing. Parsing and rich editing do not fetch references or execute code.
+
 `patch` accepts a content revision and non-overlapping edits in that revision's
 coordinates. A stale revision, overlapping edits or a range splitting a UTF-16
 surrogate pair is refused. Untouched source is preserved. A no-op edit does not
