@@ -943,6 +943,8 @@ Concretely, with the action each RPC is policed as:
 | share, unshare or delete a KB | `:grant` on the KB | policy row |
 | write to or discard an open proposal fork | `:write` on the store AND (the fork's author, or `:merge` on its authority scope) | policy row (`{:branch …}`) |
 | dismiss one fork of a proposal (`dismiss-fork!`) | `:write` on the proposal's room AND control of that fork, as above | policy row (`{:proposal-fork …}`) |
+| check or accept retained file outputs (`preview-file-proposal!`, `adopt-reviewed-files!`) | authenticated human with current room read + merge, Proposal write, and control of its single retained file component; acceptance also requires the unchanged reviewed fingerprint | RPC policy + `file-output-service` + exact writer checks |
+| reconcile uncertain retained-file completion (`reconcile-file-proposal!`) | current human read/write/merge and component control, including coherent accepted history; original receipt only, never replay authority | RPC policy + `file-output-adoption/reconciliation-snapshot` + scoped receipt |
 | dismiss a whole proposal (`dismiss-proposal!`) | `:write` on the room AND (its filer, or control of every open fork) | policy row (`{:proposal-forks …}`) |
 | accept or reject an escalated review's proposal | `:merge` on the room (its owner): the policy row above, then `review/decide!`, then dvergr's authorizer for `room_merge` / `room_discard` | policy row + `workflows.review/decide!` + `access/dvergr-authorize` |
 | a wiki widget's data transaction (`widget-transact`) | `:write` on the KB's store (`{:kb-store …}` — never a room store); no schema in it | policy row + `block_remote` (shape, then `d/with`) |

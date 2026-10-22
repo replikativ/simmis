@@ -1,10 +1,11 @@
 (ns is.simm.ops.file-output-controller
-  "INTERNAL inactive fixed host orchestration. No route/schema/default change.
+  "Fixed HOST orchestration; public actions use the strict reviewed entries.
    Original ACK values are invocation-local witnesses, never readback tokens or
    client capabilities. Only original sealed no-entry cleanup is supported;
    positive recovery remains a separate currently authorized operation."
   (:require [dvergr.rooms.files :as files]
             [dvergr.runtime.preparation :as preparation]
+            [hasch.core :as hasch]
             [is.simm.model.file-adoptions :as adoptions]
             [is.simm.model.system-db :as sdb]
             [is.simm.ops.file-output-adoption :as adoption]
@@ -45,11 +46,57 @@
     (owned/validate! db party :merge room-id room owned-binding)
     true))
 
+(defn- review-revision [prepared witness]
+  ;; Unordered maps/sets hash canonically. Scope ordering is not semantic;
+  ;; retain every scope while normalizing its acquisition order. No clocks,
+  ;; actor-specific authority, native handles or body bytes enter this digest.
+  (hasch/uuid [:simmis/reviewed-file-adoption-v1
+               (select-keys (get-in prepared [:proof :binding]) [:proposal :component])
+               (update witness :typed-scopes
+                       #(vec (sort-by (comp str :revision) %)))]))
+
+(defn- preflight! [conn party room-id room proposal-id binding]
+  (let [prepared (adoption/prepare conn party room-id room proposal-id)]
+    (when-not (= (:target binding) (get-in prepared [:proof :binding :target]))
+      (refuse! :target-changed))
+    (let [witness (validation-binding! binding (:plan prepared)
+                                       (validation/prepare-in (:db binding) (:plan prepared)))]
+      {:prepared prepared :witness witness :revision (review-revision prepared witness)})))
+
+(defn- host-input! [conn party room-id proposal-id]
+  (when (simple/on-drain-thread?) (refuse! :requires-host-worker))
+  (when-not (and conn (identical? conn (sdb/get-conn))
+                 (every? uuid? [party room-id proposal-id]))
+    (refuse! :invalid-host-input)))
+
+(defn preview-reviewed!
+  "HOST current canonical review, not an admission capability. Caller owns the
+   outer application lifetime and authorizes metadata before Room hydration.
+   No claim, writer or publication occurs. Each acceptance must recompute its
+   OWN preflight and compare the returned revision before claiming."
+  [conn party room-id room proposal-id]
+  (host-input! conn party room-id proposal-id)
+  (preparation/with-host-operation!
+    room
+    (fn [lease]
+      (preparation/with-host-current! lease (constantly true))
+      (let [db @conn binding (owned/resolve! db party :merge room-id room)
+            proof (adoption/snapshot db party room-id proposal-id)
+            existing (adoptions/current-operation db (get-in proof [:fork :db/id]))]
+        (if (and existing (not= :aborted (:state existing)))
+          (pending existing)
+          (do
+            (or (native-writer) (refuse! :explicit-writer-unavailable))
+            (let [{:keys [revision]} (preflight! conn party room-id room proposal-id binding)]
+              (preparation/with-host-current! lease (constantly true))
+              {:status :reviewed :proposal proposal-id
+               :component (get-in proof [:binding :component]) :revision revision})))))))
+
 (defn- adopt-in!
   "INTERNAL ordinary single-component adoption. Caller supplies transport-
    authenticated party and the canonical live Room; hydrate only after authority
    checks, OUTSIDE this operation's writers. No force, bytes, target, claim token
-   or arbitrary callback is accepted. Public adapters remain disabled.
+   or arbitrary callback is accepted. Public adapters require reviewed adoption.
 
    Only a NORMAL native returned completion with applied? true, a winning receipt,
    and THIS invocation's applying ACK reaches original-publisher finalization.
@@ -58,11 +105,8 @@
    a strictly authorized exact original claimed->aborted cleanup. Applying never
    aborts. No recovery read, native retry or generic acceptance.
    Pure/mock tests of this composition are NOT native ownership evidence."
-  [conn party room-id room proposal-id lease]
-  (when (simple/on-drain-thread?) (refuse! :requires-host-worker))
-  (when-not (and conn (identical? conn (sdb/get-conn))
-                 (every? uuid? [party room-id proposal-id]))
-    (refuse! :invalid-host-input))
+  [conn party room-id room proposal-id lease expected-revision]
+  (host-input! conn party room-id proposal-id)
   (preparation/with-host-current! lease (constantly true))
   (let [db @conn binding (owned/resolve! db party :merge room-id room)
         proof (adoption/snapshot db party room-id proposal-id)
@@ -71,13 +115,13 @@
       ;; A new invocation NEVER becomes the publisher by finding its token.
       (pending existing)
       (let [write! (or (native-writer) (refuse! :explicit-writer-unavailable))
-            prepared (adoption/prepare conn party room-id room proposal-id)
-            _ (when-not (= (:target binding) (get-in prepared [:proof :binding :target]))
-                (refuse! :target-changed))
-            witness (validation-binding! binding (:plan prepared)
-                                         (validation/prepare-in (:db binding) (:plan prepared)))
+            {:keys [prepared witness revision]} (preflight! conn party room-id room proposal-id binding)
+            _ (when (and expected-revision (not= expected-revision revision))
+                (refuse! :review-changed))
             _ (preparation/with-host-current! lease (constantly true))
-            claimed (adoption/claim! conn party room-id room prepared)
+            claimed (if expected-revision
+                      (adoption/claim! conn party room-id room prepared revision)
+                      (adoption/claim! conn party room-id room prepared))
             operation (:operation claimed)
             applying (volatile! nil)]
         (try
@@ -134,4 +178,16 @@
   [conn party room-id room proposal-id]
   (when (simple/on-drain-thread?) (refuse! :requires-host-worker))
   (preparation/with-host-operation!
-    room #(adopt-in! conn party room-id room proposal-id %)))
+    room #(adopt-in! conn party room-id room proposal-id % nil)))
+
+(defn adopt-reviewed!
+  "HOST explicit reviewed acceptance. The mandatory semantic revision is a
+   precondition, NOT authority or a substitute for current authorization.
+   Recompute the fixed HOST witness and compare BEFORE claim. No client witness,
+   target, bytes, callback or ownership token is accepted. Caller owns the outer
+   application lifetime and authorizes metadata before Room hydration."
+  [conn party room-id room proposal-id expected-revision]
+  (host-input! conn party room-id proposal-id)
+  (when-not (uuid? expected-revision) (refuse! :invalid-review-revision))
+  (preparation/with-host-operation!
+    room #(adopt-in! conn party room-id room proposal-id % expected-revision)))

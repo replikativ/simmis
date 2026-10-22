@@ -242,6 +242,9 @@
    "proposal-retained-audit!" [(c :none AUTH)]
    "proposal-diff!"          [(c :proposal MEMBERS)]
    "proposal-file!"          [(c :proposal MEMBERS)]
+   "preview-file-proposal!"  [(c :proposal MEMBERS)]
+   "adopt-reviewed-files!"   [(c :proposal MEMBERS)]
+   "reconcile-file-proposal!" [(c :proposal MEMBERS)]
    "proposal-checks!"        [(c :proposal MEMBERS)]
    "list-proposals!"         [(c :none AUTH)]
    ;; labels: what the room's people decided on reviewed work — a room read

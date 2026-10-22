@@ -20,6 +20,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.file-output-adoption :as adoption]
             [is.simm.ops.file-output-controller :as controller]
+            [is.simm.ops.file-output-service :as service]
             [is.simm.ops.file-output-plan :as plans]
             [is.simm.ops.file-output-publication :as publication]
             [is.simm.ops.file-output-storage :as storage]
@@ -28,6 +29,11 @@
             [is.simm.ops.owned-workspace :as owned]
             [is.simm.ops.owned-workspace-test :as fixture]
             [is.simm.ops.proposals :as proposals]
+            [is.simm.agents.room-agents :as live-rooms]
+            [is.simm.runtimes.application-ops :as application]
+            [is.simm.runtimes.application-ops-test :as application-fixture]
+            [is.simm.runtimes.context :as context]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [kontor.governance :as governance]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.yggdrasil :as ygg]
@@ -319,6 +325,100 @@
    trusted producer remains separate from prior agent certification evidence."
   [owned-first?]
   (native-probe* owned-first? true))
+
+(defn native-reviewed-adoption-probe
+  "OPT-IN actual canonical preview -> valid new context -> stale refusal before
+   claim -> explicit fresh review -> native publication with immutable review
+   audit. Synthetic producer; no agent or paid inference certification claim."
+  [owned-first?]
+  (let [accepted-revision (atom nil)]
+    (with-redefs [controller/adopt!
+                  (fn [conn party room-id room proposal]
+                    (let [before-control @conn
+                          binding (owned/resolve! before-control party :merge room-id room)
+                          target (:conn binding) before-target @target
+                          preview (controller/preview-reviewed! conn party room-id room proposal)]
+                      (is (= :reviewed (:status preview)))
+                      (is (= (:max-tx before-control) (:max-tx @conn)))
+                      (is (= (:max-tx before-target) (:max-tx @target)))
+                      ;; A canonical, identified additional context document is
+                      ;; valid, but was not part of the earlier human review.
+                      (repo/write! target "wiki/review-context.md"
+                                   (markdown/source-bytes
+                                    (str "---\nsimmis-id: '" (random-uuid) "'\n---\n# New review context\n")))
+                      (let [failure (try (controller/adopt-reviewed! conn party room-id room proposal (:revision preview))
+                                         nil (catch clojure.lang.ExceptionInfo error error))]
+                        (is (= :review-changed (:reason (ex-data failure)))))
+                      (is (empty? (d/datoms @conn :aevt :file.adoption/id)))
+                      (is (empty? (d/datoms @target :avet :db/ident :publication/id)))
+                      (let [fresh (controller/preview-reviewed! conn party room-id room proposal)]
+                        (is (not= (:revision preview) (:revision fresh)))
+                        (reset! accepted-revision (:revision fresh))
+                        (let [result (controller/adopt-reviewed! conn party room-id room proposal (:revision fresh))]
+                          (is (= 2 (get-in result [:operation :version])))
+                          (is (= (:revision fresh) (get-in result [:operation :review-revision])))
+                          result))))]
+      (assoc (native-probe* owned-first? false) :review-revision @accepted-revision))))
+
+(defn native-service-adoption-probe
+  "OPT-IN fixed human service over real EACL, canonical filing, application
+   installation and Room leases. A blocked retained body read holds shutdown
+   until physical exit; after a new installation the explicit review is accepted.
+   Only registry UUID->memory fixture hydration is scoped, as above."
+  [owned-first?]
+  (with-redefs [controller/adopt!
+                (fn [conn party room-id room proposal]
+                  ;; The shared diagnostic also probes ordinary accepted replay
+                  ;; with all body IO forbidden. Do not restart this blocked-
+                  ;; read scenario for that deliberately closed second call.
+                  (when (= :accepted (:proposal/status (d/pull @conn [:proposal/status] [:proposal/id proposal])))
+                    (throw (ex-info "Accepted diagnostic repeat is not a publication" {})))
+                  (with-redefs [context/server-context (:ctx room)
+                                live-rooms/live-room (fn [id]
+                                                       (when-not (= room-id id)
+                                                         (throw (ex-info "Wrong fixture Room" {})))
+                                                       room)]
+                    (@#'application-fixture/isolated
+                     (fn []
+                       (application/start!)
+                       (let [entered (promise) release (promise) joining (promise)
+                             read! storage/read-file-in join! lifetime/join!
+                             preview
+                             (with-redefs [storage/read-file-in
+                                           (fn [& args]
+                                             (deliver entered true)
+                                             @release
+                                             (apply read! args))
+                                           lifetime/join!
+                                           (fn [owner timeout]
+                                             (deliver joining true)
+                                             (join! owner timeout))]
+                               (let [work (future (service/preview! party proposal))]
+                                 (try
+                                   (is (true? (deref entered 10000 nil)))
+                                   (let [shutdown (future (application/quiesce!))]
+                                     (try
+                                       (is (true? (deref joining 10000 nil)))
+                                       (is (not (realized? work)))
+                                       (is (not (realized? shutdown)))
+                                       (is (= {:status :unavailable} (service/preview! party proposal)))
+                                       (finally (deliver release true)))
+                                     ;; Actual physical joins, never future
+                                     ;; cancellation as an acknowledgement.
+                                     @shutdown
+                                     @work)
+                                   (finally (deliver release true) @work))))]
+                         (is (= :reviewed (:status preview)))
+                         (application/stop!)
+                         (application/start!)
+                         (let [result (service/adopt! party proposal (parse-uuid (:revision preview)))
+                               operation (when-let [id (:operation result)]
+                                           (adoptions/operation @conn (parse-uuid id)))]
+                           (is (= :accepted (:status result)))
+                           (is (= 2 (:version operation)))
+                           (is (= (:revision preview) (str (:review-revision operation))))
+                           {:status (:status result) :operation operation}))))))]
+    (native-probe* owned-first? false)))
 
 (defn- durable-state [conn]
   (let [db @conn]

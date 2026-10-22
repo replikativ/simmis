@@ -268,6 +268,27 @@ agree). Append-only — no RPC writes or removes one. Read with
 `review/labels` and the `list-labels!` RPC (a room read); the room settings
 page lists them under "Review decisions".
 
+### Retained file-output acceptance
+
+A single `:file-output` component has its own fixed reviewed acceptance path;
+the generic whole-world/fork Accept actions do not adopt it. The shared
+Proposal inspector (also reached from chat and Tasks) retains its before/after
+comparison and offers **Check current workspace** then **Accept reviewed
+files**. The server validates current human authority and the closed filing
+before hydration, then owns application and exact Room lifetimes throughout.
+Acceptance recomputes canonical source/definitions/constraints and exact target
+identity, compares the expected review revision before claim, and uses the
+native prepared-snapshot/checkpoint guard before publication. Version-2 journal
+intent includes the review revision; this digest is attribution, not a historical
+database snapshot. Mixed-component Proposals remain review-only.
+
+Lost acknowledgement stays uncertain, never permission to retry publication.
+**Check recorded completion** reauthorizes separately and reconciles the
+original scoped receipt, including accepted history. It does not reload old
+bodies or overwrite subsequent edits/checkouts. Review/action tokens live in
+context-backed card state; stale requests and connection/principal epochs cannot
+restore an obsolete Accept action.
+
 ## 6. Semantic diff
 
 Server ns `ops/semantic_diff.clj` over `DatahikeDiff` (has FULL

@@ -16,6 +16,7 @@
         conn (atom {}) room (Object.) party (:actor operation) rid (:room operation)
         system (Object.) binding {:system system :target (:target operation) :db {:source :snapshot}}
         witness {:manifest (get-in plan [:manifest :id]) :target (:target operation)}
+        witness-ref (atom witness)
         proof {:binding (select-keys operation [:proposal :component :manifest :room :actor :filing :disposition :target])
                :fork {:db/id 1} :proposal {:db/id 2} :retained {:manifest (:manifest plan)}}
         prepared {:proof proof :plan plan}
@@ -76,12 +77,12 @@
                                  (is (= (:db binding) db))
                                  (is (= plan actual-plan))
                                  (when (:invalid-canonical? options) (throw (ex-info "Invalid canonical output" {})))
-                                 (cond-> witness
+                                 (cond-> @witness-ref
                                    (:wrong-witness? options) (assoc :manifest (random-uuid))))
        #'validation/assert-after! (fn [db actual-witness]
                                     (note! :canonical-after)
                                     (is (= {:source :prepared-after} db))
-                                    (is (= witness actual-witness))
+                                    (is (= @witness-ref actual-witness))
                                     (when (= :guard-refused (:mode options))
                                       (throw (ex-info "Prepared source changed" {})))
                                     true)
@@ -124,10 +125,68 @@
          (when (:lost-abort? options) (throw (ex-info "Lost aborted ACK" {})))
          {:status :aborted :operation (:id operation) :reason :native-not-started})
        #'controller/native-writer (fn [] (note! :feature-check) (when-not (:unsupported? options) write!))}
-      #(f {:run! run! :calls calls :journal journal :operation operation :claimed claimed}))))
+      #(f {:run! run! :calls calls :journal journal :operation operation :claimed claimed
+           :witness witness-ref
+           :preview! (fn [] (controller/preview-reviewed! conn party rid room (:proposal operation)))
+           :adopt-reviewed! (fn [revision]
+                              (controller/adopt-reviewed! conn party rid room (:proposal operation) revision))}))))
 
 (defn- error [run!]
   (try (run!) nil (catch clojure.lang.ExceptionInfo e e)))
+
+(deftest reviewed-preview-is-read-only-and-acceptance-recomputes-before-claim
+  (with-host {}
+    (fn [{:keys [preview! adopt-reviewed! calls journal]}]
+      (let [preview (preview!) again (preview!)]
+        (is (= :reviewed (:status preview)))
+        (is (uuid? (:revision preview)))
+        (is (= preview again))
+        (is (nil? @journal))
+        (is (not-any? #{:claim :native-write :applying :finalize} @calls))
+        (reset! calls [])
+        (is (= :accepted (:status (adopt-reviewed! (:revision preview)))))
+        (is (= 1 (count (filter #{:canonical-preflight} @calls))))
+        (is (< (.indexOf @calls :canonical-preflight) (.indexOf @calls :claim)))))))
+
+(deftest missing-or-changed-review-cannot-claim
+  (with-host {}
+    (fn [{:keys [preview! adopt-reviewed! calls journal witness]}]
+      (doseq [invalid [nil false "client-supplied-string"]]
+        (is (= :invalid-review-revision (:reason (ex-data (error #(adopt-reviewed! invalid)))))))
+      (is (empty? @calls))
+      (let [preview (preview!)]
+        (swap! witness assoc :selection {:files {"wiki/other.md" {:content (random-uuid)}}})
+        (reset! calls [])
+        (is (= :review-changed (:reason (ex-data (error #(adopt-reviewed! (:revision preview)))))))
+        (is (nil? @journal))
+        (is (not-any? #{:claim :native-write :applying :finalize} @calls))
+        (is (not= (:revision preview) (:revision (preview!))))))))
+
+(deftest preview-of-existing-ownership-never-reads-bodies-or-republishes
+  (with-host {:existing {:id (random-uuid) :state :claimed}}
+    (fn [{:keys [preview! calls]}]
+      (is (= :pending (:status (preview!))))
+      (is (= [:resolve :snapshot] @calls)))))
+
+(deftest review-revision-covers-semantic-witness-with-order-independent-scopes
+  (let [prepared {:proof {:binding {:proposal (random-uuid) :component (random-uuid)}}}
+        a {:revision (random-uuid) :declarations {:a true}}
+        b {:revision (random-uuid) :declarations {:b false}}
+        witness {:profile {:version 1} :preservation {:version 1}
+                 :manifest (random-uuid) :target {:ref "refs/heads/main"}
+                 :selection {:files {}} :typed-scopes [a b]
+                 :constraint-dependencies {:external-targets #{}} :after {}}
+        revision #(@#'controller/review-revision prepared %)]
+    (is (= (revision witness) (revision (assoc witness :typed-scopes [b a]))))
+    (doseq [changed [(assoc witness :profile {:version 2})
+                     (assoc witness :preservation {:version 2})
+                     (assoc witness :manifest (random-uuid))
+                     (assoc witness :target {:ref "refs/heads/other"})
+                     (assoc witness :selection {:files {"wiki/a.md" {:content (random-uuid)}}})
+                     (assoc witness :typed-scopes [(assoc a :declarations {:a false}) b])
+                     (assoc witness :constraint-dependencies {:external-targets #{(random-uuid)}})
+                     (assoc witness :after {"wiki/new.md" {:content (random-uuid)}})]]
+      (is (not= (revision witness) (revision changed))))))
 
 (deftest original-normal-native-result-is-the-only-finalization-path
   (with-host {}
