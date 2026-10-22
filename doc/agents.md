@@ -359,6 +359,13 @@ hydration, capture, preparation, submission, funding or inference; unauthorized
 resume must refuse without rewriting the activation. Like the other diagnostics,
 its evidence is written only after native shutdown joins.
 
+`bash scripts/probe-scheduled-wiki-failure.sh` scripts a real provider failure
+event after a successful baseline. It checks the direct candidate Run and its
+certified failed Attempt, separately from orchestration Job status, and requires
+no failed-input processing proof, filing or automatic new work. It records the
+held activation's active pointer; it does not claim failed LIVE filing becomes
+resumable or clear that pointer to manufacture a retry.
+
 The experimental Claude Code text backend is disabled by default. A trusted operator enables it
 with JVM properties `simmis.cli-benchmarks.enabled=true`,
 `simmis.cli-benchmarks.unit=YOUR.service` and (optionally)
