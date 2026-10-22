@@ -180,6 +180,8 @@
    "save-memory-office-part!" [(c :room MEMBERS)]
    "submit-workflow-run!"    [(c :room OWNER)]
    "collect-workflow-wiki-output!" [(c :room OWNER)]
+   "inspect-wiki-maintenance-setup!" [(c :room OWNER)]
+   "install-wiki-maintenance!" [(c :room OWNER)]
    "create-workflow-schedule!" [(c :room OWNER)]
    "set-workflow-schedule-enabled!" [(c :room OWNER)]
    "submit-workflow-benchmark!" [(c :room OWNER)]

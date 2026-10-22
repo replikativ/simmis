@@ -122,6 +122,10 @@
                             (fn [s reply] (-> s (assoc :list reply :permissions (:permissions reply))
                                               (update :errors dissoc :list)))
                             (fn [s error] (-> s (dissoc :permissions :list) (assoc-in [:errors :list] error))))
+                  (observe! :wiki-setup generation
+                            #(remote/inspect-wiki-maintenance-setup! web/server-id room)
+                            editor/observe-wiki-setup
+                            (fn [s _] (editor/observe-wiki-setup s {:status :unavailable})))
                   (when (and selected
                              (not (get-in (state) [:loading [:save selected]]))
                              (not (get-in (state) [:loading [:source selected]])))
@@ -242,6 +246,18 @@
                                   (-> s (assoc-in [:drafts name :schedule-submission :reply] (dissoc reply :permissions))))
                                 (fn [s reply] (assoc-in s [:drafts name :schedule-submission :reply] (dissoc reply :permissions)))))))
                 (catch :default error (update! assoc-in [:errors :schedule] (rem/error-text error)))))
+            (inspect-setup! []
+              (request! :wiki-setup-inspect nil
+                        #(remote/inspect-wiki-maintenance-setup! web/server-id room)
+                        editor/observe-wiki-setup))
+            (install-setup! []
+              (when (and (= :missing (get-in (state) [:wiki-setup :status]))
+                         (not (:access-denied? (state)))
+                         (confirm! "Install the wiki maintenance workflow in this room? This changes only the empty starter workflow folder. It does not choose a model, fund work, enable a schedule or merge any output."))
+                (update! editor/begin-wiki-setup)
+                (request! :wiki-setup-install nil
+                          #(remote/install-wiki-maintenance! web/server-id room)
+                          editor/acknowledge-wiki-setup editor/acknowledge-wiki-setup)))
             (collect-output! [name]
               (when-let [request-id (editor/collectable-output-request (get-in (state) [:drafts name]))]
                 (when-not (get-in (state) [:loading [:output name]])
@@ -294,6 +310,7 @@
                      (update! assoc-in [:errors :source] "Use a lowercase workflow name with letters, digits and dashes (max64)."))))
        :owner k :change change! :save save! :submit submit! :fund fund! :schedule schedule!
        :collect-output collect-output!
+       :inspect-wiki-setup inspect-setup! :install-wiki-setup install-setup!
        :open-proposal (fn [proposal]
                         (binding [ec/*execution-context* ctx]
                           (when (web/current-session? session)

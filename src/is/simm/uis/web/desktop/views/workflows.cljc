@@ -41,6 +41,21 @@
                       (el/button {:on-click (fn [_] ((:refresh actions))) :disabled (:list loading)} "Retry updates")))
             (el/p {:class "workflow-note"} "A workflow is a reusable task saved in this room. Each Run executes it separately and produces results or a proposal to review. Ordinary chat does not require a workflow.")
             (el/p {:class "workflow-note"} "This is the source editor: instructions and inputs are versioned room files. The optional checker is for benchmarking; inspecting source never executes it.")
+            (let [{:keys [status observed-status]} (:wiki-setup state)]
+              (when (#{:missing :installed :customized :pending} status)
+                (el/div {:class "workflow-note"}
+                        (el/strong {} "Wiki maintenance · ")
+                        (case status
+                          :missing (el/button {:on-click (fn [_] ((:install-wiki-setup actions)))} "Set up wiki maintenance")
+                          :installed (el/span {} "Saved workflow available. ")
+                          :customized (el/span {} "Customized workflow preserved. ")
+                          :pending (el/span {} "Setup outcome is uncertain. Checking saved source does not repeat installation. "))
+                        (when (or (#{:installed :customized} status) (#{:installed :customized} observed-status))
+                          (el/button {:on-click (fn [_] ((:select actions) "maintain-wiki"))} "Open wiki workflow"))
+                        (when (= :pending status)
+                          (el/button {:on-click (fn [_] ((:inspect-wiki-setup actions)))
+                                      :disabled (get-in state [:loading :wiki-setup-inspect])} "Check saved setup"))
+                        (el/p {} "No model, allowance or schedule is activated by setup."))))
             (for [[slot error] (:errors state)]
               (el/div {:key (pr-str slot) :class "proposal-error" :role "alert"}
                       (str (when (vector? slot) (str (second slot) ": ")) error)))

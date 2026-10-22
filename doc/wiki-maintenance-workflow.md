@@ -112,6 +112,29 @@ customer facts into a real scheduled Run.
 
 ## Current integration boundaries
 
+### Explicit inactive setup
+
+Workflows observes whether an eligible canonical workspace has the exact shipped
+maintainer, a customized version, or no files in its named subtree. An owner can
+choose **Set up wiki maintenance** for an empty subtree. Existing customized
+source is preserved and can be opened in the ordinary editor; setup never
+switches away from or replaces an unsaved draft automatically.
+
+The fixed browser service holds application lifetime, checks current human room
+read/write/admin authority before hydration, then holds the exact native Room
+lifetime before inspecting its canonical repository or calling the installer.
+Nested installer/authoring lookups reuse that leased Room; a changed UUID/slug
+mapping refuses before any newly selected repository is inspected.
+It does not require or confer room merge authority. A profile marker establishes
+repository eligibility, not that all documents are valid.
+
+Inspection describes current saved source, not an earlier write acknowledgement.
+An acknowledged setup result may be an exact-source or customization decision;
+it does not necessarily represent a native write.
+An uncertain setup remains pending: **Check saved setup** only observes source
+and cannot replay installation, even if the subtree still appears empty. No
+model, allowance, enabled schedule or automatic adoption is part of setup.
+
 ### Manual output collection
 
 For a newly submitted hosted knowledge workflow, Workflows offers **Review wiki

@@ -21,6 +21,7 @@
             #?(:clj [is.simm.ops.work-api :as work-api])
             #?(:clj [is.simm.ops.workflows :as workflows])
             #?(:clj [is.simm.ops.knowledge-output-service :as knowledge-output])
+            #?(:clj [is.simm.ops.wiki-setup :as wiki-setup])
             #?(:clj [is.simm.runtimes.context :as context])))
 
 #?(:clj
@@ -189,6 +190,20 @@
      (when (and (string? value)
                 (re-matches #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" value))
        (parse-uuid value))))
+
+(defn-spin-remote inspect-wiki-maintenance-setup!
+  [server-id room-id-str]
+  (spin-remote server-id [room-id-str]
+               #?(:clj (let [party (access/authenticated-party-id) room-id (wire-uuid room-id-str)]
+                         (await (blocking/blocking #(wiki-setup/inspect! party room-id))))
+                  :cljs nil)))
+
+(defn-spin-remote install-wiki-maintenance!
+  [server-id room-id-str]
+  (spin-remote server-id [room-id-str]
+               #?(:clj (let [party (access/authenticated-party-id) room-id (wire-uuid room-id-str)]
+                         (await (blocking/blocking #(wiki-setup/install! party room-id))))
+                  :cljs nil)))
 
 (defn-spin-remote collect-workflow-wiki-output!
   [server-id room-id-str request-id-str]

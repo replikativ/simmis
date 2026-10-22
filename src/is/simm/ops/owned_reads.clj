@@ -91,16 +91,31 @@
       (refuse!))
     resolved))
 
-(defn- resolve-action! [conn host-ctx principal handle action]
+(declare ^:private registered-native-room)
+
+(defn- original-install-room!
+  [expectation current]
+  (let [captured (:binding expectation) room (:room captured)]
+    (when-not (and (map? captured) room
+                   (= (select-keys current [:party :room-id :slug])
+                      (select-keys captured [:party :room-id :slug]))
+                   (identical? room (registered-native-room (:room-id current) (:slug current))))
+      (refuse!))
+    room))
+
+(defn- resolve-action! [conn host-ctx principal handle action & [expectation]]
   (binding [ec/*execution-context* host-ctx]
     (let [authorize (case action :read authorize-read! :write authorize-write! :install authorize-install!)
           before (current-control-db! conn host-ctx)
           original (authorize before principal handle)
-          room (rooms/live-room (:room-id original))
+          room (if expectation
+                 (original-install-room! expectation original)
+                 (rooms/live-room (:room-id original)))
           after (current-control-db! conn host-ctx)
           current (authorize after principal handle)]
       (when-not (and room (= (select-keys original [:room-id :party])
                              (select-keys current [:room-id :party]))) (refuse!))
+      (when expectation (original-install-room! expectation current))
       (let [binding (assoc (owned/resolve! after principal (if (= :install action) :write action)
                                            (:room-id original) room)
                            :control-db after)]
@@ -169,20 +184,20 @@
                      (true? (registry/admitted-incarnation? room))) (refuse!))
       room)))
 
-(defn resolve-host-room!
-  "Fixed HOST human read+MERGE Room-only hydration for retained offline work.
-   No default/source/files lookup. Returns ephemeral HOST data including the
-   exact original owner pair; never persist/export it, put it in SCI/fork state,
-   or treat its control DB as a lease. Room ctx need not equal server ctx."
+(defn preflight-host-install!
+  "Fixed metadata-only human governance gate before Room hydration."
   [host principal original-handle]
+  (authorize-install! (current-host-control-db! host) principal original-handle))
+
+(defn- resolve-room! [host principal original-handle authorize]
   (let [{:keys [control-conn execution-ctx] :as owner} (original-owner! host)]
     (binding [ec/*execution-context* execution-ctx]
       (let [before (current-control-db! control-conn execution-ctx)
-            original (authorize-room! before principal original-handle)
+            original (authorize before principal original-handle)
             registered (registered-native-room (:room-id original) (:slug original))
             room (rooms/live-room (:room-id original))
             after (current-control-db! control-conn execution-ctx)
-            current (authorize-room! after principal original-handle)
+            current (authorize after principal original-handle)
             canonical (registered-native-room (:room-id current) (:slug current))]
         (when-not (and room
                        (= original current)
@@ -191,11 +206,7 @@
           (refuse!))
         (assoc current :room room :control-db after ::room-owner owner)))))
 
-(defn validate-host-room!
-  "Current fixed read+MERGE and exact native Room-incarnation validation.
-   Never hydrates a missing/replacement Room, changes original owner or resolves
-   a source/default. Returns a refreshed ephemeral final-control-DB binding."
-  [host principal original-handle binding]
+(defn- validate-room! [host principal original-handle binding authorize]
   (let [{:keys [control-conn execution-ctx] :as owner} (original-owner! host)
         captured (::room-owner binding)]
     (when-not (and (map? binding)
@@ -206,13 +217,38 @@
       (refuse!))
     (clojure.core/binding [ec/*execution-context* execution-ctx]
       (let [db (current-control-db! control-conn execution-ctx)
-            current (authorize-room! db principal original-handle)
+            current (authorize db principal original-handle)
             room (registered-native-room (:room-id current) (:slug current))]
         (when-not (and (= current (select-keys binding [:party :room-id :slug]))
                        room (identical? room (:room binding))
                        (identical? (:ctx room) (:ctx (:room binding)))
                        (identical? (:meta room) (:meta (:room binding)))) (refuse!))
         (assoc current :room room :control-db db ::room-owner owner)))))
+
+(defn resolve-host-room!
+  "Fixed HOST human read+MERGE Room-only hydration for retained offline work.
+   No default/source/files lookup. Returns ephemeral HOST data including the
+   exact original owner pair; never persist/export it, put it in SCI/fork state,
+   or treat its control DB as a lease. Room ctx need not equal server ctx."
+  [host principal original-handle]
+  (resolve-room! host principal original-handle authorize-room!))
+
+(defn validate-host-room!
+  "Current fixed read+MERGE and exact native Room-incarnation validation.
+   Never hydrates a missing/replacement Room or resolves a source/default."
+  [host principal original-handle binding]
+  (validate-room! host principal original-handle binding authorize-room!))
+
+(defn resolve-host-install-room!
+  "Fixed human read+write+admin Room-only gate for inactive starter setup.
+   Canonical repository eligibility must still be checked UNDER the Room lease."
+  [host principal original-handle]
+  (resolve-room! host principal original-handle authorize-install!))
+
+(defn validate-host-install-room!
+  "Recheck install governance and exact original Room without target IO."
+  [host principal original-handle binding]
+  (validate-room! host principal original-handle binding authorize-install!))
 
 (defn resolve-host-read!
   "Fixed HOST composition entry. Validate the ORIGINAL host owner, then obtain
@@ -241,10 +277,13 @@
 
 (defn resolve-host-install!
   "Fixed HOST room-governance + write gate for an explicitly selected canonical
-   workspace. No implicit personal-room discovery or legacy provisioning."
+   workspace. With an install-room binding, reuse ONLY that leased Room and
+   validate its canonical mapping before any target IO. No fallback hydration."
   [host principal original-handle]
   (let [{:keys [control-conn execution-ctx]} (original-owner! host)]
-    (resolve-action! control-conn execution-ctx principal original-handle :install)))
+    (resolve-action! control-conn execution-ctx principal original-handle :install
+                     (when (contains? host ::install-room-binding)
+                       {:binding (::install-room-binding host)}))))
 
 (defn validate-host-install!
   "Recheck original host, current room governance and canonical target at every
@@ -253,6 +292,10 @@
   (let [{:keys [control-conn execution-ctx]} (original-owner! host)
         db (current-control-db! control-conn execution-ctx)
         current (authorize-install! db principal original-handle)]
+    (when (contains? host ::install-room-binding)
+      (when-not (identical? (:room binding)
+                           (original-install-room! {:binding (::install-room-binding host)} current))
+        (refuse!)))
     (when-not (= (select-keys binding [:room-id :party]) (select-keys current [:room-id :party]))
       (refuse!))
     (let [fresh (owned/validate! db principal :write (:room-id binding) (:room binding) binding)]

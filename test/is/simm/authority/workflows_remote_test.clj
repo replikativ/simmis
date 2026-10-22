@@ -16,9 +16,25 @@
             [is.simm.ops.work-api :as api]
             [is.simm.ops.work-test]
             [is.simm.ops.workflows :as workflows]
+            [is.simm.ops.wiki-setup :as wiki-setup]
             [is.simm.ops.workflows-test :as fixture]
             [is.simm.runtimes.context :as context]
             [is.simm.uis.web.desktop.workflows-remote :as remote]))
+
+(deftest wiki-setup-rpcs-capture-authenticated-owner-without-new-tool-authority
+  (world/with-world [conn w]
+    (let [calls (atom [])
+          capture (fn [party room]
+                    (swap! calls conj [party room]) {:status :unavailable})]
+      (with-redefs [wiki-setup/inspect! capture wiki-setup/install! capture]
+        (doseq [op ["inspect-wiki-maintenance-setup!" "install-wiki-maintenance!"]]
+          (doseq [kind [:member :non-member :admin :anon]]
+            (is (world/refused? (world/inbound! (world/principal w kind) op {:room-id-str (str (:room w))}))))
+          (is (empty? @calls))
+          (is (= {:status :unavailable}
+                 (:result (world/inbound! (world/principal w :owner) op {:room-id-str (str (:room w))}))))
+          (is (= [[(:owner w) (:room w)]] @calls))
+          (reset! calls []))))))
 
 (defn- with-api [f]
   (let [previous (dops/operations)]

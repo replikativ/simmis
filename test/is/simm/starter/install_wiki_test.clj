@@ -13,6 +13,9 @@
             [is.simm.ops.owned-workflow-authoring :as authoring]
             [is.simm.ops.owned-workflows :as owned]
             [is.simm.ops.workflows :as workflows]
+            [is.simm.ops.wiki-setup :as setup]
+            [is.simm.runtimes.application-ops :as application]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [is.simm.starter.install-wiki :as install]
             [is.simm.starter.wiki-maintenance :as starter]
             [kontor.governance :as governance]
@@ -85,6 +88,33 @@
                      (reads/resolve-host-install! host (principal w) handle)
                      starter/name (workflows/manifest-in @owned starter/name)))))
         (is (= control-before (vec (d/datoms @conn :eavt))) "No activation, funding or schedule records")))))
+
+(deftest setup-service-inspects-installs-and-preserves-custom-source-under-real-owners
+  (with-canonical
+    (fn [{:keys [conn w host owned]}]
+      (let [owner (lifetime/create) party (:owner w) room (:room w)
+            before (vec (d/datoms @conn :eavt))]
+        (lifetime/open! owner)
+        (try
+          ;; Isolate this test's embedding installation while exercising the
+          ;; real application admission and exact native Room lease.
+          (with-redefs-fn {#'application/installation (atom {:host host :owner owner})}
+            (fn []
+              (is (= :missing (:status (setup/inspect! party room))))
+              (is (= :installed (:status (setup/install! party room))))
+              (is (= :installed (:status (setup/inspect! party room))))
+              (with-redefs [native/write-to-completion!
+                            (fn [& _] (throw (AssertionError. "Exact setup repeat must not write")))]
+                (is (= :installed (:status (setup/install! party room)))))
+              (repo/write! owned "workflows/maintain-wiki/custom.txt" (.getBytes "Keep this customization" "UTF-8"))
+              (let [custom (query/worktree @owned)]
+                (is (= :customized (:status (setup/inspect! party room))))
+                (with-redefs [native/write-to-completion!
+                              (fn [& _] (throw (AssertionError. "Customized setup must not write")))]
+                  (is (= :customized (:status (setup/install! party room)))))
+                (is (= custom (query/worktree @owned))))
+              (is (= before (vec (d/datoms @conn :eavt))))))
+          (finally (lifetime/fence! owner) (lifetime/join! owner 30000)))))))
 
 (deftest customized-installed-source-is-preserved-without-a-native-dispatch
   (with-canonical

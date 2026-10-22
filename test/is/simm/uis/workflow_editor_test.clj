@@ -6,6 +6,22 @@
              :definition {:params {:goal "old default"}}
              :inspection {:ok true :bundle "bundle" :cases []}})
 
+(deftest wiki-setup-is-isolated-from-editor-intent-and-uncertainty-is-sticky
+  (let [state {:selected "other" :drafts {"other" (assoc (editor/draft source) :files {"a" "unsaved"})}}
+        observation {:status :missing :name "maintain-wiki" :activation :unchanged :observation :current-source}
+        observed (editor/observe-wiki-setup state observation)
+        pending (editor/begin-wiki-setup observed)
+        checked (editor/observe-wiki-setup pending observation)
+        reply (assoc observation :status :installed :observation :acknowledged :permissions {:write? true})
+        acknowledged (editor/acknowledge-wiki-setup checked reply)]
+    (is (= :missing (get-in observed [:wiki-setup :status])))
+    (is (= :pending (get-in checked [:wiki-setup :status])))
+    (is (= :missing (get-in checked [:wiki-setup :observed-status])))
+    (is (= :installed (get-in acknowledged [:wiki-setup :status])))
+    (is (= state (dissoc acknowledged :wiki-setup)))
+    (is (= pending (editor/acknowledge-wiki-setup pending {:status :unavailable})))
+    (is (= :unavailable (get-in (editor/observe-wiki-setup state reply) [:wiki-setup :status])))))
+
 (deftest wiki-output-belongs-to-the-original-submission-not-the-edited-form
   (let [id (str (random-uuid)) proposal (str (random-uuid))
         draft {:submission {:mode "run" :knowledge? true

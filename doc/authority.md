@@ -570,7 +570,7 @@ workspace write lock; omitted means an explicit unconditional write. This
 serializes cooperating workspace writers, not raw direct DB transactions that
 bypass the workspace API. A conflict leaves every file unchanged.
 
-The HOST-only wiki starter installer is narrower than ordinary workflow
+The fixed HOST wiki starter installer is narrower than ordinary workflow
 authoring. It requires a selected canonical-profile personal/project/group
 room, current read+write and room `:admin` authority (currently owner-only).
 It rechecks that governance and the original target at native effect gates,
@@ -580,6 +580,12 @@ extra files preserve the customization rather than silently upgrading it.
 No legacy provisioning, global-admin content bypass, schedule activation,
 model selection or funding is granted by installation. Uncertain writes remain
 pending without automatic replay. This installer is not an MCP or SCI endpoint.
+Authenticated browser inspection and explicit installation enter the application
+lifetime before metadata, apply the same fixed install governance before Room
+hydration, and hold the exact native Room lease before repository inspection or
+installation. These gates use read/write/admin, not merge permission. Browser
+observations do not establish an earlier installation acknowledgement and cannot
+resolve uncertain writes into permission to replay them.
 
 `simmis_workflow-list` discovers names from the room's path index without
 loading blobs: 25 names per page, capped at 20,000 matching path entries.

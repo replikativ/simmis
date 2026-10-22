@@ -40,6 +40,25 @@
 
 (defn dirty? [draft] (not= (:files draft) (get-in draft [:source :files])))
 
+(defn observe-wiki-setup [state reply]
+  (let [status (if (and (= "maintain-wiki" (:name reply)) (= :unchanged (:activation reply))
+                        (= :current-source (:observation reply))
+                        (#{:missing :installed :customized} (:status reply)))
+                 (:status reply) :unavailable)]
+    (if (get-in state [:wiki-setup :uncertain?])
+      (assoc-in state [:wiki-setup :observed-status] status)
+      (assoc state :wiki-setup {:status status}))))
+
+(defn begin-wiki-setup [state]
+  (assoc state :wiki-setup {:status :pending :uncertain? true}))
+
+(defn acknowledge-wiki-setup [state reply]
+  ;; Missing source after an uncertain write is NOT permission to replay it.
+  (if (and (= "maintain-wiki" (:name reply)) (= :unchanged (:activation reply))
+           (= :acknowledged (:observation reply)) (#{:installed :customized} (:status reply)))
+    (assoc state :wiki-setup {:status (:status reply)})
+    (assoc state :wiki-setup {:status :pending :uncertain? true})))
+
 (defn reloaded [old source]
   (merge (draft source) (select-keys old [:submission :schedule-submission :fund-request :fund-backend :funded? :fund-reply])))
 

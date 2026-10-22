@@ -31,6 +31,8 @@
                     web/current-session (constantly session)
                     web/current-session? #(= session %)
                     connection/snapshot (constantly {:socket :fixture})
+                    remote/inspect-wiki-maintenance-setup!
+                    (fn [& _] (fn [ok _] (ok {:status :unavailable})))
                     actions/confirm! (constantly true)]
         (binding [ec/*execution-context* ctx]
           (reset! sig/workflow-editor-state {})
@@ -104,6 +106,28 @@
               (is (false? (get-in state [:loading [:output "a"]])))
               (is (nil? (:permissions state)))
               (is (not (editor/source-current? draft))))))))))
+
+(deftest wiki-setup-receipt-preserves-dirty-editor-and-never-replays-uncertainty
+  (doseq [outcome [:ack :lost-ack]]
+    (with-state
+      (fn [ui k]
+        (let [requests (atom [])]
+          (with-redefs [remote/install-wiki-maintenance! (deferred requests)]
+            ((:change ui) "a" assoc-in [:files "workflow.edn"] "unsaved")
+            (swap! sig/workflow-editor-state assoc-in [k :wiki-setup] {:status :missing})
+            ((:install-wiki-setup ui))
+            (is (= 1 (count @requests)))
+            (reset! sync/state {:control-dirty 1})
+            (case outcome
+              :ack ((:ok (first @requests)) {:status :installed :name "maintain-wiki"
+                                            :activation :unchanged :observation :acknowledged})
+              :lost-ack ((:error (first @requests)) :disconnected))
+            (let [state (get @sig/workflow-editor-state k)]
+              (is (= "a" (:selected state)))
+              (is (= "unsaved" (get-in state [:drafts "a" :files "workflow.edn"])))
+              (is (= (if (= :ack outcome) :installed :pending) (get-in state [:wiki-setup :status]))))
+            ((:install-wiki-setup ui))
+            (is (= 1 (count @requests)))))))))
 
 (deftest explicit-source-reply-cannot-restore-revoked-room-access
   (with-state
