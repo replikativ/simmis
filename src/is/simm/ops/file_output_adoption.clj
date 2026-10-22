@@ -184,30 +184,32 @@
 (defn claim!
   "INTERNAL trusted-host storage boundary, NOT an endpoint or publication.
    Takes only the host's prepared value; never accept this map from a client.
-   Schema must already be installed by the owning host (tests only for now).
+   Schema must already be installed by the owning host. An optional HOST review
+   revision is recorded as immutable version-2 intent data, not authority.
 
    Fresh invocation token, one claim transaction, NO retries. Only its original
    acknowledged report confers permission to continue towards dispatch. Any
    error/lost ACK leaves ownership unacknowledged: expose only operation ID,
    never infer ownership from a live readback. Applying and all competing
    decision paths must be wired before this is used by a public accept action."
-  [conn party room-id room prepared]
-  (host-connection! conn)
-  (prepared! prepared party room-id)
-  (let [proof (:proof prepared)
-        operation (adoptions/make (:binding proof) (random-uuid) (java.util.Date.))]
-    (try
-      (let [report (d/transact conn [[:db.fn/call
-                                      (fn [db] (claim-tx db party room-id room proof operation))]])]
-        (when-not (:db-after report) (refuse! :claim-report-unavailable))
+  ([conn party room-id room prepared] (claim! conn party room-id room prepared nil))
+  ([conn party room-id room prepared review-revision]
+   (host-connection! conn)
+   (prepared! prepared party room-id)
+   (let [proof (:proof prepared)
+         operation (adoptions/make (:binding proof) (random-uuid) (java.util.Date.) review-revision)]
+     (try
+       (let [report (d/transact conn [[:db.fn/call
+                                       (fn [db] (claim-tx db party room-id room proof operation))]])]
+         (when-not (:db-after report) (refuse! :claim-report-unavailable))
         ;; Only the immutable result of THIS acknowledged native invocation.
         ;; Do not replace it with @conn, even if the same token is readable.
-        (adoptions/linked-operation! (:db-after report) (get-in proof [:fork :db/id]) operation)
-        (assoc prepared :operation operation))
-      (catch Throwable error
-        (when (instance? InterruptedException error) (.interrupt (Thread/currentThread)))
-        (throw (ex-info "File adoption claim was not acknowledged; do not publish"
-                        {:type ::claim-unacknowledged :operation (:id operation)} error))))))
+         (adoptions/linked-operation! (:db-after report) (get-in proof [:fork :db/id]) operation)
+         (assoc prepared :operation operation))
+       (catch Throwable error
+         (when (instance? InterruptedException error) (.interrupt (Thread/currentThread)))
+         (throw (ex-info "File adoption claim was not acknowledged; do not publish"
+                         {:type ::claim-unacknowledged :operation (:id operation)} error)))))))
 
 (defn- applying-with-binding!
   "INTERNAL original-publisher callback, not a route or recovery operation.
@@ -430,8 +432,11 @@
           (throw (ex-info "File adoption finalization was not acknowledged; durable outcome may already be accepted"
                           {:type ::finalization-unacknowledged :operation (:id operation)} error)))))))
 
-(defn- recovery-snapshot!
-  "Current authority and coherent joint state. Never supplies publisher ownership."
+(defn reconciliation-snapshot
+  "HOST metadata-only current authority and coherent joint recovery state.
+   Supports accepted history as well as uncertain open publication. Authorize
+   before Room hydration; returned proof is NOT publisher ownership, a receipt
+   or native target capability. Never expose it to clients or SCI."
   [db party room-id proposal-id]
   (when-not (and (every? uuid? [party room-id proposal-id])
                  (access/can? db party :read {:room room-id})
@@ -495,7 +500,7 @@
 
 (defn- recovery-tx
   [db party room-id room observation binding receipt at]
-  (let [{:keys [proof operation]} (recovery-snapshot! db party room-id (get-in observation [:operation :proposal]))]
+  (let [{:keys [proof operation]} (reconciliation-snapshot db party room-id (get-in observation [:operation :proposal]))]
     (same-operation! (:operation observation) operation)
     (when-not (= (immutable-proof (:proof observation)) (immutable-proof proof))
       (refuse! :preflight-changed))
@@ -527,7 +532,7 @@
   [conn party room-id room proposal-id]
   (host-connection! conn)
   (let [db @conn
-        {:keys [proof operation] :as observation} (recovery-snapshot! db party room-id proposal-id)
+        {:keys [proof operation] :as observation} (reconciliation-snapshot db party room-id proposal-id)
         binding (recovery-binding! db party room-id room operation nil)
         target-db (:db binding)
         identity (native-publication/identity operation (get-in proof [:retained :manifest]))
@@ -548,7 +553,7 @@
                                             (fn [writer-db]
                                               (recovery-tx writer-db party room-id room observation binding receipt at))]])]
               (when-not (and (:db-before report) (:db-after report)) (refuse! :recovery-report-unavailable))
-              (let [before (recovery-snapshot! (:db-before report) party room-id proposal-id)
+              (let [before (reconciliation-snapshot (:db-before report) party room-id proposal-id)
                     _ (same-operation! operation (:operation before))
                     _ (when-not (= (immutable-proof proof) (immutable-proof (:proof before)))
                         (refuse! :recovery-report-mismatch))

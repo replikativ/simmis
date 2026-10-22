@@ -9,11 +9,12 @@
   (let [fork {:system-type :file-output :may-merge? true}
         action (model {:forks [fork] :diffs []})]
     (is (= :files (:kind (proposal-card/fork-diff-model fork))))
-    (is (= "Review only" (:accept-label action)))
+    (is (= "Use file review" (:accept-label action)))
     (is (:accept-disabled? action))
     (is (false? (:dismiss-disabled? action)))
     (is (nil? (:capability-live? fork)))
     (is (:accept-disabled? (model {:forks [{:system-type :kb :may-merge? true} fork] :diffs []})))
+    (is (= "Review only" (:accept-label (model {:forks [{:system-type :kb :may-merge? true} fork] :diffs []}))))
     (is (false? (:accept-disabled? (model {:forks [{:system-type :kb :may-merge? true}
                                                    (assoc fork :status :dismissed)] :diffs []}))))))
 
@@ -30,6 +31,30 @@
                           [:file-bodies ["scope" "wiki/a.md"] :status])))
     (is (nil? (get-in (apply-result current "scope" "wiki/a.md" :new body "Denied")
                       [:file-bodies ["scope" "wiki/a.md"] :body])))))
+
+(deftest reviewed-file-actions-are-fenced-and-never-retain-stale-acceptance
+  (let [begin proposal-card/begin-file-action apply-result proposal-card/apply-file-action
+        pid (str (random-uuid)) scope (str (random-uuid)) revision (str (random-uuid))
+        proposal {:id pid}
+        old (begin proposal scope :preview :old)
+        current (begin old scope :preview :new)
+        result {:status :reviewed :proposal pid :component scope :revision revision}
+        reviewed (apply-result current :new result nil)]
+    (is (= current (apply-result current :old result nil)))
+    (is (= proposal (apply-result proposal :new result nil)))
+    (is (= revision (get-in reviewed [:file-adoption :revision])))
+    (doseq [bad [(assoc result :proposal (str (random-uuid)))
+                 (assoc result :component (str (random-uuid)))
+                 (assoc result :revision "not-a-revision")]]
+      (is (= :unavailable (get-in (apply-result current :new bad nil) [:file-adoption :status]))))
+    (let [accepting (begin reviewed scope :adopt :accept)]
+      (is (nil? (get-in accepting [:file-adoption :revision])))
+      (is (= :pending (get-in (apply-result accepting :accept nil "Disconnected") [:file-adoption :status])))
+      (is (= :review-changed (get-in (apply-result accepting :accept {:status :review-changed} nil)
+                                    [:file-adoption :status])))
+      (is (nil? (get-in (apply-result accepting :accept {:status :review-changed} nil)
+                       [:file-adoption :revision]))))
+    (is (= :unavailable (get-in (apply-result current :new nil "Denied") [:file-adoption :status])))))
 
 (deftest adopted-world-diffs-count-their-actual-substrate
   (let [present proposal-card/fork-diff-model]

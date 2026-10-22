@@ -20,7 +20,7 @@
           [:file.adoption/proposal :db.type/uuid] [:file.adoption/component :db.type/uuid]
           [:file.adoption/manifest :db.type/uuid] [:file.adoption/room :db.type/uuid]
           [:file.adoption/actor :db.type/uuid] [:file.adoption/filing :db.type/string]
-          [:file.adoption/disposition :db.type/uuid]
+          [:file.adoption/disposition :db.type/uuid] [:file.adoption/review-revision :db.type/uuid]
           [:file.adoption/repository :db.type/uuid] [:file.adoption/store :db.type/uuid]
           [:file.adoption/backend :db.type/keyword] [:file.adoption/branch :db.type/keyword]
           [:file.adoption/ref :db.type/string] [:file.adoption/registry-system :db.type/uuid]
@@ -64,15 +64,19 @@
                       :room :actor :filing :disposition :target :state
                       :created-at :updated-at}
                     (set (keys (apply dissoc value
-                                      [:reason :commit :head :noop? :reconciled-by]))))
-                 (= 1 (:version value))
+                                      [:reason :commit :head :noop? :reconciled-by :review-revision]))))
+                 (= (if (contains? value :review-revision) 2 1) (:version value))
+                 (or (not (contains? value :review-revision)) (uuid? (:review-revision value)))
                  (every? uuid? (map value [:id :intent :token]))
                  (instance? java.util.Date (:created-at value))
                  (instance? java.util.Date (:updated-at value))
                  (not (.before ^java.util.Date (:updated-at value) (:created-at value)))
                  (= (:intent value)
-                    (hasch/uuid [:simmis/file-adoption-intent-v1
-                                 (select-keys value binding-keys)]))
+                    (hasch/uuid (if (= 2 (:version value))
+                                  [:simmis/file-adoption-intent-v2
+                                   (select-keys value binding-keys) (:review-revision value)]
+                                  [:simmis/file-adoption-intent-v1
+                                   (select-keys value binding-keys)])))
                  (= (:id value)
                     (hasch/uuid [:simmis/file-adoption-operation-v1
                                  (:intent value) (:token value)])))
@@ -98,13 +102,18 @@
   "Create a fresh invocation's proposed claim. The host supplies a fresh token,
    never an external caller. Only an ACKNOWLEDGED claim transaction can win;
    readback or exact replay does not confer publisher ownership."
-  [binding token now]
-  (binding! binding)
-  (let [intent (hasch/uuid [:simmis/file-adoption-intent-v1 binding])]
-    (validate! (merge binding
-                      {:id (hasch/uuid [:simmis/file-adoption-operation-v1 intent token])
-                       :version 1 :intent intent :token token :state :claimed
-                       :created-at now :updated-at now}))))
+  ([binding token now] (make binding token now nil))
+  ([binding token now review-revision]
+   (binding! binding)
+   (when-not (or (nil? review-revision) (uuid? review-revision)) (refuse! :invalid-review-revision))
+   (let [intent (hasch/uuid (if review-revision
+                              [:simmis/file-adoption-intent-v2 binding review-revision]
+                              [:simmis/file-adoption-intent-v1 binding]))]
+     (validate! (cond-> (merge binding
+                               {:id (hasch/uuid [:simmis/file-adoption-operation-v1 intent token])
+                                :version (if review-revision 2 1) :intent intent :token token :state :claimed
+                                :created-at now :updated-at now})
+                  review-revision (assoc :review-revision review-revision))))))
 
 (defn- entity [value]
   (into {} (map (fn [[k v]] [(keyword "file.adoption" (name k)) v]))

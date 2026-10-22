@@ -63,8 +63,24 @@ updated, including false, zero or explicit null when independent canonical
 validation allows them. Unknown page/block metadata, including nested values,
 must remain equal. Mutable aliases come from BEFORE: adding a binding cannot
 reinterpret a previously unknown field. New types/aliases are allowed, subject
-to separate canonical validation. The inactive HOST adoption controller applies
-it with canonical preflight; no public or automatic acceptance is enabled.
+to separate canonical validation. File-only proposal acceptance applies it with
+canonical preflight. There is no automatic acceptance.
+
+The retained comparison stays inspectable independently of the Run. A single
+file-output Proposal offers **Check current workspace**, followed by **Accept
+reviewed files**. The check is an explicit review decision, not a refresh needed
+to load Memory. Acceptance recomputes the full canonical source/definition/
+constraint/target fingerprint before claiming publication. A changed review
+requires an explicit new check; it is never silently retried. The version-2
+adoption journal retains the accepted review revision as immutable intent data.
+This digest is audit attribution, not a replayable historical snapshot or proof
+of factual correctness. Mixed-component Proposals remain review-only.
+
+An uncertain completion offers **Check recorded completion**, a separately
+authorized historical receipt reconciliation. It does not publish again or
+overwrite later human edits. Browser actions own the application lifetime and
+the exact Room through all body access, publication and finalization. Current
+human authority and the closed component set are checked before hydration.
 
 These restrictions belong to default maintenance, not the general editor.
 Removing stale properties/types, renaming aliases and deleting explicit blocks
@@ -94,8 +110,8 @@ customer facts into a real scheduled Run.
 ## Current integration boundaries
 
 Canonical prospective validation, preservation and exact AFTER snapshot guards
-are inactive HOST primitives, not a public acceptance operation. Processed
-input, a filed proposal and an adopted result remain distinct. The installer
+support explicit reviewed file-only acceptance. Processed input, a filed
+proposal and an adopted result remain distinct. The installer
 does not participate in automatic personal workspace provisioning. It neither
 configures an admitted model and finite allowance nor enables a schedule. The
 mechanical fixture checks are not actual-model quality measurements.

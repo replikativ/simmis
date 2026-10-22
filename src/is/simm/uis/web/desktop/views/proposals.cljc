@@ -84,6 +84,21 @@
      (update-proposal! pid #(update % :file-bodies dissoc [scope path]))))
 
 #?(:cljs
+   (defn- file-proposal-action! [pid scope action revision]
+     (let [request-id (random-uuid) epoch (connection-epoch/snapshot)]
+       (update-proposal! pid #(card-model/begin-file-action % scope action request-id))
+       (rem/spin! #(case action
+                     :preview (pr/preview-file-proposal! web/server-id pid)
+                     :adopt (pr/adopt-reviewed-files! web/server-id pid revision)
+                     :reconcile (pr/reconcile-file-proposal! web/server-id pid))
+                  (fn [result error]
+                    (when (connection-epoch/current? epoch)
+                      (update-proposal! pid #(card-model/apply-file-action
+                                              % request-id result (some-> error rem/error-text)))
+                      (when (and (nil? error) (= :accepted (:status result)))
+                        (refresh-loaded!))))))))
+
+#?(:cljs
    (defn- load-diff-into-signal! [pid]
      ;; A failure has to land on the card. Silently ignoring it left `:diffs`
      ;; nil forever, so a DENIED diff rendered as a permanent "Loading changes…"
@@ -756,6 +771,41 @@
                          :on-click (fn [_] (dismiss-fork! pid scope branch))}
                         "Dismiss this"))))
 
+(defn- retained-adoption-actions [pid scope state eligible? may-merge?]
+  (let [state (when (= scope (:scope state)) state)
+        status (:status state)
+        button (fn [label action revision]
+                 (el/button {:class "btn btn-secondary btn-sm"
+                             :on-click #?(:cljs (fn [_] (file-proposal-action! pid scope action revision)) :clj nil)}
+                            label))]
+    (el/div {:class "proposal-file-adoption"}
+            (cond
+              (not eligible?) (el/div {:class "proposal-note-line"} "Mixed proposals remain review-only.")
+              (false? may-merge?) (el/div {:class "proposal-note-line"}
+                                         "You can inspect these files. A reviewer with merge permission must accept them.")
+              (= :working status) (el/div {:class "proposal-note-line"}
+                                         (case (:action state)
+                                           :preview "Checking current workspace…"
+                                           :adopt "Accepting reviewed files…"
+                                           :reconcile "Checking recorded completion…"))
+              (= :accepted status) (el/div {:class "proposal-note-line"} "Files accepted.")
+              (= :pending status) (el/div {}
+                                         (el/div {:class "proposal-note-line"}
+                                                 "Completion is uncertain. Check its recorded result; do not repeat publication.")
+                                         (button "Check recorded completion" :reconcile nil))
+              (= :reviewed status) (el/div {}
+                                          (el/div {:class "proposal-note-line"}
+                                                  "Current files and properties validated. Acceptance will check them again.")
+                                          (button "Accept reviewed files" :adopt (:revision state)))
+              :else (el/div {}
+                            (when (#{:review-changed :unavailable :aborted} status)
+                              (el/div {:class "proposal-note-line"}
+                                      (case status
+                                        :review-changed "The workspace changed. Review it again before accepting."
+                                        :aborted "Publication did not start. A new review is required."
+                                        :unavailable "Review unavailable: check permissions, proposal state, and target compatibility.")))
+                            (button "Check current workspace" :preview nil))))))
+
 (defn- retained-file-view [pid scope {:keys [path status]} state]
   (el/div {:class "proposal-retained-file"}
           (el/div {:class "proposal-file"} (str (name status) " " path))
@@ -788,7 +838,7 @@
    dismissed block carries a line saying so instead of an empty change list."
   ([pid fk] (fork-diff-view pid fk true))
   ([pid {:keys [system-type pages files entries counts stat patch patch-truncated?
-                baseless? status author-name checks file-bodies scope] :as fk} body?]
+                baseless? status author-name checks file-bodies file-adoption scope] :as fk} body?]
    (let [resolved? (some? status)
          ;; A campaign puts one fork per AGENT on the same database, so without
          ;; the author two contributions render as two identical rows and the
@@ -839,7 +889,9 @@
                (= :file-output system-type)
                (el/div {:class "proposal-retained-files"}
                        (el/div {:class "proposal-note-line"}
-                               "Retained evidence, independent of the Run. Current target compatibility is not checked; adoption is unavailable.")
+                               "Retained evidence, independent of the Run. Review current workspace compatibility before accepting.")
+                       (when-not resolved?
+                         (retained-adoption-actions pid scope file-adoption (:only-fork? fk) (:may-merge? fk)))
                        (for [file files]
                          (el/div {:key (:path file)}
                                  (retained-file-view pid scope file (get file-bodies [scope (:path file)])))))
@@ -1036,7 +1088,7 @@
 
 (defn- proposal-card [{:keys [id title summary diffs diff-error action-error busy?
                               tier intent conflicts comments checks ai-summary expanded
-                              accept-warned? forks review file-bodies]}]
+                              accept-warned? forks review file-bodies file-adoption]}]
   #?(:cljs
      (let [expanded (or expanded #{})
            toggle (fn [k] (update-proposal! id
@@ -1051,7 +1103,10 @@
            ;; Tier only where it MEANS something. A budget's branch may merge
            ;; cleanly and it still is not landable, so "no substantive change"
            ;; on a plan reads as a verdict the tier is not making.
-                       (when (= :change (or intent :change)) (tier-badge tier)))
+                       (when (= :change (or intent :change))
+                         (if (card-model/dedicated-file-review? forks)
+                           (el/span {:class "proposal-tier proposal-tier--review-only"} "file review")
+                           (tier-badge tier))))
                (when review (review-notes-view review))
                (when (and (not review) (fs/auto-mergeable? intent tier))
                  (el/div {:class "proposal-note-line"}
@@ -1116,7 +1171,7 @@
                                    (el/div {:class "proposal-fork-strip"}
                                            (for [[i fk] (map-indexed vector diffs)]
                                              (el/div {:key (str "fs" i)}
-                                                     (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count diffs)) :file-bodies file-bodies
+                                                     (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count forks)) :file-bodies file-bodies :file-adoption file-adoption
                                                                                :settlement-supported? (and (card-model/settlement-supported? fk)
                                                                                                            (not (and review (seq (review-only-open-forks forks)))))
                                                                                :checks (check-for checks fk)
@@ -1135,7 +1190,7 @@
                                               "Back to summary"))
                                  (for [[i fk] (map-indexed vector diffs)]
                                    (el/div {:key (str i)}
-                                           (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count diffs)) :file-bodies file-bodies
+                                           (fork-diff-view id (assoc fk :busy? busy? :only-fork? (= 1 (count forks)) :file-bodies file-bodies :file-adoption file-adoption
                                                                      :settlement-supported? (and (card-model/settlement-supported? fk)
                                                                                                  (not (and review (seq (review-only-open-forks forks)))))
                                                                      :checks (check-for checks fk)
@@ -1223,6 +1278,7 @@
                                                             (seq (unlandable-open-forks forks))
                                                             (seq (unavailable-open-forks forks))))
                                      :title (cond
+                                              (card-model/dedicated-file-review? forks) "Use the file review controls above; generic branch acceptance is disabled"
                                               (seq (review-only-open-forks forks)) "Retained evidence is review-only; adoption is unavailable"
                                               (seq (unavailable-open-forks forks))
                                               "The adopted world capability is unavailable"
@@ -1230,6 +1286,7 @@
                                               "Some patches in this proposal are not yours to land")
                                      :on-click (fn [_] (accept! id (boolean accept-warned?)))}
                                     (cond busy? "Working…"
+                                          (card-model/dedicated-file-review? forks) "Use file review"
                                           (seq (review-only-open-forks forks)) "Review only"
                                           diff-error "Review unavailable"
                                           (nil? diffs) "Checking…"

@@ -37,6 +37,26 @@
   (d/transact conn [[:db.fn/call adoptions/transition-tx-data
                      eid operation state fields (java.util.Date.)]]))
 
+(deftest reviewed-intent-keeps-its-revision-through-all-transitions
+  (with-store
+    (fn [conn eid binding]
+      (let [revision (random-uuid)
+            operation (adoptions/make binding (random-uuid) (java.util.Date.) revision)]
+        (is (= 2 (:version operation)))
+        (is (= revision (:review-revision operation)))
+        (is (thrown? Exception (adoptions/validate! (assoc operation :review-revision (random-uuid)))))
+        (is (thrown? Exception (adoptions/validate! (dissoc operation :review-revision))))
+        (is (thrown? Exception (adoptions/make binding (random-uuid) (java.util.Date.) false)))
+        (claim! conn eid operation)
+        (is (= operation (adoptions/operation @conn (:id operation))))
+        (transition! conn eid operation :applying {})
+        (let [applying (adoptions/operation @conn (:id operation))]
+          (is (= revision (:review-revision applying)))
+          (is (thrown? Exception
+                       (transition! conn eid applying :accepted {:noop? true :review-revision (random-uuid)})))
+          (transition! conn eid applying :accepted {:noop? true})
+          (is (= revision (:review-revision (adoptions/operation @conn (:id operation))))))))))
+
 (deftest closed-typed-integrity-and-fresh-invocation-identities
   (let [binding (fixture) token (random-uuid) now (java.util.Date.)
         a (adoptions/make binding token now)

@@ -67,6 +67,14 @@
   (and (not= :file-output (:system-type fork))
        (not (false? (:settlement-supported? fork)))))
 
+(defn dedicated-file-review?
+  "Presentation only: one retained-file component uses the dedicated review
+   path, never generic branch settlement. Does not imply compatibility or permission."
+  [forks]
+  (and (= 1 (count forks))
+       (= :file-output (:system-type (first forks)))
+       (nil? (:status (first forks)))))
+
 (defn begin-audit-request [data pid request-id]
   (assoc-in data [:retained-audits pid] {:state :loading :request-id request-id}))
 
@@ -83,6 +91,29 @@
 
 (defn begin-file-request [proposal scope path request-id]
   (assoc-in proposal [:file-bodies [scope path]] {:status :loading :request-id request-id}))
+
+(defn begin-file-action
+  "A review/action request belongs to this reactive card and exact component.
+   Starting any request clears the old actionable revision."
+  [proposal scope action request-id]
+  (assoc proposal :file-adoption {:status :working :scope scope :action action :request-id request-id}))
+
+(defn apply-file-action [proposal request-id result error]
+  (let [{:keys [scope] :as current} (:file-adoption proposal)
+        valid-review? (and (= :reviewed (:status result)) (= (:id proposal) (:proposal result))
+                           (= scope (:component result)) (string? (:revision result))
+                           (re-matches #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+                                       (:revision result)))]
+    (if (not= request-id (:request-id current))
+      proposal
+      (assoc proposal :file-adoption
+             (cond
+               error {:status (if (#{:adopt :reconcile} (:action current)) :pending :unavailable)
+                      :scope scope :error error}
+               valid-review? {:status :reviewed :scope scope :revision (:revision result)}
+               (#{:accepted :aborted :pending :review-changed :unavailable} (:status result))
+               {:status (:status result) :scope scope}
+               :else {:status :unavailable :scope scope})))))
 
 (defn apply-file-result [proposal scope path request-id result error]
   (if (not= request-id (get-in proposal [:file-bodies [scope path] :request-id]))
@@ -151,6 +182,7 @@
      :accept-force? (boolean (:accept-warned? proposal))
      :accept-label (cond
                      busy? "Working…"
+                     (dedicated-file-review? forks) "Use file review"
                      review-only? "Review only"
                      diff-error "Review unavailable"
                      (not diff-ready?) "Checking…"

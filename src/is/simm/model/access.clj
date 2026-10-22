@@ -857,6 +857,11 @@
      "proposal-diff!"          {:action R :resource (proposal :proposal-id-str)}
      "proposal-file!"          {:action R :resource (proposal :proposal-id-str)}
      "proposal-retained-audit!" {:action R :resource (always :authenticated)}
+     ;; Fixed service additionally requires current human read+merge, proposal
+     ;; write, exact retained single-component shape, and original Room target.
+     "preview-file-proposal!"  {:action R :resource (proposal :proposal-id-str)}
+     "adopt-reviewed-files!"   {:action W :resource (proposal :proposal-id-str)}
+     "reconcile-file-proposal!" {:action W :resource (proposal :proposal-id-str)}
      "proposal-checks!"        {:action R :resource (proposal :proposal-id-str)}
      ;; a room's labels (`is.simm.workflows.review`): reading the room. There
      ;; is no row that writes one — a label is recorded by the decision itself

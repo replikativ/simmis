@@ -14,6 +14,7 @@
             #?(:clj [is.simm.ops.proposals :as props])
             #?(:clj [is.simm.ops.semantic-diff :as sdiff])
             #?(:clj [is.simm.ops.file-output-review :as file-review])
+            #?(:clj [is.simm.ops.file-output-service :as file-service])
             #?(:clj [is.simm.ops.checks :as checks])
             #?(:clj [is.simm.runtimes.branching :as branching])
             #?(:clj [is.simm.model.access :as access])
@@ -233,6 +234,37 @@
                          (await (blocking/blocking
                                  #(ctx/with-server-context
                                     (file-review/audit party (java.util.UUID/fromString proposal-id-str))))))
+                  :cljs nil)))
+
+#?(:clj
+   (defn- wire-uuid [value]
+     (when (and (string? value)
+                (re-matches #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" value))
+       (parse-uuid value))))
+
+(defn-spin-remote preview-file-proposal!
+  [server-id proposal-id-str]
+  (spin-remote server-id [proposal-id-str]
+               #?(:clj (let [party (access/authenticated-party-id)]
+                         (await (blocking/blocking
+                                 #(file-service/preview! party (wire-uuid proposal-id-str)))))
+                  :cljs nil)))
+
+(defn-spin-remote adopt-reviewed-files!
+  [server-id proposal-id-str expected-review-str]
+  (spin-remote server-id [proposal-id-str expected-review-str]
+               #?(:clj (let [party (access/authenticated-party-id)]
+                         (await (blocking/blocking
+                                 #(file-service/adopt! party (wire-uuid proposal-id-str)
+                                                       (wire-uuid expected-review-str)))))
+                  :cljs nil)))
+
+(defn-spin-remote reconcile-file-proposal!
+  [server-id proposal-id-str]
+  (spin-remote server-id [proposal-id-str]
+               #?(:clj (let [party (access/authenticated-party-id)]
+                         (await (blocking/blocking
+                                 #(file-service/reconcile! party (wire-uuid proposal-id-str)))))
                   :cljs nil)))
 
 (defn-spin-remote accept-proposal!
