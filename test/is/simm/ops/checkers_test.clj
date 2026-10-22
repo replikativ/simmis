@@ -1,7 +1,9 @@
 (ns is.simm.ops.checkers-test
   (:require [clojure.test :refer [deftest is]]
+            [dvergr.agent.environment :as environment]
             [dvergr.agent.evaluation :as evaluation]
             [dvergr.catalog.room :as catalog]
+            [dvergr.sandbox :as sandbox]
             [is.simm.ops.checkers :as checkers]))
 
 (deftest checker-executes-synchronously-and-returns-only-validated-evidence
@@ -95,6 +97,39 @@
                (checkers/calibrate (assoc calibrated-bundle :checker "(ns checker) (defn check [_] (loop [] (recur)))")
                                    (assoc checkers/calibration-policy :timeout-ms 20)))))
 
+(deftest calibration-scales-one-shared-account-and-deadline-through-the-max-answer-count
+  (doseq [damaged-count [1 4]]
+    (let [account (fn []) accounts (atom []) seen (atom [])
+          damaged (into {} (for [i (range damaged-count)]
+                             [(str "wrong-" i) {:files {"/out/answer" "wrong"} :loses [:correct?]}]))
+          bundle (assoc-in calibrated-bundle [:calibration :damaged] damaged)
+          before (System/nanoTime)
+          report (with-redefs [sandbox/make-resource-limits
+                              (fn [& options] (swap! accounts conj (vec options)) account)
+                              checkers/run-checker
+                              (fn [_ {:keys [files]} limits]
+                                (swap! seen conj limits)
+                                (let [ok (= "answer" (get files "/out/answer"))]
+                                  {:checks {:correct? ok} :reward (if ok 1.0 0.0)}))]
+                   (checkers/calibrate bundle (assoc checkers/calibration-policy
+                                                    :timeout-ms 123 :max-allocated-bytes 4096)))
+          after (System/nanoTime)
+          answers (inc damaged-count)
+          deadline (:deadline-nanos (first @seen))]
+      (is (:ok? report))
+      (is (= [[:max-bytes (* answers 4096)]] @accounts))
+      (is (= answers (count @seen)))
+      (is (every? #(identical? account (:allocation-check %)) @seen))
+      (is (apply = (map :deadline-nanos @seen)))
+      (is (<= before (- deadline (* 1000000 answers 123)) after))))
+  (with-redefs [sandbox/make-resource-limits
+                (fn [& _] (throw (AssertionError. "Invalid calibration allocated resources")))]
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (checkers/calibrate
+                   (assoc-in calibrated-bundle [:calibration :damaged]
+                             (into {} (for [i (range 5)]
+                                        [(str i) {:files {} :loses [:correct?]}]))))))))
+
 (deftest calibration-budget-is-one-scoring-check-per-answer
   ;; Each call allocates well over half the per-answer budget: two of them
   ;; overrun one shared check's budget, not two checks' worth.
@@ -108,6 +143,26 @@
                                                  (assoc checkers/policy :max-allocated-bytes (quot per-answer 2))))
         "a single call needs more than half the per-answer budget")
     (is (:ok? (checkers/calibrate bundle (assoc checkers/calibration-policy :max-allocated-bytes per-answer))))))
+
+(deftest per-answer-budget-has-a-distinct-calibration-setup-identity
+  (let [setup-ref #(evaluation/world-setup-ref (checkers/world-setup calibrated-bundle))
+        current (setup-ref)
+        legacy-policy (-> checkers/calibration-policy
+                          (assoc :version 1)
+                          (dissoc :budget-scaling))
+        legacy (with-redefs [checkers/calibration-policy legacy-policy] (setup-ref))
+        env #(environment/make-environment
+                {:id :fixture/calibration-policy :task "Same task"
+                 :verifier {:id :fixture/checker :version 1} :world {:setup %}})]
+    (is (= 2 (get-in current [:setup/basis :calibration-policy :version])))
+    (is (= :per-answer (get-in current [:setup/basis :calibration-policy :budget-scaling])))
+    (is (not= current legacy)
+        "The same bundle cannot reuse the old admission-budget identity")
+    (is (= current (setup-ref)))
+    (is (not= (:environment/content-id (env current))
+              (:environment/content-id (env legacy))))
+    (is (= (dissoc (:setup/basis current) :calibration-policy)
+           (dissoc (:setup/basis legacy) :calibration-policy)))))
 
 (deftest calibrated-setup-does-not-seed-answers-and-keeps-policy-in-identity
   (let [contexts (atom [])]

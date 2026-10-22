@@ -63,7 +63,8 @@
        {:checks (into {} checks) :reward (double reward)}))))
 
 (def calibration-policy
-  {:version 1 :max-damaged 4 :max-files 100 :max-bytes 2097152 :timeout-ms 20000})
+  {:version 2 :budget-scaling :per-answer
+   :max-damaged 4 :max-files 100 :max-bytes 2097152 :timeout-ms 20000})
 
 (defn validate-calibration!
   "Pure shape/bounds validation; never executes source. No fixture HTTP/judge

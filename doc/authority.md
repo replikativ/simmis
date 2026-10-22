@@ -676,7 +676,9 @@ is bounded to 100 files / 2MiB.
 Before each candidate starts, its owned world-setup worker runs all these
 answers with one shared deadline and allocation account, sized at one scoring
 check's budget per answer (20 seconds and 128 MiB allocated each), so a checker
-that fits a scoring check also fits its calibration. The reference
+that fits a scoring check also fits its calibration. Calibration policy version
+2 records this per-answer scaling in the world-setup identity; it is distinct
+from the former single-total-budget policy. The reference
 must pass every check; every damaged answer must return actual `false` for its
 declared lost checks and score below the reference. Failure prevents candidate
 execution. This bound is per attempt, not once for the whole benchmark.
