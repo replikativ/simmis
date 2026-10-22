@@ -205,3 +205,32 @@
         (when @release (browser/unmount! @release))
         (.remove container)
         (context/stop-context! ctx)))))
+
+(deftest footnote-references-remain-visible-in-read-and-structure-views
+  (doseq [mode [:read :outline]]
+    (let [ctx (context/create-execution-context)
+          container (.createElement js/document "div")
+          release (atom nil)
+          node {:kind :Paragraph :from 0 :to 25
+                :children [(text-node "Evidence")
+                           {:kind :Emphasis
+                            :children [{:kind :Footnote :from 8 :to 19
+                                        :footnote {:raw "[^ method ]" :label "method"}}]}]}
+          model (rich/model node)
+          analysis {:slots [{:from 0 :to 25 :model model}]
+                    :semantic {:status :ready :blocks [{:id "provisional" :identity-status :provisional
+                                                       :syntax [node] :children []}]}}
+          d {:mode mode :text "Evidence*[^ method ]*" :analysis analysis}]
+      (.appendChild (.-body js/document) container)
+      (try
+        (binding [ec/*execution-context* ctx]
+          (reset! release (browser/mount! container (tree d false)))
+          (is (= "method" (.-textContent (.querySelector container "sup"))))
+          (is (= "[^ method ]" (.getAttribute (.querySelector container "sup") "title")))
+          (is (= "Footnote method" (.getAttribute (.querySelector container "sup") "aria-label")))
+          (is (= "method" (.-textContent (.querySelector container "sup em"))))
+          (is (nil? (.querySelector container "script"))))
+        (finally
+          (when @release (browser/unmount! @release))
+          (.remove container)
+          (context/stop-context! ctx))))))
