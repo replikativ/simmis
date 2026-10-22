@@ -350,6 +350,11 @@ Stale resume inspections cannot cross failure reconciliation, and replaying an
 already recorded failure cannot disable a later explicit resume. Missing or
 inconsistent certification, uncertain admission and exhausted allowance remain
 held for reconciliation, not converted into this retryable execution failure.
+Schedules marks unresolved active admission metadata as requiring reconciliation
+and disables Resume while keeping Pause available. That hint uses the same
+metadata predicate as the serialized resume gate; it is not a new permission or
+recovery mechanism. Adding allowance alone does not reconcile an uncertain
+admission, and the server always rechecks current state and authority.
 
 The opt-in `bash scripts/probe-scheduled-wiki-restart.sh` diagnostic starts two
 sequential capped JVMs against one newly created `/tmp` file-backed home. It

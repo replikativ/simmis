@@ -141,6 +141,9 @@
                      (when (= :legacy-recreate (:resume-blocked row))
                        (el/p {:role "status"}
                              "This older deployment is held. Recreate it from the workflow editor to run it; existing Runs are unchanged."))
+                     (when (= :reconciliation-required (:resume-blocked row))
+                       (el/p {:role "status"}
+                             "This deployment has an unresolved admission. Resume is unavailable until it is reconciled; adding allowance does not resolve it."))
                      (el/button {:disabled (boolean (or (:updating? row)
                                                         (and (not (:enabled? row)) (:resume-blocked row))))
                                  :on-click (fn [_] ((:on-toggle row) row))}

@@ -1043,9 +1043,15 @@
                                            (schedules/activations control-conn)))
             result (owned-storage!
                     #(mapv (fn [row]
-                             (let [target (owned-control-target! control-conn original row)]
+                             (let [target (owned-control-target! control-conn original row)
+                                   blocked (if (= 1 (:version target))
+                                             :legacy-recreate
+                                             (when-not (schedules/resumable-active?
+                                                        row (when-let [oid (:schedule.activation/active-occurrence row)]
+                                                              (schedules/occurrence control-conn oid)))
+                                               :reconciliation-required))]
                                (cond-> (schedule-summary control-conn (:room-id original) row target)
-                                 (= 1 (:version target)) (assoc :resume-blocked :legacy-recreate)
+                                 blocked (assoc :resume-blocked blocked)
                                  (= 2 (:version target))
                                  (assoc :source-revision (str (get-in target [:source-origin :revision])))))) rows))
             current (owned-storage! #(reads/preflight-host-read! host principal handle))]
@@ -1070,13 +1076,10 @@
         (when enabled?
           (when-not (= 2 (:version target))
             (throw (ex-info "Recreate this legacy schedule before resuming" {:type ::legacy-recreate})))
-          (when-let [oid (:schedule.activation/active-occurrence row)]
-            (let [o (owned-storage! #(schedules/occurrence control-conn oid))]
-              (when-not (and (= oid (:schedule.occurrence/id o))
-                             (= id (:schedule.occurrence/activation o))
-                             (= (:schedule.activation/revision row) (:schedule.occurrence/revision o))
-                             (#{:pending :linked} (:schedule.occurrence/state o)))
-                (throw (ex-info "Uncertain admission requires reconciliation before resuming" {:type ::conflict})))))
+          (let [o (when-let [oid (:schedule.activation/active-occurrence row)]
+                    (owned-storage! #(schedules/occurrence control-conn oid)))]
+            (when-not (schedules/resumable-active? row o)
+              (throw (ex-info "Uncertain admission requires reconciliation before resuming" {:type ::conflict}))))
           (owned-preflight! host (principals/party-principal (:schedule.activation/by row)) handle kind)
           (owned-storage! #(owned-policy-current! target)))
         (let [current (owned-current! host principal handle kind original nil)]

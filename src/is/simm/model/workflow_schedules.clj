@@ -157,16 +157,23 @@
    :schedule.activation/enabled? :schedule.activation/reason
    :schedule.activation/active-occurrence :schedule.activation/last-terminal-failure])
 
+(defn resumable-active?
+  "Pure metadata check shared by human advice and the serialized resume gate.
+   True is not admission or authority: current policy/permissions still apply."
+  [row occurrence]
+  (let [oid (:schedule.activation/active-occurrence row)]
+    (boolean (or (nil? oid)
+                 (and (= oid (:schedule.occurrence/id occurrence))
+                      (= (:schedule.activation/id row) (:schedule.occurrence/activation occurrence))
+                      (= (:schedule.activation/revision row) (:schedule.occurrence/revision occurrence))
+                      (#{:pending :linked} (:schedule.occurrence/state occurrence)))))))
+
 (defn- resume-managed-tx [db id expected]
   (let [row (pull-row db :schedule.activation/id id)
         oid (:schedule.activation/active-occurrence row)
         o (when oid (pull-row db :schedule.occurrence/id oid))]
     (when-not (and row (= expected (select-keys row resume-identity-fields))
-                   (or (nil? oid)
-                       (and (= oid (:schedule.occurrence/id o))
-                            (= id (:schedule.occurrence/activation o))
-                            (= (:schedule.activation/revision row) (:schedule.occurrence/revision o))
-                            (#{:pending :linked} (:schedule.occurrence/state o)))))
+                   (resumable-active? row o))
       (throw (ex-info "Schedule changed or admission requires reconciliation" {:type ::conflict})))
     (enabled-tx db id true)))
 

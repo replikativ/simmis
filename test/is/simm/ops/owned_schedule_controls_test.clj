@@ -69,6 +69,47 @@
             (is (true? (:schedule.activation/enabled? (schedules/set-enabled-owned! host p handle id true)))))
           (is (= (:schedule.activation/revision row) (:schedule.activation/revision (model/activation conn id)))))))))
 
+(deftest resume-advice-shares-the-writer-predicate-without-acquiring-execution
+  (with-activation true :workflow
+    (fn [{:keys [conn w host row handle p]}]
+      (let [id (:schedule.activation/id row) oid (random-uuid)
+            base {:schedule.occurrence/id oid :schedule.occurrence/activation id
+                  :schedule.occurrence/revision (:schedule.activation/revision row)
+                  :schedule.occurrence/intended-at (java.util.Date. 0)
+                  :schedule.occurrence/created-at (java.util.Date. 0)
+                  :schedule.occurrence/coalesced 0 :schedule.occurrence/state :pending}
+            forbidden (fn [& _] (throw (AssertionError. "Resume advice acquired execution")))
+            basis #(let [db @conn] {:commit (d/commit-id db) :max-tx (:max-tx db) :config (:config db)})]
+        (schedules/set-enabled-owned! host p handle id false)
+        (d/transact conn [base])
+        (doseq [[change blocked?] [[{} false]
+                                   [{:schedule.occurrence/state :linked} false]
+                                   [{:schedule.occurrence/state :admitting} true]
+                                   [{:schedule.occurrence/state :interrupted} true]
+                                   [{:schedule.occurrence/activation (random-uuid)} true]
+                                   [{:schedule.occurrence/revision (random-uuid)} true]
+                                   [:missing true]]]
+          (d/transact conn [(assoc (merge base (when (map? change) change))
+                                  :db/id [:schedule.occurrence/id oid])
+                            {:db/id (:db/id row)
+                             :schedule.activation/active-occurrence (if (= :missing change) (random-uuid) oid)}])
+          (let [before (basis)
+                [summary] (with-redefs [reads/resolve-host-read! forbidden rooms/live-room forbidden
+                                       models/get-model forbidden workflows/snapshot-in forbidden model/target forbidden
+                                       work/prepare forbidden work/submit-prepared! forbidden]
+                            (schedules/list-owned! host (principal w :member) handle))]
+            (is (= (when blocked? :reconciliation-required) (:resume-blocked summary)) (str change))
+            (is (= before (basis)) "Metadata advice never writes")
+            (is (not (contains? summary :active-occurrence)) "Never expose a foreign pointer")
+            (when blocked?
+              (is (some? (failure #(schedules/set-enabled-owned! host p handle id true))))
+              (is (= before (basis)) "Rejected Resume does not write"))))
+        (let [active (:schedule.activation/active-occurrence (model/activation conn id))]
+          (d/transact conn [[:db/retract [:schedule.activation/id id] :schedule.activation/active-occurrence active]]))
+        (is (nil? (:resume-blocked (first (schedules/list-owned! host p handle)))))
+        (is (true? (:schedule.activation/enabled? (schedules/set-enabled-owned! host p handle id true))))
+        (is (empty? (d/datoms @conn :aevt :work.request/id)))))))
+
 (deftest pause-withdraws-only-pending-occurrences
   (with-activation true :workflow
     (fn [{:keys [conn host row handle p]}]
