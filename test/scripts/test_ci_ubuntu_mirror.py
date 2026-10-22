@@ -47,3 +47,20 @@ class UbuntuMirrorTests(unittest.TestCase):
                          mirror.canonical_archive(source))
         other = "deb http://azure.archive.ubuntu.com/ubuntu noble main\n"
         self.assertEqual(other, mirror.canonical_archive(other))
+
+    def test_runner_mirror_list_is_replaced_only_in_uri_fields(self):
+        source = ("Types: deb\r\nURIs: mirror+file:/etc/apt/apt-mirrors.txt\r\n"
+                  "Suites: noble noble-updates noble-backports\r\n"
+                  "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\r\n"
+                  "\r\nURIs: https://security.ubuntu.com/ubuntu/\r\nSuites: noble-security\r\n")
+        expected = source.replace("mirror+file:/etc/apt/apt-mirrors.txt",
+                                  "https://archive.ubuntu.com/ubuntu")
+        self.assertEqual(expected, mirror.canonical_archive(source))
+        self.assertEqual(expected, mirror.canonical_archive(expected))
+
+    def test_other_local_lists_and_partial_paths_are_unchanged(self):
+        source = ("URIs: mirror+file:/etc/apt/other-mirrors.txt\n"
+                  "URIs: mirror+file:/etc/apt/apt-mirrors.txt.other\n"
+                  "Signed-By: mirror+file:/etc/apt/apt-mirrors.txt\n"
+                  "# URIs: mirror+file:/etc/apt/apt-mirrors.txt\n")
+        self.assertEqual(source, mirror.canonical_archive(source))
