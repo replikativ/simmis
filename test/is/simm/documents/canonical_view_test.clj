@@ -275,10 +275,52 @@
                         optional-edit (property-model/prepare-edit-in person-base options (edit-request model "slug" nil))
                         uuid-value (str (random-uuid))
                         uuid-edit (property-model/prepare-edit-in person-base options (edit-request model "external-id" uuid-value))]
-                    (is (= :source-edit-required (:reason relation)) "structured relation map needs structured source codec")
-                    (is (false? (:editable? relation)))
+                    (is (nil? (:reason relation)))
+                    (is (true? (:editable? relation)))
+                    (is (= {:text (str person-id)} (:input relation)))
+                    (is (= {:representation :mapping :target (str person-id) :path-hint "research/a.md"
+                            :codomain person-type :clearable? false} (:relation relation)))
+                    (is (= (source person-raw body)
+                           (:text (property-model/prepare-edit-in person-base options (edit-request model "person" (str person-id))))))
+                    (is (thrown? clojure.lang.ExceptionInfo
+                                 (property-model/prepare-edit-in person-base options (edit-request model "person" nil))))
+                    (is (thrown? clojure.lang.ExceptionInfo
+                                 (property-model/prepare-edit-in person-base options (edit-request model "person" (str page-b)))))
+                    (let [next-person (random-uuid)
+                          alternate (d/db-with person-base [{:entity/uuid next-person
+                                                            :instance/of-role [[:entity/uuid person-type]]}])
+                          input-request (-> (edit-request model "person" nil) (dissoc :value)
+                                            (assoc :input {:text (str next-person)}))
+                          prepared (property-model/prepare-input-in alternate options input-request)
+                          after (get-in (markdown/parse (:text prepared)) [:frontmatter :properties "person"])
+                          deleted (d/db-with alternate [[:db/retractEntity [:entity/uuid next-person]]])
+                          retyped (d/db-with alternate [[:db/retract [:entity/uuid next-person]
+                                                        :instance/of-role [:entity/uuid person-type]]])]
+                      (is (= {"id" (str next-person) "path" "research/a.md"} after))
+                      (is (= person-base @conn) "Preparing a relation edit never writes the source repository")
+                      (is (thrown? clojure.lang.ExceptionInfo
+                                   (property-model/prepare-input-in deleted options input-request)))
+                      (is (thrown? clojure.lang.ExceptionInfo
+                                   (property-model/prepare-input-in retyped options input-request))))
                     (is (nil? (get-in (markdown/parse (:text optional-edit)) [:frontmatter :properties "slug"])))
                     (is (= uuid-value (get-in (markdown/parse (:text uuid-edit)) [:frontmatter :properties "external-id"]))))
+                  (testing "scalar relation clearing still validates optionality in the fresh source/schema"
+                    (write! conn "companies/a.md" (source (assoc person-raw "person" (str person-id)) body))
+                    (try
+                      (let [scalar-db @conn
+                            scalar-model (property-model/inspect-in scalar-db "companies/a.md" {:kind :page})
+                            scalar-field (first (filter #(= "person" (:alias %)) (:fields scalar-model)))
+                            cleared (property-model/prepare-edit-in scalar-db options (edit-request scalar-model "person" nil))
+                            required-db (d/db-with scalar-db [{:entity/uuid person-property :morphism/optional? false}])
+                            required-model (property-model/inspect-in required-db "companies/a.md" {:kind :page})
+                            required-field (first (filter #(= "person" (:alias %)) (:fields required-model)))]
+                        (is (true? (get-in scalar-field [:relation :clearable?])))
+                        (is (nil? (get-in (markdown/parse (:text cleared)) [:frontmatter :properties "person"])))
+                        (is (false? (get-in required-field [:relation :clearable?])))
+                        (is (thrown? clojure.lang.ExceptionInfo
+                                     (property-model/prepare-edit-in required-db options (edit-request required-model "person" nil))))
+                        (is (= scalar-db @conn) "Neither successful nor refused preparation publishes source"))
+                      (finally (write! conn "companies/a.md" (source person-raw body)))))
                   (when projected
                     (is (= person-id (get-in (d/pull projected [{:S.ProjectionCompany/person [:entity/uuid]}]
                                                     [:entity/uuid page-a])

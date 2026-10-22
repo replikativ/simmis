@@ -68,6 +68,15 @@ saves patch source through the same native writer with an atomic fresh schema
 basis; they do not write disposable projection datoms. Existing unprovisioned
 workspaces remain readable and report that typed editing is unavailable.
 
+Single-valued relations expose their stable target UUID separately from ordinary
+UUID-valued properties. Scalar reference tokens and closed `{id, path?}` mappings
+can update that identity through the same guarded source writer. Mapping edits
+retain their original comments, layout and inert path hint; the hint never
+selects the entity. Clearing such a mapping remains an explicit Markdown edit,
+not a button that silently discards structure. These controls currently accept
+exact UUID text, not a searchable entity picker. Fresh whole-selection validation
+still checks the target's existence and trusted codomain before publication.
+
 Type assignments select existing trusted definitions for a page or explicit
 block. Required new fields and values form one source edit, checked against
 both original and proposed definition digests and the whole knowledge selection.

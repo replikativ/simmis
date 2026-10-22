@@ -65,6 +65,56 @@
            (try (property-source/replace-scalar source (random-uuid) ["value"] 1)
                 (catch clojure.lang.ExceptionInfo error (:type (ex-data error))))))))
 
+(deftest reference-map-edits-touch-only-the-identity-not-hints-layout-or-comments
+  (let [old "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" new "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]
+    (doseq [newline ["\n" "\r\n"]
+            reference [(str "{id: '" old "', path: '../misleading/😀.md'} # hint stays")
+                       (str "\n  id: '" old "' # identity stays\n  path: '../misleading/😀.md' # hint stays")]]
+      (let [source (str/replace (str "﻿---\nemoji: '😀'\nfounder: " reference "\n---\n# Body 😀\n") "\n" newline)
+            parsed (markdown/parse source)
+            span (property-source/reference-span parsed ["founder"])
+            changed (property-source/replace-reference source (:revision parsed) ["founder"] new)]
+        (is (= :mapping (:representation span)))
+        (is (= old (:id span)))
+        (is (= "../misleading/😀.md" (:path-hint span)))
+        (is (= (str "'" old "'") (subs source (:from span) (:to span))))
+        (is (= (.replace source old new) (:source changed)))
+        (is (= source (:source (property-source/replace-reference source (:revision parsed) ["founder"] old))))
+        (is (= :reference-map-clear-requires-source-edit
+               (try (property-source/replace-reference source (:revision parsed) ["founder"] nil)
+                    (catch clojure.lang.ExceptionInfo e (:reason (ex-data e))))))))))
+
+(deftest scalar-and-nested-block-references-retain-their-source-representation
+  (let [old "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" new "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        source (str "---\nsimmis:\n  blocks:\n    block:\n      values:\n        founder: '" old "' # keep\n---\nbody\n")
+        path ["simmis" "blocks" "block" "values" "founder"]
+        revision (markdown/revision source)]
+    (is (= :scalar (:representation (property-source/reference-span (markdown/parse source) path))))
+    (is (= (.replace source (str "'" old "'") (str "'" new "'"))
+           (:source (property-source/replace-reference source revision path new))))
+    (is (= (.replace source (str "'" old "'") "null")
+           (:source (property-source/replace-reference source revision path nil))))
+    (let [empty-source (.replace source (str "'" old "'") "null")]
+      (is (= new (get-in (property-source/replace-reference empty-source (markdown/revision empty-source) path new)
+                        (into [:frontmatter :properties] path)))))
+    (is (thrown? clojure.lang.ExceptionInfo (property-source/replace-reference source (random-uuid) path new)))))
+
+(deftest unsupported-reference-structures-remain-source-only
+  (let [id "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]
+    (doseq [raw [(str "{id: '" id "', extra: keep}")
+                 "{path: 'people/a.md'}" "{id: null}" "{id: '1-1-1-1-1'}"
+                 (str "&ref {id: '" id "'}")
+                 (str "{id: !!str '" id "'}")
+                 (str "{id: '" id "', path: null}")
+                 (str "{id: '" id "', path: \"line\\nbreak\"}")]]
+      (let [source (str "---\nfounder: " raw "\n---\nbody\n")]
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (property-source/replace-reference source (markdown/revision source) ["founder"] id)))))
+    (doseq [value ["people/sam.md" "1-1-1-1-1" {"id" id} false]]
+      (let [source (str "---\nfounder: '" id "'\n---\nbody\n")]
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (property-source/replace-reference source (markdown/revision source) ["founder"] value)))))))
+
 (deftest flow-mappings-unicode-and-numeric-boundaries
   (let [source "---\nvalues: {active: true, keep: '😀'} # stay\nafter: 0\n---\nbody\n"
         changed (edit source ["values" "keep"] "future 🦋")]

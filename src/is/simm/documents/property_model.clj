@@ -76,22 +76,31 @@
      (fn [[id binding]]
        (let [m (:morphism binding) alias (get aliases id)
              generated? (and (= :page (:kind target)) (= id (:title-property canonical/profile)))
+             reference? (= :db.type/ref (get-in binding [:schema :db/valueType]))
+             span (try ((if reference? property-source/reference-span property-source/scalar-span)
+                        parsed (conj values-path alias))
+                       (catch clojure.lang.ExceptionInfo _ nil))
              reason (or (when generated? :generated-property)
                         (restriction binding alias values)
-                        (try (property-source/scalar-span parsed (conj values-path alias)) nil
-                             (catch clojure.lang.ExceptionInfo _ :source-edit-required)))]
+                        (when-not span :source-edit-required))]
          {:id id :name (:entity/name m) :label (or alias (last (str/split (:entity/name m) #"/")))
           :declaring-type (get-in m [:morphism/src :entity/uuid]) :alias alias
           :value (if generated? (:path file) (when alias (get values alias)))
           ;; Exact text for controls: serializing a Long to a browser number
           ;; before filling an input would already lose precision.
-          :input (let [value (if generated? (:path file) (when alias (get values alias)))]
+          :input (let [value (cond generated? (:path file)
+                                  (and reference? span) (:id span)
+                                  alias (get values alias))]
                    (if (nil? value) {:null true}
                        {:text (if (instance? java.util.Date value)
                                 (str (.toInstant ^java.util.Date value)) (str value))}))
           :present? (boolean (or generated? (and alias (contains? values alias))))
           :required? (false? (:morphism/optional? m)) :cardinality (:cardinality binding)
           :value-type (get-in binding [:schema :db/valueType]) :render-hint (:morphism/property-type m)
+          :relation (when (and reference? span)
+                      {:representation (:representation span) :target (:id span) :path-hint (:path-hint span)
+                       :codomain (get-in m [:morphism/dst :entity/uuid])
+                       :clearable? (and (= :scalar (:representation span)) (not (false? (:morphism/optional? m))))})
           :editable? (nil? reason) :reason reason}))
      (:properties compiled))))
 
@@ -155,7 +164,9 @@
     (when-let [reason (restriction binding alias values)] (refuse! reason))
     (let [value (if (= :input payload) (input-value (get-in binding [:schema :db/valueType]) (:input request))
                     (:value request))
-          patched (property-source/replace-scalar (:text file) revision (conj values-path alias) value)
+          patched ((if (= :db.type/ref (get-in binding [:schema :db/valueType]))
+                     property-source/replace-reference property-source/replace-scalar)
+                   (:text file) revision (conj values-path alias) value)
           preview (view/validate-replacement db options {:path path :expected expected :source (:source patched)})]
       (when-not (= :valid (:status preview))
         (throw (ex-info "Property edit violates the prospective knowledge selection"

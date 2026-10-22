@@ -179,3 +179,29 @@
         (when @release (browser/unmount! @release))
         (.remove container)
         (context/stop-context! ctx)))))
+
+(deftest reference-map-control-edits-identity-without-offering-lossy-clear
+  (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+        release (atom nil) calls (atom []) target {:kind :page}
+        id "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        field {:id (random-uuid) :label "Founder" :alias "founder" :value-type :db.type/ref
+               :editable? true :input {:text id} :required? false
+               :relation {:representation :mapping :target id :path-hint "inert-hint.md" :clearable? false}}
+        a {:property-input (fn [& args] (swap! calls conj args))}]
+    (.appendChild (.-body js/document) container)
+    (try
+      (binding [ec/*execution-context* ctx]
+        (reset! release (browser/mount! container (memory/property-field-view "a.md" target field {} {} a true)))
+        (let [input (.querySelector container "input")
+              buttons (array-seq (.querySelectorAll container "button"))]
+          (is (= id (.-value input)))
+          (is (not (.-disabled input)))
+          (is (not-any? #(= "Clear" (.-textContent %)) buttons))
+          (is (.includes (.-textContent container) "clear in Markdown"))
+          (.dispatchEvent input (js/Event. "input" #js {:bubbles true}))
+          (is (= ["a.md" target field {:text id}] (last @calls)))
+          (is (nil? (.querySelector container "a")) "A path hint is not a link or target resolver")))
+      (finally
+        (when @release (browser/unmount! @release))
+        (.remove container)
+        (context/stop-context! ctx)))))
