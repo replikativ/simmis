@@ -9072,6 +9072,19 @@ body.tab-dragging .column-drop-zone {
 .memory-file-header .memory-breadcrumbs { flex: 1; display: flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; font-size: 12px; color: var(--mono-text-secondary); }
 .memory-path-part { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
 .memory-file-name { color: var(--mono-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memory-type-chips, .memory-property-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.memory-type-chips { max-width: 35%; }
+.memory-type-chip { display: inline-flex; padding: 2px 6px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--mono-text-secondary); font-size: 11px; white-space: nowrap; }
+.memory-semantic-form { margin-bottom: 8px; opacity: 1; }
+.memory-property-heading { min-height: 26px; margin-bottom: 4px; font-size: 12px; color: var(--mono-text-secondary); }
+.memory-property-heading > button { margin-left: auto; }
+.memory-semantic-form button, .memory-semantic-form input, .memory-semantic-form select, .memory-block-properties select { background: transparent; color: var(--mono-text-primary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 3px 6px; font: inherit; }
+.memory-semantic-form button:disabled, .memory-semantic-form input:disabled, .memory-semantic-form select:disabled { opacity: .55; }
+.memory-property-field { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 3px 0; }
+.memory-property-field > label { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.memory-property-field input { width: min(240px, 100%); }
+.memory-available-properties, .memory-block-properties { margin: 4px 0 8px; font-size: 12px; color: var(--mono-text-secondary); }
+.memory-available-properties > summary, .memory-block-properties > summary { cursor: pointer; }
 .memory-file-header button, .memory-file-header select, .memory-file-menu > summary { background: transparent; color: inherit; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 5px 8px; font: inherit; font-size: 12px; }
 .memory-file-header .memory-breadcrumbs button { border: 0; padding: 2px 0; color: inherit; white-space: nowrap; }
 .memory-save-state { color: var(--mono-text-secondary); font-size: 11px; white-space: nowrap; }

@@ -55,8 +55,14 @@ Office XML parts and typed-property forms still have explicit publication.
 This gate does not make all explicit host actions simulation-safe; an explicit
 Save retains its existing host publication behavior.
 
-Markdown's optional Properties panel derives scalar page fields from trusted
-definitions in an explicitly provisioned canonical workspace. Its context-owned
+Markdown automatically loads page properties from trusted definitions in an
+explicitly provisioned canonical workspace. Explicitly assigned semantic types
+appear beside the file title; implicit structural roles and ordinary Markdown
+tags are not presented as user-assigned types. Page and selected explicit-block
+forms share a scoped renderer but retain independent models and drafts. Populated,
+required and drafted fields appear first, with unused optional properties in a
+disclosure. Generated structural titles are not ordinary form controls.
+Its context-owned
 drafts and model reads share Memory's target/socket/read-epoch fencing. Property
 saves patch source through the same native writer with an atomic fresh schema
 basis; they do not write disposable projection datoms. Existing unprovisioned

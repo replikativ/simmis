@@ -12,6 +12,39 @@
 (def field {:id field-id :declaring-type type-id :required? true :new? true :editable? true})
 (def reply (assoc model :proposed-scope-revision #uuid "77777777-7777-4777-8777-777777777777" :fields [field]))
 
+(deftest semantic-header-shows-assigned-types-not-implicit-structural-roles
+  (let [implicit (random-uuid) unknown (random-uuid)
+        m {:assigned-types [type-id unknown]
+           :types [{:id implicit :name "S/Page"} {:id type-id :name "Business/Company"}]}]
+    (is (= [{:id type-id :name "Business/Company"} {:id unknown :name (str unknown)}]
+           (declarations/assigned-types m)))
+    (is (= [] (declarations/assigned-types (assoc m :assigned-types []))))))
+
+(deftest page-and-block-scopes-are-simultaneously-visible-without-transferring-drafts
+  (let [path (:path model) block {:kind :block :id field-id}
+        initial {:property-drafts {[path {:kind :page}] {field-id {:input {:text "0"}}}}}
+        selected (assoc-in initial [:property-targets path] block)]
+    (is (= [{:kind :page}] (declarations/visible-targets initial path)))
+    (is (= [{:kind :page} block] (declarations/visible-targets selected path)))
+    (is (= [{:kind :page}] (declarations/visible-targets selected "another.md")))
+    (is (= (:property-drafts initial) (:property-drafts selected)))))
+
+(deftest field-grouping-retains-exact-values-required-and-drafted-fields
+  (let [fields [{:id :zero :value 0 :input {:text "0"} :present? true}
+                {:id :false :value false :input {:text "false"} :present? true}
+                {:id :null :value nil :input {:null true} :present? true}
+                {:id :long :input {:text "9007199254740993"} :present? true}
+                {:id :required :required? true}
+                {:id :drafted}
+                {:id :generated :reason :generated-property :present? true}
+                {:id :unused}]
+        groups (declarations/field-groups {:fields fields} {:drafted {:input {:text ""}}})]
+    (is (= [:zero :false :null :long :required :drafted] (mapv :id (:primary groups))))
+    (is (= [:unused] (mapv :id (:available groups))))
+    (is (= (subvec fields 0 6) (:primary groups)))
+    (is (= [(nth fields 6)] (:primary (declarations/field-groups {:fields [(nth fields 6)]}
+                                                                               {:generated {:input {:text "retained"}}}))))))
+
 (deftest drafts-are-pure-forkable-values-and-preserve-explicit-false-zero
   (let [original (declarations/draft model)
         typed (declarations/set-types original [type-id])

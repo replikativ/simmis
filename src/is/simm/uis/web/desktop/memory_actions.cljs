@@ -547,8 +547,13 @@
               (navigation-refresh!))]
       {:owner key :state state :change change! :edit edited! :folder folder! :open #(open! % false) :reload #(open! % true)
        :open-properties (fn [path target] (update! assoc-in [:property-targets path] target) (properties! path target))
-       :ensure-properties (fn [] (let [s (state) path (:selected s)]
-                                   (when-let [target (get-in s [:property-targets path])] (properties! path target))))
+       :ensure-properties
+       (fn []
+         (let [s (state) path (:selected s)
+               targets (if (= :markdown (get-in s [:drafts path :source :kind]))
+                         (declarations/visible-targets s path)
+                         (when-let [target (get-in s [:property-targets path])] [target]))]
+           (doseq [target targets] (properties! path target))))
        :property-input (fn [path target field input]
                          (let [scope [path target] model (get-in (state) [:property-models scope])]
                            (update! update-in [:property-drafts scope (:id field)]
