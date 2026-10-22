@@ -19,6 +19,7 @@
             [hasch.core :as hasch]
             [is.simm.model.access :as access]
             [is.simm.model.work-requests :as requests]
+            [is.simm.model.knowledge-dispositions :as dispositions]
             [is.simm.model.workflow-schedules :as schedules]
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.ops.benchmarks :as benchmarks]
@@ -264,8 +265,9 @@
   target)
 
 (defn create-owned!
-  "INACTIVE fixed human HOST schedule activation. Retains inspected code only;
-   no LIVE input capture, Job, occurrence dispatch, runtime or transport flip."
+  "Create an enabled fixed-human HOST activation retaining inspected code.
+   Does not synchronously capture inputs, dispatch a Job, fund work or start a
+   dispatcher. An already running owned dispatcher may execute it when due."
   [host principal original-handle input]
   (when-not (and (m/validate create-schema input)
                  (m/validate (if (= "benchmark" (:kind input)) owned-benchmark-schema owned-workflow-schema) (:execution input))
@@ -940,8 +942,37 @@
             (when (.isInterrupted (Thread/currentThread)) (throw error)))))
       nil)))
 
+(defn- occurrence-request?
+  "Metadata binding only, after room read authorization. A foreign/corrupt
+   occurrence pointer must not expose another request's Job or filing links."
+  [row occurrence target request]
+  (and (every? uuid? (map row [:schedule.activation/id :schedule.activation/by :schedule.activation/room]))
+       (uuid? (:schedule.occurrence/id occurrence))
+       (= (:schedule.activation/id row) (:schedule.occurrence/activation occurrence))
+       (= (:schedule.activation/revision row) (:schedule.occurrence/revision occurrence))
+       (= (request-id row occurrence) (:schedule.occurrence/request occurrence) (:work.request/id request))
+       (= (:schedule.occurrence/id occurrence) (:work.request/client-id request))
+       (= (:schedule.activation/by row) (:work.request/by request))
+       (= (:schedule.activation/room row) (:work.request/room request))
+       (= (:kind target) (:work.request/kind request))
+       (= :submitted (:work.request/state request))))
+
+(defn- filing-summary [request]
+  (when-let [value (dispositions/disposition request)]
+    (cond-> {:status (:kind value)}
+      (:proposal value) (assoc :proposal (str (:proposal value))))))
+
+(defn- occurrence-job? [native-room row target request job]
+  (and (some? native-room)
+       (= native-room (:room job))
+       (= (:work.request/job request) (:id job))
+       (= (:schedule.activation/by row) (access/actor->party-uuid (:owner job)))
+       (= (if (= :benchmark (:kind target)) :experiment :workflow) (:kind job))))
+
 (defn- schedule-summary [conn room-id row target]
-  {:id (str (:schedule.activation/id row)) :room-id (str room-id)
+  (let [slug (:room/slug (d/pull @conn [:room/slug] [:room/id room-id]))
+        native-room (when slug (room-store/slug->room-id slug))]
+   {:id (str (:schedule.activation/id row)) :room-id (str room-id)
    :name (get-in target [:execution :name]) :kind (:kind target)
    :revision (str (:schedule.activation/revision row))
    :bundle (str (get-in target [:execution :expected-bundle]))
@@ -951,16 +982,21 @@
    :next-fire (.getTime ^java.util.Date (:schedule.activation/next-fire row))
    :occurrences
    (mapv (fn [o]
-           (let [r (when-let [rid (:schedule.occurrence/request o)] (requests/get-request conn rid))
-                 j (when-let [id (:work.request/job r)] (jobs/status id))]
-             {:id (str (:schedule.occurrence/id o)) :state (:schedule.occurrence/state o)
+           (let [candidate (when-let [rid (:schedule.occurrence/request o)] (requests/get-request conn rid))
+                 r (when (occurrence-request? row o target candidate) candidate)
+                 job (when-let [id (:work.request/job r)] (jobs/status id))
+                 j (when (occurrence-job? native-room row target r job) job)
+                 filing (when r (filing-summary r))]
+             (cond-> {:id (str (:schedule.occurrence/id o)) :state (:schedule.occurrence/state o)
               :input-id (some-> (:schedule.occurrence/input-id o) str)
               :input-revision (some-> (:schedule.occurrence/input-revision o) str)
               :intended-at (.getTime ^java.util.Date (:schedule.occurrence/intended-at o))
               :coalesced (:schedule.occurrence/coalesced o) :reason (:schedule.occurrence/reason o)
-              :job (some-> (:work.request/job r) str) :status (:status j)
-              :settled? (:settled? j)}))
-         (schedules/recent-occurrences conn (:schedule.activation/id row) 12))})
+              :request (some-> (:work.request/id r) str)
+              :job (some-> (:id j) str) :status (:status j)
+              :settled? (:settled? j)}
+               filing (assoc :filing filing))))
+         (schedules/recent-occurrences conn (:schedule.activation/id row) 12))}))
 
 (defn- owned-control-target! [conn original row]
   ;; Creation retries are creator-specific; room controls deliberately are not.
@@ -991,7 +1027,7 @@
     target))
 
 (defn list-owned!
-  "Inactive HOST human schedule metadata. No room hydration, current default,
+  "HOST human schedule metadata. No room hydration, current default,
    live source, provider preparation or execution. Legacy targets stay legacy."
   [host principal handle]
   (let [original (owned-storage! #(reads/preflight-host-read! host principal handle))
@@ -1012,8 +1048,9 @@
         result))))
 
 (defn set-enabled-owned!
-  "Inactive HOST human pause/resume. Pause withdraws pending work through the
-   existing transaction; resume rechecks the stored creator and pinned policy."
+  "HOST human pause/resume. Pause withdraws pending work through the existing
+   transaction; resume rechecks creator and pinned policy, and lets an already
+   running dispatcher execute due work. Does not fund or start a dispatcher."
   [host principal handle id enabled?]
   (when-not (and (uuid? id) (boolean? enabled?))
     (throw (ex-info "Invalid schedule control" {:type ::invalid})))

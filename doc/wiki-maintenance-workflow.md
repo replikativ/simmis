@@ -165,6 +165,17 @@ exclusive new-repository initialization. Neither path
 configures an admitted model and finite allowance nor enables a schedule. The
 mechanical fixture checks are not actual-model quality measurements.
 
+The shipped-source scheduling regression uses the actual packaged maintainer
+under its own workflow name, an explicitly finite fixture allowance, and a
+scripted HTTP response through the real provider adapter and native Job. The
+activation target and admitted request retain the exact packaged source. Empty
+evidence skips without spending. A certified empty capture produces a no-op;
+manual collection before automatic filing and subsequent retries share that
+same disposition. Unchanged triggers and context-only edits skip new capture,
+funding and dispatch. The Schedules DTO exposes the resulting no-change outcome
+without adopting files. This is deterministic integration evidence, not a live
+subscription benchmark or a fresh-process recovery test.
+
 After successful staging, the knowledge collector and benchmark setup bind an
 explicit execution-world source-memory profile. This distinguishes owned
 frozen-input/output staging from canonical knowledge: `in/knowledge` and

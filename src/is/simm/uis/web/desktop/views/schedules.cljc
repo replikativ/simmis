@@ -13,6 +13,7 @@
             #?(:cljs [is.simm.uis.web.desktop.observation-io :as observation-io])
             #?(:cljs [is.simm.uis.web.desktop.connection-epoch :as connection])
             #?(:cljs [is.simm.uis.web.desktop.memory-sync :as sync])
+            #?(:cljs [is.simm.uis.web.desktop.refs :as refs])
             #?(:cljs [is.simm.uis.web.desktop.views.mermaid :as mmd])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -107,6 +108,9 @@
          {:session-id session-id :observe observe-all!
           :refresh #(do (load!) (binding [rtc/*execution-context* ctx] (sync/retry! (connection/snapshot))))
           :toggle toggle!
+          :open-proposal (fn [proposal]
+                           (binding [rtc/*execution-context* ctx]
+                             (when (current?) (refs/open! {:kind :proposal :id proposal}))))
           :open-run (fn [row job event]
                       (binding [rtc/*execution-context* ctx]
                         (when (current?)
@@ -123,7 +127,7 @@
 (declare cadence-str)
 
 #?(:cljs
-   (defn- workflow-row [row]
+   (defn workflow-row [row]
      (el/div {:class "schedule-row" :key (:id row)}
              (el/div {:class "schedule-main"}
                      (el/h3 {} (str (:room-name row) " · " (:name row)))
@@ -149,7 +153,12 @@
                                                 (when (pos? (:coalesced o)) (str " · coalesced " (:coalesced o)))))
                                (when-let [job (:job o)]
                                  (el/button {:on-click (fn [event] ((:on-open-run row) row job event))}
-                                            "Open Run and results"))))))))
+                                            "Open Run and results"))
+                               (case (get-in o [:filing :status])
+                                 :proposed (el/button {:on-click (fn [_] ((:on-open-proposal row) (get-in o [:filing :proposal])))}
+                                                      "Review wiki proposal")
+                                 :no-op (el/span {:class "schedule-outcome"} "No wiki changes")
+                                 nil)))))))
 
 ;; =============================================================================
 ;; Formatting
@@ -239,7 +248,8 @@
                         vec)
             workflow-rows (mapv #(assoc % :updating? (boolean (:updating data))
                                         :this-updating? (= (:id %) (:updating data))
-                                        :on-toggle (:toggle actions) :on-open-run (:open-run actions))
+                                        :on-toggle (:toggle actions) :on-open-run (:open-run actions)
+                                        :on-open-proposal (:open-proposal actions))
                                 (:workflow-schedules data))]
         (el/div {:class "content-schedules"}
                 (el/div {:class "schedules-header"}

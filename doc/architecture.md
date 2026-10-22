@@ -342,6 +342,12 @@ controls authorize before hydrating their native Room. The Schedules dashboard
 loads retained workflow targets on a host worker through the same owned metadata
 listing. Owned execution requires its
 target-bound source revision separately from the portable bundle identity.
+Occurrence metadata validates its exact creator/room/request binding before
+projecting Run links; live Job status additionally matches native room, owner
+and Run kind. Typed filing receipts expose only a proposal link or no-change
+outcome. These observations do not collect output, approve it, hydrate a file
+workspace or retrieve artifacts. Proposal navigation retains its existing
+authorization. Corrupt typed receipts fail closed rather than becoming no-ops.
 Worker workflow/benchmark retries inspect canonical metadata before checking
 fresh-admission readiness; only normal absence may enter new admission. Saves
 project their original sealed acknowledgement, never a subsequent source read.
