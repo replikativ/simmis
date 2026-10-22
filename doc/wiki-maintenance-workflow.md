@@ -90,22 +90,20 @@ differs from the live starter; the task and checker bytes remain the same. Never
 compare these as if they were one identical full bundle or seed synthetic
 customer facts into a real scheduled Run.
 
-## Remaining delivery gates
+## Current integration boundaries
 
-1. Integrate the available canonical prospective validation, preservation and
-   exact AFTER snapshot guards into guarded file-only adoption and recovery
-   receipts; they are currently inactive host primitives. Preserve the
-   distinction between processed input, filed proposal and adopted result.
-2. Integrate the inactive installer into explicitly eligible personal workspace
-   provisioning. Do not overwrite a customized bundle or convert legacy stores.
-3. Make configuration of an admitted model and finite allowance explicit before
-   enabling its ordinary schedule. Expose status, proposals and failures in UI.
-4. Benchmark actual models on retained cases before making quality claims or
-   recommending defaults; expand checks and examples from observed failures.
+Canonical prospective validation, preservation and exact AFTER snapshot guards
+are inactive HOST primitives, not a public acceptance operation. Processed
+input, a filed proposal and an adopted result remain distinct. The installer
+does not participate in automatic personal workspace provisioning. It neither
+configures an admitted model and finite allowance nor enables a schedule. The
+mechanical fixture checks are not actual-model quality measurements.
 
-Before default activation, bind an explicit execution-world source-memory
-selection profile that distinguishes owned frozen-input/output staging from
-canonical knowledge. Otherwise preserved IDs in staged copies and replacements
-can collide with the inherited wiki. Ordinary room selection must remain
-unchanged; retained evidence remains accessible as files, and `/out` pages do
-not become canonical knowledge merely because a Run wrote them.
+After successful staging, the knowledge collector and benchmark setup bind an
+explicit execution-world source-memory profile. This distinguishes owned
+frozen-input/output staging from canonical knowledge: `in/knowledge` and
+`out/wiki` are excluded only in the matching disposable execution world. The
+immutable role follows copies but is not adopted into the ordinary parent by
+system settlement. Ordinary room selection remains unchanged; retained evidence
+remains accessible as files, and `/out` pages do not become canonical knowledge
+merely because a Run wrote them.
