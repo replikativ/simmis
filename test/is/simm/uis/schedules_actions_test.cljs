@@ -1,7 +1,9 @@
 (ns is.simm.uis.schedules-actions-test
-  (:require [cljs.test :refer-macros [deftest is]]
+  (:require [cljs.test :refer-macros [deftest is async]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.dom.browser :as browser]
+            [org.replikativ.spindel.dom.render :as render]
             [is.simm.runtimes.web :as web]
             [is.simm.uis.web.desktop.runtime :as runtime]
             [is.simm.uis.web.desktop.signals :as sig]
@@ -9,7 +11,9 @@
             [is.simm.uis.web.desktop.workflows-remote :as remote]
             [is.simm.uis.web.desktop.connection-epoch :as connection]
             [is.simm.uis.web.desktop.memory-sync :as sync]
-            [is.simm.uis.web.desktop.views.schedules :as schedules]))
+            [is.simm.uis.web.desktop.refs :as refs]
+            [is.simm.uis.web.desktop.views.schedules :as schedules])
+  (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (def row {:id "activation" :room-id "room" :room-name "Room" :enabled? true})
 
@@ -111,3 +115,53 @@
   (is (= "every month @ 10:30 (day 2)"
          (schedules/cadence-str {:kind :recurring :every :month :at "10:30" :on-day 2})))
   (is (= "once" (schedules/cadence-str {:kind :once}))))
+
+(deftest proposal-result-navigation-only-uses-the-current-owning-session
+  (with-state
+    (fn [ui _]
+      (let [opened (atom []) proposal (str (random-uuid)) before @sig/schedules-data]
+        (with-redefs [refs/open! (fn ([reference] (swap! opened conj reference))
+                                  ([reference _] (swap! opened conj reference)))]
+          ((:open-proposal ui) proposal)
+          (is (= [{:kind :proposal :id proposal}] @opened))
+          (is (= before @sig/schedules-data) "Navigation neither files output nor changes schedule state")
+          (with-redefs [web/current-session? (constantly false)]
+            ((:open-proposal ui) proposal))
+          (is (= 1 (count @opened))))))))
+
+(deftest scheduled-filing-results-render-without-triggering-an-action
+  (async done
+    (let [ctx (context/fork-context runtime/runtime) container (.createElement js/document "div")
+          opened (atom []) handle (atom nil) proposal (str (random-uuid))
+          row {:id "render-fixture" :room-id "room" :room-name "Fixture" :name "maintain-wiki"
+               :kind :workflow :enabled? false :cadence {:interval-ms 60000 :tz "UTC"}
+               :revision "fixture-revision" :bundle "fixture-bundle" :next-fire 0
+               :on-toggle (fn [& _] (throw (js/Error. "Render changed activation")))
+               :on-open-run (fn [& _] (throw (js/Error. "Render opened Run")))
+               :on-open-proposal #(swap! opened conj %)
+               :occurrences [{:id "proposed" :intended-at 0 :state :linked :coalesced 0
+                              :job "fixture-job" :filing {:status :proposed :proposal proposal}}
+                             {:id "no-op" :intended-at 1 :state :linked :coalesced 0 :filing {:status :no-op}}]}
+          observer (js/MutationObserver.
+                    (fn [_ observer]
+                      (when-let [button (some #(when (= "Review wiki proposal" (.-textContent %)) %)
+                                             (array-seq (.querySelectorAll container "button")))]
+                        (when (.includes (.-textContent container) "No wiki changes")
+                          (.disconnect observer)
+                          (try
+                            (is (empty? @opened) "Rendering never collects, opens or adopts anything")
+                            (is (.includes (.-textContent container) "Open Run and results"))
+                            (.click button)
+                            (is (= [proposal] @opened))
+                            (finally
+                              (when-let [stop (:stop! @handle)] (stop))
+                              (.remove container)
+                              (context/close-context! ctx)
+                              (done)))))))]
+      ;; Wait on the actual DOM mutation, not an arbitrary render delay.
+      (set! (.. container -style -display) "none")
+      (.appendChild (.-body js/document) container)
+      (.observe observer container #js {:childList true :subtree true})
+      (binding [ec/*execution-context* ctx]
+        (reset! handle (render/render-spin! container (spin (schedules/workflow-row row))
+                                           (browser/make-dom-discharge js/document)))))))
