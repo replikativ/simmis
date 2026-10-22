@@ -9,8 +9,9 @@
            [org.yaml.snakeyaml.error YAMLException]
            [org.yaml.snakeyaml.nodes Node MappingNode SequenceNode ScalarNode Tag]))
 
-(def profile {:id :simmis/markdown-property-source :version 2 :positions :utf16
-              :features #{:existing-scalar-replacement :missing-mapping-insertion :type-sequence-replacement}})
+(def profile {:id :simmis/markdown-property-source :version 3 :positions :utf16
+              :features #{:existing-scalar-replacement :existing-reference-id-replacement
+                          :missing-mapping-insertion :type-sequence-replacement}})
 (def ^:private max-nodes 20000)
 
 (defn- refuse! [reason]
@@ -108,6 +109,44 @@
                          (= (subs source (:body-from parsed)) (subs (:source after) (:body-from after))))
             (refuse! :scalar-did-not-roundtrip))
           after)))))
+
+(defn- reference-id? [value]
+  (and (string? value)
+       (try (= value (str (java.util.UUID/fromString value)))
+            (catch IllegalArgumentException _ false))))
+
+(defn reference-span
+  "Locate the identity token of an existing scalar or closed {id,path?}
+   reference. A path is an inert hint, never a lookup key or executable value."
+  [parsed path]
+  (let [value (get-in parsed (into [:frontmatter :properties] path))
+        mapping? (map? value)]
+    (when-not (if mapping?
+                (and (contains? value "id") (every? #{"id" "path"} (keys value))
+                     (reference-id? (get value "id"))
+                     (or (not (contains? value "path"))
+                         (and (string? (get value "path")) (<= (count (get value "path")) 512)
+                              (not (re-find #"[\p{Cntrl}]" (get value "path"))))))
+                (or (nil? value) (reference-id? value)))
+      (refuse! :unsupported-reference-value))
+    (assoc (scalar-span parsed (cond-> path mapping? (conj "id")))
+           :representation (if mapping? :mapping :scalar)
+           :id (if mapping? (get value "id") value)
+           :path-hint (when mapping? (get value "path")))))
+
+(defn replace-reference
+  "Patch only a reference identity token, retaining map layout, comments and
+   any inert path hint. Map clearing requires source editing rather than
+   silently deleting that structure. This performs no target authorization."
+  [source revision path value]
+  (let [parsed (markdown/parse source)]
+    (when-not (= revision (:revision parsed))
+      (throw (ex-info "Property source changed" {:type ::conflict})))
+    (when-not (or (nil? value) (reference-id? value)) (refuse! :unsupported-reference-value))
+    (let [span (reference-span parsed path) mapping? (= :mapping (:representation span))]
+      (when (and mapping? (nil? value)) (refuse! :reference-map-clear-requires-source-edit))
+      ;; replace-scalar independently verifies the complete metadata and body.
+      (replace-scalar source revision (cond-> path mapping? (conj "id")) value))))
 
 (defn- checked-source [source revision path]
   (let [parsed (markdown/parse source)]

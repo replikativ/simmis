@@ -55,12 +55,27 @@ Office XML parts and typed-property forms still have explicit publication.
 This gate does not make all explicit host actions simulation-safe; an explicit
 Save retains its existing host publication behavior.
 
-Markdown's optional Properties panel derives scalar page fields from trusted
-definitions in an explicitly provisioned canonical workspace. Its context-owned
+Markdown automatically loads page properties from trusted definitions in an
+explicitly provisioned canonical workspace. Explicitly assigned semantic types
+appear beside the file title; implicit structural roles and ordinary Markdown
+tags are not presented as user-assigned types. Page and selected explicit-block
+forms share a scoped renderer but retain independent models and drafts. Populated,
+required and drafted fields appear first, with unused optional properties in a
+disclosure. Generated structural titles are not ordinary form controls.
+Its context-owned
 drafts and model reads share Memory's target/socket/read-epoch fencing. Property
 saves patch source through the same native writer with an atomic fresh schema
 basis; they do not write disposable projection datoms. Existing unprovisioned
 workspaces remain readable and report that typed editing is unavailable.
+
+Single-valued relations expose their stable target UUID separately from ordinary
+UUID-valued properties. Scalar reference tokens and closed `{id, path?}` mappings
+can update that identity through the same guarded source writer. Mapping edits
+retain their original comments, layout and inert path hint; the hint never
+selects the entity. Clearing such a mapping remains an explicit Markdown edit,
+not a button that silently discards structure. These controls currently accept
+exact UUID text, not a searchable entity picker. Fresh whole-selection validation
+still checks the target's existence and trusted codomain before publication.
 
 Type assignments select existing trusted definitions for a page or explicit
 block. Required new fields and values form one source edit, checked against

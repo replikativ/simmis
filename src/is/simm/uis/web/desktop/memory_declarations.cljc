@@ -3,6 +3,26 @@
    Spindel execution-context state; no runtime handles or authority live here."
   (:require [is.simm.uis.web.desktop.memory-editor :as editor]))
 
+(defn visible-targets [state path]
+  (let [selected (get-in state [:property-targets path])]
+    (cond-> [{:kind :page}]
+      (= :block (:kind selected)) (conj selected))))
+
+(defn assigned-types [model]
+  (let [names (into {} (map (juxt :id :name)) (:types model))]
+    (mapv (fn [id] {:id id :name (get names id (str id))}) (:assigned-types model))))
+
+(defn field-groups
+  "Presentation only: retain exact DTO values and every drafted field. Generated
+   structural fields are not ordinary controls; unused optional fields fold away."
+  [model drafts]
+  (reduce (fn [groups field]
+            (let [draft? (contains? drafts (:id field))]
+              (if (and (= :generated-property (:reason field)) (not draft?)) groups
+                  (update groups (if (or draft? (:present? field) (:required? field)) :primary :available)
+                          conj field))))
+          {:primary [] :available []} (:fields model)))
+
 (defn draft [model]
   {:baseline (editor/property-baseline model) :types (:assigned-types model [])
    :additions [] :inputs {} :generation 0})

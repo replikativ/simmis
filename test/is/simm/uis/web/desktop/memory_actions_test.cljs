@@ -519,6 +519,31 @@
       ((:repl-evaluate a) :clojure)
       (is (= 1 (count (:repl @calls))) "Known denial stays disabled; server checks actual attempts"))))
 
+(deftest markdown-page-properties-load-without-a-click-and-do-not-replace-block-selection
+  (with-client
+    (fn [{:keys [a states state stamp file seed! calls last-call]}]
+      (seed!)
+      (swap! states assoc-in [(:owner a) :drafts "x.clj" :source :kind] :markdown)
+      ((:ensure-properties a))
+      (is (= [{:kind :page}] (mapv #(get-in % [:request :target]) (:properties @calls))))
+      ((:ensure-properties a))
+      (is (= 1 (count (:properties @calls))) "Loading renders do not duplicate reads")
+      ((:ok (last-call :properties)) (wire stamp {:path "x.clj" :target {:kind :page}
+                                                :status :unavailable :reason :unprovisioned-canonical-space}))
+      ((:ensure-properties a))
+      (is (= 1 (count (:properties @calls))) "Unavailable pages do not loop")
+      (let [target {:kind :block :id (random-uuid)}
+            page-model (get-in (state) [:property-models ["x.clj" {:kind :page}]])]
+        ((:open-properties a) "x.clj" target)
+        ((:ensure-properties a))
+        (is (= 2 (count (:properties @calls))))
+        (is (= target (get-in (state) [:property-targets "x.clj"])))
+        (is (= page-model (get-in (state) [:property-models ["x.clj" {:kind :page}]])))
+        ((:ok (last-call :properties)) (wire stamp {:path "x.clj" :target target :expected (:entry file)}))
+        ((:ensure-properties a))
+        (is (= 2 (count (:properties @calls))))
+        (is (= target (get-in (state) [:property-targets "x.clj"])))))))
+
 (deftest property-controls-send-exact-text-and-retain-newer-input-after-publication
   (with-client
     (fn [{:keys [a states state stamp file seed! last-call calls]}]
