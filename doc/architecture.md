@@ -282,6 +282,13 @@ round-tripping and unchanged frontmatter/explicit identity nesting, and uses
 the canonical file writer's revision precondition. Unchanged syntax siblings
 and source outside the changed spans retain their exact spelling and newlines.
 Empty-file/block insertion is allowed only at reconstructed insertion anchors.
+Empty top-level rich paragraphs represent Markdown blank-line layout, not new
+knowledge-block identities. Their blank lines within otherwise nonempty content
+are serialized; an entirely blank insertion remains empty. Semantic
+round-trip comparison ignores only those empty top-level paragraphs, since the
+Markdown AST has no corresponding node. Reopening reconstructs paragraphs from
+source rather than retaining transient empty editor nodes. Nested list shape
+and significant text whitespace remain subject to exact validation.
 
 Office containers have a bounded advanced XML-part editor, not a Word/Excel
 layout editor. Each operation reopens the selected immutable file revision;

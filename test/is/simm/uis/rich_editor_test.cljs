@@ -46,6 +46,25 @@
                    (rich/normalize (last @events))))))
         (finally (.remove el))))))
 
+(deftest enter-layout-survives-controlled-echo-typing-and-native-undo
+  (mounted "First"
+           (fn [^js el ^js editor]
+             (let [decode #(@#'is.simm.uis.web.desktop.rich-editor/portable-model (.getJSON editor))
+                   baseline (decode)]
+               (.. editor -commands (setTextSelection 6))
+               (is (true? (.. editor -commands (splitBlock))))
+               (let [after-enter (decode) position (.. editor -state -selection -from)]
+                 (is (= 2 (count (:content after-enter))))
+                 (is (= "First\n\n" (rich/markdown after-enter)))
+                 (is (= (rich/roundtrip-normalize baseline) (rich/roundtrip-normalize after-enter)))
+                 (.setAttribute el "data-model" (js/JSON.stringify (.getJSON editor)))
+                 (is (identical? editor (.-simmisRichEditor el)))
+                 (is (= position (.. editor -state -selection -from))))
+               (.. editor -commands (insertContent "Second"))
+               (is (= "First\n\nSecond" (rich/markdown (decode))))
+               (is (true? (.. editor -commands (undo))))
+               (is (= (rich/normalize baseline) (rich/normalize (decode))))))))
+
 (deftest each-element-owns-and-releases-its-native-interpreter
   (mounted "one"
            (fn [^js el ^js first]

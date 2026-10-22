@@ -31,7 +31,7 @@
           roundtrip (mapv rich/model (:nodes (markdown/parse serialized)))
           decoded {:type "doc" :content (vec (mapcat :content roundtrip))}
           _ (when-not (and (every? some? roundtrip)
-                            (= (rich/normalize model) (rich/normalize decoded)))
+                            (= (rich/roundtrip-normalize model) (rich/roundtrip-normalize decoded)))
               (throw (ex-info "This formatting does not round-trip yet; use Source or simplify the region"
                               {:type ::unsupported})))
           source (document/apply-run source slots model)
