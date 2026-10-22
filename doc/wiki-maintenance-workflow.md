@@ -92,8 +92,9 @@ customer facts into a real scheduled Run.
 
 ## Remaining delivery gates
 
-1. Validate prospective output against canonical Markdown/property rules, then
-   integrate guarded file-only adoption and recovery receipts. Preserve the
+1. Integrate the available canonical prospective validation, preservation and
+   exact AFTER snapshot guards into guarded file-only adoption and recovery
+   receipts; they are currently inactive host primitives. Preserve the
    distinction between processed input, filed proposal and adopted result.
 2. Integrate the inactive installer into explicitly eligible personal workspace
    provisioning. Do not overwrite a customized bundle or convert legacy stores.

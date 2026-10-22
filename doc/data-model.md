@@ -171,6 +171,22 @@ preservation also do not guarantee preservation of optional properties,
 declarations or unknown frontmatter; automatic wiki adoption needs a separate
 conservative preservation policy. No adoption path is activated by this API.
 
+`ops.file-output-validation/prepare-in` is an INTERNAL read-only composition
+over retained exact file pairs and one fresh canonical destination. It repeats
+body/descriptor validation, checks complete prospective canonical validity and
+the versioned metadata-preservation policy, and returns bounded immutable host
+data without bodies, DB values, handles or functions. Fixed normal repository
+selection is used, never execution-world staging exclusions.
+`assert-after!` checks the physical target and prepares the complete actual
+AFTER source from the exact DB supplied by native publication. Touched metadata
+must equal retained outputs; untouched selected files, compiled-definition
+revisions and constraint dependencies must equal the fresh preflight. Only
+then does it return literal true. This data is neither authority nor proof of
+an earlier human review or unchanged agent admission context. Atomic native
+checkpoint enforcement, current authority, original publisher ACK ownership
+and historical duplicate-first recovery remain separate required boundaries.
+The helper does not activate the adoption controller or any public endpoint.
+
 `documents.property-source` is a separate pure token-replacement codec for
 existing scalar frontmatter leaves. It checks the exact source revision,
 uses the same bounded safe YAML policy as the Markdown parser, and converts
