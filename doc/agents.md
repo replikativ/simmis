@@ -345,6 +345,13 @@ nor uses provider credentials; it is not a wall-clock timing or model-quality
 benchmark. The temporary evidence is retained and its path printed. This
 diagnostic is deliberately outside the default test suite.
 
+The separate `bash scripts/probe-scheduled-wiki-allowance.sh` diagnostic uses
+one fresh private process and the same scripted native dispatcher fixture. It
+consumes three explicitly provisioned dispatches, then checks that changed
+evidence holds without a new request, provider preparation, funding or HTTP
+call. A further manually driven pass must not retry held work. Its retained
+hold reason is evidence, not a promise of automatic resume after funding.
+
 The experimental Claude Code text backend is disabled by default. A trusted operator enables it
 with JVM properties `simmis.cli-benchmarks.enabled=true`,
 `simmis.cli-benchmarks.unit=YOUR.service` and (optionally)
