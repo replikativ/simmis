@@ -29,6 +29,7 @@
          [:schedule.activation/last-occurrence :db.type/uuid]
          [:schedule.activation/active-occurrence :db.type/uuid]
          [:schedule.activation/reason :db.type/keyword]
+         [:schedule.activation/last-terminal-failure :db.type/uuid]
          [:schedule.activation/last-processed-input :db.type/uuid]
          [:schedule.occurrence/id :db.type/uuid]
          [:schedule.occurrence/activation :db.type/uuid]
@@ -43,7 +44,9 @@
          [:schedule.occurrence/input-revision :db.type/uuid]
          [:schedule.occurrence/request :db.type/uuid]
          [:schedule.occurrence/announced? :db.type/boolean]
-         [:schedule.occurrence/reason :db.type/keyword]]))
+         [:schedule.occurrence/reason :db.type/keyword]
+         [:schedule.occurrence/failed-candidate :db.type/uuid]
+         [:schedule.occurrence/failed-attempt-content :db.type/uuid]]))
 
 (defn- pull-row [db attr id]
   ;; A missing lookup ref throws in Datahike's pull; absence is normal for
@@ -148,7 +151,11 @@
 
 (def ^:private resume-identity-fields
   [:schedule.activation/room :schedule.activation/by
-   :schedule.activation/revision :schedule.activation/target-ref])
+   :schedule.activation/revision :schedule.activation/target-ref
+   ;; Fence a resume inspected before a terminal failure. The failure marker
+   ;; also prevents ABA after resume -> another failed occurrence -> hold.
+   :schedule.activation/enabled? :schedule.activation/reason
+   :schedule.activation/active-occurrence :schedule.activation/last-terminal-failure])
 
 (defn- resume-managed-tx [db id expected]
   (let [row (pull-row db :schedule.activation/id id)
@@ -165,7 +172,7 @@
 
 (defn resume-managed!
   "HOST internal serialized resume after current human/policy checks. A
-   changed retained identity or uncertain/foreign active pointer cannot pass
+   changed retained identity, inspected control state or uncertain pointer cannot pass
    between inspection and the enable transaction. No authority is persisted."
   [conn row]
   (let [id (:schedule.activation/id row)]
@@ -543,3 +550,53 @@
 (defn block! [conn row reason]
   (d/transact conn [{:db/id (:db/id row)
                      :schedule.activation/enabled? false :schedule.activation/reason reason}]))
+
+(def ^:private failure-occurrence-fields
+  [:schedule.occurrence/id :schedule.occurrence/activation :schedule.occurrence/revision
+   :schedule.occurrence/state :schedule.occurrence/request :schedule.occurrence/claim
+   :schedule.occurrence/input-id :schedule.occurrence/input-ref :schedule.occurrence/input-revision])
+
+(defn- fail-certified-tx [db id expected occurrence outcome]
+  (let [row (pull-row db :schedule.activation/id id)
+        oid (:schedule.occurrence/id occurrence)
+        current (pull-row db :schedule.occurrence/id oid)
+        request (pull-row db :work.request/id (:schedule.occurrence/request current))
+        candidate (:candidate outcome) content (:attempt-content outcome)
+        recorded? (and (= candidate (:schedule.occurrence/failed-candidate current))
+                       (= content (:schedule.occurrence/failed-attempt-content current)))]
+    (when-not (and row (uuid? oid) (uuid? candidate) (uuid? content)
+                   (= :failed (:outcome outcome))
+                   (= occurrence (select-keys current failure-occurrence-fields))
+                   (= :linked (:schedule.occurrence/state current))
+                   (= id (:schedule.occurrence/activation current))
+                   (= (:schedule.activation/revision row) (:schedule.occurrence/revision current))
+                   (= (:request-binding outcome) (dispositions/request-binding request))
+                   (= oid (:work.request/client-id request))
+                   (= (:schedule.activation/by row) (:work.request/by request))
+                   (= (:schedule.activation/room row) (:work.request/room request))
+                   (true? (:schedule.occurrence/announced? current))
+                   (nil? (dispositions/disposition request)))
+      (throw (ex-info "Certified schedule failure binding changed" {:type ::conflict})))
+    ;; An exact recorded reconciliation is a no-op even after a later human
+    ;; resume. It must never disable new work or overwrite a newer failure.
+    (when-not recorded?
+      (when-not (and (= expected (select-keys row resume-identity-fields))
+                     (= oid (:schedule.activation/active-occurrence row))
+                     (nil? (:schedule.occurrence/failed-candidate current))
+                     (nil? (:schedule.occurrence/failed-attempt-content current)))
+        (throw (ex-info "Schedule changed before failure reconciliation" {:type ::conflict})))
+      [{:db/id (:db/id row) :schedule.activation/enabled? false
+        :schedule.activation/reason :execution-failed :schedule.activation/last-terminal-failure oid}
+       [:db/retract (:db/id row) :schedule.activation/active-occurrence oid]
+       {:db/id (:db/id current) :schedule.occurrence/failed-candidate candidate
+        :schedule.occurrence/failed-attempt-content content}])))
+
+(defn fail-certified!
+  "HOST-only reconciliation AFTER strict candidate/Attempt certification and
+   physical return. Atomically disable and release the exact active slot;
+   preserve the failed occurrence/request/Attempt and never process its input.
+   The outcome is not an authority token: the writer rechecks row bindings."
+  [conn row occurrence outcome]
+  (d/transact conn [[:db.fn/call fail-certified-tx (:schedule.activation/id row)
+                     (select-keys row resume-identity-fields)
+                     (select-keys occurrence failure-occurrence-fields) outcome]]))

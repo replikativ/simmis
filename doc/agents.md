@@ -338,6 +338,19 @@ Ordinary workflow completion remains distinct from checker-backed benchmarking.
 Recurring benchmarks require installation-operator authority as well as room
 merge authority. CLI and local-worker executions are not scheduled by this path.
 
+For LIVE knowledge work, a completed orchestration Job is not candidate success.
+A strictly certified failed direct candidate holds the activation as
+`:execution-failed`, without filing its partial output or advancing the input
+cursor. Reconciliation atomically disables the activation and releases only
+that failed active slot; the occurrence retains its canonical request and
+failed candidate/Attempt identities. A fresh authorized human Resume allows a
+new occurrence at the next due cadence against the still-unprocessed input,
+using the existing remaining allowance. There is no automatic retry or refill.
+Stale resume inspections cannot cross failure reconciliation, and replaying an
+already recorded failure cannot disable a later explicit resume. Missing or
+inconsistent certification, uncertain admission and exhausted allowance remain
+held for reconciliation, not converted into this retryable execution failure.
+
 The opt-in `bash scripts/probe-scheduled-wiki-restart.sh` diagnostic starts two
 sequential capped JVMs against one newly created `/tmp` file-backed home. It
 uses native component startup, room hydration and the owned dispatcher, but
@@ -366,9 +379,11 @@ its evidence is written only after native shutdown joins.
 `bash scripts/probe-scheduled-wiki-failure.sh` scripts a real provider failure
 event after a successful baseline. It checks the direct candidate Run and its
 certified failed Attempt, separately from orchestration Job status, and requires
-no failed-input processing proof, filing or automatic new work. It records the
-held activation's active pointer; it does not claim failed LIVE filing becomes
-resumable or clear that pointer to manufacture a retry.
+no failed-input processing proof, filing or automatic new work. It then uses
+the normal authorized human Resume handler and verifies one distinct new
+request/occurrence for the same evidence, without minting allowance or changing
+the failed request's audit records. It never clears a fixture pointer to
+manufacture a retry.
 
 The experimental Claude Code text backend is disabled by default. A trusted operator enables it
 with JVM properties `simmis.cli-benchmarks.enabled=true`,

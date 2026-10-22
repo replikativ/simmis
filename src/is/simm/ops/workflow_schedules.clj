@@ -25,6 +25,7 @@
             [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.dvergr :as principals]
             [is.simm.ops.knowledge-publish :as knowledge-publish]
+            [is.simm.ops.knowledge-filing :as knowledge-filing]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-workflows :as owned-sources]
@@ -506,7 +507,12 @@
 (defn- process-input! [conn row occurrence request job room target]
   (if (= :completed (:status job))
     (if (publication-required? conn target occurrence request)
-      (file-input! conn row occurrence request room)
+      (let [outcome (knowledge-filing/candidate-outcome
+                     conn (principals/party-principal (:schedule.activation/by row))
+                     (:schedule.activation/room row) room (:work.request/id request))]
+        (if (= :failed (:outcome outcome))
+          (schedules/fail-certified! conn row occurrence outcome)
+          (file-input! conn row occurrence request room)))
       (if (input-processed? conn request room)
         (schedules/mark-input-processed! conn (:schedule.occurrence/id occurrence))
         (schedules/block! conn row :execution-failed)))

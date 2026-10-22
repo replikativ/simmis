@@ -15,10 +15,13 @@
             [is.simm.model.system-db :as system-db]
             [is.simm.model.workflow-schedules :as model]
             [is.simm.model.work-requests :as requests]
+            [is.simm.ops.dvergr :as principals]
             [is.simm.ops.knowledge-inputs :as inputs]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as runs]
             [is.simm.ops.workflow-schedules :as schedules]
+            [is.simm.runtimes.application-ops :as application]
+            [taoensso.telemere :as log]
             [org.replikativ.spindel.engine.core :as ec]))
 
 (defn- check! [condition label]
@@ -29,12 +32,13 @@
    :body (java.io.ByteArrayInputStream.
            (.getBytes "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"Synthetic failure after native model admission\"}}}\n\n" "UTF-8"))})
 
-(defn- exercise! [conn calls mode forbidden? entered passes]
+(defn- exercise! [conn calls mode forbidden? funding-closed? entered passes]
   (let [initial (#'restart/stage-a! conn calls)
         {:keys [party room activation]} initial
         baseline (:first initial)
         rich (#'restart/binding-for! party room)
         native-room (:room rich)]
+    (reset! funding-closed? true)
     (#'restart/write-evidence! rich "Synthetic K2 must not become processed after model failure.")
     (reset! mode :failed)
     (let [occurrence (#'restart/tick! conn activation (#'restart/next-due conn activation)
@@ -69,6 +73,7 @@
           (#'allowance/quiet-pass! passes (#'restart/next-due conn activation))
           (let [held (model/activation conn activation)
                 oid (:schedule.occurrence/id occurrence)
+                later (java.util.Date. (+ 60000 (.getTime ^java.util.Date (#'restart/next-due conn activation))))
                 assert-unprocessed! (fn []
                                       (check! (empty? @entered) :no-fresh-acquisition)
                                       (check! (= 2 @calls) :no-provider-retry)
@@ -80,21 +85,52 @@
                                       (check! (= (:proof baseline) (model/processing-proof conn (:occurrence baseline))) :original-proof)
                                       (check! (= (:disposition baseline) (dispositions/disposition (requests/get-request conn (:request baseline)))) :original-filing))]
             (check! (false? (:schedule.activation/enabled? held)) :failed-activation-held)
-            (check! (keyword? (:schedule.activation/reason held)) :visible-hold-reason)
+            (check! (= :execution-failed (:schedule.activation/reason held)) :certified-failure-hold)
+            (check! (nil? (:schedule.activation/active-occurrence held)) :released-failed-slot)
+            (check! (= oid (:schedule.activation/last-terminal-failure held)) :failure-generation)
+            (check! (= (:attempt/run-id certified)
+                       (:schedule.occurrence/failed-candidate (model/occurrence conn oid))) :failed-candidate-audit)
+            (check! (= (:attempt/content-id certified)
+                       (:schedule.occurrence/failed-attempt-content (model/occurrence conn oid))) :failed-attempt-audit)
             (#'restart/retained-live-input! conn occurrence)
             (assert-unprocessed!)
-            (#'allowance/quiet-pass! passes (java.util.Date. (+ 60000 (.getTime ^java.util.Date (#'restart/next-due conn activation)))))
+            (#'allowance/quiet-pass! passes later)
             (assert-unprocessed!)
-            {:version 1 :room room :activation activation :job job :root-job-status (:status status)
-             :candidate (:attempt/run-id certified) :attempt-content (:attempt/content-id certified)
-             :candidate-status :failed :requests 2 :scripted-calls @calls :wallet wallet
-             :hold-reason (:schedule.activation/reason held)
-             :active-occurrence (:schedule.activation/active-occurrence held)}))))))
+            ;; A real human control call, not fixture pointer clearing or new
+            ;; funding. Until it returns the no-acquisition guard stays on.
+            (let [resumed (schedules/set-enabled-owned! (application/host!)
+                                                        (principals/party-principal party)
+                                                        (str room) activation true)]
+              (check! (true? (:schedule.activation/enabled? resumed)) :explicit-authorized-resume)
+              (assert-unprocessed!)
+              (reset! mode :success)
+              (reset! forbidden? false)
+              (let [retried (#'restart/run-once! conn party room activation
+                                               (java.util.Date. (+ 60000 (.getTime ^java.util.Date later))))]
+                (check! (empty? @entered) :no-refill-after-resume)
+                (check! (= 3 @calls) :one-explicit-new-call)
+                (check! (= 3 (#'allowance/request-count conn room)) :one-new-request)
+                (check! (not= request-id (:request retried)) :distinct-request)
+                (check! (not= oid (:occurrence retried)) :distinct-occurrence)
+                (check! (= (:schedule.occurrence/input-id occurrence) (:input retried)) :same-unprocessed-evidence)
+                (check! (nil? (model/processing-proof conn oid)) :old-failure-never-processed)
+                (check! (nil? (dispositions/disposition (requests/get-request conn request-id))) :old-failure-never-filed)
+                (check! (= (:disposition baseline)
+                           (dispositions/disposition (requests/get-request conn (:request baseline)))) :original-filing-after-retry)
+                (check! (zero? (get (resource/balance native-room) resource/model-dispatches 0M)) :no-refill)
+                {:version 2 :room room :activation activation :job job :root-job-status (:status status)
+                 :candidate (:attempt/run-id certified) :attempt-content (:attempt/content-id certified)
+                 :candidate-status :failed :requests 3 :scripted-calls @calls
+                 :wallet-after-failure wallet :wallet (resource/balance native-room)
+                 :hold-reason (:schedule.activation/reason held)
+                 :active-occurrence (:schedule.activation/active-occurrence held)
+                 :explicit-retry retried}))))))))
 
 (defn -main [checkpoint]
   (let [target (#'restart/private-artifact! checkpoint)
         _ (check! (not (.exists target)) :no-overwrite)
-        calls (atom 0) mode (atom :success) forbidden? (atom false) entered (atom {}) passes (atom {})
+        calls (atom 0) mode (atom :success) forbidden? (atom false) funding-closed? (atom false)
+        entered (atom {}) passes (atom {})
         provider (codex/create {:credentials (gateway/static-credentials :fixture {} #{"https://chatgpt.com"})})]
     (reset! providers/providers {:codex-subscription provider})
     (alter-var-root #'gateway/*request-fn*
@@ -104,7 +140,7 @@
                       [#'work/submit-prepared! :submit] [#'resource/mint! :mint]]]
       (alter-var-root v (fn [original]
                          (fn [& args]
-                           (when @forbidden?
+                           (when (or @forbidden? (and (= label :mint) @funding-closed?))
                              (swap! entered update label (fnil inc 0))
                              (throw (AssertionError. "Failed activation acquired fresh work")))
                            (apply original args)))))
@@ -120,8 +156,8 @@
                               (throw error)))))))
     (binding [restart/*pass-receipts* passes]
       (try
-        (let [result (try (exercise! (#'restart/boot!) calls mode forbidden? entered passes)
+        (let [result (try (exercise! (#'restart/boot!) calls mode forbidden? funding-closed? entered passes)
                           (finally (#'restart/stop! (system-db/get-conn))))]
           (spit target (pr-str result))
-          (println :failure-diagnostic-completed (str target)))
+          (log/log! {:level :info :id ::failure-diagnostic-completed :data {:checkpoint (str target)}}))
         (finally (shutdown-agents))))))

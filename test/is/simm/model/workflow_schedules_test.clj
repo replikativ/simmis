@@ -62,6 +62,77 @@
           (is (nil? (schedules/occurrence conn nil)))
           (is (nil? (schedules/processing-proof conn nil))))))))
 
+(defn- with-failed-input [f]
+  (with-filed-input
+    (fn [{:keys [conn activation oid request] :as fixture}]
+      (schedules/mark-announced! conn oid)
+      (f (assoc fixture :activation (schedules/activation conn (:schedule.activation/id activation))
+                        :occurrence (schedules/occurrence conn oid)
+                        :outcome {:outcome :failed :candidate (random-uuid) :attempt-content (random-uuid)
+                                  :request-binding (dispositions/request-binding request)})))))
+
+(deftest certified-failure-atomically-holds-with-audit-and-never-processes-input
+  (with-failed-input
+    (fn [{:keys [conn activation oid occurrence outcome request]}]
+      (let [id (:schedule.activation/id activation)]
+        (schedules/fail-certified! conn activation occurrence outcome)
+        (let [held (schedules/activation conn id)
+              failed (schedules/occurrence conn oid)]
+          (is (false? (:schedule.activation/enabled? held)))
+          (is (= :execution-failed (:schedule.activation/reason held)))
+          (is (= oid (:schedule.activation/last-terminal-failure held)))
+          (is (nil? (:schedule.activation/active-occurrence held)))
+          (is (nil? (:schedule.activation/last-processed-input held)))
+          (is (= (:candidate outcome) (:schedule.occurrence/failed-candidate failed)))
+          (is (= (:attempt-content outcome) (:schedule.occurrence/failed-attempt-content failed)))
+          (is (= (:work.request/id request) (:schedule.occurrence/request failed)))
+          (is (nil? (schedules/processing-proof conn oid))))))))
+
+(deftest stale-resume-cannot-cross-failure-and-failure-replay-cannot-undo-fresh-resume
+  (with-failed-input
+    (fn [{:keys [conn activation occurrence outcome]}]
+      (let [id (:schedule.activation/id activation)]
+        ;; This is a resume whose inspection preceded failure's writer.
+        (schedules/fail-certified! conn activation occurrence outcome)
+        (is (thrown? Exception (schedules/resume-managed! conn activation)))
+        (is (false? (:schedule.activation/enabled? (schedules/activation conn id))))
+        ;; Only a fresh human inspection after failure can resume.
+        (let [held (schedules/activation conn id)]
+          (schedules/resume-managed! conn held)
+          (let [resumed (schedules/activation conn id)]
+            (is (true? (:schedule.activation/enabled? resumed)))
+            (schedules/fail-certified! conn activation occurrence outcome)
+            (is (= resumed (schedules/activation conn id)))
+            ;; A different failure generation must defeat a stale disabled
+            ;; snapshot, even if enabled/reason/active appear identical (ABA).
+            (d/transact conn [[:db/add [:schedule.activation/id id] :schedule.activation/enabled? false]
+                              [:db/add [:schedule.activation/id id] :schedule.activation/reason :execution-failed]
+                              [:db/add [:schedule.activation/id id] :schedule.activation/last-terminal-failure (random-uuid)]])
+            (is (thrown? Exception (schedules/resume-managed! conn held)))))))))
+
+(deftest resume-before-failure-still-ends-disabled
+  (with-failed-input
+    (fn [{:keys [conn activation occurrence outcome]}]
+      (schedules/resume-managed! conn activation)
+      (schedules/fail-certified! conn activation occurrence outcome)
+      (is (false? (:schedule.activation/enabled?
+                    (schedules/activation conn (:schedule.activation/id activation))))))))
+
+(deftest failure-writer-refuses-changed-bindings-without-clearing-or-processing
+  (doseq [field [:work.request/return-pending? :work.request/job :work.request/by
+                 :schedule.occurrence/request :schedule.occurrence/input-ref
+                 :schedule.activation/active-occurrence :schedule.activation/revision]]
+    (with-failed-input
+      (fn [{:keys [conn activation oid occurrence outcome request]}]
+        (let [entity (case (namespace field)
+                       "work.request" [:work.request/id (:work.request/id request)]
+                       "schedule.occurrence" [:schedule.occurrence/id oid]
+                       "schedule.activation" [:schedule.activation/id (:schedule.activation/id activation)])]
+          (d/transact conn [[:db/add entity field (if (= field :work.request/return-pending?) true (random-uuid))]])
+          (let [before @conn]
+            (is (thrown? Exception (schedules/fail-certified! conn activation occurrence outcome)) (str field))
+            (is (= before @conn))))))))
+
 (deftest knowledge-cursor-requires-the-already-durable-filing
   (with-filed-input
     (fn [{:keys [conn activation oid file! input-id]}]
