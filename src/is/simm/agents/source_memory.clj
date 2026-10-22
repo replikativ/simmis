@@ -8,6 +8,7 @@
             [dvergr.substrate.geschichte :as workspace]
             [geschichte.query :as query]
             [is.simm.agents.memory-read :as memory]
+            [is.simm.documents.execution-view :as execution-view]
             [is.simm.documents.view :as view]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.yggdrasil :as ygg]
@@ -60,7 +61,7 @@
                                     (:geschichte.repo/id (query/repository @conn))))
                      (throw (ex-info "Proposal belongs to a different source repository"
                                      {:type ::wrong-proposal-repository})))
-                   (view/current-view conn options)))))))))))
+                   (view/current-view conn (execution-view/selection-options system conn options))))))))))))
 
 (defn bindings [owner capability-id receipts policy]
   (memory/bindings (resolver owner capability-id receipts policy)))

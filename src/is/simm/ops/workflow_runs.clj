@@ -8,6 +8,7 @@
             [dvergr.catalog.workspace :as workspace]
             [dvergr.rooms.files :as files]
             [hasch.core :as hasch]
+            [is.simm.documents.execution-view :as execution-view]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.work :as work]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
@@ -130,9 +131,10 @@
   (let [prefix (str "/workflows/" name "/")
         digest (str (hasch/uuid entries))]
     (evaluation/make-world-setup
-     {:id :simmis/workflow-inputs :version (if collector? 2 1)
+     {:id :simmis/workflow-inputs :version (if collector? 3 1)
       :basis (cond-> {:name name :bundle (str (:id bundle)) :inputs digest :policy policy}
-               collector? (assoc :cleanup knowledge-workspace/cleanup-policy))
+               collector? (assoc :cleanup knowledge-workspace/cleanup-policy
+                                 :source-role execution-view/profile))
       :prepare
       (fn [{world :room}]
         ;; This is the RUN WORLD, never the source room. Replace the entire
@@ -147,6 +149,9 @@
           (when collector? (knowledge-workspace/clear-owned! world))
           (files/write! world edits {:message (str "Pin workflow " name " at " (:id bundle))}))
         (when (seq entries) (workspace/seed! world entries))
+        (when collector?
+          (binding [ec/*execution-context* (:ctx world)]
+            (execution-view/install! world)))
         {:bundle (str (:id bundle)) :inputs digest :files (count entries)
          :checker-executed? false :source-pinned? true})})))
 

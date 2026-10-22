@@ -10,6 +10,7 @@
             [is.simm.agents.source-memory :as source]
             [is.simm.agents.room-agents :as room-agents]
             [is.simm.documents.files :as files]
+            [is.simm.documents.execution-view :as execution]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.yggdrasil :as ygg]
             [sci.core :as sci]
@@ -36,6 +37,33 @@
                                :options {:schema-revision :source-memory-test-v1}} policy))
       {:capability-id cap})))
 
+(deftest execution-memory-reads-canonical-pages-not-duplicated-staging
+  (with-room
+    (fn [room]
+      (let [source (str "---\nsimmis-id: '" (random-uuid) "'\n---\n# Company\n")]
+        (files/save-file! room {:path "wiki/Company.md" :text source :expected nil})
+        (let [api (install! room {})
+              fork (ygg/fork!)]
+          (binding [ec/*execution-context* (:child-ctx fork)]
+            (let [conn (:conn (geschichte/current-workspace))]
+              (doseq [path ["in/knowledge/sources/wiki/Company.md" "out/wiki/Company.md"]]
+                (repo/write! conn path (.getBytes source "UTF-8"))))
+            (is (= :invalid (:status ((api 'documents)))))
+            (execution/install! {:ctx (:child-ctx fork)})
+            (is (= :ready (:status ((api 'documents)))))
+            (is (= #{"wiki/Company.md"} (set (map :path (:documents ((api 'documents)))))))
+            (is (nil? (:document ((api 'read) "out/wiki/Company.md")))))
+          (let [[a b] (ygg/copy-fork! fork 2)]
+            (try
+              (doseq [copy [a b]]
+                (binding [ec/*execution-context* (:child-ctx copy)]
+                  (is (= :ready (:status ((api 'documents)))))
+                  (is (= source (get-in ((api 'read) "wiki/Company.md") [:document :source])))))
+              (is (= :ready (:status ((api 'documents)))) "Ordinary parent stays unchanged")
+              (finally
+                (ygg/discard-fork! a)
+                (ygg/discard-fork! b)))))))))
+
 (deftest saved-read-selects-child-world-not-parents-proposal-and-never-writes
   (with-room
     (fn [room]
@@ -57,7 +85,7 @@
             (let [ws (geschichte/current-workspace)]
               (repo/write! (:conn ws) "a.md" (.getBytes "child" "UTF-8"))
               (is (= "child" (get-in (sci/eval-string* child-interpreter "(saved-read \"a.md\")")
-                                      [:document :source])))))
+                                     [:document :source])))))
           (is (= 1 @proposal-reads) "Child never consults the parent's global proposal overlay")
           (is (= "parent" (:text (files/read-file room "a.md"))))
           (finally (ygg/discard-fork! child) (ygg/discard-fork! proposal)))))))

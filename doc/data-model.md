@@ -154,6 +154,39 @@ candidate revision and diagnostics, not an actual-source selection or current
 view; `current?` explicitly refuses it. A valid preview is neither permission
 nor a publication receipt or lease on later schema changes.
 
+`documents.view/validate-changes` shares that pipeline for a bounded batch of
+Markdown creations and replacements. Each path carries exact `:expected`
+metadata, or nil for a creation. Creations must be absent from the complete
+worktree, including explicit/implicit directories and file ancestors; roots and
+exclusions do not certify physical absence. Unchanged selected Markdown still
+participates in relation, identity and uniqueness checks. Existing explicit
+page/block identities must survive a replacement. Candidate bytes remain in
+memory with no persisted content identity, source mutation or queryable DB.
+The `:changes-preview` result carries source selection, compiled-definition and
+constraint data plus candidate revisions, not authority or a complete native
+publication witness. `current?` refuses it. Publication still needs physical
+target binding and semantic validation against its exact guarded snapshot;
+checks of touched paths alone are insufficient. Canonical validity and identity
+preservation also do not guarantee preservation of optional properties,
+declarations or unknown frontmatter; automatic wiki adoption needs a separate
+conservative preservation policy. No adoption path is activated by this API.
+
+`ops.file-output-validation/prepare-in` is an INTERNAL read-only composition
+over retained exact file pairs and one fresh canonical destination. It repeats
+body/descriptor validation, checks complete prospective canonical validity and
+the versioned metadata-preservation policy, and returns bounded immutable host
+data without bodies, DB values, handles or functions. Fixed normal repository
+selection is used, never execution-world staging exclusions.
+`assert-after!` checks the physical target and prepares the complete actual
+AFTER source from the exact DB supplied by native publication. Touched metadata
+must equal retained outputs; untouched selected files, compiled-definition
+revisions and constraint dependencies must equal the fresh preflight. Only
+then does it return literal true. This data is neither authority nor proof of
+an earlier human review or unchanged agent admission context. Atomic native
+checkpoint enforcement, current authority, original publisher ACK ownership
+and historical duplicate-first recovery remain separate required boundaries.
+The helper does not activate the adoption controller or any public endpoint.
+
 `documents.property-source` is a separate pure token-replacement codec for
 existing scalar frontmatter leaves. It checks the exact source revision,
 uses the same bounded safe YAML policy as the Markdown parser, and converts

@@ -17,7 +17,18 @@
             [is.simm.ops.checkers :as checkers]
             [is.simm.ops.workflow-runs :as workflow-runs]
             [is.simm.ops.workflow-runs-test :as workflow-fixture]
-            [org.replikativ.spindel.engine.core :as ec]))
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.yggdrasil :as ygg]))
+
+(defn- with-execution-world [room f]
+  ;; Setup installs source roles only in a bound disposable world, just as the
+  ;; real evaluator does. Never weaken that guard to support a root fixture.
+  (binding [ec/*execution-context* (:ctx room)]
+    (let [fork (ygg/fork!)]
+      (try
+        (binding [ec/*execution-context* (:child-ctx fork)]
+          (f (assoc room :ctx (:child-ctx fork))))
+        (finally (ygg/discard-fork! fork))))))
 
 (defn- with-repository [f]
   (let [cfg {:store {:backend :memory :id (random-uuid)}
@@ -199,12 +210,16 @@
             prepared (workflow-runs/prepare-source snapshot request captured)]
         (binding [ec/*execution-context* (:ctx room)]
           (repo/write! (:conn (geschichte/current-workspace)) "inbox/a.md" (.getBytes "Later change" "UTF-8")))
-        ((:prepare (:world-setup prepared)) {:room room})
-        (is (= "Evidence at admission"
-               (:text (document-files/read-file room "in/knowledge/sources/inbox/a.md"))))
-        (is (nil? (get-in (document-files/metadata room {:folders [] :paths ["in/knowledge/sources/stale.md"]})
-                          [:entries "in/knowledge/sources/stale.md"])))
-        (is (= "Keep this" (:text (document-files/read-file room "unrelated.txt")))))
+        (with-execution-world room
+          (fn [world]
+            ((:prepare (:world-setup prepared)) {:room world})
+            (is (= "Evidence at admission"
+                   (:text (document-files/read-file world "in/knowledge/sources/inbox/a.md"))))
+            (is (nil? (get-in (document-files/metadata world {:folders [] :paths ["in/knowledge/sources/stale.md"]})
+                              [:entries "in/knowledge/sources/stale.md"])))
+            (is (= "Keep this" (:text (document-files/read-file world "unrelated.txt"))))))
+        (is (= "Not admitted" (:text (document-files/read-file room "in/knowledge/sources/stale.md"))))
+        (is (= "Later change" (:text (document-files/read-file room "inbox/a.md")))))
       (finally (discourse/close-room! room)))))
 
 (deftest publication-basis-binds-explicit-default-identity-without-upgrading-legacy-bases
@@ -306,13 +321,19 @@
           (workspace/ensure-workspace! room)
           (workspace/seed! room {"/in/knowledge/sources/not-in-case.md" "Stale"
                                  "/unrelated.txt" "Keep"})
-          ((:prepare setup) {:room room :environment {}})
-          (is (= "Case evidence" (:text (document-files/read-file room "in/knowledge/sources/inbox/a.md"))))
-          (is (nil? (get-in (document-files/metadata room {:folders [] :paths ["in/knowledge/sources/not-in-case.md"]})
-                            [:entries "in/knowledge/sources/not-in-case.md"])))
-          (is (= "Keep" (:text (document-files/read-file room "unrelated.txt"))))
-          ((:prepare setup) {:room fresh :environment {}})
-          (is (= "Case evidence" (:text (document-files/read-file fresh "in/knowledge/sources/inbox/a.md"))))
+          (with-execution-world room
+            (fn [world]
+              ((:prepare setup) {:room world :environment {}})
+              (is (= "Case evidence" (:text (document-files/read-file world "in/knowledge/sources/inbox/a.md"))))
+              (is (nil? (get-in (document-files/metadata world {:folders [] :paths ["in/knowledge/sources/not-in-case.md"]})
+                                [:entries "in/knowledge/sources/not-in-case.md"])))
+              (is (= "Keep" (:text (document-files/read-file world "unrelated.txt"))))))
+          (workspace/ensure-workspace! fresh)
+          (with-execution-world fresh
+            (fn [world]
+              ((:prepare setup) {:room world :environment {}})
+              (is (= "Case evidence" (:text (document-files/read-file world "in/knowledge/sources/inbox/a.md"))))))
+          (is (= "Stale" (:text (document-files/read-file room "in/knowledge/sources/not-in-case.md"))))
           (finally
             (try (discourse/close-room! fresh)
                  (finally (discourse/close-room! room)))))))))
