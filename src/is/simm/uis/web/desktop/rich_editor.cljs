@@ -12,6 +12,15 @@
 
 (defn- read-only? [^js el] (= "true" (.getAttribute el "data-read-only")))
 
+(defn- json-model [model]
+  ;; ProseMirror attributes use null-prototype objects. js->clj deliberately
+  ;; leaves those as native objects; a JSON boundary restores ordinary data
+  ;; before rich validation, equality checks and context-backed draft storage.
+  (js/JSON.parse (js/JSON.stringify model)))
+
+(defn- portable-model [model]
+  (js->clj (json-model model) :keywordize-keys true))
+
 (defn disconnect! [^js el]
   (when-let [^js editor (.-simmisRichEditor el)]
     (.destroy editor)
@@ -22,7 +31,7 @@
     (.dispatchEvent el
                     (js/CustomEvent. "input"
                                      #js {:bubbles true :composed true
-                                          :detail #js {:model (.getJSON editor)
+                                          :detail #js {:model (json-model (.getJSON editor))
                                                        :selection #js {:from (.. editor -state -selection -from)
                                                                        :to (.. editor -state -selection -to)}}}))))
 
@@ -57,7 +66,7 @@
       (try (case attribute
         "data-owner" (do (disconnect! el) (mount! el))
         "data-model" (when-not (= (rich/normalize (js->clj (data el) :keywordize-keys true))
-                                  (rich/normalize (js->clj (.getJSON editor) :keywordize-keys true)))
+                                  (rich/normalize (portable-model (.getJSON editor))))
                        ;; Authoritative source/rollback: a new editor also
                        ;; resets its native undo history.
                        (disconnect! el) (mount! el))
@@ -89,8 +98,8 @@
 
 (defn command! [event operation]
   (when-let [container (some-> (.-target event) (.closest ".memory-document, .memory-region-editor"))]
-    (when-let [el (.querySelector container "simmis-rich-editor:focus-within")]
-    (when-let [editor (.-simmisRichEditor el)]
+    (when-let [^js el (.querySelector container "simmis-rich-editor:focus-within")]
+    (when-let [^js editor (.-simmisRichEditor el)]
       (let [chain (.focus (.chain editor))]
         (case operation
           :bold (.run (.toggleBold chain))

@@ -232,7 +232,9 @@ external-process writes to a shared physical store are not a supported feed.
 Editor drafts, selections, request tokens, and read/mutation generations live
 in a session/room/column/tab-keyed Spindel signal. Native CodeMirror/Tiptap handles
 and download object URLs belong only to their DOM elements and are released
-on detach. Authenticated RPCs capture the principal before dispatching bounded
+on detach. ProseMirror JSON crosses a JSON-data boundary before ClojureScript
+conversion: its native attribute objects must not enter draft state or break
+controlled-model equality. Authenticated RPCs capture the principal before dispatching bounded
 store/parsing work off the FRP drain. Saves use the canonical Dvergr file
 writer's opened-revision precondition, effect gate, and applied entry receipt;
 a late pre-save read cannot replace a new save acknowledgement. A revoked

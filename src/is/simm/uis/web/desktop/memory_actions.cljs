@@ -582,6 +582,7 @@
        :focus-folder (fn [path] (update! assoc :focus-folder path :current-folder path :query "" :root-expanded? true) (folder! path))
        :rich-change (fn [path base-id from model selection]
                       (try (change! path editor/rich-changed base-id from model selection)
+                           (update! update :errors dissoc [:rich path])
                            (catch :default error (update! assoc-in [:errors [:rich path]] (rem/error-text error)))))
        :root (fn [] (update! assoc :current-folder "") (folder! ""))
        :mkdir (fn [path]
