@@ -104,7 +104,7 @@
         n (count (:entries manifest))]
     (proposals/prepare-filing
      {:id (:proposal plan) :title (str "Wiki update — " n " file" (when (not= 1 n) "s"))
-      :summary "Certified workflow output retained for review. Adoption is not yet available."
+      :summary "Mechanically certified workflow output retained for human review. Check current workspace compatibility before accepting; certification does not establish factual correctness."
       :author party :room room :run (:candidate disposition)
       :forks [{:scope (:id manifest) :authority-scope room
                :system-type :file-output :branch (str "files-" (:id manifest))

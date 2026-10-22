@@ -16,6 +16,7 @@
             [is.simm.model.crud :as crud]
             [is.simm.model.schema :as model-schema]
             [is.simm.model.store :as store]
+            [is.simm.starter.wiki-maintenance :as wiki]
             [kontor.governance :as governance]
             [kontor.schema :as accounting-schema]))
 
@@ -95,29 +96,36 @@
   "Pristine exclusive connection only. Seed and validate the whole starter wiki
    before its owner can publish a Room. Failure belongs to that bootstrap owner,
    never to an implicit migration or a retry of a partially initialized store."
-  [conn options bundle]
-  (profile! options)
-  (starter/verify! bundle)
-  (space/provision! conn)
-  (chat-schema/install-schema! conn)
-  (let [{:keys [files provenance]} (starter/adapt bundle (:geschichte.repo/id (query/repository @conn)))]
-    (doseq [[path text] files] (repo/write! conn path (markdown/source-bytes text)))
-    (repo/write! conn "code/starter-provenance.edn" (markdown/source-bytes (str (pr-str provenance) "\n"))))
-  (seed-files! conn)
-  (validate-foundation! @conn)
-  (let [prepared (view/prepare @conn selection-options)]
-    (when-not (= :ready (:status prepared)) (refuse! :invalid-starter-projection)))
-  (repo/stage-all! conn)
-  (repo/commit! conn {:message "Initialize knowledge workspace" :author "Simmis"})
-  conn)
+  ([conn options bundle] (initialize! conn options bundle (wiki/source)))
+  ([conn options bundle wiki-source]
+   (profile! options)
+   (starter/verify! bundle)
+   (space/provision! conn)
+   (chat-schema/install-schema! conn)
+   (let [{:keys [files provenance]} (starter/adapt bundle (:geschichte.repo/id (query/repository @conn)))]
+     (doseq [[path text] files] (repo/write! conn path (markdown/source-bytes text)))
+     (repo/write! conn "code/starter-provenance.edn" (markdown/source-bytes (str (pr-str provenance) "\n"))))
+   (seed-files! conn)
+  ;; Exclusive NEW repository only. Reopening never reinstalls defaults or
+  ;; overwrites customized/deleted workflow files.
+   (doseq [[path text] wiki-source]
+     (repo/write! conn (str "workflows/" wiki/name "/" path) (markdown/source-bytes text)))
+   (validate-foundation! @conn)
+   (let [prepared (view/prepare @conn selection-options)]
+     (when-not (= :ready (:status prepared)) (refuse! :invalid-starter-projection)))
+   (repo/stage-all! conn)
+   (repo/commit! conn {:message "Initialize knowledge workspace" :author "Simmis"})
+   conn))
 
 (defn policies
   "Closed HOST map over already-owned immutable bundle data. Acquire/verify the
    packaged resource BEFORE Room intent. Never accept bundles from transports;
    hosts supplying a custom bundle own its source-provenance claim."
   [bundle]
-  (let [bundle (starter/verify! bundle)]
-    {space/profile {:initialize! (fn [conn options] (initialize! conn options bundle)) :prepare-open! prepare-open!
+  (let [bundle (starter/verify! bundle)
+        ;; Acquire fixed bounded resources BEFORE durable Room intent.
+        wiki-source (wiki/source)]
+    {space/profile {:initialize! (fn [conn options] (initialize! conn options bundle wiki-source)) :prepare-open! prepare-open!
                   ;; Exclusive unpublished initialization only; no async worker
                   ;; is started above. This synchronous detach is idempotent.
                     :abort-create! (fn [conn _] (governance/ungovern! conn))}}))

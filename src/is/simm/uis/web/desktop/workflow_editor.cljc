@@ -40,6 +40,25 @@
 
 (defn dirty? [draft] (not= (:files draft) (get-in draft [:source :files])))
 
+(defn observe-wiki-setup [state reply]
+  (let [status (if (and (= "maintain-wiki" (:name reply)) (= :unchanged (:activation reply))
+                        (= :current-source (:observation reply))
+                        (#{:missing :installed :customized} (:status reply)))
+                 (:status reply) :unavailable)]
+    (if (get-in state [:wiki-setup :uncertain?])
+      (assoc-in state [:wiki-setup :observed-status] status)
+      (assoc state :wiki-setup {:status status}))))
+
+(defn begin-wiki-setup [state]
+  (assoc state :wiki-setup {:status :pending :uncertain? true}))
+
+(defn acknowledge-wiki-setup [state reply]
+  ;; Missing source after an uncertain write is NOT permission to replay it.
+  (if (and (= "maintain-wiki" (:name reply)) (= :unchanged (:activation reply))
+           (= :acknowledged (:observation reply)) (#{:installed :customized} (:status reply)))
+    (assoc state :wiki-setup {:status (:status reply)})
+    (assoc state :wiki-setup {:status :pending :uncertain? true})))
+
 (defn reloaded [old source]
   (merge (draft source) (select-keys old [:submission :schedule-submission :fund-request :fund-backend :funded? :fund-reply])))
 
@@ -48,6 +67,37 @@
    from knowingly issuing fresh work against an unverified or changed source."
   [draft]
   (and (not (:source-stale? draft)) (nil? (:incoming-source draft))))
+
+(defn collectable-output-request
+  "Pinned submission presentation, not current source or form settings.
+   The server independently checks the actual canonical request and Attempt."
+  [draft]
+  (let [submission (:submission draft) reply (:reply submission)]
+    (when (and (= "run" (:mode submission)) (= "hosted" (:backend submission "hosted")) (:knowledge? submission)
+               (= :workflow (:kind reply)) (:id reply) (:job reply))
+      (str (:id reply)))))
+
+(defn apply-output-result [draft request-id reply]
+  (if (not= request-id (collectable-output-request draft))
+    draft
+    (assoc draft :wiki-output
+           (if (and (= request-id (:request reply))
+                    (or (= :no-op (:status reply))
+                        (and (= :proposed (:status reply)) (string? (:proposal reply)))))
+             (select-keys reply [:status :request :proposal])
+             {:status :unavailable :request request-id}))))
+
+(defn collected-output [draft]
+  (when-let [request-id (collectable-output-request draft)]
+    (when (= request-id (get-in draft [:wiki-output :request])) (:wiki-output draft))))
+
+(defn acknowledge-output
+  "Keep a sealed result receipt even when its own filing invalidates metadata.
+   No source, permissions or missing/replaced draft may be restored by this ACK."
+  [state name request-id reply]
+  (if (contains? (:drafts state) name)
+    (update-in state [:drafts name] apply-output-result request-id reply)
+    state))
 
 (defn unverified [draft]
   (assoc draft :source-stale? true))

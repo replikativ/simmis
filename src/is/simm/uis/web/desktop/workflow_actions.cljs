@@ -10,6 +10,7 @@
             [is.simm.uis.web.desktop.memory-remote :as memory-remote]
             [is.simm.uis.web.desktop.workflows-remote :as remote]
             [is.simm.uis.web.desktop.remote :as rem]
+            [is.simm.uis.web.desktop.refs :as refs]
             [is.simm.runtimes.web :as web]))
 
 (defn state-key [room] [(:id (web/current-session)) (str room)])
@@ -121,6 +122,10 @@
                             (fn [s reply] (-> s (assoc :list reply :permissions (:permissions reply))
                                               (update :errors dissoc :list)))
                             (fn [s error] (-> s (dissoc :permissions :list) (assoc-in [:errors :list] error))))
+                  (observe! :wiki-setup generation
+                            #(remote/inspect-wiki-maintenance-setup! web/server-id room)
+                            editor/observe-wiki-setup
+                            (fn [s _] (editor/observe-wiki-setup s {:status :unavailable})))
                   (when (and selected
                              (not (get-in (state) [:loading [:save selected]]))
                              (not (get-in (state) [:loading [:source selected]])))
@@ -211,7 +216,10 @@
                                             "Only pinned workflow/source inputs reach the local guest. Completion is not a correctness check; nothing auto-merges."
                                             "The Run inherits room files. Frozen workflow/source inputs appear in its proposed diff. Completion is not a correctness check; nothing auto-merges.")))))
                       (throw (js/Error. "Submission cancelled")))
-                    (change! name assoc :submission (if retry? pending {:payload payload :mode mode :backend backend}))
+                    (change! name assoc :submission
+                             (if retry? pending
+                                 {:payload payload :mode mode :backend backend
+                                  :knowledge? (contains? (get-in draft [:source :files]) "input-selection.edn")}))
                     (request! :submit name
                               #((submitter backend mode) web/server-id room payload)
                               (fn [s reply] (assoc-in s [:drafts name :submission :reply] (dissoc reply :permissions)))
@@ -238,6 +246,28 @@
                                   (-> s (assoc-in [:drafts name :schedule-submission :reply] (dissoc reply :permissions))))
                                 (fn [s reply] (assoc-in s [:drafts name :schedule-submission :reply] (dissoc reply :permissions)))))))
                 (catch :default error (update! assoc-in [:errors :schedule] (rem/error-text error)))))
+            (inspect-setup! []
+              (request! :wiki-setup-inspect nil
+                        #(remote/inspect-wiki-maintenance-setup! web/server-id room)
+                        editor/observe-wiki-setup))
+            (install-setup! []
+              (when (and (= :missing (get-in (state) [:wiki-setup :status]))
+                         (not (:access-denied? (state)))
+                         (confirm! "Install the wiki maintenance workflow in this room? This changes only the empty starter workflow folder. It does not choose a model, fund work, enable a schedule or merge any output."))
+                (update! editor/begin-wiki-setup)
+                (request! :wiki-setup-install nil
+                          #(remote/install-wiki-maintenance! web/server-id room)
+                          editor/acknowledge-wiki-setup editor/acknowledge-wiki-setup)))
+            (collect-output! [name]
+              (when-let [request-id (editor/collectable-output-request (get-in (state) [:drafts name]))]
+                (when-not (get-in (state) [:loading [:output name]])
+                  (let [acknowledge #(editor/acknowledge-output %1 name request-id %2)]
+                    ;; Filing publishes a control/room hint before its own ACK.
+                    ;; Retain only that request's receipt across invalidation;
+                    ;; request! still fences changed sessions/rosters and drops
+                    ;; permissions and source verification on the stale path.
+                    (request! :output name #(remote/collect-workflow-wiki-output! web/server-id room request-id)
+                              acknowledge acknowledge)))))
             (fund! [name]
               (try
                 (when (get-in (state) [:loading [:fund name]])
@@ -279,6 +309,12 @@
                      (select! name (nil? (get-in (state) [:drafts name])) true)
                      (update! assoc-in [:errors :source] "Use a lowercase workflow name with letters, digits and dashes (max64)."))))
        :owner k :change change! :save save! :submit submit! :fund fund! :schedule schedule!
+       :collect-output collect-output!
+       :inspect-wiki-setup inspect-setup! :install-wiki-setup install-setup!
+       :open-proposal (fn [proposal]
+                        (binding [ec/*execution-context* ctx]
+                          (when (web/current-session? session)
+                            (refs/open! {:kind :proposal :id proposal}))))
        :open-run (fn [job]
                    (binding [ec/*execution-context* ctx]
                      (when (web/current-session? session)

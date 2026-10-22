@@ -22,7 +22,8 @@
   "Return the shipped source files relative to /workflows/maintain-wiki/.
    Fixed classpath resources only: no discovery, external paths, room writes,
    schedule creation, model selection or allowance. Call the existing owned
-   workflow writer explicitly to install; never overwrite user edits implicitly."
+   workflow writer for existing rooms, or the exclusive new-repository
+   initializer; never overwrite user edits implicitly."
   []
   (:files
    (reduce (fn [{:keys [files size]} path]

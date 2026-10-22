@@ -46,12 +46,14 @@ jobs:
             clojure-${{ runner.os }}-
 
       - name: Install audio and MCP helper dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg python3
+        timeout-minutes: 5
+        run: bash scripts/install-test-helpers.sh
+
+      - name: Prepare backend dependencies
+        run: clojure -X:deps prep
 
       - name: Run backend tests
-        run: |
-          clojure -X:deps prep
-          clojure -X:test
+        run: clojure -X:test :reporter kaocha.report/documentation
 
   helper-tests:
     runs-on: ubuntu-latest

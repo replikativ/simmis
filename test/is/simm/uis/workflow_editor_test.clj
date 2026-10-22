@@ -6,6 +6,61 @@
              :definition {:params {:goal "old default"}}
              :inspection {:ok true :bundle "bundle" :cases []}})
 
+(deftest wiki-setup-is-isolated-from-editor-intent-and-uncertainty-is-sticky
+  (let [state {:selected "other" :drafts {"other" (assoc (editor/draft source) :files {"a" "unsaved"})}}
+        observation {:status :missing :name "maintain-wiki" :activation :unchanged :observation :current-source}
+        observed (editor/observe-wiki-setup state observation)
+        pending (editor/begin-wiki-setup observed)
+        checked (editor/observe-wiki-setup pending observation)
+        reply (assoc observation :status :installed :observation :acknowledged :permissions {:write? true})
+        acknowledged (editor/acknowledge-wiki-setup checked reply)]
+    (is (= :missing (get-in observed [:wiki-setup :status])))
+    (is (= :pending (get-in checked [:wiki-setup :status])))
+    (is (= :missing (get-in checked [:wiki-setup :observed-status])))
+    (is (= :installed (get-in acknowledged [:wiki-setup :status])))
+    (is (= state (dissoc acknowledged :wiki-setup)))
+    (is (= pending (editor/acknowledge-wiki-setup pending {:status :unavailable})))
+    (is (= :unavailable (get-in (editor/observe-wiki-setup state reply) [:wiki-setup :status])))))
+
+(deftest wiki-output-belongs-to-the-original-submission-not-the-edited-form
+  (let [id (str (random-uuid)) proposal (str (random-uuid))
+        draft {:submission {:mode "run" :knowledge? true
+                            :reply {:id id :kind :workflow :job (random-uuid)}}
+               :form {:mode "benchmark"}}
+        reply {:status :proposed :request id :proposal proposal :native-handle :secret}]
+    (is (= id (editor/collectable-output-request draft)))
+    (is (= (dissoc reply :native-handle) (:wiki-output (editor/apply-output-result draft id reply))))
+    (is (= (dissoc reply :native-handle) (editor/collected-output (editor/apply-output-result draft id reply))))
+    (is (nil? (editor/collected-output (assoc-in (editor/apply-output-result draft id reply)
+                                                 [:submission :reply :id] (str (random-uuid))))))
+    (is (= draft (editor/apply-output-result draft (str (random-uuid)) reply)))
+    (is (= :unavailable (get-in (editor/apply-output-result draft id (assoc reply :request "other"))
+                                [:wiki-output :status])))
+    (doseq [ineligible [(assoc-in draft [:submission :mode] "benchmark")
+                        (assoc-in draft [:submission :backend] "local")
+                        (assoc-in draft [:submission :knowledge?] false)
+                        (update-in draft [:submission :reply] dissoc :job)
+                        (assoc-in draft [:submission :reply :kind] :benchmark)]]
+      (is (nil? (editor/collectable-output-request ineligible))))))
+
+(deftest own-filing-invalidation-keeps-only-the-exact-result-receipt
+  (let [id (str (random-uuid))
+        draft {:source-stale? true :source source :files (:files source)
+               :submission {:mode "run" :knowledge? true
+                            :reply {:id id :kind :workflow :job (random-uuid)}}}
+        state {:drafts {"memory" draft "other" {:files {"a" "unsaved"}}}}
+        reply {:status :proposed :request id :proposal (str (random-uuid))
+               :permissions {:merge? true} :source :untrusted}
+        acknowledged (editor/acknowledge-output state "memory" id reply)]
+    (is (= (select-keys reply [:status :request :proposal])
+           (get-in acknowledged [:drafts "memory" :wiki-output])))
+    (is (true? (get-in acknowledged [:drafts "memory" :source-stale?])))
+    (is (not (contains? acknowledged :permissions)))
+    (is (= source (get-in acknowledged [:drafts "memory" :source])))
+    (is (= (get-in state [:drafts "other"]) (get-in acknowledged [:drafts "other"])))
+    (is (= state (editor/acknowledge-output state "memory" (str (random-uuid)) reply)))
+    (is (= {} (editor/acknowledge-output {} "memory" id reply)))))
+
 (deftest recurring-deployments-retain-the-inspected-execution-intent
   (let [draft (-> (editor/draft source) (assoc-in [:form :model] "explicit-model")
                   (assoc-in [:form :schedule-minutes] "60")

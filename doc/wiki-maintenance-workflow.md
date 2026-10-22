@@ -4,8 +4,11 @@ The version-1 starter is source data returned by
 `is.simm.starter.wiki-maintenance/source`. It contains the files for
 `/workflows/maintain-wiki/`, not a second agent, scheduler or resource ledger.
 Loading it does not install anything, choose a model, allocate money or enable
-a schedule. Installation must use the existing authorized owned-workflow writer
-and preserve user edits. Automatic installation is a separate integration step.
+a schedule. Installation into an existing room uses the authorized owned-
+workflow writer and preserves user edits. An exclusive new canonical repository
+initializer also includes these same ordinary files before its initial commit
+and Room publication; reopen never reinstalls them. Personal alpha bootstrap
+creates new canonical spaces this way, without enabling or funding execution.
 
 `is.simm.starter.install-wiki/install!` is an explicit HOST-only inactive
 installer for a selected canonical personal/project/group room. It uses the
@@ -109,10 +112,56 @@ customer facts into a real scheduled Run.
 
 ## Current integration boundaries
 
+### Explicit inactive setup
+
+Workflows observes whether an eligible canonical workspace has the exact shipped
+maintainer, a customized version, or no files in its named subtree. An owner can
+choose **Set up wiki maintenance** for an empty subtree. Existing customized
+source is preserved and can be opened in the ordinary editor; setup never
+switches away from or replaces an unsaved draft automatically.
+
+The fixed browser service holds application lifetime, checks current human room
+read/write/admin authority before hydration, then holds the exact native Room
+lifetime before inspecting its canonical repository or calling the installer.
+Nested installer/authoring lookups reuse that leased Room; a changed UUID/slug
+mapping refuses before any newly selected repository is inspected.
+It does not require or confer room merge authority. A profile marker establishes
+repository eligibility, not that all documents are valid.
+
+Inspection describes current saved source, not an earlier write acknowledgement.
+An acknowledged setup result may be an exact-source or customization decision;
+it does not necessarily represent a native write.
+An uncertain setup remains pending: **Check saved setup** only observes source
+and cannot replay installation, even if the subtree still appears empty. No
+model, allowance, enabled schedule or automatic adoption is part of setup.
+
+### Manual output collection
+
+For a newly submitted hosted knowledge workflow, Workflows offers **Review wiki
+output** beside the Run result. Use it after the Run finishes. The action reads
+the original canonical request and its direct certified Attempt, retains the
+exact output, and links an ordinary Proposal. It does not run the checker source,
+repeat inference, recapture today's inputs, or accept the proposed files. A
+verified empty output is reported as no wiki changes, not an empty Proposal.
+
+An unfinished or uncertified Run, revoked permission, a benchmark request, or an
+unavailable historical source is not a reviewable result. Collection may be
+retried: an existing immutable disposition and reserved chat message are reused,
+never a new Job. Inspect the resulting Proposal, check it against the current
+workspace, and explicitly accept its reviewed files. Mechanical certification
+does not establish that the content is factually correct.
+
+This browser action requires the original request author and current room merge
+permission. It is not added to existing signed MCP capabilities. Local-worker
+output certification remains a separate integration; this control is not offered
+for local-worker or benchmark submissions. Existing scheduled knowledge requests
+already use the same filing helper automatically. Neither path advances an
+adopted-memory watermark merely by filing a Proposal.
+
 Canonical prospective validation, preservation and exact AFTER snapshot guards
 support explicit reviewed file-only acceptance. Processed input, a filed
-proposal and an adopted result remain distinct. The installer
-does not participate in automatic personal workspace provisioning. It neither
+proposal and an adopted result remain distinct. The installer is separate from
+exclusive new-repository initialization. Neither path
 configures an admitted model and finite allowance nor enables a schedule. The
 mechanical fixture checks are not actual-model quality measurements.
 

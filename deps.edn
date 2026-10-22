@@ -436,9 +436,10 @@
                                ;; prepared-snapshot publication validation.
                                ;; #388 physically owns HOST Room operations and
                                ;; configured embedding lifetimes through exit.
+                               ;; #389 records personal room type atomically.
                                ;; Permanent reviewed, green main squash.
                                ;; Adopt only in a fresh runtime, never hot reload.
-                               :git/sha "6bdb19fa93fbfa369be4c9b57f05916b37af417b"
+                               :git/sha "f2e76ac6d6030e0d36201f075e6edf930b810efa"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.

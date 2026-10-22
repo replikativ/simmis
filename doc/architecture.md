@@ -42,6 +42,22 @@ to interleave their admission/publication with a file move or another save.
 Definition creation and arbitrary schema publication are not part of this
 control: Geschichte proposals transfer files, not arbitrary schema datoms.
 
+Personal-workspace bootstrap has a separate HOST coordinator in
+`model.personal-rooms`. It selects an existing default by ownership, never by
+membership in somebody else's personal room. Existing legacy rooms remain
+unchanged. Ambiguous defaults and partially marked provisioning are recovery
+problems, not invitations to create another room. A new personal workspace has
+its native type recorded in the original pending intent; canonical preparation
+precedes membership publication. New canonical projects and personal spaces
+include the ordinary editable `workflows/maintain-wiki/` bundle in their clean
+initial commit. Reopening never reinstalls edited or deleted defaults.
+
+This bootstrap is used by alpha account initialization and is not a public
+provisioning RPC. It creates no workflow activation, work request, model grant
+or room spending allowance. Legacy default-KB creation/attachment remains a
+separate compatibility data/API path; this does not migrate those contents to
+Markdown or prove immediate legacy-tool mounting after a live attachment.
+
 The experimental source-selected knowledge view derives semantic document/block
 rows from one immutable Geschichte snapshot without writing a second repository.
 Its default selection includes root and nested Markdown, with trusted exact folder

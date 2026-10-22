@@ -7,6 +7,7 @@
             [is.simm.documents.space :as space]
             [is.simm.documents.starter-bundle :as starter]
             [is.simm.documents.view :as view]
+            [is.simm.starter.wiki-maintenance :as wiki]
             [kontor.book :as book]
             [kontor.governance :as governance]))
 
@@ -27,7 +28,8 @@
       (let [before @conn prepared (view/prepare before profile/selection-options)]
         (is (= :ready (:status prepared)) (pr-str (:diagnostics prepared)))
         (is (= (into #{"wiki/Welcome.md" "wiki/People/Founder.md" "wiki/Company.md" "code/welcome.clj" "code/starter-provenance.edn"}
-                     (keys (:files (starter/read-packaged!))))
+                     (concat (keys (:files (starter/read-packaged!)))
+                             (map #(str "workflows/" wiki/name "/" %) (keys (wiki/source)))))
                (set (keys (repo/worktree conn)))))
         (is (= 0 (d/q '[:find ?value . :where [_ :S.Company/revenue ?value]] (:db prepared))))
         (is (= false (d/q '[:find ?value . :where [_ :S.Research/active ?value]] (:db prepared))))
@@ -73,3 +75,14 @@
         (is (= before @conn)))
       (repo/write! conn "wiki/Broken.md" (markdown/source-bytes (str "---\nsimmis-id: '" (random-uuid) "'\n---\n# Repaired\n")))
       (is (= :ready (:status (view/prepare @conn profile/selection-options)))))))
+
+(deftest reopening-never-reinstalls-edited-or-deleted-default-workflow-files
+  (with-store
+    (fn [conn]
+      (profile/initialize! conn options (starter/read-packaged!))
+      (repo/write! conn "workflows/maintain-wiki/workflow.edn" (markdown/source-bytes "{:custom true}\n"))
+      (repo/remove! conn "workflows/maintain-wiki/checker.clj")
+      (let [before @conn]
+        (with-redefs [wiki/source (fn [] (throw (AssertionError. "No packaged defaults during reopen")))]
+          (is (identical? conn (profile/prepare-open! conn options))))
+        (is (= before @conn))))))

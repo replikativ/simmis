@@ -6,6 +6,7 @@
             [dvergr.room.registry :as registry]
             [dvergr.agent.room-context :as working]
             [dvergr.chat.context :as chat]
+            [dvergr.chat.schema :as chat-schema]
             [dvergr.substrate.geschichte :as repository]
             [dvergr.substrate.paths :as paths]
             [dvergr.system.db :as control]
@@ -14,10 +15,14 @@
             [is.simm.documents.profile :as profile]
             [is.simm.documents.starter-bundle :as starter]
             [is.simm.documents.view :as view]
+            [is.simm.documents.files :as files]
             [is.simm.model.knowledge-rooms :as rooms]
+            [is.simm.model.personal-rooms :as personal]
+            [is.simm.model.rooms :as room-model]
             [is.simm.model.store :as store]
             [is.simm.model.system-db :as system-db]
             [is.simm.runtimes.context :as server]
+            [is.simm.starter.wiki-maintenance :as wiki]
             [kontor.governance :as governance]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
@@ -54,6 +59,10 @@
              (try
                (d/transact conn (vec (vals (into {} (map (juxt :db/ident identity))
                                                  (concat control/schema system-db/schema)))))
+               ;; Match the owning production system-db initialization: actor
+               ;; lookups and actual assistant creation require the actor core,
+               ;; not merely the Simmis extension and native registry schema.
+               (chat-schema/ensure-full-schema! conn)
                (f {:conn conn :root root :errors errors})
                (finally
                  (when (seq @errors)
@@ -134,6 +143,32 @@
              (swap! errors #(if (contains? % id) % (assoc % id error)))
              (throw error)))
          (is (identical? root server/server-context)))))))
+
+(deftest personal-birth-publishes-canonical-memory-and-an-inactive-ordinary-workflow
+  (fixture
+   (fn [{:keys [conn]}]
+     (let [owner (random-uuid)]
+       (d/transact conn [{:party/id owner :party/type :human}])
+       (let [room (personal/ensure! owner "Ada") id (:room/id room)
+             ctx (native/room-ctx-for id)
+             source (binding [ec/*execution-context* ctx] (:conn (repository/current-system)))
+             initial @source
+             assistants (room-model/get-room-agents id)]
+         (is (= :personal-ai (:room/type room)))
+         (is (= (str "personal-" owner) (:room/slug room)))
+         (is (= :ready (:room/provisioning-state (d/entity @conn [:room/id id]))))
+         (is (= :ready (:status (view/prepare @source profile/selection-options))))
+         (is (true? (:clean? (repo/status source))))
+         (doseq [[path text] (wiki/source)]
+           (is (= text (:text (files/read-file-in @source (str "workflows/" wiki/name "/" path))))))
+         (is (= 1 (count assistants)))
+         (is (= owner (get-in (first assistants) [:party/owner :party/id])))
+         (is (empty? (d/datoms @conn :aevt :schedule.activation/id)))
+         (is (empty? (d/datoms @conn :aevt :work.request/id)))
+         (is (nil? (:room/budget-dollars (d/entity @conn [:room/id id]))))
+         (is (= id (:room/id (personal/ensure! owner "Ada"))))
+         (is (= assistants (room-model/get-room-agents id)))
+         (is (= initial @source) "Repeated ensure does not reinstall or transact on wiki source"))))))
 
 (deftest failed-messages-installation-never-publishes-membership
   (fixture

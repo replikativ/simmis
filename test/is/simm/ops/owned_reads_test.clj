@@ -13,6 +13,7 @@
             [is.simm.documents.files :as documents]
             [is.simm.authority.world :as world]
             [is.simm.model.system-db :as system-db]
+            [is.simm.model.access :as access]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.owned-mcp-test :as fixture]
             [is.simm.ops.owned-reads :as reads]
@@ -175,6 +176,47 @@
          (is (= [(:room w) (:room w)] @hydrations))
          (is (= selected (workspace/selected-system-id)))
          (is (= before (snapshot owned))) (is (= other (snapshot attached))))))))
+
+(deftest leased-installation-refuses-a-mapping-switch-before-target-io
+  (@#'fixture/with-fixture
+   true
+   (fn [{:keys [conn w host room]}]
+     (let [p (ops/party-principal (:owner w)) handle (str (:room w))
+           resolved (reads/resolve-host-install-room! host p handle)
+           leased-host (assoc host ::reads/install-room-binding resolved)
+           calls (atom 0) forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "No new Room or target IO")))]
+       (with-redefs [rooms/live-room forbidden owned/resolve! forbidden]
+         (doseq [malformed [nil false {} (dissoc resolved :room)]]
+           (is (thrown? Exception
+                        (reads/resolve-host-install! (assoc host ::reads/install-room-binding malformed) p handle)))))
+       (d/transact conn [{:room/id (:room w) :room/slug "switched-after-room-lease"}])
+       (with-redefs [rooms/live-room forbidden owned/resolve! forbidden]
+         (is (thrown? Exception (reads/resolve-host-install! leased-host p handle)))
+         (is (thrown? Exception (reads/validate-host-install! leased-host p handle {:room room}))))
+       (is (zero? @calls))))))
+
+(deftest installation-room-gate-does-not-borrow-merge-permission
+  (@#'fixture/with-fixture
+   true
+   (fn [{:keys [w host room hydrations]}]
+     (let [principal (ops/party-principal (:owner w)) handle (str (:room w))
+           can? access/can? actions (atom [])]
+       (with-redefs [access/can? (fn [db party action resource]
+                                 (swap! actions conj action)
+                                 (and (not= :merge action) (can? db party action resource)))]
+         (let [resolved (reads/resolve-host-install-room! host principal handle)]
+           (is (identical? room (:room resolved)))
+           (is (identical? room (:room (reads/validate-host-install-room! host principal handle resolved))))
+           (is (not-any? #{:merge} @actions))
+           (is (every? (set @actions) [:read :write :admin])))
+         (let [before @hydrations]
+           (is (thrown? Exception (reads/resolve-host-room! host principal handle)))
+           (is (= before @hydrations)))
+         (doseq [p [(ops/party-principal (:member w))
+                    (assoc principal :principal/kind :agent)]]
+           (let [before @hydrations]
+             (is (thrown? Exception (reads/resolve-host-install-room! host p handle)))
+             (is (= before @hydrations)))))))))
 
 (deftest room-only-requires-human-read-and-merge-before-hydration
   (@#'fixture/with-fixture
