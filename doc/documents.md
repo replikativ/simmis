@@ -53,6 +53,12 @@ diagnostic instead of a guessed repair. Typed projection requires explicit
 trusted schema bindings as described below. Syntax projection and source sizes
 are bounded; exceeding a limit is an explicit refusal.
 
+Syntax profile version 3 treats exactly one initial UTF-8 BOM as an immutable
+prefix, even without frontmatter. Syntax spans remain absolute UTF-16 offsets
+into the unchanged original source; noninitial U+FEFF remains ordinary text.
+Disposable views include the profile in their fingerprint and must be rebuilt
+when it changes; no source rewrite or storage migration is performed.
+
 The syntax profile pins Flexmark 0.64.8 with explicit table, task-list,
 strikethrough, footnote and wikilink/embed extensions. It preserves heading
 levels, task state and table-cell alignment. `references` extracts body
@@ -87,8 +93,11 @@ token and display label. The key is not a persistent knowledge-block ID. Client
 composition and host publication independently check tokens against the frozen
 source-region baseline before normalization: removal and relocation within one
 region are permitted; fabricated, duplicated and foreign-region tokens are not.
-Serialization round-trip comparison ignores only the local span key, after this
-validation. HTML cannot import those keys, and attribute text counts toward the
+After this validation, serialization round-trip comparison ignores the local
+span key and empty root paragraphs representing Markdown blank-line layout;
+nested empty paragraphs and significant token/text structure remain intact.
+Ordinary editor echo equality still retains provenance and layout. HTML cannot
+import those keys, and attribute text counts toward the
 bounded model budget. Parsing and rich editing do not fetch references or execute
 code.
 

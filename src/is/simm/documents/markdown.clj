@@ -24,7 +24,7 @@
 
 (def syntax-profile
   "Pinned syntax projection, not a claim of complete Obsidian/plugin support."
-  {:id :simmis/markdown-syntax :version 2 :parser "flexmark/0.64.8"
+  {:id :simmis/markdown-syntax :version 3 :parser "flexmark/0.64.8"
    :features #{:tables :tasks :strikethrough :footnotes :wikilinks :wiki-embeds}})
 
 (defn- parser []
@@ -151,7 +151,10 @@
   [source]
   (let [id (revision source)
         fm (frontmatter source)
-        offset (or (:to fm) 0)
+        ;; An initial UTF-8 BOM belongs to the immutable file prefix, not the
+        ;; first paragraph. Keep absolute source coordinates. Unclosed
+        ;; frontmatter's explicit :to 0 retains its source-only diagnostics.
+        offset (or (:to fm) (when (.startsWith ^String source "\uFEFF") 1) 0)
         tree (.parse (parser) (subs source offset))
         ;; Per-call traversal budget; never a registry or shared editor state.
         remaining (volatile! max-syntax-nodes)]

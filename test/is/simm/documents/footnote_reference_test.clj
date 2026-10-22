@@ -85,6 +85,45 @@
     (is (= (rich/roundtrip-normalize a) (rich/roundtrip-normalize same-text)))
     (is (thrown? clojure.lang.ExceptionInfo (rich/validate-provenance! a same-text)))))
 
+(deftest blank-root-layout-and-footnote-location-have-independent-normalization
+  (let [baseline (rich/model (paragraph "Before[^one].\n"))
+        blank {:type "paragraph" :content []}
+        padded (update baseline :content #(vec (concat [blank] % [blank])))
+        nested {:type "doc"
+                :content [{:type "bulletList"
+                           :content [{:type "listItem"
+                                      :content [blank (first (:content baseline))]}]}]}]
+    (is (= padded (rich/validate-provenance! baseline padded)))
+    (is (not= (rich/normalize baseline) (rich/normalize padded)))
+    (is (= (rich/roundtrip-normalize baseline) (rich/roundtrip-normalize padded)))
+    (is (= blank (get-in (rich/roundtrip-normalize nested) [:content 0 :content 0 :content 0]))
+        "Nested empty paragraphs remain structural, not root blank-line layout")
+    (is (= "[^one]" (get-in (first (refs (rich/roundtrip-normalize nested))) [:attrs :raw])))
+    (is (nil? (get-in (first (refs (rich/roundtrip-normalize nested))) [:attrs :sourceKey])))
+    (is (some? (get-in (first (refs (rich/normalize nested))) [:attrs :sourceKey]))
+        "Ordinary echo equality must retain provenance")))
+
+(deftest joined-host-edit-preserves-references-and-definitions-through-blank-layout
+  (doseq [newline ["\n" "\r\n"]]
+    (let [source (str "﻿First[^ method ]." newline newline "Second." newline newline
+                      "[^ method ]: Definition **stays exact**." newline)
+          analysis (files/analyze repository path source)
+          slots (vec (take 2 (filter :model (:slots analysis))))
+          baseline {:type "doc" :content (vec (mapcat #(get-in % [:model :content]) slots))}
+          blank {:type "paragraph" :content []}
+          edited {:type "doc" :content [blank (first (:content baseline)) blank
+                                        (second (:content baseline)) blank]}
+          local (document/apply-run source slots edited)
+          result (host/apply-edit repository path source (:revision analysis)
+                                  (:from (first slots)) (:to (peek slots)) edited)]
+      (is (= 2 (count slots)))
+      (is (= local result))
+      (is (str/starts-with? result "﻿"))
+      (is (= 1 (count (refs edited))))
+      (is (str/includes? result "First[^ method ]"))
+      (is (str/ends-with? result (subs source (:to (peek slots)))))
+      (is (str/ends-with? result (str "[^ method ]: Definition **stays exact**." newline))))))
+
 (deftest native-attribute-size-is-part-of-the-model-budget
   (is (thrown? clojure.lang.ExceptionInfo
                (rich/validate-model! {:type "doc" :attrs {:hidden (apply str (repeat 2097153 "x"))}})))

@@ -132,7 +132,8 @@
     (if (= (:from (first slots)) (:to (first slots)))
       (let [text (rich/markdown {:type "doc" :content new}) pos (:from (first slots))]
         (if (str/blank? text) source
-            (str (subs source 0 pos) (when (pos? pos) newline)
+            (str (subs source 0 pos)
+                 (when-not (or (zero? pos) (= "\uFEFF" (subs source 0 pos))) newline)
                  (str/replace text "\n" newline) newline newline (subs source pos))))
       (let [old (mapv #(first (get-in % [:model :content])) slots)
             normalized-old (mapv #(rich/normalize {:type "doc" :content [%]}) old)

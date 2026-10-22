@@ -114,6 +114,7 @@
     (fn [conn]
       (write! conn "wiki/a.md" "text")
       (let [v (view/current-view conn options)]
+        (is (not (view/current? @conn options (assoc-in v [:selection :codec :version] 2))))
         (is (not (view/current? @conn (assoc options :schema-revision :v2) v)))
         (with-redefs [markdown/syntax-profile (update markdown/syntax-profile :version inc)]
           (is (not (view/current? @conn options v))))
