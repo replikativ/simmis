@@ -232,10 +232,10 @@
         ;; (#27), so an overlay swap's mutator may run MORE THAN ONCE. Every
         ;; function simmis hands to an overlay or swap! must be pure — side
         ;; effects go before or after the swap, never inside it.
-        ;; Match the new historical-overlay contract (#29). An old direct Maven
-        ;; pin would override the compatible transitive dependency.
+        ;; Match Dvergr's historical overlays and independent cleanup leases
+        ;; (#29/#30). Copied siblings may outlive their temporary parent branch.
         org.replikativ/yggdrasil {:git/url "https://github.com/replikativ/yggdrasil"
-                                  :git/sha "dee7438acbf428323779e6d59fc18db4aa9d7556"}
+                                  :git/sha "b271739dbfa8ddbd5dfac7db314e821212cdfa00"}
         ;; Keep the direct Geschichte dependency aligned with dvergr: nearest
         ;; wins, and Simmis also relies on Yggdrasil's Geschichte adapter and
         ;; its content-level merge API.
@@ -431,14 +431,12 @@
         ;; Alpha stores
         ;; must use the classified wallet schema; no legacy migration is implied.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               ;; Reviewed #380-383 prepare trusted repository
-                               ;; profiles before Room publication. #384 adds
-                               ;; targeted live registration and admits ordinary
-                               ;; agent ChatContexts when checking canonical
-                               ;; messages identity. Permanent main squash,
-                               ;; tree-identical to the reviewed, green PR head.
+                               ;; #385 adds owned live KB attachment without
+                               ;; replacing rooms. #386 aligns native cleanup
+                               ;; leases for copied sibling execution worlds.
+                               ;; Permanent reviewed, green main squash.
                                ;; Adopt only in a fresh runtime, never hot reload.
-                               :git/sha "7bb754597ff1c364c2983b7801f04864bd706e4e"
+                               :git/sha "30c545e1cbcff36d684daa9419889e2fb4046d24"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; Both artifacts contain org.httpkit classes;
                                ;; the original can shadow its WebSocket fixes.

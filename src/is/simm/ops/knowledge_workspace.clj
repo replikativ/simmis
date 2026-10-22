@@ -8,6 +8,7 @@
             [dvergr.rooms.files :as files]
             [dvergr.substrate.geschichte :as workspace]
             [geschichte.query :as query]
+            [is.simm.documents.execution-view :as execution-view]
             [is.simm.model.knowledge-publication :as publication]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]
@@ -128,9 +129,13 @@
    before seeding its verified case. No global cache or new world authority."
   [base]
   (evaluation/make-world-setup
-   {:id :simmis/knowledge-fixtures :version 2
-    :basis {:base (evaluation/world-setup-ref base) :cleanup cleanup-policy}
+   {:id :simmis/knowledge-fixtures :version 3
+    :basis {:base (evaluation/world-setup-ref base) :cleanup cleanup-policy
+            :source-role execution-view/profile}
     :prepare (fn [{world :room :as context}]
                (room-workspace/ensure-workspace! world)
                (clear-owned! world)
-               ((:prepare base) context))}))
+               (let [result ((:prepare base) context)]
+                 (binding [ec/*execution-context* (:ctx world)]
+                   (execution-view/install! world))
+                 result))}))

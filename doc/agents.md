@@ -51,6 +51,18 @@ just to read. Membership, exact repository attachment and the world's read
 effect policy are rechecked on use. The isolated workflow worker does not gain
 live room access through this namespace.
 
+Knowledge workflow and benchmark setup install a versioned source role only
+after successful staging in the disposable Run world. There, `memory/*`
+excludes the owned `in/knowledge/` frozen copies and `out/wiki/` proposals:
+preserved document IDs in these files must not collide with the inherited wiki
+or make proposals appear adopted. Raw file tools still read every staged file.
+The immutable Spindel world component follows nested forks and copies, is bound
+to the actual source system/repository, and does not merge into the ordinary
+parent room with Yggdrasil system settlement. Normal room views and Markdown
+under `workflows/` are unchanged. The role is selection metadata, not permission;
+normal live authority and world checks still precede every memory read. Setup
+and selection identities include the role version.
+
 `wiki` and `kb` reach the KBs attached to the agent's room, and only those the
 agent itself may reach through the room's grants (`access/sandbox-kb-allows?`,
 doc/authority.md). A KB the room holds `:read` is listed as read-only in the
