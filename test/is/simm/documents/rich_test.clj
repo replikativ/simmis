@@ -25,6 +25,35 @@
   (doseq [url ["javascript:alert(1)" "data:text/html,bad" "//example.com" "\nhttps://example.com" "java\tscript:bad"]]
     (is (not (text/safe-link? url)))))
 
+(deftest empty-list-items-round-trip-with-their-required-editor-paragraph
+  (doseq [kind ["bulletList" "orderedList"]
+          position [0 1 2 :sole :consecutive]
+          newline ["\n" "\r\n" "\r"]]
+    (let [paragraph (fn [s] {:type "paragraph" :content [{:type "text" :text s}]})
+          item (fn [p] {:type "listItem" :content [p]})
+          items [(item (paragraph "First")) (item (paragraph "Last"))]
+          empty-item (item {:type "paragraph"})
+          items (case position
+                  :sole [empty-item]
+                  :consecutive [empty-item empty-item]
+                  (vec (concat (subvec items 0 position) [empty-item] (subvec items position))))
+          empty-index (if (integer? position) position 0)
+          list-model (cond-> {:type kind :content items} (= kind "orderedList") (assoc :attrs {:start 3}))
+          model {:type "doc" :content [list-model]}
+          serialized (text/markdown model newline)
+          parsed (text/model (first (:nodes (markdown/parse serialized))))]
+      (is (= (text/roundtrip-normalize model) (text/roundtrip-normalize parsed))
+          (pr-str [kind position newline serialized]))
+      (is (= {:type "paragraph" :content []}
+             (first (get-in (text/normalize parsed) [:content 0 :content empty-index :content]))))
+      ;; The real HOST validator must accept the transient Enter state without
+      ;; relaxing semantic equivalence or creating a knowledge-block identity.
+      (let [source (str "- Existing" newline)
+            result (rich/apply-edit repo-id "wiki/empty-item.md" source
+                                    (markdown/revision source) 0 (count source) model)
+            reread (text/model (first (:nodes (markdown/parse result))))]
+        (is (= (text/roundtrip-normalize model) (text/roundtrip-normalize reread)))))))
+
 (deftest native-defaults-and-text-merging-do-not-cause-source-rewrites
   (let [source "Some **bold** text.\r\n"
         node (first (:nodes (markdown/parse source))) model (text/model node)

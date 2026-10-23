@@ -358,6 +358,9 @@ round-trip comparison ignores only those empty top-level paragraphs, since the
 Markdown AST has no corresponding node. Reopening reconstructs paragraphs from
 source rather than retaining transient empty editor nodes. Nested list shape
 and significant text whitespace remain subject to exact validation.
+Bare Markdown list markers project to a list item containing an empty paragraph,
+as required by Tiptap. This lets the empty item created by Enter round-trip and
+save while retaining its place in the list; it is not discarded as blank layout.
 
 Saved data-only charts use a separate fixed read RPC. It captures the original
 application owner before queuing work, holds the native Room operation lifetime,
