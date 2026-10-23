@@ -190,7 +190,7 @@
                          (let [stamp (:target-stamp reply) changed? (not= stamp (:target-stamp current))
                                pending (into {} (filter (fn [[slot loading?]]
                                                           (and loading? (vector? slot)
-                                                               (#{:file :folder :properties} (first slot))))) (:loading current))
+                                                               (#{:file :folder :properties :chart} (first slot))))) (:loading current))
                                next (cond-> (editor/observe-target current stamp)
                                       changed? (update :target-epoch (fnil inc 0))
                                       changed? retire-upload

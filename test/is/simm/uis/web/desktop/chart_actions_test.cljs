@@ -45,6 +45,26 @@
       (is (= "typing" (get-in (state) [:drafts "wiki/a.md" :text])))
       (is (not (get-in (state) [:loading [:chart "wiki/a.md" fixture/block]]))))))
 
+(deftest metadata-advancing-during-a-chart-read-retires-its-loading-slot
+  (with-controller
+    (fn [{:keys [a state charts metadata connection]}]
+      ((:ensure-charts a))
+      (let [old (:ok (first @charts)) slot [:chart "wiki/a.md" fixture/block]]
+        (is (true? (get-in (state) [:loading slot])))
+        ((:ensure-sync a) connection {:connection connection :status :ready :dirty {}})
+        ((:ok (first @metadata)) {:target-stamp fixture/stamp :protocol-version 2 :folders {}
+                                 :entries {"wiki/a.md" fixture/entry} :definition-basis fixture/revision
+                                 :revision :new-epoch})
+        (is (false? (get-in (state) [:loading slot])))
+        ((:ensure-charts a)) ((:ensure-charts a))
+        (is (= 2 (count @charts)))
+        (old fixture/reply)
+        (is (true? (get-in (state) [:loading slot])) "late old reply cannot finish the replacement request")
+        (is (empty? ((:chart-models a) "wiki/a.md")))
+        ((:ok (second @charts)) (assoc-in fixture/reply [:chart :series 0 :points] [[0 9]]))
+        (is (false? (get-in (state) [:loading slot])))
+        (is (= [[0 9]] (get-in ((:chart-models a) "wiki/a.md") [(str fixture/block) :series 0 :points])))))))
+
 (deftest optional-analysis-is-single-flight-and-preserves-concurrent-typing
   (with-controller
     (fn [{:keys [a state change charts analyses]}]
