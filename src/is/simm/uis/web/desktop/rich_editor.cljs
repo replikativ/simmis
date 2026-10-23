@@ -7,6 +7,7 @@
             [is.simm.documents.rich-document :as document]
             [is.simm.uis.web.desktop.rich-controls :as controls]
             [is.simm.uis.web.desktop.chart-view :as charts]
+            [is.simm.uis.web.desktop.math-view :as math]
             [org.replikativ.spindel.dom.foreign]
             [org.replikativ.spindel.engine.core :as ec])
   (:require-macros [org.replikativ.spindel.dom.foreign :refer [foreign-node]]))
@@ -129,6 +130,27 @@
                                              (when (= "footnoteReference" (.. node -type -name))
                                                (paint! node) true))})))}))
 
+(defn- math-node [name display?]
+  (.create Node
+           #js {:name name :group (if display? "block" "inline") :inline (not display?) :atom true
+                :addAttributes (fn [] #js {:sourceKey #js {:default nil}
+                                           :raw #js {:default nil} :tex #js {:default nil}})
+                :parseHTML (fn [] #js [])
+                :renderText (fn [props] (aget (.. props -node -attrs) "raw"))
+                :renderHTML (fn [props] #js [(if display? "div" "span") #js {}
+                                            (aget (.. props -node -attrs) "raw")])
+                :addNodeView
+                (fn []
+                  (fn [props]
+                    (let [dom (.createElement js/document (if display? "div" "span"))
+                          paint! (fn [^js node]
+                                   (.removeAttribute dom "aria-label")
+                                   (math/paint! dom (aget (.-attrs node) "tex") (aget (.-attrs node) "raw") display?))]
+                      (paint! (.-node props))
+                      #js {:dom dom :update (fn [^js node]
+                                             (when (= name (.. node -type -name)) (paint! node) true))
+                           :destroy #(.replaceChildren dom)})))}))
+
 (defn- boundary-guard [^js el]
   (.create Extension
            #js {:name "memoryBoundaryGuard"
@@ -175,9 +197,9 @@
     (let [^js editor (Editor.
                   #js {:element el :content (data el) :editable (not (read-only? el))
                        :extensions #js [(boundary-node "memoryBlock" "(memoryBlock|memoryRegion|memoryOpaque)*" el)
-                                        (boundary-node "memoryRegion" "(paragraph|heading|bulletList|orderedList|codeBlock|horizontalRule)+" el)
+                                        (boundary-node "memoryRegion" "(paragraph|heading|bulletList|orderedList|codeBlock|horizontalRule|displayMath)+" el)
                                         (boundary-node "memoryOpaque" "" el)
-                                        (footnote-node)
+                                        (footnote-node) (math-node "inlineMath" false) (math-node "displayMath" true)
                                         (boundary-guard el)
                                         (.configure StarterKit
                                                     #js {:underline false :blockquote false :trailingNode false

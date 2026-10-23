@@ -22,6 +22,7 @@ node_modules/
 .calva/
 /public/js
 /public/main.css
+/public/vendor/katex/
 .idea
 *.iml
 

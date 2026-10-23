@@ -39,7 +39,7 @@
            (subs result (+ (:to heading) (count "Edited ")))))
     (is (= (:frontmatter parsed) (:frontmatter (markdown/parse result)))))))
 
-(deftest current-profile-recognizes-footnotes-without-pretending-to-render-tex
+(deftest current-profile-recognizes-footnotes-and-math-with-code-context-preserved
   (let [parsed (markdown/parse notebook)
         nodes (mapcat #(tree-seq (comp seq :children) :children %) (:nodes parsed))
         kinds (set (map :kind nodes))
@@ -47,7 +47,8 @@
     (is (contains? kinds :Footnote))
     (is (contains? kinds :FootnoteBlock))
     (is (str/includes? (:literal code) "$not-math$ [^not-a-note] [@not-a-citation]"))
-    (is (not (contains? (get-in parsed [:syntax-profile :features]) :math)))
+    (is (contains? (get-in parsed [:syntax-profile :features]) :inline-math))
+    (is (contains? (get-in parsed [:syntax-profile :features]) :standalone-display-math))
     (is (not (contains? (get-in parsed [:syntax-profile :features]) :citations)))))
 
 (deftest footnote-projection-retains-exact-token-separately-from-display-label

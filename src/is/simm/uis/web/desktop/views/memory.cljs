@@ -15,6 +15,7 @@
             [is.simm.uis.web.desktop.source-editor :as source]
             [is.simm.uis.web.desktop.rich-editor :as rich-editor]
             [is.simm.uis.web.desktop.chart-view :as charts]
+            [is.simm.uis.web.desktop.math-view :as math]
             [is.simm.uis.web.desktop.rich-controls :as rich-controls]
             [is.simm.uis.web.desktop.markdown :as md]
             [superficie.api :refer [toSup]]
@@ -57,6 +58,7 @@
   (case (:type node)
     "doc" (el/div {} (children node))
     "text" (marked-text node)
+    ("inlineMath" "displayMath") (math/view node)
     "footnoteReference" (el/sup {:class "memory-footnote-reference"
                                  :title (get-in node [:attrs :raw])
                                  :aria-label (str "Footnote " (get-in node [:attrs :label]))}

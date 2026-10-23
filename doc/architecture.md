@@ -29,6 +29,18 @@ Edited text encodes boundary spaces/tabs as Markdown character entities so
 ordinary intermediate keystrokes satisfy the same strict round-trip gate as a
 finished sentence. Entities decode once into inert text, never executable HTML
 or reparsed Markdown; unchanged source retains its original spelling.
+Formula source is recognized by bounded Flexmark parser hooks before Markdown
+escape/emphasis decoding. Single-line `$...$` and standalone top-level `$$`
+blocks project to frozen inline/display atoms. Same-line `$$x$$` and display
+blocks nested in lists/quotes remain ordinary source in this dialect. Currency,
+code and escaped delimiters retain their ordinary Markdown meaning. Exact raw
+tokens and UTF-16 spans survive nearby prose edits; only generated separators
+use the selected newline style. Rich saves validate token type and complete
+source provenance, refusing fabrication, duplication and cross-region borrowing.
+Formula changes use Markdown source editing. The shared element-owned KaTeX
+projection uses local fonts, MathML accessibility, a fresh macro scope, disabled
+trusted commands and finite expansion/size limits. Invalid TeX remains inert
+source; formula rendering never starts SCI or a workflow.
 YAML document properties and explicit document/block identities remain in the
 source; programmable property schemas are separate trusted definitions, not
 automatically installed by an uploaded file. Existing independent KBs
