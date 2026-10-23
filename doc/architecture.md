@@ -339,6 +339,12 @@ inert, source-backed node and is included as text when copied. Selection can
 cross containers, but transactions that remove/reorder protected containers
 are refused with feedback; structural knowledge changes remain Source edits.
 The source map, baseline models and selections live in the context-owned draft.
+Unmodified vertical arrows enter the start/end of adjacent editable regions
+across protected semantic wrappers at visual text-block boundaries; this
+transition does not preserve the horizontal caret column. Ordinary wrapped-line motion
+and modified range selection remain native editor behavior. Gap selections keep
+their native position through the controlled selection round trip rather than
+being interpreted as text positions. Navigation does not change block topology.
 Saving sends disjoint original source spans through the existing authenticated
 rich-save path. The host reconstructs supported spans, validates Markdown
 round-tripping and unchanged frontmatter/explicit identity nesting, and uses

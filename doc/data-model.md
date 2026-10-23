@@ -34,6 +34,35 @@ The property value is an exact path from the room repository root, such as
 below. Chart appearance is derived; no chart data enters the Markdown editor
 model or changes the block's prose, identity or source serialization.
 
+For example, a complete Markdown declaration looks like this:
+
+```markdown
+---
+simmis-id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+simmis:
+  version: 1
+  blocks:
+    bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb:
+      types: [2d4a6ef1-5159-45d6-b12d-683064cb8cee]
+      properties:
+        spec:
+          id: 0bcb85c0-405d-46b2-90b9-d34d81351975
+          type: 2d4a6ef1-5159-45d6-b12d-683064cb8cee
+      values:
+        spec: data/sales.json
+---
+<!-- simmis:block bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb -->
+## Sales
+Ordinary editable explanation of the chart.
+<!-- /simmis:block -->
+```
+
+The full-file Markdown view contains this frontmatter. The rich toolbar's local
+Markdown editor contains only its selected prose region, so it does not include
+the enclosing type declaration. The JSON is another file in the same Memory
+tree. Changing it refreshes the saved chart projection without changing the
+Markdown explanation.
+
 The referenced UTF-8 JSON uses a closed versioned data format:
 
 ```json

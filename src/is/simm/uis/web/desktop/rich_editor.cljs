@@ -1,7 +1,8 @@
 (ns is.simm.uis.web.desktop.rich-editor
   "One controlled Tiptap region, no global handles or alternative draft state."
   (:require ["@tiptap/core" :refer [Editor Node Extension]]
-            ["@tiptap/pm/state" :refer [Plugin TextSelection AllSelection NodeSelection]]
+            ["@tiptap/pm/state" :refer [Plugin Selection TextSelection AllSelection NodeSelection]]
+            ["@tiptap/pm/gapcursor" :refer [GapCursor]]
             ["@tiptap/starter-kit" :default StarterKit]
             [is.simm.documents.rich-text :as rich]
             [is.simm.documents.rich-document :as document]
@@ -37,6 +38,11 @@
         (let [^js native (aget value "native")
               selection (cond
                           (= "all" (some-> native (aget "type"))) (AllSelection. doc)
+                          (= "gapcursor" (some-> native (aget "type")))
+                          (let [position (.resolve doc (clamp (aget native "pos")))]
+                            (if (.valid GapCursor position)
+                              (GapCursor. position)
+                              (.near Selection position)))
                           (and (= "node" (some-> native (aget "type")))
                                (some? (.nodeAt doc (clamp (aget native "anchor"))))
                                (.isSelectable NodeSelection (.nodeAt doc (clamp (aget native "anchor")))))
@@ -46,6 +52,35 @@
                                     (.resolve doc (clamp (if native (aget native "anchor") (aget value "from"))))
                                     (.resolve doc (clamp (if native (aget native "head") (aget value "to"))))))]
           (.dispatch (.-view editor) (.setSelection (.. editor -state -tr) selection)))))))
+
+(defn- region-at [position]
+  (some (fn [depth]
+          (let [node (.node position depth)]
+            (when (= "memoryRegion" (.. node -type -name))
+              (aget (.-attrs node) "key"))))
+        (range (.-depth position) 0 -1)))
+
+(defn- navigate-boundary! [^js view event]
+  ;; Native motion owns wrapped lines, lists and selection extension. At the
+  ;; last visual line of a region, skip the noneditable semantic wrappers and
+  ;; enter the adjacent text region instead of creating an invisible gap stop.
+  (when (and (#{"ArrowDown" "ArrowUp"} (.-key event))
+             (not (or (.-shiftKey event) (.-altKey event) (.-ctrlKey event) (.-metaKey event)))
+             (.-editable view))
+    (let [selection (.. view -state -selection)
+          direction (if (= "ArrowDown" (.-key event)) 1 -1)
+          position (.-$head selection)
+          gap? (instance? GapCursor selection)]
+      (when (and (.-empty selection)
+                 (or gap? (and (instance? TextSelection selection)
+                               (.endOfTextblock view (if (pos? direction) "down" "up")))))
+        (let [start (if gap? position
+                        (.resolve (.. view -state -doc)
+                                  (if (pos? direction) (.after position) (.before position))))
+              next (.findFrom Selection start direction true)]
+          (when (and next (or gap? (not= (region-at position) (region-at (.-$head next)))))
+            (.dispatch view (.scrollIntoView (.setSelection (.. view -state -tr) next)))
+            true))))))
 
 (defn- paint-chart! [^js el ^js projection block-id]
   (let [data (some-> (.-simmisChartData el) (aget block-id))]
@@ -209,9 +244,10 @@
                        :editorProps #js {:attributes #js {:class "memory-rich-content"
                                                          :role "textbox" :aria-multiline "true"
                                                          :aria-label "Rich document editor"}
-                                         :handleKeyDown (fn [_ event]
-                                                          (when (and (.-altKey event) (= "F10" (.-key event)))
-                                                            (.preventDefault event) (controls/focus-toolbar! el) true))}
+                                         :handleKeyDown (fn [view event]
+                                                          (or (when (and (.-altKey event) (= "F10" (.-key event)))
+                                                                (.preventDefault event) (controls/focus-toolbar! el) true)
+                                                              (navigate-boundary! view event)))}
                        :onUpdate (fn [event] (notify! el (.-editor event)))
                        :onFocus (fn [event] (notify! el (.-editor event)))
                        :onSelectionUpdate (fn [event] (notify! el (.-editor event)))})]

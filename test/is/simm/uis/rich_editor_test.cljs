@@ -1,5 +1,6 @@
 (ns is.simm.uis.rich-editor-test
   (:require [cljs.test :refer-macros [deftest is]]
+            ["@tiptap/pm/gapcursor" :refer [GapCursor]]
             [is.simm.documents.rich-text :as rich]
             [is.simm.uis.web.desktop.rich-editor]))
 
@@ -130,6 +131,111 @@
                (is (= 4 (.. editor -state -selection -to)))
                (is (zero? @events))
                (is (identical? editor (.-simmisRichEditor el)))))))
+
+(defn- region [key text]
+  {:type "memoryRegion" :attrs {:key key}
+   :content [{:type "paragraph" :content [{:type "text" :text text}]}]})
+
+(defn- nested-document []
+  {:type "doc"
+   :content [(region "intro" "Introduction")
+             {:type "memoryBlock" :attrs {:key "parent" :blockId "parent"}
+              :content [(region "parent-prose" "Parent prose")
+                        {:type "memoryBlock" :attrs {:key "child" :blockId "child"}
+                         :content [(region "child-prose" "Nested child prose")]}]}
+             (region "after" "After the blocks")]})
+
+(defn- mounted-document
+  ([f] (mounted-document (nested-document) f))
+  ([model f]
+  (let [^js el (.createElement js/document "simmis-rich-editor")]
+    (.setAttribute el "data-model" (js/JSON.stringify (clj->js model)))
+    (.setAttribute el "data-document" "true")
+    (.setAttribute el "data-read-only" "false")
+    (.appendChild (.-body js/document) el)
+    (try (f el (.-simmisRichEditor el)) (finally (.remove el))))))
+
+(defn- text-ranges [^js editor]
+  (let [ranges (atom [])]
+    (.. editor -state -doc
+        (descendants (fn [^js node position]
+                       (when (.-isTextblock node)
+                         (swap! ranges conj {:start (inc position) :end (+ position (.-nodeSize node) -1)})))))
+    @ranges))
+
+(deftest nested-region-arrows-survive-the-controlled-selection-round-trip
+  (mounted-document
+   (fn [^js el ^js editor]
+     (let [ranges (text-ranges editor) original (.getJSON editor)
+           echo (fn [event]
+                  (when (= el (.-target event))
+                    (.setAttribute el "data-selection" (js/JSON.stringify (.. event -detail -selection)))))
+           press! (fn [key]
+                    (let [event (js/KeyboardEvent. "keydown" #js {:key key})]
+                      (.someProp (.-view editor) "handleKeyDown" (fn [handler] (handler (.-view editor) event)))))]
+       (.addEventListener el "input" echo)
+       (try
+         (.focus (.-view editor))
+         (doseq [[current following] (partition 2 1 ranges)]
+           (.. editor -commands (setTextSelection (:end current)))
+           (is (true? (press! "ArrowDown")))
+           (is (= (:start following) (.. editor -state -selection -head))))
+         (doseq [[current previous] (partition 2 1 (reverse ranges))]
+           (.. editor -commands (setTextSelection (:start current)))
+           (is (true? (press! "ArrowUp")))
+           (is (= (:end previous) (.. editor -state -selection -head))))
+         (is (= (js->clj original :keywordize-keys true)
+                (js->clj (.getJSON editor) :keywordize-keys true)))
+         (is (identical? editor (.-simmisRichEditor el)))
+         ;; Modified arrow motion is left to native range selection.
+         (is (not (@#'is.simm.uis.web.desktop.rich-editor/navigate-boundary!
+                   (.-view editor) (js/KeyboardEvent. "keydown" #js {:key "ArrowDown" :shiftKey true}))))
+         (finally (.removeEventListener el "input" echo)))))))
+
+(deftest vertical-motion-within-a-region-is-left-to-the-native-editor
+  (let [model (-> (nested-document)
+                  (assoc-in [:content 0 :content 0 :content]
+                            [{:type "text" :text (apply str (repeat 100 "Wrapped words "))}])
+                  (update-in [:content 0 :content] conj
+                             {:type "paragraph" :content [{:type "text" :text "Same region"}]}))]
+    (mounted-document
+     model
+     (fn [_ ^js editor]
+       (let [^js view (.-view editor) ranges (text-ranges editor)
+             arrow (js/KeyboardEvent. "keydown" #js {:key "ArrowDown"})]
+         (set! (.. view -dom -style -width) "240px")
+         (.focus view)
+         (.. editor -commands (setTextSelection (:start (first ranges))))
+         (is (false? (.endOfTextblock view "down")) "Fixture spans multiple visual lines")
+         (is (not (@#'is.simm.uis.web.desktop.rich-editor/navigate-boundary! view arrow)))
+         (is (= (:start (first ranges)) (.. editor -state -selection -head)))
+         (.. editor -commands (setTextSelection (:end (first ranges))))
+         (is (.endOfTextblock view "down"))
+         (is (not (@#'is.simm.uis.web.desktop.rich-editor/navigate-boundary! view arrow))
+             "Adjacent paragraphs in the same semantic region retain native motion")
+         (is (= (:end (first ranges)) (.. editor -state -selection -head))))))))
+
+(deftest gap-cursor-restoration-keeps-its-position-without-an-input-echo
+  (mounted-document
+   (fn [^js el ^js editor]
+     (let [^js doc (.. editor -state -doc) ^js first-region (.child doc 0)
+           position (.-nodeSize first-region)
+           events (atom 0)]
+       (is (.valid GapCursor (.resolve doc position)))
+       (.addEventListener el "input" #(when (= el (.-target %)) (swap! events inc)))
+       (.setAttribute el "data-selection"
+                      (js/JSON.stringify #js {:from position :to position
+                                              :native #js {:type "gapcursor" :pos position}}))
+       (is (= "gapcursor" (aget (.. editor -state -selection (toJSON)) "type")))
+       (is (= position (.. editor -state -selection -head)))
+       (is (zero? @events))
+       (is (identical? editor (.-simmisRichEditor el)))
+       ;; A stale gap position which now points into text resolves nearby,
+       ;; rather than creating an invalid GapCursor or resetting to the start.
+       (.setAttribute el "data-selection"
+                      "{\"from\":5,\"to\":5,\"native\":{\"type\":\"gapcursor\",\"pos\":5}}")
+       (is (= 5 (.. editor -state -selection -head)))
+       (is (= "text" (aget (.. editor -state -selection (toJSON)) "type")))))))
 
 (defn- footnote-model []
   {:type "doc" :content [{:type "paragraph"
