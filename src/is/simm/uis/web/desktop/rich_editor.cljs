@@ -46,7 +46,7 @@
                                     (.resolve doc (clamp (if native (aget native "head") (aget value "to"))))))]
           (.dispatch (.-view editor) (.setSelection (.. editor -state -tr) selection)))))))
 
-(defn- paint-chart! [el projection block-id]
+(defn- paint-chart! [^js el ^js projection block-id]
   (let [data (some-> (.-simmisChartData el) (aget block-id))]
     ;; A native element-owned render cache, not semantic state. ProseMirror may
     ;; update a block on every keystroke; keep its unchanged SVG/table intact.
