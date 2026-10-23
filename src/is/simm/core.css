@@ -2396,6 +2396,19 @@ body {
   opacity: 1;
 }
 
+.conversation-capture-panel {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--mono-border);
+  border-radius: 8px;
+  background: var(--mono-bg-surface);
+  font-size: 12px;
+}
+.conversation-capture-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.conversation-capture-heading button { background: transparent; color: inherit; border: 0; cursor: pointer; }
+.conversation-capture-panel p { margin: 6px 0; }
+.conversation-capture-path { overflow-wrap: anywhere; opacity: .7; }
+.conversation-capture-source { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
 .chat-message-reply:hover {
   color: var(--mono-text-primary);
 }

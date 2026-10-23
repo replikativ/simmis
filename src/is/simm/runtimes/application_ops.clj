@@ -33,14 +33,32 @@
       (reads/current-host-control-db! host)
       host)))
 
+(defn capture-operation
+  "Capture only this installation's registration, without native access or a
+   lifetime admission. Safe on the engine drain before queuing blocking work.
+   The returned HOST-only thunk enters the ORIGINAL owner off-engine; a queued
+   invocation can never borrow a replacement installation. Do not export it."
+  []
+  (let [{:keys [host owner]} (locking installation
+                             (let [{:keys [owner] :as current} @installation]
+                               (when-not (and owner (lifetime/ready? owner))
+                                 (throw (ex-info "Application operations are not ready" {:type ::held})))
+                               current))]
+    (fn [f]
+      (off-engine!)
+      (when-not (fn? f)
+        (throw (ex-info "Invalid application operation" {:type ::invalid-body})))
+      (lifetime/with-operation! owner
+        #(do (reads/current-host-control-db! host) (f host))))))
+
 (defn with-operation!
   "Enter the captured installation BEFORE passing its host to synchronous work.
    A shutdown between capture and admission refuses, without using old handles."
   [f]
   (off-engine!)
   (let [{:keys [host owner]} (locking installation
-                               (or @installation
-                                   (throw (ex-info "Application operations are not ready" {:type ::held}))))]
+                             (or @installation
+                                 (throw (ex-info "Application operations are not ready" {:type ::held}))))]
     (lifetime/with-operation! owner
       #(do (reads/current-host-control-db! host) (f host)))))
 

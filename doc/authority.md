@@ -136,6 +136,19 @@ uuid of a block it is creating (`create-sibling-after`'s `:new-uuid`,
 names an entity: `:entity/uuid` is a unique identity, so it would upsert onto
 that entity rather than create a block.
 
+### Explicit conversation evidence
+
+The chat's `preview-conversation-capture!` and `publish-conversation-capture!`
+both require room write permission; their HOST service independently checks
+current human identity plus room read/write and exact owned-default mapping.
+Only exact message IDs and inspected capture/target preconditions cross this
+boundary, never client-authored source, author, path or authority. Registration
+capture on the engine drain performs no native I/O. Queued work admits against
+that original application owner off-engine, then holds the native Room lease;
+shutdown cannot redirect it to a replacement installation. Publication rechecks
+eligibility and authority through the existing CAS writer. Unknown results
+retain an inspection hold and confer no replay or wiki-adoption permission.
+
 ### Data plane — replication
 
 Subscription to a store scope goes through `can?`. Publication *from* a client

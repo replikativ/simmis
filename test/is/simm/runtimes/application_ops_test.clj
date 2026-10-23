@@ -3,6 +3,7 @@
             [dvergr.mcp.server :as server]
             [dvergr.ops :as dops]
             [is.simm.ops.owned-mcp-test :as fixture]
+            [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.results :as results]
             [is.simm.ops.work-api :as work-api]
             [is.simm.ops.worker-api :as worker-api]
@@ -13,6 +14,62 @@
             [is.simm.runtimes.workflow-schedules :as schedules]
             [org.replikativ.spindel.engine.impl.simple :as simple])
   (:import [java.util.concurrent CountDownLatch]))
+
+(deftest captured-registration-is-engine-safe-but-native-invocation-is-not
+  (let [owner (lifetime/create) host {:test :original} reads (atom 0) calls (atom 0)]
+    (lifetime/open! owner)
+    (with-redefs-fn {#'application/installation (atom {:host host :owner owner})
+                    #'reads/current-host-control-db! (fn [& _] (swap! reads inc))}
+      (fn []
+        (let [invoke (with-redefs [simple/on-drain-thread? (constantly true)]
+                       (let [invoke (application/capture-operation)]
+                         (is (thrown? clojure.lang.ExceptionInfo (invoke #(swap! calls inc))))
+                         invoke))]
+          (is (zero? @reads)) (is (zero? @calls))
+          (is (= host (invoke identity)))
+          (is (= 1 @reads))
+          (lifetime/fence! owner)
+          (dotimes [_ 2]
+            (is (= :not-ready (try (invoke identity) nil
+                                  (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))))
+          (is (= 1 @reads)))))))
+
+(deftest queued-capture-never-adopts-a-replacement-installation
+  (let [old (lifetime/create) replacement (lifetime/create) reads (atom [])
+        slot (atom {:host :original :owner old})]
+    (lifetime/open! old) (lifetime/open! replacement)
+    (with-redefs-fn {#'application/installation slot
+                    #'reads/current-host-control-db! (fn [host] (swap! reads conj host))}
+      (fn []
+        (let [queued (application/capture-operation)]
+          (lifetime/fence! old)
+          (reset! slot {:host :replacement :owner replacement})
+          (is (thrown? clojure.lang.ExceptionInfo (queued identity)))
+          (is (empty? @reads))
+          (is (= :replacement ((application/capture-operation) identity)))
+          (is (= [:replacement] @reads)))))))
+
+(deftest an-entered-captured-operation-is-joined-and-may-finish-nesting
+  (let [owner (lifetime/create) slot (atom {:host :original :owner owner})
+        entered (promise) gate (CountDownLatch. 1)]
+    (lifetime/open! owner)
+    (with-redefs-fn {#'application/installation slot
+                    #'reads/current-host-control-db! (fn [& _] :current)}
+      (fn []
+        (let [invoke (application/capture-operation)
+              task (future (invoke (fn [_]
+                                     (deliver entered true)
+                                     (.await gate)
+                                     (application/with-operation! identity))))]
+          (try
+            (is (= true (deref entered 3000 ::timeout)))
+            (lifetime/fence! owner)
+            (is (thrown? clojure.lang.ExceptionInfo (lifetime/join! owner 0)))
+            (is (thrown? clojure.lang.ExceptionInfo (application/capture-operation)))
+            (.countDown gate)
+            (is (= :original (deref task 3000 ::timeout)))
+            (is (nil? (lifetime/join! owner 3000)))
+            (finally (.countDown gate) (deref task 10000 nil))))))))
 
 (defn- reason [f]
   (try (f) nil (catch clojure.lang.ExceptionInfo error (:reason (ex-data error)))))

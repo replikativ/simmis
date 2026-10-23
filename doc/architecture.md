@@ -136,7 +136,7 @@ the retry identity. Captured bytes and collector provenance are retained with
 the work request. Pure preparation and benchmarks require verified frozen
 inputs instead of resolving a live policy.
 
-`ops.conversation-capture` is an inactive HOST composition for explicitly
+`ops.conversation-capture` is a HOST composition for explicitly
 selected human messages. It reads at most 50 exact native message IDs from one
 immutable room-store snapshot and checks sender identity against the trusted
 control DB. A user role alone is insufficient; agent, Run, transcript and other
@@ -150,10 +150,23 @@ source eligibility and selection at the existing native writer's effect gates.
 One deterministic `inbox/conversations/<capture-id>.md` destination prevents
 duplicate files; an occupied path is a conflict, never proof that an earlier
 unknown write acknowledged. There is no automatic retry, chat cursor, ingestion
-policy, transport endpoint or spending grant in this composition. Published
+policy or spending grant in this composition. Published
 evidence is an ordinary input to the same file-backed knowledge workflow.
 It is a deliberate exported snapshot, not a continuously mirrored chat view;
 later edits/deletions of a message do not rewrite an already published file.
+
+The chat's single-human-message **Save to Memory** action previews those exact
+server-selected bytes before explicit confirmation. Preview/publish RPCs require
+room write permission and capture both authenticated identity and the original
+application registration before queuing blocking work. That registration admits
+native access only off-engine and refuses after fencing; it cannot adopt a newer
+installation. Client state lives in execution-context signals, with account,
+message, originating tab's room/thread, socket and request fences. Hiding/reconnecting after
+an uncertain save retains an inspection-required hold, never automatic replay.
+Only a validated native saved receipt enables **Open saved file**; destination
+inspection remains a separate read and does not reconstruct an acknowledgement.
+This surface exports evidence, not a summary, wiki adoption or paid workflow.
+Commands dispatch only from the live home UI context, not simulated forks.
 
 The `ops.retained-knowledge-sources` host reader addresses a canonical
 Proposal plus its file-output component, not an arbitrary artifact or current
