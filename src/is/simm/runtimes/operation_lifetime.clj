@@ -18,6 +18,20 @@
 
 (defn ready? [owner] (= :ready (:phase @(::state owner))))
 
+(defn check-current!
+  "Actual-thread admission check before entering new user computation after
+   waiting on its interpreter gate. A previously admitted waiter cannot reuse
+   a heap after failed cleanup fenced this original installation."
+  []
+  (off-engine!)
+  (let [{:keys [owner thread id] :as ticket} *ticket* state (::state owner)]
+    (when-not (and state (identical? thread (Thread/currentThread))) (refuse! :not-owner))
+    (locking state
+      (when-not (and (= :ready (:phase @state))
+                     (identical? ticket (get-in @state [:tickets id])))
+        (refuse! :not-ready))))
+  nil)
+
 (defn open!
   "An owner can be opened once, only after installation. Never resurrect it."
   [owner]
@@ -29,8 +43,57 @@
   nil)
 
 (defn- assert-not-owner-in! [state]
-  (when (some #(identical? (Thread/currentThread) (:thread %)) (vals (:tickets state)))
+  (when (some #(or (and (identical? (Thread/currentThread) (:thread %))
+                        (or (nil? (:origin-completion %))
+                            (not (realized? (:origin-completion %)))))
+                   (when-let [active (:cleanup-thread %)]
+                     (identical? (Thread/currentThread) @active)))
+              (vals (:tickets state)))
     (refuse! :self-drain)))
+
+(defn retain-operation-cleanup!
+  "Transfer this actual worker's exact ticket slot to recoverable cleanup.
+   cleanup! takes the remaining join milliseconds and must release only its
+   captured original resources. It must not reenter application admission or
+   lifecycle. Called while owned, even after fencing; no new capacity is needed.
+   The original body ceases access to the transferred resources. Transfer fences
+   independent application admission: unconfirmed cleanup cannot leave another
+   Room reusing a shared interpreter. Recovery is explicit stop/restart."
+  [cleanup!]
+  (off-engine!)
+  (when-not (fn? cleanup!) (refuse! :invalid-cleanup))
+  (let [{:keys [owner thread id] :as ticket} *ticket*
+        state (::state owner)]
+    (when-not (and state (identical? thread (Thread/currentThread)))
+      (refuse! :not-owner))
+    (locking state
+      (when-not (and (identical? ticket (get-in @state [:tickets id]))
+                     (nil? (:origin-completion ticket))) (refuse! :not-owner))
+      (let [recovery (assoc ticket :origin-completion (:completion ticket)
+                            :completion (promise) :cleanup! cleanup!
+                            :cleanup-monitor (Object.) :cleanup-thread (atom nil))]
+        (swap! state #(-> % (assoc :phase :stopping) (assoc-in [:tickets id] recovery)))
+        recovery))))
+
+(defn- join-ticket! [owner ticket deadline]
+  (let [remaining #(max 0 (quot (- deadline (System/nanoTime)) 1000000))
+        state (::state owner)]
+    (when-let [origin (:origin-completion ticket)]
+      (when-not (true? (deref origin (remaining) nil)) (refuse! :physical-exit-unconfirmed))
+      ;; A release may run user cleanup. Never hold the installation/state
+      ;; monitor; serialize retries only on this original recovery ticket.
+      (locking (:cleanup-monitor ticket)
+        (when-not (realized? (:completion ticket))
+          (reset! (:cleanup-thread ticket) (Thread/currentThread))
+          (try
+            ((:cleanup! ticket) (remaining))
+            (locking state
+              (when (identical? ticket (get-in @state [:tickets (:id ticket)]))
+                (swap! state update :tickets dissoc (:id ticket)))
+              (deliver (:completion ticket) true))
+            (finally (reset! (:cleanup-thread ticket) nil))))))
+    (when-not (true? (deref (:completion ticket) (remaining) nil))
+      (refuse! :physical-exit-unconfirmed))))
 
 (defn assert-not-owner!
   "Check every live ticket, including outer nested owners, before taking an
@@ -60,15 +123,18 @@
   (off-engine!)
   (when-not (and (integer? timeout-ms) (<= 0 timeout-ms 60000)) (refuse! :invalid-deadline))
   (let [state (::state owner)
-        tickets (locking state
-                  (assert-not-owner-in! @state)
-                  (when-not (= :stopping (:phase @state)) (refuse! :not-fenced))
-                  (vals (:tickets @state)))
         deadline (+ (System/nanoTime) (* 1000000 timeout-ms))]
-    (doseq [ticket tickets]
-      (when-not (true? (deref (:completion ticket)
-                              (max 0 (quot (- deadline (System/nanoTime)) 1000000)) nil))
-        (refuse! :physical-exit-unconfirmed))))
+    (loop []
+      (let [tickets (locking state
+                      (assert-not-owner-in! @state)
+                      (when-not (= :stopping (:phase @state)) (refuse! :not-fenced))
+                      (vals (:tickets @state)))]
+        (when (seq tickets)
+          (doseq [ticket tickets] (join-ticket! owner ticket deadline))
+          ;; An active worker may transfer its original slot AFTER this
+          ;; snapshot. Its old ACK isn't the replacement cleanup's ACK.
+          ;; Re-read by identity until the fenced registry is empty.
+          (recur)))))
   nil)
 
 (defn with-operation!

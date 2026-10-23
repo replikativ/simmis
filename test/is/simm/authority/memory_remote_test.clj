@@ -15,6 +15,9 @@
             [is.simm.media.office :as zip]
             [is.simm.model.access :as access]
             [is.simm.ops.owned-workspace-test :as fixture]
+            [is.simm.ops.owned-mcp :as mcp]
+            [is.simm.runtimes.application-ops :as application]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [is.simm.runtimes.context :as context]
             [is.simm.runtimes.memory-changes :as changes]
             [is.simm.uis.web.desktop.memory-remote :as remote]
@@ -31,15 +34,21 @@
                         (reset! chat-connection chat)
                         (reset! configs (mapv #(-> % deref :config) [conn owned attached chat])))
                       (let [hydrations (atom 0)
+                            owner (doto (lifetime/create) lifetime/open!)
+                            installation (atom {:host (mcp/host conn (:ctx room)) :owner owner})
                             inbound (fn [kind name request]
                                       (world/inbound! (world/principal w kind) name
                                                       (cond-> {:room-id-str (str (:room w))}
                                                         (some? request) (assoc :request request))))]
-                        (with-redefs [context/server-context (:ctx room)
-                                      rooms/live-room (fn [id]
-                                                        (swap! hydrations inc)
-                                                        (when (= id (:room w)) room))]
-                          (f (assoc data :inbound inbound :hydrations hydrations))))))]
+                        (try
+                          (with-redefs-fn
+                            {#'application/installation installation}
+                            #(with-redefs [context/server-context (:ctx room)
+                                           rooms/live-room (fn [id]
+                                                             (swap! hydrations inc)
+                                                             (when (= id (:room w)) room))]
+                               (f (assoc data :inbound inbound :hydrations hydrations))))
+                          (finally (lifetime/fence! owner) (lifetime/join! owner 30000))))))]
         (reset! completed? true)
         result)
       (finally
@@ -127,7 +136,7 @@
           (is (uuid? token))
           (is (true? (:saved? saved)))
           (let [read (:result (inbound :member "load-memory-office-part!"
-                                     {:path "report.docx" :expected (:entry saved) :part nil :expected-target-stamp stamp}))]
+                                       {:path "report.docx" :expected (:entry saved) :part nil :expected-target-stamp stamp}))]
             (is (= "Corrected" (get-in read [:reading :blocks 0 :runs 0 :text]))))
           (is (:error (inbound :member "correct-memory-office-text!" request)) "The old revision cannot be reused")
           (is (= other @attached)))))))
@@ -140,7 +149,7 @@
               [name args] [["load-memory-metadata!" {:folders [""] :paths []}]
                            ["prepare-memory-stream!" nil]
                            ["preview-memory-declaration!" {:path "wiki/file.md" :target {:kind :page}
-                                                            :types [] :additions [] :expected-target-stamp (random-uuid)}]
+                                                           :types [] :additions [] :expected-target-stamp (random-uuid)}]
                            ["save-memory-declaration!" {:path "wiki/file.md" :expected-target-stamp (random-uuid)}]
                            ["load-memory-file!" {:path "wiki/file.md" :expected-target-stamp (random-uuid)}]
                            ["save-memory-file!" {:path "bad.md" :expected nil :text "bad" :expected-target-stamp (random-uuid)}]

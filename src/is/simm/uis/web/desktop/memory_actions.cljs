@@ -727,8 +727,8 @@
                      (when (and (not (get-in (state) [:loading [:evaluate path]]))
                                 (not (false? (get-in (state) [:sandbox-permissions :evaluate?]))))
                        (request! [:evaluate path] #(remote/evaluate-memory-code! web/server-id room request)
-                                 #(assoc-in %1 [:evaluations path] (assoc %2 :input-text (:text draft))) nil
-                                 {:scope :sandbox :accept? (generation? path (:generation draft))}))))
+                                 #(editor/file-evaluation-result %1 path (:generation draft) (:text draft) %2) nil
+                                 {:scope :sandbox}))))
        :block-links (fn [path] (references/block-links room path (get-in (state) [:drafts path])))
        :jump (fn [path] (references/jump (state) path))
        :linked-block (fn [path] (references/linked-block (state) path))
