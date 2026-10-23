@@ -725,7 +725,7 @@
 #?(:cljs
    (defn- query-room-message-projections [db room-eid]
      (let [users (room-message-users db)
-           legacy (legacy-room-messages db room-eid users)
+           legacy (if room-eid (legacy-room-messages db room-eid users) [])
            legacy-by-id (into {} (map (juxt :entity/uuid identity)) legacy)
            canonical (canonical-room-messages db)
            canonical-ids (into #{} (map #(or (:id %) (:entity/uuid %))) canonical)
@@ -751,7 +751,7 @@
      [room-uuid]
      (fn [db]
        (when db
-         (when-let [room-eid (d/q '[:find ?r . :in $ ?uuid :where [?r :entity/uuid ?uuid]] db room-uuid)]
+         (let [room-eid (d/q '[:find ?r . :in $ ?uuid :where [?r :entity/uuid ?uuid]] db room-uuid)]
            (query-room-message-projections db room-eid))))))
 
 #?(:cljs
@@ -785,12 +785,13 @@
      [room-uuid]
      (fn [db]
        (when db
-         ;; Resolve the Simmis room projection first; it scopes compatibility
-         ;; rows while canonical dvergr messages are already isolated by the
-         ;; per-room database itself.
-         (when-let [room-eid (d/q '[:find ?r . :in $ ?uuid :where [?r :entity/uuid ?uuid]] db room-uuid)]
+         ;; The legacy room entity scopes compatibility rows ONLY. Native
+         ;; history is already scoped by the authorized per-room replica and
+         ;; must never need a viewer-triggered write to become visible.
+         (let [room-eid (d/q '[:find ?r . :in $ ?uuid :where [?r :entity/uuid ?uuid]] db room-uuid)]
            (let [messages (query-room-message-projections db room-eid)
-                 kb-events (->> (d/q '[:find ?uuid ?type ?title ?block-count ?author-uuid ?author-name ?ts
+                 kb-events (when room-eid
+                             (->> (d/q '[:find ?uuid ?type ?title ?block-count ?author-uuid ?author-name ?ts
                                         :in $ ?room
                                         :where
                                         [?e :S.KBEvent/room ?room]
@@ -812,7 +813,7 @@
                                         :S.KBEvent/author-name author-name
                                         :S.KBEvent/timestamp ts
                                         :timeline/type :kb-event
-                                        :timeline/ts ts})))
+                                        :timeline/ts ts}))))
                  ;; Tool activity is dvergr's own tool-call rows: recorded
                  ;; when a call starts and completed when it ends, so a chip
                  ;; appears while the call runs.

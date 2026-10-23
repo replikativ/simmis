@@ -141,10 +141,8 @@
         (is (= once twice) (pr-str data))))))
 
 (deftest a-settled-layout-is-returned-unchanged-identity-included
-  (testing "no write, so no re-render, so no repeated `ensure-room!` — the
-            chat render fires that RPC as a side effect of rendering, and a
-            reconciliation that rewrote an equal layout on every roster
-            refresh would fire it again each time"
+  (testing "an unchanged roster causes no redundant layout write or render;
+            chat rendering itself must not initialize server-side rows"
     (let [cols   (tab-heal/reconcile-layout
                    [{:id "c1" :tabs [(open-tab {:room-id (str room-id)} nil)
                                      (open-tab {:room-id stale-id} nil)]}]

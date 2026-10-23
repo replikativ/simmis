@@ -49,6 +49,11 @@
     :run-inspector (or (:title tab) "Workflow Run")
     (:room/name room)))
 
+(defn- named-room [room-id rooms personal-room]
+  (if (= room-id "personal-ai-placeholder")
+    personal-room
+    (when room-id (first (filter #(= room-id (str (:room/id %))) rooms)))))
+
 (defn heal-chat-tab
   "Reconcile one tab against `rooms`: fill in what the roster knows, or mark
    the tab as pointing at no room this party can open. Applies to every tab
@@ -73,14 +78,12 @@
     tab
     (let [room-id      (get-in tab [:data :room-id])
           placeholder? (= room-id "personal-ai-placeholder")
-          room         (cond
-                         placeholder? personal-room
-                         room-id (first (filter #(= room-id (str (:room/id %))) rooms))
-                         :else nil)]
+          room         (named-room room-id rooms personal-room)
+          conversation? (#{:chat :chat-thread} (:type tab))]
       (if room
         (cond-> (assoc-in tab [:data :room-id] (str (:room/id room)))
           true (update :data dissoc :room-missing?)
-          (nil? (get-in tab [:data :db-scope]))
+          (or conversation? (nil? (get-in tab [:data :db-scope])))
           (assoc-in [:data :db-scope] (str (:room/content-db-scope room)))
           ;; Adopt the room's name when the tab is not showing a real one: it
           ;; either has none (a deep link carries no title) or is showing the
@@ -91,7 +94,8 @@
               (assoc :title (roster-title tab room))))
         ;; No room-id at all is the same conclusion by a shorter route: the
         ;; legacy `:chat-room` backlink opens a tab carrying only a title.
-        (assoc-in tab [:data :room-missing?] true)))))
+        (cond-> (assoc-in tab [:data :room-missing?] true)
+          conversation? (update :data dissoc :db-scope))))))
 
 (defn heal-chat-tabs
   "`heal-chat-tab` across a whole column layout."
@@ -131,6 +135,35 @@
    without knowing its id."
   [rooms]
   (first (filter #(= :personal-ai (:room/type %)) rooms)))
+
+(defn chat-source
+  "UI source coherence, NOT authorization. Only the current authenticated
+   roster maps a chat's room to its replica; restored scope hints are never
+   sufficient. A missing or not-yet-known mapping exposes no cached DB."
+  [data roster]
+  (if-not (roster-known? roster)
+    {:state :loading}
+    (let [rooms (roster-rooms roster)
+          room (named-room (:room-id data) rooms (personal-room rooms))]
+      (if-not room
+        {:state :missing}
+        (if-let [scope (:room/content-db-scope room)]
+          {:state :ready :room-id (str (:room/id room)) :db-scope (str scope)}
+          {:state :loading})))))
+
+(defn render-chat-tab
+  "Ephemeral column input, not a persisted layout update. Strip unverified
+   chat scope hints BEFORE any column reader (including its context footer)
+   sees them. Other tab kinds retain their explicit work/world selectors."
+  [tab roster]
+  (if-not (#{:chat :chat-thread} (:type tab))
+    tab
+    (let [source (chat-source (:data tab) roster)]
+      (update tab :data
+              #(cond-> (assoc (dissoc % :db-scope) ::chat-source source
+                             :room-missing? (= :missing (:state source)))
+                 (= :ready (:state source))
+                 (assoc :db-scope (:db-scope source) :room-id (:room-id source)))))))
 
 (defn reconcile-tab
   "Apply the roster's verdict to ONE tab — the tab-opened-second half.

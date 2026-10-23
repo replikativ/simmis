@@ -50,12 +50,52 @@
       (is (nil? (get-in healed [:data :room-missing?]))))))
 
 (deftest a-tab-that-already-resolved-is-left-alone
-  (testing "a healthy tab keeps its own scope and its own label"
+  (testing "a healthy tab keeps its canonical scope and its own label"
     (let [tab (assoc (chat-tab {:room-id (str room-id)
-                                :db-scope "other-scope"
+                                :db-scope (str scope-id)
                                 :room-name "What I called it"})
                      :title "What I called it")]
       (is (= tab (tab-heal/heal-chat-tab tab rooms personal))))))
+
+(deftest conversation-scopes-come-from-the-current-roster
+  (doseq [kind [:chat :chat-thread]]
+    (let [tab {:id "restored" :type kind :title "My label"
+               :data {:room-id (str room-id) :db-scope "stale-other-room-scope"
+                      :thread-root-id (str thread-root)}}
+          healed (tab-heal/reconcile-tab tab {:rooms rooms})]
+      (is (= (str scope-id) (get-in healed [:data :db-scope])))
+      (is (= (str thread-root) (get-in healed [:data :thread-root-id])))
+      (is (= {:state :ready :room-id (str room-id) :db-scope (str scope-id)}
+             (tab-heal/chat-source (:data tab) {:rooms rooms})))
+      (is (= {:state :loading} (tab-heal/chat-source (:data tab) nil)))
+      (is (= {:state :missing} (tab-heal/chat-source (:data tab) {:rooms []})))
+      (is (nil? (get-in (tab-heal/reconcile-tab tab {:rooms []}) [:data :db-scope])))
+      (is (= healed (-> [tab]
+                        (as-> tabs (tab-heal/reconcile-layout [{:id "c" :tabs tabs}] nil))
+                        (tab-heal/reconcile-layout {:rooms rooms})
+                        (get-in [0 :tabs 0])))))))
+
+(deftest explicit-work-and-world-selectors-are-not-rewritten
+  (doseq [kind [:workflows :run-inspector]]
+    (let [tab {:id "work" :type kind :title "Work"
+               :data {:room-id (str room-id) :db-scope "explicit-work-scope" :run-id "job"}}]
+      (is (= "explicit-work-scope"
+             (get-in (tab-heal/reconcile-tab tab {:rooms rooms}) [:data :db-scope])))
+      (is (identical? tab (tab-heal/render-chat-tab tab {:rooms rooms}))))))
+
+(deftest the-whole-conversation-column-sees-only-a-verified-source
+  (doseq [kind [:chat :chat-thread]]
+    (let [tab {:type kind :data {:room-id (str room-id) :db-scope "warm-foreign-cache"
+                                 :thread-root-id (str thread-root)}}]
+      (doseq [roster [nil {:rooms []}]]
+        (let [rendered (tab-heal/render-chat-tab tab roster)]
+          (is (nil? (get-in rendered [:data :db-scope]))
+              "Column/footer and timeline cannot read a warm foreign hint")
+          (is (= (if roster :missing :loading)
+                 (get-in rendered [:data ::tab-heal/chat-source :state])))))
+      (let [rendered (tab-heal/render-chat-tab tab {:rooms rooms})]
+        (is (= (str scope-id) (get-in rendered [:data :db-scope])))
+        (is (= (str thread-root) (get-in rendered [:data :thread-root-id])))))))
 
 (deftest the-boot-placeholder-adopts-the-real-room
   (testing "the default layout ships a stand-in tab; its stand-in NAME is a
