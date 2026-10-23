@@ -64,7 +64,9 @@
         aliases (atom {})]
     (binding [tr/*data-readers* {}
               tr/*default-data-reader-fn* (fn [_tag v] v)
-              tr/*alias-map* aliases
+              ;; tools.reader CALLS this resolver. An atom only happened to
+              ;; work while no scanned form contained an auto-resolved alias.
+              tr/*alias-map* #(get @aliases %)
               *ns* (create-ns 'is.simm.uis.browser-write-guard-test.scratch)]
       (loop [acc []]
         (let [form (tr/read {:eof ::eof :read-cond :allow :features #{:cljs}} rdr)]
@@ -136,6 +138,8 @@
                        "(ns x (:require #?(:cljs [datahike.api :as dh]))) #?(:cljs (defn f [c] (dh/transact c [])))"
                        "fully qualified, no alias"
                        "(ns x) (defn f [c] (datahike.api/transact! c []))"
+                       "an auto-resolved keyword before a guarded write"
+                       "(ns x (:require [datahike.api :as d])) (defn f [c] (let [k ::d/example] (d/transact! c [k])))"
                        "a konserve write into a synced store"
                        "(ns x (:require [konserve.core :as k])) (defn f [s] (k/assoc s :db {}))"
                        "kabel.remote directly"
