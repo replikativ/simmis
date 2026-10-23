@@ -26,6 +26,7 @@
             [is.simm.model.workflow-schedules :as model]
             [is.simm.ops.dvergr :as principals]
             [is.simm.ops.work :as work]
+            [is.simm.ops.knowledge-filing :as knowledge-filing]
             [is.simm.ops.knowledge-publish :as knowledge-publish]
             [is.simm.ops.workflow-runs :as workflow-runs]
             [is.simm.ops.workflow-schedules :as schedules]
@@ -134,6 +135,15 @@
       (requests/record-job! conn (:work.request/id request) (:work.request/claim request) (random-uuid))
       request)))
 
+(defn- fixture-outcome!
+  "Orchestration double for synthetic Attempts, never host certification.
+   Preserve the fixture's environment/status/check gates; failed, absent and
+   mismatched evidence must remain unresolved, not become certified failures."
+  [conn _principal _room-id room rid]
+  (when-not (#'schedules/input-processed? conn (requests/get-request conn rid) room)
+    (throw (ex-info "Synthetic candidate did not pass" {:type ::uncertified})))
+  {:outcome :completed})
+
 (defn- fixture-file!
   "Orchestration double ONLY. Real host certification/Proposal storage has its
    own integration tests. These schedules use deliberately synthetic Attempts;
@@ -171,6 +181,7 @@
         (try
           (workspace/ensure-workspace! room)
           (with-redefs [knowledge-admission/default-target workflow-fixture/fixture-default-target
+                        knowledge-filing/candidate-outcome fixture-outcome!
                         knowledge-publish/file-completed-request! fixture-file!]
             (f (assoc fixture :room room :target target :row row
                       :environment (environment/make-environment
