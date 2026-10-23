@@ -36,6 +36,8 @@
    nothing about drives, rooms or muschel."
   (:require [clojure.string :as str]
             [clojure.walk :as walk]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.component :as component]
             [taoensso.telemere :as log])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream]
            [java.util.zip ZipInputStream ZipOutputStream ZipEntry]
@@ -73,7 +75,7 @@
 
 ;; Handles are server-side and hold the container bytes; cap them.
 (def max-handles 16)
-(def handle-ttl-ms (* 30 60 1000))
+(def max-retained-bytes (* 200 1024 1024))
 
 ;; =============================================================================
 ;; Errors as data (same contract as sheet/*)
@@ -91,7 +93,15 @@
   `(try
      ~@body
      (catch clojure.lang.ExceptionInfo e#
-       (if-let [k# (:error (ex-data e#))]
+       (if-let [k# (or (:error (ex-data e#))
+                      (case (:type (ex-data e#))
+                        :effect/denied :not-authorized
+                        :is.simm.agents.source-memory/wrong-world :wrong-world
+                        :is.simm.agents.source-memory/missing-binding :unavailable
+                        :is.simm.agents.source-memory/missing-repository :unavailable
+                        :is.simm.agents.source-memory/missing-proposal-workspace :unavailable
+                        :is.simm.agents.source-memory/wrong-proposal-repository :unavailable
+                        nil))]
          (assoc (dissoc (ex-data e#) :error) :error k# :message (ex-message e#))
          (do (log/log! {:level :error :id ::office-bug :error e#})
              {:error :office-error :message (ex-message e#)})))
@@ -207,9 +217,9 @@
   "Parse an XML byte array into a plain-data tree:
      element → {:tag :w:t :attrs {:xml:space \"preserve\"} :content [children…]}
      text    → String (whitespace preserved verbatim)
-   Comments and processing instructions are dropped (SAX does not surface them
-   here); OOXML/ODF main parts do not depend on them, and any part that does is
-   copied as raw bytes because the agent never parses it."
+   Comments and processing instructions are dropped in parts edited through
+   this structural API. Untouched parts retain their raw bytes; this is not
+   a source-preserving XML editor."
   [^bytes bs]
   (when (> (alength bs) max-part-parse-bytes)
     (fail! :part-too-large "XML part exceeds the parser byte limit"))
@@ -272,10 +282,37 @@
         (.append sb "/>")))
     :else (fail! :bad-tree (str "not an XML node: " (pr-str node)))))
 
+(defn- bounded-tree!
+  "Bound caller-supplied trees before recursive emission or allocation."
+  [tree]
+  (loop [pending (list [tree 0]) nodes 0 chars 128]
+    (when (> (* 6 chars) max-part-parse-bytes)
+      (fail! :xml-too-complex "XML tree exceeds the bounded output size"))
+    (when-let [[node depth] (first pending)]
+      (when (or (> depth 256) (>= nodes 100000) (> (* 6 chars) max-part-parse-bytes))
+        (fail! :xml-too-complex "XML tree exceeds the bounded depth, node count or output size"))
+      (cond
+        (nil? node) (recur (next pending) (inc nodes) chars)
+        (string? node) (recur (next pending) (inc nodes) (+ chars (count node)))
+        (map? node)
+        (let [{:keys [tag attrs content]} node]
+          (when-not (and (or (keyword? tag) (string? tag))
+                         (or (nil? attrs) (map? attrs))
+                         (or (nil? content) (sequential? content))
+                         (<= (count attrs) 10000)
+                         (every? (fn [[k v]] (and (or (keyword? k) (string? k)) (string? v))) attrs))
+            (fail! :bad-tree "Expected an XML element with named string attributes and sequential content"))
+          (recur (concat (map #(vector % (inc depth)) content) (next pending))
+                 (inc nodes)
+                 (+ chars (* 2 (count (name tag))) 5
+                    (reduce + 0 (map (fn [[k v]] (+ (count (name k)) (count v) 4)) attrs)))))
+        :else (fail! :bad-tree "Expected an XML element or text")))))
+
 (defn emit-xml
   "Serialise a plain-data tree back to an XML byte array (UTF-8, flat — no
    reindentation, so `xml:space=\"preserve\"` text is untouched)."
   ^bytes [tree]
+  (bounded-tree! tree)
   (let [sb (StringBuilder. "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")]
     (emit-node! sb tree)
     (.getBytes (.toString sb) "UTF-8")))
@@ -334,19 +371,31 @@
 ;; Handle registry — server-side, so the container stays out of the context
 ;; =============================================================================
 
-(defonce ^:private handles (atom {}))
+(def ^:dynamic ^:private *registry-id* nil)
+(def ^:dynamic ^:private *scope* nil)
 
-(defn- now-ms [] (System/currentTimeMillis))
+(defn- fork-registry [value _fork-id _directive] value)
 
-(defn- evict! []
-  (swap! handles
-         (fn [hs]
-           (let [t (now-ms)
-                 live (into {} (remove (fn [[_ h]] (> (- t @(:touched h)) handle-ttl-ms))) hs)]
-             (if (<= (count live) max-handles)
-               live
-               (into {} (drop (- (count live) max-handles)
-                              (sort-by (fn [[_ h]] @(:touched h)) live))))))))
+(defn- registry []
+  (let [entry (ec/get-state [:world/components *registry-id*])]
+    (when-not entry (fail! :unavailable "Office staging is unavailable in this world"))
+    (component/realization entry)))
+
+(defn- retained-bytes [handles]
+  (reduce + 0 (for [h (vals handles)
+                    bs (concat (vals (:parts h)) (vals (:edits h)))]
+                (alength ^bytes bs))))
+
+(defn- update-registry! [f]
+  (ec/swap-state!
+   [:world/components *registry-id*]
+   (fn [entry]
+     (when-not entry (fail! :unavailable "Office staging is unavailable in this world"))
+     (let [handles (f (component/realization entry))]
+       (when (or (> (count handles) max-handles)
+                 (> (retained-bytes handles) max-retained-bytes))
+         (fail! :office-limit "Close an Office document before retaining more data"))
+       (component/forkable handles fork-registry)))))
 
 (defn- handle-id [h]
   (cond (string? h) h
@@ -355,13 +404,20 @@
 
 (defn- get-handle [h]
   (let [id (handle-id h)]
-    (or (get @handles id)
+    (or (let [entry (get (registry) id)] (when (= *scope* (:scope entry)) entry))
         (fail! :unknown-handle
-               (str "no open document for handle " (pr-str id)
-                    " — (office/open \"/drive/…\") returns a fresh one")
-               {:open (vec (keys @handles))}))))
+               "No open document for this handle in the selected world"))))
 
-(defn- new-id [] (str "office-" (subs (str (java.util.UUID/randomUUID)) 0 8)))
+(defn- new-id [] (str "office-" (java.util.UUID/randomUUID)))
+
+(defn- commit-edits! [before edits]
+  (update-registry!
+   (fn [handles]
+     (let [current (get handles (:id before))]
+       (when-not (and current (= *scope* (:scope current))
+                      (= (:generation before) (:generation current)))
+         (fail! :stale-handle "Office staging changed; inspect the document again"))
+       (assoc handles (:id before) (-> current (assoc :edits edits) (update :generation inc)))))))
 
 ;; =============================================================================
 ;; Text extraction — a bounded preview from the body parts
@@ -415,7 +471,7 @@
 (defn- current-bytes
   "The bytes of part `pname` accounting for any staged edit."
   [h pname]
-  (or (get @(:edits h) pname)
+  (or (get (:edits h) pname)
       (get (:parts h) pname)))
 
 (defn- do-open [{:keys [read-bytes stat]} scope path]
@@ -439,26 +495,24 @@
           (fail! :use-sheet
                  (str path " is a spreadsheet — use sheet/open, which models it as a"
                       " live grid rather than raw XML")))
-        (evict!)
         (let [id (new-id)
               h {:id id :path path :scope scope :format format
-                 :parts parts :edits (atom {}) :touched (atom (now-ms))}]
-          (swap! handles assoc id h)
-          (summarize id path format parts))))))
+                 :parts parts :edits {} :generation 0}
+              summary (summarize id path format parts)]
+          (update-registry! #(assoc % id h))
+          summary)))))
 
 (defn- do-parts [h]
   (let [hh (get-handle h)]
-    (reset! (:touched hh) (now-ms))
     {:handle (:id hh)
      :parts (mapv (fn [[nm bs]]
                     {:name nm
                      :bytes (count bs)
-                     :edited? (contains? @(:edits hh) nm)})
+                     :edited? (contains? (:edits hh) nm)})
                   (:parts hh))}))
 
 (defn- do-text [h]
   (let [hh (get-handle h)]
-    (reset! (:touched hh) (now-ms))
     ;; text over the CURRENT bytes (edits included)
     (let [parts (reduce (fn [m [nm _]] (assoc m nm (current-bytes hh nm)))
                         (array-map) (:parts hh))]
@@ -479,7 +533,6 @@
 
 (defn- do-xml [h pname]
   (let [hh (get-handle h)]
-    (reset! (:touched hh) (now-ms))
     (parse-xml (require-part hh pname))))
 
 (defn- do-set-xml! [h pname tree]
@@ -491,8 +544,7 @@
            (catch Throwable _
              (fail! :malformed-tree
                     (str "the edited tree for " pname " did not serialise to well-formed XML"))))
-      (swap! (:edits hh) assoc pname bs)
-      (reset! (:touched hh) (now-ms))
+      (commit-edits! hh (assoc (:edits hh) pname bs))
       {:handle (:id hh) :part pname :bytes (count bs) :staged? true})))
 
 (defn- replace-in-tree
@@ -521,21 +573,19 @@
     (when (str/blank? old) (fail! :bad-arg "office/replace-text needs a non-empty search string"))
     (let [{:keys [text-parts text-tags]} (format-table (:format hh))
           parts (text-parts (:parts hh))
-          total (atom 0)]
-      (doseq [pname parts :when (contains? (:parts hh) pname)]
-        (let [[tree n] (replace-in-tree (parse-xml (current-bytes hh pname)) text-tags old new)]
-          (when (pos? n)
-            (swap! (:edits hh) assoc pname (emit-xml tree))
-            (swap! total + n))))
-      (reset! (:touched hh) (now-ms))
-      {:handle (:id hh) :replaced @total
-       :note (when (zero? @total)
+          [edits total] (reduce (fn [[edits total] pname]
+                                  (let [[tree n] (replace-in-tree (parse-xml (current-bytes hh pname)) text-tags old new)]
+                                    [(if (pos? n) (assoc edits pname (emit-xml tree)) edits) (+ total n)]))
+                                [(:edits hh) 0] (filter #(contains? (:parts hh) %) parts))]
+      (when (pos? total) (commit-edits! hh edits))
+      {:handle (:id hh) :replaced total
+       :note (when (zero? total)
                (str "no visible occurrence of " (pr-str old) " — note it may be split"
                     " across runs; office/xml + a structural edit reaches those"))})))
 
 (defn- do-save-as! [{:keys [write-file!]} h dest]
   (when-not write-file!
-    (fail! :read-only "this document filesystem is read-only (no :write-file!)"))
+    (fail! :read-only "Office publication is unavailable in this filesystem; staged changes remain in this world"))
   (let [hh (get-handle h)]
     (when-not (str/ends-with? (str dest) (str "." (name (:format hh))))
       (fail! :bad-extension
@@ -546,14 +596,13 @@
           bytes (write-parts parts)
           mime (get format-mime (:format hh) "application/octet-stream")
           node (write-file! dest bytes mime)]
-      (reset! (:touched hh) (now-ms))
       {:handle (:id hh) :saved dest :bytes (count bytes)
-       :edited-parts (vec (keys @(:edits hh)))
+       :edited-parts (vec (keys (:edits hh)))
        :node (when (map? node) (select-keys node [:fs.node/id :fs.node/name]))})))
 
 (defn- do-close [h]
   (let [hh (get-handle h)]
-    (swap! handles dissoc (:id hh))
+    (update-registry! #(dissoc % (:id hh)))
     {:handle (:id hh) :closed true}))
 
 ;; =============================================================================
@@ -568,34 +617,60 @@
      :stat        (fn [path] → {:size n} | nil) optional — enables the size gate
      :write-file! (fn [path bytes mime] → node) optional — without it, save-as!
                                                 is unavailable
-   `scope` is an opaque key (the room uuid) recorded on each handle."
-  [fs scope]
-  {'open          (fn [path] (guarded (do-open fs scope path)))
-   'parts         (fn [h] (guarded (do-parts h)))
-   'text          (fn [h] (guarded (do-text h)))
-   'xml           (fn [h part] (guarded (do-xml h part)))
-   'set-xml!      (fn [h part tree] (guarded (do-set-xml! h part tree)))
-   'replace-text  (fn [h old new] (guarded (do-replace-text h old new)))
-   'save-as!      (fn [h dest] (guarded (do-save-as! fs h dest)))
-   'close         (fn [h] (guarded (do-close h)))})
+   The two-argument constructor is for explicitly context-bound host adapters.
+   Production adapters use owner/capability/with-environment!: each invocation
+   resolves current authority and calls a synchronous callback with
+   {:ctx selected :fs adapter :scope id}, inside its effect boundary.
+   Handle data is immutable, private and fork-local; no global handles or TTL."
+  ([fs scope]
+   (let [owner (ec/current-execution-context)]
+     (sci-namespace owner (random-uuid)
+                    (fn [consume!] (consume! {:ctx (ec/current-execution-context) :fs fs :scope scope})))))
+  ([owner capability-id with-environment!]
+   (let [id [::handles capability-id]
+         _ (binding [ec/*execution-context* owner]
+             (when-not (contains? (component/registered) id)
+               (component/register! id (component/forkable {} fork-registry))))
+         invoke (fn [operation & args]
+                  (guarded
+                   (with-environment!
+                    (fn [{:keys [ctx fs scope]}]
+                     (when-not (and ctx fs scope)
+                       (fail! :unavailable "Office invocation has no authorized environment"))
+                     (binding [ec/*execution-context* ctx *registry-id* id *scope* scope]
+                       (registry)
+                       (case operation
+                         :open (apply do-open fs scope args)
+                         :save (apply do-save-as! fs args)
+                         (apply operation args)))))))]
+     {'open (partial invoke :open)
+      'parts (partial invoke do-parts)
+      'text (partial invoke do-text)
+      'xml (partial invoke do-xml)
+      'set-xml! (partial invoke do-set-xml!)
+      'replace-text (partial invoke do-replace-text)
+      'save-as! (partial invoke :save)
+      'close (partial invoke do-close)})))
 
 (def prompt-block
   "What the agent is told about `office/*`. Kept next to the code so the two
    cannot drift."
-  (str "\n\nOFFICE DOCUMENTS (.docx .pptx .odt on the drive) are a ZIP of XML"
+  (str "\n\nOFFICE DOCUMENTS (.docx .pptx .odt in the room source repository) are a ZIP of XML"
        " parts. `office/*` opens one HOST-side and hands you the XML as DATA;"
-       " parts you don't touch are copied byte-for-byte, so an edit can't break"
-       " the rest of the document. In clojure_eval:\n"
-       "- `(def h (office/open \"/drive/report.docx\"))` — handle + format,"
+       " staging belongs to the current execution world. In clojure_eval:\n"
+       "- `(def h (office/open \"documents/report.docx\"))` — handle + format,"
        " part list, and a text preview (never the raw bytes)\n"
        "- `(office/text h)` — the document's visible text (bounded)\n"
-       "- `(office/replace-text h \"18%\" \"23%\")` — replace visible text across runs;"
+       "- `(office/replace-text h \"18%\" \"23%\")` — replace visible text within runs;"
        " returns how many it changed\n"
        "- `(office/xml h \"word/document.xml\")` — that part as a data tree with the"
        " tags you know (`{:tag :w:t :content [\"…\"]}`). Edit it with clojure.walk"
        " or clojure.zip, then:\n"
        "- `(office/set-xml! h \"word/document.xml\" edited-tree)` — stage the edited part\n"
-       "- `(office/save-as! h \"/drive/report-v2.docx\")` — write a NEW file; only the"
-       " parts you edited are re-serialised, the original is untouched\n"
+       "Binary publication through office/save-as! and legacy /drive paths are"
+       " currently unavailable; staged edits stay in this world. The human Memory"
+       " XML-part editor retains its revision-bound save path. Do not claim a"
+       " staged edit has been published. Changed parts lose XML comments and"
+       " processing instructions; untouched parts retain their bytes.\n"
        "- `(office/close h)` when done.\n"
        "Spreadsheets (.xlsx) use sheet/*, not office/*."))

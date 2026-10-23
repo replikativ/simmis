@@ -34,7 +34,8 @@ a curated vocabulary, injected as namespaces:
 | `memory` | bounded source-selected Markdown descriptors, reads and literal search in the current file world |
 | `kontor` | the room's double-entry book — `entry!`, `balances`, `accounts` |
 | `proposal` | opening, filing and releasing proposals |
-| `sheet` / `office` | spreadsheet and document intake |
+| `sheet` | spreadsheet intake |
+| `office` | canonical source-file reads and fork-local XML staging |
 | `screen` | screen captures the room has been granted — live, and from shares that have ended |
 | `transcript` | the room's meeting transcripts (`/drive/transcripts/`), and `transcribe!` for audio on the drive |
 | a shell | over a [muschel](https://github.com/replikativ/muschel) mount, so file tools and the shell see one filesystem |
@@ -50,6 +51,27 @@ ordinary participant's existing proposal file workspace, never opening a fork
 just to read. Membership, exact repository attachment and the world's read
 effect policy are rechecked on use. The isolated workflow worker does not gain
 live room access through this namespace.
+
+`office/open` reads bounded Office files from that same selected source repository,
+for example `documents/report.docx`. Handles and staged XML are immutable values
+in a capability-owned Spindel world component. Descendants and copied worlds may
+edit or close their copies independently. Every invocation checks the current
+capability identity, repository attachment, membership and world read policy.
+A handle from another capability or replaced repository is unavailable; errors
+do not list handles. Close releases that world's staged bytes. Context-local
+handle and retained-byte limits replace global eviction.
+
+Office staging is deterministic program state, so answering/replaying an access
+effect cannot skip creating or updating a live handle. Actual file reads retain
+their effect boundary and use bounded base64 string receipts. The host does not
+expose raw container bytes to SCI. XML trees are bounded before emission;
+structural edits can lose comments and processing instructions in changed parts.
+
+The agent Office vocabulary currently refuses legacy `/drive` paths and
+`office/save-as!` binary publication. It does not redirect those operations to
+the shared room drive. Staged edits remain in their world and must not be
+reported as saved files. The human Memory XML-part editor retains its independent
+revision-bound save operation. Spreadsheet behavior is unchanged.
 
 Knowledge workflow and benchmark setup install a versioned source role only
 after successful staging in the disposable Run world. There, `memory/*`

@@ -47,6 +47,7 @@
             [is.simm.agents.vocab :as vocab]
             [is.simm.agents.wiki-read :as wiki-read]
             [is.simm.agents.source-memory :as source-memory]
+            [is.simm.agents.office :as agent-office]
             [is.simm.model.parties :as parties]
             [is.simm.model.system-db :as system-db]
             [is.simm.model.model-selection :as model-selection]
@@ -1739,11 +1740,11 @@
       :else nil)))
 
 (defn- room-doc-fs
-  "The filesystem the document vocabularies (`sheet/*`, `office/*`) run on,
+  "The legacy filesystem the spreadsheet vocabulary (`sheet/*`) runs on,
    bound to this room: /drive through the drive model (full-fidelity bytes —
    critical for a zip container the shell FS would truncate), everything else
    through the agent's muschel FS, and writes as NEW content-addressed blobs in
-   the drive. Format-agnostic: both sheet and office share this contract."
+   the drive. Office uses the fork-selected source adapter instead."
   [cctx room room-uuid]
   (let [muschel-fs (fn []
                      (let [host ((requiring-resolve 'dvergr.intake.bash/get-or-create-host!) cctx)]
@@ -1799,13 +1800,15 @@
                       (sheet/sci-namespace (room-doc-fs cctx room room-uuid) room-uuid)))
 
 (defn- add-office-ns!
-  "Install `office/*` — a .docx/.pptx/.odt on the drive opens HOST-side and the
+  "Install `office/*` — a source-repository .docx/.pptx/.odt opens HOST-side and the
    agent edits its XML parts as DATA (walk/zip), re-serialising only the parts
    it touched. Also exposes `clojure.zip` for positional edits (`clojure.walk`
    is already in the sandbox). The container bytes never enter the sandbox."
-  [sci-ctx cctx room room-uuid]
+  [sci-ctx cctx room _room-uuid]
   (sci/add-namespace! sci-ctx 'office
-                      (office/sci-namespace (room-doc-fs cctx room room-uuid) room-uuid))
+                      (agent-office/bindings (:ctx room) (:capability-id cctx) (:receipts cctx)
+                                             {:authorize! authorize-source-memory!
+                                              :proposal-workspace existing-source-proposal-workspace}))
   (sci/add-namespace! sci-ctx 'clojure.zip
                       (sci/copy-ns clojure.zip (sci/create-ns 'clojure.zip nil))))
 
