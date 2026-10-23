@@ -94,17 +94,24 @@
      (fn [draft [index id]]
        (let [source (:text draft) from (count source)
              open (str "<!-- simmis:block " id " -->\n\n")
+             heading (str "### Context " index "\n\n")
+             heading-from (+ from (count open)) heading-to (+ heading-from (- (count heading) 2))
              text (str "Explanation " index)
-             paragraph-from (+ from (count open)) paragraph-to (+ paragraph-from (count text))
-             close-from (+ paragraph-to 2) next (str source open text "\n\n<!-- /simmis:block -->\n\n")
+             paragraph-from (+ heading-from (count heading)) paragraph-to (+ paragraph-from (count text))
+             close-from (+ paragraph-to 2) next (str source open heading text "\n\n<!-- /simmis:block -->\n\n")
+             heading-node {:kind :Heading :heading-level 3 :from heading-from :to heading-to
+                           :children [{:kind :Text :text (str "Context " index) :children []}]}
              syntax {:kind :Paragraph :from paragraph-from :to paragraph-to
                      :children [{:kind :Text :text text :children []}]}]
          (-> draft (assoc :text next)
              (update-in [:analysis :semantic :blocks] conj
                         {:id (uuid id) :identity-status :explicit :from from :to (count next)
-                         :children [] :syntax [syntax]})
+                         :children [] :syntax [heading-node syntax]})
              (update-in [:analysis :slots] into
-                        [{:from from :to paragraph-from :kind :HtmlBlock}
+                        [{:from from :to heading-from :kind :HtmlBlock}
+                         {:from heading-from :to heading-to :kind :Heading
+                          :model {:type "doc" :content [{:type "heading" :attrs {:level 3}
+                                                        :content [{:type "text" :text (str "Context " index)}]}]}}
                          {:from paragraph-from :to paragraph-to :kind :Paragraph
                           :model {:type "doc" :content [{:type "paragraph" :content [{:type "text" :text text}]}]}}
                          {:from close-from :to (count next) :kind :HtmlBlock}]))))
@@ -135,6 +142,9 @@
             (is (= ["Revenue" "Costs" "Experiments"]
                    (mapv #(.-textContent %) (array-seq (.querySelectorAll container "figcaption")))))
             (is (= 2 (.-length (.querySelectorAll container "svg.memory-chart-plot rect"))))
+            (is (= ["Context 0" "Context 1" "Context 2"]
+                   (mapv #(.-textContent %) (array-seq (.querySelectorAll container "h3")))))
+            (is (every? #(str/includes? (.-textContent container) (str "Explanation " %)) (range 3)))
             (let [labels (array-seq (.querySelectorAll container "svg.memory-chart-plot text"))]
               (is (= 18 (count labels)) "axis labels are SVG elements, not text-node sentinels")
               (is (every? #(= "http://www.w3.org/2000/svg" (.-namespaceURI %)) labels))

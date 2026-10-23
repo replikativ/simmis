@@ -211,10 +211,13 @@
                                   (when (= :explicit (:identity-status block))
                                     (el/button {:on-click (fn [_] ((:open-properties a) path {:kind :block :id (:id block)}))}
                                                "Block properties"))
-                                  (for [node (:syntax block)]
-                                    (if-let [model (rich/model node)]
-                                      (model-node model)
-                                      (el/pre {} (subs source (:from node) (:to node)))))
+                                  (mapv (fn [index node]
+                                          (addressing/with-slot-fn
+                                            index
+                                            #(if-let [model (rich/model node)]
+                                               (model-node model)
+                                               (el/pre {} (subs source (:from node) (:to node))))))
+                                        (range) (:syntax block))
                                   (when-let [chart (:chart block)] (charts/view [path (:id block)] chart))
                                   (el/button {:on-click (fn [_]
                                                           ((:change a) path assoc :mode :source
