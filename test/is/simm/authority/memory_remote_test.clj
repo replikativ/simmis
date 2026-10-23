@@ -11,6 +11,7 @@
             [is.simm.authority.world :as world]
             [is.simm.distributed-scope :as ds]
             [is.simm.documents.files :as files]
+            [is.simm.documents.docx-test :as docx-fixtures]
             [is.simm.media.office :as zip]
             [is.simm.model.access :as access]
             [is.simm.ops.owned-workspace-test :as fixture]
@@ -109,6 +110,28 @@
             (is (= other @attached))
             (is (= selected (workspace/selected-system-id)))))))))
 
+(deftest actual-inbound-word-correction-is-a-stamped-owned-write
+  (with-fixture
+    false
+    (fn [{:keys [room owned attached own-descriptor inbound]}]
+      (let [container (zip/write-parts (docx-fixtures/package-parts "<w:p><w:r><w:t>Original</w:t></w:r></w:p>"))]
+        (native/write-to! room (:system own-descriptor)
+                          {"/report.docx" {:base64 (.encodeToString (Base64/getEncoder) container)}} {})
+        (let [stamp (discover inbound) other @attached
+              file (:result (inbound :member "load-memory-file!" {:path "report.docx" :expected-target-stamp stamp}))
+              opened (:result (inbound :member "load-memory-office-part!"
+                                       {:path "report.docx" :expected (:entry file) :part nil :expected-target-stamp stamp}))
+              token (first (vals (get-in opened [:reading :corrections :tokens])))
+              request {:path "report.docx" :expected (:entry file) :token token :replacement "Corrected" :expected-target-stamp stamp}
+              saved (:result (inbound :member "correct-memory-office-text!" request))]
+          (is (uuid? token))
+          (is (true? (:saved? saved)))
+          (let [read (:result (inbound :member "load-memory-office-part!"
+                                     {:path "report.docx" :expected (:entry saved) :part nil :expected-target-stamp stamp}))]
+            (is (= "Corrected" (get-in read [:reading :blocks 0 :runs 0 :text]))))
+          (is (:error (inbound :member "correct-memory-office-text!" request)) "The old revision cannot be reused")
+          (is (= other @attached)))))))
+
 (deftest inbound-and-direct-worker-authorization-precede-room-hydration
   (with-fixture
     true
@@ -120,7 +143,9 @@
                                                             :types [] :additions [] :expected-target-stamp (random-uuid)}]
                            ["save-memory-declaration!" {:path "wiki/file.md" :expected-target-stamp (random-uuid)}]
                            ["load-memory-file!" {:path "wiki/file.md" :expected-target-stamp (random-uuid)}]
-                           ["save-memory-file!" {:path "bad.md" :expected nil :text "bad" :expected-target-stamp (random-uuid)}]]]
+                           ["save-memory-file!" {:path "bad.md" :expected nil :text "bad" :expected-target-stamp (random-uuid)}]
+                           ["correct-memory-office-text!" {:path "report.docx" :expected nil :token (random-uuid)
+                                                           :replacement "bad" :expected-target-stamp (random-uuid)}]]]
         (is (world/refused? (inbound kind name args))))
       (is (zero? @hydrations))
       ;; This ordering unit isolates the actual drain predicate, not a conveyed

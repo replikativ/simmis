@@ -89,7 +89,7 @@
         state {:drafts {path {:text "saved" :source {:text "saved" :entry (:expected model)}}}}
         open (assoc-in state [:declaration-drafts [path target]] (declarations/draft model))]
     (is (declarations/openable? state path model))
-    (doseq [operation [:move :save :property-save :office-save]]
+    (doseq [operation [:move :save :property-save :office-save :office-correct]]
       (is (false? (declarations/openable? (assoc-in state [:loading [operation path]] true) path model))))
     (is (declarations/move-blocked? open path))
     (is (false? (declarations/openable? open path model)))
@@ -104,7 +104,7 @@
 (deftest queued-discard-cannot-forget-an-in-flight-assignment
   (let [path (:path model) target (:target model)
         state {:declaration-drafts {[path target] (declarations/draft model)}}]
-    (doseq [operation [:move :save :property-save :office-save]]
+    (doseq [operation [:move :save :property-save :office-save :office-correct]]
       (let [busy (assoc-in state [:loading [operation path]] true)]
         (is (= busy (declarations/discard busy path target)))))
     (is (false? (declarations/drafts? (declarations/discard state path target) path)))))

@@ -10,9 +10,8 @@ harness or a local-first SaaS on Datahike, this is a worked example of the
 whole path: durable storage, client↔server replication, authorization,
 branching and review, and a sandboxed agent runtime.
 
-> **Status: early.** This is a "release early" first public cut. It runs, it
-> is used daily, and it has rough edges — see [Known gaps](#known-gaps) before
-> deploying it anywhere that matters.
+> **Status: alpha.** Simmis is actively developed and has rough edges. Read
+> [Known gaps](#known-gaps) before using it with sensitive or irreplaceable data.
 
 ## What is in the box
 
@@ -20,17 +19,22 @@ branching and review, and a sandboxed agent runtime.
 are the same kind of participant (a *party*), so `@mention` works across both.
 Rooms can be mirrored to Telegram.
 
-**Knowledge bases.** A KB is its own Datahike database holding wiki pages,
-blocks, links, and typed entities (customers, invoices, contacts). Pages link
-with `[[Title]]`; links are stored as datoms, so backlinks and neighborhood
-queries are ordinary queries. Cross-database links use an explicit
-`[[dh://…][Display]]` form.
+**Memory.** New canonical workspaces present one hierarchical file tree.
+Markdown files are wiki knowledge, with stable page/block identities and typed
+properties. Supported source, reading, rich-text and structure views share the
+same revision-checked files. Code files offer source/Superficie views and an
+explicit room SCI REPL. Word documents have simplified reading, selective text
+corrections and advanced XML editing; Word page layout is not reproduced.
+Legacy knowledge bases remain available separately and are not automatically
+migrated. See [the document model](doc/documents.md) for syntax and properties.
 
-**Proposals.** Every governed write from an agent lands on a *fork* — an
-yggdrasil branch — not on trunk. A proposal collects forks across KBs, the
+**Proposals.** Agents can work in isolated worlds and submit their changes for
+review. A proposal collects forks across KBs, the
 book and the room repository, shows a semantic diff against the merge base,
 and merges only when someone with `:merge` authority accepts it. This is the
-control that lets you be generous with what agents may write.
+control that lets you be generous with what agents may write. Direct room
+operations remain subject to current permissions; not every operation is
+forced into a fork.
 
 **Time travel.** Stores keep history, so any KB can be read `as-of` a point in
 time, and the history subway shows how a page got to where it is.
@@ -46,6 +50,14 @@ ledger by getting the arithmetic wrong.
 `datahike.api`). They can schedule recurring workflows, write wiki pages,
 post to the book, and open proposals against the room's code repository.
 
+**Workflows and Schedules.** Versioned room files define reusable work that can
+run manually, be benchmarked on retained cases, or be activated on a schedule.
+New canonical workspaces include an editable wiki-maintenance workflow,
+installed inactive. Background execution requires a configured model, a finite
+allowance and explicit activation. Results and file proposals remain
+inspectable; setup does not fund or merge them automatically. Existing rooms
+can install the starter without overwriting customized source.
+
 **Intake.** Web-clipper browser extension, mail accounts, screen capture, and
 voice notes all land in the same substrate.
 
@@ -58,12 +70,14 @@ voice notes all land in the same substrate.
 | Database | [datahike](https://github.com/replikativ/datahike) — Datalog, durable, history-preserving |
 | Storage | [konserve](https://github.com/replikativ/konserve) — pluggable KV (file, S3, IndexedDB) |
 | Branching | [yggdrasil](https://github.com/replikativ/yggdrasil) — copy-on-write branches over Datahike |
-| Replication | [konserve-sync](https://github.com/replikativ/konserve-sync) over [kabel](https://github.com/replikativ/kabel) websockets, [kabel-auth](https://github.com/replikativ/kabel-auth) JWT |
+| Replication | [konserve-sync](https://github.com/replikativ/konserve-sync) over [kabel](https://github.com/replikativ/kabel) websockets with integrated JWT authentication |
 | Ledger | [kontor](https://github.com/replikativ/kontor) — double-entry accounting on Datahike |
 
-The client runs a **real Datahike replica in the browser** (IndexedDB-backed),
-kept in sync by konserve-sync. Queries are local; the server is the
-authorization boundary, not a query API.
+The browser maintains IndexedDB-backed Datahike replicas for authorized shared
+and room data. Replica queries run locally. Canonical Memory files also use
+bounded, authorized server operations, reactive change notifications and
+on-demand file loading. The browser does not replicate the entire owned file
+repository. The server checks authorization at these boundaries.
 
 ## Quick start
 
@@ -115,16 +129,16 @@ external identity providers, and every environment variable simmis reads.
 
 Agents need a model. Provider keys come from the environment —
 `FIREWORKS_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`; a provider is
-registered only when its key is present. The explicit default, used only when
-nobody selected a model, is `accounts/fireworks/models/glm-5p2`, so
-`FIREWORKS_API_KEY` is the path of least resistance. An unavailable selection
+registered only when its key is present. Configure the default using
+`SIMMIS_DEFAULT_MODEL` or `:models {:default "<id or family>"}` in config.
+Without either, the compiled-in preference is the Fireworks GLM family,
+`accounts/fireworks/models/glm-*`. An unavailable selection
 never falls through to that default or another family/provider. Latest stores a
 family and follows its newest usable version. An explicit version is preserved
 as the preferred version; if withdrawn, it may use only a newer usable version
 in the same family and provider, and automatically returns to the preferred
 version if it reappears. `OPENAI_API_KEY`
-on its own reaches OpenAI (the GPT-5.6 and GPT-5.5
-models); add `OPENAI_BASE_URL` to point that key at any other OpenAI-compatible
+authenticates the OpenAI provider; add `OPENAI_BASE_URL` to point that key at another OpenAI-compatible
 endpoint, including a local one. Fireworks always uses its own base and
 `FIREWORKS_API_KEY`; credentials are never shared between providers. Each
 agent's model can also be set per room in its settings. The picker keeps every
@@ -215,9 +229,9 @@ Five documents, each about code that exists.
 
 Being explicit, because the list selects who should use this today:
 
-- **Authorization has no integration-level test.** The `can?` predicate, the
-  control plane and the data-plane gates all have unit coverage, but nothing
-  exercises them together against a real system DB and real grants.
+- **Alpha security.** Authorization has integration coverage over real grants,
+  inbound RPCs, data-plane gates and guarded native publication. This is not a
+  security audit; some surfaces have the limitations listed below.
 - **Blob reads are authenticated, but not authorized.** Any signed-in user can
   fetch any blob by hash — drive files, mail attachments, pasted images,
   screen-recording chunks. Scoping a blob to a room would need a record of
@@ -229,7 +243,12 @@ Being explicit, because the list selects who should use this today:
   curated vocabulary, hardened against the escapes we found, but it is not a
   VM. Do not run untrusted agents against secrets you cannot rotate.
 - **No migration tooling.** Create-time-fixed store flags mean some upgrades
-  require re-creating stores.
+  require re-creating stores. Existing wikis are not automatically converted
+  to canonical Memory, and file export does not recreate every governed type
+  definition.
+- **Fulltext installation.** Late fulltext installation on a populated
+  shared-writer store may be unavailable; the supported installation path is
+  tracked in [Datahike #1136](https://github.com/replikativ/datahike/issues/1136).
 - **Set `SIMMIS_JWT_SECRET` in production.** Without it a signing secret is
   generated once and persisted to `.dvergr/jwt-secret`, i.e. in the same
   directory as the data it protects. Fine for development, not for a server.

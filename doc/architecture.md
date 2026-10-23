@@ -406,6 +406,23 @@ conversion. A failed optional reading or default XML projection leaves the
 original download available. DOCX reading never converts a package to Markdown
 or supplies publication authority.
 
+Eligible saved Word text runs offer an explicit whole-run correction. A bounded
+lexical locator is cross-checked against the hardened SAX element sequence;
+the host patches the original UTF-8 character-data span and verifies the
+resulting semantic tree. Duplicate text is selected by source identity rather
+than text search. Exact no-ops retain original package bytes. New leading or
+trailing whitespace requires an existing effective `xml:space="preserve"`.
+Fields, review content, hyperlinks, content controls, mixed-content text leaves,
+signed/macro packages and parts with bookmark/review ranges are outside this
+profile. Application ReBAC governs file writes; this is not an implementation
+of Word password/protection semantics.
+
+Correction tokens bind the file path, descriptor and main-part source revision;
+they grant no authority. Publication uses the same current owned binding,
+fresh authority gate and native binary CAS as other Office writes. Correction
+drafts are context-backed; incoming revisions and late acknowledgements cannot
+rebase newer typing onto the wrong saved XML version.
+
 ## Processes and ports
 
 One JVM runs everything in development (`clj -M:dev`):

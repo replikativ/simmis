@@ -36,7 +36,7 @@
      (context/with-server-context
        (let [id (when (string? room-id) (parse-uuid room-id))
              action (cond (#{:evaluate :repl} operation) :merge
-                          (#{:save :move :office-save :rich-save :property-save :declaration-save} operation) :write
+                          (#{:save :move :office-save :office-correct :rich-save :property-save :declaration-save} operation) :write
                           :else :read)
              conn (system-db/get-conn)]
          (when-not (and id (uuid? party)) (throw (ex-info "Invalid room identity" {:type :validation-error})))
@@ -84,6 +84,7 @@
                                        :rich-save (owned-files/rich-save! conn party id room args)
                                        :office (owned-files/office! conn party id room args)
                                        :office-save (owned-files/office-save! conn party id room args)
+                                       :office-correct (owned-files/office-correct! conn party id room args)
                                        :move (owned-files/move! conn party id room args))))]
              (assoc reply :permissions
                     {:write? (access/can? @(system-db/get-conn) party :write {:room id})
@@ -234,4 +235,11 @@
   (spin-remote server-id [room-id-str request]
                #?(:clj (let [party (access/authenticated-party-id)]
                          (await (blocking/blocking #(invoke-memory party room-id-str :office-save request))))
+                  :cljs nil)))
+
+(defn-spin-remote correct-memory-office-text!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (let [party (access/authenticated-party-id)]
+                         (await (blocking/blocking #(invoke-memory party room-id-str :office-correct request))))
                   :cljs nil)))
