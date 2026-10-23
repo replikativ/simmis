@@ -700,11 +700,14 @@
                                  {:scope :sandbox :accept? (generation? path (:generation draft))}))))
        :block-links (fn [path] (references/block-links room path (get-in (state) [:drafts path])))
        :jump (fn [path] (references/jump (state) path))
+       :linked-block (fn [path] (references/linked-block (state) path))
        :retry-reference (fn [] (update! #(-> % (dissoc :block-reference) (update :errors dissoc :reference))))
        :before-jump (fn [path jump]
-                      (= jump (references/jump (state) path)))
+                      (and (current?) (verified? (state) (connection))
+                           (= jump (references/jump (state) path))))
        :jumped (fn [path jump mode selection]
-                 (when (= jump (references/jump (state) path))
+                 (when (and (current?) (verified? (state) (connection))
+                            (= jump (references/jump (state) path)))
                    (update! (fn [s]
                               (-> s (assoc-in [:block-reference :applied?] true)
                                   (assoc-in (if (= :rich mode)

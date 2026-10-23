@@ -48,6 +48,9 @@
         b (assoc a :target-stamp room)
         attempted-b (assoc-in b [:block-reference] {:intent intent :request-marker (references/marker b intent)})]
     (is (references/completed? a intent))
+    (is (= (str block) (references/linked-block a path)))
+    (is (nil? (references/linked-block (assoc a :target-stamp room) path)))
+    (is (nil? (references/linked-block (assoc-in a [:drafts path :incoming-entry] {:content room}) path)))
     (is (references/completed? (assoc a :connection 9 :target-epoch 3) intent))
     (is (not (references/completed? b intent)))
     (is (not (references/completed? (assoc attempted-b :target-stamp stamp) intent)))))

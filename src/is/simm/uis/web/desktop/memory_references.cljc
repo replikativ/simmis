@@ -37,6 +37,18 @@
     (and (:applied? reference) (= intent (:intent reference))
          (= (:target-stamp state) (second (:request-marker reference))))))
 
+(defn linked-block [state path]
+  (let [{:keys [intent reply]} (:block-reference state)
+        draft (get-in state [:drafts path])]
+    (when (and (completed? state intent) (:target-verified? state)
+               (= path (:selected state) (:path reply))
+               (= (:repository-id intent) (get-in draft [:source :repository-id]))
+               (= (:target-stamp state) (get-in draft [:source :target-stamp]))
+               (not (:target-stale? draft)) (not (:incoming draft))
+               (not (:incoming-entry draft)) (not (:remote-deleted? draft))
+               (some #(= (:block-id intent) (:id %)) (explicit-blocks draft)))
+      (str (:block-id intent)))))
+
 (defn jump [state path]
   (let [{:keys [intent reply id applied? request-marker]} (:block-reference state)
         draft (get-in state [:drafts path])

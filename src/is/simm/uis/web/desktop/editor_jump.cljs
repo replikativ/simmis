@@ -2,6 +2,19 @@
   "Native selection adapter. The owning Spindel context admits and acknowledges
    navigation; this element retains only a disposable duplicate-event guard.")
 
+(defn attach!
+  "Spindel assigns on-* DOM properties. Browsers recognize only built-in event
+   properties, so the foreign adapter bridges its custom events explicitly.
+   Read the latest property on delivery: reactive callbacks may change without
+   remounting this native editor. All listeners belong to this element."
+  [^js el]
+  (let [before (fn [event] (when-let [callback (aget el "onsimmis-before-jump")] (callback event)))
+        after (fn [event] (when-let [callback (aget el "onsimmis-jumped")] (callback event)))]
+    (.addEventListener el "simmis-before-jump" before)
+    (.addEventListener el "simmis-jumped" after)
+    (fn [] (.removeEventListener el "simmis-before-jump" before)
+      (.removeEventListener el "simmis-jumped" after))))
+
 (defn consume! [^js el apply!]
   (when-let [raw (.getAttribute el "data-jump")]
     (let [jump (js/JSON.parse raw)

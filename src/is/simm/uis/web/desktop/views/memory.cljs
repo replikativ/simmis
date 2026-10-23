@@ -202,6 +202,7 @@
                                    :selection (:document-selection base) :document? true
                                    :charts chart-models
                                    :block-links ((:block-links a) path)
+                                   :linked-block ((:linked-block a) path)
                                    :jump ((:jump a) path)
                                    :before-jump #((:before-jump a) path %)
                                    :on-jumped (fn [jump selection] ((:jumped a) path jump :rich selection))

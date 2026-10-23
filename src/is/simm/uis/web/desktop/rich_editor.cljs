@@ -103,6 +103,7 @@
           paint! (fn [node]
                    (let [id (aget (.-attrs node) "blockId")]
                      (.setAttribute dom "data-block-id" id)
+                     (.toggleAttribute dom "data-linked-block" (= id (.getAttribute el "data-linked-block-id")))
                      (let [href (aget (js/JSON.parse (or (.getAttribute el "data-block-links") "{}")) id)]
                        (set! (.-hidden link) (not href))
                        (if href (.setAttribute link "href" href) (.removeAttribute link "href")))
@@ -228,6 +229,8 @@
                                    allowed?)))})])}))
 
 (defn disconnect! [^js el]
+  (when-let [release (.-simmisReleaseJump el)]
+    (release) (set! (.-simmisReleaseJump el) nil))
   (set! (.-simmisChartData el) nil)
   (when-let [release (.-simmisReleaseControls el)]
     (release)
@@ -273,9 +276,6 @@
                                   (.create NodeSelection doc pos))]
                   (.dispatch (.-view editor) (.scrollIntoView (.setSelection (.. editor -state -tr) selection)))
                   (.focus (.-view editor))
-                  (doseq [block (array-seq (.querySelectorAll el ".memory-semantic-block"))]
-                    (.toggleAttribute block "data-linked-block"
-                                      (= (aget request "block-id") (.getAttribute block "data-block-id"))))
                   #js {:from (.-from selection) :to (.-to selection) :native (.toJSON selection)
                        :region (controls/region editor) :format (clj->js (controls/format-state el editor))}))))))))
 
@@ -305,6 +305,7 @@
                        :onFocus (fn [event] (notify! el (.-editor event)))
                        :onSelectionUpdate (fn [event] (notify! el (.-editor event)))})]
       (set! (.-simmisRichEditor el) editor)
+      (set! (.-simmisReleaseJump el) (jump/attach! el))
       (set! (.-simmisReleaseControls el) (controls/attach! el editor))
       (restore-selection! el editor)
       (controls/consume-focus-request! el editor)
@@ -339,6 +340,8 @@
                                    href (aget (js/JSON.parse (or new "{}")) id)]
                                (set! (.-hidden link) (not href))
                                (if href (.setAttribute link "href" href) (.removeAttribute link "href"))))
+        "data-linked-block-id" (doseq [block (array-seq (.querySelectorAll el ".memory-semantic-block"))]
+                                 (.toggleAttribute block "data-linked-block" (= new (.getAttribute block "data-block-id"))))
         nil)
         (consume-jump! el (.-simmisRichEditor el))
         (finally (set! (.-simmisApplying el) false))))))
@@ -349,10 +352,10 @@
              connectedCallback() { (~{})(this); }
              disconnectedCallback() { (~{})(this); }
              attributeChangedCallback(name, oldValue, newValue) { (~{})(this, name, oldValue, newValue); }
-             static get observedAttributes() { return ['data-owner', 'data-model', 'data-read-only', 'data-selection', 'data-charts', 'data-block-links', 'data-jump']; }
+             static get observedAttributes() { return ['data-owner', 'data-model', 'data-read-only', 'data-selection', 'data-charts', 'data-block-links', 'data-linked-block-id', 'data-jump']; }
            })" mount! disconnect! sync!)))
 
-(defn view [{:keys [id model selection read-only? on-change document? on-blocked charts block-links jump before-jump on-jumped]}]
+(defn view [{:keys [id model selection read-only? on-change document? on-blocked charts block-links linked-block jump before-jump on-jumped]}]
   (foreign-node
    {:tag :simmis-rich-editor :key id :class "memory-rich-editor"
     :data-owner (pr-str [id (:fork-id ec/*execution-context*)])
@@ -360,6 +363,7 @@
     :data-model (js/JSON.stringify (clj->js model))
     :data-charts (js/JSON.stringify (clj->js (or charts {})))
     :data-block-links (js/JSON.stringify (clj->js (or block-links {})))
+    :data-linked-block-id (or linked-block "")
     :data-jump (when jump (js/JSON.stringify (clj->js jump)))
     :on-simmis-before-jump #(jump/before! % before-jump)
     :on-simmis-jumped #(jump/acknowledge! % on-jumped)

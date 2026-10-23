@@ -91,6 +91,7 @@
 
 (defn mount! [^js el]
   (when-not (.-simmisEditorView el)
+    (set! (.-simmisReleaseJump el) (jump/attach! el))
     (set! (.-simmisEditorView el)
           (EditorView. #js {:state (editor-state! el) :parent el}))
     (when (= "true" (.getAttribute el "data-auto-focus"))
@@ -98,6 +99,8 @@
     (consume-jump! el (.-simmisEditorView el))))
 
 (defn disconnect! [^js el]
+  (when-let [release (.-simmisReleaseJump el)]
+    (release) (set! (.-simmisReleaseJump el) nil))
   (when-let [^js view (.-simmisEditorView el)]
     (.destroy view)
     (set! (.-simmisEditorView el) nil)
