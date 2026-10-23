@@ -9219,3 +9219,10 @@ body.tab-dragging .column-drop-zone {
 .memory-repl .source-editor { min-height: 100px; max-height: 300px; overflow: auto; }
 .memory-repl-receipt { margin: 8px 0; padding: 8px; border-top: 1px solid var(--mono-border); }
 .memory-repl-receipt pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.office-document button.office-correctable { display: inline; margin: 0; padding: 0; border: 0; border-radius: 2px; background: transparent; color: inherit; font: inherit; text-align: inherit; white-space: pre-wrap; cursor: text; }
+.office-document button.office-correctable:hover { background: var(--mono-bg-subtle); }
+.office-document button.office-correctable:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.office-correction-form { margin: 8px 0; padding: 8px; border: 1px solid var(--mono-border); border-radius: 6px; }
+.office-correction-form label { display: block; font-size: 0.85rem; }
+.office-correction-form input { display: block; box-sizing: border-box; width: 100%; margin: 4px 0 8px; padding: 6px; border: 1px solid var(--mono-border); border-radius: 4px; background: var(--mono-bg-base); color: inherit; font: inherit; }
+.office-correction-form button { margin-right: 6px; }

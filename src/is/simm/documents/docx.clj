@@ -1,7 +1,9 @@
 (ns is.simm.documents.docx
   "Bounded, inert DOCX reading projection. Never serializes a package or
    resolves external relationships, document styles, fields or resources."
-  (:require [clojure.string :as str])
+  (:require [clojure.string :as str]
+            [is.simm.documents.markdown :as markdown]
+            [is.simm.documents.xml-source :as xml-source])
   (:import [java.io ByteArrayInputStream]
            [java.net URI]
            [javax.xml XMLConstants]
@@ -43,13 +45,13 @@
         _ (.setProperty parser XMLConstants/ACCESS_EXTERNAL_DTD "")
         _ (.setProperty parser XMLConstants/ACCESS_EXTERNAL_SCHEMA "")
         stack (java.util.ArrayDeque.) root (volatile! nil)
-        nodes (volatile! 0) chars (volatile! 0)
+        nodes (volatile! 0) chars (volatile! 0) element-index (volatile! -1)
         count! (fn [n]
                  (when (or (> (vswap! nodes inc) max-xml-nodes)
                            (> (vswap! chars + n) max-xml-bytes))
                    (refuse! ::limit "Document XML exceeds the reading complexity limit.")))
         handler (proxy [DefaultHandler] []
-                  (startElement [uri local _qname attrs]
+                  (startElement [uri local qname attrs]
                     (when (or (>= (.size stack) 128) (> (.getLength attrs) 128))
                       (refuse! ::limit "Document XML exceeds the reading depth or attribute limit."))
                     (count! (+ (count uri) (count local)))
@@ -59,7 +61,10 @@
                                                uri (.getURI attrs i) name (.getLocalName attrs i)]]
                                      (do (count! (+ (count uri) (count name) (count value)))
                                          [[uri name] value])))]
-                      (.push stack {:ns uri :name local :attrs attributes :children (transient [])})))
+                      (.push stack {:ns uri :name local :qname qname :source-index (vswap! element-index inc)
+                                    :space (or (get attributes [XMLConstants/XML_NS_URI "space"])
+                                               (:space (.peek stack)))
+                                    :attrs attributes :children (transient [])})))
                   (endElement [_uri _local _qname]
                     (let [node (.pop stack) node (update node :children persistent!)]
                       (if-let [parent (.peek stack)]
@@ -150,6 +155,9 @@
 (defn- run [state node id]
   (let [properties (child node "rPr")
         underline (child properties "u")
+        correction? (and (:correction? state)
+                         (every? #(some (partial word? %) ["rPr" "t" "tab" "br" "cr" "noBreakHyphen" "softHyphen"]) (elements node))
+                         (every? #(some (partial word? %) ["b" "i" "strike" "u"]) (elements properties)))
         marks {:bold (boolean (on? (child properties "b")))
                :italic (boolean (on? (child properties "i")))
                :strike (boolean (on? (child properties "strike")))
@@ -163,8 +171,9 @@
                       (word? item "rPr") nil
                       (word? item "t")
                       (if (every? string? (:children item))
-                        (emit! state {:kind :text :id (conj id index) :marks marks
-                                      :text (text! state (apply str (:children item)))})
+                        (emit! state (cond-> {:kind :text :id (conj id index) :marks marks
+                                             :text (text! state (apply str (:children item)))}
+                                       correction? (assoc :source-index (:source-index item))))
                         (placeholder state item (conj id index)))
                       (or (word? item "br") (word? item "cr"))
                       (emit! state {:kind :text :id (conj id index) :marks marks :text (text! state "\n")})
@@ -178,7 +187,8 @@
             (map-indexed vector (elements node))))))
 
 (defn- paragraph [state node id]
-  (let [properties (child node "pPr")
+  (let [state (assoc state :correction? (every? #(some (partial word? %) ["pPr" "r"]) (elements node)))
+        properties (child node "pPr")
         outline (some-> (child properties "outlineLvl") (word-attr "val"))
         heading (when (and outline (re-matches #"[0-5]" outline)) (inc (Long/parseLong outline)))
         numbering (child properties "numPr")
@@ -296,3 +306,84 @@
       {:status :unsupported :diagnostics [(ex-message e)]})
     (catch Exception _
       {:status :unsupported :diagnostics ["Document XML or package relationships could not be read safely."]})))
+
+(defn- unsigned-package! [parts]
+  ;; Package metadata is authority here; conventional filenames alone do not
+  ;; identify signatures or macro payloads in OPC packages.
+  (doseq [[path bytes] parts
+          :when (or (= path "[Content_Types].xml") (str/ends-with? path ".rels"))
+          node (tree-seq map? elements (xml-tree bytes))
+          :let [kind (some-> (or (attr node "ContentType") (attr node "Type")) str/lower-case)]
+          :when (and kind (or (str/includes? kind "digital-signature")
+                              (str/includes? kind "macroenabled")
+                              (str/includes? kind "vbaproject")))]
+    (refuse! ::correction "Signed or macro-enabled packages cannot be corrected in this view.")))
+
+(defn correction-source
+  "Host-only source map for eligible complete text leaves. No connections,
+   publication callbacks or browser offsets are accepted or retained."
+  [parts]
+  (unsigned-package! parts)
+  (let [reading (inspect-parts parts)
+        _ (when-not (= :ready (:status reading)) (refuse! ::correction "The saved document is not eligible for text correction."))
+        path (:main-part reading) bytes (get parts path)
+        source (markdown/decode bytes)
+        _ (when (or (some zero? bytes)
+                    (when-let [[_ _ encoding] (re-find #"\A\uFEFF?<\?xml\s[^?]*\bencoding\s*=\s*(['\"])([^'\"]+)\1" source)]
+                      (not= "UTF-8" (str/upper-case encoding))))
+            (refuse! ::correction "Text correction supports UTF-8 document parts only."))
+        document (xml-tree bytes) semantic (vec (tree-seq map? elements document))
+        locations (xml-source/checked-locations source semantic)
+        ;; These range constructs can cross paragraph boundaries. The first
+        ;; correction profile conservatively refuses them for the whole part.
+        _ (when (some #(and (contains? word-namespaces (:ns %))
+                            (contains? #{"bookmarkStart" "bookmarkEnd" "commentRangeStart" "commentRangeEnd"
+                                         "moveFromRangeStart" "moveFromRangeEnd" "moveToRangeStart" "moveToRangeEnd"}
+                                       (:name %))) semantic)
+            (refuse! ::correction "Documents with bookmark or review ranges require Advanced XML."))
+        runs (filter #(and (map? %) (= :text (:kind %)) (contains? % :source-index))
+                     (tree-seq coll? seq (:blocks reading)))
+        targets (into {}
+                      (keep (fn [{:keys [source-index text]}]
+                              (let [node (get semantic source-index) location (get locations source-index)]
+                                (when (and (word? node "t") (:plain? location))
+                                  [source-index {:text text :space (:space node) :location location}])))) runs)]
+    {:main-part path :source source :reading reading :targets targets}))
+
+(defn correct-text
+  "Replace exactly one eligible, whole w:t. Reconstruct and verify its source
+   identity on every call; source-index is a selector, never authority."
+  [parts source-index replacement]
+  (let [{:keys [main-part source targets]} (correction-source parts)
+        target (get targets source-index)]
+    (when-not target (refuse! ::correction "Select an ordinary text run from the current saved document."))
+    (if (= replacement (:text target))
+      {:changed? false :main-part main-part}
+      (let [_ (when-not (and (string? replacement) (<= (count replacement) 10000)
+                             (not (re-find #"[\p{Cc}]" replacement)))
+                (refuse! ::correction "Use bounded plain text without tabs, line breaks or control characters."))
+            _ (when (and (not= "preserve" (:space target)) (re-find #"\A\s|\s\z" replacement))
+                (refuse! ::correction "Leading or trailing whitespace requires an existing xml:space=preserve text run."))
+            patched (xml-source/replace-content source (:location target) replacement)
+            result (assoc parts main-part patched)
+            after (correction-source result)
+            expected (assoc-in targets [source-index :text] replacement)
+            comparable (fn [items] (into {} (map (fn [[index item]] [index (dissoc item :location)])) items))]
+        (when-not (= (comparable expected) (comparable (:targets after)))
+          (refuse! ::correction "The correction changed unexpected document content."))
+        ;; Verify the entire semantic tree, allowing only the selected text
+        ;; leaf's character chunks to differ. Prefixes and attributes survive.
+        (let [before-tree (xml-tree (get parts main-part)) after-tree (xml-tree patched)
+              scrub (fn scrub [node]
+                      (if (= source-index (:source-index node))
+                        (assoc node :children [::selected-text])
+                        (update node :children
+                                (fn [items]
+                                  (reduce (fn [out item]
+                                            (let [item (if (map? item) (scrub item) item)]
+                                              (if (and (string? item) (string? (peek out)))
+                                                (conj (pop out) (str (peek out) item))
+                                                (conj out item)))) [] items)))))]
+          (when-not (= (scrub before-tree) (scrub after-tree))
+            (refuse! ::correction "The correction changed document structure.")))
+        {:changed? true :main-part main-part :bytes patched}))))

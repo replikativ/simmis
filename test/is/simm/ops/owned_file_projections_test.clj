@@ -4,6 +4,7 @@
             [dvergr.substrate.geschichte :as workspace]
             [is.simm.documents.files :as files]
             [is.simm.documents.office :as office]
+            [is.simm.documents.docx-test :as docx-fixtures]
             [is.simm.documents.rich :as rich]
             [is.simm.media.office :as zip]
             [is.simm.ops.owned-files :as actions]
@@ -70,10 +71,12 @@
           (is (= "# Attachment\n" (:text (apply actions/read! (conj args {:path "wiki/file.md"}))))))
         (with-redefs [files/history-in (fn [& _] (throw (AssertionError. "Stale stamp reached history")))
                       office/inspect-in (fn [& _] (throw (AssertionError. "Stale stamp reached ZIP decoding")))
-                      office/prepare-save-in (fn [& _] (throw (AssertionError. "Stale stamp reached XML parsing")))]
+                      office/prepare-save-in (fn [& _] (throw (AssertionError. "Stale stamp reached XML parsing")))
+                      office/prepare-correction-in (fn [& _] (throw (AssertionError. "Stale stamp reached text reconstruction")))]
           (doseq [[f request] [[actions/history! {:path "wiki/file.md"}]
                                [actions/office! {:path "report.docx" :expected nil :part nil}]
-                               [actions/office-save! {:path "report.docx" :expected nil :part "word/document.xml" :text "<x/>"}]]]
+                               [actions/office-save! {:path "report.docx" :expected nil :part "word/document.xml" :text "<x/>"}]
+                               [actions/office-correct! {:path "report.docx" :expected nil :token (random-uuid) :replacement "text"}]]]
             (is (thrown? clojure.lang.ExceptionInfo
                          (apply f (conj args (assoc request :expected-target-stamp stamp)))))))))))
 
@@ -105,6 +108,31 @@
                                              :room/default-repository [:system/id (:registry-system attached-descriptor)]}])
                           prepared))]
           (is (thrown? clojure.lang.ExceptionInfo (apply actions/office-save! (conj args edit)))))
+        (is (= before @owned))
+        (is (= other @attached))))))
+
+(deftest correction-prepare-cannot-switch-the-original-publication-binding
+  (with-fixture
+    false
+    (fn [{:keys [conn w room owned attached attached-descriptor]}]
+      (let [args [conn (:owner w) (:room w) room]
+            stamp (:target-stamp (apply actions/metadata! (conj args {:folders [] :paths []})))
+            container (zip/write-parts (docx-fixtures/package-parts "<w:p><w:r><w:t>Original</w:t></w:r></w:p>"))
+            saved (apply actions/save! (conj args {:path "report.docx" :expected nil
+                                                   :base64 (.encodeToString (Base64/getEncoder) container)
+                                                   :expected-target-stamp stamp}))
+            opened (apply actions/office! (conj args {:path "report.docx" :expected (:entry saved) :part nil :expected-target-stamp stamp}))
+            token (first (vals (get-in opened [:reading :corrections :tokens])))
+            edit {:path "report.docx" :expected (:entry saved) :token token :replacement "Correction" :expected-target-stamp stamp}
+            before @owned other @attached prepare office/prepare-correction-in]
+        (is (uuid? token))
+        (with-redefs [office/prepare-correction-in
+                      (fn [db request]
+                        (let [prepared (prepare db request)]
+                          (d/transact conn [{:room/id (:room w)
+                                             :room/default-repository [:system/id (:registry-system attached-descriptor)]}])
+                          prepared))]
+          (is (thrown? clojure.lang.ExceptionInfo (apply actions/office-correct! (conj args edit)))))
         (is (= before @owned))
         (is (= other @attached))))))
 

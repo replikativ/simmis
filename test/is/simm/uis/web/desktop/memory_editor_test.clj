@@ -4,6 +4,38 @@
 
 (def file {:path "src/example.clj" :kind :text :entry {:content :one} :text "opened"})
 
+(deftest selective-office-corrections-retain-edits-and-reject-stale-targets
+  (is (nil? (editor/office-corrected nil 0 {} {})))
+  (let [stamp (random-uuid) token (random-uuid)
+        source {:path "report.docx" :kind :office :entry {:content :one} :text nil :target-stamp stamp}
+        correction {:path "report.docx" :token token :original "Original" :text "Edited" :entry (:entry source)}
+        draft (assoc (editor/draft source) :office-correction correction
+                     :office {:text "XML" :saved-text "XML" :reading-entry (:entry source)
+                              :reading {:corrections {:tokens {4 token}}}})
+        incoming (assoc source :entry {:content :two})
+        reply {:path "report.docx" :entry {:content :saved} :commit :saved :target-stamp stamp}]
+    (is (editor/dirty? draft))
+    (is (editor/office-correction-current? draft))
+    (is (= correction (:office-correction (editor/loaded draft incoming))))
+    (is (not (editor/office-correction-current? (editor/loaded draft incoming))))
+    (is (not (editor/office-correction-current? (assoc-in draft [:source :path] "renamed.docx"))))
+    (let [saved (editor/office-corrected draft (:generation draft) correction reply)]
+      (is (nil? (:office saved)))
+      (is (nil? (:office-correction saved)))
+      (is (= (:entry reply) (get-in saved [:source :entry]))))
+    (doseq [incoming-state [{:incoming (assoc source :entry {:content :foreign})}
+                            {:incoming-entry {:content :foreign}}]]
+      (let [saved (editor/office-corrected (merge draft incoming-state) (:generation draft) correction reply)]
+        (is (= incoming-state (select-keys saved (keys incoming-state))))))
+    (doseq [newer [(assoc-in draft [:office-correction :text] "Later typing")
+                   (assoc-in draft [:office :text] "New XML")
+                   (update draft :generation inc)]]
+      (let [saved (editor/office-corrected newer (:generation draft) correction reply)]
+        (is (= (:office-correction newer) (:office-correction saved)))
+        (is (= (:office newer) (:office saved)))
+        (is (= (:entry source) (get-in saved [:source :entry])))
+        (is (= reply (:earlier-save-receipt saved)))))))
+
 (deftest saved-office-previews-do-not-rebase-or-overwrite-xml-drafts
   (let [source {:path "report.docx" :kind :office :entry {:content :one} :text nil}
         draft (assoc (editor/draft source) :office-mode :xml

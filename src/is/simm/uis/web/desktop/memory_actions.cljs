@@ -536,7 +536,8 @@
                                                  (or reading-only? (not (editor/dirty? current))))))})))))
             (office-save! [path]
               (let [draft (get-in (state) [:drafts path]) office (:office draft) sent (:text office)]
-                (when (and (not (get-in (state) [:loading [:office-save path]])) (not (get-in (state) [:loading [:move path]])))
+                (when (and (not (get-in (state) [:loading [:office-save path]]))
+                           (not (get-in (state) [:loading [:office-correct path]])) (not (get-in (state) [:loading [:move path]])))
                   (when-let [stamp (draft-stamp! path [:office-save path])]
                     (request! [:office-save path] #(remote/save-memory-office-part! web/server-id room
                                                                                     {:path path :expected (get-in draft [:source :entry])
@@ -550,6 +551,21 @@
                                 (office-open! path nil true))
                               {:stamp stamp :accept? (fn [s _] (and (= (:generation draft) (get-in s [:drafts path :generation]))
                                                                     (= (:part office) (get-in s [:drafts path :office :part]))))})))))
+            (office-correct! [path]
+              (let [draft (get-in (state) [:drafts path]) sent (:office-correction draft)
+                    slot [:office-correct path]]
+                (when (and (editor/office-correction-current? draft)
+                           (not= (:text sent) (:original sent))
+                           (not (get-in (state) [:loading slot]))
+                           (not (get-in (state) [:loading [:office-save path]]))
+                           (not (get-in (state) [:loading [:move path]])))
+                  (when-let [stamp (draft-stamp! path slot)]
+                    (request! slot #(remote/correct-memory-office-text! web/server-id room
+                                                                      {:path path :expected (:entry sent) :token (:token sent)
+                                                                       :replacement (:text sent) :expected-target-stamp stamp})
+                              #(update-in %1 [:drafts path] editor/office-corrected (:generation draft) sent %2)
+                              (fn [_] (open! path true) (folder! (parent path)) (navigation-refresh!))
+                              {:stamp stamp})))))
             (history! [path]
               (when-let [stamp (draft-stamp! path [:history path])]
                 (let [generation (get-in (state) [:drafts path :generation])]
@@ -690,7 +706,7 @@
                                                                    (not= (:text draft) (:analysis-text draft)))))
                                                  (analyze! path))))
        :create (fn [path & [origin]] (create! path (or origin (when (verified? (state) (connection)) (:target-stamp (state))))))
-       :download download! :upload upload! :office-open office-open! :office-save office-save!
+       :download download! :upload upload! :office-open office-open! :office-save office-save! :office-correct office-correct!
        :select-path #(update! assoc :selected %) :set-query #(update! assoc :query %) :search search!
        :toggle-root (fn [] (update! update :root-expanded? not) (folder! (or (:focus-folder (state)) "")))
        :focus-folder (fn [path] (update! assoc :focus-folder path :current-folder path :query "" :root-expanded? true) (folder! path))
@@ -750,6 +766,7 @@
                  (if (or (declarations/move-blocked? (state) path)
                          (get-in (state) [:loading [:save path]])
                          (get-in (state) [:loading [:office-save path]]) (get-in (state) [:loading [:move path]])
+                         (get-in (state) [:loading [:office-correct path]])
                          (get-in (state) [:loading [:property-save path]])
                          (get-in (state) [:drafts target]))
                    (update! assoc-in [:errors :move] "Apply or discard field drafts, finish pending saves and choose a destination without another open draft before moving.")

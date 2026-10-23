@@ -34,7 +34,7 @@
   (boolean (some (fn [[[p _] value]] (and (= p path) (some? value))) (:declaration-drafts state))))
 
 (defn busy? [state path]
-  (boolean (some #(get-in state [:loading [% path]]) [:save :property-save :office-save :move])))
+  (boolean (some #(get-in state [:loading [% path]]) [:save :property-save :office-save :office-correct :move])))
 
 (defn move-blocked? [state path]
   (boolean (or (busy? state path) (drafts? state path) (editor/property-drafts? state path)

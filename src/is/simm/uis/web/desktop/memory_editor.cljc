@@ -132,6 +132,7 @@
   (or (and (:source d) (nil? (get-in d [:source :entry])))
       (not= (:text d) (get-in d [:source :text]))
       (not= (get-in d [:office :text]) (get-in d [:office :saved-text]))
+      (and (:office-correction d) (not= (get-in d [:office-correction :text]) (get-in d [:office-correction :original])))
       (and (:local-source d) (not= (get-in d [:local-source :text]) (get-in d [:local-source :opened-text])))))
 
 (defn autosave-ready?
@@ -300,6 +301,27 @@
   (if (and reading-only? (:office draft))
     (update draft :office merge {:reading (:reading reply) :reading-entry (:entry reply)})
     (assoc draft :office (assoc reply :saved-text (:text reply) :reading-entry (:entry reply)))))
+
+(defn office-correction-current? [draft]
+  (let [{:keys [entry token path]} (:office-correction draft)]
+    (and token (= path (get-in draft [:source :path])) (= entry (office-reading-entry draft))
+         (some #{token} (vals (get-in draft [:office :reading :corrections :tokens])))
+         (= (get-in draft [:office :text]) (get-in draft [:office :saved-text])))))
+
+(defn office-corrected
+  "Only a still-current, unchanged correction may advance its file baseline.
+   Newer text/XML edits survive an ACK against their original revision."
+  [draft generation sent reply]
+  (when draft
+    (if (and (= generation (:generation draft)) (same-target? (:source draft) reply)
+             (= sent (:office-correction draft))
+             (= (get-in draft [:office :text]) (get-in draft [:office :saved-text])))
+      (-> draft (dissoc :office :office-correction)
+          (assoc-in [:source :entry] (:entry reply))
+          (assoc :last-commit (:commit reply)) (update :generation inc)
+          (cond-> (same-document? reply (:incoming draft)) (dissoc :incoming)
+            (and (same-target? reply (:source draft)) (= (:entry reply) (:incoming-entry draft))) (dissoc :incoming-entry)))
+      (assoc draft :earlier-save-receipt reply))))
 
 (defn metadata-generation-current? [expected actual]
   (or (= expected actual)

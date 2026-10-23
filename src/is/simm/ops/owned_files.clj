@@ -168,6 +168,15 @@
         prepared (office/prepare-save-in (:db binding) (dissoc request :expected-target-stamp))]
     (save-bound! conn principal room-id room binding prepared)))
 
+(defn office-correct!
+  "Correct one host-validated Word text leaf with the same binding and native
+   binary CAS used for other human Office writes. Tokens grant no authority."
+  [conn principal room-id room request]
+  (closed! request #{:path :expected :token :replacement} true)
+  (let [binding (binding! conn principal :write room-id room request true)
+        prepared (office/prepare-correction-in (:db binding) (dissoc request :expected-target-stamp))]
+    (save-bound! conn principal room-id room binding prepared)))
+
 (defn rich-save!
   "Validate submitted rich source and publish with the SAME original binding."
   [conn principal room-id room request]

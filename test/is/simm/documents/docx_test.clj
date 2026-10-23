@@ -165,3 +165,57 @@
                                        "\"/></w:numPr></w:pPr><w:r><w:t>Paragraph</w:t></w:r></w:p>")))]
       (is (= :ready (:status reading)))
       (is (= (= "7" id) (get-in reading [:blocks 0 :list?]))))))
+
+(deftest whole-leaf-correction-preserves-source-and-occurrence
+  (let [parts (package-parts "<w:p><w:r><w:t>Repeated &amp; &#x1F98B;</w:t><w:t>Repeated &amp; &#x1F98B;</w:t></w:r></w:p>")
+        located (docx/correction-source parts) indices (sort (keys (:targets located)))
+        selected (last indices) old (get-in located [:targets selected :text])
+        noop (docx/correct-text parts selected old)
+        edit (docx/correct-text parts selected "Literal </w:t> &amp; 🦋")
+        changed (assoc parts (:main-part edit) (:bytes edit))
+        text (String. ^bytes (:bytes edit) "UTF-8")]
+    (is (= 2 (count indices)))
+    (is (false? (:changed? noop)))
+    (is (nil? (:bytes noop)))
+    (is (str/includes? text "<w:t>Repeated &amp; &#x1F98B;</w:t><w:t>Literal &lt;/w:t&gt; &amp;amp; 🦋</w:t>"))
+    (is (= "Repeated & 🦋Literal </w:t> &amp; 🦋" (text-of (docx/inspect-parts changed))))
+    (is (thrown? clojure.lang.ExceptionInfo (docx/correct-text parts 999 "other")))))
+
+(deftest correction-proof-normalizes-parser-callback-chunks
+  (let [long-text (apply str (repeat 1800 "α🦋 &amp; text\r\n"))
+        parts (package-parts (str "<w:p><w:r><w:t>short</w:t><w:t xml:space='preserve'>" long-text "</w:t></w:r></w:p>"))
+        source (docx/correction-source parts) index (first (sort (keys (:targets source))))
+        edit (docx/correct-text parts index (apply str (repeat 1000 "longer")))
+        text (String. ^bytes (:bytes edit) "UTF-8")]
+    (is (true? (:changed? edit)))
+    (is (str/includes? text (str "<w:t xml:space='preserve'>" long-text "</w:t>")))))
+
+(deftest correction-eligibility-is-conservative
+  (doseq [body ["<w:p><w:hyperlink><w:r><w:t>linked</w:t></w:r></w:hyperlink></w:p>"
+                "<w:p><w:sdt><w:sdtContent><w:r><w:t>controlled</w:t></w:r></w:sdtContent></w:sdt></w:p>"
+                "<w:p><w:ins><w:r><w:t>tracked</w:t></w:r></w:ins></w:p>"
+                "<w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t>hidden</w:t></w:r></w:p>"
+                "<w:p><w:r><w:fldChar w:fldCharType='begin'/><w:t>cached</w:t><w:fldChar w:fldCharType='end'/></w:r></w:p>"
+                "<w:p><w:r><w:t>a<!-- comment -->b</w:t></w:r></w:p>"
+                "<w:p><w:r><w:t><![CDATA[not plain lexical text]]></w:t></w:r></w:p>"
+                "<w:p><w:r><w:t/></w:r></w:p>"]]
+    (is (empty? (:targets (docx/correction-source (package-parts body)))) body))
+  (let [parts (package-parts "<w:p><w:r><w:t>ordinary</w:t></w:r></w:p><w:p><w:bookmarkStart w:id='1'/><w:bookmarkEnd w:id='1'/></w:p>")]
+    (is (thrown? clojure.lang.ExceptionInfo (docx/correction-source parts)))))
+
+(deftest correction-whitespace-and-package-policy
+  (doseq [text [" A &amp; B " "line&#10;break" (apply str (repeat 12000 "x"))]]
+    (let [parts (package-parts (str "<w:p><w:r><w:t>" text "</w:t></w:r></w:p>"))
+          targets (:targets (docx/correction-source parts)) index (first (keys targets))]
+      (is (false? (:changed? (docx/correct-text parts index (:text (get targets index))))))))
+  (doseq [space ["" " xml:space='preserve'"]]
+    (let [parts (package-parts (str "<w:p><w:r><w:t" space ">ordinary</w:t></w:r></w:p>"))
+          index (first (keys (:targets (docx/correction-source parts))))]
+      (if (empty? space)
+        (is (thrown? clojure.lang.ExceptionInfo (docx/correct-text parts index " edge ")))
+        (is (= " edge " (text-of (docx/inspect-parts (assoc parts "word/document.xml" (:bytes (docx/correct-text parts index " edge "))))))))))
+  (doseq [kind ["application/vnd.ms-office.vbaProject" "application/vnd.openxmlformats-package.digital-signature-xmlsignature+xml"]]
+    (let [parts (package-parts "<w:p><w:r><w:t>ordinary</w:t></w:r></w:p>")
+          types (String. ^bytes (get parts "[Content_Types].xml") "UTF-8")
+          parts (assoc parts "[Content_Types].xml" (bytes-of (str/replace types "</Types>" (str "<Override PartName='/renamed/payload.bin' ContentType='" kind "'/></Types>"))))]
+      (is (thrown? clojure.lang.ExceptionInfo (docx/correction-source parts))))))
