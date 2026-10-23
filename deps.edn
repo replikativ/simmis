@@ -318,7 +318,7 @@
         ;; express those coordinates. Alpha stores require classified wallets;
         ;; no legacy wallet migration is implied.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr.git"
-                              :git/sha "49be78f6f039d05dcea5817b554f7ea906b952ae"
+                              :git/sha "e3c2ebf2dd5d5a9418d0f768ee985049aa19eeb7"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.

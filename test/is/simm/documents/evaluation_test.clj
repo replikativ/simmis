@@ -148,8 +148,13 @@
           (with-redefs [sandbox/start-evaluation!
                         (fn [code options]
                           (reset! started (start code (assoc options :timeout-ms 500))))]
-            (let [result (run a "(require '[org.replikativ.spindel.spin.cps :refer [spin]] '[org.replikativ.spindel.effects.await :refer [await]] '[org.replikativ.spindel.spin.combinators :as c]) @(spin (await (c/sleep 2000)))")]
+            ;; Plain promises are part of the human sandbox. The combinator
+            ;; namespace is not among its default exposed namespaces.
+            (let [result (run a "(deref (promise) 2000 :finished)")]
               (is (false? (:success result)))
+              (is (= "TimeoutException" (:error-type result)))
+              (is (= :timeout (:stop-reason result)))
+              (is (:evaluation-entered? result))
               (is (:session-quarantined? result)))
             (is (sandbox/join-evaluation! @started 30000)))
           (let [result (evaluation/evaluate-repl! child a
