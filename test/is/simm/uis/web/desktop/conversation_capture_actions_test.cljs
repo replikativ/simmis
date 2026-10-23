@@ -110,6 +110,17 @@
          (is (empty? @calls)) (is (empty? @opened))
          (finally (context/close-context! child)))))))
 
+(deftest same-home-environment-wrapping-still-allows-the-live-action
+  (fixture
+   (fn [{:keys [data pending state calls]}]
+     (binding [ec/*execution-context* (assoc runtime :bindings
+                                            (assoc (:bindings runtime) :capture-probe true))]
+       (let [a (actions/controller data)]
+         ((:preview a))
+         (is (= 1 (count @calls)))
+         ((:preview @pending) example/preview)
+         (is (= :preview (:phase (state)))))))))
+
 (deftest focused-thread-controller-requires-its-exact-thread
   (fixture
    (fn [{:keys [data layout calls]}]

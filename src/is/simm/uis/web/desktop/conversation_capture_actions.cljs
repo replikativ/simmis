@@ -15,7 +15,10 @@
   (let [ctx (or ec/*execution-context* runtime)
         session (web/current-session)
         key (state-key (:account frame) room-id message-id)
-        own? #(and (identical? ctx runtime)
+        ;; Spins may extend the execution environment without forking its
+        ;; home. Compare native home ownership, not the wrapper map identity.
+        own? #(and (some? (ec/home-context ctx))
+                   (identical? (ec/home-context ctx) (ec/home-context runtime))
                    (web/current-session? session)
                    (= (:session frame) (:id session))
                    (= (:account frame) (:id @sig/current-user)))
