@@ -47,6 +47,15 @@
     (is (not (editor/evaluation-receipt? [:save "a.clj"] receipt)))
     (is (not (editor/evaluation-receipt? :repl {:success false :error "Unauthorized"})))))
 
+(deftest retargeting-retires-file-io-but-keeps-pending-human-evaluation-identities
+  (let [slots {:repl :scratch [:evaluate "a.clj"] :file-code
+               [:cell "a.md" :revision :span] :saved-cell [:file "a.md"] :body :metadata :discovery}
+        state {:target-stamp (random-uuid) :requests slots :loading slots :errors slots}
+        result (editor/observe-target state (random-uuid))]
+    (doseq [key [:requests :loading :errors]]
+      (is (= {:repl :scratch [:evaluate "a.clj"] :file-code [:cell "a.md" :revision :span] :saved-cell}
+             (get result key))))))
+
 (deftest repl-namespace-follows-evaluation-unless-the-user-changed-the-target
   (let [receipt {:id (random-uuid) :requested-namespace "user" :namespace "research.new"}]
     (is (= "research.new" (get-in (editor/repl-result {} receipt) [:repl :namespace])))

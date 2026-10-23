@@ -29,8 +29,14 @@
          (= (:requested-namespace receipt) (get-in state [:repl :namespace] "user")))
     (assoc-in [:repl :namespace] (:namespace receipt))))
 
+(defn evaluation-slot? [slot]
+  (or (= :repl slot) (and (vector? slot) (#{:evaluate :cell} (first slot)))))
+
+(defn keep-evaluation-slots [entries]
+  (into {} (filter (comp evaluation-slot? key)) entries))
+
 (defn evaluation-receipt? [slot reply]
-  (and (or (= :repl slot) (and (vector? slot) (#{:evaluate :cell} (first slot))))
+  (and (evaluation-slot? slot)
        (= :human-sci (:target reply)) (uuid? (:id reply))
        (or (true? (:success reply)) (false? (:success reply)))))
 
@@ -172,7 +178,8 @@
   "Inactive pure target-epoch transition, for the stamped adapter rollout.
    A stamp is identity, not authority. Invalidate file I/O/cache identities even
    for identical bytes, retaining every draft and its original source/Office/
-   rich model for explicit conflict handling. Generic Room REPL is not retargeted."
+   rich model for explicit conflict handling. Pending human evaluations keep
+   their original input/receipt; a new file target never retargets that work."
   [state stamp]
   (when-not (uuid? stamp)
     (throw (ex-info "A Memory target needs an exact stamp" {:type ::invalid-target})))
@@ -185,9 +192,9 @@
                     (into {} (map (fn [[path d]]
                                     [path (-> d (assoc :target-stale? true :current-target-stamp stamp)
                                               (update :generation (fnil inc 0)))])) drafts)))
-          (update :requests #(select-keys % [:repl]))
-          (update :loading #(select-keys % [:repl]))
-          (update :errors #(select-keys % [:repl]))
+          (update :requests keep-evaluation-slots)
+          (update :loading keep-evaluation-slots)
+          (update :errors keep-evaluation-slots)
           (dissoc :folders :workspace :observed-entries :history :history-preview
                   :search :download :evaluations :permissions :opened-path
                   :watch-connection :sync))))

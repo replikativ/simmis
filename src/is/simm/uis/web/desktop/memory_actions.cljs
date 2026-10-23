@@ -56,7 +56,7 @@
                 (assoc-in [:loading slot] false))) state slots))
 
 (defn- target-bookkeeping [state]
-  (reduce (fn [s k] (update s k #(select-keys % [:repl])))
+  (reduce (fn [s k] (update s k editor/keep-evaluation-slots))
           state [:request-contexts :finished :accepted]))
 
 (defn- moved-state [state path target reply]

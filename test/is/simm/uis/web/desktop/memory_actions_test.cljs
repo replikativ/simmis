@@ -6,6 +6,7 @@
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.memory-actions :as actions]
             [is.simm.uis.web.desktop.memory-editor :as editor]
+            [is.simm.uis.web.desktop.memory-cells :as cells]
             [is.simm.uis.web.desktop.memory-remote :as remote]
             [is.simm.uis.web.desktop.memory-reference-remote :as reference-remote]
             [is.simm.uis.web.desktop.memory-sync :as sync]
@@ -304,6 +305,7 @@
                     remote/save-memory-file! (deferred :save) remote/save-memory-rich-file! (deferred :rich-save)
                     remote/load-memory-properties! (deferred :properties) remote/save-memory-property! (deferred :property-save)
                     remote/evaluate-memory-repl! (deferred :repl)
+                    remote/evaluate-memory-cell! (deferred :cell)
                     remote/save-memory-office-part! (deferred :office-save)
                     remote/correct-memory-office-text! (deferred :office-correct) remote/move-memory-file! (deferred :move)]
         (let [a (actions/controller data) state #(get @states (:owner a))
@@ -318,6 +320,31 @@
                            ((:ok (last (:metadata @calls)))
                             (wire target {:folders {"" {:entries []}} :entries {"x.clj" (:entry file)}
                                           :revision (random-uuid) :permissions {:write? true :evaluate? true}})))}))))))
+
+(deftest a-retargeted-file-view-retains-the-original-pending-cell-receipt-once
+  (with-client
+    (fn [{:keys [a seed! metadata! last-call state stamp]}]
+      (seed!)
+      (let [path "wiki/Cells.md" revision (random-uuid) next-stamp (random-uuid)
+            request {:path path :revision revision :namespace "user"}
+            receipt {:id (random-uuid) :target :human-sci :success true :value "42"
+                     :input-syntax :clojure :namespace "user" :requested-namespace "user"
+                     :source {:kind :saved-markdown-cell :path path :revision revision :target-stamp stamp}}]
+        ;; The pure projection/request contract has its own source mapping tests.
+        ;; Here exercise the real controller's retained native callback ownership.
+        (with-redefs [cells/request (fn [& _] request)]
+          ((:run-cell a) path "cell:0:22"))
+        (let [reply (:ok (last-call :cell))]
+          (is (fn? reply))
+          (metadata! next-stamp)
+          (is (= next-stamp (:target-stamp (state))))
+          (reply receipt)
+          (is (= [receipt] (get-in (state) [:repl :history])))
+          (is (= :unverified (cells/receipt-status (state) receipt)))
+          (is (false? (get-in (state) [:loading [:cell path revision "cell:0:22"]])))
+          (reply receipt)
+          (is (= [receipt] (get-in (state) [:repl :history])) "A duplicate callback cannot append twice")
+          (is (= next-stamp (:target-stamp (state)))))))))
 
 (deftest moves-retire-old-path-reads-and-drain-current-metadata
   (doseq [metadata-first? [true false] old-exists? [true false]]
