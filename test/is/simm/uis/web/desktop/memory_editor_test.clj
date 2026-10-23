@@ -4,6 +4,34 @@
 
 (def file {:path "src/example.clj" :kind :text :entry {:content :one} :text "opened"})
 
+(deftest saved-office-previews-do-not-rebase-or-overwrite-xml-drafts
+  (let [source {:path "report.docx" :kind :office :entry {:content :one} :text nil}
+        draft (assoc (editor/draft source) :office-mode :xml
+                     :office {:part "word/document.xml" :text "Human XML" :saved-text "Saved XML"
+                              :selection {:anchor 4 :head 8} :reading-entry (:entry source)})
+        reply {:entry {:content :two} :text "Different XML" :part "another.xml"
+               :reading {:status :ready :blocks []}}
+        updated (editor/office-loaded draft reply true)]
+    (is (= (:source draft) (:source updated)))
+    (is (= (select-keys (:office draft) [:part :text :saved-text :selection])
+           (select-keys (:office updated) [:part :text :saved-text :selection])))
+    (is (= :xml (:office-mode updated)))
+    (is (= (:entry reply) (get-in updated [:office :reading-entry])))
+    (let [initial (editor/office-loaded (editor/draft source) reply true)]
+      (is (= "Different XML" (get-in initial [:office :text])))
+      (is (= "another.xml" (get-in initial [:office :part])))
+      (is (not (editor/dirty? initial))))
+    (is (editor/dirty? updated))
+    (is (= {:content :two} (editor/office-reading-entry (assoc draft :incoming-entry {:content :two}))))
+    (doseq [blocked [{:remote-deleted? true} {:incoming-missing? true} {:target-stale? true} {:incoming {:deleted? true}}]]
+      (is (nil? (editor/office-reading-entry (merge draft blocked))))))
+  (let [source {:path "report.docx" :kind :office :entry {:content :one} :text nil}
+        draft (assoc (editor/draft source) :office-mode :xml
+                     :office {:text "Saved" :saved-text "Saved"})
+        loaded (editor/loaded draft (assoc source :entry {:content :two}))]
+    (is (= :xml (:office-mode loaded)) "A clean metadata refresh retains view preference")
+    (is (nil? (:office loaded)) "A new file revision never retains the old preview as current")))
+
 (deftest incoming-files-cannot-overwrite-local-work
   (let [draft (editor/changed (editor/draft file) "typing" {:anchor 3 :head 3})
         incoming (assoc file :entry {:content :two} :text "agent edit")

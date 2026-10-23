@@ -190,7 +190,7 @@
                          (let [stamp (:target-stamp reply) changed? (not= stamp (:target-stamp current))
                                pending (into {} (filter (fn [[slot loading?]]
                                                           (and loading? (vector? slot)
-                                                               (#{:file :folder :properties :chart} (first slot))))) (:loading current))
+                                                               (#{:file :folder :properties :chart :office :office-reading} (first slot))))) (:loading current))
                                next (cond-> (editor/observe-target current stamp)
                                       changed? (update :target-epoch (fnil inc 0))
                                       changed? retire-upload
@@ -255,6 +255,11 @@
                            (doseq [p files]
                              (when-not (and (contains? (:entries reply) p) (nil? (get-in reply [:entries p])))
                                (open! p true nil true)))
+                           (doseq [[[kind p] _] (:metadata-followups s)
+                                   :when (and (#{:office :office-reading} kind) (not (contains? files p))
+                                              (get-in s [:drafts p]) (not (get-in s [:drafts p :remote-deleted?])))]
+                             (office-open! p (when (= :office kind) (get-in s [:drafts p :office :part]))
+                                           (= :office-reading kind)))
                            (doseq [p folders] (folder! p))
                            (when (seq (:query (state))) (search!))
                            (doseq [p (keys (:history s))] (history! p))))
@@ -296,7 +301,11 @@
                     (request! [:file path] #(remote/load-memory-file! web/server-id room
                                                                       {:path path :expected-target-stamp stamp})
                               #(-> %1 (update-in [:drafts path] editor/loaded-at-generation generation %2)
-                                   (update :file-intents dissoc path)) nil
+                                   (update :file-intents dissoc path))
+                              (fn [_]
+                                (let [draft (get-in (state) [:drafts path])]
+                                  (when (= :office (get-in draft [:source :kind]))
+                                    (office-open! path nil (boolean (:office draft))))))
                               {:stamp stamp :read? true :accept? (generation? path generation)}))
                   (discover! false))))
             (analyze! [path & [saved-baseline?]]
@@ -507,17 +516,24 @@
                                   (when (valid?)
                                     (update! #(-> % (dissoc :upload-token :upload-intent)
                                                   (assoc-in [:errors :upload] (rem/error-text error))))))))))))
-            (office-open! [path part]
-              (let [draft (get-in (state) [:drafts path])]
-                (if (or (editor/dirty? draft) (get-in (state) [:loading [:office-save path]]))
+            (office-open! [path part & [reading-only?]]
+              (let [draft (get-in (state) [:drafts path])
+                    expected (if reading-only? (editor/office-reading-entry draft) (get-in draft [:source :entry]))
+                    slot [(if reading-only? :office-reading :office) path]]
+                (if (or (and (not reading-only?) (editor/dirty? draft)) (get-in (state) [:loading [:office-save path]]))
                   (update! assoc-in [:errors :office] "Save or discard this XML draft before switching parts.")
-                  (when-let [stamp (draft-stamp! path [:office path])]
-                    (request! [:office path] #(remote/load-memory-office-part! web/server-id room
-                                                                               {:path path :expected (get-in draft [:source :entry])
+                  (when-let [stamp (when expected (draft-stamp! path slot))]
+                    (request! slot #(remote/load-memory-office-part! web/server-id room
+                                                                               {:path path :expected expected
                                                                                 :part part :expected-target-stamp stamp})
-                              #(assoc-in %1 [:drafts path :office] (assoc %2 :saved-text (:text %2))) nil
-                              {:stamp stamp :accept? (fn [s _] (and (= (:generation draft) (get-in s [:drafts path :generation]))
-                                                                    (not (editor/dirty? (get-in s [:drafts path])))))})))))
+                              #(update-in %1 [:drafts path] editor/office-loaded %2 reading-only?) nil
+                              {:stamp stamp :read? true
+                               :accept? (fn [s reply]
+                                          (let [current (get-in s [:drafts path])]
+                                            (and (= expected (:entry reply))
+                                                 (= (:generation draft) (:generation current))
+                                                 (= expected (if reading-only? (editor/office-reading-entry current) (get-in current [:source :entry])))
+                                                 (or reading-only? (not (editor/dirty? current))))))})))))
             (office-save! [path]
               (let [draft (get-in (state) [:drafts path]) office (:office draft) sent (:text office)]
                 (when (and (not (get-in (state) [:loading [:office-save path]])) (not (get-in (state) [:loading [:move path]])))
@@ -529,7 +545,9 @@
                                           (fn [d] (-> d (assoc-in [:source :entry] (:entry %2))
                                                       (assoc-in [:office :saved-text] sent)
                                                       (assoc :last-commit (:commit %2)) (update :generation inc))))
-                              (fn [_] (folder! (parent path)) (navigation-refresh!))
+                              (fn [_]
+                                (folder! (parent path)) (navigation-refresh!)
+                                (office-open! path nil true))
                               {:stamp stamp :accept? (fn [s _] (and (= (:generation draft) (get-in s [:drafts path :generation]))
                                                                     (= (:part office) (get-in s [:drafts path :office :part]))))})))))
             (history! [path]

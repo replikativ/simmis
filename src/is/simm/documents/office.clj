@@ -3,6 +3,7 @@
    retain global document handles or rebuild untouched XML parts."
   (:require [clojure.string :as str]
             [is.simm.documents.files :as files]
+            [is.simm.documents.docx :as docx]
             [is.simm.documents.markdown :as markdown]
             [is.simm.media.office :as office])
   (:import [java.util Base64]))
@@ -19,27 +20,47 @@
       (throw (ex-info "Office file changed; reload before editing" {:type ::conflict})))
     (office/read-parts (files/source-bytes db path selected) limits)))
 
+(defn- utf8-xml! [bytes]
+  (office/parse-xml bytes)
+  (when (or (and (>= (alength ^bytes bytes) 2)
+                 (contains? #{[255 254] [254 255]}
+                            (mapv #(bit-and 255 %) (take 2 bytes))))
+            (some zero? bytes))
+    (throw (ex-info "The advanced XML editor supports UTF-8 parts only" {:type ::encoding})))
+  (let [text (markdown/decode bytes)
+        encoding (nth (re-find #"\A\uFEFF?<\?xml\s[^?]*\bencoding\s*=\s*(['\"])([^'\"]+)\1" text) 2 nil)]
+    (when (and encoding (not= "UTF-8" (str/upper-case encoding)))
+      (throw (ex-info "The advanced XML editor supports UTF-8 parts only" {:type ::encoding})))
+    text))
+
 (defn- xml! [parts part]
   (when-not (and (string? part) (str/ends-with? (str/lower-case part) ".xml") (contains? parts part))
     (throw (ex-info "Select an existing XML part" {:type ::invalid})))
   (let [bytes (get parts part)]
     (when (> (alength ^bytes bytes) max-xml-bytes)
       (throw (ex-info "This XML part exceeds the interactive editor limit" {:type ::limit})))
-    (office/parse-xml bytes)
-    (markdown/decode bytes)))
+    (utf8-xml! bytes)))
 
 (defn inspect-in
   "Inert Office projection from one explicit immutable DB; no authorization."
   [db path expected part]
   (let [parts (parts-in! db path expected)
-        selected (or part (first (filter #(contains? parts %)
-                                         ["word/document.xml" "content.xml" "ppt/slides/slide1.xml" "xl/workbook.xml"])))
-        text (when selected (xml! parts selected))]
-    {:path path :entry expected :part selected :text text
-     :parts (mapv (fn [[name bytes]] {:name name :size (alength ^bytes bytes)
-                                      :editable? (and (str/ends-with? (str/lower-case name) ".xml")
-                                                      (<= (alength ^bytes bytes) max-xml-bytes))}) (sort-by key parts))
-     :editing-scope :xml-part :execution-policy :source-only}))
+        reading (when (str/ends-with? (str/lower-case path) ".docx") (docx/inspect-parts parts))
+        selected (or part (first (filter #(and (string? %) (str/ends-with? (str/lower-case %) ".xml") (contains? parts %))
+                                         [(:main-part reading) "word/document.xml" "content.xml" "ppt/slides/slide1.xml" "xl/workbook.xml"])))
+        xml (when selected
+              (try {:text (xml! parts selected)}
+                   (catch Exception e
+                     (if part (throw e)
+                         {:xml-error (if (or (= ::encoding (:type (ex-data e)))
+                                             (instance? java.nio.charset.CharacterCodingException e))
+                                       "The advanced XML editor supports UTF-8 parts only."
+                                       "The default XML part cannot be opened safely in the advanced editor.")}))))]
+    (merge {:path path :entry expected :part selected :reading reading
+            :parts (mapv (fn [[name bytes]] {:name name :size (alength ^bytes bytes)
+                                             :editable? (and (str/ends-with? (str/lower-case name) ".xml")
+                                                             (<= (alength ^bytes bytes) max-xml-bytes))}) (sort-by key parts))
+            :editing-scope :xml-part :execution-policy :source-only} xml)))
 
 (defn inspect! [room path expected part]
   (files/with-workspace room #(inspect-in @% path expected part)))
@@ -56,7 +77,7 @@
     (when (> (alength ^bytes bytes) max-xml-bytes)
       (throw (ex-info "XML edit exceeds the interactive editor limit" {:type ::limit})))
     ;; Validate, but save the submitted XML bytes, not a lossy re-emission.
-    (office/parse-xml bytes)
+    (utf8-xml! bytes)
     (let [container (if (= before text)
                       ;; Exact no-op: don't even recompress the original ZIP.
                       (:base64 (files/read-binary-in db path expected))

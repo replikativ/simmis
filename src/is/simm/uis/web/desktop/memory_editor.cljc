@@ -199,7 +199,7 @@
         (dissoc :target-stale?))
       (cond-> (-> old (assoc :incoming file) (dissoc :incoming-entry))
         (not (same-target? file (:source old))) (assoc :target-stale? true)))
-    :else (assoc (merge (draft file) (select-keys old [:mode :selection :code-view]))
+    :else (assoc (merge (draft file) (select-keys old [:mode :selection :code-view :office-mode]))
                  ;; A same-entry refresh must not supersede an in-flight save.
                  :generation (if (same-document? file (:source old))
                                (:generation old 0) (inc (:generation old 0))))))
@@ -283,6 +283,23 @@
 
 (defn loaded-at-generation [d generation file]
   (if (= generation (:generation d)) (loaded d file) d))
+
+(defn office-reading-entry
+  "Current saved revision for an inert preview, including an incoming revision
+   while an older XML draft stays open. A missing/replaced target never falls
+   back to the old saved file."
+  [draft]
+  (when-not (or (:target-stale? draft) (:remote-deleted? draft) (:incoming-missing? draft)
+                (get-in draft [:incoming :deleted?]))
+    (or (get-in draft [:incoming :entry]) (:incoming-entry draft) (get-in draft [:source :entry]))))
+
+(defn office-loaded
+  "Reading-only responses cannot overwrite XML text, selection or the save
+   baseline. View mode is context-backed and survives part switches."
+  [draft reply reading-only?]
+  (if (and reading-only? (:office draft))
+    (update draft :office merge {:reading (:reading reply) :reading-entry (:entry reply)})
+    (assoc draft :office (assoc reply :saved-text (:text reply) :reading-entry (:entry reply)))))
 
 (defn metadata-generation-current? [expected actual]
   (or (= expected actual)
