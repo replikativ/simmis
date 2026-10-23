@@ -7,10 +7,19 @@
 
 (deftest formatting-is-identical-in-the-jvm-and-browser
   (is (= "**one region**" (rich/markdown (doc "one region" "bold"))))
-  (is (= " *italic* " (rich/markdown (doc " italic " "italic"))))
+  (is (= "*&#32;italic&#32;*" (rich/markdown (doc " italic " "italic"))))
   (is (= "~~gone~~" (rich/markdown (doc "gone" "strike"))))
-  (is (= "  " (rich/markdown (doc "  " "bold"))))
+  (is (= "**&#32;&#32;**" (rich/markdown (doc "  " "bold"))))
   (is (= "**🦋**" (rich/markdown (doc "🦋" "bold")))))
+
+(deftest literal-entities-and-typing-whitespace-remain-text-in-both-runtimes
+  (doseq [[text expected] [["Sentence. " "Sentence\\.&#32;"]
+                           [" " "&#32;"] ["\tLeading" "&#9;Leading"]
+                           ["A & B" "A &amp; B"]
+                           ["&#32;" "&amp;\\#32;"]
+                           ["&amp;lt;" "&amp;amp;lt;"]]]
+    (is (= expected
+           (rich/markdown {:type "doc" :content [{:type "paragraph" :content [{:type "text" :text text}]}]})))))
 
 (deftest no-op-and-edits-preserve-the-surrounding-source-in-both-runtimes
   (let [source "front\r\n\r\n**old**\r\n\r\n[[opaque]]\r\n"

@@ -32,10 +32,38 @@
       (is (= ["method" "missing" "missing"] (mapv #(get-in % [:attrs :label]) (refs model))))
       (is (= 3 (count (set (map #(get-in % [:attrs :sourceKey]) (refs model))))))
       (is (= source (rich/apply-region source (assoc node :model model) model)))
-      (is (= (str/replace source "Before" "Changed🦋")
-             ;; Ordinary prose punctuation is serialized; footnote tokens/definitions are not.
-             (str/replace result "\\." ".")))
+      ;; Changed ordinary prose may use entities for significant whitespace;
+      ;; compare its full semantic model, not the old serializer's spelling.
+      (is (= (rich/roundtrip-normalize edited)
+             (rich/roundtrip-normalize (rich/model (paragraph result)))))
+      (is (= (mapv #(get-in % [:attrs :raw]) (refs model))
+             (mapv #(get-in % [:attrs :raw]) (refs (rich/model (paragraph result))))))
+      (is (= prefix (subs result 0 (count prefix))))
       (is (= (subs source (:to node)) (subs result (+ (:to node) (- (count result) (count source)))))))))
+
+(deftest whitespace-next-to-real-footnotes-and-code-remains-lossless
+  (doseq [newline ["\n" "\r\n"]
+          prefix ["" (str "\uFEFF---" newline "custom: 'keep exact'" newline "---" newline)]
+          value [" " "  " "\t"]]
+    (let [source (str prefix "A[^ method ] `x` B." newline newline
+                      "[^ method ]: Unchanged **definition**." newline newline
+                      "```clojure" newline ";; untouched code region" newline "(+ 1 2)" newline "```" newline)
+          node (paragraph source)
+          baseline (rich/model node)
+          edited (-> baseline
+                     (assoc-in [:content 0 :content 0 :text] value)
+                     (assoc-in [:content 0 :content 2 :text] value)
+                     (assoc-in [:content 0 :content 4 :text] value))
+          result (apply-host source node edited)
+          reopened (rich/model (paragraph result))
+          code (filter #(some (fn [mark] (= "code" (:type mark))) (:marks %))
+                       (get-in reopened [:content 0 :content]))]
+      (is (= (rich/roundtrip-normalize edited) (rich/roundtrip-normalize reopened)))
+      (is (= ["[^ method ]"] (mapv #(get-in % [:attrs :raw]) (refs reopened))))
+      (is (= ["x"] (mapv :text code)))
+      (is (= [[{:type "code"}]] (mapv :marks code)))
+      (is (= prefix (subs result 0 (count prefix))))
+      (is (str/ends-with? result (subs source (:to node)))))))
 
 (deftest frozen-provenance-rejects-forgery-before-normalization
   (let [source "Before[^one] and after.\n\nSeparate[^two].\n"

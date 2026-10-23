@@ -53,7 +53,16 @@
 
 (defn- escaped [s]
   (-> s (str/replace #"\r\n|\r|\n" " ")
-      (str/replace #"[\\`*_{}\[\]<>#.!|~+()\-]" #(str "\\" %))))
+      ;; Escape authored ampersands BEFORE creating our own entities: literal
+      ;; "&#32;" must stay that text, not become whitespace on the next parse.
+      (str/replace "&" "&amp;")
+      (str/replace #"[\\`*_{}\[\]<>#.!|~+()\-]" #(str "\\" %))
+      ;; Markdown trims paragraph/heading edges and interprets indentation.
+      ;; Ordinary keystrokes (including a space-only paragraph) must survive
+      ;; strict round-trip validation. Leaf-local encoding also keeps marked
+      ;; whitespace INSIDE its mark; code and raw footnote tokens bypass this.
+      (str/replace #"^[ \t]+|[ \t]+$"
+                   #(apply str (map (fn [c] (if (= c \tab) "&#9;" "&#32;")) %)))))
 
 (defn- code-span [s]
   (let [s (str/replace s #"\r\n|\r|\n" " ")
@@ -219,7 +228,7 @@
 (defn- inline-model [node marks]
   (let [children #(vec (mapcat (fn [n] (inline-model n %)) (:children node)))]
     (case (:kind node)
-      :Text (if (seq (:text node)) [(cond-> {:type "text" :text (:text node)}
+      (:Text :HtmlEntity) (if (seq (:text node)) [(cond-> {:type "text" :text (:text node)}
                                     (seq marks) (assoc :marks marks))] [])
       :SoftLineBreak [(cond-> {:type "text" :text " "} (seq marks) (assoc :marks marks))]
       :HardLineBreak [{:type "hardBreak"}]

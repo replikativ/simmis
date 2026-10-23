@@ -53,9 +53,16 @@ diagnostic instead of a guessed repair. Typed projection requires explicit
 trusted schema bindings as described below. Syntax projection and source sizes
 are bounded; exceeding a limit is an explicit refusal.
 
-Syntax profile version 3 treats exactly one initial UTF-8 BOM as an immutable
-prefix, even without frontmatter. Syntax spans remain absolute UTF-16 offsets
-into the unchanged original source; noninitial U+FEFF remains ordinary text.
+Syntax profile version 4 retains version 3's treatment of exactly one initial
+UTF-8 BOM as an immutable prefix, even without frontmatter. Syntax spans remain
+absolute UTF-16 offsets into the unchanged original source; noninitial U+FEFF
+remains ordinary text. Character entities expose their decoded value once as
+inert text with the original source span. Decoded characters are not reparsed as
+HTML, references or Markdown. Edited ordinary text escapes literal ampersands
+before representing boundary spaces/tabs as numeric entities, so intermediate
+typing and space-only paragraphs retain significant whitespace through the
+strict rich round-trip check. Raw footnote tokens and code retain their distinct
+codecs, and no-op source remains byte-for-byte unchanged.
 Disposable views include the profile in their fingerprint and must be rebuilt
 when it changes; no source rewrite or storage migration is performed.
 

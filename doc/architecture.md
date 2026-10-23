@@ -25,6 +25,10 @@ publication. A compact file header carries path, persistence status and view
 selection; secondary file actions and properties live in its overflow menu.
 Formatting controls follow the focused semantic block without taking document
 height. They support keyboard access and cannot bypass protected block topology.
+Edited text encodes boundary spaces/tabs as Markdown character entities so
+ordinary intermediate keystrokes satisfy the same strict round-trip gate as a
+finished sentence. Entities decode once into inert text, never executable HTML
+or reparsed Markdown; unchanged source retains its original spelling.
 YAML document properties and explicit document/block identities remain in the
 source; programmable property schemas are separate trusted definitions, not
 automatically installed by an uploaded file. Existing independent KBs

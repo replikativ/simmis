@@ -44,9 +44,9 @@
         edited (assoc-in model [:content 0 :content 0 :text] "Revised ")
         result (rich/apply-edit repo-id "wiki/note.md" source (:revision before) (:from node) (:to node) edited)]
     (is (str/starts-with? result "---\r\ncustom: untouched\r\n---\r\n"))
-    (is (str/includes? result "Revised **bold**\\.\r\n"))
+    (is (str/includes? result "Revised&#32;**bold**\\.\r\n"))
     (is (str/includes? result "Child [[opaque]] text.\r\n"))
-    (is (= (str/replace source "Hello **bold**." "Revised **bold**\\.") result))
+    (is (= (str/replace source "Hello **bold**." "Revised&#32;**bold**\\.") result))
     (is (thrown? clojure.lang.ExceptionInfo
                  (rich/apply-edit repo-id "wiki/note.md" result (:revision before) (:from node) (:to node) edited)))))
 
@@ -126,9 +126,7 @@
 
 (deftest blank-layout-does-not-relax-significant-text-or-nested-structure
   (doseq [[source model]
-          [["# Heading\n" {:type "doc" :content [{:type "heading" :attrs {:level 1}
-                                                  :content [{:type "text" :text " Heading"}]}]}]
-           ["- First\n" {:type "doc" :content [{:type "bulletList"
+          [["- First\n" {:type "doc" :content [{:type "bulletList"
                                                 :content [{:type "listItem"
                                                            :content [{:type "paragraph" :content [{:type "text" :text "First"}]}
                                                                      {:type "paragraph" :content []}]}]}]}]]]
@@ -139,3 +137,35 @@
                 (catch clojure.lang.ExceptionInfo error (:type (ex-data error)))))))
   (is (= "" (rich/apply-edit repo-id "wiki/empty.md" "" (markdown/revision "") 0 0
                              {:type "doc" :content [{:type "paragraph"} {:type "paragraph"}]}))))
+
+(deftest every-whitespace-keystroke-roundtrips-without-relaxing-equivalence
+  (doseq [value [" " "   " "Sentence. " " leading" "\tLeading" "Trailing\t"
+                 "&#32;" "&copy;" "&amp;copy;" "&not-an-entity;"
+                 "<script>literal</script>" "[^not-a-footnote]" "`literal`" "\\"]
+          block [:paragraph :heading :list]
+          mark [nil "bold" "italic" "link"]]
+    (let [leaf (cond-> {:type "text" :text value}
+                 mark (assoc :marks [(cond-> {:type mark}
+                                      (= mark "link") (assoc :attrs {:href "notes.md"}))]))
+          paragraph {:type "paragraph" :content [leaf]}
+          model {:type "doc" :content [(case block
+                                         :paragraph paragraph
+                                         :heading {:type "heading" :attrs {:level 2} :content [leaf]}
+                                         :list {:type "bulletList" :content [{:type "listItem" :content [paragraph]}]})]}
+          original "Original\n"
+          result (rich/apply-edit repo-id "wiki/whitespace.md" original (markdown/revision original)
+                                  0 (count original) model)
+          decoded {:type "doc" :content (vec (mapcat :content (map text/model (:nodes (markdown/parse result)))))}]
+      (is (= (text/roundtrip-normalize model) (text/roundtrip-normalize decoded)) [value block mark]))))
+
+(deftest entities-decode-once-and-remain-inert-source-positioned-text
+  (let [source "&#60;script&#62; &#91;^not-a-note&#93; &amp;copy; &#92; &#42;\n"
+        parsed (markdown/parse source)
+        node (first (:nodes parsed))
+        model (text/model node)]
+    (is (some #(= :HtmlEntity (:kind %)) (:children node)))
+    (is (= "<script> [^not-a-note] &copy; \\ *"
+           (apply str (map :text (get-in model [:content 0 :content])))))
+    (is (empty? (markdown/references parsed)))
+    (is (= source (text/apply-region source (assoc node :model model) model)))
+    (is (not-any? #(#{:HtmlInline :Footnote} (:kind %)) (:children node)))))

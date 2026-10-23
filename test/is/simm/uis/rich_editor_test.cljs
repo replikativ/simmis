@@ -65,6 +65,21 @@
                (is (true? (.. editor -commands (undo))))
                (is (= (rich/normalize baseline) (rich/normalize (decode))))))))
 
+(deftest intermediate-space-survives-native-echo-and-subsequent-typing
+  (mounted "Sentence."
+           (fn [^js el ^js editor]
+             (let [decode #(@#'is.simm.uis.web.desktop.rich-editor/portable-model (.getJSON editor))]
+               (.. editor -commands (setTextSelection 10))
+               (.. editor -commands (insertContent " "))
+               (is (= "Sentence\\.&#32;" (rich/markdown (decode))))
+               (let [position (.. editor -state -selection -from)]
+                 (.setAttribute el "data-model" (js/JSON.stringify (.getJSON editor)))
+                 (is (identical? editor (.-simmisRichEditor el)))
+                 (is (= position (.. editor -state -selection -from))))
+               (.. editor -commands (insertContent "Next"))
+               (is (= "Sentence\\. Next" (rich/markdown (decode))))
+               (is (= "Sentence. Next" (.getText editor)))))))
+
 (deftest each-element-owns-and-releases-its-native-interpreter
   (mounted "one"
            (fn [^js el ^js first]
