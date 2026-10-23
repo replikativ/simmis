@@ -310,143 +310,16 @@
         ;; default; costs nothing when unused.
         nrepl/nrepl {:mvn/version "1.3.1"}
 
-        ;; dvergr - agentic programming framework. 0.1.54 adds fail-closed tool
-        ;; authorizers with durable subject/action/resource receipts and native
-        ;; reactive agent programs. 0.1.51 added durable Run lifecycles,
-        ;; targeted cancellation and Run-correlated messages/tool activity.
-        ;; 0.1.49 added durable Room thread roots, FIFO topic attention
-        ;; and configurable steer/queue/observe policy on top of the typed message
-        ;; metadata and room-local agent assignments introduced in 0.1.46.
-        ;; 0.1.43 originally followed
-        ;; the Geschichte adapter into Yggdrasil (dvergr#46) and takes
-        ;; geschichte 0.1.12 with it
-        ;; — pairing 0.1.10 with yggdrasil 0.3.38 would put TWO GeschichteSystem
-        ;; record types on the classpath. It also carries the sandbox hardening:
-        ;; the sci 0.15.56 interop-escape close (#44), clojure.repl introspecting
-        ;; the SANDBOX rather than the host JVM and a :reload that can no longer
-        ;; swap a shim for the host namespace (#43), and discoverable in-sandbox
-        ;; testing + vocabulary (#45).
-        ;; 0.1.24 had added: the :on-reply
-        ;; turn hook (embedder rewrites an agent's reply + injects learn-back
-        ;; system notes — simmis resolves [[Title]]→[[dh://…]] and nudges toward
-        ;; kb/link, room_agents/make-link-reply-hook); the GLM leaked-tool-name/
-        ;; null-args poison fix (#25 — a leaked envelope, once durable, 400s the
-        ;; room forever); plus GLM tool-channel recovery, embedder-tunable eval
-        ;; timeout, and budget exhaustion that ENDS the turn instead of blocking
-        ;; the shared drain thread.
-        ;; 0.1.61 (dvergr#70, including #69/#68): retained Run worlds can be
-        ;; durably adopted, exhaustively partitioned and settled through affine
-        ;; governance capabilities, while typed message object references give
-        ;; each Proposal one canonical chat identity.
-        ;; 0.1.66 includes the model-registry and native OpenAI work from
-        ;; dvergr#48, structured attention/admission and conserved run-resource
-        ;; delegation (#71-#73), plus fresh runtime components for hired runs
-        ;; (#87). Simmis's provider-aware picker depends on #48 being present in
-        ;; the released artifact; no local dvergr overlay is required anymore.
-        ;; 0.1.80 makes live model directives reach actual calls, delegated
-        ;; tools and new forks. Owner-preference activation relies on it to
-        ;; preserve participant inboxes instead of resetting live contexts.
-        ;; 0.1.140: the Scorecard statistics are cljc (the Attempts board's
-        ;; ranges and comparison run them in the browser).
-        ;; 0.1.154: rooms from an older dvergr gain new attributes; :attempt/notional-microdollars (the board's At list price); Claude Code candidates work embedded (server/discover, CLI outside any project).
-        ;; 0.1.255 (dvergr main 3cbceb2): experiments are kept in a room of
-        ;; their own per ExperimentDef, payloads in the room's Datahike store;
-        ;; the Scorecard read ops (experiment/report, scorecard/detail) carry
-        ;; paired comparisons (exact McNemar, Holm-adjusted). Its stack:
-        ;; spindel 0.1.111, partial-cps 0.1.66, datahike 0.8.1903, kabel
-        ;; 0.3.139, kontor 0.1.39.
-        ;; 0.1.278: principal-aware ops (dvergr#316). `dvergr.ops/invoke` takes
-        ;; a principal and has no arity without one; every op and registry
-        ;; tool declares `:authz`; a registry tool call must name a
-        ;; `:principal` or an agent `:actor`; a Telegram sender needs a
-        ;; non-empty allowlist (an empty one now refuses everyone). Its
-        ;; stack: spindel 0.1.122, partial-cps 0.1.68 (org.replikativ),
-        ;; datahike 0.8.1903, konserve 0.9.394, kabel 0.3.139 (via spindel),
-        ;; yggdrasil 0.3.46, kontor 0.1.39 — the client-sync set is unchanged.
-        ;; 0.1.286: sandbox database handles follow the room's grant
-        ;; (dvergr#326). `dvergr.room/db`, the guarded `d/connect` and
-        ;; `*room*` write only where the grant permits `:write`; the messages
-        ;; store is read-only from the sandbox (`dvergr.room/post!` posts).
-        ;; dvergr asks the host what a permission permits through
-        ;; `dvergr.system.rooms/set-grant-permits!`; simmis answers with
-        ;; `access/permission-satisfies?`, set in `web/start-server!` before
-        ;; rooms hydrate, so a `:merge` grant writes. The sandbox prompt
-        ;; changed (`*room*` is read-only), so Run inputs ids change and a
-        ;; resumed experiment re-runs its cells. Its stack moves datahike to
-        ;; 0.8.1904, yggdrasil 0.3.48 and geschichte 0.1.19 (all three only
-        ;; for org.replikativ/partial-cps, plus yggdrasil's merge work);
-        ;; spindel 0.1.122, konserve 0.9.394, kontor 0.1.39 unchanged.
-        ;; 0.1.291: review escalations are typed room messages (dvergr#330 —
-        ;; simmis keeps the Review RECORD as the source of a proposal and
-        ;; hides the message, see review-escalation); `:review/id` is a
-        ;; :db.unique/identity, so sibling forks that each reviewed now both
-        ;; merge. Storage GC is opt-in per home (dvergr#332,
-        ;; `enable-storage-gc!`, wired by is.simm.runtimes.storage-gc).
-        ;; Nested-fork merges land (dvergr#333). Its stack moves ONLY spindel
-        ;; to 0.1.126 and yggdrasil to 0.3.49; it keeps datahike 0.8.1904 (simmis
-        ;; pins 0.8.1906, for the fail-closed GC) and the client-sync set (konserve 0.9.394, konserve-sync, kabel 0.3.139)
-        ;; does not move.
-        ;; 0.1.298: embedded MCP host hook, retired-model successors and
-        ;; explicit vision configuration, plus funded dispatch accounting.
-        ;; 0.1.299: one durable message can address an explicit recipient set;
-        ;; duplicate same-id per-target posts no longer stand in for multicast.
-        ;; 0.1.306 includes bounded evaluation cleanup, automatic workspace
-        ;; settlement, zero-priced native dispatch accounting and canonical
-        ;; fork/grant/settlement fixes (#342–348).
-        ;; 0.1.311 preserves unknown usage in typed Attempt projections and
-        ;; evaluation read models without rewriting certified Scorecards (#353).
-        ;; 0.1.312 keeps model/broker loading independent of Datahike and the
-        ;; agent runtime, preserving trusted installation boundaries (#355).
-        ;; Temporary immutable upstream pin for scoped coordinators, owned Run
-        ;; sessions, world-spend attribution, subscription image input and
-        ;; explicit default workspace identity, plus the independently reviewed
-        ;; main-based editor receipt/one-shot batch fixes (#365) and atomic
-        ;; scoped file publication receipts (#366), and writer-snapshot default
-        ;; resolution (#368). The public #368 head also repairs the transitive
-        ;; Datahike source pin; a root override cannot skip resolving a retired
-        ;; transitive Git SHA. The merged #369 fix additionally binds workspace
-        ;; selection to fork-local execution state, never attachment order. Pin
-        ;; its permanent main squash (tree-identical to the reviewed PR head).
-        ;; #370 is merged: off-drain SCI preparation and owned physical cleanup.
-        ;; #371 adds explicit-target file batches without mutating Room
-        ;; selection. Pin its permanent main squash after independent review,
-        ;; 82/500 local regressions and all required full CI passed.
-        ;; #372 seals explicit-target completion at native boundaries; reviewed
-        ;; head and permanent squash have identical trees, 76/595 fresh-JVM
-        ;; regressions and all required CI passed. No legacy writer API change.
-        ;; #373 adds optional immutable host file reads for MCP tools/resources.
-        ;; Pin its permanent main squash: tree-identical to the reviewed head,
-        ;; 113/1746 local regressions and all required CI passed. Simmis's owned
-        ;; host remains inactive until catalog/export/source routing is coherent.
-        ;; #374 also projects room catalog entries from that same immutable
-        ;; binding. Its permanent squash is tree-identical to the reviewed
-        ;; source; 137/2037 local regressions and all required CI passed.
-        ;; #375 refuses incomplete catalog rows and handles inclusive prefix
-        ;; endpoints after bounded acquisition. Its permanent squash matches
-        ;; the reviewed tree; focused and 11-namespace regressions plus all
-        ;; four upstream CI checks passed. Owned host activation remains off.
-        ;; #376 permanent squash adds full subtree CAS and joined native
-        ;; stage/commit/cleanup ACKs. Its tree matches the reviewed public head;
-        ;; local140/1145 and all required CI passed. Authoring remains inactive.
-        ;; Alpha stores
-        ;; must use the classified wallet schema; no legacy migration is implied.
-        org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr"
-                               ;; #385 adds owned live KB attachment, #386 fixes
-                               ;; copied-world cleanup, and #387 adds exact
-                               ;; prepared-snapshot publication validation.
-                               ;; #388 physically owns HOST Room operations and
-                               ;; configured embedding lifetimes through exit.
-                               ;; #389 records personal room type atomically.
-                               ;; #392 joins admission/scoring handoff and late
-                               ;; experiment controllers before cleanup returns.
-                               ;; #390 projects/caches owned MCP operation schemas
-                               ;; without rediscovering host operations per read.
-                               ;; Permanent reviewed, green main squash.
-                               ;; Adopt only in a fresh runtime, never hot reload.
-                               :git/sha "49b7ef14cd03512148cf24af801a09fecd1e0d1b"
+        ;; Agent runtime, owned HOST lifecycle and durable workflow receipts.
+        ;; 0.1.350 includes joined native admission/cleanup and failed experiment
+        ;; cells in MCP job_status. Change dependencies only in a fresh runtime.
+        ;; Keep the explicit Spindel/Yggdrasil Git pins above: Maven's POM cannot
+        ;; express those coordinates. Alpha stores require classified wallets;
+        ;; no legacy wallet migration is implied.
+        org.replikativ/dvergr {:mvn/version "0.1.350"
                                ;; Kabel supplies the maintained HTTP-kit fork.
-                               ;; Both artifacts contain org.httpkit classes;
-                               ;; the original can shadow its WebSocket fixes.
+                               ;; The original contains the same org.httpkit
+                               ;; classes and can shadow its WebSocket fixes.
                                :exclusions [http-kit/http-kit]}}
  :paths ["src" "resources"]
  :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
