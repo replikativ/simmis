@@ -32,6 +32,7 @@
             [is.simm.model.references :as refs]
             [clojure.string :as str]
             #?(:cljs [is.simm.uis.web.desktop.markdown :as md])
+            #?(:cljs [is.simm.uis.web.desktop.views.conversation-capture :as capture-view])
             #?(:cljs [is.simm.uis.web.desktop.views.mermaid :as mmd])
             #?(:cljs [superficie.api :refer [toSup]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el]
@@ -459,7 +460,7 @@
            in-reply-to reply-count on-jump-parent on-reply audience run-id
            activities mention-handles on-open-thread on-open-run on-open-proposal
            on-accept-proposal on-request-proposal-changes on-dismiss-proposal
-           on-retry-proposal proposal-state object]}]
+           on-retry-proposal proposal-state object capture]}]
   (el/div {:key id
            :class (vc/class-names "chat-message" "message"
                                   (when is-own? "chat-message--own"))
@@ -524,7 +525,8 @@
                       :on-click (fn [event]
                                   (.stopPropagation event)
                                   (on-reply))}
-            "Reply")))
+            "Reply"))
+        #?(:cljs (when capture (capture-view/control capture)) :clj nil))
       ;; The visible @handle is presentation; this chip confirms that dispatch
       ;; resolved it to canonical actor identities before the message was
       ;; accepted. Keep the ids in the title for inspection without making the
@@ -577,6 +579,7 @@
                         :src (str "/blobs/" attachment-blob)})))
          :clj nil)
       (activity-chips activities)
+      #?(:cljs (when capture (capture-view/panel capture)) :clj nil)
       ;; One typed application object may replace the generic prose body with
       ;; a domain-aware projection. The Proposal remains owned by Simmis; this
       ;; message is only its durable conversational home and thread root.

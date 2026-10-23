@@ -50,6 +50,8 @@
             [is.simm.uis.web.desktop.views.run-inspector :as run-inspector]
             #?(:cljs [is.simm.uis.web.desktop.result-actions :as result-actions])
             [is.simm.uis.web.desktop.proposal-card :as proposal-card]
+            [is.simm.uis.web.desktop.conversation-capture :as capture-model]
+            #?(:cljs [is.simm.uis.web.desktop.conversation-capture-actions :as capture-actions])
             [is.simm.uis.web.desktop.signals :as sig]
             [clojure.string :as str]
             #?(:cljs [datahike.api :as d])
@@ -961,6 +963,8 @@
              run-facts (iv/get-new (track sig/run-server-facts))
              captured-results (iv/get-new (track sig/captured-results))
              workflow-state (iv/get-new (track sig/workflow-editor-state))
+             conversation-captures (iv/get-new (track sig/conversation-captures))
+             capture-connection (iv/get-new (track sig/memory-connection))
              ;; Canonical Proposal review projection. Inline chat cards consume
              ;; the same rows/controllers as Tasks and the full inspector.
              proposal-data (iv/get-new (track sig/proposals-data))
@@ -1020,7 +1024,9 @@
                                        tabs)))
              tab-result (if active-tab-data
                            (render-tab-content (:type active-tab-data)
-                                               (cond-> (:data active-tab-data)
+                                               (cond-> (assoc (:data active-tab-data)
+                                                              :conversation-captures conversation-captures
+                                                              :capture-connection capture-connection)
                                                  (= :memory (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
                                                local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
                            (el/div {:class "empty-state"}
@@ -1613,12 +1619,20 @@
              visible-items
              (mapv
               (fn [item]
-                (if-let [object (get-in item [:message/metadata :object])]
+                (let [item (assoc item ::capture-state
+                                 (capture-model/reconcile
+                                  (get (:conversation-captures data)
+                                       (capture-actions/state-key (:id @sig/current-user) room-id (:entity/uuid item)))
+                                  (:capture-connection data))
+                                 ::capture-frame {:account (:id @sig/current-user)
+                                                  :session (:id (web/current-session))
+                                                  :connection (:capture-connection data)})]
+                 (if-let [object (get-in item [:message/metadata :object])]
                   (if (= :proposal (:kind object))
                     (proposal-card/attach-state
                      item (proposals-view/proposal-state proposal-data (:id object)))
                     item)
-                  item))
+                  item)))
               (iv/get-new visible-iv))
              ;; One-shot scroll+highlight once the anchor is in the DOM.
              ;; DOM-flag guarded (no reactive state). This runs in the BUILD,
@@ -2058,6 +2072,16 @@
                        :run-id (:message/run-id item)
                        :activities (:message/activities item)
                        :object (get-in item [:message/metadata :object])
+                       :capture (when (and (not time-travel?) (not (:S.Message/is-ai item))
+                                           (= :user (get-in item [:message/metadata :role]))
+                                           (uuid? (:entity/uuid item)) (:S.Message/author-uuid item)
+                                           (nil? (:message/run-id item))
+                                           (contains? #{nil :mcp-user-message} (get-in item [:message/metadata :kind]))
+                                           (nil? (get-in item [:message/metadata :object])))
+                                  {:room-id room-id :room-name room-name
+                                   :message-id (:entity/uuid item) :col-id col-id :tab-id tab-id
+                                   :thread-root-id (when thread-view? thread-root-id)
+                                   :state (::capture-state item) :frame (::capture-frame item)})
                        :proposal-state (get item proposal-card/proposal-state-key)
                        :on-open-run open-run!
                        :on-open-proposal

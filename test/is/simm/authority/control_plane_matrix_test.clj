@@ -174,6 +174,8 @@
    "apply-memory-rich-edit!" [(c :room MEMBERS)]
    "download-memory-file!"   [(c :room MEMBERS)]
    "save-memory-file!"       [(c :room MEMBERS)]
+   "preview-conversation-capture!" [(c :room MEMBERS)]
+   "publish-conversation-capture!" [(c :room MEMBERS)]
    "save-memory-rich-file!"  [(c :room MEMBERS)]
    "move-memory-file!"       [(c :room MEMBERS)]
    "load-memory-office-part!" [(c :room MEMBERS)]

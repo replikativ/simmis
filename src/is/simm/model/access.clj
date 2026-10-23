@@ -803,6 +803,8 @@
      "apply-memory-rich-edit!" {:action R :resource (room :room-id-str)}
      "download-memory-file!"   {:action R :resource (room :room-id-str)}
      "save-memory-file!"       {:action W :resource (room :room-id-str)}
+     "preview-conversation-capture!" {:action W :resource (room :room-id-str)}
+     "publish-conversation-capture!" {:action W :resource (room :room-id-str)}
      "save-memory-rich-file!"  {:action W :resource (room :room-id-str)}
      "move-memory-file!"       {:action W :resource (room :room-id-str)}
      "load-memory-office-part!" {:action R :resource (room :room-id-str)}

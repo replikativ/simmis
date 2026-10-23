@@ -334,6 +334,11 @@
            "Session/room/view keyed file drafts, folders and request fences."
            (signal runtime {})))
 
+#?(:cljs (def conversation-captures
+           "Account/room/message evidence previews and sticky publication holds.
+            View visibility and socket epochs never authorize automatic replay."
+           (signal runtime {})))
+
 #?(:cljs (def memory-connection
            "Authenticated socket epoch; alias shared with low-level replicas."
            connection-epoch/connection))
@@ -1323,7 +1328,7 @@
      (doseq [s [room-details screens-results recordings-results web-captures-results video-call-info
                 drive-data files-upload-status unread-counts notify-prefs
                 block-conflicts orphaned-blocks room-app-status leaderboards
-                books book-ledgers book-ui workflow-editor-state memory-editor-state
+                books book-ledgers book-ui workflow-editor-state memory-editor-state conversation-captures
                 memory-navigation-state run-server-facts chat-scroll-windows
                 chat-reply-targets active-kb-branch kb-branches projected-branch-dbs]]
        (reset! s {}))
