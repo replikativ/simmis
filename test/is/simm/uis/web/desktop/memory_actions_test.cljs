@@ -216,6 +216,66 @@
                             (wire target {:folders {"" {:entries []}} :entries {"x.clj" (:entry file)}
                                           :revision (random-uuid) :permissions {:write? true :evaluate? true}})))}))))))
 
+(deftest office-preview-refresh-retains-dirty-xml-and-fences-stale-revisions
+  (with-client
+    (fn [{:keys [a states state stamp file seed! last-call]}]
+      (seed!)
+      (let [xml {:part "word/document.xml" :text "Human XML" :saved-text "Saved XML" :selection {:anchor 2 :head 5}}
+            next-entry {:content :next}]
+        (swap! states assoc-in [(:owner a) :drafts "x.clj" :office] xml)
+        ((:office-open a) "x.clj" nil true)
+        (let [old (last-call :office)]
+          (swap! states assoc-in [(:owner a) :drafts "x.clj" :incoming-entry] next-entry)
+          ((:office-open a) "x.clj" nil true)
+          (let [current (last-call :office)]
+            ((:ok old) (wire stamp {:entry (:entry file) :reading {:status :ready :notice "old"}}))
+            (is (true? (get-in (state) [:loading [:office-reading "x.clj"]])))
+            (is (nil? (get-in (state) [:drafts "x.clj" :office :reading])))
+            ((:ok current) (wire stamp {:entry next-entry :text "Server XML" :part "another.xml"
+                                       :reading {:status :ready :notice "current"}}))))
+        (is (= xml (select-keys (get-in (state) [:drafts "x.clj" :office]) (keys xml))))
+        (is (= (:entry file) (get-in (state) [:drafts "x.clj" :source :entry])))
+        (is (= next-entry (get-in (state) [:drafts "x.clj" :office :reading-entry])))
+        ((:office-open a) "x.clj" nil true)
+        (let [pending (last-call :office)]
+          (swap! states assoc-in [(:owner a) :drafts "x.clj" :remote-deleted?] true)
+          ((:ok pending) (wire stamp {:entry next-entry :reading {:status :ready :notice "deleted"}})))
+        (is (= "current" (get-in (state) [:drafts "x.clj" :office :reading :notice])))
+        (is (false? (get-in (state) [:loading [:office-reading "x.clj"]])))))))
+
+(deftest metadata-retires-and-replaces-pending-office-reads
+  (with-client
+    (fn [{:keys [a state stamp file seed! last-call metadata! calls]}]
+      (seed!)
+      ((:office-open a) "x.clj" nil)
+      (let [old (last-call :office)]
+        (metadata! stamp)
+        (is (= 2 (count (:office @calls))))
+        ((:ok old) (wire stamp {:entry (:entry file) :text "Late XML"}))
+        (is (true? (get-in (state) [:loading [:office "x.clj"]])))
+        (is (nil? (get-in (state) [:drafts "x.clj" :office])))
+        ((:ok (last-call :office)) (wire stamp {:entry (:entry file) :text "Current XML" :reading {:status :ready}}))
+        (is (= "Current XML" (get-in (state) [:drafts "x.clj" :office :text])))
+        (is (false? (get-in (state) [:loading [:office "x.clj"]])))))))
+
+(deftest office-save-ack-refreshes-preview-without-losing-newer-xml-typing
+  (with-client
+    (fn [{:keys [a states state stamp seed! last-call]}]
+      (seed!)
+      (swap! states assoc-in [(:owner a) :drafts "x.clj" :office]
+             {:part "word/document.xml" :text "First XML edit" :saved-text "Baseline XML"})
+      ((:office-save a) "x.clj")
+      ((:change a) "x.clj" update :office assoc :text "Second XML edit" :selection {:anchor 3 :head 7})
+      (let [entry {:content :saved-first}]
+        ((:ok (last-call :office-save)) (wire stamp {:entry entry :commit :saved}))
+        (is (= entry (get-in (last-call :office) [:request :expected])))
+        ((:ok (last-call :office)) (wire stamp {:entry entry :text "First XML edit" :reading {:status :ready}}))
+        (is (= "Second XML edit" (get-in (state) [:drafts "x.clj" :office :text])))
+        (is (= "First XML edit" (get-in (state) [:drafts "x.clj" :office :saved-text])))
+        (is (= {:anchor 3 :head 7} (get-in (state) [:drafts "x.clj" :office :selection])))
+        (is (= entry (get-in (state) [:drafts "x.clj" :office :reading-entry])))
+        (is (editor/dirty? (get-in (state) [:drafts "x.clj"])))))))
+
 (deftest discovery-and-manual-refresh-do-not-wait-for-live-stream-readiness
   (with-client
     (fn [{:keys [a state connection stamp calls last-call]}]

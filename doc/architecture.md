@@ -379,12 +379,32 @@ incremental dependency. Charts never become editor attributes,
 editor clipboard serialization or source edits; element detach releases their
 native cache. The accessible chart table remains ordinary selectable content.
 
-Office containers have a bounded advanced XML-part editor, not a Word/Excel
-layout editor. Each operation reopens the selected immutable file revision;
+Word `.docx` files open in a bounded saved-document reading view. The main
+document is selected through package relationships and content types, with
+namespace-aware strict/transitional parsing. Native paragraphs, direct emphasis,
+outline levels and simple tables use application styling. Page layout, style
+inheritance, headers and footers are not reproduced. Fields, embedded objects,
+structural revisions and other unsupported content have explicit placeholders;
+field scopes spanning paragraphs and tables cannot expose cached results as
+ordinary final text. No document relationships, images, styles or external
+resources are fetched or executed.
+
+Document/Advanced XML is context-owned view state. Office reads load with the
+file and refresh from replicated metadata. A saved reading projection can update
+while XML typing, selection and its save baseline remain intact. Entry,
+generation, target and read-epoch checks reject stale asynchronous replies.
+Reading-only replies are independent of the selected advanced XML part.
+
+Office containers retain a bounded advanced XML-part editor. Each operation
+reopens the selected immutable file revision;
 there is no retained server document handle. Validation disables DTDs, and an
 edit copies untouched part bytes rather than re-emitting their XML. Exact
 no-ops retain the original container. Saving modified XML does not certify
-Office schema validity or preserve a document signature's validity.
+Office schema validity or preserve a document signature's validity. The XML
+editor accepts UTF-8 parts only; other supported encodings may be read without
+conversion. A failed optional reading or default XML projection leaves the
+original download available. DOCX reading never converts a package to Markdown
+or supplies publication authority.
 
 ## Processes and ports
 

@@ -13,6 +13,7 @@
             [is.simm.uis.web.desktop.memory-declarations :as declarations]
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.source-editor :as source]
+            [is.simm.uis.web.desktop.office-view :as office-view]
             [is.simm.uis.web.desktop.rich-editor :as rich-editor]
             [is.simm.uis.web.desktop.chart-view :as charts]
             [is.simm.uis.web.desktop.math-view :as math]
@@ -593,7 +594,7 @@
         text? (string? (:text draft))
         clojure? (and text? (re-find #"(?i)\.(clj|cljc|cljs|bb)$" (or path "")))
         code-view (editor/code-view draft syntax-pref)
-        office? (= :office (get-in draft [:source :kind])) office (:office draft)]
+        office? (= :office (get-in draft [:source :kind]))]
     (el/div {:class "memory-panel"}
             (file-header data state a draft workspace-write? write? coherent? syntax-pref)
             (when-not verified?
@@ -659,24 +660,7 @@
                                                               (el/details {} (el/summary {} "Evaluated source") (el/pre {} (:code result)))))))
                                       (cond
                                         office?
-                                        (el/div {:class "memory-office"}
-                                                (el/p {:class "memory-note"} "Office container · advanced XML part editor, not a Word/Excel layout editor. Only the selected part changes; other part contents are preserved. Signed documents may require re-signing after edits.")
-                                                (if-not office
-                                                  (el/button {:disabled (not coherent?) :on-click (fn [_] ((:office-open a) path nil))} "Inspect document parts")
-                                                  (el/div {}
-                                                          (el/select {:aria-label "Office XML part" :value (:part office)
-                                                                      :disabled (or (not coherent?) (editor/dirty? draft) (get-in state [:loading [:office-save path]]))
-                                                                      :on-change (fn [e] ((:office-open a) path (.. e -target -value)))}
-                                                                     (for [part (:parts office) :when (:editable? part)]
-                                                                       (el/option {:key (:name part) :value (:name part)} (:name part))))
-                                                          (source/view {:id [(:owner a) path (:part office)] :path (:part office)
-                                                                        :label "Office XML part source" :value (:text office)
-                                                                        :selection (:selection office) :read-only? (not write?)
-                                                                        :on-change (fn [text selection]
-                                                                                     ((:change a) path update :office assoc :text text :selection selection))})
-                                                          (el/button {:disabled (or (not write?) (not (editor/dirty? draft))
-                                                                                    (get-in state [:loading [:office-save path]]))
-                                                                      :on-click (fn [_] ((:office-save a) path))} "Save XML part"))))
+                                        (office-view/view {:path path :draft draft :state state :actions a :write? write? :coherent? coherent?})
                                         (not text?) (el/p {:class "memory-note"} "Binary file. Download preserves the original bytes; document-specific editing is not available in this view yet.")
                                         (and clojure? (= :superficie code-view)) (superficie-view (:text draft))
                                         (= :source (:mode draft)) (source-view path draft a write?)
