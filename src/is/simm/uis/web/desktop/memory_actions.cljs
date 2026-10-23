@@ -57,6 +57,33 @@
   (reduce (fn [s k] (update s k #(select-keys % [:repl])))
           state [:request-contexts :finished :accepted]))
 
+(defn- moved-state [state path target reply]
+  (let [slots (into #{[:file path]}
+                    (keep (fn [[slot frame]]
+                            (when (and (vector? slot) (= path (second slot))
+                                       (= :target (:scope frame)) (not= :move (first slot))) slot)))
+                    (:request-contexts state))]
+    (reduce (fn [s key]
+              (let [values (get s key)]
+                (if (contains? values path)
+                  (assoc s key (assoc (dissoc values path) target (get values path))) s)))
+     (-> state
+        (assoc-in [:drafts target] (editor/moved (get-in state [:drafts path]) reply))
+        (update :drafts dissoc path)
+        (assoc :selected target)
+        (retire-reads slots)
+        (update :errors #(apply dissoc % slots))
+        (update :file-intents dissoc path)
+        (update :metadata-followups #(into {} (remove (fn [[slot _]] (= path (second slot)))) %))
+        (update :observed-entries dissoc path)
+        (update :history dissoc path)
+        (update :history-preview dissoc path)
+        (update :accepted dissoc :metadata)
+        ;; An older discovery keeps its token so on-settled can drain the
+        ;; current intent, but cannot consume or re-open the retired path.
+        (update :discovery-revision (fnil inc 0)))
+     [:autosave :autosave-holds])))
+
 (defn controller [data]
   (let [ctx (or ec/*execution-context* runtime) session (web/current-session)
         room (str (:room-id data)) key (state-key data)
@@ -824,10 +851,10 @@
                      (request! [:move path] #(remote/move-memory-file! web/server-id room
                                                                        {:path path :target target :expected (get-in draft [:source :entry]) :expected-target-stamp stamp})
                                (fn [s reply]
-                                 (-> s (assoc-in [:drafts target] (editor/moved (get-in s [:drafts path]) reply))
-                                     (update :drafts dissoc path) (assoc :selected (:path reply))))
+                                 (moved-state s path target reply))
                                (fn [_]
                                  (select! target true)
-                                 (folder! (parent path)) (folder! (parent target)) (navigation-refresh!) (open! target true))
+                                 (doseq [p (set [(parent path) (parent target)])] (folder! p))
+                                 (navigation-refresh!) (open! target true) (discover! true) (autosave! target))
                                {:stamp stamp :accept? (fn [s _] (and (= (:generation draft) (get-in s [:drafts path :generation]))
                                                                      (nil? (get-in s [:drafts target]))))})))))})))

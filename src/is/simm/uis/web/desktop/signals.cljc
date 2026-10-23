@@ -812,7 +812,8 @@
                         (if (= col-id (:id column))
                           (update column :tabs #(mapv (fn [tab] (if (= tab-id (:id tab)) (transform tab) tab)) %))
                           column)) columns)))
-       (when (identical? rtc/*execution-context* runtime)
+       (when (and (some? rtc/*execution-context*)
+                  (identical? (rtc/home-context rtc/*execution-context*) (rtc/home-context runtime)))
          (notify-focus-change! reason)))
      :clj nil))
 

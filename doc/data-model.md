@@ -45,6 +45,12 @@ Native handles remain element-owned. Markdown source supports the same jump
 when rich projection is unavailable. Opening or copying a link never evaluates
 code or writes the file.
 
+Renaming retires old-path reads and history requests before reconciling current
+metadata; late replies cannot reopen the removed path. Typing during the move
+follows the file and resumes autosave at its new path. Address notifications use
+the live execution context's stable home, so ordinary execution frames update
+browser history while simulation forks retain their own layout.
+
 Rich list serialization alternates standard Markdown markers for adjacent
 lists so reparsing preserves their boundaries and numbering. Selective edits
 to a region containing adjacent sibling lists serialize that region together;

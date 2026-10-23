@@ -23,12 +23,15 @@
                                   (swap! events conj [reason (routes/tab->route (sig/focused-tab @sig/layout-columns @sig/active-column-id))])))
           (sig/retarget-tab! "column" "tab" #(references/selected-tab % "wiki/New.md" false) :navigate)
           (is (= [[:navigate "/room/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/files?path=wiki%2FNew.md"]] @events))
+          (binding [ec/*execution-context* (assoc live ::execution-frame true)]
+            (sig/retarget-tab! "column" "tab" #(references/selected-tab % "wiki/Frame.md" false) :passive))
+          (is (= [:passive "/room/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/files?path=wiki%2FFrame.md"] (last @events)))
           (let [fork (context/fork-context live)]
             (try
               (binding [ec/*execution-context* fork]
                 (sig/retarget-tab! "column" "tab" #(references/selected-tab % "wiki/Simulation.md" false) :navigate)
                 (is (= "wiki/Simulation.md" (get-in (first @sig/layout-columns) [:tabs 0 :data :path]))))
-              (is (= 1 (count @events)))
-              (is (= "wiki/New.md" (get-in (first @sig/layout-columns) [:tabs 0 :data :path])))
+              (is (= 2 (count @events)))
+              (is (= "wiki/Frame.md" (get-in (first @sig/layout-columns) [:tabs 0 :data :path])))
               (finally (context/close-context! fork))))))
       (finally (reset! listeners saved) (context/close-context! live)))))

@@ -246,6 +246,70 @@
                             (wire target {:folders {"" {:entries []}} :entries {"x.clj" (:entry file)}
                                           :revision (random-uuid) :permissions {:write? true :evaluate? true}})))}))))))
 
+(deftest moves-retire-old-path-reads-and-drain-current-metadata
+  (doseq [metadata-first? [true false] old-exists? [true false]]
+    (with-client
+      (fn [{:keys [a states state stamp file seed! calls last-call]}]
+        (seed!)
+        (swap! states update (:owner a) assoc :history-preview {"x.clj" {:text "Old history"}})
+        ((:discover a))
+        (let [old-metadata (last-call :metadata)]
+          ((:reload a) "x.clj")
+          ((:history a) "x.clj")
+          ((:ok (last-call :history)) (wire stamp {:versions []}))
+          (let [metadata (wire stamp {:folders {} :entries {"x.clj" (when old-exists? (:entry file))}
+                                      :revision :before-move :permissions {:write? true :evaluate? true}})]
+            ((:move a) "x.clj" "moved.clj")
+            (when metadata-first? ((:ok old-metadata) metadata))
+            (let [old-bodies (filterv #(= "x.clj" (get-in % [:request :path])) (:file @calls))
+                  old-histories (:history @calls)]
+            ((:ok (last-call :move)) (wire stamp {:path "moved.clj" :entry (:entry file)}))
+            (when-not metadata-first? ((:ok old-metadata) metadata))
+            (doseq [body old-bodies]
+              ((:error body) (ex-info "Old path has been removed" {}))
+              ((:ok body) (assoc file :text "Late original body")))
+            (doseq [history old-histories]
+              ((:ok history) (wire stamp {:versions [{:old-history true}]})))
+            (let [current (last (filter #(some #{"moved.clj"} (get-in % [:request :paths])) (:metadata @calls)))]
+              (is (some? current) "Superseded discovery drains a current request")
+              (is (not (some #{"x.clj"} (get-in current [:request :paths]))))
+              ((:ok current) (wire stamp {:folders {} :entries {"moved.clj" (:entry file)}
+                                         :revision :after-move :permissions {:write? true :evaluate? true}})))
+            ((:ok (last-call :file)) (assoc file :path "moved.clj"))
+            (is (= "moved.clj" (:selected (state))))
+            (is (= "Original" (get-in (state) [:drafts "moved.clj" :text])))
+            (is (nil? (get-in (state) [:drafts "x.clj"])))
+            (is (nil? (get-in (state) [:errors [:file "x.clj"]])))
+            (is (nil? (get-in (state) [:history "x.clj"])))
+            (is (nil? (get-in (state) [:history-preview "x.clj"])))
+            (is (nil? (get-in (state) [:observed-entries "x.clj"])))
+            (is (= (count old-bodies) (count (filter #(= "x.clj" (get-in % [:request :path])) (:file @calls))))
+                "No new read of the retired path after acknowledgement")
+            (is (= (count old-histories) (count (:history @calls)))))))))))
+
+(deftest typing-during-move-follows-the-file-and-resumes-autosave
+  (doseq [old-entry [nil {:content :old-path-changed}]]
+  (with-client
+    (fn [{:keys [a state stamp file seed! calls last-call]}]
+      (seed!)
+      ((:discover a))
+      (let [metadata (last-call :metadata)]
+      ((:move a) "x.clj" "moved.clj")
+      ((:edit a) "x.clj" editor/changed "Typed during move" {:anchor 17 :head 17})
+      (is (empty? (:save @calls)) "Do not save the path while its move is in flight")
+      ((:ok metadata) (wire stamp {:folders {} :entries {"x.clj" old-entry}
+                                  :revision :old-path :permissions {:write? true :evaluate? true}}))
+      ((:ok (last-call :move)) (wire stamp {:path "moved.clj" :entry (:entry file)}))
+      (is (= "Typed during move" (get-in (state) [:drafts "moved.clj" :text])))
+      (is (nil? (get-in (state) [:drafts "x.clj"])))
+      (is (nil? (get-in (state) [:autosave "x.clj"])))
+      (is (= "moved.clj" (get-in (last-call :save) [:request :path])))
+      (is (= "Typed during move" (get-in (last-call :save) [:request :text])))
+      (is (not (get-in (state) [:drafts "moved.clj" :remote-deleted?])))
+      (is (nil? (get-in (state) [:drafts "moved.clj" :incoming-entry])))
+      ((:ok (last-call :save)) (wire stamp {:path "moved.clj" :entry {:content :typed}}))
+      (is (not (editor/dirty? (get-in (state) [:drafts "moved.clj"])))))))))
+
 (deftest office-preview-refresh-retains-dirty-xml-and-fences-stale-revisions
   (with-client
     (fn [{:keys [a states state stamp file seed! last-call]}]
