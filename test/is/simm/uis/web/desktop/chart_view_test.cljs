@@ -87,3 +87,63 @@
         (is (= source (:text draft))))
       (finally (when @discharge (browser/unmount! @discharge))
                (.remove container) (context/stop-context! ctx)))))
+
+(defn- multi-draft [mode]
+  (let [ids [block-id "cccccccc-cccc-4ccc-8ccc-cccccccccccc" "dddddddd-dddd-4ddd-8ddd-dddddddddddd"]]
+    (reduce
+     (fn [draft [index id]]
+       (let [source (:text draft) from (count source)
+             open (str "<!-- simmis:block " id " -->\n\n")
+             text (str "Explanation " index)
+             paragraph-from (+ from (count open)) paragraph-to (+ paragraph-from (count text))
+             close-from (+ paragraph-to 2) next (str source open text "\n\n<!-- /simmis:block -->\n\n")
+             syntax {:kind :Paragraph :from paragraph-from :to paragraph-to
+                     :children [{:kind :Text :text text :children []}]}]
+         (-> draft (assoc :text next)
+             (update-in [:analysis :semantic :blocks] conj
+                        {:id (uuid id) :identity-status :explicit :from from :to (count next)
+                         :children [] :syntax [syntax]})
+             (update-in [:analysis :slots] into
+                        [{:from from :to paragraph-from :kind :HtmlBlock}
+                         {:from paragraph-from :to paragraph-to :kind :Paragraph
+                          :model {:type "doc" :content [{:type "paragraph" :content [{:type "text" :text text}]}]}}
+                         {:from close-from :to (count next) :kind :HtmlBlock}]))))
+     {:mode mode :text "" :analysis {:semantic {:blocks []} :slots []}}
+     (map-indexed vector ids))))
+
+(defn- multi-tree [draft models]
+  (memory/document-view "wiki/multiple.md" draft {:chart-models (constantly models)} false))
+
+(defn- addresses [tree]
+  (keep :addr (tree-seq #(and (map? %) (:children %)) #(seq @(:children %)) tree)))
+
+(deftest read-and-outline-charts-have-distinct-addresses-and-data-dependencies
+  (doseq [mode [:read :outline]]
+    (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+          release (atom nil) draft (multi-draft mode)
+          ids (mapv (comp str :id) (get-in draft [:analysis :semantic :blocks]))
+          data [(assoc chart :title "Revenue")
+                {:kind :bar :title "Costs" :series [{:label "Cost" :points [["Research" 12] ["Delivery" 9]]}]}
+                {:kind :point :title "Experiments" :series [{:label "Trial" :points [[0 1] [2 4]]}]}]
+          models (zipmap ids data)]
+      (.appendChild (.-body js/document) container)
+      (try
+        (binding [ec/*execution-context* ctx]
+          (let [initial (multi-tree draft models) addrs (vec (addresses initial))]
+            (is (= (count addrs) (count (set addrs))) "every chart and descendant owns a distinct DOM address")
+            (reset! release (browser/mount! container initial))
+            (is (= ["Revenue" "Costs" "Experiments"]
+                   (mapv #(.-textContent %) (array-seq (.querySelectorAll container "figcaption")))))
+            (is (= 2 (.-length (.querySelectorAll container "svg.memory-chart-plot rect"))))
+            (let [changed (assoc models (first ids) {:kind :point :title "Revised revenue"
+                                                   :series [{:label "Revenue" :points [[5 99]]}]})
+                  next (multi-tree draft changed) next-addrs (vec (addresses next))]
+              (is (= (count next-addrs) (count (set next-addrs))))
+              (browser/refresh! @release initial next)
+              (is (= ["Revised revenue" "Costs" "Experiments"]
+                     (mapv #(.-textContent %) (array-seq (.querySelectorAll container "figcaption")))))
+              (is (= 3 (.-length (.querySelectorAll container "svg.memory-chart-plot circle"))))
+              (is (= 2 (.-length (.querySelectorAll container "svg.memory-chart-plot rect"))))
+              (is (= (:text draft) (:text (multi-draft mode))) "a spec-only update does not edit Markdown"))))
+        (finally (when @release (browser/unmount! @release))
+                 (.remove container) (context/stop-context! ctx))))))

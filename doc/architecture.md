@@ -361,7 +361,9 @@ Analysis is usable only when its revision matches the saved content identity.
 Chart responses are not accepted into a dirty draft. Already accepted saved
 charts can remain visible during protected prose editing; Source editing hides
 them. One closed pure scene supplies Spindel's Read DOM and Tiptap's inert
-element-owned NodeView projection. Charts never become editor attributes,
+element-owned NodeView projection. Read/Outline roots are keyed by file path
+and block identity, and loop items carry their chart data as an explicit
+incremental dependency. Charts never become editor attributes,
 editor clipboard serialization or source edits; element detach releases their
 native cache. The accessible chart table remains ordinary selectable content.
 

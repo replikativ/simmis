@@ -15,7 +15,11 @@
                                      (addressing/with-slot-fn index (fn [] (render-scene child))))
                                    (range) (:children tree)))))))
 
-(defn view [data] (render-scene (chart/scene data)))
+(defn view [id data]
+  ;; A component called from one variable-length source slot still needs its
+  ;; own keyed root. Internal child slots alone cannot distinguish two charts.
+  (el/div {:key id :class "memory-chart-projection"}
+          (render-scene (chart/scene data))))
 
 (def ^:private svg-tags #{:svg :path :circle :rect :text})
 

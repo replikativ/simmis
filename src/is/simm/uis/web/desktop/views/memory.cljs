@@ -172,7 +172,10 @@
         chart-ends (into {} (for [block (mapcat #(tree-seq (comp seq :children) :children %)
                                                  (get-in analysis [:semantic :blocks]))
                                   :let [chart (get chart-models (str (:id block)))] :when chart]
-                              [(:to block) chart]))]
+                              [(:to block) [(:id block) chart]]))
+        ;; Chart data is an explicit item dependency, not an invisible closure
+        ;; beside an unchanged syntax slot in the incremental loop.
+        slots (mapv #(assoc % :chart (get chart-ends (:to %))) (:slots analysis))]
     (el/div {:class "memory-document"}
             (when rich? (rich-toolbar write? (:document-selection base) #((:local-source-open a) path %)))
             (when (and (= :rich (:mode draft)) (not base) analysis)
@@ -198,7 +201,8 @@
                                                 ((:document-change a) path (:id base) model selection))})
               (if (= :outline (:mode draft))
                 (el/div {:class "memory-outline"}
-                        (for [block (editor/outline (get-in analysis [:semantic :blocks]))]
+                        (for [block (mapv #(assoc % :chart (get chart-models (str (:id %))))
+                                          (editor/outline (get-in analysis [:semantic :blocks])))]
                           (el/div {:key (str (:id block)) :class "memory-outline-block"
                                    :style {:margin-left (str (* 18 (:depth block)) "px")}}
                                   (el/details {:class "memory-properties"}
@@ -211,17 +215,17 @@
                                     (if-let [model (rich/model node)]
                                       (model-node model)
                                       (el/pre {} (subs source (:from node) (:to node)))))
-                                  (when-let [chart (get chart-models (str (:id block)))] (charts/view chart))
+                                  (when-let [chart (:chart block)] (charts/view [path (:id block)] chart))
                                   (el/button {:on-click (fn [_]
                                                           ((:change a) path assoc :mode :source
                                                                        :selection {:anchor (:from block) :head (:to block)}))}
                                              "Edit source"))))
-                (for [slot (:slots analysis)]
+                (for [slot slots]
                   (let [model (or (when rich? (get-in base [:models (:from slot)])) (:model slot))
                         text (subs source (:from slot) (:to slot))
                         structural? (boolean (re-matches #"(?s)\s*<!-- /?simmis:block[^>]*-->\s*" text))]
                     (if structural?
-                      (when-let [chart (get chart-ends (:to slot))] (charts/view chart))
+                      (when-let [[id chart] (:chart slot)] (charts/view [path id] chart))
                       (el/div {:key (str (:from slot) ":" (:to slot)) :class "memory-region"}
                               (cond
                                 (and rich? model)
