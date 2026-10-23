@@ -29,6 +29,13 @@ hints invalidate closed caches, while open listings reconcile in place.
 Reconnect clears cached listings and revalidates the target. File contents
 remain on demand, and editor drafts and sidebar navigation have separate owners.
 
+Rich-document code fences use presentation-only syntax decorations for explicitly
+recognized language names and aliases. Tokens are derived from the original
+code with the same shipped grammars as chat, without changing editor content,
+block identities or saved Markdown. Unlabelled/unknown languages and cells beyond
+the highlighting bounds remain plain code. Viewing, editing and highlighting
+code do not evaluate it.
+
 ### File and block addresses
 
 Memory files have `/room/<room>/files?path=<encoded-path>` addresses. An
