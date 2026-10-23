@@ -18,6 +18,44 @@ source-selected disposable query view do not install untrusted schema or
 execute imported code/widgets. Existing legacy KB entities are retained; this
 surface is not a completed migration of their identity or widget semantics.
 
+### Saved data-only charts
+
+New canonical spaces install the optional `:simmis/typed-chart` version 1
+definitions. They are separate from the mandatory canonical knowledge profile;
+existing spaces remain valid without them. Opening a file never installs or
+repairs definitions. Partial, colliding or modified Chart definitions refuse
+activation, including changed storage, codomain or inherited constraints.
+
+An explicitly identified semantic block assigns type
+`2d4a6ef1-5159-45d6-b12d-683064cb8cee` (`S/ChartV1`) and binds its required
+string property `0bcb85c0-405d-46b2-90b9-d34d81351975` (`S/ChartV1/spec-path`).
+The property value is an exact path from the room repository root, such as
+`data/sales.json`. It uses the ordinary `simmis.blocks` declaration format
+below. Chart appearance is derived; no chart data enters the Markdown editor
+model or changes the block's prose, identity or source serialization.
+
+The referenced UTF-8 JSON uses a closed versioned data format:
+
+```json
+{"version":1,"kind":"line","title":"Sales","series":[{"label":"Revenue","points":[[0,10],[1,15]]}]}
+```
+
+Kinds are `line`, `point` and `bar`; bar x values are category strings, while
+line/point coordinates are numeric. Optional `x-label` and `y-label` name axes.
+Series labels are distinct; category labels are distinct within each bar
+series. Input order is retained and missing categories are not zero-filled.
+The format admits at most 64 KiB, eight series and 2,000 total points, with
+bounded text and finite coordinates of magnitude at most 10¹². Duplicate JSON
+keys, transforms, expressions, URLs, raw HTML and arbitrary chart grammars are
+unsupported. Metadata admission bounds ordinary file reads; the parser's
+actual-byte cap is not a corrupt-storage allocation containment mechanism.
+
+Read and continuous rich views show up to four saved Chart blocks with native
+SVG, legends and an accessible data table. Ordinary fences and provisional
+blocks stay inert. Source/local-source editing hides these projections until
+the saved declaration is available again. The legacy Vega/SCI widget path is
+not used to activate canonical charts.
+
 ### Portable typed declarations
 
 `documents.metadata` provides a separate inert declaration codec, identified by

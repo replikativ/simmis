@@ -9153,6 +9153,15 @@ body.tab-dragging .column-drop-zone {
 .memory-semantic-block { border-left: 2px solid transparent; padding-left: 10px; margin: 4px 0; }
 .memory-semantic-block:hover, .memory-semantic-block:focus-within { border-left-color: var(--border-color); }
 .memory-continuous-region { min-height: 1em; }
+.memory-chart { margin: 12px 0; padding: 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--mono-text-primary); background: transparent; }
+.memory-chart figcaption { font-weight: 500; margin-bottom: 6px; }
+.memory-chart-plot { display: block; width: 100%; max-width: 640px; height: auto; }
+.memory-chart details { max-height: 240px; overflow: auto; font-size: 12px; }
+.memory-chart table { width: 100%; border-collapse: collapse; }
+.memory-chart th, .memory-chart td { padding: 3px 6px; border-bottom: 1px solid var(--border-color); text-align: left; }
+.memory-chart-slot:empty { display: none; }
+.memory-chart-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 4px 0; padding: 0; list-style: none; font-size: 12px; }
+.memory-chart-legend li { display: flex; align-items: center; gap: 5px; }
 .memory-opaque { white-space: pre-wrap; color: var(--mono-text-secondary); background: var(--bg-overlay); padding: 8px; border-radius: 4px; }
 .memory-region-editor > .memory-toolbar { margin-top: 8px; }
 .memory-conflict { padding: 12px; border: 1px solid #b9914e; border-radius: 8px; margin-bottom: 12px; }

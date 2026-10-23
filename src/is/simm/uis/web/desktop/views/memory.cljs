@@ -14,6 +14,7 @@
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.source-editor :as source]
             [is.simm.uis.web.desktop.rich-editor :as rich-editor]
+            [is.simm.uis.web.desktop.chart-view :as charts]
             [is.simm.uis.web.desktop.rich-controls :as rich-controls]
             [is.simm.uis.web.desktop.markdown :as md]
             [superficie.api :refer [toSup]]
@@ -166,7 +167,12 @@
 (defn- document-view [path draft a write?]
   (let [base (:rich-base draft) rich? (and (= :rich (:mode draft)) base)
         analysis (if rich? (:analysis base) (:analysis draft))
-        source (if rich? (:text base) (:text draft))]
+        source (if rich? (:text base) (:text draft))
+        chart-models (when-let [models (:chart-models a)] (models path))
+        chart-ends (into {} (for [block (mapcat #(tree-seq (comp seq :children) :children %)
+                                                 (get-in analysis [:semantic :blocks]))
+                                  :let [chart (get chart-models (str (:id block)))] :when chart]
+                              [(:to block) chart]))]
     (el/div {:class "memory-document"}
             (when rich? (rich-toolbar write? (:document-selection base) #((:local-source-open a) path %)))
             (when (and (= :rich (:mode draft)) (not base) analysis)
@@ -185,6 +191,7 @@
                 (rich-editor/view {:id [(:owner a) path (:id base) :document]
                                    :model (or (:document-model base) (get-in base [:document :model]))
                                    :selection (:document-selection base) :document? true
+                                   :charts chart-models
                                    :read-only? (or (not write?) (some? (:local-source draft)))
                                    :on-blocked #((:document-blocked a) path)
                                    :on-change (fn [model selection]
@@ -204,6 +211,7 @@
                                     (if-let [model (rich/model node)]
                                       (model-node model)
                                       (el/pre {} (subs source (:from node) (:to node)))))
+                                  (when-let [chart (get chart-models (str (:id block)))] (charts/view chart))
                                   (el/button {:on-click (fn [_]
                                                           ((:change a) path assoc :mode :source
                                                                        :selection {:anchor (:from block) :head (:to block)}))}
@@ -212,7 +220,8 @@
                   (let [model (or (when rich? (get-in base [:models (:from slot)])) (:model slot))
                         text (subs source (:from slot) (:to slot))
                         structural? (boolean (re-matches #"(?s)\s*<!-- /?simmis:block[^>]*-->\s*" text))]
-                    (when-not structural?
+                    (if structural?
+                      (when-let [chart (get chart-ends (:to slot))] (charts/view chart))
                       (el/div {:key (str (:from slot) ":" (:to slot)) :class "memory-region"}
                               (cond
                                 (and rich? model)
@@ -676,6 +685,7 @@
      ((:ensure-path a))
      ((:ensure-sync a) connection stream)
      ((:ensure-properties a))
+     ((:ensure-charts a))
      (view data state a syntax-pref))))
 
 (defn render-context [data]

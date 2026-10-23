@@ -791,6 +791,7 @@
      "load-memory-metadata!"  {:action R :resource (room :room-id-str)}
      "load-memory-file!"       {:action R :resource (room :room-id-str)}
      "load-memory-properties!" {:action R :resource (room :room-id-str)}
+     "load-memory-chart!"      {:action R :resource (room :room-id-str)}
      "save-memory-property!"   {:action W :resource (room :room-id-str)}
      "preview-memory-declaration!" {:action R :resource (room :room-id-str)}
      "save-memory-declaration!" {:action W :resource (room :room-id-str)}
