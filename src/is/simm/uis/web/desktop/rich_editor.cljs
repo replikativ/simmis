@@ -7,6 +7,7 @@
             [is.simm.documents.rich-text :as rich]
             [is.simm.documents.rich-document :as document]
             [is.simm.uis.web.desktop.rich-controls :as controls]
+            [is.simm.uis.web.desktop.code-highlight :as code-highlight]
             [is.simm.uis.web.desktop.chart-view :as charts]
             [is.simm.uis.web.desktop.math-view :as math]
             [is.simm.uis.web.desktop.editor-jump :as jump]
@@ -288,7 +289,7 @@
                                         (boundary-node "memoryRegion" "(paragraph|heading|bulletList|orderedList|codeBlock|horizontalRule|displayMath)+" el)
                                         (boundary-node "memoryOpaque" "" el)
                                         (footnote-node) (math-node "inlineMath" false) (math-node "displayMath" true)
-                                        (boundary-guard el)
+                                        (boundary-guard el) (code-highlight/extension)
                                         (.configure StarterKit
                                                     #js {:underline false :blockquote false :trailingNode false
                                                          :link #js {:openOnClick false

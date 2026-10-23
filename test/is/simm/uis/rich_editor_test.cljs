@@ -12,6 +12,38 @@
     (.appendChild (.-body js/document) el)
     (try (f el (.-simmisRichEditor el)) (finally (.remove el)))))
 
+(deftest nested-code-highlight-is-disposable-and-preserves-editing-and-export
+  (let [code "; note\n(def title \"😀 <script>\")"
+        model {:type "doc" :content [{:type "bulletList" :content [{:type "listItem"
+                            :content [{:type "paragraph" :content [{:type "text" :text "Nested cell"}]}
+                                      {:type "codeBlock" :attrs {:language "clj"}
+                                       :content [{:type "text" :text code}]}]}]}]}
+        el (.createElement js/document "simmis-rich-editor") inputs (atom 0)]
+    (.setAttribute el "data-model" (js/JSON.stringify (clj->js model)))
+    (.setAttribute el "data-read-only" "false")
+    (.addEventListener el "input" #(swap! inputs inc))
+    (.appendChild (.-body js/document) el)
+    (try
+      (let [^js editor (.-simmisRichEditor el) before (js/JSON.stringify (.getJSON editor))
+            position (volatile! nil)]
+        (is (= code (.-textContent (.querySelector el "pre code"))))
+        (is (pos? (.-length (.querySelectorAll el "pre code span.hljs-comment"))))
+        (is (pos? (.-length (.querySelectorAll el "pre code span.hljs-string"))))
+        (is (= 0 (.-length (.querySelectorAll el "pre script"))))
+        (is (not (re-find #"hljs-" (.getHTML editor))))
+        (is (not (re-find #"hljs-" before)))
+        (is (= 1 @inputs) "Only the ordinary mount snapshot; decorations add no input events")
+        (.descendants (.. editor -state -doc) (fn [node pos]
+                                               (when (= "codeBlock" (.. node -type -name))
+                                                 (vreset! position (+ pos 1 (count code))))))
+        (.dispatch (.-view editor) (.insertText (.. editor -state -tr) " 42" @position))
+        (is (= (str code " 42") (.-textContent (.querySelector el "pre code"))))
+        (is (pos? (.-length (.querySelectorAll el "pre code span.hljs-number"))))
+        (.undo (.-commands editor))
+        (is (= before (js/JSON.stringify (.getJSON editor))))
+        (is (= code (.-textContent (.querySelector el "pre code")))))
+      (finally (.remove el)))))
+
 (deftest block-links-and-controlled-jumps-preserve-native-editor-and-content
   (let [id "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
         model {:type "doc" :content [{:type "memoryBlock" :attrs {:blockId id :key (str "block:" id)}

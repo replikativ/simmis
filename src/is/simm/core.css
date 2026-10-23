@@ -9164,6 +9164,18 @@ body.tab-dragging .column-drop-zone {
 .memory-rich-content { min-height: 1.5em; padding: 2px 0; outline: none; border: 0; }
 .memory-rich-content:focus { box-shadow: inset 2px 0 0 var(--accent, #7893ce); padding-left: 8px; }
 .memory-rich-content p { margin: 8px 0; }
+.memory-rich-content pre .hljs-comment,
+.memory-rich-content pre .hljs-quote { color: var(--mono-text-tertiary); font-style: italic; }
+.memory-rich-content pre .hljs-keyword,
+.memory-rich-content pre .hljs-built_in,
+.memory-rich-content pre .hljs-name,
+.memory-rich-content pre .hljs-title { color: var(--accent); }
+.memory-rich-content pre .hljs-string,
+.memory-rich-content pre .hljs-regexp { color: var(--accent-success); }
+.memory-rich-content pre .hljs-number,
+.memory-rich-content pre .hljs-literal,
+.memory-rich-content pre .hljs-symbol,
+.memory-rich-content pre .hljs-attr { color: var(--mono-text-primary); font-weight: 500; }
 .memory-document { position: relative; }
 .memory-document-toolbar { position: absolute; z-index: 20; display: flex; align-items: center; flex-wrap: wrap; gap: 3px; max-width: calc(100% - 8px); padding: 4px; background: var(--mono-bg-elevated, #202124); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: 0 4px 16px #0003; }
 .memory-document-toolbar:not([data-visible=true]) { visibility: hidden; pointer-events: none; }

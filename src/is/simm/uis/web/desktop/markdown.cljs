@@ -2,38 +2,10 @@
   "Markdown rendering for chat messages using marked + highlight.js."
   (:require ["marked" :refer [Marked]]
             ["marked-highlight" :refer [markedHighlight]]
-            ["highlight.js/lib/core" :as hljs]
-            ;; Register common languages for code blocks
-            ["highlight.js/lib/languages/clojure" :as clojure-lang]
-            ["highlight.js/lib/languages/javascript" :as js-lang]
-            ["highlight.js/lib/languages/python" :as python-lang]
-            ["highlight.js/lib/languages/bash" :as bash-lang]
-            ["highlight.js/lib/languages/json" :as json-lang]
-            ["highlight.js/lib/languages/css" :as css-lang]
-            ["highlight.js/lib/languages/xml" :as xml-lang]
-            ["highlight.js/lib/languages/sql" :as sql-lang]
-            ["highlight.js/lib/languages/diff" :as diff-lang]
-            ["highlight.js/lib/languages/yaml" :as yaml-lang]
-            ["highlight.js/lib/languages/markdown" :as md-lang]
-            ["./superficie_hljs.js" :as sup-hljs]
+            [is.simm.uis.web.desktop.syntax-highlight :as syntax]
             [is.simm.uis.web.desktop.sanitize :as sanitize]))
 
-;; Register languages
-(.registerLanguage hljs "clojure" clojure-lang)
-(.registerLanguage hljs "javascript" js-lang)
-(.registerLanguage hljs "js" js-lang)
-(.registerLanguage hljs "python" python-lang)
-(.registerLanguage hljs "bash" bash-lang)
-(.registerLanguage hljs "shell" bash-lang)
-(.registerLanguage hljs "json" json-lang)
-(.registerLanguage hljs "css" css-lang)
-(.registerLanguage hljs "html" xml-lang)
-(.registerLanguage hljs "xml" xml-lang)
-(.registerLanguage hljs "sql" sql-lang)
-(.registerLanguage hljs "diff" diff-lang)
-(.registerLanguage hljs "yaml" yaml-lang)
-(.registerLanguage hljs "markdown" md-lang)
-(.registerLanguage hljs "superficie" sup-hljs)
+(def ^js hljs syntax/engine)
 
 ;; Create marked instance with highlight.js integration
 (def marked-instance
