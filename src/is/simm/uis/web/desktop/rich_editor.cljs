@@ -8,6 +8,7 @@
             [is.simm.documents.rich-document :as document]
             [is.simm.uis.web.desktop.rich-controls :as controls]
             [is.simm.uis.web.desktop.code-highlight :as code-highlight]
+            [is.simm.uis.web.desktop.rich-cells :as cells]
             [is.simm.uis.web.desktop.chart-view :as charts]
             [is.simm.uis.web.desktop.math-view :as math]
             [is.simm.uis.web.desktop.editor-jump :as jump]
@@ -230,6 +231,8 @@
                                    allowed?)))})])}))
 
 (defn disconnect! [^js el]
+  (when-let [release (.-simmisReleaseCells el)]
+    (release) (set! (.-simmisReleaseCells el) nil))
   (when-let [release (.-simmisReleaseJump el)]
     (release) (set! (.-simmisReleaseJump el) nil))
   (set! (.-simmisChartData el) nil)
@@ -289,7 +292,7 @@
                                         (boundary-node "memoryRegion" "(paragraph|heading|bulletList|orderedList|codeBlock|horizontalRule|displayMath)+" el)
                                         (boundary-node "memoryOpaque" "" el)
                                         (footnote-node) (math-node "inlineMath" false) (math-node "displayMath" true)
-                                        (boundary-guard el) (code-highlight/extension)
+                                        (boundary-guard el) (code-highlight/extension) (cells/extension el)
                                         (.configure StarterKit
                                                     #js {:underline false :blockquote false :trailingNode false
                                                          :link #js {:openOnClick false
@@ -306,6 +309,7 @@
                        :onFocus (fn [event] (notify! el (.-editor event)))
                        :onSelectionUpdate (fn [event] (notify! el (.-editor event)))})]
       (set! (.-simmisRichEditor el) editor)
+      (set! (.-simmisReleaseCells el) (cells/attach! el))
       (set! (.-simmisReleaseJump el) (jump/attach! el))
       (set! (.-simmisReleaseControls el) (controls/attach! el editor))
       (restore-selection! el editor)
@@ -332,6 +336,7 @@
         "data-read-only" (do (.setEditable editor (not (read-only? el)))
                              (controls/consume-focus-request! el editor))
         "data-selection" (sync-selection! el editor)
+        "data-cells" (cells/refresh! el)
         "data-charts" (do
                         (set! (.-simmisChartData el) (js/JSON.parse (or new "{}")))
                         (doseq [projection (array-seq (.querySelectorAll el ".memory-chart-slot"))]
@@ -344,6 +349,7 @@
         "data-linked-block-id" (doseq [block (array-seq (.querySelectorAll el ".memory-semantic-block"))]
                                  (.toggleAttribute block "data-linked-block" (= new (.getAttribute block "data-block-id"))))
         nil)
+        (cells/refresh! el)
         (consume-jump! el (.-simmisRichEditor el))
         (finally (set! (.-simmisApplying el) false))))))
 
@@ -353,15 +359,19 @@
              connectedCallback() { (~{})(this); }
              disconnectedCallback() { (~{})(this); }
              attributeChangedCallback(name, oldValue, newValue) { (~{})(this, name, oldValue, newValue); }
-             static get observedAttributes() { return ['data-owner', 'data-model', 'data-read-only', 'data-selection', 'data-charts', 'data-block-links', 'data-linked-block-id', 'data-jump']; }
+             static get observedAttributes() { return ['data-owner', 'data-model', 'data-read-only', 'data-selection', 'data-charts', 'data-block-links', 'data-linked-block-id', 'data-jump', 'data-cells']; }
            })" mount! disconnect! sync!)))
 
-(defn view [{:keys [id model selection read-only? on-change document? on-blocked charts block-links linked-block jump before-jump on-jumped]}]
+(defn view [{:keys [id model selection read-only? on-change document? on-blocked charts block-links linked-block jump before-jump on-jumped cell-config on-run-cell]}]
   (foreign-node
    {:tag :simmis-rich-editor :key id :class "memory-rich-editor"
     :data-owner (pr-str [id (:fork-id ec/*execution-context*)])
     :data-focus-scope (pr-str [(first id) (second id) (:fork-id ec/*execution-context*)])
     :data-model (js/JSON.stringify (clj->js model))
+    :data-cells (when cell-config (js/JSON.stringify (clj->js cell-config)))
+    :on-simmis-run-cell (fn [event]
+                          (when (and on-run-cell (= (.-target event) (.-currentTarget event)))
+                            (on-run-cell (aget (.-detail event) "key"))))
     :data-charts (js/JSON.stringify (clj->js (or charts {})))
     :data-block-links (js/JSON.stringify (clj->js (or block-links {})))
     :data-linked-block-id (or linked-block "")

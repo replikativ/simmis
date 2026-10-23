@@ -6,6 +6,7 @@
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.memory-editor :as editor]
+            [is.simm.uis.web.desktop.memory-cells :as cells]
             [is.simm.uis.web.desktop.memory-tree :as tree]
             [is.simm.uis.web.desktop.memory-declarations :as declarations]
             [is.simm.uis.web.desktop.memory-sync :as sync]
@@ -705,6 +706,15 @@
        :declaration-save declaration-save!
        :verified? #(verified? (state) (connection)) :discover #(discover! false)
        :repl-change (fn [f & args] (apply update! update :repl f args))
+       :cell-config #(when (verified? (state) (connection)) (cells/visible (state) %))
+       :run-cell (fn [path key]
+                   (when (and (verified? (state) (connection))
+                              (not (false? (get-in (state) [:sandbox-permissions :evaluate?]))))
+                     (when-let [request (cells/request (state) path key)]
+                       (let [slot [:cell path (:revision request) key]]
+                         (when-not (get-in (state) [:loading slot])
+                           (request! slot #(remote/evaluate-memory-cell! web/server-id room request)
+                                     editor/repl-result nil {:scope :sandbox}))))))
        :repl-evaluate
        (fn [syntax]
          (when (and (not (get-in (state) [:loading :repl]))

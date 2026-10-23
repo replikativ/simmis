@@ -10,6 +10,7 @@
             #?(:clj [is.simm.model.db :as db])
             #?(:clj [is.simm.agents.room-agents :as rooms])
             #?(:clj [is.simm.ops.owned-files :as owned-files])
+            #?(:clj [is.simm.ops.owned-cells :as owned-cells])
             #?(:clj [is.simm.documents.evaluation :as evaluation])
             #?(:clj [is.simm.ops.owned-reads :as reads])
             #?(:clj [is.simm.runtimes.application-ops :as application])
@@ -23,24 +24,38 @@
       thunk starts an owned evaluation and awaits its receipt outside preflight
       admission; it never reopens ambient/replacement application handles."
      [party room-id operation request]
-     (when-not (and (uuid? party) (#{:evaluate :repl} operation)
+     (when-not (and (uuid? party) (#{:evaluate :repl :cell} operation)
                     (string? room-id) (= room-id (some-> room-id parse-uuid str)))
        (throw (ex-info "Invalid evaluation identity" {:type :validation-error})))
      (let [invoke (application/capture-operation)
            principal {:principal/kind :human :principal/id (str "party/" party)}]
        (fn []
-         (let [[host selected] (invoke (fn [host] [host (reads/resolve-host-room! host principal room-id)]))
+         (let [[host selected prepared]
+               (invoke (fn [host]
+                         (if (= :cell operation)
+                           (let [prepared (owned-cells/prepare! host principal room-id request)]
+                             [host (:room-binding prepared) prepared])
+                           [host (reads/resolve-host-room! host principal room-id) nil])))
                room (:room selected)
-               authorize! #(do (lifetime/check-current!)
-                               (reads/validate-host-room! host principal room-id selected))
+               authorize-room! #(do (lifetime/check-current!)
+                                    (reads/validate-host-room! host principal room-id selected))
+               authorize! #(do (authorize-room!)
+                               ;; Only called under the actual Room lease,
+                               ;; including AFTER waiting for the interpreter.
+                               (when prepared (owned-cells/validate! host principal room-id prepared)))
                with-owner (fn [f]
                             (invoke (fn [current-host]
                                       (when-not (identical? host current-host)
                                         (throw (ex-info "Application changed" {:type :not-authorized})))
-                                      (authorize!)
+                                      (authorize-room!)
                                       (f))))
-               result ((case operation :evaluate evaluation/evaluate! :repl evaluation/evaluate-repl!)
-                       room party request authorize! with-owner)
+               result (if prepared
+                        (assoc (evaluation/evaluate-repl!
+                                room party {:text (get-in prepared [:input :code]) :syntax :clojure
+                                            :namespace (:namespace request)} authorize! with-owner)
+                               :source (get-in prepared [:input :source]))
+                        ((case operation :evaluate evaluation/evaluate! :repl evaluation/evaluate-repl!)
+                         room party request authorize! with-owner))
                db (:control-db selected)]
            ;; Observational permissions from preflight. Execution always rechecks
            ;; current authority inside its actual worker ownership and gate.
@@ -49,7 +64,7 @@
 
 #?(:clj
    (defn- file-action [operation f]
-     (if (#{:evaluate :repl} operation) (f)
+     (if (#{:evaluate :repl :cell} operation) (f)
          (try (f)
               (catch clojure.lang.ExceptionInfo error
                 (let [{:keys [type reason]} (ex-data error)]
@@ -66,7 +81,7 @@
      (when-not party (throw (ex-info "Authentication required" {:type :authentication-required})))
      (when (simple/on-drain-thread?)
        (throw (ex-info "Memory actions require a host worker" {:type :validation-error})))
-     (if (#{:evaluate :repl} operation)
+     (if (#{:evaluate :repl :cell} operation)
        ((prepare-evaluation party room-id operation args))
        (context/with-server-context
          (let [id (when (string? room-id) (parse-uuid room-id))
@@ -144,6 +159,13 @@
   [server-id room-id-str request]
   (spin-remote server-id [room-id-str request]
                #?(:clj (let [body (prepare-evaluation (access/authenticated-party-id) room-id-str :repl request)]
+                         (await (blocking/blocking body)))
+                  :cljs nil)))
+
+(defn-spin-remote evaluate-memory-cell!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (let [body (prepare-evaluation (access/authenticated-party-id) room-id-str :cell request)]
                          (await (blocking/blocking body)))
                   :cljs nil)))
 

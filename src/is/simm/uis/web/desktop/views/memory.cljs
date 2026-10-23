@@ -10,6 +10,7 @@
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.memory-actions :as actions]
             [is.simm.uis.web.desktop.memory-editor :as editor]
+            [is.simm.uis.web.desktop.memory-cells :as cells]
             [is.simm.uis.web.desktop.memory-declarations :as declarations]
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.source-editor :as source]
@@ -133,7 +134,21 @@
                   (el/details {:key (str (:id receipt)) :open (= (:id receipt) (:id (first history)))
                                :class "memory-repl-receipt"}
                               (el/summary {} (str (if (:success receipt) "Result" "Failed") " · " (name (:input-syntax receipt))
-                                                  " · " (:namespace receipt)))
+                                                  " · " (:namespace receipt)
+                                                  (when-let [source (:source receipt)]
+                                                    (str " · " (:path source) " · "
+                                                         (case (cells/receipt-status state receipt)
+                                                           :saved-current "saved version matches"
+                                                           :draft-changed "draft changed"
+                                                           :saved-changed "saved source changed"
+                                                           "source not verified")))))
+                              (when-let [source (:source receipt)]
+                                (el/details {}
+                                            (el/summary {} "Saved cell provenance")
+                                            (el/p {:class "memory-note"}
+                                                  (str (:path source) " · revision " (:revision source)
+                                                       " · source span " (:from source) "–" (:to source)))
+                                            (el/pre {} (:original source))))
                               (el/pre {} (if (:success receipt) (:value receipt) (:error receipt)))
                               (when (:value-truncated? receipt) (el/p {:class "memory-note"} "Value preview is truncated."))
                               (when (:partial? receipt) (el/p {} "Earlier forms may have executed; inspect the session before retrying."))
@@ -203,6 +218,8 @@
                                    :model (or (:document-model base) (get-in base [:document :model]))
                                    :selection (:document-selection base) :document? true
                                    :charts chart-models
+                                   :cell-config ((:cell-config a) path)
+                                   :on-run-cell #((:run-cell a) path %)
                                    :block-links ((:block-links a) path)
                                    :linked-block ((:linked-block a) path)
                                    :jump ((:jump a) path)
@@ -688,7 +705,7 @@
                                         (and clojure? (= :superficie code-view)) (superficie-view (:text draft))
                                         (= :source (:mode draft)) (source-view path draft a write?)
                                         :else (document-view path draft a write?))
-                                      (when (and text? (re-find #"(?i)\.(clj|cljc|bb)$" path))
+                                      (when (and text? (or markdown? (re-find #"(?i)\.(clj|cljc|bb)$" path)))
                                         (repl-view state a syntax-pref)))))))))
 
 (defn render [data]

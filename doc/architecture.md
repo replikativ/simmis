@@ -265,7 +265,29 @@ history even when the draft changes or moves; older replies are marked stale
 and do not overwrite newer draft text. They are not a durable
 Run or a deployed workflow. The old chat inspector Quick eval input is removed.
 
-Below the file buffer, the code-file panel includes a dual-input **Room REPL**.
+Saved Markdown `clj`/`clojure` fenced cells have an explicit inline Run control
+in the continuous rich editor. Opening, editing and saving never run code.
+The host derives the exact parser literal from the authorized saved file entry;
+the request contains only its repository/stamp, revision, source span, optional
+explicit block ID and namespace, never caller-supplied executable text. Source
+identity, original Room/application owners and current read/merge authority are
+checked again under the execution lease after the interpreter monitor. The
+16K-character whole cell uses the same human SCI session and ten-second boundary.
+Indented code, other languages and extra fence-header tokens are inert. Header
+tokens do not configure execution.
+
+Run is offered only for a clean saved rich projection with exact structural
+correspondence. Fresh source-derived region/opaque offset keys may differ from
+the retained native undo baseline; explicit block IDs, opaque bytes and all
+content must match. Offset-based math/footnote token keys remain strict, so a
+shifted token can temporarily disable Run until the document is reopened. This
+specialized cell check does not weaken source-write or token-provenance gates.
+Results are disposable inline chrome and retained in the same twenty-receipt
+human history, including the executed input, exact original source span, saved
+entry/revision, target stamp and Room incarnation. They never enter Markdown,
+pretend to be stable cell IDs across revisions, or become durable workflow Runs.
+
+Below the file buffer, Markdown and code-file panels include a dual-input **Room REPL**.
 Separate Clojure and Superficie scratch buffers follow the Code View preference unless locally
 overridden; switching syntax never converts a buffer or changes the file draft.
 Both inputs use the same human SCI world component, with an explicit namespace
