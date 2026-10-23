@@ -69,7 +69,7 @@
 (deftest metadata-selection-recovers-an-initial-folder-failure-and-covers-pending-reads
   (is (= {:folders [""] :paths []}
          (editor/metadata-request {:root-expanded? true :errors {[:folder ""] "failed"}})))
-  (is (= {:folders ["notes" "slow"] :paths ["a.clj" "b.clj"]}
+  (is (= {:folders ["" "notes" "slow"] :paths ["a.clj" "b.clj"]}
          (editor/metadata-request {:root-expanded? true :focus-folder "notes"
                                    :drafts {"a.clj" {}}
                                    :loading {[:folder "slow"] true [:file "b.clj"] true

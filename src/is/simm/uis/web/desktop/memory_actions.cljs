@@ -6,6 +6,7 @@
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.memory-editor :as editor]
+            [is.simm.uis.web.desktop.memory-tree :as tree]
             [is.simm.uis.web.desktop.memory-declarations :as declarations]
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.memory-remote :as remote]
@@ -112,7 +113,7 @@
                   (update! #(-> % retire-upload (assoc :connection c :target-verified? false)
                                 (update :target-epoch (fnil inc 0))
                                 (assoc :requests {} :request-contexts {} :loading {} :accepted {} :finished {})
-                                (dissoc :verified-connection :permissions :sandbox-permissions
+                                (dissoc :folders :verified-connection :permissions :sandbox-permissions
                                         :watch-connection :sync))))
                 c))
             (frame-current? [s frame]
@@ -201,17 +202,15 @@
                     (catch :default error (fail! error))))))
             (metadata-request [s]
               (let [request (editor/metadata-request s)]
-                {:folders (vec (sort (set (concat (:folders request) [""]
-                                                  (keep (fn [[p open?]] (when open? p)) (:expanded s))
-                                                  (keys (:folder-intents s))))))
+                {:folders (:folders request)
                  :paths (vec (sort (set (concat (:paths request) (keys (:file-intents s))
                                                 (keys (:create-intents s))
                                                 (when-let [p (:selected s)] [p])))))}))
             (discover! [force?]
               (when force? (update! update :discovery-revision (fnil inc 0)))
               (let [c (connected!) s (state)
-                    request (metadata-request s)
-                    marker [c request (:stream-marker s)
+                    request (metadata-request s) stream-marker (:stream-marker s)
+                    marker [c request stream-marker
                             (:discovery-revision s 0)]]
                 (when (and c (current?) (not (get-in s [:loading :metadata]))
                            (or force? (not= marker (get-in s [:sync :attempted]))))
@@ -270,7 +269,10 @@
                                       :metadata-followups pending)
                                (update :read-epoch (fnil inc 0))
                                (update :observed-entries merge (:entries reply))
-                               (update :folders merge (:folders reply))
+                               ;; A superseded snapshot may still reconcile
+                               ;; file receipts, but cannot refill closed caches.
+                               (update :folders merge (when (= stream-marker (:stream-marker current)) (:folders reply)))
+                               tree/trim-folder-cache
                                (update :file-intents #(apply dissoc % (keys (:create-intents current))))
                                (dissoc :create-intents)
                                (assoc-in [:sync :attempted] marker)
@@ -329,10 +331,12 @@
             (folder! [path]
               (update! assoc-in [:folder-intents path] true)
               (if-let [stamp (when (verified? (state) (connected!)) (:target-stamp (state)))]
-                (request! [:folder path] #(remote/load-memory-folder! web/server-id room
+                (let [marker (:stream-marker (state))]
+                  (request! [:folder path] #(remote/load-memory-folder! web/server-id room
                                                                       {:folder path :expected-target-stamp stamp})
-                          #(-> %1 (assoc-in [:folders path] %2) (update :folder-intents dissoc path))
-                          nil {:stamp stamp :read? true})
+                          #(-> %1 (assoc-in [:folders path] %2) (update :folder-intents dissoc path)
+                               tree/trim-folder-cache)
+                          nil {:stamp stamp :read? true :accept? (fn [s _] (= marker (:stream-marker s)))}))
                 (discover! false)))
             (open! [path refresh? & [observed passive?]]
               (when-not (or observed passive?) (select! path))
@@ -624,7 +628,7 @@
               (when (and c (= c (connection)) (current?))
                 (let [marker [(:connection stream) (:status stream) (get-in stream [:dirty room] 0)]]
                   (when (not= marker (:stream-marker (state)))
-                    (update! assoc :stream-marker marker)))
+                    (update! #(-> % tree/invalidate-closed-folders (assoc :stream-marker marker)))))
                 (when (not= c (:watch-connection (state)))
                   (update! assoc :watch-connection c)
                   (request! :watch #(remote/prepare-memory-stream! web/server-id room) (fn [s _] s)
@@ -636,7 +640,7 @@
                 (discover! false)))
             (refresh! []
               (connected!)
-              (update! #(-> % (assoc :errors {} :retry-stream? true)
+              (update! #(-> % tree/invalidate-closed-folders (assoc :errors {} :retry-stream? true)
                             (dissoc :watch-connection)))
               (discover! true)
               (when-let [c (connection)]
@@ -785,8 +789,13 @@
        :create (fn [path & [origin]] (create! path (or origin (when (verified? (state) (connection)) (:target-stamp (state))))))
        :download download! :upload upload! :office-open office-open! :office-save office-save! :office-correct office-correct!
        :select-path select! :set-query #(update! assoc :query %) :search search!
-       :toggle-root (fn [] (update! update :root-expanded? not) (folder! (or (:focus-folder (state)) "")))
-       :focus-folder (fn [path] (update! assoc :focus-folder path :current-folder path :query "" :root-expanded? true) (folder! path))
+       :toggle-root (fn []
+                      (update! update :root-expanded? not)
+                      (let [s (state) path (or (:focus-folder s) "")]
+                        (when (and (:root-expanded? s) (nil? (get-in s [:folders path]))) (folder! path))))
+       :focus-folder (fn [path]
+                       (update! assoc :focus-folder path :current-folder path :query "" :root-expanded? true)
+                       (when-not (get-in (state) [:folders path]) (folder! path)))
        :rich-change (fn [path base-id from model selection]
                       (try (edited! path editor/rich-changed base-id from model selection)
                            (update! update :errors dissoc [:rich path])
@@ -828,7 +837,7 @@
        :toggle (fn [path]
                  (let [expanded (get-in (state) [:expanded path])]
                    (update! assoc-in [:expanded path] (not expanded))
-                   (when expanded (update! update :folders dissoc path))
+                   (update! tree/trim-folder-cache)
                    (update! assoc :current-folder path)
                    (when (and (not expanded) (nil? (get-in (state) [:folders path]))) (folder! path))))
        :use-incoming (fn [path]

@@ -28,3 +28,32 @@
     (is (= :two (:id (tree/file-tab columns :a :room2 "a.md"))))
     (is (= :three (:id (tree/file-tab columns :b :room1 "a.md"))))
     (is (nil? (tree/file-tab columns :a :room1 "b.md")))))
+
+(deftest hidden-descendants-do-not-count-towards-active-folder-reconciliation
+  (let [state {:root-expanded? true :expanded {"wiki" false "wiki/deep" true "code" true}
+               :folders {"" {:entries [{:path "wiki" :kind :folder} {:path "code" :kind :folder}]}
+                         "wiki" {:entries [{:path "wiki/deep" :kind :folder}]} "wiki/deep" {} "code" {}}}]
+    (is (= #{"" "code"} (tree/active-folders state)))
+    (is (= #{"" "wiki/deep"}
+           (tree/active-folders (assoc state :focus-folder "wiki/deep"))))
+    (is (= #{""} (tree/active-folders (assoc state :root-expanded? false))))
+    (is (= #{"" "code"} (set (keys (:folders (tree/invalidate-closed-folders state))))))))
+
+(deftest folder-cache-is-bounded-without-evicting-active-or-pending-listings
+  (let [paths (mapv #(str "folder-" %) (range 100))
+        state {:root-expanded? true :expanded {"folder-99" true}
+               :folder-intents {"folder-98" true}
+               :folders (assoc (zipmap paths (repeat {:entries []}))
+                               "" {:entries [{:path "folder-99" :kind :folder}]})}
+        cached (tree/trim-folder-cache state)]
+    (is (= 64 (count (:folders cached))))
+    (is (every? #(contains? (:folders cached) %) ["" "folder-99" "folder-98"]))
+    (is (= #{"" "folder-99" "folder-98"} (tree/active-folders cached)))))
+
+(deftest deleted-expanded-folders-do-not-remain-pinned-by-expansion-flags
+  (let [state {:root-expanded? true :expanded {"deleted" true "deleted/child" true}
+               :folders {"" {:entries []}
+                         "deleted" {:entries [{:path "deleted/child" :kind :folder}]}
+                         "deleted/child" {:entries []}}}]
+    (is (= #{""} (tree/active-folders state)))
+    (is (= {"" {:entries []}} (:folders (tree/invalidate-closed-folders state))))))

@@ -328,24 +328,16 @@
                      :id ::alpha-party-seeded
                      :msg (str "Seeded alpha party: " email " (role: " (clojure.core/name role) ")")
                      :data {:party-id (:party/id party)}})))))
-  ;; Ensure each party has a personal AI room and default KB. The try is PER
-  ;; party: one bad alpha user must not stop the rest from being seeded.
+  ;; Personal rooms provision file-backed Memory themselves. Do not also create
+  ;; a separate legacy Wiki. Existing KBs and grants are preserved. The try is
+  ;; PER party: one bad account must not stop the rest from being seeded.
   (let [s (get-auth-store)]
     (doseq [{:keys [email name]} (alpha-parties)]
       (try
         (when-let [party (store/find-user-by-email s email)]
           (require 'is.simm.model.personal-rooms)
-          (require 'is.simm.model.knowledge-bases)
-          (let [room ((resolve 'is.simm.model.personal-rooms/ensure!)
-                      (:party/id party) (or name email))
-                kb ((resolve 'is.simm.model.knowledge-bases/ensure-default-kb!)
-                    (:party/id party) (or name email))]
-            ;; The personal AI room gets the owner's default KB attached —
-            ;; otherwise [[page]] links from its chat have nothing to
-            ;; resolve against and knowledge tools see no product KB.
-            (when (and (:room/id room) (:kb/id kb))
-              ((resolve 'is.simm.model.knowledge-bases/attach-kb-to-room!)
-               (:room/id room) (:kb/id kb)))))
+          ((resolve 'is.simm.model.personal-rooms/ensure!)
+           (:party/id party) (or name email)))
         (catch Exception e
           (log/log! {:level :warn
                      :id ::room-seed-error

@@ -634,6 +634,9 @@
              (vc/icon (if kb-collapsed? "chevron-right" "chevron-down")
                       {:class "nav-title-chevron"})
              (el/span {:style {:flex "1"}} (or (:kb/name kb) "Wiki"))
+             (el/span {:class "nav-scope"
+                       :title "Database-backed pages retained from the earlier wiki. File-backed knowledge is in the room's Memory tree."}
+                      "Legacy wiki")
              ;; Gear icon for KB settings
              (el/button {:class "nav-item-action-btn"
                          :title "KB settings"
