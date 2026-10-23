@@ -284,7 +284,13 @@
       :Heading {:type "heading" :attrs {:level (:heading-level node)} :content (inline)}
       :BulletList {:type "bulletList" :content (children)}
       :OrderedList {:type "orderedList" :attrs {:start (:start node)} :content (children)}
-      (:BulletListItem :OrderedListItem) {:type "listItem" :content (children)}
+      (:BulletListItem :OrderedListItem)
+      ;; Markdown permits a bare list marker with no child nodes. Tiptap's
+      ;; listItem schema requires a leading paragraph, including while Enter
+      ;; has just created a new empty bullet. Represent that same empty item
+      ;; canonically instead of losing its editor-required paragraph.
+      {:type "listItem" :content (let [content (children)]
+                                   (if (empty? content) [{:type "paragraph" :content []}] content))}
       (:FencedCodeBlock :IndentedCodeBlock)
       {:type "codeBlock" :attrs {:language (or (:language node) "")}
        :content (let [text (str/replace (:literal node) #"(?:\r\n|\n|\r)$" "")]
