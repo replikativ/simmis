@@ -20,6 +20,30 @@
   (is (= "json" (editor/language "result.json")))
   (is (= "text" (editor/language "unknown.ext"))))
 
+(deftest readonly-jumps-acknowledge-selection-without-writing-or-echoing-input
+  (mounted "one\ntwo\n"
+           (fn [el view]
+             (let [acks (atom []) inputs (atom [])]
+               (.setAttribute el "data-read-only" "true")
+               (.addEventListener el "input" #(swap! inputs conj %))
+               (.addEventListener el "simmis-jumped" #(swap! acks conj (js->clj (.-detail %) :keywordize-keys true)))
+               (aset el "onsimmis-before-jump" #(.preventDefault %))
+               (.setAttribute el "data-jump" "{\"id\":\"first\",\"from\":4,\"to\":7}")
+               (is (empty? @acks) "The current property callback can refuse selection")
+               (aset el "onsimmis-before-jump" (fn [_] nil))
+               (.setAttribute el "data-jump" "{\"id\":\"allowed\",\"from\":4,\"to\":7}")
+               (is (= 4 (.. view -state -selection -main -anchor)))
+               (is (= {:anchor 4 :head 4} (:selection (first @acks))))
+               (is (= "one\ntwo\n" (.toString (.. view -state -doc))))
+               (is (empty? @inputs))
+               (.setAttribute el "data-language" "text")
+               (is (= 1 (count @acks)))
+               (let [deny #(.preventDefault %)]
+                 (.addEventListener el "simmis-before-jump" deny)
+                 (.setAttribute el "data-jump" "{\"id\":\"second\",\"from\":0,\"to\":2}")
+                 (is (= 4 (.. view -state -selection -main -anchor)))
+                 (is (= 1 (count @acks))))))))
+
 (deftest source-preserves-newlines-and-opaque-content
   (let [source "\uFEFF---\r\ncustom: yes\n---\r\n# 🦋\n<script>bad()</script>"]
     (mounted source

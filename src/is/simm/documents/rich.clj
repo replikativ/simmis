@@ -28,7 +28,8 @@
     (when-not (and (= :ready (:status semantic)) baseline)
       (throw (ex-info "This region requires Source editing" {:type ::unsupported})))
     (rich/validate-provenance! baseline model)
-    (let [serialized (rich/markdown (rich/normalize model))
+    (let [original-size (count source)
+          serialized (rich/markdown (rich/normalize model))
           roundtrip (mapv rich/model (:nodes (markdown/parse serialized)))
           decoded {:type "doc" :content (vec (mapcat :content roundtrip))}
           _ (when-not (and (every? some? roundtrip)
@@ -37,6 +38,13 @@
                               {:type ::unsupported})))
           source (document/apply-run source slots model)
           after (markdown/parse source)
+          patched-to (+ to (- (count source) original-size))
+          actual-models (mapv rich/model (filter #(and (<= from (:from %)) (<= (:to %) patched-to)) (:nodes after)))
+          _ (when-not (and (every? some? actual-models)
+                            (= (rich/roundtrip-normalize model)
+                               (rich/roundtrip-normalize {:type "doc" :content (vec (mapcat :content actual-models))})))
+              (throw (ex-info "The patched Markdown does not preserve this rich edit"
+                              {:type ::unsupported})))
           next-semantic (blocks/project document-id after)
           identity-tree (fn identity-tree [bs]
                           (mapv (fn [b] [(:id b) (identity-tree (:children b))])

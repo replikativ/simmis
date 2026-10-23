@@ -88,6 +88,21 @@
 
 (declare emit)
 
+(defn- emit-blocks [nodes depth budget newline]
+  ;; Native list editing can split one list into adjacent lists. Blank lines
+  ;; alone do not separate those in CommonMark. Alternate ordinary Markdown
+  ;; markers so reparsing retains every list boundary (and ordered-list start).
+  (second
+   (reduce (fn [[previous out] node]
+             (let [kind (:type node)
+                   marker (case kind
+                            "bulletList" (if (= previous "-") "+" "-")
+                            "orderedList" (if (= previous ".") ")" ".")
+                            nil)
+                   emitted (emit node depth budget newline marker)]
+               [(if (str/blank? emitted) previous marker) (conj out emitted)]))
+           [nil []] nodes)))
+
 (defn- delimited [marker s]
   ;; Explicit anchors matter: cljs re-matches executes the JS regex first;
   ;; an unanchored lazy body can choose an empty match and fail its size check.
@@ -133,10 +148,10 @@
                     (marked (apply str (map #(inline (dissoc % :marks) (inc depth) budget newline) run)) marks))))
               (partition-by #(vec (:marks %)) (:content node)))))
 
-(defn- emit [node depth budget newline]
+(defn- emit [node depth budget newline & [list-marker]]
   (when (or (> depth 100) (neg? (vswap! budget dec))) (invalid!))
   (case (:type node)
-    "doc" (str/join (str newline newline) (map #(emit % (inc depth) budget newline) (:content node)))
+    "doc" (str/join (str newline newline) (emit-blocks (:content node) (inc depth) budget newline))
     "paragraph" (inlines node depth budget newline)
     "heading" (let [level (get-in node [:attrs :level])]
                 (when-not (and (integer? level) (<= 1 level 6)) (invalid!))
@@ -158,8 +173,9 @@
        (map-indexed
         (fn [index item]
           (when-not (= "listItem" (:type item)) (invalid!))
-          (let [marker (if (= "bulletList" (:type node)) "- " (str (+ start index) ". "))
-                body (str/join (str newline newline) (map #(emit % (inc depth) budget newline) (:content item)))
+          (let [marker (if (= "bulletList" (:type node)) (str (or list-marker "-") " ")
+                           (str (+ start index) (or list-marker ".") " "))
+                body (str/join (str newline newline) (emit-blocks (:content item) (inc depth) budget newline))
                 [first-line & more] (str/split body (re-pattern newline) -1)
                 padding (apply str (repeat (count marker) " "))]
             (str marker first-line

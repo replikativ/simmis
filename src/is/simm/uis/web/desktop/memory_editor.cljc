@@ -356,13 +356,14 @@
         (dissoc :incoming-entry))))
 
 (defn moved
-  "Move the saved baseline, retaining any edits made while the move was in flight."
+  "Move the acknowledged baseline, retaining concurrent typing. Observations of
+   the removed old path are not conflicts against the new destination."
   [d reply]
   (-> d (assoc-in [:source :path] (:path reply))
       (assoc-in [:source :entry] (:entry reply))
       (assoc :last-commit (:commit reply))
       (update :generation (fnil inc 0))
-      (dissoc :incoming)))
+      (dissoc :incoming :incoming-entry :observed-entry :remote-deleted?)))
 
 (defn saved-at-generation [d generation sent reply]
   (if (and (= generation (:generation d)) (same-target? (:source d) reply)) (saved d sent reply)

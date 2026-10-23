@@ -140,7 +140,17 @@
             normalized-new (mapv #(rich/normalize {:type "doc" :content [%]}) new)
             hunks (if (= (count old) (count new))
                     (vec (keep-indexed (fn [i n] (when (not= n (nth normalized-new i)) [i (inc i) i (inc i)])) normalized-old))
-                    (changed-hunks normalized-old normalized-new))]
+                    (changed-hunks normalized-old normalized-new))
+            adjacent-lists? (fn [nodes]
+                              (some (fn [[a b]] (and (contains? #{"bulletList" "orderedList"} (:type a))
+                                                    (= (:type a) (:type b))))
+                                    (partition 2 1 (remove #(and (= "paragraph" (:type %)) (empty? (:content %))) nodes))))
+            ;; A list hunk cannot choose its delimiter independently of the
+            ;; neighboring list. Serialize this one semantic region together
+            ;; when sibling lists touch, retaining their alternating markers.
+            ;; No-op opens and all source outside this region remain exact.
+            hunks (if (and (seq hunks) (or (adjacent-lists? old) (adjacent-lists? new)))
+                    [[0 (count old) 0 (count new)]] hunks)]
         (reduce
          (fn [text [a b c d]]
            (let [replacement {:type "doc" :content (subvec new c d)}]

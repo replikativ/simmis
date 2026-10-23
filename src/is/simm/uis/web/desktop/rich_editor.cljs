@@ -9,6 +9,7 @@
             [is.simm.uis.web.desktop.rich-controls :as controls]
             [is.simm.uis.web.desktop.chart-view :as charts]
             [is.simm.uis.web.desktop.math-view :as math]
+            [is.simm.uis.web.desktop.editor-jump :as jump]
             [org.replikativ.spindel.dom.foreign]
             [org.replikativ.spindel.engine.core :as ec])
   (:require-macros [org.replikativ.spindel.dom.foreign :refer [foreign-node]]))
@@ -97,26 +98,49 @@
   (fn [props]
     (let [dom (.createElement js/document "div")
           content (.createElement js/document "div")
+          link (.createElement js/document "a")
           projection (.createElement js/document "div")
           paint! (fn [node]
                    (let [id (aget (.-attrs node) "blockId")]
                      (.setAttribute dom "data-block-id" id)
+                     (.toggleAttribute dom "data-linked-block" (= id (.getAttribute el "data-linked-block-id")))
+                     (let [href (aget (js/JSON.parse (or (.getAttribute el "data-block-links") "{}")) id)]
+                       (set! (.-hidden link) (not href))
+                       (if href (.setAttribute link "href" href) (.removeAttribute link "href")))
                      (.setAttribute projection "data-chart-block" id)
                      (paint-chart! el projection id)))]
       (set! (.-className dom) "memory-semantic-block")
       (set! (.-className content) "memory-semantic-content")
+      (set! (.-className link) "memory-block-link")
+      (set! (.-textContent link) "↗")
+      (.setAttribute link "contenteditable" "false")
+      (.setAttribute link "aria-label" "Copy block link")
+      (.setAttribute link "title" "Copy block link · browser menu opens or copies the address")
+      (.setAttribute link "target" "_blank")
+      (.setAttribute link "rel" "noopener noreferrer")
+      (set! (.-onclick link)
+            (fn [event]
+              (when-not (or (.-ctrlKey event) (.-metaKey event) (.-shiftKey event) (.-altKey event))
+                (.preventDefault event)
+                (when-let [clipboard (.-clipboard js/navigator)]
+                  (-> (.writeText clipboard (.-href link))
+                      (.then #(.setAttribute link "title" "Block link copied"))
+                      (.catch #(.setAttribute link "title" "Use the browser menu to copy this link")))))))
       (set! (.-className projection) "memory-chart-slot")
       (.setAttribute projection "contenteditable" "false")
-      (.appendChild dom content) (.appendChild dom projection)
+      (.appendChild dom link) (.appendChild dom content) (.appendChild dom projection)
       (paint! (.-node props))
       #js {:dom dom :contentDOM content
            :update (fn [node]
                      (when (= "memoryBlock" (.. node -type -name)) (paint! node) true))
            :ignoreMutation (fn [mutation]
                              (and (not= "selection" (.-type mutation))
-                                  (.contains projection (.-target mutation))))
-           :stopEvent (fn [event] (.contains projection (.-target event)))
+                                  (or (.contains projection (.-target mutation)) (.contains link (.-target mutation))
+                                      (and (= "attributes" (.-type mutation)) (= dom (.-target mutation))
+                                           (#{"data-block-id" "data-linked-block"} (.-attributeName mutation))))))
+           :stopEvent (fn [event] (or (.contains projection (.-target event)) (.contains link (.-target event))))
            :destroy (fn [] (charts/paint! projection nil)
+                      (set! (.-onclick link) nil)
                       (set! (.-simmisChartProjection projection) nil))})))
 
 (defn- boundary-node [name content el]
@@ -205,6 +229,8 @@
                                    allowed?)))})])}))
 
 (defn disconnect! [^js el]
+  (when-let [release (.-simmisReleaseJump el)]
+    (release) (set! (.-simmisReleaseJump el) nil))
   (set! (.-simmisChartData el) nil)
   (when-let [release (.-simmisReleaseControls el)]
     (release)
@@ -225,6 +251,33 @@
                                                                        :native (.. editor -state -selection (toJSON))
                                                                        :region (controls/region editor)
                                                                        :format (clj->js (controls/format-state el editor))}}}))))
+
+(defn- consume-jump! [^js el ^js editor]
+  (jump/consume!
+   el (fn [request]
+        ;; Typing can occur between rendering props and this native lifecycle
+        ;; callback. Never move a caret in an unreported native draft.
+        (when (= (document/normalized (js->clj (data el) :keywordize-keys true))
+                 (document/normalized (portable-model (.getJSON editor))))
+          (let [doc (.. editor -state -doc) found (volatile! nil)]
+            (.descendants doc (fn [^js node pos]
+                                (if @found false
+                                    (when (and (= "memoryBlock" (.. node -type -name))
+                                               (= (aget request "block-id") (aget (.-attrs node) "blockId")))
+                                      (vreset! found [node pos]) false))))
+            (when-let [[^js node pos] @found]
+              (let [text-position (volatile! nil)]
+                (.descendants node (fn [^js child relative]
+                                     (cond @text-position false
+                                           (.-isTextblock child) (do (vreset! text-position (+ pos relative 2)) false)
+                                           :else true)))
+                (let [selection (if-let [position @text-position]
+                                  (.create TextSelection doc position)
+                                  (.create NodeSelection doc pos))]
+                  (.dispatch (.-view editor) (.scrollIntoView (.setSelection (.. editor -state -tr) selection)))
+                  (.focus (.-view editor))
+                  #js {:from (.-from selection) :to (.-to selection) :native (.toJSON selection)
+                       :region (controls/region editor) :format (clj->js (controls/format-state el editor))}))))))))
 
 (defn mount! [^js el]
   (when-not (.-simmisRichEditor el)
@@ -252,12 +305,14 @@
                        :onFocus (fn [event] (notify! el (.-editor event)))
                        :onSelectionUpdate (fn [event] (notify! el (.-editor event)))})]
       (set! (.-simmisRichEditor el) editor)
+      (set! (.-simmisReleaseJump el) (jump/attach! el))
       (set! (.-simmisReleaseControls el) (controls/attach! el editor))
       (restore-selection! el editor)
       (controls/consume-focus-request! el editor)
       ;; A rebuilt editor may already own focus before onFocus can publish a
       ;; snapshot. Initial control state must not wait for a caret movement.
-      (notify! el editor))))
+      (notify! el editor)
+      (consume-jump! el editor))))
 
 (defn- sync-selection! [^js el ^js editor]
   (restore-selection! el editor))
@@ -280,7 +335,15 @@
                         (set! (.-simmisChartData el) (js/JSON.parse (or new "{}")))
                         (doseq [projection (array-seq (.querySelectorAll el ".memory-chart-slot"))]
                           (paint-chart! el projection (.getAttribute projection "data-chart-block"))))
+        "data-block-links" (doseq [link (array-seq (.querySelectorAll el ".memory-block-link"))]
+                             (let [id (.getAttribute (.-parentElement link) "data-block-id")
+                                   href (aget (js/JSON.parse (or new "{}")) id)]
+                               (set! (.-hidden link) (not href))
+                               (if href (.setAttribute link "href" href) (.removeAttribute link "href"))))
+        "data-linked-block-id" (doseq [block (array-seq (.querySelectorAll el ".memory-semantic-block"))]
+                                 (.toggleAttribute block "data-linked-block" (= new (.getAttribute block "data-block-id"))))
         nil)
+        (consume-jump! el (.-simmisRichEditor el))
         (finally (set! (.-simmisApplying el) false))))))
 
 (when-not (.get js/customElements "simmis-rich-editor")
@@ -289,16 +352,21 @@
              connectedCallback() { (~{})(this); }
              disconnectedCallback() { (~{})(this); }
              attributeChangedCallback(name, oldValue, newValue) { (~{})(this, name, oldValue, newValue); }
-             static get observedAttributes() { return ['data-owner', 'data-model', 'data-read-only', 'data-selection', 'data-charts']; }
+             static get observedAttributes() { return ['data-owner', 'data-model', 'data-read-only', 'data-selection', 'data-charts', 'data-block-links', 'data-linked-block-id', 'data-jump']; }
            })" mount! disconnect! sync!)))
 
-(defn view [{:keys [id model selection read-only? on-change document? on-blocked charts]}]
+(defn view [{:keys [id model selection read-only? on-change document? on-blocked charts block-links linked-block jump before-jump on-jumped]}]
   (foreign-node
    {:tag :simmis-rich-editor :key id :class "memory-rich-editor"
     :data-owner (pr-str [id (:fork-id ec/*execution-context*)])
     :data-focus-scope (pr-str [(first id) (second id) (:fork-id ec/*execution-context*)])
     :data-model (js/JSON.stringify (clj->js model))
     :data-charts (js/JSON.stringify (clj->js (or charts {})))
+    :data-block-links (js/JSON.stringify (clj->js (or block-links {})))
+    :data-linked-block-id (or linked-block "")
+    :data-jump (when jump (js/JSON.stringify (clj->js jump)))
+    :on-simmis-before-jump #(jump/before! % before-jump)
+    :on-simmis-jumped #(jump/acknowledge! % on-jumped)
     :data-selection (when selection (js/JSON.stringify
                                      #js {:owner (pr-str [id (:fork-id ec/*execution-context*)])
                                           :selection (clj->js selection)}))

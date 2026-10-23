@@ -800,6 +800,23 @@
                 (first cols))]
     (some #(when (= (:id %) (:active-tab col)) %) (:tabs col))))
 
+(defn retarget-tab!
+  "Transform a tab in the caller's execution context. Announce address changes
+   only for the live UI; simulated forks must not mutate native browser history."
+  [col-id tab-id transform reason]
+  #?(:cljs
+     (do
+       (swap! layout-columns
+              (fn [columns]
+                (mapv (fn [column]
+                        (if (= col-id (:id column))
+                          (update column :tabs #(mapv (fn [tab] (if (= tab-id (:id tab)) (transform tab) tab)) %))
+                          column)) columns)))
+       (when (and (some? rtc/*execution-context*)
+                  (identical? (rtc/home-context rtc/*execution-context*) (rtc/home-context runtime)))
+         (notify-focus-change! reason)))
+     :clj nil))
+
 (defn set-active-column!
   "Set the active column by ID.
    Called when user clicks in a column or when a new column is created.
