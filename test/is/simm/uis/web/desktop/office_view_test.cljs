@@ -55,6 +55,8 @@
                                                                 :actions actions :write? true :coherent? true})))
         (is (str/includes? (.-textContent container) "Unsaved XML changes are retained"))
         (is (nil? (.querySelector container ".cm-editor")) "XML editor is not injected into Document mode")
+        (let [buttons (array-seq (.querySelectorAll container ".office-mode-controls button"))]
+          (is (= ["true" "false"] (mapv #(.getAttribute % "aria-pressed") buttons))))
         (let [button (first (filter #(= "Advanced XML" (.-textContent %)) (array-seq (.querySelectorAll container "button"))))]
           (.click button)
           (is (= [["report.docx" assoc :office-mode :xml]] @changes))))

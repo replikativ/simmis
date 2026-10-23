@@ -9138,7 +9138,11 @@ body.tab-dragging .column-drop-zone {
 .memory-detail h3 { overflow-wrap: anywhere; }
 .memory-note, .memory-properties, .memory-outline small, .memory-source-region small { font-size: 12px; opacity: .75; }
 .office-mode-controls { display: flex; gap: 6px; margin-bottom: 10px; }
-.office-mode-controls button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.memory-office button, .memory-office select { padding: 5px 8px; border: 1px solid var(--mono-border); border-radius: var(--radius-sm, 4px); background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.memory-office button:hover { background: var(--mono-bg-overlay); }
+.memory-office button:disabled { opacity: .45; cursor: default; }
+.office-mode-controls button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-subtle); }
+.office-mode-controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .office-document { color: inherit; line-height: 1.6; overflow-wrap: anywhere; }
 .office-body { max-width: 76ch; }
 .office-paragraph { min-height: 1.6em; margin: 8px 0; }
@@ -9151,9 +9155,9 @@ body.tab-dragging .column-drop-zone {
 .office-placeholder { font-size: .85em; color: var(--mono-text-secondary); }
 .office-table-wrap { overflow: auto; margin: 12px 0; }
 .office-document table { border-collapse: collapse; width: 100%; }
-.office-document td, .office-document th { border: 1px solid var(--border-color); padding: 6px 10px; vertical-align: top; text-align: left; }
+.office-document td, .office-document th { border: 1px solid var(--mono-border); padding: 6px 10px; vertical-align: top; text-align: left; }
 .office-document td p, .office-document th p { margin: 0; }
-.office-diagnostics { margin-top: 16px; border-top: 1px solid var(--border-color); }
+.office-diagnostics { margin-top: 16px; border-top: 1px solid var(--mono-border); }
 .memory-region { padding: 8px 12px; margin-bottom: 6px; border: 1px solid transparent; border-radius: 8px; }
 .memory-region:hover { border-color: var(--border-color, #465063); }
 .memory-document pre, .memory-outline pre { white-space: pre-wrap; overflow-wrap: anywhere; }

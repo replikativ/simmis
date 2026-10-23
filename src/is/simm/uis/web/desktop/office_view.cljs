@@ -86,9 +86,9 @@
               (el/div {}
                       (when reading
                         (el/div {:class "office-mode-controls" :role "group" :aria-label "Office view"}
-                                (el/button {:aria-pressed (not advanced?)
+                                (el/button {:aria-pressed (if advanced? "false" "true")
                                             :on-click (fn [_] ((:change actions) path assoc :office-mode :document))} "Document")
-                                (el/button {:aria-pressed (boolean advanced?)
+                                (el/button {:aria-pressed (if advanced? "true" "false")
                                             :on-click (fn [_] ((:change actions) path assoc :office-mode :xml))} "Advanced XML")))
                       (if advanced?
                         (el/div {}
