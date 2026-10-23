@@ -297,9 +297,14 @@
         (assoc (draft incoming) :generation (inc (:generation d 0)))) d))
 
 (defn analyzed [d text analysis]
-  (if (= text (:text d))
-    (cond-> (assoc d :analysis analysis :analysis-text text)
-      (= :rich (:mode d)) begin-rich) d))
+  (let [d (cond-> d
+            (and (= text (get-in d [:source :text]))
+                 (= (:revision analysis) (get-in d [:source :entry :content]))
+                 (uuid? (:revision analysis)))
+            (assoc-in [:source :analysis] analysis))]
+    (if (= text (:text d))
+      (cond-> (assoc d :analysis analysis :analysis-text text)
+        (= :rich (:mode d)) begin-rich) d)))
 
 (defn saved [d sent reply]
   (-> d

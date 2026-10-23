@@ -225,6 +225,17 @@
                        (identical? (:meta room) (:meta (:room binding)))) (refuse!))
         (assoc current :room room :control-db db ::room-owner owner)))))
 
+(defn resolve-host-read-room!
+  "Fixed human read-only Room gate before taking the native operation lease.
+   No default repository snapshot, merge requirement or selected fallback."
+  [host principal original-handle]
+  (resolve-room! host principal original-handle authorize-read!))
+
+(defn validate-host-read-room!
+  "Recheck current human read authority and the exact original Room incarnation."
+  [host principal original-handle binding]
+  (validate-room! host principal original-handle binding authorize-read!))
+
 (defn resolve-host-room!
   "Fixed HOST human read+MERGE Room-only hydration for retained offline work.
    No default/source/files lookup. Returns ephemeral HOST data including the

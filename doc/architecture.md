@@ -299,7 +299,7 @@ change it even when file descriptors and logical HEAD do not. It is an
 invalidation hint, not replicated schema, permission, an opened-file revision or
 a target stamp. Existing draft conflict comparisons still use the file entry
 and target stamp; this token must not turn an unchanged text buffer into a
-source conflict. Typed property UI controls are not yet activated.
+source conflict. Typed property controls use the current definition basis.
 
 The notifier owns routing interests for the process lifetime, not one callback
 per mounted editor. Room shutdown releases concrete listeners; retained party/
@@ -340,6 +340,32 @@ round-trip comparison ignores only those empty top-level paragraphs, since the
 Markdown AST has no corresponding node. Reopening reconstructs paragraphs from
 source rather than retaining transient empty editor nodes. Nested list shape
 and significant text whitespace remain subject to exact validation.
+
+Saved data-only charts use a separate fixed read RPC. It captures the original
+application owner before queuing work, holds the native Room operation lifetime,
+and checks current human read authority without requiring merge permission.
+One immutable owned-default DB supplies the saved document, explicit typed
+block, full feature definitions and referenced JSON bytes. Before replying,
+the service rechecks authority, Room incarnation, target identity and relevant
+source/spec definitions. The finite response includes document/spec entries,
+source/scope revisions and feature digest; native exceptions are normalized to
+a constant unavailable error without forwarding helper messages, data or causes.
+
+Chart state uses the existing session/room/column/tab Spindel ownership and
+socket/target/generation request fences. Room notifications invalidate all
+displayed charts through the existing Memory read epoch, including spec-only
+commits whose JSON file is not an open buffer. No extra polling or file cache
+is added. Optional analysis follows a saved baseline once per identity; a
+baseline-only reply cannot replace newer prose, selection or `rich-base`.
+Analysis is usable only when its revision matches the saved content identity.
+Chart responses are not accepted into a dirty draft. Already accepted saved
+charts can remain visible during protected prose editing; Source editing hides
+them. One closed pure scene supplies Spindel's Read DOM and Tiptap's inert
+element-owned NodeView projection. Read/Outline roots are keyed by file path
+and block identity, and loop items carry their chart data as an explicit
+incremental dependency. Charts never become editor attributes,
+editor clipboard serialization or source edits; element detach releases their
+native cache. The accessible chart table remains ordinary selectable content.
 
 Office containers have a bounded advanced XML-part editor, not a Word/Excel
 layout editor. Each operation reopens the selected immutable file revision;

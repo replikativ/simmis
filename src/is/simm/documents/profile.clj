@@ -7,6 +7,7 @@
             [geschichte.repo :as repo]
             [geschichte.query :as query]
             [geschichte.schema :as repository-schema]
+            [is.simm.documents.chart-profile :as charts]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.repository :as documents]
             [is.simm.documents.space :as space]
@@ -102,6 +103,9 @@
    (starter/verify! bundle)
    (space/provision! conn)
    (chat-schema/install-schema! conn)
+   ;; Optional feature definitions belong only to explicit NEW-space creation.
+   ;; Existing canonical v1 repositories are valid without this feature.
+   (d/transact conn (charts/installation-tx @conn))
    (let [{:keys [files provenance]} (starter/adapt bundle (:geschichte.repo/id (query/repository @conn)))]
      (doseq [[path text] files] (repo/write! conn path (markdown/source-bytes text)))
      (repo/write! conn "code/starter-provenance.edn" (markdown/source-bytes (str (pr-str provenance) "\n"))))

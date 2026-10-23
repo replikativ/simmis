@@ -9,6 +9,8 @@
             [is.simm.uis.web.desktop.memory-declarations :as declarations]
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.memory-remote :as remote]
+            [is.simm.uis.web.desktop.chart-remote :as chart-remote]
+            [is.simm.uis.web.desktop.memory-charts :as charts]
             [is.simm.uis.web.desktop.remote :as rem]
             [is.simm.runtimes.web :as web]))
 
@@ -188,7 +190,7 @@
                          (let [stamp (:target-stamp reply) changed? (not= stamp (:target-stamp current))
                                pending (into {} (filter (fn [[slot loading?]]
                                                           (and loading? (vector? slot)
-                                                               (#{:file :folder :properties} (first slot))))) (:loading current))
+                                                               (#{:file :folder :properties :chart} (first slot))))) (:loading current))
                                next (cond-> (editor/observe-target current stamp)
                                       changed? (update :target-epoch (fnil inc 0))
                                       changed? retire-upload
@@ -297,17 +299,35 @@
                                    (update :file-intents dissoc path)) nil
                               {:stamp stamp :read? true :accept? (generation? path generation)}))
                   (discover! false))))
-            (analyze! [path]
+            (analyze! [path & [saved-baseline?]]
               (let [draft (get-in (state) [:drafts path]) text (:text draft)]
                 (when-let [stamp (and (string? text) (draft-stamp! path [:analysis path]))]
                   (request! [:analysis path] #(remote/analyze-memory-text! web/server-id room
                                                                            {:path path :text text :expected-target-stamp stamp})
                             #(update-in %1 [:drafts path] editor/analyzed text %2) nil
-                            {:stamp stamp :accept? (fn [s _] (and (= text (get-in s [:drafts path :text]))
-                                                                  (= (:generation draft) (get-in s [:drafts path :generation]))))}))))
+                            {:stamp stamp :accept? (fn [s _] (and (= (:generation draft) (get-in s [:drafts path :generation]))
+                                                                  (or (= text (get-in s [:drafts path :text]))
+                                                                      (and saved-baseline?
+                                                                           (= text (get-in s [:drafts path :source :text]))))))}))))
             (property-marker [s path target]
               [(:connection s) (:target-stamp s) (:read-epoch s) (:definition-basis s)
                (get-in s [:observed-entries path]) target])
+            (chart! [path block]
+              (let [s (state) marker (charts/marker s path block) scope [path block]
+                    slot [:chart path block] draft (get-in s [:drafts path])]
+                (when (and (verified? s (connected!)) (draft-current? s path)
+                           (not (editor/dirty? draft)) (not= :source (:mode draft))
+                           (not (get-in s [:loading slot]))
+                           (not= marker (get-in s [:chart-attempts scope])))
+                  (update! assoc-in [:chart-attempts scope] marker)
+                  (request! slot #(chart-remote/load-memory-chart! web/server-id room (charts/request s path block))
+                            #(assoc-in %1 [:charts scope] {:marker marker :reply %2}) nil
+                            {:stamp (:target-stamp s) :read? true
+                             :accept? #(and (not (editor/dirty? (get-in %1 [:drafts path])))
+                                            (charts/reply-current? %1 path block marker %2))
+                             :failure-state (fn [current _]
+                                              (-> current (update :errors dissoc slot)
+                                                  (assoc-in [:charts scope] {:marker marker :status :unavailable})))}))))
             (properties! [path target]
               (let [s (state) marker (property-marker s path target) scope [path target]
                     slot [:properties path target]]
@@ -546,6 +566,24 @@
                 (ensure-sync! c (binding [ec/*execution-context* ctx] @sync/state)))
               (navigation-refresh!))]
       {:owner key :state state :change change! :edit edited! :folder folder! :open #(open! % false) :reload #(open! % true)
+       :ensure-charts (fn []
+                        (let [s (state) path (:selected s) draft (get-in s [:drafts path])
+                              marker (charts/analysis-marker s path)]
+                          ;; Room change notifications advance read-epoch, thus
+                          ;; invalidating ALL displayed charts, including spec-
+                          ;; only commits whose JSON file is not an open buffer.
+                          (if (charts/saved-analysis draft)
+                            (doseq [block (charts/blocks draft)] (chart! path block))
+                            (when (and (verified? s (connected!)) (draft-current? s path)
+                                       (= :markdown (get-in draft [:source :kind]))
+                                       (not= :source (:mode draft)) (not (editor/dirty? draft))
+                                       (not (get-in s [:loading [:analysis path]]))
+                                       (not= marker (get-in s [:chart-analysis-attempts path])))
+                              ;; Failed optional analysis is attempted once per
+                              ;; saved baseline, never retried by its own render.
+                              (update! assoc-in [:chart-analysis-attempts path] marker)
+                              (analyze! path true)))))
+       :chart-models #(charts/visible (state) %)
        :open-properties (fn [path target] (update! assoc-in [:property-targets path] target) (properties! path target))
        :ensure-properties
        (fn []
