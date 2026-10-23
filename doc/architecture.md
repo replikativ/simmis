@@ -136,6 +136,25 @@ the retry identity. Captured bytes and collector provenance are retained with
 the work request. Pure preparation and benchmarks require verified frozen
 inputs instead of resolving a live policy.
 
+`ops.conversation-capture` is an inactive HOST composition for explicitly
+selected human messages. It reads at most 50 exact native message IDs from one
+immutable room-store snapshot and checks sender identity against the trusted
+control DB. A user role alone is insufficient; agent, Run, transcript and other
+generated records are refused. Mention audiences are routing, not privacy ACLs.
+The preview preserves exact text inside inert fences with source IDs, authors,
+timestamps, byte counts and content hashes. Its exact captured application
+operation and native Room lease cover source/repository access; a binding or
+permission check alone does not retain those resources. Publication requires the inspected
+capture ID and original Memory target stamp, then rechecks current permissions,
+source eligibility and selection at the existing native writer's effect gates.
+One deterministic `inbox/conversations/<capture-id>.md` destination prevents
+duplicate files; an occupied path is a conflict, never proof that an earlier
+unknown write acknowledged. There is no automatic retry, chat cursor, ingestion
+policy, transport endpoint or spending grant in this composition. Published
+evidence is an ordinary input to the same file-backed knowledge workflow.
+It is a deliberate exported snapshot, not a continuously mirrored chat view;
+later edits/deletions of a message do not rewrite an already published file.
+
 The `ops.retained-knowledge-sources` host reader addresses a canonical
 Proposal plus its file-output component, not an arbitrary artifact or current
 workspace path. It verifies the original request, typed filing, source revision,

@@ -233,6 +233,17 @@
   [host principal original-handle]
   (resolve-room! host principal original-handle authorize-room!))
 
+(defn resolve-host-write-room!
+  "Fixed human read+WRITE Room-only hydration before taking its native lease.
+   No repository snapshot or merge authority is required."
+  [host principal original-handle]
+  (resolve-room! host principal original-handle authorize-write!))
+
+(defn validate-host-write-room!
+  "Current read+WRITE and exact Room incarnation; never hydrates a replacement."
+  [host principal original-handle binding]
+  (validate-room! host principal original-handle binding authorize-write!))
+
 (defn validate-host-room!
   "Current fixed read+MERGE and exact native Room-incarnation validation.
    Never hydrates a missing/replacement Room or resolves a source/default."
