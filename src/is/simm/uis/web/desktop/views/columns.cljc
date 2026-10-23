@@ -921,10 +921,12 @@
              ;; from the parent can leave a retained child holding its initial
              ;; nil snapshot after the room handshake completes.
              room-states (iv/get-new (track db-sig/room-states))
+             room-roster (iv/get-new (track sig/user-rooms))
              ;; The owning column and tab travel WITH the tab data: a room
              ;; header action rendered in an inactive column must act on that
              ;; column's exact tab, not on whichever one happens to be focused.
              active-tab-data (some-> (first (filter #(= (:id %) active-tab) tabs))
+                                     (tab-heal/render-chat-tab room-roster)
                                      (as-> tab (assoc tab :data (room-actions/tab-render-data id tab))))
              is-active? (= id active-column-id)
              index _index
@@ -1484,10 +1486,11 @@
        ;; All chats (including Vár AI) use messages from the room's own Datahike DB
        (let [col-id (:col-id data)
              tab-id (:tab-id data)
-             room-id (or (:room-id data) "11111111-1111-1111-1111-111111111111")
+             source (::tab-heal/chat-source data)
+             room-id (or (:room-id source) (:room-id data) "11111111-1111-1111-1111-111111111111")
              room-name (or (:room-name data) "Chat")
              room-uuid (uuid room-id)
-             room-db-scope (:db-scope data)
+             room-db-scope (when (= :ready (:state source)) (:db-scope source))
              thread-view? (boolean (:thread-view? data))
              thread-root-id (when-let [root (:thread-root-id data)]
                               (if (uuid? root) root (uuid (str root))))
@@ -1534,27 +1537,13 @@
                    :new-tab? (not new-column?)
                    :new-column? new-column?})))
 
-             ;; The roster's verdict on this tab (written by `tab-heal`, from
-             ;; whichever of the two moments came second — the tab opening or
-             ;; the roster landing): this tab names no room this party can
-             ;; open. It is a CONCLUSION, so the render can act on it rather
-             ;; than waiting.
-             room-missing? (:room-missing? data)
+             ;; A current roster conclusion, not a trusted restored hint.
+             ;; Until mapping exists, room-db-scope is nil even if another
+             ;; authorized room's old replica is still warm in room-states.
+             room-missing? (= :missing (:state source))
 
-             ;; Ensure room chatroom + user entities exist in room DB (side effect)
-             ;; Guard against placeholder room-id before real room is loaded,
-             ;; and against a tab that names no room — that one would create a
-             ;; room for a uuid nobody asked for.
-             _ (when (and (string? room-id)
-                          (not room-missing?)
-                          (not= room-id "personal-ai-placeholder"))
-                 (when-let [user @sig/current-user]
-                   (let [s (chat-remote/ensure-room!
-                             is.simm.runtimes.web/server-id room-id (:id user))]
-                     ;; a refusal is ANSWERED (`{:status :error :reason …}`):
-                     ;; the room's projection was not made, so say so
-                     (s (rem/on-ok "This room could not be prepared on the server." nil)
-                        (rem/on-error "This room could not be prepared on the server.")))))
+             ;; Reading a chat never initializes legacy rows or requires write
+             ;; permission. Actual posting owns that preparation in ops.chat.
              ;; Current user info from auth
              current-user-info @sig/current-user
              current-user-uuid (when current-user-info

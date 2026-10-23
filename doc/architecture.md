@@ -614,6 +614,15 @@ a room store up from the server context finds nothing and returns `nil` with no
 error. Use `model.room-databases/room-store-conn`, or `(room-conn "slug")` at
 the REPL.
 
+Reading chat does not initialize legacy entities or require write permission.
+Native Dvergr history is read from the authorized per-room replica even when
+there is no `S/ChatRoom` projection. Legacy messages and KB events are included
+only when that projection exists; actual posting prepares the legacy room and
+author rows before dispatch, rather than issuing writes from the render path.
+Chat/thread source scopes come from the current authenticated room roster,
+not restored tab hints. Before that roster arrives, or after a room disappears,
+the chat does not open or query a cached replica under an unverified label.
+
 ## Server and client
 
 The client is not a view onto an API. It runs a **real Datahike replica in the
