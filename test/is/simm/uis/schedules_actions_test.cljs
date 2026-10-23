@@ -43,16 +43,17 @@
                       :toggle #(do ((:toggle ui) %) ((:observe ui)))) ctx))))
       (finally (context/close-context! ctx)))))
 
-(deftest older-deployments-may-be-paused-but-not-resumed
-  (with-state
+(deftest blocked-deployments-may-be-paused-but-not-resumed
+  (doseq [reason [:legacy-recreate :reconciliation-required]]
+   (with-state
     (fn [ui _]
-      (let [requests (atom []) legacy (assoc row :resume-blocked :legacy-recreate)]
+      (let [requests (atom []) legacy (assoc row :resume-blocked reason)]
         (with-redefs [remote/set-workflow-schedule-enabled! (deferred requests)]
           ((:toggle ui) (assoc legacy :enabled? false))
           (is (empty? @requests))
           ((:toggle ui) legacy)
           (is (= 1 (count @requests)))
-          (is (false? (:enabled? (nth (:args (first @requests)) 2)))))))))
+          (is (false? (:enabled? (nth (:args (first @requests)) 2))))))))))
 
 (deftest refresh-cannot-erase-a-pending-toggle-or-restore-its-old-state
   (with-state
@@ -135,6 +136,7 @@
           opened (atom []) handle (atom nil) proposal (str (random-uuid))
           row {:id "render-fixture" :room-id "room" :room-name "Fixture" :name "maintain-wiki"
                :kind :workflow :enabled? false :cadence {:interval-ms 60000 :tz "UTC"}
+               :resume-blocked :reconciliation-required :reason :interrupted
                :revision "fixture-revision" :bundle "fixture-bundle" :next-fire 0
                :on-toggle (fn [& _] (throw (js/Error. "Render changed activation")))
                :on-open-run (fn [& _] (throw (js/Error. "Render opened Run")))
@@ -151,6 +153,11 @@
                           (try
                             (is (empty? @opened) "Rendering never collects, opens or adopts anything")
                             (is (.includes (.-textContent container) "Open Run and results"))
+                            (is (.includes (.-textContent container) "adding allowance does not resolve it"))
+                            (let [resume (some #(when (= "Resume" (.-textContent %)) %)
+                                               (array-seq (.querySelectorAll container "button")))]
+                              (is (some? resume))
+                              (is (true? (.-disabled resume))))
                             (.click button)
                             (is (= [proposal] @opened))
                             (finally

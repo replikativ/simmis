@@ -125,7 +125,8 @@
                            (= :agent-task (:run/kind candidate))
                            (= job-id (:run/parent candidate))
                            (= (store/conversation-id room) (:run/room candidate))
-                           (= :completed (:run/status candidate))
+                           (#{:completed :failed} (:run/status candidate))
+                           (instance? java.util.Date (:run/ended-at candidate))
                            (= (:agent/id agent) (:run/actor candidate))
                            (= agent-hash (:run/agent-def-hash candidate))
                            (= (:agent/version agent) (:run/agent-version candidate))
@@ -149,10 +150,13 @@
                      (= :saved-workflow (:execution-kind metrics))
                      (= (evaluation/evaluator-tier (outputs/with-capture work/completion))
                         (:verifier-trust metrics))
-                     (= :completed (:attempt/status receipt))
-                     (map? checks) (seq checks) (true? (:completed? checks))
+                     (= (:run/status candidate) (:attempt/status receipt))
+                     (map? checks) (seq checks)
                      (true? (:knowledge-workspace? checks))
-                     (every? true? (vals checks))
+                     (if (= :completed (:run/status candidate))
+                       (and (true? (:completed? checks)) (every? true? (vals checks)))
+                       (and (= {:completed? false :knowledge-workspace? true} checks)
+                            (zero? (:attempt/reward receipt))))
                      (<= (count trace) max-runs)
                      (= 1 (count trace-candidates))
                      (= (select-keys candidate [:run/id :run/parent :run/actor :run/status :run/agent-def-hash])
@@ -160,12 +164,7 @@
         (refuse! :certification-mismatch))
       certified)))
 
-(defn prepare
-  "Certify ONE canonical request's direct durable Attempt and prepare exact
-   retained filing data. Returns {:request-binding :disposition :plan :party
-   :room :target}; :plan is nil only for an explicit verified no-op. No writes,
-   no live input recapture, no model/provider preparation, no world execution.
-   Current authority/default identity MUST be rechecked by the filing writer."
+(defn- certified-request!
   [conn principal room-id room request-id]
   (when-not (uuid? request-id) (refuse! :invalid-request))
   (let [party (authorize! @conn principal room-id)
@@ -185,7 +184,31 @@
         {:keys [environment workflow-bundle]} (verify-frozen-workflow! input)
         certified (certified-candidate! room row input)
         _ (workspace/validate-proof! (:target basis)
-                                     (get-in certified [:attempt/evidence :knowledge-workspace]))
+                                     (get-in certified [:attempt/evidence :knowledge-workspace]))]
+    {:party party :row row :binding binding :basis basis :input input
+     :environment environment :workflow-bundle workflow-bundle :certified certified}))
+
+(defn candidate-outcome
+  "Read-only strict certification of the exact LIVE knowledge candidate.
+   A failed outcome certifies execution failure, NOT publishable output or a
+   processed input. Missing, corrupt or inconsistent evidence always throws.
+   The caller must separately establish physical settlement and serialize
+   the exact returned request binding before changing activation state."
+  [conn principal room-id room request-id]
+  (let [{:keys [binding certified]} (certified-request! conn principal room-id room request-id)]
+    {:outcome (get-in certified [:attempt/receipt :attempt/status])
+     :request-binding binding :candidate (:attempt/run-id certified)
+     :attempt-content (:attempt/content-id certified)}))
+
+(defn prepare
+  "Certify ONE canonical request's successful direct durable Attempt and
+   prepare exact retained filing data. A failed candidate can never file.
+   Current authority/default identity MUST be rechecked by the filing writer."
+  [conn principal room-id room request-id]
+  (let [{:keys [party row binding basis input environment workflow-bundle certified]}
+        (certified-request! conn principal room-id room request-id)
+        _ (when-not (= :completed (get-in certified [:attempt/receipt :attempt/status]))
+            (refuse! :candidate-not-completed))
         output (get-in certified [:attempt/evidence :knowledge-output])
         _ (outputs/validate! output)
         planned (plans/plan {:request request-id :room room-id :attempt (:attempt/run-id certified)

@@ -134,8 +134,10 @@
              room {:id runtime-id :store st :ctx ec/*execution-context*}
              _ (store/-store-room! st runtime-id {:slug (name runtime-id)})
              _ (store/-store-run! st runtime-id (terminal-run job runtime-id (:principal/actor principal) :workflow))
+             status (get options :candidate-status :completed)
              candidate-run (merge (terminal-run candidate runtime-id (:agent/id agent) :agent-task)
                                   {:run/parent job :run/agent-version (:agent/version agent)
+                                   :run/status status
                                    :run/program-kind :echo :run/interpreter-version 5
                                    :run/agent-def-hash (hasch/uuid agent)})
              _ (store/-store-run! st runtime-id candidate-run)
@@ -155,7 +157,7 @@
                         :knowledge-workspace (knowledge-workspace/expected-proof (:target basis))})
              receipt (environment/make-attempt-receipt
                       (get options :attempt-environment (:environment input))
-                      {:run-id candidate :provider :dvergr :model "echo" :status :completed
+                      {:run-id candidate :provider :dvergr :model "echo" :status (get options :receipt-status status)
                        :started-at 1000 :elapsed-ms 25
                        :metrics (merge {:program-kind :echo :model-resolution :not-applicable
                                         :agent-version 1 :agent-def-hash (hasch/uuid agent)
@@ -163,7 +165,8 @@
                                         :request-id id :execution-kind :saved-workflow
                                         :verifier-trust (evaluation/evaluator-tier evaluator)}
                                        (:metrics options))
-                       :checks (get options :checks {:completed? true :knowledge-workspace? true}) :reward 1.0
+                       :checks (get options :checks {:completed? (= :completed status) :knowledge-workspace? true})
+                       :reward (get options :reward (if (= :completed status) 1.0 0.0))
                        :result (:result evidence) :trace (:trace evidence)})
              certified (attempt/make-attempt (get options :attempt-environment (:environment input))
                                              agent receipt evidence :discard)]
@@ -191,6 +194,54 @@
 
 (defn- prepare [{:keys [conn principal room-id room request]}]
   (filing/prepare conn principal room-id room request))
+
+(defn- candidate-outcome [{:keys [conn principal room-id room request]}]
+  (filing/candidate-outcome conn principal room-id room request))
+
+(deftest failed-candidate-is-certified-for-hold-but-never-filing
+  (with-fixture {:candidate-status :failed :evidence-transform #(dissoc % :knowledge-output)}
+    (fn [{:keys [conn request candidate certified] :as fixture}]
+      (let [before @conn result (candidate-outcome fixture)]
+        (is (= {:outcome :failed :candidate candidate :attempt-content (:attempt/content-id certified)
+                 :request-binding (dispositions/request-binding (requests/get-request conn request))}
+                result))
+        (is (= before @conn))
+        (is (thrown? clojure.lang.ExceptionInfo (prepare fixture)))
+        (is (nil? (dispositions/disposition (requests/get-request conn request))))))))
+
+(deftest failed-outcome-requires-the-same-complete-provenance-as-success
+  (with-fixture {:candidate-status :failed :persist? false}
+    (fn [fixture] (is (thrown? clojure.lang.ExceptionInfo (candidate-outcome fixture)))))
+  ;; Writer governance already rejects some inconsistent combinations. A
+  ;; broken-store read must still fail this independent host boundary; do not
+  ;; deliberately dead-letter invalid writes just to construct those reads.
+  (doseq [options [{:receipt-status :completed :checks {:completed? true :knowledge-workspace? true}}
+                   {:checks {:completed? true :knowledge-workspace? true}}
+                   {:checks {:completed? false :knowledge-workspace? false}}
+                   {:checks {:completed? false :knowledge-workspace? true :unknown? true}}
+                   {:reward 1.0}
+                   {:metrics {:requester-party (random-uuid)}}
+                   {:metrics {:request-id (random-uuid)}}
+                   {:metrics {:verifier-trust :untrusted}}
+                   {:evidence-transform #(dissoc % :knowledge-workspace)}
+                   {:evidence-transform #(assoc-in % [:trace :runs 0 :run/status] :completed)}
+                   {:evidence-transform #(update-in % [:trace :runs] (fn [rows] (conj rows (first rows))))}]]
+    (with-fixture (merge {:candidate-status :failed :persist? false} options)
+      (fn [{:keys [certified] :as fixture}]
+        (with-redefs [episode/attempt (constantly certified)]
+          (is (thrown? clojure.lang.ExceptionInfo (candidate-outcome fixture)) (str options)))))))
+
+(deftest inconsistent-failed-durable-lineage-is-not-a-retry-permit
+  (with-fixture {:candidate-status :failed}
+    (fn [{:keys [conn request candidate] :as fixture}]
+      (let [original run/run]
+        (doseq [change [#(assoc % :run/status :completed) #(assoc % :run/parent (random-uuid))
+                        #(assoc % :run/actor :other) #(assoc % :run/agent-def-hash (random-uuid))
+                        #(dissoc % :run/ended-at)]]
+          (with-redefs [run/run (fn [room id] (cond-> (original room id) (= id candidate) change))]
+            (is (thrown? clojure.lang.ExceptionInfo (candidate-outcome fixture)))))
+        (d/transact conn [[:db/add [:work.request/id request] :work.request/return-pending? true]])
+        (is (thrown? clojure.lang.ExceptionInfo (candidate-outcome fixture)))))))
 
 (deftest real-durable-attempt-plans-historical-bytes-without-live-capture-or-provider
   (with-fixture

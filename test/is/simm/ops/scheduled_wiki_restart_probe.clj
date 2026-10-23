@@ -147,9 +147,11 @@
             :retained-live-input)
     value))
 
-(defn- run-once! [conn party room-id activation]
-  (let [due (next-due conn activation)
-        occurrence (tick! conn activation due
+(defn- run-once!
+  ([conn party room-id activation]
+   (run-once! conn party room-id activation (next-due conn activation)))
+  ([conn party room-id activation due]
+   (let [occurrence (tick! conn activation due
                           #(some->> (:schedule.occurrence/request %) (requests/get-request conn) :work.request/job))
         request-id (:schedule.occurrence/request occurrence)
         job (:work.request/job (requests/get-request conn request-id))
@@ -172,7 +174,7 @@
        :input (:schedule.occurrence/input-id occurrence) :proof proof
        :retained-input (retained-live-input! conn occurrence)
        :disposition (dispositions/disposition (requests/get-request conn request-id))
-       :skipped (:schedule.occurrence/id skipped)})))
+       :skipped (:schedule.occurrence/id skipped)}))))
 
 (defn- stage-a! [conn calls]
   (check! (empty? (model/activations conn)) :fresh-home)
