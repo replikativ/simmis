@@ -209,7 +209,7 @@ this gate in addition to the production frontend build.
 
 ## Documentation
 
-Five documents, each about code that exists.
+These guides describe the implemented system.
 
 - [`doc/architecture.md`](doc/architecture.md) — **start here.** The stores,
   what owns what, server vs client, and the three seams everything goes through
@@ -222,6 +222,10 @@ Five documents, each about code that exists.
   an agent's write reaches trunk, and reading any store as of a past point
 - [`doc/agents.md`](doc/agents.md) — what an agent is, what it may do, and
   where its writes land
+- [`doc/documents.md`](doc/documents.md) — canonical files, Markdown identity,
+  properties and supported editor projections
+- [`doc/wiki-maintenance-workflow.md`](doc/wiki-maintenance-workflow.md) — the
+  ordinary starter workflow, frozen inputs, schedules and file proposals
 - [`CLAUDE.md`](CLAUDE.md) — working in this repository: the REPL workflow,
   spindel's sharp edges, the logging policy
 
