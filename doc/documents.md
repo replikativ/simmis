@@ -53,6 +53,19 @@ diagnostic instead of a guessed repair. Typed projection requires explicit
 trusted schema bindings as described below. Syntax projection and source sizes
 are bounded; exceeding a limit is an explicit refusal.
 
+Syntax profile version 4 retains version 3's treatment of exactly one initial
+UTF-8 BOM as an immutable prefix, even without frontmatter. Syntax spans remain
+absolute UTF-16 offsets into the unchanged original source; noninitial U+FEFF
+remains ordinary text. Character entities expose their decoded value once as
+inert text with the original source span. Decoded characters are not reparsed as
+HTML, references or Markdown. Edited ordinary text escapes literal ampersands
+before representing boundary spaces/tabs as numeric entities, so intermediate
+typing and space-only paragraphs retain significant whitespace through the
+strict rich round-trip check. Raw footnote tokens and code retain their distinct
+codecs, and no-op source remains byte-for-byte unchanged.
+Disposable views include the profile in their fingerprint and must be rebuilt
+when it changes; no source rewrite or storage migration is performed.
+
 The syntax profile pins Flexmark 0.64.8 with explicit table, task-list,
 strikethrough, footnote and wikilink/embed extensions. It preserves heading
 levels, task state and table-cell alignment. `references` extracts body
@@ -67,6 +80,33 @@ This profile does not yet implement complete Obsidian callout/math semantics,
 arbitrary legacy semantic-block identity or Simmis widget metadata. The separate
 grouping codec below provides explicit identities for new files. Recognizing syntax is not a claim that the
 semantic codec or rich editor can round-trip every feature.
+
+The synthetic academic source corpus exercises named footnotes, dollar-delimited
+formula source, Pandoc-style citation spelling, a local bibliography filename,
+and nested Clojure fences, including literal lookalikes in code. Current tests
+establish exact no-op preservation and unchanged academic source when a neighboring
+heading is edited, for both LF and CRLF input. This does not claim formula
+rendering, citation resolution, bibliography loading, or runnable Markdown cells.
+Footnote-reference syntax nodes retain exact raw token spelling separately from
+their trimmed display label, including unresolved and repeated references.
+Single-line references are inert inline rich-editor atoms: neighboring prose
+remains editable, copying exports the original token, and deletion/undo use
+ordinary document editing. Definitions remain source-backed opaque regions.
+New references and multiline labels use Markdown source editing in this slice.
+Reference numbering, definition editing and automatic resolution are not added.
+
+Each inline reference retains a projection-local source-span key, exact raw
+token and display label. The key is not a persistent knowledge-block ID. Client
+composition and host publication independently check tokens against the frozen
+source-region baseline before normalization: removal and relocation within one
+region are permitted; fabricated, duplicated and foreign-region tokens are not.
+After this validation, serialization round-trip comparison ignores the local
+span key and empty root paragraphs representing Markdown blank-line layout;
+nested empty paragraphs and significant token/text structure remain intact.
+Ordinary editor echo equality still retains provenance and layout. HTML cannot
+import those keys, and attribute text counts toward the
+bounded model budget. Parsing and rich editing do not fetch references or execute
+code.
 
 `patch` accepts a content revision and non-overlapping edits in that revision's
 coordinates. A stale revision, overlapping edits or a range splitting a UTF-16

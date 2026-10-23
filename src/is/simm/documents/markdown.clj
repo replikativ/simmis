@@ -7,12 +7,12 @@
   (:require [clj-yaml.core :as yaml]
             [hasch.core :as hasch])
   (:import [com.vladsch.flexmark.parser Parser]
-           [com.vladsch.flexmark.ast Heading Text Code FencedCodeBlock IndentedCodeBlock Link OrderedList]
+           [com.vladsch.flexmark.ast Heading Text HtmlEntity Code FencedCodeBlock IndentedCodeBlock Link OrderedList]
            [com.vladsch.flexmark.util.sequence Escaping]
            [com.vladsch.flexmark.ext.tables TablesExtension TableCell]
            [com.vladsch.flexmark.ext.gfm.tasklist TaskListExtension TaskListItem]
            [com.vladsch.flexmark.ext.gfm.strikethrough StrikethroughExtension]
-           [com.vladsch.flexmark.ext.footnotes FootnoteExtension]
+           [com.vladsch.flexmark.ext.footnotes FootnoteExtension Footnote]
            [com.vladsch.flexmark.ext.wikilink WikiLinkExtension WikiNode WikiImage]
            [com.vladsch.flexmark.util.ast Node]
            [java.nio ByteBuffer CharBuffer]
@@ -24,7 +24,7 @@
 
 (def syntax-profile
   "Pinned syntax projection, not a claim of complete Obsidian/plugin support."
-  {:id :simmis/markdown-syntax :version 2 :parser "flexmark/0.64.8"
+  {:id :simmis/markdown-syntax :version 4 :parser "flexmark/0.64.8"
    :features #{:tables :tasks :strikethrough :footnotes :wikilinks :wiki-embeds}})
 
 (defn- parser []
@@ -105,6 +105,11 @@
            :children (mapv #(syntax-node % offset (inc depth) remaining) (children node))}
     (instance? Heading node) (assoc :heading-level (.getLevel ^Heading node))
     (instance? Text node) (assoc :text (Escaping/unescapeString (.getChars node)))
+    ;; Decode exactly once into inert text; never reparse it as HTML/Markdown.
+    ;; Keep the original entity's source span for lossless no-op projection.
+    (instance? HtmlEntity node) (assoc :text (Escaping/unescapeHtml ^CharSequence (.getChars node)))
+    (instance? Footnote node)
+    (assoc :footnote {:raw (str (.getChars node)) :label (str (.getText ^Footnote node))})
     (instance? Code node) (assoc :literal (str (.getText ^Code node)))
     (instance? FencedCodeBlock node)
     (assoc :literal (str (.getContentChars ^FencedCodeBlock node))
@@ -149,7 +154,10 @@
   [source]
   (let [id (revision source)
         fm (frontmatter source)
-        offset (or (:to fm) 0)
+        ;; An initial UTF-8 BOM belongs to the immutable file prefix, not the
+        ;; first paragraph. Keep absolute source coordinates. Unclosed
+        ;; frontmatter's explicit :to 0 retains its source-only diagnostics.
+        offset (or (:to fm) (when (.startsWith ^String source "\uFEFF") 1) 0)
         tree (.parse (parser) (subs source offset))
         ;; Per-call traversal budget; never a registry or shared editor state.
         remaining (volatile! max-syntax-nodes)]

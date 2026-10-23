@@ -107,7 +107,7 @@
     (is (= (:text next) (host/apply-edits repo "wiki/note.md" source (:revision a) (editor/document-edits next))))))
 
 (deftest empty-files-and-empty-identified-blocks-can-be-edited-without-inventing-an-id
-  (doseq [source ["" "---\ncustom: yes\n---\n"
+  (doseq [source ["" "\uFEFF" "---\ncustom: yes\n---\n" "\uFEFF---\ncustom: yes\n---\n"
                   (str "<!-- simmis:block " parent-id " -->\r\n\r\n<!-- /simmis:block -->\r\n")]]
     (let [projection (document/project source (analysis source))
           model (:model projection) key (first (keys (:regions projection)))
@@ -115,6 +115,8 @@
           result (check-host source projection edited)]
       (is (= source (document/apply-model source projection model)))
       (is (str/includes? result "New content"))
+      (when (= "\uFEFF" source)
+        (is (= "\uFEFFNew content\n\n" result)))
       (is (= :ready (:status (blocks/project repo (markdown/parse result)))))))
   (is (thrown? clojure.lang.ExceptionInfo
                (host/apply-edits repo "wiki/note.md" "Alpha\n" (markdown/revision "Alpha\n")

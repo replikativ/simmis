@@ -65,6 +65,31 @@
                                   #js ["pre" dom-attrs (or (.-label attrs) "")]
                                   #js ["div" dom-attrs 0])))}))
 
+(defn- footnote-node []
+  (.create Node
+           #js {:name "footnoteReference" :group "inline" :inline true :atom true
+                :addAttributes (fn [] #js {:sourceKey #js {:default nil}
+                                           :raw #js {:default nil} :label #js {:default nil}})
+                ;; HTML/clipboard text may never import projection-local keys.
+                :parseHTML (fn [] #js [])
+                :renderText (fn [props] (aget (.. props -node -attrs) "raw"))
+                ;; Clipboard HTML retains spelling as inert ordinary text, not
+                ;; the compact label or an importable identity-bearing node.
+                :renderHTML (fn [props] #js ["span" #js {} (aget (.. props -node -attrs) "raw")])
+                :addNodeView
+                (fn []
+                  (fn [props]
+                    (let [^js dom (.createElement js/document "sup")
+                          paint! (fn [^js node]
+                                   (set! (.-className dom) "memory-footnote-reference")
+                                   (set! (.-textContent dom) (aget (.-attrs node) "label"))
+                                   (.setAttribute dom "title" (aget (.-attrs node) "raw"))
+                                   (.setAttribute dom "aria-label" (str "Footnote " (aget (.-attrs node) "label"))))]
+                      (paint! (.-node props))
+                      #js {:dom dom :update (fn [^js node]
+                                             (when (= "footnoteReference" (.. node -type -name))
+                                               (paint! node) true))})))}))
+
 (defn- boundary-guard [^js el]
   (.create Extension
            #js {:name "memoryBoundaryGuard"
@@ -111,6 +136,7 @@
                        :extensions #js [(boundary-node "memoryBlock" "(memoryBlock|memoryRegion|memoryOpaque)*")
                                         (boundary-node "memoryRegion" "(paragraph|heading|bulletList|orderedList|codeBlock|horizontalRule)+")
                                         (boundary-node "memoryOpaque" "")
+                                        (footnote-node)
                                         (boundary-guard el)
                                         (.configure StarterKit
                                                     #js {:underline false :blockquote false :trailingNode false

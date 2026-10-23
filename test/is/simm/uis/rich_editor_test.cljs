@@ -65,6 +65,21 @@
                (is (true? (.. editor -commands (undo))))
                (is (= (rich/normalize baseline) (rich/normalize (decode))))))))
 
+(deftest intermediate-space-survives-native-echo-and-subsequent-typing
+  (mounted "Sentence."
+           (fn [^js el ^js editor]
+             (let [decode #(@#'is.simm.uis.web.desktop.rich-editor/portable-model (.getJSON editor))]
+               (.. editor -commands (setTextSelection 10))
+               (.. editor -commands (insertContent " "))
+               (is (= "Sentence\\.&#32;" (rich/markdown (decode))))
+               (let [position (.. editor -state -selection -from)]
+                 (.setAttribute el "data-model" (js/JSON.stringify (.getJSON editor)))
+                 (is (identical? editor (.-simmisRichEditor el)))
+                 (is (= position (.. editor -state -selection -from))))
+               (.. editor -commands (insertContent "Next"))
+               (is (= "Sentence\\. Next" (rich/markdown (decode))))
+               (is (= "Sentence. Next" (.getText editor)))))))
+
 (deftest each-element-owns-and-releases-its-native-interpreter
   (mounted "one"
            (fn [^js el ^js first]
@@ -115,3 +130,72 @@
                (is (= 4 (.. editor -state -selection -to)))
                (is (zero? @events))
                (is (identical? editor (.-simmisRichEditor el)))))))
+
+(defn- footnote-model []
+  {:type "doc" :content [{:type "paragraph"
+                         :content [{:type "text" :text "Before"}
+                                   {:type "footnoteReference"
+                                    :attrs {:sourceKey "footnote:6:17" :raw "[^ method ]" :label "method"}}
+                                   {:type "text" :text " after"}]}]})
+
+(deftest footnote-atoms-retain-source-through-native-selection-copy-delete-and-undo
+  (mounted "temporary"
+           (fn [^js el _]
+             (let [model (footnote-model)]
+               (.setAttribute el "data-model" (js/JSON.stringify (clj->js model)))
+               (let [^js editor (.-simmisRichEditor el)
+                     decode #(@#'is.simm.uis.web.desktop.rich-editor/portable-model (.getJSON editor))]
+                 (is (= "method" (.-textContent (.querySelector el "sup"))))
+                 (is (= "Footnote method" (.getAttribute (.querySelector el "sup") "aria-label")))
+                 (is (= "Before[^ method ] after" (.getText editor)))
+                 (is (= (rich/normalize model) (rich/normalize (decode))))
+                 (.. editor -commands (setTextSelection 4))
+                 (is (= (rich/normalize model) (rich/normalize (decode)))
+                     "Selection alone retains the exact source-token identity")
+                 ;; Copy exports source spelling, not the display label/key.
+                 (.. editor -commands (selectAll))
+                 (let [^js view (.-view editor)
+                       serializer (.someProp view "clipboardTextSerializer")]
+                   (is (= "Before[^ method ] after" (serializer))))
+                 (let [^js slice (.. editor -state -selection (content))
+                       ^js clipboard (.serializeForClipboard (.-view editor) slice)]
+                   (is (= "Before[^ method ] after" (.-textContent (.-dom clipboard))))
+                   (is (not (.includes (.-innerHTML (.-dom clipboard)) "footnote:6:17"))))
+                 ;; An atom is one native position regardless of raw-token size.
+                 (.. editor -commands (setTextSelection #js {:from 7 :to 8}))
+                 (is (true? (.. editor -commands (deleteSelection))))
+                 (is (nil? (.querySelector el "sup")))
+                 (is (= "Before after" (.getText editor)))
+                 (is (true? (.. editor -commands (undo))))
+                 (is (= (rich/normalize model) (rich/normalize (decode))))
+                 (.setAttribute el "data-model" (js/JSON.stringify (.getJSON editor)))
+                 (is (identical? editor (.-simmisRichEditor el))))))))
+
+(deftest copied-footnote-html-pastes-as-raw-text-without-provenance
+  (mounted "temporary"
+           (fn [^js el _]
+             (.setAttribute el "data-model" (js/JSON.stringify (clj->js (footnote-model))))
+             (let [^js editor (.-simmisRichEditor el)]
+               (.. editor -commands (selectAll))
+               (let [^js clipboard (.serializeForClipboard (.-view editor) (.. editor -state -selection (content)))
+                     html (.-innerHTML (.-dom clipboard))]
+                 (.. editor -commands (setContent html))
+                 (is (= "Before[^ method ] after" (.getText editor)))
+                 (is (nil? (.querySelector el "sup")))
+                 (let [decoded (@#'is.simm.uis.web.desktop.rich-editor/portable-model (.getJSON editor))]
+                   (is (not-any? #(= "footnoteReference" (:type %))
+                                 (tree-seq #(seq (:content %)) :content decoded)))))))))
+
+(deftest footnote-labels-are-inert-and-html-never-imports-provenance
+  (mounted "temporary"
+           (fn [^js el _]
+             (let [model (assoc-in (footnote-model) [:content 0 :content 1 :attrs :label] "<img src=x onerror=bad()>")]
+               (.setAttribute el "data-model" (js/JSON.stringify (clj->js model)))
+               (let [^js editor (.-simmisRichEditor el)]
+                 (is (nil? (.querySelector el "img")))
+                 (is (= "<img src=x onerror=bad()>" (.-textContent (.querySelector el "sup"))))
+                 (.. editor -commands (setContent "<p>Pasted<sup sourceKey='footnote:6:17' raw='[^ method ]'>method</sup></p>"))
+                 (is (nil? (.querySelector el "sup")))
+                 (is (not-any? #(= "footnoteReference" (:type %))
+                               (tree-seq #(seq (:content %)) :content
+                                         (@#'is.simm.uis.web.desktop.rich-editor/portable-model (.getJSON editor))))))))))

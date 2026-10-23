@@ -37,6 +37,31 @@
            (get-in document [:frontmatter :raw])))
     (is (not= (md/revision fixture) (:revision document)))))
 
+(deftest bare-bom-is-an-immutable-prefix-with-original-source-coordinates
+  (doseq [newline ["\n" "\r\n" "\r"]
+          body [(str "# Heading 🦋" newline newline "Text\uFEFFinside [[Note]]." newline)
+                (str "Paragraph 🦋[^one]." newline newline "[^one]: Definition." newline)]]
+    (let [source (str "\uFEFF" body)
+          parsed (md/parse source)
+          nodes (rest (tree-seq (comp seq :children) :children {:children (:nodes parsed)}))]
+      (is (= source (:source parsed) (md/decode (md/source-bytes source))))
+      (is (= 1 (:body-from parsed)))
+      (is (nil? (:frontmatter parsed)))
+      (is (= 1 (:from (first (:nodes parsed)))))
+      (is (= (if (str/starts-with? body "#") :Heading :Paragraph) (:kind (first (:nodes parsed)))))
+      (is (every? #(<= 1 (:from %) (:to %) (count source)) nodes))
+      (is (= source (:source (md/patch source (:revision parsed) []))))
+      (when (str/includes? body "\uFEFF")
+        (is (some #(and (= :Text (:kind %)) (str/includes? (:text %) "\uFEFF")) nodes)))
+      (doseq [{:keys [from to]} (md/references parsed)]
+        (is (= "[[Note]]" (subs source from to))))))
+  (let [parsed (md/parse "\uFEFF")]
+    (is (= 1 (:body-from parsed)))
+    (is (empty? (:nodes parsed))))
+  (let [parsed (md/parse "\uFEFF---\ntitle: Unclosed")]
+    (is (= 0 (:body-from parsed)))
+    (is (= :frontmatter/unclosed (-> parsed :diagnostics first :kind)))))
+
 (deftest frontmatter-errors-are-visible-but-never-repaired-or-executed
   (doseq [[source kind] [["---\na: 1\na: 2\n---\nbody" :frontmatter/invalid]
                          ["---\n- one\n---\nbody" :frontmatter/not-a-map]

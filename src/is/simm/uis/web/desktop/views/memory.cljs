@@ -56,6 +56,10 @@
   (case (:type node)
     "doc" (el/div {} (children node))
     "text" (marked-text node)
+    "footnoteReference" (el/sup {:class "memory-footnote-reference"
+                                 :title (get-in node [:attrs :raw])
+                                 :aria-label (str "Footnote " (get-in node [:attrs :label]))}
+                                (marked-text (assoc node :text (get-in node [:attrs :label]))))
     "paragraph" (el/p {} (children node))
     "heading" (case (get-in node [:attrs :level])
                 1 (el/h1 {} (children node)) 2 (el/h2 {} (children node)) 3 (el/h3 {} (children node))

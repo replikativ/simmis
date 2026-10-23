@@ -20,6 +20,23 @@
                  "> Exact source quotation.\n\n^evidence-1\n\n"
                  "See [[Research#^evidence-1|evidence]]. $p(x)$ is not a measured result.\n\n"
                  "[^source]: Synthetic fixture source.\n")}
+   {:id :academic-notebook
+    :required-semantics #{:named-footnotes :inline-math :display-math :citations
+                          :nested-sci-cells :literal-contexts :source-backed-inlines}
+    :editable "Experiment notebook"
+    :source (str "---\ntitle: Experiment notebook\nbibliography: references.bib\n"
+                 "custom: 'keep exact spelling'\n---\n"
+                 "# Experiment notebook 🦋\n\n"
+                 "A claim with a named footnote.[^method]\n\n"
+                 "Prior $p(x)$ and evidence $p(y \\mid x)$ inform a posterior.\n\n"
+                 "$$\np(x \\mid y) = \\frac{p(y \\mid x)p(x)}{p(y)}\n$$\n\n"
+                 "A page locator [@sample2026, p. 12; @replication2025].\n\n"
+                 "- An experiment inside a list.\n\n"
+                 "  ```clojure\n  ;; Explicit execution only, never on open/save.\n"
+                 "  {:example \"$not-math$ [^not-a-note] [@not-a-citation]\"}\n  ```\n\n"
+                 "Literal `$x$`, `[^method]`, and `[@sample2026]`; price $5.00.\n\n"
+                 "[^method]: A synthetic method, not a fetched reference.\n"
+                 "    A second paragraph in the same footnote.\n")}
    {:id :nested-structure
     :required-semantics #{:list-continuations :nested-lists :heading-outline}
     :editable "Working notes"

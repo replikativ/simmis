@@ -27,6 +27,7 @@
       (throw (ex-info "Draft changed before the rich edit could be applied" {:type ::conflict})))
     (when-not (and (= :ready (:status semantic)) baseline)
       (throw (ex-info "This region requires Source editing" {:type ::unsupported})))
+    (rich/validate-provenance! baseline model)
     (let [serialized (rich/markdown (rich/normalize model))
           roundtrip (mapv rich/model (:nodes (markdown/parse serialized)))
           decoded {:type "doc" :content (vec (mapcat :content roundtrip))}
