@@ -122,7 +122,7 @@
     (let [ctx (context/create-execution-context) container (.createElement js/document "div")
           release (atom nil) draft (multi-draft mode)
           ids (mapv (comp str :id) (get-in draft [:analysis :semantic :blocks]))
-          data [(assoc chart :title "Revenue")
+          data [(assoc chart :title "Revenue" :x-label "Month" :y-label "USD")
                 {:kind :bar :title "Costs" :series [{:label "Cost" :points [["Research" 12] ["Delivery" 9]]}]}
                 {:kind :point :title "Experiments" :series [{:label "Trial" :points [[0 1] [2 4]]}]}]
           models (zipmap ids data)]
@@ -135,6 +135,12 @@
             (is (= ["Revenue" "Costs" "Experiments"]
                    (mapv #(.-textContent %) (array-seq (.querySelectorAll container "figcaption")))))
             (is (= 2 (.-length (.querySelectorAll container "svg.memory-chart-plot rect"))))
+            (let [labels (array-seq (.querySelectorAll container "svg.memory-chart-plot text"))]
+              (is (= 18 (count labels)) "axis labels are SVG elements, not text-node sentinels")
+              (is (every? #(= "http://www.w3.org/2000/svg" (.-namespaceURI %)) labels))
+              (is (some #(= "Month" (.-textContent %)) labels))
+              (is (some #(= "Research" (.-textContent %)) labels))
+              (is (not (str/includes? (.-textContent container) "null"))))
             (let [changed (assoc models (first ids) {:kind :point :title "Revised revenue"
                                                    :series [{:label "Revenue" :points [[5 99]]}]})
                   next (multi-tree draft changed) next-addrs (vec (addresses next))]
@@ -144,6 +150,7 @@
                      (mapv #(.-textContent %) (array-seq (.querySelectorAll container "figcaption")))))
               (is (= 3 (.-length (.querySelectorAll container "svg.memory-chart-plot circle"))))
               (is (= 2 (.-length (.querySelectorAll container "svg.memory-chart-plot rect"))))
+              (is (= 18 (.-length (.querySelectorAll container "svg.memory-chart-plot text"))))
               (is (= (:text draft) (:text (multi-draft mode))) "a spec-only update does not edit Markdown"))))
         (finally (when @release (browser/unmount! @release))
                  (.remove container) (context/stop-context! ctx))))))

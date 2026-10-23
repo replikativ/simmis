@@ -10,7 +10,9 @@
       (let [addr (addressing/current-element-address {:file "simmis/chart-scene" :line 1 :column 1})]
         (addressing/with-parent-addr-fn
           addr
-          #(el/build-element (:tag tree) addr (:attrs tree)
+          ;; :text is Spindel's text-node sentinel. A namespaced SVG tag
+          ;; remains an element; the browser discharge uses its local name.
+          #(el/build-element (if (= :text (:tag tree)) :svg/text (:tag tree)) addr (:attrs tree)
                              (mapv (fn [index child]
                                      (addressing/with-slot-fn index (fn [] (render-scene child))))
                                    (range) (:children tree)))))))
