@@ -31,3 +31,12 @@
 (deftest empty-editor-documents-normalize-to-empty-markdown
   (is (= {:type "doc" :content []}
          (rich/normalize {:type "doc" :content [{:type "paragraph" :content []}]}))))
+
+(deftest empty-parsed-list-items-project-to-editable-paragraphs-in-both-runtimes
+  (doseq [[kind type] [[:BulletList "bulletList"] [:OrderedList "orderedList"]]]
+    (let [node {:kind kind :start 3 :children [{:kind (if (= kind :BulletList) :BulletListItem :OrderedListItem)
+                                             :children []}]}
+          model (rich/model node)]
+      (is (= type (get-in model [:content 0 :type])))
+      (is (= [{:type "paragraph" :content []}] (get-in model [:content 0 :content 0 :content])))
+      (is (= (if (= kind :BulletList) "- " "3. ") (rich/markdown model))))))
