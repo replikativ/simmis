@@ -39,7 +39,7 @@
                                                :folders {"" {:entries []}}))
           ((:toggle a) "wiki") ((:toggle a) "wiki") ((:toggle a) "wiki")
           (is (= ["wiki"] @calls))
-          (is (= {:entries []} (get-in (state) [:folders "wiki"])))
+          (is (= [] (get-in (state) [:folders "wiki" :entries])))
           ((:toggle a) "wiki")
           ((:toggle-root a)) ((:toggle-root a))
           (is (= ["wiki"] @calls) "Neither root collapse nor cached reopen needs a folder read")
