@@ -18,7 +18,9 @@
    `[[dh://…]]` links carry in wiki and chat text. That is deliberate: a link
    an agent writes into a digest page and a row in a dashboard should be the
    same act, not two parallel systems."
-  (:require [is.simm.uis.web.desktop.signals :as sig]
+  (:require [clojure.string :as str]
+            [is.simm.uis.web.desktop.memory-links :as memory-links]
+            [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [datahike.reference :as dh-ref])
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]])))
@@ -44,7 +46,7 @@
 
    Pure apart from the roster lookup, so the mapping can be read in one place
    and tested without a DOM."
-  [{:keys [kind id scope page room room-name message thread run title] :as _ref}]
+  [{:keys [kind id scope page room room-name message thread run title path repository block] :as _ref}]
   #?(:cljs
      (case kind
        :page (when (and page scope)
@@ -74,6 +76,15 @@
                           sc (assoc :db-scope sc))
                   (or title "Chat")]))
        :files (when room [:files {:room-id (str room)} (or title "Files")])
+       :memory-file (when (memory-links/route _ref)
+                      [:memory {:room-id (str room) :path path}
+                       (or title (last (str/split path #"/")))])
+       :memory-block (when (memory-links/route _ref)
+                       [:memory {:room-id (str room)
+                                 :reference (cond-> {:repository-id (parse-uuid (str repository))
+                                                    :block-id (parse-uuid (str block))}
+                                              path (assoc :path-hint path))}
+                        (or title "Referenced block")])
        ;; A team's book — the Accounting perspective's team heading.
        :book (when room
                [:book (cond-> {:room-id (str room) :room-name title}
@@ -134,6 +145,6 @@
             (sig/open-tab! tab-type tab-data
                            (cond-> {:title (or title tab-title)
                                     :new-column? (boolean new-column?)}
-                             new-tab? (assoc :new-tab? true)
+                             (or new-tab? (#{:memory-file :memory-block} (:kind ref))) (assoc :new-tab? true)
                              col-id (assoc :col-id col-id)))
             (js/console.warn "[refs] cannot open reference:" (pr-str ref))))))))

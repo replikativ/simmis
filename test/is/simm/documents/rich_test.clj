@@ -9,6 +9,42 @@
 
 (def repo-id #uuid "00000000-0000-4000-8000-000000000001")
 
+(deftest adjacent-native-lists-retain-their-boundaries-and-numbering
+  (let [paragraph (fn [s] {:type "paragraph" :content [{:type "text" :text s}]})
+        item (fn [s] {:type "listItem" :content [(paragraph s)]})
+        list-model (fn [kind n s] (cond-> {:type kind :content [(item s)]}
+                                   (= kind "orderedList") (assoc :attrs {:start n})))]
+    (doseq [kind ["bulletList" "orderedList"] newline ["\n" "\r\n" "\r"] nested? [false true]]
+      (let [lists [(list-model kind 3 "First") (list-model kind 8 "Second") (list-model kind 2 "Third")]
+            model {:type "doc" :content (if nested?
+                                          [{:type "bulletList" :content [{:type "listItem" :content (into [(paragraph "Parent")] lists)}]}]
+                                          lists)}
+            serialized (text/markdown model newline)
+            decoded {:type "doc" :content (vec (mapcat :content (map text/model (:nodes (markdown/parse serialized)))))}]
+        (is (= (text/roundtrip-normalize model) (text/roundtrip-normalize decoded)) (pr-str [kind nested? serialized]))
+        (let [source "Original paragraph.\n"
+              result (rich/apply-edit repo-id "wiki/lists.md" source (markdown/revision source) 0 (count source) model)
+              reread {:type "doc" :content (vec (mapcat :content (map text/model (:nodes (markdown/parse result)))))}]
+          (is (= (text/roundtrip-normalize model) (text/roundtrip-normalize reread))))))))
+
+(deftest selective-edits-of-existing-separated-lists-keep-every-list
+  (doseq [source ["- A\n\n+ B\n" "+ A\n\n- B\n" "3. A\n\n8) B\n"]
+          indices [[0] [1] [0 1]]]
+    (let [original {:type "doc" :content (vec (mapcat :content (map text/model (:nodes (markdown/parse source)))))}
+          model (reduce (fn [m i] (assoc-in m [:content i :content 0 :content 0 :content 0 :text] "Changed")) original indices)
+          result (rich/apply-edit repo-id "wiki/split-lists.md" source (markdown/revision source) 0 (count source) model)
+          decoded {:type "doc" :content (vec (mapcat :content (map text/model (:nodes (markdown/parse result)))))}]
+      (is (= (text/roundtrip-normalize model) (text/roundtrip-normalize decoded)) (pr-str [source indices result]))))
+  (let [model {:type "doc" :content [{:type "bulletList" :content [{:type "listItem" :content [{:type "paragraph" :content [{:type "text" :text "A"}]}]}]}
+                                     {:type "paragraph"}
+                                     {:type "bulletList" :content [{:type "listItem" :content [{:type "paragraph" :content [{:type "text" :text "B"}]}]}]}]}
+        decoded {:type "doc" :content (vec (mapcat :content (map text/model (:nodes (markdown/parse (text/markdown model))))))}]
+    (is (= (text/roundtrip-normalize model) (text/roundtrip-normalize decoded)))
+    (let [source "- A\n"
+          result (rich/apply-edit repo-id "wiki/new-list.md" source (markdown/revision source) 0 (count source) model)
+          actual {:type "doc" :content (vec (mapcat :content (map text/model (:nodes (markdown/parse result)))))}]
+      (is (= (text/roundtrip-normalize model) (text/roundtrip-normalize actual))))))
+
 (deftest supported-regions-have-serializable-inert-models
   (doseq [source ["# Heading **bold** and *italic*.\n" "A [link](https://example.com) and `code`.\n"
                   "- One\n  - Nested\n- Two\n" "3. Three\n4. Four\n"

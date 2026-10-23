@@ -11,6 +11,8 @@
             [is.simm.uis.web.desktop.memory-remote :as remote]
             [is.simm.uis.web.desktop.chart-remote :as chart-remote]
             [is.simm.uis.web.desktop.memory-charts :as charts]
+            [is.simm.uis.web.desktop.memory-references :as references]
+            [is.simm.uis.web.desktop.memory-reference-remote :as reference-remote]
             [is.simm.uis.web.desktop.remote :as rem]
             [is.simm.runtimes.web :as web]))
 
@@ -42,7 +44,8 @@
         (update :requests #(apply dissoc % slots))
         (update :request-contexts #(apply dissoc % slots))
         (update :loading #(apply dissoc % slots))
-        (update :accepted #(apply dissoc % slots)))))
+        (update :accepted #(apply dissoc % slots))
+        (cond-> (contains? slots :reference) (dissoc :block-reference)))))
 
 (defn- retire-reads [state slots]
   (reduce (fn [s slot]
@@ -66,7 +69,17 @@
                   (binding [ec/*execution-context* ctx]
                     (when (current?) (apply swap! state-signal update key f args))))
         change! (fn [path f & args] (apply update! update-in [:drafts path] f args))]
-    (letfn [(connected! []
+    (letfn [(select! [path & [retain-reference?]]
+              (let [preserve? (or retain-reference? (= path (:selected (state))))]
+                (update! #(cond-> (assoc % :selected path)
+                            (not preserve?) (dissoc :block-reference)
+                            (not preserve?) (update :errors dissoc :reference)))
+                (when (and (current?) (:tab-id data))
+                  (binding [ec/*execution-context* ctx]
+                    (sig/retarget-tab! (:col-id data) (:tab-id data)
+                                       #(if (= :memory (:type %)) (references/selected-tab % path preserve?) %)
+                                       (if retain-reference? :passive :navigate))))))
+            (connected! []
               (let [c (connection)]
                 (when (and (current?) (not= c (:connection (state))))
                   (update! #(-> % retire-upload (assoc :connection c :target-verified? false)
@@ -196,6 +209,8 @@
                                       changed? retire-upload
                                       changed? target-bookkeeping)
                                next (retire-reads next (keys pending))
+                               next (if (get-in current [:loading :reference])
+                                      (-> next (retire-reads [:reference]) (dissoc :block-reference)) next)
                                next (reduce-kv
                                      (fn [s path entry]
                                        (if (and (some? (get-in s [:drafts path]))
@@ -293,7 +308,7 @@
                           nil {:stamp stamp :read? true})
                 (discover! false)))
             (open! [path refresh? & [observed passive?]]
-              (when-not (or observed passive?) (update! assoc :selected path))
+              (when-not (or observed passive?) (select! path))
               (when (or refresh? (nil? (get-in (state) [:drafts path])))
                 (update! assoc-in [:file-intents path] true)
                 (if-let [stamp (when (verified? (state) (connected!)) (:target-stamp (state)))]
@@ -472,7 +487,8 @@
                 (let [markdown? (re-find #"(?i)\.(md|markdown)$" path)
                       intent {:origin origin :kind (if markdown? :markdown :text)
                               :text (if markdown? (str "---\nsimmis-id: '" (random-uuid) "'\n---\n# Untitled\n\n") "")}]
-                  (update! #(-> % (assoc :selected path) (assoc-in [:create-intents path] intent)))
+                  (select! path)
+                  (update! assoc-in [:create-intents path] intent)
                   (discover! true))))
             (download! [path]
               (when-let [stamp (draft-stamp! path [:download path])]
@@ -682,14 +698,45 @@
                        (request! [:evaluate path] #(remote/evaluate-memory-code! web/server-id room request)
                                  #(assoc-in %1 [:evaluations path] (assoc %2 :input-text (:text draft))) nil
                                  {:scope :sandbox :accept? (generation? path (:generation draft))}))))
+       :block-links (fn [path] (references/block-links room path (get-in (state) [:drafts path])))
+       :jump (fn [path] (references/jump (state) path))
+       :retry-reference (fn [] (update! #(-> % (dissoc :block-reference) (update :errors dissoc :reference))))
+       :before-jump (fn [path jump]
+                      (= jump (references/jump (state) path)))
+       :jumped (fn [path jump mode selection]
+                 (when (= jump (references/jump (state) path))
+                   (update! (fn [s]
+                              (-> s (assoc-in [:block-reference :applied?] true)
+                                  (assoc-in (if (= :rich mode)
+                                              [:drafts path :rich-base :document-selection]
+                                              [:drafts path :selection]) selection))))))
        :ensure-path (fn []
-                      (when (and (:path data) (not= (:path data) (:opened-path (state))))
+                      (if-let [intent (not-empty (select-keys (:reference data) [:repository-id :block-id]))]
+                        (let [c (connected!) s (state) marker (references/marker s intent)]
+                          (when (and (verified? s c)
+                                     (not (references/completed? s intent))
+                                     (not= marker (get-in s [:block-reference :request-marker])))
+                            (update! assoc :block-reference {:intent intent :request-marker marker :id (random-uuid)})
+                            (request! :reference #(reference-remote/resolve-memory-block! web/server-id room
+                                                                                        (assoc intent :expected-target-stamp (:target-stamp s)))
+                                      #(assoc-in %1 [:block-reference :reply] %2)
+                                      (fn [reply]
+                                        (if (= :resolved (:status reply))
+                                          (do (select! (:path reply) true) (open! (:path reply) true nil true))
+                                            (update! assoc-in [:errors :reference]
+                                                     (if (= :ambiguous (:status reply))
+                                                       "This block identity appears more than once. Resolve the duplicate in Markdown before opening its link."
+                                                       "This block is not in the current workspace."))))
+                                      {:stamp (:target-stamp s) :read? true
+                                       :accept? (fn [current _] (= marker (get-in current [:block-reference :request-marker])))
+                                       :error-current? (fn [current] (= marker (get-in current [:block-reference :request-marker])))})))
+                        (when (and (:path data) (not= (:path data) (:opened-path (state))))
                         (update! assoc :opened-path (:path data))
                         (if (and (:create-origin-stamp data)
                                  (not= (:create-intent-id data) (:created-intent (state))))
                           (do (update! assoc :created-intent (:create-intent-id data))
                               (create! (:path data) (:create-origin-stamp data)))
-                          (open! (:path data) false))))
+                          (open! (:path data) false)))))
        :observe-navigation
        (fn [stamp]
          (when (and (uuid? stamp) (not= stamp (:target-stamp (state))))
@@ -707,7 +754,7 @@
                                                  (analyze! path))))
        :create (fn [path & [origin]] (create! path (or origin (when (verified? (state) (connection)) (:target-stamp (state))))))
        :download download! :upload upload! :office-open office-open! :office-save office-save! :office-correct office-correct!
-       :select-path #(update! assoc :selected %) :set-query #(update! assoc :query %) :search search!
+       :select-path select! :set-query #(update! assoc :query %) :search search!
        :toggle-root (fn [] (update! update :root-expanded? not) (folder! (or (:focus-folder (state)) "")))
        :focus-folder (fn [path] (update! assoc :focus-folder path :current-folder path :query "" :root-expanded? true) (folder! path))
        :rich-change (fn [path base-id from model selection]
@@ -777,16 +824,7 @@
                                  (-> s (assoc-in [:drafts target] (editor/moved (get-in s [:drafts path]) reply))
                                      (update :drafts dissoc path) (assoc :selected (:path reply))))
                                (fn [_]
-                                 (binding [ec/*execution-context* ctx]
-                                   (swap! sig/layout-columns
-                                          (fn [columns]
-                                            (mapv (fn [col]
-                                                    (if (= (:col-id data) (:id col))
-                                                      (update col :tabs
-                                                              (fn [tabs] (mapv (fn [tab]
-                                                                                 (if (= (:tab-id data) (:id tab))
-                                                                                   (-> tab (assoc-in [:data :path] target)
-                                                                                       (assoc :title (last (str/split target #"/")))) tab)) tabs))) col)) columns))))
+                                 (select! target true)
                                  (folder! (parent path)) (folder! (parent target)) (navigation-refresh!) (open! target true))
                                {:stamp stamp :accept? (fn [s _] (and (= (:generation draft) (get-in s [:drafts path :generation]))
                                                                      (nil? (get-in s [:drafts target]))))})))))})))

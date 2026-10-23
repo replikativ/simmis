@@ -10,6 +10,7 @@
             ["@codemirror/lang-json" :refer [json]]
             ["@codemirror/legacy-modes/mode/clojure" :refer [clojure]]
             [org.replikativ.spindel.engine.core :as ec]
+            [is.simm.uis.web.desktop.editor-jump :as jump]
             [clojure.string :as str])
   (:require-macros [org.replikativ.spindel.dom.foreign :refer [foreign-node]]))
 
@@ -79,12 +80,22 @@
       (set! (.-simmisPermissions el) permissions)
       state))
 
+(defn- consume-jump! [^js el ^js view]
+  (jump/consume! el (fn [request]
+                     (let [from (aget request "from") to (aget request "to")]
+                       (when (and (= (source el) (.toString (.. view -state -doc)))
+                                  (integer? from) (integer? to) (<= 0 from to (.. view -state -doc -length)))
+                         (.dispatch view #js {:selection #js {:anchor from :head from} :scrollIntoView true})
+                         (.focus view)
+                         #js {:anchor from :head from})))))
+
 (defn mount! [^js el]
   (when-not (.-simmisEditorView el)
     (set! (.-simmisEditorView el)
           (EditorView. #js {:state (editor-state! el) :parent el}))
     (when (= "true" (.getAttribute el "data-auto-focus"))
-      (.focus (.-simmisEditorView el)))))
+      (.focus (.-simmisEditorView el)))
+    (consume-jump! el (.-simmisEditorView el))))
 
 (defn disconnect! [^js el]
   (when-let [^js view (.-simmisEditorView el)]
@@ -127,6 +138,7 @@
                                                      #js [(.of (.-readOnly EditorState) (readonly? el))
                                                           (.of (.-editable EditorView) (not (readonly? el)))])})
           nil)
+        (consume-jump! el (.-simmisEditorView el))
         (finally (set! (.-simmisApplying el) false))))))
 
 (defn- register! []
@@ -139,14 +151,14 @@
                connectedCallback() { (~{})(this); }
                disconnectedCallback() { (~{})(this); }
                attributeChangedCallback(name, oldValue, newValue) { (~{})(this, name, oldValue, newValue); }
-               static get observedAttributes() { return ['data-owner', 'data-source', 'data-selection', 'data-language', 'data-read-only']; }
+               static get observedAttributes() { return ['data-owner', 'data-source', 'data-selection', 'data-language', 'data-read-only', 'data-jump']; }
              })"
                   (fn [el] (mount! el)) (fn [el] (disconnect! el))
                   (fn [el a old new] (sync! el a old new))))))
 
 (register!)
 
-(defn view [{:keys [id path value selection read-only? on-change on-evaluate label auto-focus?]}]
+(defn view [{:keys [id path value selection read-only? on-change on-evaluate label auto-focus? jump before-jump on-jumped]}]
   (foreign-node
    {:tag :simmis-source-editor :key id :class "source-editor"
     :data-owner (pr-str [id (:fork-id ec/*execution-context*)])
@@ -156,6 +168,9 @@
     :data-read-only (str (boolean read-only?))
     :data-evaluate (str (boolean on-evaluate))
     :data-auto-focus (str (boolean auto-focus?))
+    :data-jump (when jump (js/JSON.stringify (clj->js jump)))
+    :on-simmis-before-jump #(jump/before! % before-jump)
+    :on-simmis-jumped #(jump/acknowledge! % on-jumped)
     :on-input (fn [^js event]
                 ;; Ignore the contenteditable's native bubbling input event;
                 ;; only our source/selection snapshot is application input.

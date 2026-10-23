@@ -9226,3 +9226,14 @@ body.tab-dragging .column-drop-zone {
 .office-correction-form label { display: block; font-size: 0.85rem; }
 .office-correction-form input { display: block; box-sizing: border-box; width: 100%; margin: 4px 0 8px; padding: 6px; border: 1px solid var(--mono-border); border-radius: 4px; background: var(--mono-bg-base); color: inherit; font: inherit; }
 .office-correction-form button { margin-right: 6px; }
+.memory-semantic-block { position: relative; }
+.memory-block-link {
+  position: absolute; right: 0.15rem; top: 0.1rem; z-index: 1;
+  padding: 0.1rem 0.3rem; border-radius: 0.2rem;
+  color: var(--mono-text-muted, currentColor); background: var(--mono-bg-subtle);
+  opacity: 0; text-decoration: none; font-size: 0.8rem;
+}
+.memory-semantic-block:hover > .memory-block-link,
+.memory-block-link:focus-visible { opacity: 1; }
+.memory-block-link[hidden] { display: none; }
+.memory-semantic-block[data-linked-block] { box-shadow: inset 2px 0 var(--accent); }

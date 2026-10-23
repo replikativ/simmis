@@ -8,13 +8,15 @@
    someone's inbox its shape is permanent — so they get a namespace that can be
    exercised without a DOM, a browser, or a running app.
 
-   THE SIX ADDRESSABLE SHAPES, and only these:
+   The addressable shapes:
 
      /page/<db-scope>/<page-uuid>     wiki page
      /room/<room-id>                  chat
      /room/<room-id>/m/<message-id>   chat anchored on a message
      /room/<room-id>/t/<root-id>      focused message thread
      /room/<room-id>/files            files
+     /room/<room-id>/files?path=…     Memory file
+     /room/<room-id>/files?repo=…&block=…  live Memory block (optional path hint)
      /proposal/<id>                   proposal
 
    The ~20-member tab vocabulary stays unaddressable. Most of it is singletons
@@ -27,7 +29,7 @@
    same page uuid can exist in different KBs. The retired prototype router's
    `#/page/{uuid}` could not name a page in this data model at all; that, rather
    than age, is why its vocabulary was replaced instead of revived. Rooms and
-   files need only the room id, since `ref->tab` resolves the scope from the
+   file-tree views need only the room id, since `ref->tab` resolves the scope from the
    roster.
 
    WHY NOT `dh://` AS THE SCHEME. It was considered and cannot carry the
@@ -36,20 +38,22 @@
    neither is an entity. A bare URI also cannot say what KIND of thing it points
    at without resolving it server-side (`refs/uri->ref` simply assumes `:page`).
    So `dh://` stays an input format rather than the contract. \"Open whatever
-   this entity is\" would be an additive sixth route doing a server-side type
-   lookup, and it disturbs none of these five — as would `?tx=`/`?branch=` for
+   this entity is\" would add a route doing a server-side type lookup without
+   changing these addresses — as would `?tx=`/`?branch=` for
    time-travel links, which dh:// already models."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [is.simm.uis.web.desktop.memory-links :as memory-links]))
 
 (defn ref->route
   "Path for a ref, or nil when the ref is not addressable."
-  [{:keys [kind id scope page room message thread]}]
+  [{:keys [kind id scope page room message thread] :as ref}]
   (case kind
     :page (when (and page scope) (str "/page/" scope "/" page))
     :room (when room (str "/room/" room))
     :message (when (and room message) (str "/room/" room "/m/" message))
     :thread (when (and room thread) (str "/room/" room "/t/" thread))
     :files (when room (str "/room/" room "/files"))
+    (:memory-file :memory-block) (memory-links/route ref)
     :proposal (when id (str "/proposal/" id))
     nil))
 
@@ -61,10 +65,14 @@
    truncated link lands on the default view instead of opening something
    adjacent to what was meant."
   [path]
-  (let [segs (->> (str/split (str path) #"/")
+  (let [[base query] (str/split (str path) #"\?" 2)
+        segs (->> (str/split base #"/")
                   (remove str/blank?)
                   vec)]
-    (case (first segs)
+    (if (some? query)
+      (when (and (= 3 (count segs)) (= "room" (first segs)) (= "files" (segs 2)))
+        (memory-links/parse-query (segs 1) query))
+      (case (first segs)
       "page" (when (= 3 (count segs))
                {:kind :page :scope (segs 1) :page (segs 2)})
       "room" (case (count segs)
@@ -77,7 +85,7 @@
                nil)
       "proposal" (when (= 2 (count segs))
                    {:kind :proposal :id (segs 1)})
-      nil)))
+        nil))))
 
 (defn tab->ref
   "The ref a tab is showing, or nil when the tab is not addressable.
@@ -93,7 +101,7 @@
    one focused proposal). A nil ref means the URL simply does not change."
   [{:keys [type data]}]
   (let [{:keys [page-uuid db-scope room-id anchor-message thread-root-id
-                proposal-id]} data]
+                proposal-id path reference]} data]
     (case type
       :wiki (when (and page-uuid db-scope)
               {:kind :page :scope (str db-scope) :page (str page-uuid)})
@@ -108,6 +116,12 @@
                       :room (str room-id)
                       :thread (str thread-root-id)})
       :files (when room-id {:kind :files :room (str room-id)})
+      :memory (when room-id
+                (if reference
+                  (cond-> {:kind :memory-block :room (str room-id)
+                           :repository (str (:repository-id reference)) :block (str (:block-id reference))}
+                    (:path-hint reference) (assoc :path (:path-hint reference)))
+                  (when path {:kind :memory-file :room (str room-id) :path path})))
       :proposals (when proposal-id {:kind :proposal :id (str proposal-id)})
       nil)))
 

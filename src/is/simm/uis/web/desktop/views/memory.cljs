@@ -79,6 +79,9 @@
 (defn- source-view [path draft a write?]
   (source/view {:id [(:owner a) path] :path path :label "Memory file source"
                 :value (:text draft) :selection (:selection draft) :read-only? (not write?)
+                :jump ((:jump a) path)
+                :before-jump #((:before-jump a) path %)
+                :on-jumped (fn [jump selection] ((:jumped a) path jump :source selection))
                 :on-change (fn [text selection] ((:edit a) path editor/changed text selection))}))
 
 (defn- superficie-view [text]
@@ -198,6 +201,10 @@
                                    :model (or (:document-model base) (get-in base [:document :model]))
                                    :selection (:document-selection base) :document? true
                                    :charts chart-models
+                                   :block-links ((:block-links a) path)
+                                   :jump ((:jump a) path)
+                                   :before-jump #((:before-jump a) path %)
+                                   :on-jumped (fn [jump selection] ((:jumped a) path jump :rich selection))
                                    :read-only? (or (not write?) (some? (:local-source draft)))
                                    :on-blocked #((:document-blocked a) path)
                                    :on-change (fn [model selection]
@@ -597,6 +604,19 @@
         office? (= :office (get-in draft [:source :kind]))]
     (el/div {:class "memory-panel"}
             (file-header data state a draft workspace-write? write? coherent? syntax-pref)
+            (when (get-in state [:loading :reference])
+              (el/p {:class "memory-note" :role "status"} "Locating block in the current workspace…"))
+            (when-let [error (get-in state [:errors :reference])]
+              (el/div {:class "proposal-error" :role "alert"}
+                      error (el/button {:on-click (fn [_] ((:retry-reference a)))} "Try block link again")))
+            (when (and (= :resolved (get-in state [:block-reference :reply :status]))
+                       (not (get-in state [:block-reference :applied?])) draft)
+              (el/div {:class "memory-note" :role "status"}
+                      (if (editor/dirty? draft)
+                        "Your draft is retained. Save or reconcile it before jumping to the linked block."
+                        (if ((:jump a) path)
+                          (el/button {:on-click (fn [_] ((:mode a) path :source))} "Show linked block in Markdown")
+                          (el/button {:on-click (fn [_] ((:retry-reference a)))} "File changed · locate block again")))))
             (when-not verified?
               (el/p {:class "memory-note" :role "status"}
                     "Workspace is not verified. Your drafts are retained; Refresh checks the currently authorized workspace without relying on live updates."))

@@ -13,6 +13,24 @@
 (def ^:private thread "ee810e37-a7fe-4ec8-ae4a-50af80263fbc")
 (def ^:private prop  "482998ac-818f-4161-ae29-b786a798e1e6")
 
+(deftest memory-file-and-block-routes-have-the-same-shared-ref-contract
+  (let [file {:kind :memory-file :room room :path "wiki/Research & forecasts.md"}
+        block {:kind :memory-block :room room :repository scope :block page :path "wiki/Research & forecasts.md"}]
+    (doseq [ref [file block]]
+      (is (= ref (routes/route->ref (routes/ref->route ref)))))
+    (is (= (routes/ref->route file)
+           (routes/tab->route {:type :memory :data {:room-id room :path (:path file)}})))
+    (is (= (routes/ref->route block)
+           (routes/tab->route {:type :memory :data {:room-id room
+                                                   :reference {:repository-id scope :block-id page
+                                                               :path-hint (:path block)}}}))))
+  (doseq [path [(str "/room/" room "/files?path=a&path=b")
+                (str "/room/" room "/files?world=parent")
+                (str "/room/" room "/files?repo=" scope "&block=wrong")
+                (str "/room/" room "/files?")
+                (str "/room/" room "?path=a.md")]]
+    (is (nil? (routes/route->ref path)) path)))
+
 (deftest every-addressable-kind-has-a-path
   (testing "a page needs BOTH scope and uuid — identity is (store, uuid)"
     (is (= (str "/page/" scope "/" page)

@@ -12,6 +12,37 @@
     (.appendChild (.-body js/document) el)
     (try (f el (.-simmisRichEditor el)) (finally (.remove el)))))
 
+(deftest block-links-and-controlled-jumps-preserve-native-editor-and-content
+  (let [id "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        model {:type "doc" :content [{:type "memoryBlock" :attrs {:blockId id :key (str "block:" id)}
+                                      :content [{:type "memoryRegion" :attrs {:key "region:0" :blockId id}
+                                                 :content [{:type "paragraph" :content [{:type "text" :text "Target"}]}]}]}]}
+        el (.createElement js/document "simmis-rich-editor")
+        events (atom [])]
+    (.setAttribute el "data-model" (js/JSON.stringify (clj->js model)))
+    (.setAttribute el "data-block-links" (js/JSON.stringify (clj->js {id "/room/example/files?block=example"})))
+    (.setAttribute el "data-read-only" "true")
+    (.addEventListener el "simmis-jumped" #(swap! events conj (js->clj (.-detail %) :keywordize-keys true)))
+    (.appendChild (.-body js/document) el)
+    (try
+      (let [native (.-simmisRichEditor el) before (.getJSON native)
+            request (js/JSON.stringify (clj->js {:id "intent-1" :block-id id}))]
+        (is (= "/room/example/files?block=example" (.getAttribute (.querySelector el ".memory-block-link") "href")))
+        (.setAttribute el "data-jump" request)
+        (is (= 1 (count @events)))
+        (is (= 3 (.. native -state -selection -from)))
+        (is (.hasAttribute (.querySelector el ".memory-semantic-block") "data-linked-block"))
+        (is (= (js/JSON.stringify before) (js/JSON.stringify (.getJSON native))))
+        (.setAttribute el "data-charts" "{}")
+        (is (= 1 (count @events)))
+        (is (identical? native (.-simmisRichEditor el)))
+        (let [deny #(.preventDefault %)]
+          (.addEventListener el "simmis-before-jump" deny)
+          (.setAttribute el "data-jump" (js/JSON.stringify (clj->js {:id "intent-2" :block-id id})))
+          (is (= 1 (count @events)))
+          (.removeEventListener el "simmis-before-jump" deny)))
+      (finally (.remove el)))))
+
 (deftest markup-in-text-is-never-executed
   (mounted "<script>bad()</script>"
            (fn [^js el ^js editor]

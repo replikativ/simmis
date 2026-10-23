@@ -45,6 +45,14 @@ talking about.
 
 ### Control plane — RPCs
 
+`resolve-memory-block!` is a human room-read operation on the canonical
+owned-default repository. It captures application ownership before blocking,
+checks the current Room and expected target stamp, reads an immutable snapshot,
+then rechecks the same live owner, authority and complete source descriptor.
+A supplied repository UUID is a constraint, never authority to select a store.
+Failure replies contain a fixed public message rather than source or private
+exception data. This read does not merge the room's selected SCI workspace.
+
 `access/rpc-policy` maps a normalized function name to `{:action :resource}`,
 and `authorize-remote` is consulted before every inbound call. It fails closed
 on a *broken* check as well as a false one: a resource resolver that throws is

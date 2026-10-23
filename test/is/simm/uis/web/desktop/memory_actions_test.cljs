@@ -7,6 +7,7 @@
             [is.simm.uis.web.desktop.memory-actions :as actions]
             [is.simm.uis.web.desktop.memory-editor :as editor]
             [is.simm.uis.web.desktop.memory-remote :as remote]
+            [is.simm.uis.web.desktop.memory-reference-remote :as reference-remote]
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.views.memory-navigation :as navigation]
             [is.simm.uis.web.desktop.signals :as sig]
@@ -19,6 +20,34 @@
   {:connection connection :verified-connection connection :watch-connection connection
    :target-stamp stamp :target-verified? true :target-epoch 0 :read-epoch 0
    :permissions {:write? true :evaluate? true} :sandbox-permissions {:evaluate? true}})
+
+(deftest reference-resolution-refreshes-a-current-file-and-retains-dirty-drafts
+  (binding [ec/*execution-context* runtime]
+    (let [session {:id (random-uuid)} connection {:epoch (random-uuid)} stamp (random-uuid)
+          states (signal runtime {}) requests (atom []) file-reads (atom [])
+          intent {:repository-id (random-uuid) :block-id (random-uuid)} path "wiki/Moved.md"
+          old (wire stamp {:path path :kind :text :entry {:content :old} :text "Saved"})
+          data {:room-id (str (random-uuid)) :col-id :reference-test :state-signal states :reference intent}]
+      (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
+                    sig/memory-connection (signal runtime connection)
+                    reference-remote/resolve-memory-block! (fn [_ _ request]
+                                                            (fn [ok _] (swap! requests conj {:request request :ok ok})))
+                    remote/load-memory-file! (fn [_ _ request]
+                                               (fn [ok _] (swap! file-reads conj {:request request :ok ok})))]
+        (let [a (actions/controller data) key (:owner a) state #(get @states key)]
+          (swap! states assoc key (assoc (verified connection stamp) :drafts {path (assoc (editor/draft old) :text "Unsaved typing")}))
+          ((:ensure-path a)) ((:ensure-path a))
+          (is (= 1 (count @requests)))
+          (is (= (assoc intent :expected-target-stamp stamp) (:request (first @requests))))
+          ((:ok (first @requests)) (wire stamp {:status :resolved :path path :entry {:content :current}}))
+          (is (= path (:selected (state))))
+          (is (= 1 (count @file-reads)) "Even an already open path receives a current read")
+          ((:ok (first @file-reads)) (wire stamp {:path path :kind :text :entry {:content :current} :text "Current source"}))
+          (is (= "Unsaved typing" (get-in (state) [:drafts path :text])))
+          (is (= "Current source" (get-in (state) [:drafts path :incoming :text])))
+          (is (nil? ((:jump a) path)))
+          ((:ensure-path a))
+          (is (= 1 (count @requests)) "No unbounded retry from rendering"))))))
 
 (deftest passive-refresh-and-reordered-reads-never-navigate-or-resurrect-a-file
   (binding [ec/*execution-context* runtime]

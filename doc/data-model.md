@@ -18,6 +18,39 @@ source-selected disposable query view do not install untrusted schema or
 execute imported code/widgets. Existing legacy KB entities are retained; this
 surface is not a completed migration of their identity or widget semantics.
 
+### File and block addresses
+
+Memory files have `/room/<room>/files?path=<encoded-path>` addresses. An
+explicit semantic block has `/room/<room>/files?repo=<repository>&block=<block>`;
+an optional `path` is only a location hint. The repository UUID constrains the
+room's canonical owned-default repository. It does not select another world.
+Block links follow file renames and moves between Markdown files within that
+repository. Rich editing exposes a small Copy block link control beside each
+saved, explicitly identified block. These are live references, not historical
+citations, embeds or the legacy outliner's `((UUID))` syntax.
+
+Lookup reads one immutable repository snapshot and proves uniqueness across
+all admitted Markdown: at most 20,000 metadata entries, 512 Markdown files,
+8 MiB of combined source and 100,000 parsed nodes. Exceeding a bound or finding
+malformed semantic source refuses lookup rather than returning a partial hit.
+Duplicate IDs are ambiguous. The host rechecks current ownership, human read
+permission and the complete Markdown descriptor after parsing. No projection,
+schema or index is installed while following a link.
+
+Inbound links open new tabs. Selection uses the actually loaded file's saved
+analysis, not the resolver's earlier offsets. Native editor callbacks also
+check that no unreported typing occurred; an unsaved draft prevents the jump.
+The intent, acknowledgement and selection belong to the tab's Spindel context.
+Native handles remain element-owned. Markdown source supports the same jump
+when rich projection is unavailable. Opening or copying a link never evaluates
+code or writes the file.
+
+Rich list serialization alternates standard Markdown markers for adjacent
+lists so reparsing preserves their boundaries and numbering. Selective edits
+to a region containing adjacent sibling lists serialize that region together;
+other source regions remain untouched. The host validates both the serialized
+model and the actual patched source before accepting an edit.
+
 ### Saved data-only charts
 
 New canonical spaces install the optional `:simmis/typed-chart` version 1
