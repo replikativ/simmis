@@ -311,14 +311,13 @@
         nrepl/nrepl {:mvn/version "1.3.1"}
 
         ;; Agent runtime, owned HOST lifecycle and durable workflow receipts.
-        ;; Reviewed actual-worker SCI invocation ownership and same-slot cleanup
-        ;; recovery (Dvergr #395), public commit while awaiting its release.
+        ;; 0.1.352 owns actual-worker SCI invocations and same-slot cleanup
+        ;; recovery (Dvergr #395), preserving ordinary result-map shapes.
         ;; Change dependencies only in a fresh runtime.
         ;; Keep the explicit Spindel/Yggdrasil Git pins above: Maven's POM cannot
         ;; express those coordinates. Alpha stores require classified wallets;
         ;; no legacy wallet migration is implied.
-        org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr.git"
-                              :git/sha "e3c2ebf2dd5d5a9418d0f768ee985049aa19eeb7"
+        org.replikativ/dvergr {:mvn/version "0.1.352"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.
