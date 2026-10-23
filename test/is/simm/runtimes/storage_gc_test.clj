@@ -61,13 +61,16 @@
       (try
         (is (= :started (gc/boot! (gc/enabled? nil {:storage-gc {:enabled? true}}))))
         (is (true? (srooms/storage-gc-enabled?)) "enabled for simmis's home")
-        (testing "only that home: another dvergr home in this JVM stays off"
-          (with-redefs [paths/home (constantly "/tmp/some-other-dvergr-home")]
-            (is (false? (srooms/storage-gc-enabled?)))))
         (let [r (deref swept 30000 ::no-sweep)]
           (is (not= ::no-sweep r) "the loop's boot sweep ran (against the mock)")
           (is (= {:enabled? true :opts {}} r)
               "orphan-only (no :remove-before), and enabled while it ran"))
+        ;; Finish the worker's home-sensitive observation BEFORE temporarily
+        ;; replacing this process-global Var. Otherwise the boot sweep can
+        ;; observe the other-home probe and record a spurious false result.
+        (testing "only that home: another dvergr home in this JVM stays off"
+          (with-redefs [paths/home (constantly "/tmp/some-other-dvergr-home")]
+            (is (false? (srooms/storage-gc-enabled?)))))
         (finally
           (is (= :stopped (gc/stop!)))))
       (is (false? (srooms/storage-gc-enabled?)) "stop! revokes it"))))
