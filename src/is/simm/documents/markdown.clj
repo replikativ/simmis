@@ -5,6 +5,7 @@
    Parsing never serializes the AST back to Markdown or executes code/HTML.
    This is not the legacy HTML-block migration or the programmable-schema codec."
   (:require [clj-yaml.core :as yaml]
+            [is.simm.documents.math :as math]
             [hasch.core :as hasch])
   (:import [com.vladsch.flexmark.parser Parser]
            [com.vladsch.flexmark.ast Heading Text HtmlEntity Code FencedCodeBlock IndentedCodeBlock Link OrderedList]
@@ -24,14 +25,15 @@
 
 (def syntax-profile
   "Pinned syntax projection, not a claim of complete Obsidian/plugin support."
-  {:id :simmis/markdown-syntax :version 4 :parser "flexmark/0.64.8"
-   :features #{:tables :tasks :strikethrough :footnotes :wikilinks :wiki-embeds}})
+  {:id :simmis/markdown-syntax :version 5 :parser "flexmark/0.64.8"
+   :features #{:tables :tasks :strikethrough :footnotes :wikilinks :wiki-embeds
+               :inline-math :standalone-display-math}})
 
 (defn- parser []
   (-> (Parser/builder)
       (.extensions [(TablesExtension/create) (TaskListExtension/create)
                     (StrikethroughExtension/create) (FootnoteExtension/create)
-                    (WikiLinkExtension/create)])
+                    (WikiLinkExtension/create) (math/extension)])
       (.set WikiLinkExtension/LINK_FIRST_SYNTAX true)
       (.set WikiLinkExtension/ALLOW_ANCHORS true)
       (.set WikiLinkExtension/IMAGE_LINKS true)
@@ -110,6 +112,9 @@
     (instance? HtmlEntity node) (assoc :text (Escaping/unescapeHtml ^CharSequence (.getChars node)))
     (instance? Footnote node)
     (assoc :footnote {:raw (str (.getChars node)) :label (str (.getText ^Footnote node))})
+    (math/token-data node)
+    (assoc :math (-> (math/token-data node)
+                    (update :content-from + offset) (update :content-to + offset)))
     (instance? Code node) (assoc :literal (str (.getText ^Code node)))
     (instance? FencedCodeBlock node)
     (assoc :literal (str (.getContentChars ^FencedCodeBlock node))

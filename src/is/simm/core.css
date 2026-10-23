@@ -1,3 +1,8 @@
+@import "./vendor/katex/katex.min.css";
+
+.memory-math { display: inline-block; max-width: 100%; }
+.memory-math-display { display: block; overflow-x: auto; }
+
 /* Simmis Core CSS - Tiered Color System
  * =====================================
  *

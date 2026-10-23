@@ -26,6 +26,18 @@
                    (not (seq (:content node))) (nil? (:text node)))
       (invalid!))))
 
+(defn- math-shape! [node]
+  (let [{:keys [sourceKey raw tex] :as attrs} (:attrs node)]
+    (when-not (and (= #{:sourceKey :raw :tex} (set (keys attrs)))
+                   (string? sourceKey) (<= (count sourceKey) 64)
+                   (re-matches #"^math:[0-9]+:[0-9]+$" sourceKey)
+                   (string? raw) (<= 3 (count raw) 8192)
+                   (string? tex) (<= (count tex) 8192)
+                   (not (seq (:content node))) (nil? (:text node))
+                   (or (not= "displayMath" (:type node)) (not (seq (:marks node))))
+                   (not (some #(= "code" (:type %)) (:marks node))))
+      (invalid!))))
+
 (defn validate-model!
   "Bound the whole input before recursive normalization or serialization,
    including nodes such as list items and code text consumed by special cases."
@@ -37,6 +49,7 @@
                      (or (nil? (:marks node)) (and (sequential? (:marks node)) (<= (count (:marks node)) 8))))
         (invalid!))
       (when (= "footnoteReference" (:type node)) (footnote-shape! node))
+      (when (contains? #{"inlineMath" "displayMath"} (:type node)) (math-shape! node))
       (let [text (:text node) chars (+ chars (if (string? text) (count text) 0)
                                       (attributes-size (:attrs node))
                                       (reduce + 0 (map #(attributes-size (:attrs %)) (:marks node))))]
@@ -56,7 +69,7 @@
       ;; Escape authored ampersands BEFORE creating our own entities: literal
       ;; "&#32;" must stay that text, not become whitespace on the next parse.
       (str/replace "&" "&amp;")
-      (str/replace #"[\\`*_{}\[\]<>#.!|~+()\-]" #(str "\\" %))
+      (str/replace #"[\\`*_{}\[\]<>#.!|~+()$\-]" #(str "\\" %))
       ;; Markdown trims paragraph/heading edges and interprets indentation.
       ;; Ordinary keystrokes (including a space-only paragraph) must survive
       ;; strict round-trip validation. Leaf-local encoding also keeps marked
@@ -95,12 +108,13 @@
                               (str " \"" (str/replace title #"[\\\"]" #(str "\\" %)) "\"")) ")"))
               (invalid!))) initial marks))
 
-(defn- inline [node depth budget]
+(defn- inline [node depth budget newline]
   (when (or (> depth 100) (neg? (vswap! budget dec))) (invalid!))
   (case (:type node)
-    "hardBreak" "  \n"
+    "hardBreak" (str "  " newline)
     "footnoteReference" (do (when (some #(= "code" (:type %)) (:marks node)) (invalid!))
                              (marked (get-in node [:attrs :raw]) (:marks node)))
+    "inlineMath" (marked (get-in node [:attrs :raw]) (:marks node))
     "text" (let [text (:text node) marks (:marks node)
                  _ (when-not (string? text) (invalid!))
                  code? (some #(= "code" (:type %)) marks)
@@ -108,54 +122,60 @@
              (marked initial marks))
     (invalid!)))
 
-(defn- inlines [node depth budget]
+(defn- inlines [node depth budget newline]
   ;; An emphasized footnote and its adjacent text form ONE marked span. Closing
   ;; and reopening '*' at each inline atom creates ambiguous adjacent delimiters.
   (apply str
          (map (fn [run]
                 (let [marks (:marks (first run))]
                   (if (some #(= "code" (:type %)) marks)
-                    (apply str (map #(inline % (inc depth) budget) run))
-                    (marked (apply str (map #(inline (dissoc % :marks) (inc depth) budget) run)) marks))))
+                    (apply str (map #(inline % (inc depth) budget newline) run))
+                    (marked (apply str (map #(inline (dissoc % :marks) (inc depth) budget newline) run)) marks))))
               (partition-by #(vec (:marks %)) (:content node)))))
 
-(defn- emit [node depth budget]
+(defn- emit [node depth budget newline]
   (when (or (> depth 100) (neg? (vswap! budget dec))) (invalid!))
   (case (:type node)
-    "doc" (str/join "\n\n" (map #(emit % (inc depth) budget) (:content node)))
-    "paragraph" (inlines node depth budget)
+    "doc" (str/join (str newline newline) (map #(emit % (inc depth) budget newline) (:content node)))
+    "paragraph" (inlines node depth budget newline)
     "heading" (let [level (get-in node [:attrs :level])]
                 (when-not (and (integer? level) (<= 1 level 6)) (invalid!))
-                (str (apply str (repeat level "#")) " " (inlines node depth budget)))
+                (str (apply str (repeat level "#")) " " (inlines node depth budget newline)))
     "horizontalRule" "---"
+    "displayMath" (get-in node [:attrs :raw])
     "codeBlock" (let [language (or (get-in node [:attrs :language]) "")
                       _ (when-not (and (string? language) (re-matches #"[a-zA-Z0-9_+.-]{0,40}" language)) (invalid!))
                       text (apply str (map (fn [n] (when-not (= "text" (:type n)) (invalid!)) (:text n)) (:content node)))
-                      text (str/replace text #"\r\n|\r" "\n")
+                      text (str/replace text #"\r\n|\r|\n" newline)
                       n (max 3 (inc (reduce max 0 (map count (re-seq #"`+" text)))))
                       fence (apply str (repeat n "`"))]
-                  (str fence language "\n" text "\n" fence))
+                  (str fence language newline text newline fence))
     ("bulletList" "orderedList")
     (let [start (get-in node [:attrs :start] 1)
           _ (when-not (and (integer? start) (<= 0 start 999999999)) (invalid!))]
       (str/join
-       "\n"
+       newline
        (map-indexed
         (fn [index item]
           (when-not (= "listItem" (:type item)) (invalid!))
           (let [marker (if (= "bulletList" (:type node)) "- " (str (+ start index) ". "))
-                body (str/join "\n\n" (map #(emit % (inc depth) budget) (:content item)))
-                [first-line & more] (str/split body #"\n" -1)
+                body (str/join (str newline newline) (map #(emit % (inc depth) budget newline) (:content item)))
+                [first-line & more] (str/split body (re-pattern newline) -1)
                 padding (apply str (repeat (count marker) " "))]
             (str marker first-line
-                 (when (seq more) (str "\n" (str/join "\n" (map #(str padding %) more)))))))
+                 (when (seq more) (str newline (str/join newline (map #(str padding %) more)))))))
         (:content node))))
     (invalid!)))
 
-(defn markdown [document]
-  (let [result (emit (validate-model! document) 0 (volatile! 20000))]
-    (when (> (count result) 2097152) (invalid!))
-    result))
+(defn markdown
+  "Generate separators in the selected newline style. Frozen source tokens
+   retain their own bytes, including mixed newline conventions."
+  ([document] (markdown document "\n"))
+  ([document newline]
+   (when-not (contains? #{"\n" "\r\n" "\r"} newline) (invalid!))
+   (let [result (emit (validate-model! document) 0 (volatile! 20000) newline)]
+     (when (> (count result) 2097152) (invalid!))
+     result)))
 
 (defn- normalized-marks [marks]
   (vec (sort-by :type
@@ -178,7 +198,7 @@
                               (conj out n)))) [] (:content node))
         content (if (and (= type "doc") (= content [{:type "paragraph" :content []}])) [] content)]
     (cond
-      (= type "footnoteReference")
+      (contains? #{"footnoteReference" "inlineMath" "displayMath"} type)
       {:type type :attrs (:attrs node) :marks (normalized-marks (:marks node))}
       (= type "text")
       {:type type :text (:text node)
@@ -191,18 +211,20 @@
 
 (defn normalize [node] (normalize* (validate-model! node)))
 
-(defn- footnotes [model]
-  (filter #(= "footnoteReference" (:type %)) (tree-seq #(seq (:content %)) :content model)))
+(defn- source-tokens [model]
+  (filter #(contains? #{"footnoteReference" "inlineMath" "displayMath"} (:type %))
+          (tree-seq #(seq (:content %)) :content model)))
 
 (defn validate-provenance!
-  "Footnote tokens may be removed or moved within this frozen region, never
+  "Footnote/math tokens may be removed or moved within this frozen region, never
    fabricated, duplicated or imported from another region. No registry/authority
    is accepted from the editor: callers reconstruct the baseline from source."
   [baseline edited]
   (validate-model! baseline)
   (validate-model! edited)
-  (let [original (frequencies (map :attrs (footnotes baseline)))
-        current (frequencies (map :attrs (footnotes edited)))]
+  (let [identity #(select-keys % [:type :attrs])
+        original (frequencies (map identity (source-tokens baseline)))
+        current (frequencies (map identity (source-tokens edited)))]
     (doseq [[attrs amount] current]
       (when (> amount (get original attrs 0)) (invalid!))))
   edited)
@@ -214,7 +236,8 @@
   [model]
   (letfn [(walk [node]
             (cond-> node
-              (= "footnoteReference" (:type node)) (update :attrs dissoc :sourceKey)
+              (contains? #{"footnoteReference" "inlineMath" "displayMath"} (:type node))
+              (update :attrs dissoc :sourceKey)
               (contains? node :content) (update :content #(mapv walk %))))]
     (let [normalized (normalize model)
           normalized (if (= "doc" (:type normalized))
@@ -236,6 +259,10 @@
                           :attrs {:sourceKey (str "footnote:" (:from node) ":" (:to node))
                                   :raw (get-in node [:footnote :raw]) :label (get-in node [:footnote :label])}}
                    (seq marks) (assoc :marks marks))]
+      :InlineMath [(cond-> {:type "inlineMath"
+                            :attrs {:sourceKey (str "math:" (:from node) ":" (:to node))
+                                    :raw (get-in node [:math :raw]) :tex (get-in node [:math :tex])}}
+                     (seq marks) (assoc :marks marks))]
       :Emphasis (children (conj marks {:type "italic"}))
       :StrongEmphasis (children (conj marks {:type "bold"}))
       :Strikethrough (children (conj marks {:type "strike"}))
@@ -263,6 +290,9 @@
        :content (let [text (str/replace (:literal node) #"(?:\r\n|\n|\r)$" "")]
                   (if (seq text) [{:type "text" :text text}] []))}
       :ThematicBreak {:type "horizontalRule"}
+      :DisplayMath {:type "displayMath"
+                    :attrs {:sourceKey (str "math:" (:from node) ":" (:to node))
+                            :raw (get-in node [:math :raw]) :tex (get-in node [:math :tex])}}
       (invalid!))))
 
 (defn model
@@ -285,5 +315,5 @@
     (let [before (subs source from to)
           ending (or (re-find #"[\r\n]+$" before) "")
           newline (or (re-find #"\r\n|\n|\r" before) "\n")
-          replacement (-> (markdown (normalize edited)) (str/replace #"\n" newline))]
+          replacement (markdown (normalize edited) newline)]
       (str (subs source 0 from) replacement ending (subs source to))))))

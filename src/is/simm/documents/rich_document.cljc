@@ -130,11 +130,11 @@
         new (vec (:content (rich/normalize model)))
         newline (or (re-find #"\r\n|\n|\r" source) "\n")]
     (if (= (:from (first slots)) (:to (first slots)))
-      (let [text (rich/markdown {:type "doc" :content new}) pos (:from (first slots))]
+      (let [text (rich/markdown {:type "doc" :content new} newline) pos (:from (first slots))]
         (if (str/blank? text) source
             (str (subs source 0 pos)
                  (when-not (or (zero? pos) (= "\uFEFF" (subs source 0 pos))) newline)
-                 (str/replace text "\n" newline) newline newline (subs source pos))))
+                 text newline newline (subs source pos))))
       (let [old (mapv #(first (get-in % [:model :content])) slots)
             normalized-old (mapv #(rich/normalize {:type "doc" :content [%]}) old)
             normalized-new (mapv #(rich/normalize {:type "doc" :content [%]}) new)
@@ -153,7 +153,7 @@
                      leading (when-not next-slot
                                (apply str (repeat (max 0 (- 2 (count (re-seq #"\r\n|\n|\r" ending)))) newline)))
                      trailing (if next-slot (str newline newline) (when (seq ending) newline))
-                     inserted (str leading (str/replace (rich/markdown replacement) "\n" newline) trailing)]
+                     inserted (str leading (rich/markdown replacement newline) trailing)]
                  (str (subs text 0 pos) inserted (subs text pos))))))
          source (reverse hunks))))))
 
