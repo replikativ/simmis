@@ -21,6 +21,79 @@
    :target-stamp stamp :target-verified? true :target-epoch 0 :read-epoch 0
    :permissions {:write? true :evaluate? true} :sandbox-permissions {:evaluate? true}})
 
+(deftest reopening-a-fresh-folder-is-local-and-closed-caches-remain-bounded
+  (binding [ec/*execution-context* runtime]
+    (let [session {:id (random-uuid)} connection {:epoch (random-uuid)} stamp (random-uuid)
+          states (signal runtime {}) calls (atom []) metadata (atom [])]
+      (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
+                    sig/memory-connection (signal runtime connection)
+                    remote/load-memory-folder! (fn [_ _ request]
+                                                 (swap! calls conj (:folder request))
+                                                 (fn [ok _] (ok (wire stamp {:entries []}))))
+                    remote/load-memory-metadata! (fn [_ _ request]
+                                                   (swap! metadata conj request)
+                                                   (fn [ok _] (ok (wire stamp {:folders {} :entries {}}))))]
+        (let [a (actions/controller {:room-id "test-room" :col-id :navigation :state-signal states})
+              state #(get @states (:owner a))]
+          (swap! states assoc (:owner a) (assoc (verified connection stamp) :root-expanded? true
+                                               :folders {"" {:entries []}}))
+          ((:toggle a) "wiki") ((:toggle a) "wiki") ((:toggle a) "wiki")
+          (is (= ["wiki"] @calls))
+          (is (= {:entries []} (get-in (state) [:folders "wiki"])))
+          ((:toggle a) "wiki")
+          ((:toggle-root a)) ((:toggle-root a))
+          (is (= ["wiki"] @calls) "Neither root collapse nor cached reopen needs a folder read")
+          (doseq [i (range 100)]
+            (let [path (str "folder-" i)] ((:toggle a) path) ((:toggle a) path)))
+          (is (<= (count (:folders (state))) 64))
+          ((:discover a))
+          (is (= [""] (:folders (last @metadata))))
+          (is (nil? (get-in (state) [:errors :metadata]))))))))
+
+(deftest a-late-folder-response-cannot-repopulate-a-cache-after-a-room-change
+  (binding [ec/*execution-context* runtime]
+    (let [session {:id (random-uuid)} connection {:epoch (random-uuid)} stamp (random-uuid)
+          states (signal runtime {}) folder (atom nil) metadata (atom nil)
+          stream {:connection connection :status :ready :dirty {"test-room" 1}}]
+      (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
+                    sig/memory-connection (signal runtime connection)
+                    remote/load-memory-folder! (fn [& _] (fn [ok _] (reset! folder ok)))
+                    remote/load-memory-metadata! (fn [& _] (fn [ok _] (reset! metadata ok)))]
+        (let [a (actions/controller {:room-id "test-room" :col-id :navigation :state-signal states})
+              state #(get @states (:owner a))]
+          (swap! states assoc (:owner a)
+                 (assoc (verified connection stamp) :root-expanded? true
+                        :stream-marker [connection :ready 0]
+                        :folders {"" {:entries []} "closed" {:entries [:old]}}))
+          ((:folder a) "slow")
+          ((:ensure-sync a) connection stream)
+          (is (nil? (get-in (state) [:folders "closed"])))
+          (@folder (wire stamp {:entries [:stale]}))
+          (is (nil? (get-in (state) [:folders "slow"])))
+          (@metadata (wire stamp {:folders {"" {:entries []} "slow" {:entries [:current]}} :entries {}}))
+          (is (= [:current] (get-in (state) [:folders "slow" :entries]))))))))
+
+(deftest a-superseded-metadata-snapshot-cannot-refill-a-closed-cache
+  (binding [ec/*execution-context* runtime]
+    (let [session {:id (random-uuid)} connection {:epoch (random-uuid)} stamp (random-uuid)
+          states (signal runtime {}) metadata (atom nil)
+          stream {:connection connection :status :ready :dirty {}}]
+      (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
+                    sig/memory-connection (signal runtime connection)
+                    remote/load-memory-metadata! (fn [& _] (fn [ok _] (reset! metadata ok)))]
+        (let [a (actions/controller {:room-id "test-room" :col-id :navigation :state-signal states})
+              state #(get @states (:owner a))]
+          (swap! states assoc (:owner a)
+                 (assoc (verified connection stamp) :root-expanded? true :expanded {"wiki" true}
+                        :folders {"" {:entries [{:path "wiki" :kind :folder}]} "wiki" {:entries []}}))
+          ((:ensure-sync a) connection stream)
+          (let [before @metadata]
+            ((:toggle a) "wiki")
+            ((:ensure-sync a) connection (assoc-in stream [:dirty "test-room"] 1))
+            (is (nil? (get-in (state) [:folders "wiki"])))
+            (before (wire stamp {:folders {"wiki" {:entries [:stale]}} :entries {}}))
+            (is (nil? (get-in (state) [:folders "wiki"])))))))))
+
 (deftest reference-resolution-refreshes-a-current-file-and-retains-dirty-drafts
   (binding [ec/*execution-context* runtime]
     (let [session {:id (random-uuid)} connection {:epoch (random-uuid)} stamp (random-uuid)

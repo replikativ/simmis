@@ -1,7 +1,8 @@
 (ns is.simm.uis.web.desktop.memory-editor
   "Serializable, execution-context-owned document drafts and conflict rules."
   (:require [is.simm.documents.rich-text :as rich]
-            [is.simm.documents.rich-document :as document]))
+            [is.simm.documents.rich-document :as document]
+            [is.simm.uis.web.desktop.memory-tree :as tree]))
 
 (def max-rich-regions 200)
 
@@ -252,9 +253,7 @@
 (defn metadata-request [state]
   (let [pending (for [[slot loading?] (:loading state)
                       :when (and loading? (vector? slot))] slot)]
-    {:folders (vec (sort (distinct (concat (keys (:folders state))
-                                           (when (:root-expanded? state) [(or (:focus-folder state) "")])
-                                           (map second (filter #(= :folder (first %)) pending))))))
+    {:folders (vec (sort (tree/active-folders state)))
      :paths (vec (sort (distinct (concat (keys (:drafts state))
                                          (map second (filter #(= :file (first %)) pending))))))}))
 

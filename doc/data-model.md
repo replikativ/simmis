@@ -17,6 +17,17 @@ Simmis children. File YAML properties, typed property projections, and the
 source-selected disposable query view do not install untrusted schema or
 execute imported code/widgets. Existing legacy KB entities are retained; this
 surface is not a completed migration of their identity or widget semantics.
+Startup account provisioning ensures the personal room without creating or
+attaching an additional legacy Wiki. Existing DB-backed wikis remain accessible
+and are labelled as legacy in navigation; their content and grants are retained.
+
+Folder listings are authorized server reads cached in context-owned Spindel
+state, not a replicated Datahike file-tree index. The navigation cache retains
+up to 64 listings; collapsing a folder does not discard a fresh listing.
+Reconciliation covers visible folders and pending requests. Private room-change
+hints invalidate closed caches, while open listings reconcile in place.
+Reconnect clears cached listings and revalidates the target. File contents
+remain on demand, and editor drafts and sidebar navigation have separate owners.
 
 ### File and block addresses
 
