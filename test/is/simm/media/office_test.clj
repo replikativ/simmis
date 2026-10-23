@@ -13,6 +13,10 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [is.simm.media.office :as office]
+            [dvergr.discourse :as discourse]
+            [dvergr.room.store.memory :as memory]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.yggdrasil :as ygg]
             [clojure.zip]
             [sci.core :as sci])
   (:import [java.io File FileOutputStream ByteArrayOutputStream]
@@ -83,11 +87,13 @@
 (use-fixtures :each
   (fn [t]
     (let [dir (.toFile (Files/createTempDirectory "simmis-office-test"
-                                                  (make-array FileAttribute 0)))]
+                                                  (make-array FileAttribute 0)))
+          room (discourse/make-room {:id (keyword (str "office-test-" (random-uuid))) :store (memory/make)})]
       (try
         (write-docx! dir) (write-pptx! dir) (write-odt! dir)
-        (binding [*dir* dir] (t))
+        (binding [*dir* dir ec/*execution-context* (:ctx room)] (t))
         (finally
+          (discourse/close-room! room)
           (run! io/delete-file (reverse (file-seq dir))))))))
 
 ;; =============================================================================
@@ -118,6 +124,85 @@
 
 (defn- read-fixture-parts [name]
   (office/read-parts (Files/readAllBytes (.toPath (io/file *dir* name)))))
+
+(deftest office-staging-follows-the-execution-world
+  (let [api (office/sci-namespace (temp-fs) :room)
+        other (office/sci-namespace (temp-fs) :room)
+        h ((api 'open) "/report.docx")
+        fork (ygg/fork!)
+        copied? (volatile! false)]
+    (try
+      (is (= :unknown-handle (:error ((other 'parts) h))))
+      (is (not (contains? ((other 'parts) h) :open)) "no handle enumeration")
+      (binding [ec/*execution-context* (:child-ctx fork)]
+        (is (= 1 (:replaced ((api 'replace-text) h "18%" "40%"))))
+        (is (str/includes? (:text ((api 'text) h)) "40%")))
+      (is (str/includes? (:text ((api 'text) h)) "18%") "child edits do not affect the parent")
+      (let [[a b] (ygg/copy-fork! fork 2)]
+        (vreset! copied? true)
+        (try
+          (binding [ec/*execution-context* (:child-ctx a)]
+            (is (= true (:closed ((api 'close) h))))
+            (is (= :unknown-handle (:error ((api 'text) h)))))
+          (binding [ec/*execution-context* (:child-ctx b)]
+            (is (str/includes? (:text ((api 'text) h)) "40%"))
+            (is (= 1 (:replaced ((api 'replace-text) h "40%" "50%")))))
+          (is (str/includes? (:text ((api 'text) h)) "18%"))
+          (finally (ygg/discard-fork! a) (ygg/discard-fork! b))))
+      (finally
+        ;; copy-fork! consumes the source handle on success.
+        (when-not @copied? (ygg/discard-fork! fork))))))
+
+(deftest saved-office-function-selects-child-staging
+  (let [ctx (sandbox)
+        _ (ev ctx "(def h (office/open \"/report.docx\")) (defn change [] (office/replace-text h \"18%\" \"31%\"))")
+        fork (ygg/fork!)]
+    (try
+      (binding [ec/*execution-context* (:child-ctx fork)]
+        (is (= 1 (:replaced (ev ctx "(change)"))))
+        (is (str/includes? (:text (ev ctx "(office/text h)")) "31%")))
+      (is (str/includes? (:text (ev ctx "(office/text h)")) "18%"))
+      (finally (ygg/discard-fork! fork)))))
+
+(deftest office-staging-rejects-concurrent-overwrite
+  (let [api (office/sci-namespace (temp-fs) :room)
+        h ((api 'open) "/report.docx")
+        tree ((api 'xml) h "word/document.xml")
+        emit office/emit-xml
+        interfere? (atom true)]
+    (with-redefs [office/emit-xml (fn [tree]
+                                  (when (compare-and-set! interfere? true false)
+                                    ((api 'replace-text) h "18%" "22%"))
+                                  (emit tree))]
+      (is (= :stale-handle (:error ((api 'set-xml!) h "word/document.xml" tree)))))
+    (is (str/includes? (:text ((api 'text) h)) "22%"))))
+
+(deftest office-tree-bounds-precede-emission
+  (let [tree (nth (iterate #(hash-map :tag :p :content [%]) "text") 258)]
+    (is (= :xml-too-complex
+           (:error (try (office/emit-xml tree) (catch clojure.lang.ExceptionInfo e (ex-data e)))))))
+  (is (= :xml-too-complex
+         (:error (try (office/emit-xml {:tag :p :content (repeat "x")})
+                      (catch clojure.lang.ExceptionInfo e (ex-data e)))))))
+
+(deftest office-handle-limits-and-reinstallation-are-world-local
+  (let [owner (ec/current-execution-context) cap (random-uuid)
+        with-environment! (fn [f] (f {:ctx (ec/current-execution-context) :fs (temp-fs) :scope cap}))
+        api (office/sci-namespace owner cap with-environment!)
+        h ((api 'open) "/report.docx")
+        installed-again (office/sci-namespace owner cap with-environment!)
+        child (ygg/fork!)]
+    (try
+      (is (str/includes? (:text ((installed-again 'text) h)) "18%"))
+      (with-redefs [office/max-handles 1]
+        (is (= :office-limit (:error ((api 'open) "/report.docx"))))
+        (binding [ec/*execution-context* (:child-ctx child)]
+          ((api 'close) h)
+          (is (string? (:handle ((api 'open) "/report.docx")))))
+        (is (str/includes? (:text ((api 'text) h)) "18%")))
+      (with-redefs [office/max-retained-bytes 1]
+        (is (= :office-limit (:error ((api 'open) "/report.docx")))))
+      (finally (ygg/discard-fork! child)))))
 
 ;; =============================================================================
 ;; Container: hardened read / write

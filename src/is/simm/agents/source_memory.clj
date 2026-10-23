@@ -14,7 +14,7 @@
             [org.replikativ.spindel.yggdrasil :as ygg]
             [yggdrasil.protocols :as systems]))
 
-(defn resolver
+(defn selection-resolver
   "Stable resolver retaining an interpreter owner/capability identity, not a
    Room or source connection. The capability binding's :simmis/source-memory
    data names {:room-id :agent-id :system-id}. authorize! checks live host
@@ -22,11 +22,15 @@
 
    Whole-world descendants always use their own registered system. Only the
    ordinary owner world consults proposal-workspace, matching its file-tool
-   routing. Missing systems and unrelated caller worlds explicitly refuse."
-  [owner capability-id receipts {:keys [authorize! proposal-workspace options]}]
-  (let [resolve-binding (runtime-ctx/sandbox-binding-resolver owner capability-id)
-        boundary (sandbox/agent-effect-boundary owner capability-id nil receipts)]
-    (fn []
+   routing. Missing systems and unrelated caller worlds explicitly refuse.
+   Returns a synchronous host-only callback boundary; connections and context
+   must not escape into SCI or retained component state. A proposal connection
+   is explicitly distinct from the registered canonical system.
+   with-selection! is a host-only synchronous gate around selection and use;
+   callers decide which operations may be answered/replayed as projections."
+  [owner capability-id {:keys [authorize! proposal-workspace with-selection!]}]
+  (let [resolve-binding (runtime-ctx/sandbox-binding-resolver owner capability-id)]
+    (fn [consume!]
       (let [selected (runtime-ctx/selected-context owner)
             bound (when (ec/execution-context-bound?) (ec/current-execution-context))]
         (when (and bound (not (runtime-ctx/descendant-context? bound owner)))
@@ -37,31 +41,49 @@
             (when-not (and room-id agent-id system-id (= agent-id (:agent-id b)))
               (throw (ex-info "Source knowledge has no valid world binding" {:type ::missing-binding})))
             (authorize! target)
-            (effects/perform!
-             boundary {:effect :room/read :resource {:op :source-memory :room (str (:room-runtime-id b))}}
-             (fn []
+            (with-selection!
+              b
+              (fn []
                ;; Lookup by expected identity, never current-system's first-
                ;; registered fallback and never the host room registry.
-               (let [system (get (ygg/registered-systems) system-id)]
-                 (when-not (and system (= :geschichte (systems/system-type system)))
-                   (throw (ex-info "Selected world has no expected source repository"
-                                   {:type ::missing-repository :system-id system-id})))
-                 (let [canonical (workspace/gy-connection system)
-                       proposal (when (= (:fork-id selected) (:fork-id owner))
-                                  (proposal-workspace target))
-                       conn (if proposal
-                              (or (:conn proposal)
-                                  (throw (ex-info "Proposal source workspace is unavailable"
-                                                  {:type ::missing-proposal-workspace})))
-                              canonical)]
-                   (when-not conn
-                     (throw (ex-info "Source repository has no connection" {:type ::missing-repository})))
-                   (when (and proposal
-                              (not= (:geschichte.repo/id (query/repository @canonical))
-                                    (:geschichte.repo/id (query/repository @conn))))
-                     (throw (ex-info "Proposal belongs to a different source repository"
-                                     {:type ::wrong-proposal-repository})))
-                   (view/current-view conn (execution-view/selection-options system conn options))))))))))))
+                (let [system (get (ygg/registered-systems) system-id)]
+                  (when-not (and system (= :geschichte (systems/system-type system)))
+                    (throw (ex-info "Selected world has no expected source repository"
+                                    {:type ::missing-repository :system-id system-id})))
+                  (let [canonical (workspace/gy-connection system)
+                        proposal (when (= (:fork-id selected) (:fork-id owner))
+                                   (proposal-workspace target))
+                        conn (if proposal
+                               (or (:conn proposal)
+                                   (throw (ex-info "Proposal source workspace is unavailable"
+                                                   {:type ::missing-proposal-workspace})))
+                               canonical)]
+                    (when-not conn
+                      (throw (ex-info "Source repository has no connection" {:type ::missing-repository})))
+                    (when (and proposal
+                               (not= (:geschichte.repo/id (query/repository @canonical))
+                                     (:geschichte.repo/id (query/repository @conn))))
+                      (throw (ex-info "Proposal belongs to a different source repository"
+                                      {:type ::wrong-proposal-repository})))
+                    (consume! {:selected-context selected :target target
+                               :canonical-system system :canonical-conn canonical
+                               :conn conn :proposal proposal})))))))))))
+
+(defn with-workspace-resolver [owner capability-id receipts policy]
+  (let [boundary (sandbox/agent-effect-boundary owner capability-id nil receipts)]
+    (selection-resolver
+     owner capability-id
+     (assoc policy :with-selection!
+            (fn [binding next!]
+              (effects/perform!
+               boundary {:effect :room/read :resource {:op :source-memory :room (str (:room-runtime-id binding))}}
+               next!))))))
+
+(defn resolver [owner capability-id receipts policy]
+  (let [with-workspace! (with-workspace-resolver owner capability-id receipts policy)]
+    #(with-workspace!
+       (fn [{:keys [canonical-system conn]}]
+         (view/current-view conn (execution-view/selection-options canonical-system conn (:options policy)))))))
 
 (defn bindings [owner capability-id receipts policy]
   (memory/bindings (resolver owner capability-id receipts policy)))
