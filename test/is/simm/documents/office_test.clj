@@ -1,5 +1,6 @@
 (ns is.simm.documents.office-test
   (:require [clojure.test :refer [deftest is]]
+            [clojure.string :as str]
             [dvergr.catalog.workspace :as workspace]
             [dvergr.discourse :as discourse]
             [dvergr.room.store.memory :as memory]
@@ -7,10 +8,48 @@
             [is.simm.documents.office :as documents]
             [is.simm.documents.docx-test :as docx-fixtures]
             [is.simm.media.office :as office])
-  (:import [java.util Base64 Arrays]))
+  (:import [java.util Base64 Arrays]
+           [java.io ByteArrayInputStream]
+           [org.apache.poi.xwpf.usermodel XWPFDocument]))
 
 (defn- encoded [bytes] (.encodeToString (Base64/getEncoder) bytes))
 (defn- bytes-of [s] (.getBytes ^String s "UTF-8"))
+
+(deftest whole-text-corrections-use-current-package-tokens-and-retain-noop-bytes
+  (let [room (discourse/make-room {:id (keyword (str "word-correction-" (random-uuid))) :store (memory/make)})
+        parts (-> (docx-fixtures/package-parts "<w:p><w:r><w:t> A &amp; B </w:t><w:t>Second</w:t></w:r></w:p>")
+                  (assoc "custom/untouched.bin" (bytes-of "opaque"))
+                  (update "[Content_Types].xml"
+                          #(bytes-of (str/replace (String. ^bytes % "UTF-8") "</Types>"
+                                                 (str "<Default Extension='rels' ContentType='application/vnd.openxmlformats-package.relationships+xml'/>"
+                                                      "<Default Extension='bin' ContentType='application/octet-stream'/></Types>")))))
+        original (office/write-parts parts)]
+    (try
+      (workspace/ensure-workspace! room)
+      (let [saved (files/save-file! room {:path "correct.docx" :expected nil :base64 (encoded original)})
+            conn (files/with-workspace room identity)
+            db @conn opened (documents/inspect-in db "correct.docx" (:entry saved) nil)
+            tokens (get-in opened [:reading :corrections :tokens])
+            [index token] (first (sort-by key tokens))
+            request {:path "correct.docx" :expected (:entry saved) :token token :replacement " A & B "}
+            noop (documents/prepare-correction-in db request)]
+        (is (integer? index))
+        (is (uuid? token))
+        (is (= (encoded original) (:base64 noop)))
+        (is (thrown? clojure.lang.ExceptionInfo (documents/prepare-correction-in db (assoc request :token (random-uuid)))))
+        (is (thrown? clojure.lang.ExceptionInfo (documents/prepare-correction-in db (assoc request :offset 0))))
+        (let [prepared (documents/prepare-correction-in db (assoc request :replacement "Corrected <text> &amp; 🦋"))
+              next (files/save-file! room prepared)
+              binary (files/read-binary room "correct.docx" (:entry next))
+              updated (office/read-parts (.decode (Base64/getDecoder) ^String (:base64 binary)))]
+          (with-open [word (XWPFDocument. (ByteArrayInputStream. (.decode (Base64/getDecoder) ^String (:base64 binary))))]
+            (is (= "Corrected <text> &amp; 🦋Second" (.getText (first (.getParagraphs word))))))
+          (doseq [[part bytes] parts :when (not= part "word/document.xml")]
+            (is (Arrays/equals ^bytes bytes ^bytes (get updated part))))
+          (is (thrown? clojure.lang.ExceptionInfo (documents/prepare-correction-in @conn request)))
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (documents/prepare-correction-in @conn (assoc request :expected (:entry next)))))))
+      (finally (discourse/close-room! room)))))
 
 (deftest office-editing-is-revision-bound-and-preserves-untouched-part-bytes
   (let [room (discourse/make-room {:id (keyword (str "office-editor-" (random-uuid))) :store (memory/make)})

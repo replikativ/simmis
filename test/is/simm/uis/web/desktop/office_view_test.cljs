@@ -42,6 +42,24 @@
         (.remove container)
         (context/stop-context! ctx)))))
 
+(deftest only-authorized-ordinary-text-offers-correction-controls
+  (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+        release (atom nil) selected (atom nil) token (random-uuid)
+        reading (assoc-in reading [:blocks 0 :runs 0 :source-index] 4)]
+    (.appendChild (.-body js/document) container)
+    (try
+      (binding [ec/*execution-context* ctx]
+        (reset! release (browser/mount! container (office/reading-view reading {:tokens {4 token}
+                                                                             :on-correct #(reset! selected [%1 %2])})))
+        (is (= 1 (.-length (.querySelectorAll container ".office-correctable"))))
+        (.click (.querySelector container ".office-correctable"))
+        (is (= [token "First heading"] @selected))
+        (is (zero? (.-length (.querySelectorAll container "script, iframe, [src], [href]")))))
+      (finally
+        (when @release (browser/unmount! @release))
+        (.remove container)
+        (context/stop-context! ctx)))))
+
 (deftest document-controls-keep-xml-drafts-visible-as-retained-work
   (let [ctx (context/create-execution-context) container (.createElement js/document "div")
         release (atom nil) changes (atom [])

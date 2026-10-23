@@ -810,6 +810,7 @@
      "move-memory-file!"       {:action W :resource (room :room-id-str)}
      "load-memory-office-part!" {:action R :resource (room :room-id-str)}
      "save-memory-office-part!" {:action W :resource (room :room-id-str)}
+     "correct-memory-office-text!" {:action W :resource (room :room-id-str)}
      ;; --- room create + rooms list (self) ---
      ;; the initial members pass the same check as `add-room-party!`'s party
      "create-room!"            {:action W :resource (self :creator-id-str)}

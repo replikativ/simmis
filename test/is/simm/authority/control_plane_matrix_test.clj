@@ -181,6 +181,7 @@
    "move-memory-file!"       [(c :room MEMBERS)]
    "load-memory-office-part!" [(c :room MEMBERS)]
    "save-memory-office-part!" [(c :room MEMBERS)]
+   "correct-memory-office-text!" [(c :room MEMBERS)]
    "submit-workflow-run!"    [(c :room OWNER)]
    "collect-workflow-wiki-output!" [(c :room OWNER)]
    "inspect-wiki-maintenance-setup!" [(c :room OWNER)]

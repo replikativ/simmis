@@ -2,6 +2,7 @@
   "Stateless, revision-bound Office inspection and XML part editing. Never
    retain global document handles or rebuild untouched XML parts."
   (:require [clojure.string :as str]
+            [hasch.core :as hasch]
             [is.simm.documents.files :as files]
             [is.simm.documents.docx :as docx]
             [is.simm.documents.markdown :as markdown]
@@ -41,11 +42,30 @@
       (throw (ex-info "This XML part exceeds the interactive editor limit" {:type ::limit})))
     (utf8-xml! bytes)))
 
+(defn- correction-tokens [parts path expected]
+  (let [located (docx/correction-source parts)
+        revision (markdown/revision (:source located))]
+    (assoc located :tokens
+           (into {} (map (fn [[index target]]
+                           [index (hasch/uuid [:simmis/docx-text-correction-v1 path expected
+                                              (:main-part located) revision index (:text target)])]))
+                 (:targets located)))))
+
+(defn- correction-view [parts path expected]
+  (try
+    (let [{:keys [tokens targets]} (correction-tokens parts path expected)]
+      {:status :ready :tokens (into {} (filter (fn [[index _]]
+                                               (let [text (get-in targets [index :text])]
+                                                 (and (<= (count text) 10000) (not (re-find #"[\p{Cc}]" text)))))) tokens)})
+    (catch Exception _ {:status :unsupported
+                        :notice "Selective text correction is unavailable for this document. Advanced XML remains available."})))
+
 (defn inspect-in
   "Inert Office projection from one explicit immutable DB; no authorization."
   [db path expected part]
   (let [parts (parts-in! db path expected)
-        reading (when (str/ends-with? (str/lower-case path) ".docx") (docx/inspect-parts parts))
+        reading (when (str/ends-with? (str/lower-case path) ".docx")
+                  (assoc (docx/inspect-parts parts) :corrections (correction-view parts path expected)))
         selected (or part (first (filter #(and (string? %) (str/ends-with? (str/lower-case %) ".xml") (contains? parts %))
                                          [(:main-part reading) "word/document.xml" "content.xml" "ppt/slides/slide1.xml" "xl/workbook.xml"])))
         xml (when selected
@@ -87,3 +107,19 @@
 (defn save-part! [room request options]
   (let [prepared (files/with-workspace room #(prepare-save-in @% request))]
     (files/save-file! room prepared options)))
+
+(defn prepare-correction-in
+  "Reconstruct one revision-bound text token and prepare an ordinary binary
+   save. The caller retains its original owned binding through publication."
+  [db {:keys [path expected token replacement] :as request}]
+  (when-not (and (= #{:path :expected :token :replacement} (set (keys request))) (uuid? token))
+    (throw (ex-info "Invalid Word text correction" {:type ::invalid})))
+  (let [parts (parts-in! db path expected)
+        located (correction-tokens parts path expected)
+        index (some (fn [[index actual]] (when (= token actual) index)) (:tokens located))]
+    (when-not index (throw (ex-info "The selected text belongs to another saved version" {:type ::conflict})))
+    (let [{:keys [changed? main-part bytes]} (docx/correct-text parts index replacement)]
+      {:path path :expected expected
+       :base64 (if changed?
+                 (.encodeToString (Base64/getEncoder) (office/write-parts (assoc parts main-part bytes)))
+                 (:base64 (files/read-binary-in db path expected)))})))

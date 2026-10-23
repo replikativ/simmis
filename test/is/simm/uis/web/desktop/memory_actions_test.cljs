@@ -202,7 +202,8 @@
                     remote/save-memory-file! (deferred :save) remote/save-memory-rich-file! (deferred :rich-save)
                     remote/load-memory-properties! (deferred :properties) remote/save-memory-property! (deferred :property-save)
                     remote/evaluate-memory-repl! (deferred :repl)
-                    remote/save-memory-office-part! (deferred :office-save) remote/move-memory-file! (deferred :move)]
+                    remote/save-memory-office-part! (deferred :office-save)
+                    remote/correct-memory-office-text! (deferred :office-correct) remote/move-memory-file! (deferred :move)]
         (let [a (actions/controller data) state #(get @states (:owner a))
               file (wire stamp {:path "x.clj" :entry {:content :same :size 8 :mode 33188} :text "Original"})]
           (f {:a a :data data :states states :state state :connection connection :stamp stamp :file file
@@ -275,6 +276,50 @@
         (is (= {:anchor 3 :head 7} (get-in (state) [:drafts "x.clj" :office :selection])))
         (is (= entry (get-in (state) [:drafts "x.clj" :office :reading-entry])))
         (is (editor/dirty? (get-in (state) [:drafts "x.clj"])))))))
+
+(deftest correction-ack-reloads-saved-xml-and-retains-concurrent-correction-typing
+  (doseq [newer? [false true]]
+    (with-client
+      (fn [{:keys [a states state stamp file seed! last-call]}]
+        (seed!)
+        (let [token (random-uuid) correction {:path "x.clj" :token token :text "Correction" :original "Original" :entry (:entry file)}
+              base [:drafts "x.clj"]]
+          (swap! states update (:owner a)
+                 #(-> % (assoc-in (conj base :office-correction) correction)
+                      (assoc-in (conj base :office) {:text "Saved XML" :saved-text "Saved XML"
+                                                   :reading-entry (:entry file)
+                                                   :reading {:corrections {:tokens {4 token}}}})))
+          ((:office-correct a) "x.clj")
+          (is (= "Correction" (get-in (last-call :office-correct) [:request :replacement])))
+          (when newer? ((:change a) "x.clj" assoc-in [:office-correction :text] "Later typing"))
+          (let [entry {:content :corrected}]
+            ((:ok (last-call :office-correct)) (wire stamp {:entry entry :commit :corrected}))
+            (if newer?
+              (do (is (= "Later typing" (get-in (state) (conj base :office-correction :text))))
+                  (is (= (:entry file) (get-in (state) (conj base :source :entry))))
+                  (is (= entry (get-in (state) (conj base :earlier-save-receipt :entry)))))
+              (do (is (nil? (get-in (state) (conj base :office-correction))))
+                  (is (nil? (get-in (state) (conj base :office))))))
+          (is (some? (last-call :file)) "Actual file reload follows publication")))))))
+
+(deftest office-writes-exclude-each-other-in-both-dispatch-orders
+  (doseq [first-write [:correction :xml]]
+    (with-client
+      (fn [{:keys [a states stamp file seed! calls]}]
+        (seed!)
+        (let [token (random-uuid) base [(:owner a) :drafts "x.clj"]]
+          (swap! states assoc-in (conj base :office-correction)
+                 {:path "x.clj" :token token :entry (:entry file) :original "Original" :text "Edited"})
+          (swap! states assoc-in (conj base :office)
+                 {:text "XML" :saved-text "XML" :reading-entry (:entry file) :part "word/document.xml"
+                  :reading {:corrections {:tokens {4 token}}}})
+          (if (= :correction first-write)
+            (do ((:office-correct a) "x.clj") ((:office-save a) "x.clj")
+                (is (= 1 (count (:office-correct @calls))))
+                (is (empty? (:office-save @calls))))
+            (do ((:office-save a) "x.clj") ((:office-correct a) "x.clj")
+                (is (= 1 (count (:office-save @calls))))
+                (is (empty? (:office-correct @calls))))))))))
 
 (deftest discovery-and-manual-refresh-do-not-wait-for-live-stream-readiness
   (with-client
