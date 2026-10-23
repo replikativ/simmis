@@ -31,6 +31,20 @@
         x (if categories #(+ 56 (* (/ (+ 0.5 (get indexes %)) (count categories)) 560))
               #(scale xd 56 616 %))
         y #(scale yd 264 28 %)
+        tick-values (if categories
+                      (let [last-index (dec (count categories))
+                            steps (min 7 last-index)]
+                        (if (zero? steps) categories
+                            (mapv #(nth categories (quot (* % last-index) steps)) (range (inc steps)))))
+                      xd)
+        ticks (mapv (fn [value]
+                      (let [label (str value) px (x value)
+                            width (min 80 (/ 520 (count tick-values)))
+                            attrs (cond-> {:x px :y 280 :fill "currentColor" :font-size 10
+                                           :text-anchor (if (> (+ px (/ width 2)) 640) "end" "middle")}
+                                    (> (* 6 (count label)) width)
+                                    (assoc :textLength width :lengthAdjust "spacingAndGlyphs"))]
+                        (node :text attrs [label]))) tick-values)
         heading (or title "Chart")
         marks (mapcat
                (fn [index {:keys [points]}]
@@ -51,15 +65,17 @@
                                                 :fill color} [])) points)))))
                (range) series)
         axes [(node :path {:d "M56,28 V264 H616" :fill "none" :stroke "currentColor" :opacity 0.4} [])
+              (when (and (= :bar kind) (not= 264 (y 0)))
+                (node :path {:d (str "M56," (y 0) " H616") :fill "none" :stroke "currentColor" :opacity 0.6} []))
               (text 4 32 (second yd)) (text 4 264 (first yd))
-              (text 56 290 (or x-label (if categories "Category" "x")))
+              (text 56 302 (or x-label (if categories "Category" "x")))
               (text 56 16 (or y-label "y"))]
         rows (for [{:keys [label points]} series [a b] points]
                (node :tr {} [(node :td {} [label]) (node :td {} [(str a)]) (node :td {} [(str b)])]))]
     (node :figure {:class "memory-chart"}
           [(node :figcaption {} [heading])
-           (node :svg {:viewBox "0 0 640 304" :role "img" :aria-label heading :class "memory-chart-plot"}
-                 (concat axes marks))
+           (node :svg {:viewBox "0 0 640 320" :role "img" :aria-label heading :class "memory-chart-plot"}
+                 (concat (remove nil? axes) ticks marks))
            (node :ul {:class "memory-chart-legend"}
                  (map-indexed (fn [index {:keys [label]}]
                                 (node :li {} [(node :svg {:viewBox "0 0 12 12" :width 12 :height 12 :aria-hidden "true"}

@@ -28,3 +28,15 @@
                                                           :cljs (js/Number.isFinite %)))) attributes))
       (is (not-any? #(and (string? %) (or (str/includes? % "NaN") (str/includes? % "Infinity"))) attributes))
       (is (= (inc (count points)) (count (filter #(= :tr (:tag %)) (nodes scene))))))))
+
+(deftest axes-identify-categories-and-bound-visible-tick-count
+  (let [scene (chart/scene {:kind :bar :series [{:label "Costs" :points [["Research" 12] ["Delivery" 9]]}]})
+        labels (mapcat :children (filter #(= :text (:tag %)) (nodes scene)))]
+    (is (some #{"Research"} labels))
+    (is (some #{"Delivery"} labels)))
+  (let [points (mapv #(vector (str "Category " %) %) (range 100))
+        scene (chart/scene {:kind :bar :series [{:label "A" :points points}]})
+        labels (mapcat :children (filter #(and (= :text (:tag %)) (= 280 (get-in % [:attrs :y]))) (nodes scene)))]
+    (is (= 8 (count labels)))
+    (is (= "Category 0" (first labels)))
+    (is (= "Category 99" (last labels)))))
