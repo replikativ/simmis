@@ -1,1 +1,0 @@
-The product price is an unvalidated hypothesis.

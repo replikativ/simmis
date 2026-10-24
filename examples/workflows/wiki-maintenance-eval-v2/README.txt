@@ -5,6 +5,8 @@ a held-out model evaluation. The four workflow program files match the shipped
 version-2 `maintain-wiki` source. Gold, calibration answers and case fixtures
 belong only in the benchmark authoring workspace; candidate worlds receive
 only clean fixtures.
+Shared and case fixture bodies are encoded in `fixture-pack.edn`, so uploading
+the authoring bundle does not create duplicate live wiki page identities.
 
 The `supported` case permits either a minimal Company update or a fresh Product
 page. Company metadata and content remain protected at their original path.

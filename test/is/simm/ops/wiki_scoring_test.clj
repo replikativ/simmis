@@ -5,10 +5,16 @@
             [datahike.blob :as blob]
             [hasch.core :as hasch]
             [dvergr.agent.evaluation :as evaluation]
+            [is.simm.documents.view :as view]
             [is.simm.ops.checkers :as checkers]
+            [is.simm.ops.dvergr :as ops]
             [is.simm.ops.knowledge-inputs :as inputs]
             [is.simm.ops.workflow-runs :as runs]
             [is.simm.ops.workflows :as workflows]
+            [is.simm.ops.owned-workflow-authoring :as authoring]
+            [is.simm.ops.owned-workflows :as owned]
+            [is.simm.ops.owned-reads :as reads]
+            [is.simm.ops.owned-mcp-test :as owned-fixture]
             [is.simm.starter.wiki-maintenance :as starter]
             [dvergr.catalog.room :as catalog]))
 
@@ -216,10 +222,13 @@
     (is (apply = (map :deadline-nanos @seen)))
     (is (every? fn? (map :prepare-input @seen)))))
 
+(defn- example-source []
+  (let [root (io/file "examples/workflows/wiki-maintenance-eval-v2")]
+    (into {} (for [file (file-seq root) :when (.isFile file)]
+               [(str (.relativize (.toPath root) (.toPath file))) (slurp file)]))))
+
 (deftest reusable-development-example-calibrates-the-exact-shipped-program
-  (let [root (io/file "examples/workflows/wiki-maintenance-eval-v2")
-        source (into {} (for [file (file-seq root) :when (.isFile file)]
-                          [(str (.relativize (.toPath root) (.toPath file))) (slurp file)]))
+  (let [source (example-source)
         bundle (catalog/bundle starter/name source)]
     (is (= (starter/source) (select-keys source (keys (starter/source)))))
     (is (:ok (workflows/inspect-snapshot starter/name {:files source})))
@@ -230,3 +239,25 @@
                                           {:name starter/name :expected-bundle (:id bundle) :case case})]
         (is (= (if (= case "supported") original changed)
                (get-in prepared [:inputs "/in/knowledge/sources/wiki/Company.md"])))))))
+
+(deftest example-can-be-owned-written-without-polluting-canonical-wiki-identities
+  (@#'owned-fixture/with-fixture
+   true
+   (fn [{:keys [w host]}]
+     (let [handle (str (:room w))
+           principal (ops/party-principal (:owner w))
+           name "wiki-maintenance-development"
+           snapshot #(-> (reads/resolve-host-read! host principal handle) :db)
+           ;; This fixture owns real memory stores and native writes; it does
+           ;; not claim the provisioner's file-backed physical-alias checks.
+           options {:roots [""] :schema-revision ::packed-fixtures}
+           before (view/prepare (snapshot) options)
+           opened (:data (owned/details! host principal handle {:name name}))
+           answer (authoring/write! host principal handle
+                                    {:name name :expected-revision (:revision opened) :files (example-source)})
+           after (view/prepare (snapshot) options)]
+       (is (true? (get-in answer [:write :applied?])))
+       (is (= :ready (:status before)))
+       (is (= :ready (:status after)) (pr-str (:diagnostics after)))
+       (is (= (set (map :id (:documents before))) (set (map :id (:documents after)))))
+       (is (not-any? #(= page (str (:id %))) (:documents after)))))))
