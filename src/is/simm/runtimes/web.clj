@@ -17,6 +17,7 @@
             ;; Server execution context
             [is.simm.runtimes.context :as ctx]
             [is.simm.runtimes.application-ops :as application-ops]
+            [is.simm.runtimes.room-apps :as room-apps]
             [is.simm.runtimes.memory-changes :as memory-changes]
             ;; System DB (must init before auth)
             [is.simm.model.system-db :as system-db]
@@ -105,26 +106,6 @@
     (map? body) (json/write-str body)
     (vector? body) (json/write-str body)
     :else body))
-
-(defn- apps-room-resource
-  "The room an `/apps/<slug>/…` URL addresses, as a `can?` resource.
-
-   nil when the slug names no room — `can?` denies an unresolvable resource,
-   so an unknown slug is refused without revealing whether it exists."
-  [req]
-  (let [rest-uri (subs (:uri req) (count "/apps/"))
-        slug (java.net.URLDecoder/decode
-               (or (first (str/split rest-uri #"/")) "") "UTF-8")]
-    (when-let [room ((requiring-resolve 'dvergr.system.db/room-by-slug) slug)]
-      {:room (:room/id room)})))
-
-(defn- apps-handler
-  "dvergr owns the serving (worktree lookup, containment, content types); this
-   only supplies the 404 for a path it declines, which the default handler
-   used to swallow into an empty 200."
-  [req]
-  (or ((requiring-resolve 'dvergr.web.apps/handle) req nil)
-      {:status 404 :headers {"Content-Type" "text/plain"} :body "not found"}))
 
 (defn- websocket-upgrade?
   "Check if the request is a WebSocket upgrade."
@@ -454,18 +435,14 @@
                                 ((requiring-resolve 'is.simm.runtimes.screen-recording/end-session!)
                                  (hauth/party-id req)
                                  {:session-id (get (query-params req) "session")})))}]
-                  ;; Room apps. These were served from the DEFAULT handler,
-                  ;; which no policy could see — `dvergr.web.apps/handle` has no
-                  ;; auth check of its own and is keyed by a human-readable
-                  ;; SLUG, so anyone who could guess `after-fix-team-7bad6b86`
-                  ;; could read that room's app files. Routed here so the gate
-                  ;; applies; an unknown slug resolves to no resource and `can?`
-                  ;; denies, which also stops the endpoint confirming which
-                  ;; slugs exist.
+                  ;; The native server authorizes its actual resolved room row
+                  ;; inside the App operation, then adds script-isolation headers.
+                  ;; Bearer authentication remains required; no iframe token or
+                  ;; public publishing is introduced by this route.
                   ["/apps/*path"
-                   {:auth {:action :read :resource apps-room-resource}
-                    :get  {:handler apps-handler}
-                    :head {:handler apps-handler}}]
+                   {:auth :authenticated
+                    :get  {:handler room-apps/handle}
+                    :head {:handler room-apps/handle}}]
                   ["/blobs/:id"
                    ;; Reads were open until the blob cookie landed: the UI
                    ;; reaches blobs through `<img src>` and `<a href>`, which

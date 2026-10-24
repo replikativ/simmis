@@ -594,12 +594,19 @@ default `data`), and `user/shadow-config` applies the ports to shadow.
 boot — system DB, mail sync, room hydration, kabel + auth + sync, telegram,
 then the HTTP routes.
 
+Private room apps use `runtimes.room-apps` over Dvergr's native static handler.
+The HTTP route authenticates, then the native callback authorizes the exact
+room resolved for serving under an App operation. The synchronous read remains
+owned until permission and host identity are rechecked. Response CSP sandboxes
+scripts with an opaque origin and Referrer-Policy suppresses referrers. No
+capability/iframe or public-publishing endpoint is installed by this adapter.
+
 Two boot steps are switches. **Storage GC** (`runtimes/storage_gc.clj`, which
 drives dvergr's `gc-stores!` at boot and every 6h) is OFF unless
 `:storage-gc {:enabled? true}` or `SIMMIS_STORAGE_GC=true`: on datahike without
 #1117 a mark that dies on an Error comes back empty and the sweep deletes the
 whole store, which is how the dev.simm.is system DB was lost. simmis pins
-datahike 0.8.1906, the first release with #1117 (a mark that dies raises
+datahike 0.8.1910, which includes #1117 (a mark that dies raises
 `:gc-incomplete-mark` and nothing is swept); the switch stays off by default
 regardless. While enabled on an older datahike (or a source checkout) it warns on every sweep, and it logs a sweep that timed out,
 failed or skipped rooms as an error rather than as an empty one. dvergr refuses
