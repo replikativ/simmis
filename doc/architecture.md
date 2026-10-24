@@ -61,6 +61,12 @@ for pre-existing drafts and recovery. Automatic saving affects only the selected
 workspace branch, never proposal adoption. There is no typing-delay policy yet:
 coalescing occurs during in-flight requests, not across an entire typing session.
 
+Reference opening and its tab/new-column mutations likewise preserve an already
+bound execution context; unbound device callbacks default to the live UI.
+Forks update their own roster-derived tabs, selection and chat-scroll state.
+Native focus classes and URL notifications belong only to the live world's
+stable home, including ordinary execution-frame copies of that world.
+
 Selected-region Markdown is a continuously validated source presentation, not
 an Apply/Save transaction. Accepted input reprojects the exact span, retaining
 the native source editor and current caret; invalid/intermediate input stays in
