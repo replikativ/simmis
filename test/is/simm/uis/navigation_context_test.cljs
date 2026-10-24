@@ -31,9 +31,11 @@
         (.appendChild container column)))
     (.appendChild (.-body js/document) container)
     (try
+      ;; Match the real [router & args] arity: compiled callers invoke the
+      ;; variadic entry point directly even when navigating by one path.
       (with-redefs [runtime/runtime live
-                    spin-router/navigate! (fn [_ path] (swap! history conj [:push path]))
-                    spin-router/replace! (fn [_ path] (swap! history conj [:replace path]))]
+                    spin-router/navigate! (fn [_ & args] (swap! history conj [:push (first args)]))
+                    spin-router/replace! (fn [_ & args] (swap! history conj [:replace (first args)]))]
         (binding [ec/*execution-context* live]
           (reset! sig/layout-columns (layout))
           (reset! sig/active-column-id "first")
