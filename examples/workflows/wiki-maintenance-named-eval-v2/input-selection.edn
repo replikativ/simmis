@@ -1,0 +1,5 @@
+{:kind :knowledge
+ :policy {:version 1
+          :trigger-roots ["inbox" "transcripts"]
+          :context-roots ["wiki"]
+          :exclude-prefixes []}}
