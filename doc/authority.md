@@ -197,7 +197,7 @@ Every route declares `:auth` in its route data:
 | Value | Meaning |
 |---|---|
 | `:public` | no check — the SPA shell, its assets, the login endpoints |
-| `:authenticated` | a valid token, nothing more; correct when the handler scopes to the party itself |
+| `:authenticated` | a valid token; the handler enforces its own party/resource scope |
 | `:blob-read` | `:authenticated`, or the blob-read cookie on GET/HEAD — blob reads only (see below) |
 | `{:action … :resource fn}` | a token, then `can?` — the same vocabulary as `rpc-policy` |
 
@@ -209,6 +209,27 @@ which an undeclared route serves traffic.
 If the server refuses to boot with `:http/undeclared-routes`, that is this.
 Decide what the route needs; do not reach for `:public` to make the message go
 away.
+
+Room apps under `/apps/<slug>/...` remain private and require bearer
+authentication. `runtimes.room-apps` uses Dvergr's authorization callback on the
+actual resolved room UUID, rather than preauthorizing one slug lookup and
+serving another. It enters the original App operation, binds that App's root,
+and checks current room-read permission before native file access and again
+before returning bytes. App shutdown joins the synchronous read. An administrator
+without room-read authority cannot use the endpoint to inspect private content.
+
+All responses produced by this adapter carry
+`Content-Security-Policy: sandbox allow-scripts` and
+`Referrer-Policy: no-referrer`. Script execution therefore has an opaque browser
+origin; it cannot borrow the Simmis parent DOM or browser storage. Dvergr retains
+its current-worktree path, containment, content-type and asset-redirect rules.
+The adapter distinguishes authentication/permission denial from unavailable App
+or IO state and logs unexpected serving failures at error level.
+
+This App boundary does not supply a Room lease, snapshot pin, public publishing
+or an iframe credential. Ordinary iframe requests cannot attach the bearer
+header, and blob cookies are not accepted on this route. No access token is
+put into a website URL.
 
 ## Private MCP
 
