@@ -645,7 +645,10 @@
                               ;; saved baseline, never retried by its own render.
                               (update! assoc-in [:chart-analysis-attempts path] marker)
                               (analyze! path true)))))
-       :chart-models #(charts/visible (state) %)
+       :chart-budget #(cells/chart-budget (state) %)
+       :chart-models (fn [path]
+                       (let [s (state) models (charts/visible s path) budget (cells/chart-budget s path)]
+                         (into {} (take budget models))))
        :open-properties (fn [path target] (update! assoc-in [:property-targets path] target) (properties! path target))
        :ensure-properties
        (fn []

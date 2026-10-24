@@ -9277,3 +9277,7 @@ body.tab-dragging .column-drop-zone {
 .memory-reference-field summary { cursor: pointer; color: var(--mono-text-secondary); font-size: 11px; }
 .memory-reference-field details[open] { display: flex; flex-wrap: wrap; gap: 6px; }
 .memory-property-readonly { color: var(--mono-text-secondary); }
+
+.memory-cell-table { max-height: 320px; overflow: auto; margin: 6px 0; }
+.memory-cell-table table { border-collapse: collapse; font-size: 12px; width: 100%; }
+.memory-cell-table th, .memory-cell-table td { text-align: left; vertical-align: top; padding: 4px 8px; border-bottom: 1px solid var(--border-color); white-space: pre-wrap; overflow-wrap: anywhere; }

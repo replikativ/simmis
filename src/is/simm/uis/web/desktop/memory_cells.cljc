@@ -1,6 +1,7 @@
 (ns is.simm.uis.web.desktop.memory-cells
   "Pure, context-owned saved projections. No authorization or native handles."
   (:require [is.simm.documents.code-cells :as cells]
+            [is.simm.documents.chart-contract :as contract]
             [is.simm.documents.rich-document :as document]
             [is.simm.uis.web.desktop.memory-charts :as charts]))
 
@@ -28,6 +29,13 @@
         clean? (and (= (:text draft) (:text source)) (nil? (:local-source draft))
                     (not (:target-stale? draft)) (not (:remote-deleted? draft))
                     (nil? (:incoming draft)) (nil? (:incoming-entry draft)))
+        receipts (vec (filter #(and (= :saved-markdown-cell (get-in % [:source :kind]))
+                                    (= (:repository-id source) (get-in % [:source :repository-id]))
+                                    (= path (get-in % [:source :path]))
+                                    (= (:entry source) (get-in % [:source :entry]))
+                                    (= (:target-stamp state) (get-in % [:source :target-stamp])))
+                              (get-in state [:repl :history])))
+        newest (first receipts)
         coherent? (and projection native (= (:marker cache) (marker draft))
                       (cells/equivalent-projection? (:model projection) native))]
     (when (and clean? coherent? (:target-verified? state)
@@ -39,12 +47,15 @@
                             (when (and loading? (vector? slot) (= :cell (first slot)) (= path (second slot))
                                        (= (:revision (charts/saved-analysis draft)) (nth slot 2 nil)))
                               (nth slot 3))) (:loading state)))
-       :receipts (vec (filter #(and (= :saved-markdown-cell (get-in % [:source :kind]))
-                                   (= (:repository-id source) (get-in % [:source :repository-id]))
-                                   (= path (get-in % [:source :path]))
-                                   (= (:entry source) (get-in % [:source :entry]))
-                                   (= (:target-stamp state) (get-in % [:source :target-stamp])))
-                             (get-in state [:repl :history])))})))
+       :presentation-id (when (and (:success newest) (not (:partial? newest)) (:presentation newest)) (:id newest))
+       :receipts receipts})))
+
+(defn chart-budget [state path]
+  (let [current (when (= :rich (get-in state [:drafts path :mode])) (visible state path))
+        receipt (first (:receipts current))]
+    (if (and (:presentation-id current) (= :chart (get-in receipt [:presentation :kind])))
+      (dec contract/max-mounted)
+      contract/max-mounted)))
 
 (defn request [state path key]
   (when-let [cell (first (filter #(= key (:key %)) (:cells (visible state path))))]

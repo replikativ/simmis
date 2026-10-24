@@ -343,6 +343,26 @@ human history, including the executed input, exact original source span, saved
 entry/revision, target stamp and Room incarnation. They never enter Markdown,
 pretend to be stable cell IDs across revisions, or become durable workflow Runs.
 
+
+Saved-cell results may opt into one bounded table or chart by returning an exact
+`:simmis/presentation` envelope. Conversion happens beside printing inside the same
+owned SCI worker; ordinary values remain textual. Invalid presentation shape/size
+adds a diagnostic while retaining the successful computation's printed evidence.
+Tables have at most 20 columns, 50 rows and 32 KiB of displayed text; integer and
+finite decimal cells become exact strings before transport. Charts reuse the
+existing strict ChartData validator and fixed scene, with bounded direct numeric
+representations before floating-point conversion. No arbitrary serializers, DOM,
+functions or callbacks cross the receipt boundary.
+
+Only the newest eligible saved-cell receipt receives an inline rich preview.
+A chart result reserves one of the document's existing four chart slots; prior
+receipts retain text. Context can also show the newest current table, without
+mounting a duplicate chart. Native result chrome remains outside editor content,
+export and undo, is removed when correspondence is lost, and is reconstructed
+from the retained receipt on undo. Loading or saving source never executes it.
+The ordinary scratch REPL remains textual; the internal saved-cell adapter opts
+into presentation without adding a public request option or permission grant.
+
 The Context footer for Markdown and code-file panels includes a dual-input **Room REPL**.
 It uses the same tab-owned buffers and human SCI session; the file body contains only
 its document and explicit code-cell controls.

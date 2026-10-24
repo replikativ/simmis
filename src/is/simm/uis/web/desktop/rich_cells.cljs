@@ -5,6 +5,7 @@
             [is.simm.documents.code-cells :as cells]
             [is.simm.documents.inline-charts :as inline-charts]
             [is.simm.uis.web.desktop.chart-view :as charts]
+            [is.simm.uis.web.desktop.cell-result-view :as cell-result]
             [is.simm.documents.rich-document :as document]))
 
 (defn- portable [x] (js->clj (js/JSON.parse (js/JSON.stringify x)) :keywordize-keys true))
@@ -83,11 +84,16 @@
                      (set! (.-textContent button) (if running? "Running…" "Run"))
                      (set! (.-title button) (str "Run this saved Clojure cell in " (:namespace config) ". No room tools are injected."))
                      (set! (.-hidden result) (nil? receipt))
+                     (when-not receipt
+                       (.replaceChildren result)
+                       (set! (.-simmisReceipt result) nil))
                      (when receipt
                        (let [text (str (if (:success receipt) (:value receipt) (:error receipt))
                                        (when (seq (:stdout receipt)) (str "\nstdout\n" (:stdout receipt)))
                                        (when (seq (:stderr receipt)) (str "\nstderr\n" (:stderr receipt))))
-                             key [(:id receipt) text]]
+                             presentation (when (= (:id receipt) (:presentation-id config)) (:presentation receipt))
+                             diagnostic (:presentation-diagnostic receipt)
+                             key [(:id receipt) text presentation diagnostic]]
                          (when-not (= key (.-simmisReceipt result))
                            (set! (.-simmisReceipt result) key)
                            (.replaceChildren result)
@@ -96,7 +102,15 @@
                                                              (when (:value-truncated? receipt) " · truncated")
                                                              (when (:partial? receipt) " · partial; inspect Room REPL")))
                              (set! (.-textContent output) text)
-                             (.append result label output)))))))
+                             (.append result label)
+                             (when presentation
+                               (let [projection (.createElement js/document "div")]
+                                 (cell-result/paint! projection presentation) (.appendChild result projection)))
+                             (when diagnostic
+                               (let [note (.createElement js/document "p")]
+                                 (set! (.-className note) "memory-note")
+                                 (set! (.-textContent note) diagnostic) (.appendChild result note)))
+                             (.appendChild result output)))))))
           paint-language! (fn [node]
                             (let [lang (aget (.-attrs node) "language")]
                               (set! (.-className code) (if (seq lang) (str "language-" lang) ""))))]

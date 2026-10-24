@@ -826,3 +826,32 @@ sort lexicographically between its neighbours, so inserting never renumbers
 anything else. `model/fractional_index.cljc` generates them. The alphabet is
 printable ASCII, not the base-62 of the reference implementation the algorithm
 came from.
+
+
+## Saved-cell result presentation
+
+An explicit Markdown Clojure cell may return a closed, versioned value:
+
+```clojure
+{:simmis/presentation
+ {:version 1 :kind :table
+  :columns ["Scenario" "Expected revenue"]
+  :rows [["Illustrative" 9007199254740993]]}}
+```
+
+`:kind :chart` instead requires `:data`, containing the same string-keyed raw
+ChartData v1 map accepted by JSON charts. The chart validator accepts bounded
+ordinary numeric types and normalizes coordinates to doubles; exact large values
+belong in table/text output. Tables accept vectors only; each row must match its
+1–20 column headers, with at most 50 rows, 512 characters per cell, 128 per header
+and 32 KiB UTF-8 display text in total. Strings, nil, booleans and bounded ordinary
+integer/finite decimal values are supported; table ratios, records, arbitrary
+objects and lazy row sequences are refused. Values remain inspectable in the
+original printed receipt, including distinctions such as nil versus empty text.
+
+The host converts this value inside the existing worker to an optional immutable
+`:presentation` DTO with profile `{:id :simmis/cell-result :version 1}`. Malformed
+opt-in produces a static `:presentation-diagnostic`, not permission, executable
+markup or a second execution status. Original execution errors/cancellation and
+partial-result semantics remain unchanged. These are disposable receipt fields,
+not saved source, a database entity, a new workflow Run or a persisted schema.

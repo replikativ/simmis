@@ -85,7 +85,7 @@
                result (if prepared
                         (assoc (evaluation/evaluate-repl!
                                 room party {:text (get-in prepared [:input :code]) :syntax :clojure
-                                            :namespace (:namespace request)} authorize! with-owner)
+                                            :namespace (:namespace request)} authorize! with-owner true)
                                :source (get-in prepared [:input :source]))
                         ((case operation :evaluate evaluation/evaluate! :repl evaluation/evaluate-repl!)
                          room party request authorize! with-owner))

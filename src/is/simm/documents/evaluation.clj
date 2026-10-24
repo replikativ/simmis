@@ -8,6 +8,7 @@
             [clojure.tools.reader :as reader]
             [clojure.tools.reader.reader-types :as readers]
             [is.simm.documents.files :as files]
+            [is.simm.documents.cell-result :as cell-result]
             [is.simm.documents.markdown :as markdown]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.component :as component]
@@ -97,7 +98,8 @@
   "Host adapter invoked INSIDE sandbox/eval-code's timeout and ctx-store scope.
    Resolves this invocation's SCI world; never captures a parent interpreter,
    invokes host eval, or registers user syntax in global Superficie registries."
-  [{:keys [text syntax namespace] :as request}]
+  ([request] (repl-evaluate request false))
+  ([{:keys [text syntax namespace] :as request} presentation?]
   (validate-repl! request)
   (let [interpreter (sci-store/get-ctx)
         generated (volatile! [])]
@@ -128,17 +130,24 @@
                                 (vswap! generated conj (printer/print-clj-string [form]))
                                 (recur (sci/eval-form interpreter form)))))))))
               ;; Realize/print while the selected interpreter is still bound.
-              printed (binding [*print-length* 100 *print-level* 12] (sandbox/print-value value 12000))]
+              printed (binding [*print-length* 100 *print-level* 12] (sandbox/print-value value 12000))
+              presentation (when presentation?
+                             (try
+                               (when-let [dto (cell-result/presentation value)] {:presentation dto})
+                               (catch clojure.lang.ExceptionInfo error
+                                 (if (= :is.simm.documents.cell-result/refused (:type (ex-data error)))
+                                   {:presentation-diagnostic "Unsupported chart or table result. The printed value is retained."}
+                                   (throw error)))))]
           (merge {:success true :value (:text printed) :value-truncated? (:truncated? printed)
                   :namespace (str @sci/ns)}
-                 (generated-receipt @generated)))
+                 presentation (generated-receipt @generated)))
         (catch Exception e
           (when (or (.isInterrupted (Thread/currentThread))
                     (some #(instance? InterruptedException %) (take-while some? (iterate ex-cause e))))
             (throw e))
           (merge {:success false :error (clipped (ex-message e))
                   :namespace (str @sci/ns) :partial? true}
-                 (generated-receipt @generated)))))))
+                 (generated-receipt @generated))))))))
 
 (defn- retire-session! [room party ref]
   (binding [ec/*execution-context* (:ctx room)]
@@ -228,8 +237,11 @@
 (defn evaluate-repl!
   ([room party request authorize!] (evaluate-repl! room party request authorize! (fn [f] (f))))
   ([room party request authorize! with-owner]
+   (evaluate-repl! room party request authorize! with-owner false))
+  ([room party request authorize! with-owner presentation?]
    (validate-repl! request)
-   (let [result (execute! room party (str "(simmis.repl/evaluate-source " (pr-str request) ")") false authorize! with-owner)]
+   (let [result (execute! room party (str "(simmis.repl/evaluate-source " (pr-str request)
+                                        (when presentation? " true") ")") false authorize! with-owner)]
      (merge {:id (random-uuid) :target :human-sci :input-source (:text request)
              :input-syntax (:syntax request) :namespace (:namespace request)
              :requested-namespace (:namespace request)
