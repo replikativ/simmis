@@ -175,15 +175,21 @@
                {:files (workspace/read-tree world (:capture policy)
                                             {:strict? true :max-files (:max-files policy)
                                              :max-bytes (:max-characters policy)})})
-    :observe (fn [{:keys [result default] captured :execution/evidence setup :setup/evidence}]
+    :observe (fn [{:keys [result default timed-out?] captured :execution/evidence setup :setup/evidence}]
                (assoc default :files (:files captured) :run-status (:run/status result)
+                      ;; cancelled at the environment's deadline (dvergr's evaluation)
+                      :timed-out? (boolean timed-out?)
                       :setup setup :calibration (or (:calibration setup) {:status :not-provided})))
-    :verify (fn [environment {:keys [files run-status]}]
+    :verify (fn [environment {:keys [files run-status timed-out?]}]
               (let [verdict (run-checker (:checker bundle)
                                          {:files files :params (get-in bundle [:definition :params] {})
                                           :gold (catalog/gold-of bundle environment)
                                           :fetched {} :judgements {}})
-                    completed? (= :completed run-status)]
+                    completed? (= :completed run-status)
+                    ;; a workflow whose answer is a file kept current while the
+                    ;; attempt works scores a timed-out attempt on what it left
+                    scored? (or completed?
+                                (and timed-out? (true? (get-in bundle [:definition :score-on-timeout]))))]
                 (-> verdict
                     (update :checks #(assoc % :completed? (and completed? (get % :completed? true))))
-                    (update :reward #(if completed? % 0.0)))))}))
+                    (update :reward #(if scored? % 0.0)))))}))
