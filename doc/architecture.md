@@ -153,8 +153,10 @@ states do not prove an active worker or a completed workspace; an absent record
 may mean the original request is still queued. Reconnect never resends creation.
 An interrupted observation can be checked again, with old-socket replies fenced.
 The form's recovery state is session-local: browser reload persistence and native
-setup recovery are not implemented. Existing legacy sources remain available;
-normal new-workspace forms no longer create separate legacy Wiki/Drive entities.
+setup recovery are not implemented. Memory navigation lists canonical room
+workspaces; standalone legacy Wiki/Drive lists and legacy-wiki Settings controls
+are removed. Existing stores are not migrated or deleted. Normal new-workspace
+forms create canonical workspaces, without a separate Wiki/Drive entity.
 
 The experimental source-selected knowledge view derives semantic document/block
 rows from one immutable Geschichte snapshot without writing a second repository.

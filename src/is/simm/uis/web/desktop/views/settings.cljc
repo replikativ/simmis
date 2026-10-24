@@ -293,32 +293,6 @@
             (el/div {:class "settings-empty"}
               "No budget configured — usage is unlimited")))
 
-        ;; --- Knowledge Bases Section ---
-        (let [kbs (:knowledge-bases data)]
-          (el/div {:class "settings-section"}
-            (el/h3 {:class "settings-section-title"}
-              (str "Legacy wikis (" (count kbs) ")"))
-            (el/p {:class "settings-section-desc"}
-              "Existing wikis remain available. New knowledge workspaces keep Markdown pages and files together.")
-            (el/div {:class "settings-env-list"}
-              (if (seq kbs)
-                (ifor-each #(str (:kb/id %)) kbs
-                  (fn [kb]
-                    (el/div {:key (str (:kb/id kb)) :class "settings-env-row"}
-                      (el/span {:class "settings-env-key"} (:kb/name kb))
-                      (el/span {:class "settings-env-value settings-role-badge"}
-                        (if (and current-user
-                                 (= (str (:kb/owner kb)) (:id current-user)))
-                          "owned"
-                          "shared")))))
-                (el/div {:class "settings-empty"} "No wikis")))
-            (el/div {:class "settings-env-add"}
-                    (el/button {:class "settings-btn settings-btn--primary"
-                                :on-click (fn [_]
-                                            #?(:cljs (sig/open-or-activate-tab! :new-kb nil {:title "New workspace"})
-                                               :clj nil))}
-                               "New knowledge workspace"))))
-
         ;; --- Notifications Section ---
         (el/div {:class "settings-section"}
           (el/h3 {:class "settings-section-title"} "Notifications")
