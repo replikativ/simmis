@@ -36,7 +36,7 @@
   [(:connection state) (:target-stamp state) (:read-epoch state) (:definition-basis state)
    (get-in state [:drafts path :generation])
    (get-in state [:drafts path :source :entry])
-   (:revision (saved-analysis (get-in state [:drafts path]))) block])
+   (:revision (saved-analysis (get-in state [:drafts path]))) block (:stream-marker state)])
 
 (defn request [state path block]
   {:path path :block block :expected (get-in state [:drafts path :source :entry])
@@ -63,10 +63,14 @@
                (not= :source (:mode draft)) (nil? (:local-source draft)))
       (into {} (for [block (blocks draft)
                      :let [{:keys [reply marker]} (get-in state [:charts [path block]])]
+                     ;; A metadata-interest refresh with the SAME definition
+                     ;; basis is not a source change. Keep accepted data visible
+                     ;; while the new read is admitted; reply acceptance remains
+                     ;; strict. A real source/definition change still hides it.
                      ;; Ordinary continuous prose edits cannot change saved
                      ;; declarations. Keep the existing projection during typing;
                      ;; new async replies still use the strict generation fence.
                      :when (and (vector? marker)
                                 (reply-current? state path block
-                                                (assoc marker 4 (:generation draft)) reply))]
+                                                (assoc marker 2 (:read-epoch state) 4 (:generation draft)) reply))]
                  [(str block) (:chart reply)])))))

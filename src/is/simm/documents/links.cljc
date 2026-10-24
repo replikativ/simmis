@@ -93,6 +93,30 @@
     (when-let [[_ room query] (re-matches #"/room/([^/?#]+)/files\?([^#]+)" route)]
       (parse-query room query))))
 
+(defn reference-markdown
+  "Portable Markdown for an already identified target; never installs an ID."
+  [href]
+  (when-let [target (parse-route href)]
+    (str "[" (if (= :memory-block (:kind target)) "Block reference" "File reference")
+         "](" (route target) ")")))
+
+(defn clipboard-reference
+  "Recognize canonical URLs or our copied Markdown. ORIGIN is the browser's
+   actual location.origin; foreign hosts never become local references."
+  [text origin]
+  (when (and (string? text) (<= (count text) 9200))
+    (let [text (str/trim text)
+          copied (re-matches #"\[(Block reference|File reference)\]\((/room/[^\s]+)\)" text)
+          candidate (if copied (nth copied 2) text)
+          local (if (and (string? origin) (seq origin)
+                         (str/starts-with? candidate (str origin "/")))
+                  (subs candidate (count origin)) candidate)]
+      (when-let [target (parse-route local)]
+        {:href (route target)
+         :label (or (second copied)
+                    (when (= :memory-file (:kind target)) (last (str/split (:path target) #"/")))
+                    "Block reference")}))))
+
 (def ^:private source-prefix "/in/knowledge/sources/")
 
 (defn source-path? [path]

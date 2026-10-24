@@ -1682,3 +1682,30 @@
         (reset! sig/user-rooms {:rooms [{:room/id "test-room" :room/name "After"}]})
         (old (wire stamp (assoc file :text "Obsolete body")))
         (is (= before (state)))))))
+
+(deftest property-save-requires-a-current-draft-and-never-repeats-an-acknowledged-edit
+  (binding [ec/*execution-context* runtime]
+    (let [session {:id (random-uuid)} connection {:epoch (random-uuid)} stamp (random-uuid)
+          path "wiki/a.md" target {:kind :page} id (random-uuid)
+          states (signal runtime {}) calls (atom [])
+          field {:id id :alias "revenue" :label "Revenue" :editable? true :input {:text "0"}}]
+      (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
+                    sig/memory-connection (signal runtime connection)
+                    remote/save-memory-property! (fn [_ _ request]
+                                                   (swap! calls conj request) (fn [_ _]))]
+        (let [a (actions/controller {:room-id "room" :state-signal states}) key (:owner a)
+              state (assoc (verified connection stamp) :selected path
+                           :drafts {path {:source {:entry {:content id} :text "Saved" :target-stamp stamp} :text "Saved"}})
+              model {:path path :target target :target-stamp stamp :expected {:content id}
+                     :request-marker (editor/property-marker state path target)}]
+          (swap! states assoc key (assoc-in state [:property-models [path target]] model))
+          ((:property-save a) path target field)
+          (is (empty? @calls) "No draft: an old blur callback cannot write")
+          ((:property-input a) path target field {:text "1"})
+          ((:property-save a) path target field)
+          ((:property-save a) path target field)
+          (is (= 1 (count @calls)) "Enter followed by blur is single-flight")
+          (swap! states update key #(-> % (assoc-in [:loading [:property-save path]] false)
+                                         (update-in [:property-drafts [path target]] dissoc id)))
+          ((:property-save a) path target field)
+          (is (= 1 (count @calls)) "After acknowledgement cleared the draft, late blur is inert"))))))

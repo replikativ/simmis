@@ -110,10 +110,10 @@
   (let [ctx (context/create-execution-context) container (.createElement js/document "div")
         release (atom nil) calls (atom []) path "wiki/Company.md"
         page {:kind :page} block {:kind :block :id (random-uuid)}
-        company (random-uuid) experiment (random-uuid) structural (random-uuid)
+        stamp (random-uuid) company (random-uuid) experiment (random-uuid) structural (random-uuid)
         field {:id (random-uuid) :label "Revenue" :alias "revenue" :value-type :db.type/long
                :editable? true :present? true :input {:text "0"}}
-        baseline {:path path :expected {:content :saved} :revision :source :scope-revision :schema}
+        baseline {:path path :target-stamp stamp :expected {:content :saved} :revision :source :scope-revision :schema}
         page-model (merge baseline {:target page :assigned-types [company]
                                    :types [{:id company :name "Business/Company"} {:id structural :name "S/Page"}]
                                    :fields [field {:id :optional :label "Unused owner" :reason :missing-source-binding}
@@ -121,8 +121,9 @@
         block-model (merge baseline {:target block :assigned-types [experiment]
                                     :types [{:id experiment :name "Research/Experiment"}]
                                     :fields [(assoc field :input {:text "9007199254740993"})]})
-        draft {:mode :read :text "Saved" :source {:text "Saved" :entry {:content :saved} :kind :markdown}}
-        state {:selected path :property-targets {path block}
+        draft {:mode :read :text "Saved" :source {:text "Saved" :entry {:content :saved} :kind :markdown :target-stamp stamp}}
+        state {:selected path :target-verified? true :target-stamp stamp :connection :socket :verified-connection :socket
+               :property-targets {path block}
                :property-models {[path page] page-model [path block] block-model}
                :property-drafts {[path page] {(:id field) (assoc (editor/property-draft page-model {:text "0"}) :alias "revenue")}
                                  [path block] {(:id field) (assoc (editor/property-draft block-model {:text "9007199254740993"}) :alias "revenue")}}}
@@ -141,7 +142,7 @@
       (binding [ec/*execution-context* ctx]
         (let [initial (frame state draft)]
           (reset! release (browser/mount! container initial))
-          (is (= "Business/Company" (.-textContent (.querySelector container "[aria-label='Assigned page types']"))))
+          (is (= "Company" (.-textContent (.querySelector container "[aria-label='Assigned page types']"))))
           (is (nil? (.querySelector container "[title='Assigned type: S/Page']")))
           (is (= 1 (count (array-seq (.querySelectorAll container "[aria-label='Page properties']")))))
           (is (= 1 (count (array-seq (.querySelectorAll container "[aria-label='Block properties']")))))
@@ -171,7 +172,7 @@
               (let [page-only (assoc-in state [:property-targets path] page)
                     page-tree (frame page-only draft)]
                 (browser/refresh! @release dirty-tree page-tree)
-                (is (= "Business/Company" (.-textContent (.querySelector container "[aria-label='Assigned page types']"))))
+                (is (= "Company" (.-textContent (.querySelector container "[aria-label='Assigned page types']"))))
                 (is (= ["0"] (mapv #(.-value %) (inputs))))
                 (is (= 1 (count (array-seq (.querySelectorAll container "[aria-label='Retained property drafts']")))))
                 (is (= (:property-drafts state) (:property-drafts page-only))))))))
@@ -180,27 +181,35 @@
         (.remove container)
         (context/stop-context! ctx)))))
 
-(deftest reference-map-control-edits-identity-without-offering-lossy-clear
+(deftest reference-control-uses-names-and-only-compatible-host-options
   (let [ctx (context/create-execution-context) container (.createElement js/document "div")
-        release (atom nil) calls (atom []) target {:kind :page}
-        id "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        release (atom nil) calls (atom []) target {:kind :page} type (random-uuid)
+        id "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" other "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
         field {:id (random-uuid) :label "Founder" :alias "founder" :value-type :db.type/ref
                :editable? true :input {:text id} :required? false
-               :relation {:representation :mapping :target id :path-hint "inert-hint.md" :clearable? false}}
-        a {:property-input (fn [& args] (swap! calls conj args))}]
+               :relation {:representation :mapping :target id :path-hint "inert-hint.md" :codomain type :clearable? false}}
+        model {:reference-options {type {:status :ready :complete? true
+                                         :items [{:id id :label "Sam" :path "People/Sam.md"}
+                                                 {:id other :label "Chris" :path "People/Chris.md"}]}}}
+        a {:property-input (fn [& args] (swap! calls conj [:input args]))
+           :property-save (fn [& args] (swap! calls conj [:save args]))
+           :open (fn [path] (swap! calls conj [:open path]))}]
     (.appendChild (.-body js/document) container)
     (try
       (binding [ec/*execution-context* ctx]
-        (reset! release (browser/mount! container (memory/property-field-view "a.md" target field {} {} a true)))
-        (let [input (.querySelector container "input")
+        (reset! release (browser/mount! container (memory/property-field-view "a.md" target field model {} a true)))
+        (let [select (.querySelector container "select")
               buttons (array-seq (.querySelectorAll container "button"))]
-          (is (= id (.-value input)))
-          (is (not (.-disabled input)))
+          (is (= id (.-value select)))
+          (is (not (.-disabled select)))
           (is (not-any? #(= "Clear" (.-textContent %)) buttons))
-          (is (.includes (.-textContent container) "clear in Markdown"))
-          (.dispatchEvent input (js/Event. "input" #js {:bubbles true}))
-          (is (= ["a.md" target field {:text id}] (last @calls)))
-          (is (nil? (.querySelector container "a")) "A path hint is not a link or target resolver")))
+          (is (not (.includes (.-textContent container) id)) "UUID is an option identity, not a visible form value")
+          (.click (first buttons))
+          (is (= [:open "People/Sam.md"] (last @calls)) "Actual resolved path is used, never the inert hint")
+          (set! (.-value select) other)
+          (.dispatchEvent select (js/Event. "change" #js {:bubbles true}))
+          (is (= [:input (list "a.md" target field {:text other})] (nth @calls 1)))
+          (is (= [:save (list "a.md" target field)] (nth @calls 2)))))
       (finally
         (when @release (browser/unmount! @release))
         (.remove container)
@@ -272,6 +281,39 @@
           (is (.includes (.-textContent container) "Unavailable"))
           (.click (.querySelector container "button"))
           (is (= [:retry] (last @calls)))))
+      (finally
+        (when @release (browser/unmount! @release))
+        (.remove container)
+        (context/stop-context! ctx)))))
+
+(deftest property-revalidation-keeps-the-form-in-place-without-enabling-stale-writes
+  (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+        stamp (random-uuid) id (random-uuid) target {:kind :page} release (atom nil)
+        model {:target-stamp stamp :request-marker [:socket stamp 1] :expected {:content id}
+               :fields [{:id id :label "Revenue" :editable? true :required? true
+                         :value-type :db.type/long :input {:text "9007199254740993"}}]}
+        state {:target-verified? true :target-stamp stamp :connection :socket :verified-connection :socket
+               :property-models {["a.md" target] model}}
+        draft {:source {:entry {:content id} :text "saved" :target-stamp stamp} :text "saved"}
+        actions (fn [current?] {:property-current? (fn [& _] current?)})
+        frame #(memory/scoped-properties-view "a.md" target draft %1 (actions %2) true)]
+    (.appendChild (.-body js/document) container)
+    (try
+      (binding [ec/*execution-context* ctx]
+        (let [ready (frame state true)]
+          (reset! release (browser/mount! container ready))
+          (let [input (.querySelector container "input")
+                checking (frame state false)]
+            (is (not (.-disabled input)))
+            (browser/refresh! @release ready checking)
+            (is (identical? input (.querySelector container "input")))
+            (is (.-disabled input))
+            (is (= "9007199254740993" (.-value input)))
+            (is (.includes (.-textContent container) "Checking…"))
+            (let [lost (frame (assoc state :target-stamp (random-uuid)) false)]
+              (browser/refresh! @release checking lost)
+              (is (nil? (.querySelector container "input")))
+              (is (not (.includes (.-textContent container) "9007199254740993")))))))
       (finally
         (when @release (browser/unmount! @release))
         (.remove container)

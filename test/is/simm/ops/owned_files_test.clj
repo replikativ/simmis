@@ -113,3 +113,15 @@
                       (actions/save! conn (:owner w) (:room w) room (request opened "old control")))))
        (is (= before @owned))
        (is (= other @attached))))))
+
+(deftest initial-markdown-read-bundles-an-optional-property-projection
+  (@#'fixture/with-fixture
+   true
+   (fn [{:keys [conn w room]}]
+     (let [opened (owned/read-file @conn (:owner w) (:room w) room "wiki/file.md" nil)
+           reply (actions/read! conn (:owner w) (:room w) room
+                                {:path "wiki/file.md" :expected-target-stamp (:target-stamp opened)})]
+       (is (= (:text opened) (:text reply)))
+       (is (= (:target-stamp opened) (:target-stamp reply)))
+       (is (= {:kind :page} (get-in reply [:page-properties :target])))
+       (is (= :unavailable (get-in reply [:page-properties :status])))))))

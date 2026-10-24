@@ -3,9 +3,11 @@
   (:require ["@tiptap/core" :refer [Editor Node Extension]]
             ["@tiptap/pm/state" :refer [Plugin Selection TextSelection AllSelection NodeSelection]]
             ["@tiptap/pm/gapcursor" :refer [GapCursor]]
+            ["@tiptap/pm/history" :refer [closeHistory]]
             ["@tiptap/starter-kit" :default StarterKit]
             [is.simm.documents.rich-text :as rich]
             [is.simm.documents.rich-document :as document]
+            [is.simm.documents.links :as links]
             [is.simm.uis.web.desktop.rich-controls :as controls]
             [is.simm.uis.web.desktop.code-highlight :as code-highlight]
             [is.simm.uis.web.desktop.rich-cells :as cells]
@@ -101,6 +103,7 @@
     (let [dom (.createElement js/document "div")
           content (.createElement js/document "div")
           link (.createElement js/document "a")
+          reference (.createElement js/document "button")
           projection (.createElement js/document "div")
           paint! (fn [node]
                    (let [id (aget (.-attrs node) "blockId")]
@@ -108,7 +111,10 @@
                      (.toggleAttribute dom "data-linked-block" (= id (.getAttribute el "data-linked-block-id")))
                      (let [href (aget (js/JSON.parse (or (.getAttribute el "data-block-links") "{}")) id)]
                        (set! (.-hidden link) (not href))
-                       (if href (.setAttribute link "href" href) (.removeAttribute link "href")))
+                       (set! (.-hidden reference) (not href))
+                       (if href
+                         (do (.setAttribute link "href" href) (.setAttribute reference "href" href))
+                         (do (.removeAttribute link "href") (.removeAttribute reference "href"))))
                      (.setAttribute projection "data-chart-block" id)
                      (paint-chart! el projection id)))]
       (set! (.-className dom) "memory-semantic-block")
@@ -128,21 +134,37 @@
                   (-> (.writeText clipboard (.-href link))
                       (.then #(.setAttribute link "title" "Block link copied"))
                       (.catch #(.setAttribute link "title" "Use the browser menu to copy this link")))))))
+      (set! (.-className reference) "memory-block-link")
+      (set! (.. reference -style -right) "1.9rem")
+      (set! (.-textContent reference) "⧉")
+      (.setAttribute reference "type" "button")
+      (.setAttribute reference "contenteditable" "false")
+      (.setAttribute reference "aria-label" "Copy reference")
+      (.setAttribute reference "title" "Copy internal Markdown reference")
+      (set! (.-onmousedown reference) #(.preventDefault %))
+      (set! (.-onclick reference)
+            (fn [_]
+              (when-let [text (links/reference-markdown (.getAttribute reference "href"))]
+                (when-let [clipboard (.-clipboard js/navigator)]
+                  (-> (.writeText clipboard text)
+                      (.then #(.setAttribute reference "title" "Reference copied"))
+                      (.catch #(.setAttribute reference "title" "Clipboard unavailable; use the adjacent link's browser menu")))))))
       (set! (.-className projection) "memory-chart-slot")
       (.setAttribute projection "contenteditable" "false")
-      (.appendChild dom link) (.appendChild dom content) (.appendChild dom projection)
+      (.appendChild dom link) (.appendChild dom reference) (.appendChild dom content) (.appendChild dom projection)
       (paint! (.-node props))
       #js {:dom dom :contentDOM content
            :update (fn [node]
                      (when (= "memoryBlock" (.. node -type -name)) (paint! node) true))
            :ignoreMutation (fn [mutation]
                              (and (not= "selection" (.-type mutation))
-                                  (or (.contains projection (.-target mutation)) (.contains link (.-target mutation))
+                                  (or (.contains projection (.-target mutation)) (.contains link (.-target mutation)) (.contains reference (.-target mutation))
                                       (and (= "attributes" (.-type mutation)) (= dom (.-target mutation))
                                            (#{"data-block-id" "data-linked-block"} (.-attributeName mutation))))))
-           :stopEvent (fn [event] (or (.contains projection (.-target event)) (.contains link (.-target event))))
+           :stopEvent (fn [event] (or (.contains projection (.-target event)) (.contains link (.-target event)) (.contains reference (.-target event))))
            :destroy (fn [] (charts/paint! projection nil)
                       (set! (.-onclick link) nil)
+                      (set! (.-onclick reference) nil) (set! (.-onmousedown reference) nil)
                       (set! (.-simmisChartProjection projection) nil))})))
 
 (defn- boundary-node [name content el]
@@ -230,6 +252,29 @@
                                                                                      :detail #js {:blocked true}})))
                                    allowed?)))})])}))
 
+(defn- paste-reference! [^js el ^js view event]
+  (let [clipboard (.-clipboardData event) state (.-state view) selection (.-selection state)
+        parent (.. selection -$from -parent) marks (or (.-storedMarks state) (.marks (.-$from selection)))
+        code (.. state -schema -marks -code)]
+    (when (and clipboard (not (read-only? el))
+               (identical? view (some-> (.-simmisRichEditor el) .-view))
+               (instance? TextSelection selection)
+               (identical? parent (.. selection -$to -parent))
+               (not (.. parent -type -spec -code))
+               (not (and code (.isInSet code marks)))
+               (empty? (.getData clipboard "text/html")))
+      (when-let [{:keys [href label]} (links/clipboard-reference (.getData clipboard "text/plain") (.-origin js/location))]
+        (let [from (.-from selection) to (.-to selection)
+              mark (.create (.. state -schema -marks -link) #js {:href href})
+              transaction (.-tr state)
+              transaction (if (.-empty selection)
+                            (.replaceSelectionWith transaction (.text (.-schema state) label #js [mark]) false)
+                            (.setSelection (.addMark transaction from to mark)
+                                           (.create TextSelection (.-doc transaction) to)))]
+          (.preventDefault event)
+          (.dispatch view (closeHistory (-> transaction (.setStoredMarks nil) (.setMeta "uiEvent" "paste") (.scrollIntoView))))
+          true)))))
+
 (defn disconnect! [^js el]
   (when-let [release (.-simmisReleaseCells el)]
     (release) (set! (.-simmisReleaseCells el) nil))
@@ -301,6 +346,7 @@
                        :editorProps #js {:attributes #js {:class "memory-rich-content"
                                                          :role "textbox" :aria-multiline "true"
                                                          :aria-label "Rich document editor"}
+                                         :handlePaste (fn [view event _slice] (paste-reference! el view event))
                                          :handleKeyDown (fn [view event]
                                                           (or (when (and (.-altKey event) (= "F10" (.-key event)))
                                                                 (.preventDefault event) (controls/focus-toolbar! el) true)

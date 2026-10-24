@@ -189,3 +189,17 @@
     (is (= "Human typing" (:text concurrent)))
     (is (= (:rich-base opened) (:rich-base concurrent)))
     (is (= text (get-in concurrent [:incoming :text])))))
+
+(deftest bundled-page-properties-follow-only-the-accepted-source-entry
+  (let [stamp (random-uuid) target {:kind :page}
+        source {:entry {:content (random-uuid)} :target-stamp stamp
+                :page-properties {:path "a.md" :target target :fields []}}
+        state {:connection :socket :target-stamp stamp :read-epoch 2
+               :drafts {"a.md" {:source source}}}
+        installed (editor/install-page-properties state "a.md" source)
+        scope ["a.md" target]]
+    (is (= (editor/property-marker state "a.md" target)
+           (get-in installed [:property-models scope :request-marker])))
+    (is (= stamp (get-in installed [:property-models scope :target-stamp])))
+    (is (= state (editor/install-page-properties state "a.md" (assoc source :entry {:content (random-uuid)}))))
+    (is (= state (editor/install-page-properties state "a.md" (dissoc source :page-properties))))))

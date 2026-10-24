@@ -429,18 +429,29 @@ empty strings and null remain distinct. Numeric input is not an EDN reader or
 evaluation surface. The receipt includes the exact prepared source and its
 precomputed analysis, avoiding a fallible post-publication read.
 
-The Markdown editor's Show properties action opens scalar page controls from
-that safe inspection model. Controls use exact host-rendered text, never raw
+The Markdown editor displays compact typed page controls from that safe inspection
+model. The first file read includes optional page properties from the same immutable
+owned snapshot, so the document and form appear together. Expected declaration or
+schema refusals make only the optional properties unavailable; original source stays
+readable. Same-owner revalidation keeps the existing form mounted but disabled;
+connection or target ownership loss hides those values. Compatible named reference
+choices come from the existing bounded canonical view, including source-backed pages
+that are not materialized in the native repository DB. The UI retains UUIDs as identities,
+not editable names; a path hint never selects a target. Choice lists admit at most
+200 entities per codomain and explicitly report truncation. Controls use exact host-rendered text, never raw
 browser numeric values. Per-field drafts live in the existing context-backed
 Memory signal. Schema/source observations refresh models but retain entered
 values with their original scope/source stamps; stale drafts require explicit
 discard, not automatic rebinding. Removed fields remain visible for copying.
-Property saves and file moves exclude each other, and typing or newer incoming
+Scalar fields commit on blur or Enter; reference/boolean choices commit when selected.
+The controller requires a current pending draft, so Enter followed by blur cannot
+repeat an acknowledged edit. Property saves and file moves exclude each other, and typing or newer incoming
 file changes observed during publication survive its receipt. Unsaved source
 drafts must be resolved before applying a property. Legacy/provisional
 workspaces explicitly report unavailability rather than pretending to be
-canonical spaces. New typed-space creation, type selection, structured edits
-and MCP property commands are not activated by these controls.
+canonical spaces. Manage properties assigns existing trusted types and bindings;
+it does not create definitions from document content. Structured source edits and
+MCP property commands remain separate from these controls.
 
 ## Existing KB vocabulary
 

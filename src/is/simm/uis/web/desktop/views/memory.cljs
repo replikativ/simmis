@@ -393,38 +393,69 @@
   (let [pd (get-in state [:property-drafts [path target] (:id field)])
         input (editor/property-input model field pd)
         stale? (not (editor/property-draft-current? model pd))
-        enabled? (and editable? (:editable? field) (not stale?))]
+        enabled? (and editable? (:editable? field) (not stale?))
+        options (get-in model [:reference-options (get-in field [:relation :codomain])])
+        selected (first (filter #(= (:id %) (:text input)) (:items options)))
+        commit! (fn [] (when enabled? ((:property-save a) path target field)))
+        changed! (fn [value] ((:property-input a) path target field value))]
     (el/div {:class "memory-property-field"}
             (el/label {} (str (:label field) (when (:required? field) " *"))
-                      (if (= :db.type/boolean (:value-type field))
+                      (cond
+                        (:relation field)
+                        (el/div {:class "memory-reference-field"}
+                                (if-let [target-path (:path selected)]
+                                  (el/button {:type "button" :title target-path
+                                              :on-click (fn [_] ((:open a) target-path))} (:label selected))
+                                  (el/span {} (cond selected (:label selected) (:null input) "Not set" :else "Unresolved reference")))
+                                (el/details {}
+                                            (el/summary {} "Change…")
+                                            (el/input {:type "search" :aria-label (str "Find " (:label field))
+                                                       :placeholder "Find by name or path" :disabled (not enabled?)
+                                                       :value (get-in state [:reference-search [path target (:id field)]] "")
+                                                       :on-input (fn [e] ((:reference-search a) path target (:id field) (.. e -target -value)))})
+                                            (el/select {:aria-label (:label field) :value (or (:text input) "")
+                                                        :disabled (or (not enabled?) (not= :ready (:status options)))
+                                                        :on-change (fn [e]
+                                                                     (changed! {:text (.. e -target -value)})
+                                                                     (commit!))}
+                                                       (when-not selected (el/option {:value (or (:text input) "") :disabled true} "Choose a reference…"))
+                                                       (for [item (:items options)
+                                                             :let [query (str/lower-case (get-in state [:reference-search [path target (:id field)]] ""))]
+                                                             :when (or (= (:id selected) (:id item))
+                                                                       (str/includes? (str/lower-case (str (:label item) " " (:path item))) query))]
+                                                         (el/option {:key (:id item) :value (:id item)}
+                                                                    (str (:label item) (when (:path item) (str " · " (:path item)))))))
+                                            (when-not (= :ready (:status options))
+                                              (el/p {:class "memory-note"} "References are unavailable until the knowledge files are valid."))
+                                            (when (false? (:complete? options))
+                                              (el/p {:class "memory-note"} "Showing the first 200 compatible references."))))
+                        (= :db.type/boolean (:value-type field))
                         (el/select {:aria-label (:label field) :disabled (not enabled?)
                                     :value (if (:null input) "null" (:text input))
                                     :on-change (fn [event]
                                                  (let [value (.. event -target -value)]
-                                                   ((:property-input a) path target field
-                                                                        (if (= value "null") {:null true} {:text value}))))}
+                                                   (changed! (if (= value "null") {:null true} {:text value}))
+                                                   (commit!)))}
                                    (when-not (:required? field) (el/option {:value "null"} "Not set"))
-                                   (el/option {:value "true"} "True")
-                                   (el/option {:value "false"} "False"))
+                                   (el/option {:value "true"} "Yes")
+                                   (el/option {:value "false"} "No"))
+                        (:editable? field)
                         (el/input {:type "text" :aria-label (:label field) :disabled (not enabled?)
-                                   :title (when (:relation field) "Stable entity UUID; the path hint does not select the target")
+                                   :inputmode (when (#{:db.type/long :db.type/double} (:value-type field)) "decimal")
                                    :value (or (:text input) "")
-                                   :on-input (fn [event]
-                                               ((:property-input a) path target field {:text (.. event -target -value)}))})))
-            (when (:null input) (el/small {} "Not set"))
+                                   :on-input (fn [event] (changed! {:text (.. event -target -value)}))
+                                   :on-blur (fn [_] (commit!))
+                                   :on-keydown (fn [e]
+                                                 (case (.-key e)
+                                                   "Enter" (do (.preventDefault e) (commit!))
+                                                   "Escape" (do (.preventDefault e) ((:property-discard a) path target (:id field))) nil))})
+                        :else (el/span {:class "memory-property-readonly"} (if (:null input) "Not set" (:text input)))))
             (when-not (:editable? field)
-              (el/small {} (str "Read-only · " (name (:reason field)))))
-            (when (:relation field)
-              (el/small {} (str "Reference · stable UUID"
-                               (when (= :mapping (get-in field [:relation :representation]))
-                                 " · path hint retained; clear in Markdown"))))
+              (el/small {:title (name (:reason field))} "Managed by type or source"))
             (when (and (:editable? field) (not (:required? field))
-                       (not (false? (get-in field [:relation :clearable?]))))
-              (el/button {:disabled (not enabled?)
-                          :on-click (fn [_] ((:property-input a) path target field {:null true}))} "Clear"))
-            (when (:editable? field)
-              (el/button {:disabled (or (not enabled?) (nil? pd))
-                          :on-click (fn [_] ((:property-save a) path target field))} "Apply"))
+                       (not (false? (get-in field [:relation :clearable?]))) (not (:null input)))
+              (el/button {:disabled (not enabled?) :title (str "Clear " (:label field))
+                          :on-click (fn [_] (changed! {:null true}) (commit!))} "Clear"))
             (when stale?
               (el/p {:class "memory-note" :role "status"} "Saved source or property definitions changed. Your entered value was retained; discard it before editing the current version."))
             (when pd
@@ -432,13 +463,19 @@
 
 (defn- type-chips [model]
   (for [{:keys [id name]} (declarations/assigned-types model)]
-    (el/span {:key (str id) :class "memory-type-chip" :title (str "Assigned type: " name)} name)))
+    (el/span {:key (str id) :class "memory-type-chip" :title (str "Assigned type: " name)} (last (str/split name #"/")))))
 
 (defn- scoped-properties-view [path target draft state a write?]
   (let [scope [path target]
         model (get-in state [:property-models scope])
         declaration-draft (get-in state [:declaration-drafts scope])
-        current? (and model ((:property-current? a) path target model))
+        owned? (and (actions/verified? state (:connection state))
+                    (not (:target-stale? draft))
+                    (= (:target-stamp state) (get-in draft [:source :target-stamp])))
+        current? (and owned? model ((:property-current? a) path target model))
+        display? (and owned? model
+                      (= (:target-stamp state) (:target-stamp model))
+                      (= (:connection state) (first (:request-marker model))))
         busy? (declarations/busy? state path)
         groups (declarations/field-groups model (get-in state [:property-drafts scope]))
         editable? (and write? current? (not busy?) (not (editor/dirty? draft)) (not (declarations/drafts? state path))
@@ -454,7 +491,7 @@
                       (when (and declaration-draft (or (not current?) (= :unavailable (:status model))))
                         (declaration-view path target declaration-draft a false busy?))
                       (cond
-                        (not current?) (el/p {:class "memory-note" :role "status"} "Checking saved properties…")
+                        (not (or current? display?)) (el/p {:class "memory-note" :role "status"} "Checking saved properties…")
                         (= :unavailable (:status model))
                         (el/details {}
                           (el/summary {} "Typed properties unavailable")
@@ -466,9 +503,11 @@
                         (el/div {}
                                 (el/div {:class "memory-property-heading"}
                                         (el/strong {} (if (= :page (:kind target)) "Properties" "Block fields"))
+                                        (el/span {:class "memory-property-status" :role "status"}
+                                                 (cond (not current?) "Checking…" busy? "Saving…" :else ""))
                                         (when-not declaration-draft
                                           (el/button {:disabled (or (not editable?) (editor/property-drafts? state path))
-                                                      :on-click (fn [_] ((:declaration-open a) path target))} "Types and fields…")))
+                                                      :on-click (fn [_] ((:declaration-open a) path target))} "Manage properties")))
                                 (if declaration-draft
                                   (declaration-view path target declaration-draft a
                                                     (and write? current? (not busy?)
@@ -481,7 +520,7 @@
                                           (property-field-view path target field model state a editable?)))
                                 (when (seq (:available groups))
                                   (el/details {:class "memory-available-properties"}
-                                              (el/summary {} (str "More available properties (" (count (:available groups)) ")"))
+                                              (el/summary {} "Other metadata")
                                               (for [field (:available groups)]
                                                 (el/div {:key (str (:id field))}
                                                         (property-field-view path target field model state a editable?)))))))))))
@@ -567,7 +606,10 @@
                                  (el/span {:class "memory-file-name" :title path} part)))))
             (when markdown?
               (let [target {:kind :page} model (get-in state [:property-models [path target]])]
-                (when (and model ((:property-current? a) path target model)
+                (when (and coherent? model
+                           (or ((:property-current? a) path target model)
+                               (and (= (:target-stamp state) (:target-stamp model))
+                                    (= (:connection state) (first (:request-marker model)))))
                            (not= :unavailable (:status model)))
                   (el/div {:class "memory-type-chips" :aria-label "Assigned page types"}
                           (type-chips model)))))
@@ -730,9 +772,7 @@
                                         (not text?) (el/p {:class "memory-note"} "Binary file. Download preserves the original bytes; document-specific editing is not available in this view yet.")
                                         (and clojure? (= :superficie code-view)) (superficie-view (:text draft))
                                         (= :source (:mode draft)) (source-view path draft a write?)
-                                        :else (document-view path draft a write?))
-                                      (when (and text? (or markdown? (re-find #"(?i)\.(clj|cljc|bb)$" path)))
-                                        (repl-view state a syntax-pref)))))))))
+                                        :else (document-view path draft a write?)))))))))
 
 (defn render [data]
   (spin
@@ -783,6 +823,7 @@
          _layout (iv/get-new (track sig/layout-columns))
          _rooms (iv/get-new (track sig/user-rooms))
          states (iv/get-new (track sig/memory-editor-state))
+         syntax-pref (iv/get-new (track sig/syntax-pref))
          a (actions/controller data) state (get states (:owner a)) path (:selected state)
          draft (get-in state [:drafts path])
          coherent? (and (actions/verified? state connection) (not (:target-stale? draft))
@@ -792,6 +833,9 @@
      ((:ensure-sync a) connection stream)
      ((:ensure-backlinks a))
      (el/div {:class "memory-history context-section"}
+             (when (and path (or (= :markdown (get-in draft [:source :kind]))
+                                 (re-find #"(?i)\.(clj|cljc|bb)$" path)))
+               (repl-view state a syntax-pref))
              (when (= :markdown (get-in draft [:source :kind])) (backlinks-view a))
              (el/div {:class "context-section-title"} "File history")
              (when (seq (:evaluation-history state))

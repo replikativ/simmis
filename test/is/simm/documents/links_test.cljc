@@ -7,6 +7,20 @@
 (def repository "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 (def block "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 
+(deftest clipboard-references-use-portable-routes-without-borrowing-foreign-origins
+  (let [origin "https://simm.is" target {:kind :memory-block :room room :repository repository :block block :path "wiki/A+B.md"}
+        href (links/route target) markdown (links/reference-markdown href)]
+    (is (= (str "[Block reference](" href ")") markdown))
+    (doseq [text [href (str origin href) markdown (str "\n" href "\n")]]
+      (is (= {:href href :label "Block reference"} (links/clipboard-reference text origin))))
+    (doseq [text [(str "https://foreign.example" href) (str origin ".evil" href)
+                 (str origin "@evil.example" href) (str "//simm.is" href)
+                 (str href "#fake") (str href "&path=other.md") "((cccccccc-cccc-4ccc-8ccc-cccccccccccc))"]]
+      (is (nil? (links/clipboard-reference text origin))))
+    (is (nil? (links/reference-markdown (str origin href))))
+    (let [file (links/route {:kind :memory-file :room room :path "wiki/Research notes.md"})]
+      (is (= {:href file :label "Research notes.md"} (links/clipboard-reference file origin))))))
+
 (deftest route-parser-never-borrows-an-external-host-or-fragment
   (let [ref {:kind :memory-file :room room :path "wiki/A+B.md"} route (links/route ref)]
     (is (= ref (links/parse-route route)))
