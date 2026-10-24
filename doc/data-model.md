@@ -21,6 +21,15 @@ Startup account provisioning ensures the personal room without creating or
 attaching an additional legacy Wiki. Existing DB-backed wikis remain accessible
 and are labelled as legacy in navigation; their content and grants are retained.
 
+New Team and Memory forms create the same canonical `:project` Room. The owner
+and client creation UUID determine one native slug. `:room/creation-intent` holds
+that UUID and `:room/creation-basis` holds the canonical request digest, both typed
+UUID attributes written atomically with `:room/created-by`, content scope and
+membership. These receipts distinguish completed Simmis publication from native
+pending/ready preparation. They contain no EDN payload or transferable permission.
+The original typed receipt remains observable after a lost final acknowledgement;
+observing never provisions or resumes setup.
+
 Folder listings are authorized server reads cached in context-owned Spindel
 state, not a replicated Datahike file-tree index. The navigation cache retains
 up to 64 listings; collapsing a folder does not discard a fresh listing.

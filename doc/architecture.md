@@ -134,6 +134,28 @@ or room spending allowance. Legacy default-KB creation/attachment remains a
 separate compatibility data/API path; this does not migrate those contents to
 Markdown or prove immediate legacy-tool mounting after a live attachment.
 
+Add Team and Add Memory both create canonical `:project` workspaces through
+the same human provisioning service. Team opens chat; Memory opens the starter
+wiki file. The form stores one frozen request in its execution-context Signal.
+Its owner and client UUID derive the native slug; native atomic exclusion refuses
+a repeated creation rather than retrying it. Final membership and the typed
+creation receipt publish in one control transaction after native preparation.
+
+The service captures the authenticated human and original application before
+queuing blocking work. Its application operation covers physical provisioning,
+registration and publication, with current-owner checks before the final steps.
+The publication transaction rechecks human identity, member enlistability and
+the exact prepared Room basis. Fencing during preparation joins the actual worker
+and leaves prepared resources without publishing membership.
+
+A separate read-only operation observes that exact intent. Pending/native-ready
+states do not prove an active worker or a completed workspace; an absent record
+may mean the original request is still queued. Reconnect never resends creation.
+An interrupted observation can be checked again, with old-socket replies fenced.
+The form's recovery state is session-local: browser reload persistence and native
+setup recovery are not implemented. Existing legacy sources remain available;
+normal new-workspace forms no longer create separate legacy Wiki/Drive entities.
+
 The experimental source-selected knowledge view derives semantic document/block
 rows from one immutable Geschichte snapshot without writing a second repository.
 Its default selection includes root and nested Markdown, with trusted exact folder

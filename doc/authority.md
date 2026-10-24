@@ -33,6 +33,19 @@ passed. `resource` is one of a small set of shapes — a store scope, `{:kb id}`
 `{:branch {:scope s :branch b}}`, `{:room id}`, `{:proposal id}`, `{:self party}`,
 `{:settings party}`, `:admin`, or `:authenticated`.
 
+Canonical workspace creation has fixed authenticated create/observe handlers.
+Both derive the human from the connection before queueing work; the request has
+no creator, native path, profile, service or context selector. The original App
+owns synchronous provisioning through final publication. The control transaction
+rechecks the human and each member's current enlistability after preparation,
+alongside exact owner/default/grant metadata. A restricted or deleted agent cannot
+be admitted merely because it was enlistable when preparation began.
+
+The creation UUID selects only that human's owner-scoped intent. Its typed final
+receipt and current read authority are required to observe a completed workspace.
+Observation never writes, activates, retries or funds a Room. Native creation is
+refused from forked UI worlds; form edits and receipts remain context-owned.
+
 `can?` answers as plain Datalog over relations that already exist — party
 –`:room/parties`→ room –`:grant/*`→ system. Authorization is a query, not a
 second bookkeeping system that can drift from the first.

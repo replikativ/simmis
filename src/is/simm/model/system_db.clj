@@ -195,11 +195,19 @@
    {:db/ident :room/type
     :db/valueType :db.type/keyword
     :db/cardinality :db.cardinality/one
-    :db/doc "Room type: :personal-ai, :group, :telegram-mirror"}
+    :db/doc "Room type: :personal-ai, :project, :group, :telegram-mirror"}
    {:db/ident :room/created-by
     :db/valueType :db.type/uuid
     :db/cardinality :db.cardinality/one
     :db/doc "Creator party UUID"}
+   {:db/ident :room/creation-intent
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/doc "Human client creation UUID, recorded atomically with canonical membership publication"}
+   {:db/ident :room/creation-basis
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/doc "Immutable canonical creation request digest; observation never authorizes a retry"}
    {:db/ident :room/created
     :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one
