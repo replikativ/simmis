@@ -43,6 +43,15 @@ block identities or saved Markdown. Unlabelled/unknown languages and cells beyon
 the highlighting bounds remain plain code. Viewing, editing and highlighting
 code do not evaluate it.
 
+Read view uses the same recognized languages, exact-text tokens and page bounds.
+Tables and blockquotes outside the editable rich-text codec have inert previews
+in both views, derived from the existing parsed Markdown rather than arbitrary
+HTML. Tables retain inline formatting and column alignment. Comments stay in
+source without appearing as document content. These previews are disposable
+NodeView/foreign-element data: the original source bytes and protected editor
+labels remain the authority, including when copying or editing nearby text.
+Tables currently require Markdown source for editing their cells or structure.
+
 ### File and block addresses
 
 Memory files have `/room/<room>/files?path=<encoded-path>` addresses. An

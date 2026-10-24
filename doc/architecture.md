@@ -19,7 +19,11 @@ workflow files, and room-local Clojure source share the same hierarchy.
 Filename search and folder-focus breadcrumbs avoid unbounded indentation.
 Files open in independent tabs. Markdown offers Read, directly editable Rich
 text, semantic Outline, and exact Source views; unsupported rich regions remain
-inert source. Rich typing patches supported source spans locally; each automatic
+source-backed. Tables and quotes have inert display previews in both Read and
+Edit, while their exact Markdown remains outside the editable rich codec.
+Comments stay in source without rendering as page content. Read shares Edit's
+compact spacing and bounded explicit-language code highlighting. Rich typing
+patches supported source spans locally; each automatic
 save validates the complete bounded batch on the server before one canonical
 publication. A compact file header carries path, persistence status and view
 selection; secondary file actions and properties live in its overflow menu.

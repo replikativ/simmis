@@ -9,6 +9,18 @@
   (doseq [language [nil "" "unknown" "clojure<script>" "javascript:alert(1)"]]
     (is (empty? (highlight/token-ranges "(def answer 42)" language)))))
 
+(deftest read-highlighting-preserves-text-and-shares-language-and-page-bounds
+  (let [text "; comment\r\n(def title \"😀 <script>\")"
+        code (fn [text] {:type "codeBlock" :attrs {:language "clj"} :content [{:type "text" :text text}]})
+        model {:type "doc" :content [(code text)]}
+        parts (get (highlight/document-segments [model]) [0 0])
+        large (code (apply str (repeat 16384 "x")))
+        page (highlight/document-segments [{:type "doc" :content [large large large large (code text)]}])]
+    (is (= text (apply str (map :text parts))))
+    (is (some :class parts))
+    (is (nil? (get page [0 4])))
+    (is (= [{:text text}] (highlight/segments text "unknown-language")))))
+
 (deftest utf16-and-original-line-endings-match-the-highlighted-token-ranges
   (let [code "; note\r\n(def title \"😀 <tag>\")\r\n(+ 1 2)"
         tokens (highlight/token-ranges code "clj")]
