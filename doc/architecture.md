@@ -639,6 +639,12 @@ worker; it is cooperative trusted-operator execution, not hard process isolation
 Optional reference/damaged-answer calibration runs on the owned world-setup
 worker before each candidate; answers remain outside its workspace and do not
 promote checker trust.
+Optional `fixture-pack.edn` and `cases/<id>/fixture-pack.edn` files hold bounded,
+inert path-to-text data. Dvergr decodes them into the same selected fixture maps
+without reformatting their contents. Copied Markdown identities inside those
+strings remain outside the authoring room's canonical document projection.
+Root and case pack source participates in the dataset fingerprint; the bundle
+identity continues to cover every raw source file.
 Local-worker transport lives separately in `ops/worker-service.clj` and
 `ops/worker-api.clj`, backed by typed enrollment/assignment records. Its six
 narrow operations use separate worker credentials, immutable selected-file

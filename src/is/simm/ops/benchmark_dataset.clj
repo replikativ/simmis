@@ -42,6 +42,7 @@
         (invalid! "Benchmark splits must partition all named cases without duplicates"))
       (let [inputs (into (sorted-map)
                          (filter (fn [[path _]] (or (= path "gold.edn")
+                                                    (= path "fixture-pack.edn")
                                                     (str/starts-with? path "fixtures/")
                                                     (str/starts-with? path "cases/")))) files)]
         (assoc value :id (str (hasch/uuid [:simmis/benchmark-dataset-v1 value inputs])))))))

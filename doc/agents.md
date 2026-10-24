@@ -357,6 +357,9 @@ policy requires a new activation. Interrupted admissions remain held for
 reconciliation, not replayed. Each occurrence uses the room's existing finite
 allowance; exhaustion pauses the activation without provisioning more.
 Ordinary workflow completion remains distinct from checker-backed benchmarking.
+Use a separate evaluation room for bundles containing benchmark gold or
+calibration answers. Ordinary Runs inherit their room's files, so sharing only
+the live workflow's source revision does not hide other files in that room.
 Recurring benchmarks require installation-operator authority as well as room
 merge authority. CLI and local-worker executions are not scheduled by this path.
 

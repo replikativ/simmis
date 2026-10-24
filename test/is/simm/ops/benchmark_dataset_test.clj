@@ -45,3 +45,10 @@
   (is (= {:cases ["a" "b"] :metadata nil} (dataset/select-cases {} ["b" "a"] {})))
   (is (= ["b"] (:cases (dataset/select-cases {} ["a" "b"] {:cases ["b"]}))))
   (is (thrown? clojure.lang.ExceptionInfo (dataset/select-cases {} ["a"] {:split "held-out"}))))
+
+(deftest fixture-packs-participate-in-dataset-identity-at-their-declared-scopes
+  (let [packed (pr-str {:kind :dvergr/fixture-pack :version 1 :files {"/input.md" "exact evidence"}})
+        id #(:id (dataset/manifest % ["a" "b"]))]
+    (is (not= (id files) (id (assoc files "fixture-pack.edn" packed))))
+    (is (not= (id files) (id (assoc files "cases/a/fixture-pack.edn" packed))))
+    (is (= (id files) (id (assoc files "notes/fixture-pack.edn" packed))))))
