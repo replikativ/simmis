@@ -6,6 +6,24 @@
              :definition {:params {:goal "old default"}}
              :inspection {:ok true :bundle "bundle" :cases []}})
 
+(deftest schedule-observations-distinguish-unknown-empty-paused-and-held
+  (let [paused {:id "one" :room-id "room" :name "maintain-wiki" :enabled? false}
+        held (assoc paused :id "two" :reason :budget-exhausted)
+        state {:activation-status :ready
+               :activations [held paused (assoc paused :room-id "other")
+                             (assoc paused :name "other")]}]
+    (is (= [paused held] (editor/workflow-activations state "room" "maintain-wiki")))
+    (is (= [] (editor/workflow-activations state "room" "absent")))
+    (is (nil? (editor/workflow-activations (assoc state :activation-status :checking) "room" "maintain-wiki")))
+    (is (nil? (editor/workflow-activations (assoc state :activation-status :unavailable) "room" "maintain-wiki")))
+    (is (= "Paused" (editor/activation-label paused)))
+    (is (= "Held · budget-exhausted" (editor/activation-label held)))
+    (is (= "Needs recreation · earlier schedule format"
+           (editor/activation-label (assoc paused :enabled? true :resume-blocked :legacy-recreate))))
+    (is (= "Held · admission requires reconciliation"
+           (editor/activation-label (assoc paused :resume-blocked :reconciliation-required))))
+    (is (= "Active" (editor/activation-label (assoc paused :enabled? true))))))
+
 (deftest wiki-setup-is-isolated-from-editor-intent-and-uncertainty-is-sticky
   (let [state {:selected "other" :drafts {"other" (assoc (editor/draft source) :files {"a" "unsaved"})}}
         observation {:status :missing :name "maintain-wiki" :activation :unchanged :observation :current-source}

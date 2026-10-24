@@ -101,15 +101,24 @@
                     _ (when (not= owner (:observation-owner (state)))
                         ;; Retire transport bookkeeping, NOT original request
                         ;; payloads kept with each draft for identical retries.
-                        (update! assoc :observation-owner owner :loading {} :requests {}))
+                        (update! #(-> % (assoc :observation-owner owner :loading {} :requests {})
+                                      (dissoc :activations :activation-status))))
                     gen (generation)]
                 (when (not= (not allowed?) (:access-denied? (state)))
                   (update! assoc :access-denied? (not allowed?)))
                 (when (not= gen (:observed-generation (state)))
-                  (update! #(-> % (assoc :observed-generation gen)
-                                (update :drafts (fn [drafts] (into {} (map (fn [[n d]] [n (editor/unverified d)])) drafts))))))
+                  (update! (fn [s]
+                             (-> (cond-> (assoc s :observed-generation gen)
+                                   (not= gen (get-in s [:observations :activations :completed]))
+                                   (assoc :activation-status :checking))
+                                 (update :drafts (fn [drafts] (into {} (map (fn [[n d]] [n (editor/unverified d)])) drafts)))))))
                 (when (or (nil? socket) (not allowed?))
-                  (update! (fn [s] (cond-> s (:permissions s) (dissoc :permissions :list)))))
+                  ;; Retire read frames as well as their projections. If the
+                  ;; exact same roster returns, its old completed generation
+                  ;; must not suppress a fresh authorized observation. Keep
+                  ;; all command/uncertain-setup journals in the drafts.
+                  (update! #(dissoc % :permissions :list :activations :activation-status
+                                   :observations :observation-accepted)))
                 (when (and socket allowed?)
                   (observe! :stream #(vector (:retry (state)))
                             #(memory-remote/prepare-memory-stream! web/server-id room)
@@ -126,6 +135,10 @@
                             #(remote/inspect-wiki-maintenance-setup! web/server-id room)
                             editor/observe-wiki-setup
                             (fn [s _] (editor/observe-wiki-setup s {:status :unavailable})))
+                  (observe! :activations generation
+                            #(remote/load-workflow-schedules! web/server-id room)
+                            (fn [s rows] (assoc s :activations rows :activation-status :ready))
+                            (fn [s _] (-> s (dissoc :activations) (assoc :activation-status :unavailable))))
                   (when (and selected
                              (not (get-in (state) [:loading [:save selected]]))
                              (not (get-in (state) [:loading [:source selected]])))
@@ -308,7 +321,7 @@
                    (if (and (string? name) (re-matches #"[a-z0-9][a-z0-9-]{0,63}" name))
                      (select! name (nil? (get-in (state) [:drafts name])) true)
                      (update! assoc-in [:errors :source] "Use a lowercase workflow name with letters, digits and dashes (max64)."))))
-       :owner k :change change! :save save! :submit submit! :fund fund! :schedule schedule!
+       :owner k :room-id room :change change! :save save! :submit submit! :fund fund! :schedule schedule!
        :collect-output collect-output!
        :inspect-wiki-setup inspect-setup! :install-wiki-setup install-setup!
        :open-schedules (fn []
