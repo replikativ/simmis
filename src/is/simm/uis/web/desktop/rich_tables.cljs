@@ -5,7 +5,7 @@
             ["@tiptap/pm/tables" :refer [CellSelection isInTable selectedRect addRowAfter]]
             [is.simm.documents.rich-text :as rich]))
 
-(defn restore-selection [doc native]
+(defn restore-selection [^js doc native]
   (let [anchor (aget native "anchor") head (aget native "head")
         cell? (fn [p] (and (integer? p) (<= 0 p (.. doc -content -size))
                            (contains? #{"tableCell" "tableHeader"} (some-> (.nodeAt doc p) .-type .-name))))]
@@ -14,8 +14,8 @@
       (.create CellSelection doc anchor head))))
 
 (defn- add-aligned-row []
-  (fn [props]
-    (let [state (.-state props) dispatch (.-dispatch props) tr (.-tr props)]
+  (fn [^js props]
+    (let [state (.-state props) dispatch (.-dispatch props) ^js tr (.-tr props)]
       (if-not (isInTable state) false
         (let [rect (selectedRect state) table (.-table rect)
               row-index (.-bottom rect) table-start (.-tableStart rect)
@@ -26,12 +26,12 @@
             ;; command. Alignment joins it BEFORE the one final dispatch.
             (let [added? (addRowAfter state (when dispatch (fn [_] nil)))]
               (when (and added? dispatch)
-                (let [table (.nodeAt (.-doc tr) (dec table-start))
-                      row (.child table row-index)
-                      row-start (+ table-start (reduce + 0 (map #(.-nodeSize (.child table %)) (range row-index))))]
+                (let [^js changed-doc (.-doc tr) ^js table (.nodeAt changed-doc (dec table-start))
+                      ^js row (.child table row-index)
+                      row-start (+ table-start (reduce + 0 (map (fn [i] (let [^js child (.child table i)] (.-nodeSize child))) (range row-index))))]
                   (loop [i 0 pos (inc row-start)]
                     (when (< i (.-childCount row))
-                      (let [cell (.child row i)]
+                      (let [^js cell (.child row i)]
                         (.setNodeMarkup tr pos nil (js/Object.assign #js {} (.-attrs cell) #js {:align (nth aligns i)}))
                         (recur (inc i) (+ pos (.-nodeSize cell))))))))
               added?)))))))

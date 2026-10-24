@@ -9296,5 +9296,7 @@ body.tab-dragging .column-drop-zone {
 /* Editable GFM tables and Read use the same compact document styling. */
 .memory-data-table { border-collapse: collapse; width: 100%; margin: 8px 0; }
 .memory-data-table th, .memory-data-table td { position: relative; min-width: 3em; border: 1px solid var(--mono-border); padding: 6px 8px; vertical-align: top; text-align: left; }
-.memory-data-table p { margin: 0; }
+.memory-document .memory-data-table p, .memory-rich-content .memory-data-table p { margin: 0; }
 .memory-data-table .selectedCell::after { content: ""; position: absolute; inset: 0; background: var(--mono-border); opacity: .4; pointer-events: none; }
+
+.memory-rich-editor .tableWrapper { max-width: 100%; overflow-x: auto; }
