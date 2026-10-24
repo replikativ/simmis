@@ -403,3 +403,31 @@ files into Markdown or deploy a full office service as part of this prototype.
 Meeting/screen transcription, broader learning loops, mobile clients and
 simulation remain on the overarching agenda. They consume these same
 source/proposal/workflow interfaces rather than blocking this milestone.
+
+## Editing Markdown tables
+
+Basic GFM tables are editable directly in **Edit**, using the document's existing
+selection, undo and autosave. Click a cell to type; Tab and Shift+Tab move between
+cells. Tab in the last cell adds a body row, preserving column alignment, as one
+undoable change. Enter does not insert multiline cell content; the editor explains
+this restriction. Read uses the same compact table styling.
+
+The supported subset is rectangular, at most 50 rows including the first header
+row and 20 columns, with one paragraph per cell and consistent column alignment.
+Merged cells, captions, nested tables, resizing and multiple paragraphs require
+**Markdown** source editing. Unsupported source stays intact. Syntax profile 8 treats empty-cell padding as layout, preserving explicit space
+entities and code content, and retains source-derived cell spans so merged syntax cannot masquerade as a basic
+table; disposable view fingerprints change, without rewriting stored files.
+
+Opening or selecting an unchanged table preserves its exact source bytes. An edit
+may canonicalize the changed table's pipe spacing; surrounding source, properties,
+comments and explicit block identities remain unchanged. Initial table admission
+and every edited source patch must pass the existing semantic roundtrip checks.
+
+Clipboard HTML is checked before native parsing can discard unsupported content.
+Supported rectangular cell copies use native selection and undo. A paste that
+changes header structure or conflicts with the destination column's alignment is
+refused with feedback. Multiline/TSV cell paste, multiple nested table payloads,
+unsupported HTML and slice metadata carrying semantic wrapper context are also
+refused; use Markdown source for those changes. This is not general Office-table
+import. Tables do not create a separate storage, evaluation or permission model.

@@ -19,7 +19,8 @@
         analyzed-first (-> edited (editor/analyzed sent analysis) (editor/saved sent {:entry entry}))
         state #(hash-map :target-verified? true :target-stamp stamp :drafts {path %})]
     (is (nil? (cells/visible (state edited) path)))
-    (doseq [d [saved-first analyzed-first]]
+    (doseq [d [saved-first analyzed-first
+               (editor/loaded saved-first (assoc file :entry entry :text sent :analysis analysis))]]
       (is (= (:rich-base edited) (:rich-base d)) "Keep native undo/selection baseline across save")
       (let [[cell] (:cells (cells/visible (state d) path)) request (cells/request (state d) path (:key cell))]
         (is (some? request))
@@ -86,3 +87,18 @@
                    (assoc-in state [:drafts path :source :entry :content] (random-uuid))]]
       (is (nil? (:presentation-id (cells/visible stale path))))
       (is (= chart-contract/max-mounted (cells/chart-budget stale path))))))
+
+(deftest same-file-observation-keeps-native-owner-and-foreign-identities-do-not
+  (let [text "Prose\n" stamp (random-uuid)
+        file (assoc (fixture/saved text) :target-stamp stamp)
+        opened (editor/draft file)
+        retained (assoc opened :generation 3 :incoming-entry {:content :newer}
+                              :rich-base (assoc (:rich-base opened) :document-selection {:from 2 :to 2}))
+        refreshed (editor/loaded retained file)]
+    (is (identical? (:rich-base retained) (:rich-base refreshed)))
+    (is (= 3 (:generation refreshed)))
+    (is (= {:content :newer} (:incoming-entry refreshed)))
+    (doseq [different [(assoc file :repository-id (random-uuid))
+                       (assoc file :path "wiki/other.md")
+                       (assoc file :target-stamp (random-uuid))]]
+      (is (not (identical? (:rich-base retained) (:rich-base (editor/loaded retained different))))))))

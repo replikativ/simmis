@@ -56,7 +56,7 @@
 
 (deftest unknown-and-active-content-is-never-guessed-into-rich-text
   (doseq [source ["<script>bad()</script>\n" "[[Wiki]]\n" "- [ ] Task\n"
-                  "| A |\n| --- |\n| B |\n" "[bad](javascript:alert%281%29)\n"]]
+                  "| A | B |\n| --- | --- |\n| merged ||\n" "[bad](javascript:alert%281%29)\n"]]
     (is (nil? (text/model (first (:nodes (markdown/parse source))))) source))
   (doseq [url ["javascript:alert(1)" "data:text/html,bad" "//example.com" "\nhttps://example.com" "java\tscript:bad"]]
     (is (not (text/safe-link? url)))))

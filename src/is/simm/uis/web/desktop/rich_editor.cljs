@@ -12,6 +12,7 @@
             [is.simm.uis.web.desktop.code-highlight :as code-highlight]
             [is.simm.uis.web.desktop.source-preview :as source-preview]
             [is.simm.uis.web.desktop.rich-cells :as cells]
+            [is.simm.uis.web.desktop.rich-tables :as tables]
             [is.simm.uis.web.desktop.chart-view :as charts]
             [is.simm.uis.web.desktop.math-view :as math]
             [is.simm.uis.web.desktop.editor-jump :as jump]
@@ -43,6 +44,7 @@
       (when (and value (or (not scoped?) (= (aget envelope "owner") (.getAttribute el "data-owner"))))
         (let [^js native (aget value "native")
               selection (cond
+                          (= "cell" (some-> native (aget "type"))) (tables/restore-selection doc native)
                           (= "all" (some-> native (aget "type"))) (AllSelection. doc)
                           (= "gapcursor" (some-> native (aget "type")))
                           (let [position (.resolve doc (clamp (aget native "pos")))]
@@ -57,7 +59,7 @@
                           (.between TextSelection
                                     (.resolve doc (clamp (if native (aget native "anchor") (aget value "from"))))
                                     (.resolve doc (clamp (if native (aget native "head") (aget value "to"))))))]
-          (.dispatch (.-view editor) (.setSelection (.. editor -state -tr) selection)))))))
+          (when selection (.dispatch (.-view editor) (.setSelection (.. editor -state -tr) selection))))))))
 
 (defn- region-at [position]
   (some (fn [depth]
@@ -253,7 +255,7 @@
                                                      (catch :default _ false))]
                                    (when-not allowed?
                                      (.dispatchEvent el (js/CustomEvent. "input" #js {:bubbles true :composed true
-                                                                                     :detail #js {:blocked true}})))
+                                                                                     :detail #js {:blocked true :reason "This edit cannot preserve the Markdown table or protected knowledge structure. Use Markdown source for structural changes."}})))
                                    allowed?)))})])}))
 
 (defn- paste-reference! [^js el ^js view event]
@@ -338,10 +340,12 @@
     (let [^js editor (Editor.
                   #js {:element el :content (data el) :editable (not (read-only? el))
                        :extensions #js [(boundary-node "memoryBlock" "(memoryBlock|memoryRegion|memoryOpaque)*" el)
-                                        (boundary-node "memoryRegion" "(paragraph|heading|bulletList|orderedList|codeBlock|horizontalRule|displayMath)+" el)
+                                        (boundary-node "memoryRegion" "(paragraph|heading|bulletList|orderedList|codeBlock|horizontalRule|displayMath|table)+" el)
                                         (boundary-node "memoryOpaque" "" el)
                                         (footnote-node) (math-node "inlineMath" false) (math-node "displayMath" true)
                                         (boundary-guard el) (code-highlight/extension) (cells/extension el)
+                                        (tables/table-extension) (tables/row-extension)
+                                        (tables/cell-extension) (tables/header-extension)
                                         (.configure StarterKit
                                                     #js {:underline false :blockquote false :trailingNode false
                                                          :link #js {:openOnClick false
@@ -350,10 +354,16 @@
                        :editorProps #js {:attributes #js {:class "memory-rich-content"
                                                          :role "textbox" :aria-multiline "true"
                                                          :aria-label "Rich document editor"}
+                                         :handleDOMEvents #js {:paste (fn [view event]
+                                                                       (when (tables/unsupported-paste? view event)
+                                                                         (.preventDefault event)
+                                                                         (tables/blocked! el "This table paste contains structure that Markdown cannot preserve. Use Markdown source instead.")
+                                                                         true))}
                                          :handlePaste (fn [view event _slice] (paste-reference! el view event))
                                          :handleKeyDown (fn [view event]
                                                           (or (when (and (.-altKey event) (= "F10" (.-key event)))
                                                                 (.preventDefault event) (controls/focus-toolbar! el) true)
+                                                              (tables/handle-key! el view event)
                                                               (navigate-boundary! view event)))}
                        :onUpdate (fn [event] (notify! el (.-editor event)))
                        :onFocus (fn [event] (notify! el (.-editor event)))
@@ -439,7 +449,7 @@
     :on-input (fn [event]
                 (when (and (= (.-target event) (.-currentTarget event)) (.-detail event) (not read-only?))
                   (if (aget (.-detail event) "blocked")
-                    (when on-blocked (on-blocked))
+                    (when on-blocked (on-blocked (aget (.-detail event) "reason")))
                     (on-change (js->clj (.. event -detail -model) :keywordize-keys true)
                                (js->clj (.. event -detail -selection) :keywordize-keys true)))))}))
 

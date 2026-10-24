@@ -827,9 +827,9 @@
                                    (update! assoc-in [:autosave path] true)
                                    (autosave! path)))
                                (catch :default error (update! assoc-in [:errors [:rich path]] (rem/error-text error)))))
-       :document-blocked (fn [path]
+       :document-blocked (fn [path & [reason]]
                            (update! assoc-in [:errors [:rich path]]
-                                    "This edit crosses a protected knowledge boundary. Copying is allowed; use Source for structural changes."))
+                                    (or reason "This edit crosses a protected knowledge boundary. Copying is allowed; use Source for structural changes.")))
        :local-source-open (fn [path region]
                             (if (or (declarations/busy? (state) path) (declarations/drafts? (state) path) (editor/property-drafts? (state) path))
                               (update! assoc-in [:errors [:rich path]] "Apply or discard property drafts before editing local Markdown.")

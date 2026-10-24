@@ -98,6 +98,10 @@
                   (el/pre {} (code-content node options)))
     "hardBreak" (el/br {})
     "horizontalRule" (el/hr {})
+    "table" (el/table {:class "memory-data-table"} (el/tbody {} (children node options)))
+    "tableRow" (el/tr {} (children node options))
+    "tableHeader" (el/th {:style {:text-align (or (get-in node [:attrs :align]) "left")}} (children node options))
+    "tableCell" (el/td {:style {:text-align (or (get-in node [:attrs :align]) "left")}} (children node options))
     nil)))
 
 (defn- source-view [path draft a write?]
@@ -273,7 +277,7 @@
                                    :before-jump #((:before-jump a) path %)
                                    :on-jumped (fn [jump selection] ((:jumped a) path jump :rich selection))
                                    :read-only? (or (not write?) (some? (:local-source draft)))
-                                   :on-blocked #((:document-blocked a) path)
+                                   :on-blocked #((:document-blocked a) path %)
                                    :on-change (fn [model selection]
                                                 ((:document-change a) path (:id base) model selection))})
               (if (= :outline (:mode draft))

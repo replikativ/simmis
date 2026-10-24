@@ -218,6 +218,17 @@
         (dissoc :target-stale?))
       (cond-> (-> old (assoc :incoming file) (dissoc :incoming-entry))
         (not (same-target? file (:source old))) (assoc :target-stale? true)))
+    ;; An acknowledged autosave followed by a same-file stream refresh is
+    ;; observation, not authoritative replacement. Keep the native editor's
+    ;; source map, selection and undo owner while refreshing saved analysis.
+    (and (:rich-base old) (= (:text old) (:text file))
+         (= (select-keys file [:target-stamp :repository-id :path :kind :entry])
+            (select-keys (:source old) [:target-stamp :repository-id :path :kind :entry])))
+    (-> old (assoc :source file :analysis (:analysis file) :analysis-text (:text file))
+        (cond-> (and (uuid? (:target-stamp file)) (some? (:entry file))
+                     (= (:target-stamp file) (:current-target-stamp old)))
+          (dissoc :target-stale?))
+        cells/ensure-projection)
     :else (assoc (merge (draft file) (select-keys old [:mode :selection :code-view :office-mode]))
                  ;; A same-entry refresh must not supersede an in-flight save.
                  :generation (if (same-document? file (:source old))
