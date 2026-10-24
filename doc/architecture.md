@@ -358,6 +358,29 @@ recreated. External renames are deletion/addition, not guessed from equal hashes
 Per-view read epochs fence old folder/file replies against newer metadata;
 background refresh never changes the selected file. Metadata requests cover up
 to 64 folders and buffers per view; collapsing a folder releases its listing.
+The sidebar and file tabs share one context/session/Room metadata coordinator.
+It derives live demand from the current layout and expanded navigation tree,
+combines whole view requests within those bounds, and serializes the reads.
+Separate batches retain separate immutable observations, including dispatch-time
+draft generations for each participating view. Their publication sequences are
+local ordering tokens; several batches never claim one atomic snapshot. A view
+consumes its own covered observation once before issuing followup reads.
+
+The shared Signal contains metadata, admission frames and bounded batch results,
+with no file bodies, mutable editor models, native handles or callbacks. File
+tabs and the sidebar track it at the top of their rendering Spins. Closed tabs
+and collapsed trees stop contributing demand; remaining navigation rendering
+prunes unused batches. Unsupported demands are refused per view rather than
+blocking valid siblings. Write acknowledgements invalidate the shared Room
+observation; private source hints and reconnects also trigger reconciliation.
+
+Socket identity, owning world, current Room roster and source-hint generations
+fence publication and consumption. Removing a Room from the loaded roster
+removes verification and eligible listings while preserving human drafts.
+Restored access requires a new observation. A newly observed workspace target
+immediately retires older verification in other batches, without inventing
+coverage for their files. Read replies also retain their original roster basis;
+original write and execution receipt ownership remains separate.
 
 Metadata discovery captures the authenticated human and original application
 before entering its blocking worker. A fixed host service leases the actual

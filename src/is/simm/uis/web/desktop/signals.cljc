@@ -339,6 +339,10 @@
             Tab owners survive column moves; non-tab owners remain distinct."
            (signal runtime {})))
 
+#?(:cljs (def memory-room-metadata
+           "Session/Room owned immutable metadata observations; no bodies or callbacks."
+           (signal runtime {})))
+
 #?(:cljs (def conversation-captures
            "Account/room/message evidence previews and sticky publication holds.
             View visibility and socket epochs never authorize automatic replay."
@@ -1362,7 +1366,7 @@
                 drive-data files-upload-status unread-counts notify-prefs
                 block-conflicts orphaned-blocks room-app-status leaderboards
                 books book-ledgers book-ui workflow-editor-state workflow-output-reviews memory-editor-state conversation-captures
-                memory-navigation-state run-server-facts chat-scroll-windows
+                memory-navigation-state memory-room-metadata run-server-facts chat-scroll-windows
                 chat-reply-targets active-kb-branch kb-branches projected-branch-dbs]]
        (reset! s {}))
      (reset! global-ref :now)

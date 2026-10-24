@@ -3,6 +3,20 @@
   (:require [is.simm.uis.web.desktop.memory-editor :as editor]
             [is.simm.uis.web.desktop.memory-tree :as tree]))
 
+(defn request [state]
+  (let [base (editor/metadata-request state)]
+    {:folders (:folders base)
+     :paths (vec (sort (set (concat (:paths base) (keys (:file-intents state))
+                                    (keys (:create-intents state))
+                                    (when-let [path (:selected state)] [path])))))}))
+
+(defn admission [connection state]
+  (let [request (request state) stream-marker (:stream-marker state)
+        revision (:discovery-revision state 0)]
+    {:request request :connection connection :stream-marker stream-marker
+     :revision revision :marker [connection request stream-marker revision]
+     :generations (into {} (map (fn [[path draft]] [path (:generation draft)])) (:drafts state))}))
+
 (defn retire-upload [state]
   (cond-> (dissoc state :upload-token :upload-intent)
     (:upload-intent state) (assoc :cancelled-upload (:upload-intent state))))

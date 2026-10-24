@@ -47,3 +47,30 @@
   (and (map? (:folders snapshot)) (map? (:entries snapshot))
        (every? #(contains? (:folders snapshot) %) (:folders request))
        (every? #(contains? (:entries snapshot) %) (:paths request))))
+
+(defn plans
+  "Batch identity includes owner demands and invalidation, but NOT typing.
+   Draft generations are captured by admission only when starting the read."
+  [admissions invalidation]
+  (mapv (fn [{:keys [request owners]}]
+          {:request request :owners (select-keys admissions owners)
+           :generation [invalidation
+                        (into {} (for [owner owners]
+                                   [owner (:marker (get admissions owner))]))]})
+        (batches (into {} (map (fn [[owner frame]] [owner (:request frame)])) admissions))))
+
+(defn envelope-current? [envelope plan epoch]
+  (and envelope (= epoch (:epoch envelope))
+       (= (:request plan) (:request envelope))
+       (= (:generation plan) (:generation envelope))))
+
+(defn next-plan [state plans epoch]
+  (first (remove #(envelope-current? (get-in state [:envelopes (:request %)]) % epoch) plans)))
+
+(defn observation-for
+  "Return only this owner's admitted snapshot, never an aggregate of batches."
+  [state plans epoch owner]
+  (some (fn [plan]
+          (when (contains? (:owners plan) owner)
+            (let [envelope (get-in state [:envelopes (:request plan)])]
+              (when (envelope-current? envelope plan epoch) envelope)))) plans))

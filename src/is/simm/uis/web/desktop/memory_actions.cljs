@@ -8,6 +8,7 @@
             [is.simm.uis.web.desktop.memory-editor :as editor]
             [is.simm.uis.web.desktop.memory-owner :as owner]
             [is.simm.uis.web.desktop.memory-metadata-view :as metadata-view]
+            [is.simm.uis.web.desktop.memory-metadata-io :as metadata-io]
             [is.simm.uis.web.desktop.memory-cells :as cells]
             [is.simm.uis.web.desktop.memory-tree :as tree]
             [is.simm.uis.web.desktop.memory-declarations :as declarations]
@@ -72,7 +73,8 @@
         update! (fn [f & args]
                   (binding [ec/*execution-context* ctx]
                     (when (current?) (apply swap! state-signal update key f args))))
-        change! (fn [path f & args] (apply update! update-in [:drafts path] f args))]
+        change! (fn [path f & args] (apply update! update-in [:drafts path] f args))
+        shared (metadata-io/controller ctx session room key state-signal)]
     (letfn [(select! [path & [retain-reference?]]
               (let [preserve? (or retain-reference? (= path (:selected (state))))]
                 (update! #(cond-> (assoc % :selected path)
@@ -87,27 +89,38 @@
                                             (references/selected-tab % path preserve?) %)
                                          (if retain-reference? :passive :navigate)))))))
             (connected! []
-              (let [c (connection)]
+              (let [c (connection) stream (binding [ec/*execution-context* ctx] @sync/state)]
                 (when (and (current?) (not= c (:connection (state))))
-                  (update! #(-> % metadata-view/retire-upload (assoc :connection c :target-verified? false)
+                  (update! #(-> % metadata-view/retire-upload
+                                (assoc :connection c :target-verified? false
+                                       :stream-marker [(:connection stream) (:status stream)
+                                                       (get-in stream [:dirty room] 0)])
                                 (update :target-epoch (fnil inc 0))
                                 (assoc :requests {} :request-contexts {} :loading {} :accepted {} :finished {})
                                 (dissoc :folders :verified-connection :permissions :sandbox-permissions
                                         :watch-connection :sync))))
+                (when (and (current?) (nil? (:stream-marker (state))))
+                  (update! assoc :stream-marker [(:connection stream) (:status stream)
+                                                (get-in stream [:dirty room] 0)]))
                 c))
             (frame-current? [s frame]
               (and (= (:connection frame) (:connection s))
                    (or (not= :target (:scope frame))
                        (and (verified? s (:connection frame))
+                            ((:available? shared))
+                            (or (nil? ((:target shared))) (= (:stamp frame) ((:target shared))))
                             (= (:stamp frame) (:target-stamp s))
                             (= (:target-epoch frame) (:target-epoch s))
-                            (or (not (:read? frame)) (= (:read-epoch frame) (:read-epoch s)))))))
+                            (or (not (:read? frame))
+                                (and (= (:read-epoch frame) (:read-epoch s))
+                                     (= (:roster frame) (binding [ec/*execution-context* ctx] @sig/user-rooms))))))))
             (invalidate! []
               (update! metadata-view/unverify))
             (request! [slot invoke consume after opts]
               (let [c (connected!) token (random-uuid)
                     frame {:scope (:scope opts :target) :connection c :stamp (:stamp opts)
                            :target-epoch (:target-epoch (state)) :read? (:read? opts)
+                           :roster (binding [ec/*execution-context* ctx] @sig/user-rooms)
                            :read-epoch (:read-epoch (state))}
                     live? #(and (current?) (= c (connection)))
                     owns? #(and (editor/response-current? % slot token)
@@ -179,52 +192,77 @@
                                (catch :default error (fail! error))))))
                        fail!))
                     (catch :default error (fail! error))))))
-            (metadata-request [s]
-              (let [request (editor/metadata-request s)]
-                {:folders (:folders request)
-                 :paths (vec (sort (set (concat (:paths request) (keys (:file-intents s))
-                                                (keys (:create-intents s))
-                                                (when-let [p (:selected s)] [p])))))}))
+            (metadata-followups! [reply]
+              (let [{:keys [files folders office search? histories]}
+                    (metadata-view/followups (state) reply)]
+                (update! dissoc :metadata-followups)
+                (doseq [p files] (open! p true nil true))
+                (doseq [{:keys [path part reading?]} office]
+                  (office-open! path part reading?))
+                (doseq [p folders] (folder! p))
+                (when search? (search!))
+                (doseq [p histories] (history! p))))
+            (consume-metadata! []
+              (when-let [envelope ((:observation shared))]
+                (let [identity [(:epoch envelope) (:sequence envelope)]
+                      frame (get-in envelope [:owners key])]
+                  (when (and (not= identity (:metadata-consumed (state)))
+                             (or (:error envelope) frame))
+                    ;; Mark consumption before any followup can synchronously
+                    ;; reenter this controller. The original admission owns gens.
+                    (if-let [error (:error envelope)]
+                      (update! #(-> % metadata-view/unverify
+                                    (dissoc :folders :observed-entries)
+                                    (cond-> (#{:authentication-required :not-authorized} (:type error))
+                                      (dissoc :sandbox-permissions))
+                                    (assoc :metadata-consumed identity)
+                                    (assoc-in [:loading :metadata] false)
+                                    (assoc-in [:errors :metadata] (:message error))))
+                      (let [reply (-> (:reply envelope)
+                                      (update :folders select-keys (get-in frame [:request :folders]))
+                                      (update :entries select-keys (get-in frame [:request :paths])))]
+                        (update! #(-> (metadata-view/consume % reply frame)
+                                      (assoc :metadata-consumed identity)
+                                      (assoc-in [:loading :metadata] false)
+                                      (update :errors dissoc :metadata)))
+                        (metadata-followups! reply)))))))
             (discover! [force?]
-              (when force? (update! update :discovery-revision (fnil inc 0)))
-              (let [c (connected!) s (state)
-                    request (metadata-request s) stream-marker (:stream-marker s)
-                    marker [c request stream-marker
-                            (:discovery-revision s 0)]]
-                (when (and c (current?) (not (get-in s [:loading :metadata]))
-                           (or force? (not= marker (get-in s [:sync :attempted]))))
-                  (update! assoc-in [:sync :attempted] marker)
-                  (if (or (> (count (:folders request)) 64) (> (count (:paths request)) 64))
+              (when-not (:metadata-interest? (state)) (update! assoc :metadata-interest? true))
+              (when force?
+                (update! update :discovery-revision (fnil inc 0))
+                ((:invalidate shared)))
+              (let [c (connected!) request (metadata-view/request (state))]
+                (when (and c (current?))
+                  (cond
+                    (not ((:available? shared)))
+                    (when (or (:target-verified? (state)) (:folders (state))
+                              (not= "This room is no longer available." (get-in (state) [:errors :metadata])))
+                      (update! #(-> % metadata-view/unverify
+                                    (dissoc :folders :observed-entries :sandbox-permissions)
+                                    (assoc-in [:loading :metadata] false)
+                                    (assoc-in [:errors :metadata] "This room is no longer available."))))
+                    (or (> (count (:folders request)) 64) (> (count (:paths request)) 64))
                     (do (invalidate!)
                         (update! assoc-in [:errors :metadata]
-                                 "Memory supports 64 expanded folders and file buffers per view. Collapse folders or close buffers, then Refresh."))
-                    (let [generations (into {} (map (fn [[p d]] [p (:generation d)])) (:drafts s))
-                          revision (:discovery-revision s 0)]
-                      (request!
-                       :metadata #(remote/load-memory-metadata! web/server-id room request)
-                       #(metadata-view/consume %1 %2 {:connection c :stream-marker stream-marker
-                                                            :marker marker :generations generations})
-                       (fn [reply]
-                         ;; Preserve the browser-proved omitted-path fix: use
-                         ;; CURRENT pending reads, not metadata's old request.
-                         (let [{:keys [files folders office search? histories]}
-                               (metadata-view/followups (state) reply)]
-                           (update! dissoc :metadata-followups)
-                           (doseq [p files] (open! p true nil true))
-                           (doseq [{:keys [path part reading?]} office]
-                             (office-open! path part reading?))
-                           (doseq [p folders] (folder! p))
-                           (when search? (search!))
-                           (doseq [p histories] (history! p))))
-                       {:scope :discovery
-                        :accept? (fn [s _] (= revision (:discovery-revision s 0)))
-                        :error-current? (fn [s] (= revision (:discovery-revision s 0)))
-                        :on-settled (fn []
-                                      (when (not= revision (:discovery-revision (state) 0))
-                                        (discover! false)))}))))))
+                                 "Memory supports 64 expanded folders and file buffers per view. Collapse folders or close buffers, then retry."))
+                    :else (do
+                      ((:ensure shared))
+                      (let [target ((:target shared)) envelope ((:observation shared))]
+                        (when (and target (not= target (:target-stamp (state)))
+                                   (not= target (get-in envelope [:reply :target-stamp])))
+                          (update! #(-> % (editor/observe-target target)
+                                        (update :target-epoch (fnil inc 0))
+                                        metadata-view/retire-upload metadata-view/target-bookkeeping
+                                        metadata-view/unverify))))
+                      (when-not ((:observation shared))
+                        (let [included? (boolean ((:included? shared)))]
+                          (when (not= included? (get-in (state) [:loading :metadata]))
+                            (update! assoc-in [:loading :metadata] included?))))
+                      (consume-metadata!))))))
             (target! [slot]
               (connected!)
-              (if (verified? (state) (connection)) (:target-stamp (state))
+              (if (and (verified? (state) (connection)) ((:available? shared))
+                       (or (nil? ((:target shared))) (= (:target-stamp (state)) ((:target shared))))) (:target-stamp (state))
                   (do (update! assoc-in [:errors slot] "Verify the current workspace with Refresh before this action.")
                       (discover! false) nil)))
             (draft-stamp! [path slot]
@@ -234,9 +272,11 @@
             (generation? [path generation]
               (fn [s _] (= generation (get-in s [:drafts path :generation]))))
             (navigation-refresh! []
+              ((:invalidate shared))
               (when-not (= :navigation (:col-id data))
-                ((:refresh (controller {:room-id (:room-id data) :col-id :navigation
-                                        :state-signal sig/memory-navigation-state})))))
+                ((:discover (controller {:room-id (:room-id data) :col-id :navigation
+                                         :state-signal sig/memory-navigation-state}))))
+              (discover! false))
             (folder! [path]
               (update! assoc-in [:folder-intents path] true)
               (if-let [stamp (when (verified? (state) (connected!)) (:target-stamp (state)))]
@@ -324,7 +364,7 @@
                                     (update-in [:drafts path] editor/property-saved (:generation draft) reply)
                                     (= pd (get-in current [:property-drafts scope (:id field)]))
                                     (update-in [:property-drafts scope] dissoc (:id field))))
-                                (fn [_] (discover! true) (navigation-refresh!)) {:stamp stamp}))))))
+                                (fn [_] (navigation-refresh!)) {:stamp stamp}))))))
             (declaration-preview! [path target]
               (let [s (state) scope [path target] dd (get-in s [:declaration-drafts scope])
                     model (get-in s [:property-models scope]) generation (:generation dd)]
@@ -355,7 +395,7 @@
                                   (update-in [:drafts path] editor/property-saved (:generation draft) reply)
                                   (= dd (get-in current [:declaration-drafts scope]))
                                   (update :declaration-drafts dissoc scope)))
-                              (fn [_] (discover! true) (navigation-refresh!)) {:stamp stamp})))))
+                              (fn [_] (navigation-refresh!)) {:stamp stamp})))))
             (apply-local-source! [path]
               (let [draft (get-in (state) [:drafts path]) local (:local-source draft) slot [:local-source path]]
                 (when-not (get-in (state) [:loading slot])
@@ -549,12 +589,15 @@
                 (discover! false)))
             (refresh! []
               (connected!)
-              (update! #(-> % tree/invalidate-closed-folders (assoc :errors {} :retry-stream? true)
-                            (dissoc :watch-connection)))
-              (discover! true)
+              (let [stream (binding [ec/*execution-context* ctx] @sync/state)]
+                (update! #(-> % tree/invalidate-closed-folders
+                              (assoc :errors {} :retry-stream? true
+                                     :stream-marker [(:connection stream) (:status stream)
+                                                     (get-in stream [:dirty room] 0)])
+                              (dissoc :watch-connection))))
+              (navigation-refresh!)
               (when-let [c (connection)]
-                (ensure-sync! c (binding [ec/*execution-context* ctx] @sync/state)))
-              (navigation-refresh!))]
+                (ensure-sync! c (binding [ec/*execution-context* ctx] @sync/state))))]
       {:owner key :state state :change change! :edit edited! :folder folder! :open #(open! % false) :reload #(open! % true)
        :ensure-charts (fn []
                         (let [s (state) path (:selected s) draft (get-in s [:drafts path])
@@ -695,7 +738,10 @@
            ;; Client hint prompts verification, never target adoption.
            (invalidate!) (discover! true)))
        :ensure-root #(when-not (get-in (state) [:folders ""]) (folder! ""))
-       :ensure-sync ensure-sync! :refresh refresh!
+       :ensure-sync ensure-sync!
+       :maintain-metadata #(do ((:ensure shared))
+                               (when (:metadata-interest? (state)) (discover! false)))
+       :consume-metadata #(when (:metadata-interest? (state)) (discover! false)) :refresh refresh!
        :analyze analyze! :save save! :mode (fn [path mode]
                                              (change! path #(cond-> (assoc % :mode mode) (= mode :rich) editor/begin-rich))
                                              (let [draft (get-in (state) [:drafts path])]
@@ -782,6 +828,6 @@
                                (fn [_]
                                  (select! target true)
                                  (doseq [p (set [(parent path) (parent target)])] (folder! p))
-                                 (navigation-refresh!) (open! target true) (discover! true) (autosave! target))
+                                 (navigation-refresh!) (open! target true) (autosave! target))
                                {:stamp stamp :accept? (fn [s _] (and (= (:generation draft) (get-in s [:drafts path :generation]))
                                                                      (nil? (get-in s [:drafts target]))))})))))})))

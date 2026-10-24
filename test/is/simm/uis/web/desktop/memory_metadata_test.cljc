@@ -116,3 +116,33 @@
     (is (= [{:path "report.docx" :part "word/document.xml" :reading? false}] (:office plan)))
     (is (= ["old.md"] (:histories plan)))
     (is (:search? plan))))
+
+(deftest planning-captures-typing-without-making-it-a-fetch-generation
+  (let [state {:selected "a.md" :stream-marker :current
+               :drafts {"a.md" {:generation 1}}}
+        original (first (metadata/plans {:tab (view/admission :socket state)} 0))
+        typed (first (metadata/plans {:tab (view/admission :socket (assoc-in state [:drafts "a.md" :generation] 2))} 0))
+        invalidated (first (metadata/plans {:tab (view/admission :socket state)} 1))]
+    (is (= (:generation original) (:generation typed)))
+    (is (= 1 (get-in original [:owners :tab :generations "a.md"])))
+    (is (= 2 (get-in typed [:owners :tab :generations "a.md"])))
+    (is (not= (:generation original) (:generation invalidated)))))
+
+(deftest batch-envelopes-retain-independent-epochs-coverage-and-publications
+  (let [owners (into {} (for [owner [:a :b]
+                             :let [paths (mapv #(str (name owner) % ".md") (range 40))]]
+                         [owner (view/admission :socket {:file-intents (zipmap paths (repeat true))})]))
+        [a b :as plans] (metadata/plans owners :hint)
+        epoch [:socket :world]
+        a-reply (assoc a :epoch epoch :sequence 1)
+        b-reply (assoc b :epoch epoch :sequence 2)
+        state {:envelopes {(:request a) a-reply (:request b) b-reply}}]
+    (is (= 2 (count plans)))
+    (is (= a (metadata/next-plan {} plans epoch)))
+    (is (= b (metadata/next-plan {:envelopes {(:request a) a-reply}} plans epoch)))
+    (is (nil? (metadata/next-plan state plans epoch)))
+    (is (= 1 (:sequence (metadata/observation-for state plans epoch :a))))
+    (is (= 2 (:sequence (metadata/observation-for state plans epoch :b))))
+    (is (nil? (metadata/observation-for state plans [:socket :fork] :a)))
+    (is (nil? (metadata/observation-for state (metadata/plans owners :new-hint) epoch :a)))
+    (is (nil? (metadata/observation-for state plans epoch :closed-owner)))))
