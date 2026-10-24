@@ -17,6 +17,8 @@
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.connection-epoch :as connection-epoch]
             [is.simm.uis.web.desktop.views.memory-navigation :as navigation]
+            [is.simm.uis.web.desktop.views.nav :as nav]
+            [is.simm.uis.web.desktop.db-signal :as db-signal]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.runtimes.web :as web])
   (:require-macros [org.replikativ.spindel.signal :refer [signal]]))
@@ -1426,6 +1428,56 @@
             (is (empty? (:envelopes (first (vals @sig/memory-room-metadata)))))
             (is (not (.includes (.-textContent container) "Result.md")))
             (finally ((:stop! handle)))))))))
+
+(deftest memory-sidebar-uses-room-trees-without-opening-legacy-sources
+  (with-client
+    (fn [_]
+      (let [container (.createElement js/document "div")
+            legacy {:knowledge-bases [{:kb/id "legacy" :kb/name "Old Research Wiki" :kb/db-scope "legacy-store"}]
+                    :drives [{:id "old-drive" :name "Old Drive" :room-id "test-room"}]}]
+        (with-redefs [sig/nav-collapsed-projects (signal runtime #{})
+                      sig/active-nav-keys (signal runtime #{})
+                      db-signal/connect-kb! (fn [& _] (throw (js/Error. "No legacy replica connection")))]
+          (reset! sig/user-rooms (assoc legacy :rooms [{:room/id "test-room" :room/name "Knowledge"}]))
+          (let [handle (render/render-spin! container (nav/render-memory-section-spin)
+                                            (browser/make-dom-discharge js/document))]
+            (try
+              (simple/drain-events! runtime nil)
+              (is (.includes (.-textContent container) "Knowledge"))
+              (is (not (.includes (.-textContent container) "Old Research Wiki")))
+              (is (not (.includes (.-textContent container) "Old Drive")))
+              (is (.includes (.-textContent container) "Add memory"))
+              (reset! sig/user-rooms (assoc legacy :rooms []))
+              (simple/drain-events! runtime nil)
+              (is (.includes (.-textContent container) "No workspaces yet"))
+              (is (not (.includes (.-textContent container) "Knowledge")))
+              (reset! sig/nav-collapsed-projects #{"memory"})
+              (simple/drain-events! runtime nil)
+              (is (not (.includes (.-textContent container) "Add memory")))
+              (finally ((:stop! handle))))))))))
+
+(deftest memory-sidebar-clicks-stay-in-the-rendering-context
+  (with-client
+    (fn [_]
+      (with-redefs [sig/nav-collapsed-projects (signal runtime #{"parent-only"})
+                    sig/active-nav-keys (signal runtime #{})]
+        (let [child (context/fork-context runtime)
+              container (.createElement js/document "div")
+              handle (binding [ec/*execution-context* child]
+                       (reset! sig/user-rooms {:rooms []})
+                       (reset! sig/nav-collapsed-projects #{"memory"})
+                       (render/render-spin! container (nav/render-memory-section-spin)
+                                            (browser/make-dom-discharge js/document)))]
+          (try
+            (simple/drain-events! child nil)
+            (.dispatchEvent (.querySelector container ".nav-title") (js/MouseEvent. "click" #js {:bubbles true}))
+            (simple/drain-events! child nil)
+            (is (= #{"parent-only"} @sig/nav-collapsed-projects))
+            (is (= #{} (binding [ec/*execution-context* child] @sig/nav-collapsed-projects)))
+            (is (.includes (.-textContent container) "Add memory"))
+            (finally
+              (binding [ec/*execution-context* child] ((:stop! handle)))
+              (context/close-context! child))))))))
 
 (deftest a-new-target-in-another-batch-immediately-retires-old-verification
   (with-client

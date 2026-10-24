@@ -495,15 +495,13 @@
 ;;   ├─ render-sidebar-header-spin    tracks nav-search-query
 ;;   ├─ render-views-section-spin     tracks active-nav-keys
 ;;   ├─ render-memory-section-spin    tracks user-rooms + nav-collapsed-projects
-;;   │   └─ render-kb-subsection-spin (one spin per KB) tracks that KB's
-;;   │                                per-KB db signal + nav-search-query
-;;   │                                + nav-collapsed-projects
+;;   │   └─ memory-navigation/render tracks each room's shared file metadata
 ;;   ├─ render-chats-section-spin     tracks user-rooms + collapse + search
 ;;   ├─ render-contacts-section-spin  tracks user-rooms + collapse + search
 ;;   └─ render-sidebar-footer-spin    tracks connection-status + current-user
 ;;
-;; A page added to KB X bumps only X's per-KB db signal, which re-runs
-;; ONLY that KB's render-kb-subsection-spin — not the whole sidebar.
+;; File metadata changes rerun the owning room tree without connecting a
+;; separate legacy wiki replica.
 
 (defn- search-matches?
   "True when `title` matches the (lower-cased) search query, or no query."
@@ -575,263 +573,55 @@
              (item :accounting "wallet" "Accounting" nil)))))))
 
 #?(:cljs
-   (defn render-kb-subsection-spin
-     "One spin per knowledge base. Tracks this KB's per-DB signal directly
-      via `ensure-kb-db-signal!`, plus `nav-search-query` and
-      `nav-collapsed-projects` so filtering and expand/collapse stay
-      reactive without re-running the rest of the sidebar.
-
-      Adding a page to KB X bumps only X's per-DB signal — and the
-      signal-set lives in a non-reactive atom — so this spin owns the
-      single reactive dependency on KB X's pages, not the parent
-      kbs-section."
-     [kb]
-     (spin
-       (let [kb-scope   (:kb/db-scope kb)
-             ;; GlobalCut: the page list resolves through the (scope,ref)
-             ;; registry, so at a past cut the sidebar lists the pages that
-             ;; existed at T — previously it silently showed Now next to a
-             ;; time-traveled page (doc §S3). Track at the spin top; ref=:now
-             ;; returns the untouched live signal (hot path unchanged).
-             gref       (iv/get-new (track sig/global-ref))
-             kb-sig     (db-sig/ensure-view-db-signal! kb-scope (or gref :now))
-             live-db    (iv/get-new (track kb-sig))
-             collapsed  (iv/get-new (track sig/nav-collapsed-projects))
-             search-q   (iv/get-new (track sig/nav-search-query))
-             active     (iv/get-new (track sig/active-nav-keys))
-             searching? (seq search-q)
-             kb-key     (str "kb-" (:kb/id kb))
-             kb-id-str  (str (:kb/id kb))
-             ;; Page titles are derived only after this KB has been selected.
-             ;; The roster intentionally carries metadata, not a snapshot of
-             ;; every wiki's contents.
-             kb-pages   (when live-db (query-kb-pages live-db kb-scope))
-             ;; :active? IN the item — ifor-each diffs on item equality and
-             ;; cannot see a closure variable (sharp edge #2).
-             ;; Scope-qualified, because a page is (store, uuid) and the uuid
-             ;; alone is not unique across KBs — the seed gives every KB's
-             ;; "SKILL" page the same id, so this used to highlight all of them
-             ;; at once. Must match the key `sig/active-tab-keys` builds.
-             kb-pages   (mapv #(assoc % :active? (contains? active
-                                                            [:wiki (str (:db-scope %) "/" (:id %))]))
-                              (filterv #(search-matches? search-q (:title %))
-                                       (or kb-pages [])))
-             kb-collapsed? (and (not searching?)
-                                (or (nil? live-db)
-                                    (contains? collapsed kb-key)))]
-         (el/div {:key kb-key :class "nav-subsection"}
-           (el/div {:class (vc/class-names "nav-item nav-item--subsection"
-                                           (when kb-collapsed? "collapsed"))
-                    :on-click (fn [_]
-                                (binding [rtc/*execution-context* runtime]
-                                  (when-not live-db
-                                    (db-sig/connect-kb! kb-scope @web/client))
-                                  (swap! sig/nav-collapsed-projects
-                                         (fn [s]
-                                           (if kb-collapsed?
-                                             (disj s kb-key)
-                                             (conj s kb-key))))))}
-             (vc/icon (if kb-collapsed? "chevron-right" "chevron-down")
-                      {:class "nav-title-chevron"})
-             (el/span {:style {:flex "1"}} (or (:kb/name kb) "Wiki"))
-             (el/span {:class "nav-scope"
-                       :title "Database-backed pages retained from the earlier wiki. File-backed knowledge is in the room's Memory tree."}
-                      "Legacy wiki")
-             ;; Gear icon for KB settings
-             (el/button {:class "nav-item-action-btn"
-                         :title "KB settings"
-                         ;; The whole body needs the ctx: `reset!` on a signal
-                         ;; throws without one, and it sits BEFORE `open-tab!`,
-                         ;; so the gear did nothing at all — propagation already
-                         ;; stopped, tab never opened. Every sibling handler in
-                         ;; this file binds; this one did not.
-                         :on-click (fn [e]
-                                     (.stopPropagation e)
-                                     (binding [rtc/*execution-context* runtime]
-                                       (reset! sig/admin-data nil)
-                                       (sig/open-tab!
-                                         :kb-settings
-                                         {:kb-id kb-id-str}
-                                         {:title (str (:kb/name kb) " Settings")
-                                          :new-tab? true})))}
-               (vc/icon "settings" {:class "nav-item-action-icon"})))
-           ;; WHO can reach it, on its own line — a grant is an access relation,
-           ;; not containment, so this wiki is listed once and names its teams
-           ;; rather than being repeated under each. Below rather than beside
-           ;; the title: the sidebar is narrow and team names truncated to
-           ;; "Ops — Maint…", which is worse than no answer.
-           ;; A wiki the viewer may only read (a room's `:read` grant) says
-           ;; so here, next to the rooms it is reached through.
-           (when (or (seq (:scopes kb)) (:kb/read-only? kb))
-             (el/div {:class "nav-scope"}
-               (str/join " · " (cond-> (vec (:scopes kb))
-                                 (:kb/read-only? kb) (conj "read-only")))))
-           (when-not kb-collapsed?
-             (el/div {:class "nav-section-items"}
-               ;; Branch UI removed deliberately: branches are
-               ;; INFRASTRUCTURE, not interface (doc/proposals-and-
-               ;; time-travel.md) — fork review lives in the Proposals
-               ;; inbox, time travel in the time strip. The branching
-               ;; machinery (signals, projection) stays for the
-               ;; registry's {:branch} ref arm.
-               (if (seq kb-pages)
-                 (ifor-each :id kb-pages
-                   (fn [page] (nav-item page)))
-                 (el/div {:class "nav-empty"} "No pages")))))))))
-
-#?(:cljs
-   ;; ONE form per reader-conditional branch — three bare defns here meant only
-   ;; the first was emitted and the other two silently did not exist.
-   (do
-   (defn- kb-scope-index
-     "kb-id → the team names that can reach it, from each room's grant list."
-     [rooms]
-     (reduce (fn [m r]
-               (reduce (fn [m kid] (update m (str kid) (fnil conj []) (:room/name r)))
-                       m (:room/knowledge-bases r)))
-             {} rooms))
-
-   (defn- drive-rows
-     "One row per DRIVE, not per attachment. The roster carries a drive once per
-      room it is granted to (chat-remote fans out over rooms), so the same drive
-      arrives several times; collapse those into a single row whose scopes list
-      every team."
-     [drives]
-     (->> (group-by :id drives)
-          (mapv (fn [[id ds]]
-                  (let [d (first ds)]
-                    {:id id :kind :drive :title (:name d)
-                     :room-id (some :room-id ds)
-                     :scopes (vec (distinct (keep :room-name ds)))})))))
-
    (defn render-memory-section-spin
-     "ONE list of everything the workspace remembers — wikis and drives together,
-      mail later.
-
-      Not grouped by resource TYPE, because that is the distinction
-      `doc/kb-unification.md` exists to erase: wiki, drive, mail and books are
-      converging on one substrate, so heading the sidebar with their storage
-      kinds advertises an implementation detail as the primary structure.
-
-      Not nested under teams either. A grant is an ACCESS relation, not
-      containment — a wiki granted to four teams is one thing four teams can
-      reach, not four things. Nesting would list it four times, own it nowhere,
-      and (not coincidentally) put four spins on one per-KB signal. Scope is
-      therefore a COLUMN: each resource appears once and says who can see it.
-
-      Each KB keeps its own nested spin, so a page added to one wiki re-runs only
-      that wiki's subtree."
+     "Canonical room workspaces share the reactive Memory tree. Mail and web
+      captures remain separate intake views; no standalone wiki/drive listing."
      []
      (spin
-       (let [user-rooms (iv/get-new (track sig/user-rooms))
-             collapsed  (iv/get-new (track sig/nav-collapsed-projects))
-             active     (iv/get-new (track sig/active-nav-keys))
-             ;; mail + web are singletons — the tab TYPE alone identifies them
-             on?        (fn [t] (contains? active [t nil]))
-             kbs-data   (when (map? user-rooms) (:knowledge-bases user-rooms))
-             rooms      (when (map? user-rooms) (:rooms user-rooms))
-             drives     (when (map? user-rooms) (:drives user-rooms))
-             scope-idx  (kb-scope-index rooms)
-             ;; scopes ride IN the item — ifor-each diffs on item equality and
-             ;; cannot see a closure variable
-             kb-items   (->> kbs-data
-                             (mapv #(assoc % :scopes (get scope-idx (str (:kb/id %)) [])))
-                             (sort-by #(str (:kb/name %))))
-             drv-items  (sort-by :title (drive-rows drives))]
+       (let [owner-context (rtc/current-execution-context)
+             user-rooms (iv/get-new (track sig/user-rooms))
+             collapsed (iv/get-new (track sig/nav-collapsed-projects))
+             active (iv/get-new (track sig/active-nav-keys))
+             rooms (when (map? user-rooms) (:rooms user-rooms))
+             on? (fn [type] (contains? active [type nil]))]
          (el/div {:class "nav-section"}
            (nav-section-header
-             {:title "Memory"
-              :collapsible? true
-              :collapsed? (contains? collapsed "kbs")
+             {:title "Memory" :collapsible? true
+              :collapsed? (contains? collapsed "memory")
               :on-toggle (fn [_]
-                           (binding [rtc/*execution-context* runtime]
+                           (binding [rtc/*execution-context* owner-context]
                              (swap! sig/nav-collapsed-projects
-                                    (fn [s]
-                                      (if (contains? s "kbs")
-                                        (disj s "kbs")
-                                        (conj s "kbs"))))))})
-           (when-not (contains? collapsed "kbs")
+                                    (fn [keys]
+                                      (if (contains? keys "memory")
+                                        (disj keys "memory") (conj keys "memory"))))))})
+           (when-not (contains? collapsed "memory")
              (el/div {:class "nav-section-items"}
                (when (seq rooms)
                  (await (ifor-each :room/id (sort-by :room/name rooms) memory-nav/render)))
-               (when (seq kb-items)
-                 ;; render-fn returns spins → ifor-each returns a spin → await it
-                 (await (ifor-each :kb/id kb-items
-                          (fn [kb] (render-kb-subsection-spin kb)))))
-               (when (seq drv-items)
-                 (ifor-each :id drv-items
-                   (fn [drv]
-                     (el/div {:key (:id drv) :class "nav-subsection"}
-                       (if (:room-id drv)
-                         (el/div {:class "nav-item"
-                                  :on-click (fn [_]
-                                              (binding [rtc/*execution-context* runtime]
-                                                (sig/open-or-activate-tab!
-                                                  :files
-                                                  {:room-id (:room-id drv)}
-                                                  {:title (:title drv)})))}
-                           (vc/icon "folder")
-                           (el/span {:class "nav-item-label"} (:title drv)))
-                         ;; no grant yet — visible so it can be found, not
-                         ;; browsable until a team can reach it
-                         (el/div {:class "nav-item nav-item--muted"
-                                  :title "Attach to a team (Room Settings) to browse"}
-                           (vc/icon "folder")
-                           (el/span {:class "nav-item-label"} (:title drv))))
-                       (el/div {:class "nav-scope"}
-                               (if (seq (:scopes drv))
-                                 (str/join " · " (:scopes drv))
-                                 "no team"))))))
-               ;; Mail and web captures are MEMORY, not top-level destinations.
-               ;; They were sitting in the views group beside Tasks, which is
-               ;; the resource-type axis doc/kb-unification.md exists to erase —
-               ;; a mail account and a wiki are two shapes of the same
-               ;; substrate, so they belong in one list.
-               ;;
-               ;; Both are singletons per user rather than things you create:
-               ;; web captures already live in ONE per-party store
-               ;; (`runtimes.web-intake`), and mail opens onto the account list.
+               (when-not (seq rooms)
+                 (el/div {:class "nav-empty"} "No workspaces yet"))
                (el/div {:key "mail" :class "nav-subsection"}
                  (el/div {:class (vc/class-names "nav-item" (when (on? :mail) "active"))
                           :on-click (fn [_]
-                                      (binding [rtc/*execution-context* runtime]
-                                        (sig/open-or-activate-tab!
-                                          :mail nil {:title "Mail"})))}
+                                      (binding [rtc/*execution-context* owner-context]
+                                        (sig/open-or-activate-tab! :mail nil {:title "Mail"})))}
                    (vc/icon "mail")
                    (el/span {:class "nav-item-label"} "Mail"))
                  (el/div {:class "nav-scope"} "everywhere"))
                (el/div {:key "web-captures" :class "nav-subsection"}
                  (el/div {:class (vc/class-names "nav-item" (when (on? :web-captures) "active"))
                           :on-click (fn [_]
-                                      (binding [rtc/*execution-context* runtime]
-                                        (sig/open-or-activate-tab!
-                                          :web-captures nil {:title "Web"})))}
+                                      (binding [rtc/*execution-context* owner-context]
+                                        (sig/open-or-activate-tab! :web-captures nil {:title "Web"})))}
                    (vc/icon "globe")
                    (el/span {:class "nav-item-label"} "Web"))
                  (el/div {:class "nav-scope"} "yours only"))
-               (when-not (or (seq kb-items) (seq drv-items))
-                 (el/div {:class "nav-empty"} "Nothing yet"))
-               ;; ONE entry point. Two type-named buttons ("New Wiki", "New
-               ;; Drive") put the resource-type axis back in through the
-               ;; actions right after we took it out of the headings — and they
-               ;; could never cover CONNECTING an existing platform, which is
-               ;; not a "new" anything.
-               ;;
-               ;; "Add" is the only verb honest for both: you cannot create a
-               ;; Gmail account here and you cannot connect a blank wiki.
-               ;; Connecting sets an UPSTREAM on a local memory rather than
-               ;; pointing at a remote one — the same shape dvergr's geschichte
-               ;; substrate uses for repos — so the replica stays forkable,
-               ;; searchable and time-travellable like everything else.
-               (el/div {:key "add-memory"
-                        :class "nav-item nav-item--action"
+               (el/div {:key "add-memory" :class "nav-item nav-item--action"
                         :on-click (fn [_]
-                                    (binding [rtc/*execution-context* runtime]
-                                      (sig/open-or-activate-tab!
-                                        :add-memory nil {:title "Add memory"})))}
+                                    (binding [rtc/*execution-context* owner-context]
+                                      (sig/open-or-activate-tab! :add-memory nil {:title "Add memory"})))}
                  (vc/icon "plus")
-                 (el/span {} "Add memory"))))))))))
-
+                 (el/span {} "Add memory")))))))))
 
 #?(:cljs
    (defn- join-experiment-room!
