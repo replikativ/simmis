@@ -72,6 +72,25 @@ Native handles remain element-owned. Markdown source supports the same jump
 when rich projection is unavailable. Opening or copying a link never evaluates
 code or writes the file.
 
+The collapsed Backlinks section in file context lists canonical Simmis file and
+block URLs from saved Markdown in this workspace. Inline and defined reference
+links count; code, comments and unused link definitions do not. Relative paths,
+wiki-name spellings, external URLs and frozen experiment inputs are not resolved
+into live files. A block destination follows its explicit identity despite a
+stale path hint. Each origin opens its innermost explicitly identified block,
+or the source file when there is no such block.
+
+This is a bounded read of the selected repository, not another persistent index.
+The source scan uses the block-lookup limits above; it admits at most 5,000 links
+and returns at most 50 matches within 128 KiB, marking a truncated result as
+incomplete. Duplicate explicit page or block identities refuse the observation.
+The host checks the original application, room lease, current human authority,
+repository binding and complete source descriptor before replying. Parsed trees
+remain local to that read. The tab stores only a bounded reply and its marker in
+Spindel state. Saved metadata changes and reconnects invalidate it automatically;
+unsaved typing does not change the saved-workspace result. Closing a tab retires
+its reads and navigation; moving the tab preserves its current column owner.
+
 Renaming retires old-path reads and history requests before reconciling current
 metadata; late replies cannot reopen the removed path. Typing during the move
 follows the file and resumes autosave at its new path. Address notifications use

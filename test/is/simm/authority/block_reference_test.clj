@@ -45,7 +45,7 @@
         safe (fn [f] (try (f) nil (catch clojure.lang.ExceptionInfo e
                                   {:message (ex-message e) :data (ex-data e) :cause (.getCause e)})))
         failure (fn [& _] (throw (ex-info "PRIVATE source" {:type :memory/target-changed :source "PRIVATE"})))
-        expected {:message "This block link is unavailable in the current workspace."
+        expected {:message "This reference is unavailable in the current workspace."
                   :data {:type :memory/reference-unavailable} :cause nil}]
     (with-redefs [application/capture-operation failure]
       (is (= expected (safe #(remote/prepare-operation party room {})))))

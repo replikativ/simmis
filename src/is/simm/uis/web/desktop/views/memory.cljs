@@ -724,6 +724,31 @@
      ((:ensure-charts a))
      (view data state a syntax-pref))))
 
+(defn- backlinks-view [a]
+  (let [{:keys [open? reply error loading?]} ((:backlinks a))]
+    (el/details {:class "memory-backlinks" :open open?
+                 :on-toggle (fn [event] ((:backlinks-open a) (.. event -target -open)))}
+                (el/summary {} "Backlinks")
+                (when open?
+                  (el/div {}
+                          (el/p {:class "memory-note"} "Links from saved pages in this workspace.")
+                          (cond
+                            error (el/div {:class "proposal-error" :role "status"}
+                                          error (el/button {:on-click (fn [_] ((:retry-backlinks a)))} "Try again"))
+                            (or loading? (nil? reply)) (el/p {:class "memory-note" :role "status"} "Checking saved links…")
+                            (= :missing (:status reply)) (el/p {:class "memory-note"} "This page is not in the saved workspace.")
+                            (empty? (:results reply)) (el/p {:class "memory-note"} "No saved Simmis links to this page yet."))
+                          (when (and reply (not (:complete? reply)))
+                            (el/p {:class "memory-note"} "Only part of the matching links fits in this view."))
+                          (for [result (:results reply)]
+                            (el/div {:key [(:path result) (:from result)]}
+                                    (el/a {:href (:url result) :title (:path result)
+                                           :on-click (fn [event]
+                                                       (when-not (or (.-metaKey event) (.-ctrlKey event) (.-shiftKey event) (.-altKey event))
+                                                         (.preventDefault event) ((:open-backlink a) result)))}
+                                          (:path result)
+                                          (when (:block-id result) " · block")))))))))
+
 (defn render-context [data]
   (spin
    (let [connection (iv/get-new (track sig/memory-connection))
@@ -739,7 +764,9 @@
          history (get-in state [:history path]) preview (get-in state [:history-preview path])]
      ((:ensure-path a))
      ((:ensure-sync a) connection stream)
+     ((:ensure-backlinks a))
      (el/div {:class "memory-history context-section"}
+             (when (= :markdown (get-in draft [:source :kind])) (backlinks-view a))
              (el/div {:class "context-section-title"} "File history")
              (when (seq (:evaluation-history state))
                (el/details {:class "memory-evaluation-history"}

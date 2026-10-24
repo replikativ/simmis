@@ -8,7 +8,7 @@
             [is.simm.documents.math :as math]
             [hasch.core :as hasch])
   (:import [com.vladsch.flexmark.parser Parser]
-           [com.vladsch.flexmark.ast Heading Text HtmlEntity Code FencedCodeBlock IndentedCodeBlock Link OrderedList]
+           [com.vladsch.flexmark.ast Heading Text HtmlEntity Code FencedCodeBlock IndentedCodeBlock Link LinkRef Reference OrderedList]
            [com.vladsch.flexmark.util.sequence Escaping]
            [com.vladsch.flexmark.ext.tables TablesExtension TableCell]
            [com.vladsch.flexmark.ext.gfm.tasklist TaskListExtension TaskListItem]
@@ -25,9 +25,9 @@
 
 (def syntax-profile
   "Pinned syntax projection, not a claim of complete Obsidian/plugin support."
-  {:id :simmis/markdown-syntax :version 5 :parser "flexmark/0.64.8"
+  {:id :simmis/markdown-syntax :version 6 :parser "flexmark/0.64.8"
    :features #{:tables :tasks :strikethrough :footnotes :wikilinks :wiki-embeds
-               :inline-math :standalone-display-math}})
+               :inline-math :standalone-display-math :reference-links}})
 
 (defn- parser []
   (-> (Parser/builder)
@@ -98,49 +98,61 @@
 (defn- children [^Node parent]
   (take-while some? (iterate #(some-> ^Node % .getNext) (.getFirstChild parent))))
 
+(defn- link-data [^Node node]
+  (let [target (cond
+                 (instance? Link node) node
+                 (instance? LinkRef node) (.getReferenceNode ^LinkRef node (.getDocument node)))]
+    (cond
+      (instance? Link target)
+      {:url (Escaping/unescapeString (.getUrl ^Link target))
+       :title (Escaping/unescapeString (.getTitle ^Link target))}
+      (instance? Reference target)
+      {:url (Escaping/unescapeString (.getUrl ^Reference target))
+       :title (Escaping/unescapeString (.getTitle ^Reference target))})))
+
 (defn- syntax-node [^Node node offset depth remaining]
   (when (or (> depth max-syntax-depth) (neg? (vswap! remaining dec)))
     (invalid! "Document syntax exceeds the projection limit"))
-  (cond-> {:kind (keyword (.getNodeName node))
-           :from (+ offset (.getStartOffset node))
-           :to (+ offset (.getEndOffset node))
-           :children (mapv #(syntax-node % offset (inc depth) remaining) (children node))}
-    (instance? Heading node) (assoc :heading-level (.getLevel ^Heading node))
-    (instance? Text node) (assoc :text (Escaping/unescapeString (.getChars node)))
-    ;; Decode exactly once into inert text; never reparse it as HTML/Markdown.
-    ;; Keep the original entity's source span for lossless no-op projection.
-    (instance? HtmlEntity node) (assoc :text (Escaping/unescapeHtml ^CharSequence (.getChars node)))
-    (instance? Footnote node)
-    (assoc :footnote {:raw (str (.getChars node)) :label (str (.getText ^Footnote node))})
-    (math/token-data node)
-    (assoc :math (-> (math/token-data node)
-                    (update :content-from + offset) (update :content-to + offset)))
-    (instance? Code node) (assoc :literal (str (.getText ^Code node)))
-    (instance? FencedCodeBlock node)
-    (assoc :literal (str (.getContentChars ^FencedCodeBlock node))
-           :language (str (.getInfo ^FencedCodeBlock node)))
-    (instance? IndentedCodeBlock node) (assoc :literal (str (.getContentChars ^IndentedCodeBlock node)))
-    (instance? OrderedList node) (assoc :start (.getStartNumber ^OrderedList node))
-    (instance? Link node) (assoc :url (Escaping/unescapeString (.getUrl ^Link node))
-                                 :title (Escaping/unescapeString (.getTitle ^Link node)))
-    (instance? TaskListItem node) (assoc :checked? (.isItemDoneMarker ^TaskListItem node))
-    (instance? TableCell node)
-    (merge (let [alignment (.getAlignment ^TableCell node)]
-             (cond-> {:table-header? (.isHeader ^TableCell node)}
-               alignment (assoc :table-alignment (keyword (.toLowerCase (.name alignment)))))))
-    (instance? WikiNode node)
-    (assoc :reference
-           (let [^WikiNode wiki node
-                 target (.getPageRef wiki)
-                 label (.getText wiki)
-                 fragment (.getAnchorRef wiki)]
-             (cond-> {:kind (if (instance? WikiImage node) :embed :wikilink)
-                      :target (str target)
-                      :target-from (+ offset (.getStartOffset target))
-                      :target-to (+ offset (.getEndOffset target))
-                      :status :unresolved}
-               (seq (str label)) (assoc :label (str label))
-               (seq (str fragment)) (assoc :fragment (str fragment)))))))
+  (let [link (link-data node)]
+    (cond-> {:kind (keyword (.getNodeName node))
+             :from (+ offset (.getStartOffset node))
+             :to (+ offset (.getEndOffset node))
+             :children (mapv #(syntax-node % offset (inc depth) remaining) (children node))}
+      (instance? Heading node) (assoc :heading-level (.getLevel ^Heading node))
+      (instance? Text node) (assoc :text (Escaping/unescapeString (.getChars node)))
+      ;; Decode exactly once into inert text; never reparse it as HTML/Markdown.
+      ;; Keep the original entity's source span for lossless no-op projection.
+      (instance? HtmlEntity node) (assoc :text (Escaping/unescapeHtml ^CharSequence (.getChars node)))
+      (instance? Footnote node)
+      (assoc :footnote {:raw (str (.getChars node)) :label (str (.getText ^Footnote node))})
+      (math/token-data node)
+      (assoc :math (-> (math/token-data node)
+                      (update :content-from + offset) (update :content-to + offset)))
+      (instance? Code node) (assoc :literal (str (.getText ^Code node)))
+      (instance? FencedCodeBlock node)
+      (assoc :literal (str (.getContentChars ^FencedCodeBlock node))
+             :language (str (.getInfo ^FencedCodeBlock node)))
+      (instance? IndentedCodeBlock node) (assoc :literal (str (.getContentChars ^IndentedCodeBlock node)))
+      (instance? OrderedList node) (assoc :start (.getStartNumber ^OrderedList node))
+      link (merge link)
+      (instance? TaskListItem node) (assoc :checked? (.isItemDoneMarker ^TaskListItem node))
+      (instance? TableCell node)
+      (merge (let [alignment (.getAlignment ^TableCell node)]
+               (cond-> {:table-header? (.isHeader ^TableCell node)}
+                 alignment (assoc :table-alignment (keyword (.toLowerCase (.name alignment)))))))
+      (instance? WikiNode node)
+      (assoc :reference
+             (let [^WikiNode wiki node
+                   target (.getPageRef wiki)
+                   label (.getText wiki)
+                   fragment (.getAnchorRef wiki)]
+               (cond-> {:kind (if (instance? WikiImage node) :embed :wikilink)
+                        :target (str target)
+                        :target-from (+ offset (.getStartOffset target))
+                        :target-to (+ offset (.getEndOffset target))
+                        :status :unresolved}
+                 (seq (str label)) (assoc :label (str label))
+                 (seq (str fragment)) (assoc :fragment (str fragment))))))))
 
 (defn references
   "References recognized in valid Markdown syntax contexts, with exact source
@@ -152,6 +164,16 @@
                (when reference (assoc reference :from from :to to
                                                 :revision (:revision document)))))
        vec))
+
+(defn link-references
+  "Source-positioned wiki and ordinary Markdown links. Reference definitions
+   count only when used by an actual link; code/comments are never reparsed."
+  [document]
+  (into []
+        (keep (fn [{:keys [reference url kind from to]}]
+                (when-let [target (or reference (when url {:kind :link :target url :syntax kind}))]
+                  (assoc target :from from :to to :revision (:revision document)))))
+        (mapcat #(tree-seq (comp seq :children) :children %) (:nodes document))))
 
 (defn parse
   "Retain EXACT source and derive syntax spans/properties. Invalid frontmatter

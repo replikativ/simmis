@@ -730,8 +730,9 @@ are refused; selected fixtures are checked before candidate setup. Parsing,
 metadata decoding and explicit block traversal run inside the same cooperative
 deadline/allocation account as checker SCI. No parser or store capability is
 given to the checker. Facts include canonical metadata digests, explicit page
-and block identities, ancestry/order, and parsed inline Markdown link targets;
-reference-style citations are not included. Schema validity and factual truth
+and block identities, ancestry/order, and parsed inline or defined reference
+Markdown link targets. Code, comments and unused definitions do not count.
+Schema validity and factual truth
 remain separate from these structural observations.
 The profile selector is fixed grading configuration, excluded from ordinary
 workflow task-template parameters and unavailable to parameter overrides.

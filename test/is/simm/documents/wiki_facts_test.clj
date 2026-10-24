@@ -49,9 +49,11 @@
                       "`[inline code](/in/knowledge/sources/inbox/fake1.md)`\n\n"
                       "```markdown\n[Code](/in/knowledge/sources/inbox/fake2.md)\n```\n\n"
                       "<!-- [Comment](/in/knowledge/sources/inbox/fake3.md) -->\n\n"
+                      "[Reference][evidence]\n\n[evidence]: /in/knowledge/sources/inbox/reference.md\n\n"
+                      "[unused]: /in/knowledge/sources/inbox/unused.md\n\n"
                       "[[wiki/Other]]\n")))]
     (is (:valid? result))
-    (is (= ["/in/knowledge/sources/inbox/note.md"] (:links result)))))
+    (is (= ["/in/knowledge/sources/inbox/note.md" "/in/knowledge/sources/inbox/reference.md"] (:links result)))))
 
 (deftest malformed-metadata-and-identity-never-become-valid-structural-facts
   (doseq [source [(str "---\nsimmis-id: " page "\nrevenue: 0\nrevenue: 1\n---\n# Body\n")

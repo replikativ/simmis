@@ -234,3 +234,45 @@
           (when @release (browser/unmount! @release))
           (.remove container)
           (context/stop-context! ctx))))))
+
+(deftest saved-backlinks-render-without-duplicating-or-hijacking-modifier-navigation
+  (let [ctx (context/create-execution-context)
+        container (.createElement js/document "div") release (atom nil) calls (atom [])
+        result {:path "wiki/Source.md" :from 12 :url "/room/source/files?path=wiki%2FSource.md"}
+        frame (fn [observation]
+                (memory/backlinks-view
+                 {:backlinks (fn [] observation)
+                  :backlinks-open (fn [open?] (swap! calls conj [:toggle open?]))
+                  :retry-backlinks (fn [] (swap! calls conj [:retry]))
+                  :open-backlink (fn [value] (swap! calls conj [:open value]))}))]
+    (.appendChild (.-body js/document) container)
+    (try
+      (binding [ec/*execution-context* ctx]
+        (let [closed (frame {:open? false})
+              ready (frame {:open? true :reply {:status :ready :complete? false :results [result]}})
+              failed (frame {:open? true :error "Unavailable"})]
+          (reset! release (browser/mount! container closed))
+          (is (= "Backlinks" (.-textContent container)))
+          (is (nil? (.querySelector container "a")))
+          (browser/refresh! @release closed ready)
+          (is (.includes (.-textContent container) "Only part of the matching links"))
+          (is (= 1 (.-length (.querySelectorAll container "a"))))
+          (let [link (.querySelector container "a")
+                ordinary (js/MouseEvent. "click" #js {:bubbles true :cancelable true})
+                modified (js/MouseEvent. "click" #js {:bubbles true :cancelable true :ctrlKey true})]
+            ;; Cancel native navigation only after the actual handler ran.
+            (.addEventListener link "click" (fn [event] (.preventDefault event)) #js {:once true})
+            (.dispatchEvent link modified)
+            (is (empty? (filter #(= :open (first %)) @calls)))
+            (.dispatchEvent link ordinary)
+            (is (.-defaultPrevented ordinary))
+            (is (= [[:open result]] (filterv #(= :open (first %)) @calls))))
+          (browser/refresh! @release ready failed)
+          (is (nil? (.querySelector container "a")))
+          (is (.includes (.-textContent container) "Unavailable"))
+          (.click (.querySelector container "button"))
+          (is (= [:retry] (last @calls)))))
+      (finally
+        (when @release (browser/unmount! @release))
+        (.remove container)
+        (context/stop-context! ctx)))))

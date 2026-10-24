@@ -1,4 +1,4 @@
-(ns is.simm.uis.web.desktop.memory-links
+(ns is.simm.documents.links
   "Portable, data-only links to owned room files and explicit semantic blocks.
    Link identities constrain a read; they never convey permissions."
   (:require [clojure.string :as str])
@@ -84,3 +84,11 @@
                         (str "/room/" room "/files?repo=" repository "&block=" block
                              (when path (str "&path=" (encode path)))))
         nil))))
+
+(defn parse-route
+  "Only exact origin-relative canonical file/block addresses. An external URL
+   or an unrecognized query is never reinterpreted as a local reference."
+  [route]
+  (when (and (string? route) (<= (count route) 9000))
+    (when-let [[_ room query] (re-matches #"/room/([^/?#]+)/files\?([^#]+)" route)]
+      (parse-query room query))))

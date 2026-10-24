@@ -42,7 +42,7 @@
    changing these addresses — as would `?tx=`/`?branch=` for
    time-travel links, which dh:// already models."
   (:require [clojure.string :as str]
-            [is.simm.uis.web.desktop.memory-links :as memory-links]))
+            [is.simm.documents.links :as memory-links]))
 
 (defn ref->route
   "Path for a ref, or nil when the ref is not addressable."

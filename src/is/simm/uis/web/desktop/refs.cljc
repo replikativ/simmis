@@ -19,7 +19,7 @@
    an agent writes into a digest page and a row in a dashboard should be the
    same act, not two parallel systems."
   (:require [clojure.string :as str]
-            [is.simm.uis.web.desktop.memory-links :as memory-links]
+            [is.simm.documents.links :as memory-links]
             [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [datahike.reference :as dh-ref])
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])

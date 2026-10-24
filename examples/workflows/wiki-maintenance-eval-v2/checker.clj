@@ -2,7 +2,7 @@
   (:require [clojure.string :as str]))
 
 ;; Mechanical fixture checks, not factual truth or publication authority.
-;; Citations use parsed inline Markdown links, not text in code or comments.
+;; Citations use parsed inline or defined reference links, not code or comments.
 (defn wiki-path? [path]
   (and (string? path) (<= (count path) 512) (str/starts-with? path "/out/wiki/")
        (boolean (re-find #"(?i)\.(md|markdown)$" path))

@@ -53,6 +53,27 @@
   (when (contains? request :path-hint) (files/path! path-hint))
   request)
 
+(defn scan-selected
+  "HOST-only ephemeral parsed documents from an exact bounded source selection.
+   ASTs/source never leave the owning read operation or become retained state."
+  [db selected]
+  (when-not (= selected (selection db)) (refuse! :selection-changed))
+  (reduce-kv
+   (fn [{:keys [documents nodes]} path entry]
+     (let [source (markdown/decode (files/source-bytes db path entry))
+           parsed (markdown/parse source)
+           amount (count (take (inc (- max-total-nodes nodes))
+                               (mapcat #(tree-seq (comp seq :children) :children %) (:nodes parsed))))
+           _ (when (> (+ nodes amount) max-total-nodes) (refuse! :node-limit))
+           document (identity/document (:repository-id selected) path parsed)
+           semantic (when-let [id (:id document)] (blocks/project id parsed))]
+       (when-not (and (empty? (:diagnostics document)) (= :ready (:status semantic)))
+         (refuse! :invalid-source))
+       {:nodes (+ nodes amount)
+        :documents (conj documents {:path path :entry entry :document document
+                                    :parsed parsed :semantic semantic})}))
+   {:documents [] :nodes 0} (:files selected)))
+
 (defn resolve-selected
   "Resolve globally, not from a stale index or the first matching hint.
    Invalid source prevents proof of uniqueness and therefore refuses lookup.
@@ -60,28 +81,15 @@
   [db selected request]
   (let [{:keys [repository-id block-id]} (request! request)]
     (when-not (= repository-id (:repository-id selected)) (refuse! :repository-changed))
-    (when-not (= selected (selection db)) (refuse! :selection-changed))
-    (let [scanned
-          (reduce-kv
-           (fn [{:keys [matches nodes]} path entry]
-             (let [source (markdown/decode (files/source-bytes db path entry))
-                   parsed (markdown/parse source)
-                   amount (count (take (inc (- max-total-nodes nodes))
-                                       (mapcat #(tree-seq (comp seq :children) :children %) (:nodes parsed))))
-                   _ (when (> (+ nodes amount) max-total-nodes) (refuse! :node-limit))
-                   document (identity/document repository-id path parsed)
-                   semantic (when-let [id (:id document)] (blocks/project id parsed))]
-               (when-not (and (empty? (:diagnostics document)) (= :ready (:status semantic)))
-                 (refuse! :invalid-source))
-               (let [matching (filter #(and (= :explicit (:identity-status %)) (= block-id (:id %)))
-                                      (mapcat #(tree-seq (comp seq :children) :children %) (:blocks semantic)))]
-                 {:nodes (+ nodes amount)
-                  :matches (into matches (map (fn [block]
-                                               {:path path :entry entry :document-id (:id document)
-                                                :block-id block-id :revision (:revision parsed)
-                                                :from (:from block) :to (:to block)}) matching))})))
-           {:matches [] :nodes 0} (:files selected))
-          matches (:matches scanned)]
+    (let [scanned (scan-selected db selected)
+          matches (into []
+                        (mapcat (fn [{:keys [path entry parsed document semantic]}]
+                                  (for [block (mapcat #(tree-seq (comp seq :children) :children %) (:blocks semantic))
+                                        :when (and (= :explicit (:identity-status block)) (= block-id (:id block)))]
+                                    {:path path :entry entry :document-id (:id document)
+                                     :block-id block-id :revision (:revision parsed)
+                                     :from (:from block) :to (:to block)})))
+                        (:documents scanned))]
       (case (count matches)
         0 {:status :missing :repository-id repository-id :block-id block-id}
         1 (assoc (first matches) :status :resolved :repository-id repository-id)
