@@ -722,6 +722,34 @@ calibration is explicitly `:not-provided`. Neither successful calibration nor
 execution promotes checker trust. Cancellation retains physical ownership and
 the installation permit until the setup worker actually exits.
 
+The opt-in grading parameter `:simmis/checker-profile :wiki-structure-v1`
+adds data-only Markdown observations. The host verifies the frozen knowledge
+manifest from shared fixtures merged with the exact selected case fixtures,
+never from gold or a live Room. Unknown cases and invalid baseline structures
+are refused; selected fixtures are checked before candidate setup. Parsing,
+metadata decoding and explicit block traversal run inside the same cooperative
+deadline/allocation account as checker SCI. No parser or store capability is
+given to the checker. Facts include canonical metadata digests, explicit page
+and block identities, ancestry/order, and parsed inline Markdown link targets;
+reference-style citations are not included. Schema validity and factual truth
+remain separate from these structural observations.
+The profile selector is fixed grading configuration, excluded from ordinary
+workflow task-template parameters and unavailable to parameter overrides.
+Quote checks read the verified frozen source text, not a gold copy. Preservation
+requirements name their original paths: omitted pages remain unchanged, and
+moving a required fragment to another page does not count as preservation.
+
+This profile also admits `calibration.edn` version 2, with `:references` and
+`:damaged` maps. Each named reference is `{:case "case" :files {}}`; each
+damaged answer additionally declares `:loses`. There are 1–4 references and
+1–8 damaged answers, bounded together to 100 files / 2MiB. Every reference
+must pass all checks, and each damaged answer must lose its declared checks
+and score below every reference. One cumulative account is scaled by the
+actual answer count. Calibration and Attempt verification use the same scoring
+function. Profile, parser, metadata, block and selection-policy identities are
+pinned in verifier/setup references. Bundles without the profile retain their
+original scoring and identity maps.
+
 Generic bounded tasks and benchmark candidates select the versioned
 `:simmis/file-worker` sandbox extension. This is deliberately a file/code
 surface: after standard working-context installation and on every rebind, it

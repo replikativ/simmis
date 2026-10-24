@@ -416,6 +416,11 @@ not current authoring files, and retain the experiment identity for inspection.
 Calibrated WorldSetup references include the original bundle-bearing fixture
 identity and execution policies. Successful setup/calibration evidence stays in
 the existing Attempt evidence, not a separate calibration database.
+Opt-in wiki structural scoring derives bounded immutable facts from verified
+fixture bytes inside the scoring account. Facts do not persist parser ASTs or
+add a second document store. The verifier/setup basis pins the observation and
+selection profiles; multi-reference calibration verdicts remain in the same
+Attempt setup evidence as single-reference calibration.
 Restart recovery retires settled fixtures even if the wallet-return write
 completed immediately before a process crash.
 

@@ -327,6 +327,18 @@ The completed leaderboard shows the frozen split and dataset identity alongside
 the workflow bundle; its tooltip lists the selected cases. No split is invented
 for older experiments.
 
+The shipped `maintain-wiki` source is version 2. New installations use the
+structural checker profile; existing user-edited workflow files are not
+overwritten. Explicit version-1 source remains available for reproducing older
+experiments. The V2 fixture rubric accepts supported updates either in an
+existing page or a new page, and accepts empty output for a no-change case.
+Existing explicit identities, metadata and block ancestry/order must survive;
+fresh blocks may be inserted, and new identities must be unique against the
+frozen inputs and other proposed pages. Citations must resolve to frozen source
+paths using inline Markdown links. Required/forbidden text and quote checks are
+mechanical synthetic-fixture checks, not evidence that arbitrary prose is true.
+The automated score does not authorize adoption of a wiki proposal.
+
 Claude Code text benchmarks use the separate `simmis_cli-allowance` and
 `simmis_cli-benchmark` controls. They retain Dvergr's SCI tool loop and the same
 clean fixture/checker/result machinery. An operator explicitly provisions
