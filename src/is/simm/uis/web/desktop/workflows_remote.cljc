@@ -210,8 +210,17 @@
   (spin-remote server-id [room-id-str request-id-str]
                #?(:clj (let [party (access/authenticated-party-id)
                              room-id (wire-uuid room-id-str)
-                             request-id (wire-uuid request-id-str)]
-                         (await (blocking/blocking #(knowledge-output/collect! party room-id request-id))))
+                             request-id (wire-uuid request-id-str)
+                             body (knowledge-output/prepare-collect party room-id request-id)]
+                         (await (blocking/blocking body)))
+                  :cljs nil)))
+
+(defn-spin-remote inspect-run-wiki-output!
+  [server-id room-id-str job-id-str]
+  (spin-remote server-id [room-id-str job-id-str]
+               #?(:clj (let [party (access/authenticated-party-id)
+                             body (knowledge-output/prepare-inspect-job party (wire-uuid room-id-str) (wire-uuid job-id-str))]
+                         (await (blocking/blocking body)))
                   :cljs nil)))
 
 (defn-spin-remote submit-workflow-benchmark!

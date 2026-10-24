@@ -235,13 +235,13 @@
 
 (deftest new-controls-do-not-upgrade-an-existing-work-token
   (let [old-tools (disj mcp/work-tools "simmis_cli-benchmark" "simmis_cli-allowance" "simmis_coordinator"
-                        "simmis_workflow-schedule-create" "simmis_workflow-schedule-set-enabled")
+                        "simmis_workflow-schedule-create" "simmis_workflow-schedule-set-enabled" "simmis_workflow-output-collect")
         token (with-redefs [mcp/work-tools old-tools] (:token (mcp/mint-token! person :work)))
         old ((mcp/authenticator) {:bearer token})
         fresh ((mcp/authenticator) {:bearer (:token (mcp/mint-token! person :work))})]
     (is (= old-tools (:principal/tools old)))
     (doseq [tool ["simmis_cli-benchmark" "simmis_cli-allowance" "simmis_coordinator"
-                  "simmis_workflow-schedule-create" "simmis_workflow-schedule-set-enabled"]]
+                  "simmis_workflow-schedule-create" "simmis_workflow-schedule-set-enabled" "simmis_workflow-output-collect"]]
       (is (not (contains? (:principal/tools old) tool)))
       (is (contains? (:principal/tools fresh) tool)))))
 

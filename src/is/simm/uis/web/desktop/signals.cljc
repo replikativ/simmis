@@ -330,6 +330,10 @@
            "Session/room keyed source drafts, request fences and immutable admissions."
            (signal runtime {})))
 
+#?(:cljs (def workflow-output-reviews
+           "Session/room/root-Job scoped request descriptors and collection receipts."
+           (signal runtime {})))
+
 #?(:cljs (def memory-editor-state
            "Session/room/view keyed file drafts, folders and request fences."
            (signal runtime {})))
@@ -1345,7 +1349,7 @@
      (doseq [s [room-details screens-results recordings-results web-captures-results video-call-info
                 drive-data files-upload-status unread-counts notify-prefs
                 block-conflicts orphaned-blocks room-app-status leaderboards
-                books book-ledgers book-ui workflow-editor-state memory-editor-state conversation-captures
+                books book-ledgers book-ui workflow-editor-state workflow-output-reviews memory-editor-state conversation-captures
                 memory-navigation-state run-server-facts chat-scroll-windows
                 chat-reply-targets active-kb-branch kb-branches projected-branch-dbs]]
        (reset! s {}))

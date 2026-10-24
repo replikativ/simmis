@@ -186,6 +186,7 @@
    "correct-memory-office-text!" [(c :room MEMBERS)]
    "submit-workflow-run!"    [(c :room OWNER)]
    "collect-workflow-wiki-output!" [(c :room OWNER)]
+   "inspect-run-wiki-output!" [(c :room MEMBERS)]
    "inspect-wiki-maintenance-setup!" [(c :room OWNER)]
    "install-wiki-maintenance!" [(c :room OWNER)]
    "create-workflow-schedule!" [(c :room OWNER)]

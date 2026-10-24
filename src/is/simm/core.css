@@ -2022,6 +2022,8 @@ body {
 }
 
 .run-world-actions button svg { width: 13px; height: 13px; }
+.workflow-output-review button { padding: 6px 10px; border: 1px solid var(--mono-border); border-radius: var(--radius-sm); background: var(--mono-bg-overlay); color: var(--mono-text-primary); cursor: pointer; }
+.workflow-output-review button:disabled { opacity: 0.5; cursor: default; }
 .run-world-discard:hover { color: var(--danger); border-color: var(--danger); }
 .run-world-merge:hover { color: var(--success); border-color: var(--success); }
 
@@ -9254,7 +9256,9 @@ body.tab-dragging .column-drop-zone {
 .memory-code-cell { position: relative; }
 .memory-code-cell > pre { padding-right: 4rem; }
 .memory-code-cell-controls { position: absolute; top: 0.25rem; right: 0.25rem; }
-.memory-code-cell-controls button { font-size: 0.75rem; padding: 0.15rem 0.4rem; }
-.memory-code-cell-result { font-size: 0.8rem; color: var(--mono-text-muted); margin-bottom: 0.6rem; }
+.memory-code-cell-controls button { font: inherit; font-size: 0.75rem; padding: 0.15rem 0.4rem; border: 1px solid var(--mono-border); border-radius: var(--radius-sm); background: var(--mono-bg-surface); color: var(--mono-text-primary); cursor: pointer; }
+.memory-code-cell-controls button:hover { background: var(--mono-bg-overlay); }
+.memory-code-cell-controls button:disabled { opacity: 0.5; cursor: default; }
+.memory-code-cell-result { font-size: 0.8rem; color: var(--mono-text-tertiary); margin-bottom: 0.6rem; }
 .memory-code-cell-result pre { max-height: 15rem; overflow: auto; white-space: pre-wrap; }
 .memory-code-cell-controls[hidden], .memory-code-cell-result[hidden] { display: none; }
