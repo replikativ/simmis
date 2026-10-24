@@ -2,6 +2,8 @@
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
             [geschichte.repo :as repo]
+            [dvergr.catalog.room :as catalog]
+            [is.simm.documents.files :as files]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.profile :as profile]
             [is.simm.documents.space :as space]
@@ -20,6 +22,32 @@
            (finally (governance/ungovern! conn) (d/release conn) (d/delete-database cfg))))))
 
 (def options {:profile space/profile})
+
+(deftest encoded-benchmark-fixtures-do-not-acquire-live-wiki-identities
+  (with-store
+    (fn [conn]
+      (profile/initialize! conn options (starter/read-packaged!))
+      (let [original (:text (files/read-file-in @conn "wiki/Company.md"))
+            packed (pr-str {:kind :dvergr/fixture-pack :version 1 :files {"/wiki/Company.md" original}})
+            source (assoc (wiki/source) "cases/a/fixture-pack.edn" packed
+                                        "cases/a/gold.edn" "{}"
+                                        "cases/b/fixture-pack.edn" packed
+                                        "cases/b/gold.edn" "{}")
+            before (view/prepare @conn profile/selection-options)
+            paths #(set (d/q '[:find [?path ...] :where [_ :document/path ?path]] (:db %)))
+            bundle (catalog/bundle "maintain-wiki-development" source)]
+        (is (= original (get-in bundle [:cases "a" :fixtures "/wiki/Company.md"])))
+        (is (= original (get-in bundle [:cases "b" :fixtures "/wiki/Company.md"])))
+        (doseq [[path text] source]
+          (repo/write! conn (str "workflows/maintain-wiki-development/" path) (markdown/source-bytes text)))
+        (let [after (view/prepare @conn profile/selection-options)]
+          (is (= :ready (:status after)) (pr-str (:diagnostics after)))
+          (is (= (paths before) (paths after)))
+          (is (= 0 (d/q '[:find ?v . :where [_ :S.Company/revenue ?v]] (:db after))))
+          (is (= false (d/q '[:find ?v . :where [_ :S.Research/active ?v]] (:db after))))
+          (is (= 1 (count (d/q '[:find ?e :where [?e :document/path "wiki/Company.md"]] (:db after)))))
+          (is (= original (:text (files/read-file-in @conn "wiki/Company.md"))))
+          (is (= packed (:text (files/read-file-in @conn "workflows/maintain-wiki-development/cases/a/fixture-pack.edn")))))))))
 
 (deftest pristine-initialization-provides-one-valid-typed-file-backed-wiki
   (with-store
