@@ -50,6 +50,19 @@
     (is (contains? evidence :resources))
     (is (false? (get-in ((:verify evaluator) {} evidence) [:checks :completed?])))))
 
+(deftest a-timed-out-attempt-is-scored-only-when-the-workflow-says-so
+  (let [checker "(ns checker) (defn check [{:keys [files]}] {:checks {:answered? (contains? files \"/out/answer\")} :reward 1})"
+        verdict (fn [definition observed]
+                  (let [ev (checkers/evaluator {:name "late" :id (random-uuid) :definition definition :checker checker})]
+                    ((:verify ev) {} ((:observe ev) (merge {:default {} :execution/evidence {:files {"/out/answer" "x"}}}
+                                                           observed)))))
+        timed-out {:result {:run/status :cancelled} :timed-out? true}]
+    (is (= 0.0 (:reward (verdict {} timed-out))) "by default a timeout scores 0")
+    (is (= 1.0 (double (:reward (verdict {:score-on-timeout true} timed-out)))) "opted in: scored on its files")
+    (is (false? (get-in (verdict {:score-on-timeout true} timed-out) [:checks :completed?])))
+    (is (= 0.0 (:reward (verdict {:score-on-timeout true} {:result {:run/status :cancelled}})))
+        "a Run cancelled for another reason still scores 0")))
+
 (def calibrated-bundle
   {:name "calibrated" :id (random-uuid) :definition {:params {:threshold 1}}
    :gold "answer"

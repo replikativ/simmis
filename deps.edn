@@ -301,7 +301,7 @@
         ;; Coordinated SCI fork used by Spindel 0.1.44 and dvergr 0.1.66.
         ;; The former org.babashka/sci 0.13.52 coordinate put both SCI jars on
         ;; the classpath and shadowed capture-continuation-context at load time.
-        org.replikativ/sci {:mvn/version "0.15.59-replikativ.1"}
+        org.replikativ/sci {:mvn/version "0.15.59-replikativ.2"}
         metosin/reitit {:mvn/version "0.7.0"}
 
         ;; nREPL in the BASE deps so the uberjar can serve the opt-in
@@ -317,7 +317,7 @@
         ;; Keep the explicit Spindel/Yggdrasil Git pins above: Maven's POM cannot
         ;; express those coordinates. Alpha stores require classified wallets;
         ;; no legacy wallet migration is implied.
-        org.replikativ/dvergr {:mvn/version "0.1.354"
+        org.replikativ/dvergr {:mvn/version "0.1.356"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.

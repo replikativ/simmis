@@ -267,12 +267,17 @@
                   {:files (workspace/read-tree world (:capture policy)
                                                {:strict? true :max-files (:max-files policy)
                                                 :max-bytes (:max-characters policy)})})
-       :observe (fn [{:keys [result default] captured :execution/evidence setup :setup/evidence}]
+       :observe (fn [{:keys [result default timed-out?] captured :execution/evidence setup :setup/evidence}]
                   (assoc default :files (:files captured) :run-status (:run/status result)
+                         :timed-out? (boolean timed-out?)
                          :setup setup :calibration (or (:calibration setup) {:status :not-provided})))
-       :verify (fn [environment {:keys [files run-status]}]
+       :verify (fn [environment {:keys [files run-status timed-out?]}]
                  (let [verdict (score bundle selection-policy environment files policy)
-                       completed? (= :completed run-status)]
+                       completed? (= :completed run-status)
+                       ;; Only Dvergr's environment-deadline provenance admits
+                       ;; partial files; ordinary cancellation remains unscored.
+                       scored? (or completed?
+                                   (and timed-out? (true? (get-in bundle [:definition :score-on-timeout]))))]
                    (-> verdict
                        (update :checks #(assoc % :completed? (and completed? (get % :completed? true))))
-                       (update :reward #(if completed? % 0.0)))))}))))
+                       (update :reward #(if scored? % 0.0)))))}))))
