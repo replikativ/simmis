@@ -16,6 +16,35 @@
             (el/span {} label)
             (el/input {:value (or value "") :on-input (fn [e] (change #?(:cljs (.. e -target -value) :clj "")))})))
 
+(defn- native-model-field [state form set-form]
+  (let [rows (when (= :ready (:readiness-status state)) (get-in state [:readiness :models]))
+        selected (:model form "") known? (some #(= selected (:id %)) rows)]
+    (el/label {:class "workflow-field"}
+              (el/span {} "Model · exact version")
+              (el/select {:value selected :on-change (fn [event] (set-form :model #?(:cljs (.. event -target -value) :clj selected)))}
+                         (el/option {:value ""} "Choose a model…")
+                         (when (and (seq selected) (not known?))
+                           (el/option {:value selected :disabled true} (str selected " · not in the current options")))
+                         (for [{:keys [id label provider-label credential-label]} rows]
+                           (el/option {:key id :value id} (str label " · " provider-label " · " credential-label))))
+              (when (not= :ready (:readiness-status state))
+                (el/small {} "Model options are being verified or unavailable. Your selection is preserved."))
+              (when (get-in state [:readiness :models-truncated?])
+                (el/small {} "Only the first 256 registered model options are shown.")))))
+
+(defn- shared-allowance [state]
+  (let [allowance (get-in state [:readiness :allowance])]
+    (el/div {:class "workflow-note" :role "status"}
+            (el/strong {} "Shared room allowance · ")
+            (cond
+              (= :checking (:readiness-status state)) (el/span {} "Checking current allowance…")
+              (and (= :ready (:readiness-status state)) (= :observed (:status allowance)))
+              (el/span {} (str (:microdollars allowance) " microdollars and " (:model-dispatches allowance) " model requests available at the last observation."))
+              (and (= :ready (:readiness-status state)) (= :unavailable (:status allowance)))
+              (el/span {} "Unavailable until the room and its wallet are active. This check does not add allowance.")
+              :else (el/span {} "Current allowance could not be verified. This check does not add allowance."))
+            (el/p {} "Shared by room work; separate from each Run’s limits below. Admission rechecks availability. A credential is not an allowance or a verified provider connection."))))
+
 (defn- activation-status [state actions workflow]
   (let [rows (editor/workflow-activations state (:room-id actions) workflow)
         draft (get-in state [:drafts workflow])
@@ -52,6 +81,8 @@
         display-cases (if benchmark? (editor/benchmark-cases (:inspection source) form)
                           (get-in source [:inspection :cases]))
         local? (editor/local? form)
+        model-selected? (or local? (not (str/blank? (:model form))))
+        setup-card-visible? (contains? #{:missing :installed :customized :pending} (get-in state [:wiki-setup :status]))
         cli? (editor/cli? form)
         funded-here? (and (:funded? draft) (= (:fund-backend draft "hosted") (:backend form "hosted")))
         change #(apply (:change actions) selected %&)
@@ -67,7 +98,7 @@
             (el/p {:class "workflow-note"} "A workflow is a reusable task saved in this room. Each Run executes it separately and produces results or a proposal to review. Ordinary chat does not require a workflow.")
             (el/p {:class "workflow-note"} "This is the source editor: instructions and inputs are versioned room files. The optional checker is for benchmarking; inspecting source never executes it.")
             (let [{:keys [status observed-status]} (:wiki-setup state)]
-              (when (#{:missing :installed :customized :pending} status)
+              (when setup-card-visible?
                 (el/div {:class "workflow-note"}
                         (el/strong {} "Maintain knowledge · ")
                         (case status
@@ -104,6 +135,8 @@
                               :else
                               (el/div {}
                                       (el/h3 {} selected)
+                                      (when-not (and (= "maintain-wiki" selected) setup-card-visible?)
+                                        (activation-status state actions selected))
                                       (el/div {:class "workflow-toolbar"}
                                               (el/span {} (if (editor/dirty? draft) "Unsaved changes" "Saved source"))
                                               (when-not (editor/source-current? draft)
@@ -190,7 +223,10 @@
                                                             (el/button {:disabled (get-in state [:loading :workers])
                                                                         :on-click (fn [_] ((:more-workers actions)))} "More workers"))
                                                           (el/p {:class "workflow-note"} "Enrollment is not liveness. Start the private local driver separately; no login is uploaded. Allowance uses admissions, not measured dollars or tokens. Wall time includes cold JVM/interpreter startup; new local forms default to 300000 ms."))
-                                                  (field (if cli? "Model id (Claude Code text)" "Model id (explicit native provider)") (:model form) #(set-form :model %)))
+                                                  (if cli?
+                                                    (field "Model id (Claude Code text)" (:model form) #(set-form :model %))
+                                                    (el/div {} (native-model-field state form set-form)
+                                                               (shared-allowance state))))
                                                 (el/label {:class "workflow-field"}
                                                           (el/span {} "Mode")
                                                           (el/select {:value (:mode form) :on-change (fn [e] (set-form :mode #?(:cljs (.. e -target -value) :clj "run")))}
@@ -254,7 +290,7 @@
                                                             "Local Runs receive pinned workflow inputs only; benchmarks receive clean fixtures without checker/gold. One admission per cell. Run the local driver per queued cell and check Job completion; an empty queue is not completion. Nothing auto-merges or auto-funds."
                                                             :else "Ordinary Runs inherit room files. Frozen source and input changes appear in the proposed diff. Completion does not prove correctness. Allowance is never provisioned automatically."))
                                                 (el/div {:class "workflow-toolbar"}
-                                                        (el/button {:disabled (or (:submit loading) uncertain? (editor/dirty? draft) (not (editor/source-current? draft)) (not (get-in source [:inspection :ok])))
+                                                        (el/button {:disabled (or (not model-selected?) (:submit loading) uncertain? (editor/dirty? draft) (not (editor/source-current? draft)) (not (get-in source [:inspection :ok])))
                                                                     :on-click (fn [_] ((:submit actions) selected false))} "Confirm and submit")
                                                         (when submission
                                                           (el/button {:disabled (:submit loading) :on-click (fn [_] ((:submit actions) selected true))}
@@ -272,8 +308,6 @@
                                                 (when (and (not local?) (not cli?))
                                                   (el/div {:class "workflow-scheduling"}
                                                           (el/h4 {} "Schedule")
-                                                          (when-not (= "maintain-wiki" selected)
-                                                            (activation-status state actions selected))
                                                           (field "Interval · minutes (1–525600)" (:schedule-minutes form) #(set-form :schedule-minutes %))
                                                           (field "Timezone (e.g. Europe/Berlin)" (:schedule-tz form) #(set-form :schedule-tz %))
                                                           (when-let [{:keys [pending? payload]} (editor/deployment-preview draft)]
@@ -288,7 +322,7 @@
                                                                       (el/p {} (:resources description))
                                                                       (el/p {} (str (:execution-ceilings description) " " (:results description))))))
                                                           (el/p {:class "workflow-note"} "Pins saved source and the execution settings above. Uses the shared room allowance; no automatic funding or merging. Overlapping work is skipped. Manage activations and inspect occurrences in Schedules.")
-                                                          (el/button {:disabled (or (:schedule loading) (editor/dirty? draft) (not (editor/source-current? draft))
+                                                          (el/button {:disabled (or (nil? (editor/deployment-preview draft)) (:schedule loading) (editor/dirty? draft) (not (editor/source-current? draft))
                                                                                     (not (get-in source [:inspection :ok]))
                                                                                     (and (:schedule-submission draft)
                                                                                          (nil? (get-in draft [:schedule-submission :reply]))))

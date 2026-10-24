@@ -18,6 +18,9 @@ jobs:
     docker:
       - image: cimg/clojure:1.12.1-openjdk-21.0-node
     resource_class: large
+    # Separate containers keep process-global fixtures isolated. The full suite
+    # approached Circle's 60m job limit; partition namespaces without dropping any.
+    parallelism: 2
     steps:
       - checkout
       - run:
@@ -36,8 +39,11 @@ jobs:
           no_output_timeout: 15m
       - run:
           name: Run JVM tests (Maven baseline)
-          command: clojure -X:test :reporter kaocha.report/documentation
+          command: clojure -X:test is.simm.ci-runner/run! :reporter kaocha.report/documentation
           no_output_timeout: 15m
+      - store_artifacts:
+          path: target/ci-partitions
+          destination: test-partitions
       - save_cache:
           key: deps-v1-{{ checksum "deps.edn" }}
           paths:

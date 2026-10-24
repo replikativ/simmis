@@ -395,3 +395,25 @@
            (is (= "After Room hydration" (:room/name (d/entity (:control-db binding) [:room/id (:room w)]))))
            (let [validated (reads/validate-host-room! host p handle binding)]
              (is (identical? @after (:control-db validated))))))))))
+
+(deftest registered-metadata-binding-never-hydrates-and-retains-current-human-authority
+  (@#'fixture/with-fixture
+   true
+   (fn [{:keys [conn w room host hydrations]}]
+     (let [member (ops/party-principal (:member w)) handle (str (:room w))]
+       (with-redefs [rooms/live-room (fn [& _] (throw (Exception. "Metadata must not hydrate")))]
+         (let [bound (reads/resolve-registered-host-read-room! host member handle)]
+           (is (identical? room (:room bound)))
+           (is (= (:member w) (:party bound)))
+           (is (= (:room w) (:room-id bound)))
+           (is (some? (reads/validate-host-read-room! host member handle bound))))
+         (with-redefs [registry/lookup (constantly nil)]
+           (is (nil? (:room (reads/resolve-registered-host-read-room! host member handle)))))
+         (with-redefs [registry/lookup (constantly (assoc room :incarnation (random-uuid)))]
+           (is (thrown? clojure.lang.ExceptionInfo
+                        (reads/resolve-registered-host-read-room! host member handle))))
+         (doseq [party [(:non-member w) (:admin w)]]
+           (is (uuid? party))
+           (is (thrown? clojure.lang.ExceptionInfo
+                        (reads/resolve-registered-host-read-room! host (ops/party-principal party) handle))))
+         (is (empty? @hydrations)))))))

@@ -17,6 +17,7 @@
             [is.simm.ops.work-test]
             [is.simm.ops.workflows :as workflows]
             [is.simm.ops.wiki-setup :as wiki-setup]
+            [is.simm.ops.workflow-readiness :as readiness]
             [is.simm.ops.workflows-test :as fixture]
             [is.simm.runtimes.context :as context]
             [is.simm.uis.web.desktop.workflows-remote :as remote]))
@@ -261,3 +262,23 @@
            (let [error (owned-failure #(invoke (:member w) :simmis/workflow-list {}))]
              (is (= 503 (dops/error-status error)))
              (is (not (re-find #"SECRET" (pr-str [(ex-message error) (ex-data error)])))))))))))
+
+(deftest readiness-rpc-captures-the-authenticated-reader-before-host-work
+  (world/with-world [conn w]
+    (let [calls (atom [])]
+      (with-redefs [readiness/prepare-readiness
+                    (fn [party handle]
+                      (swap! calls conj [:prepared party handle])
+                      (fn [] (swap! calls conj [:executed party handle])
+                        {:models [] :allowance {:status :unavailable :reason :room-not-active}}))]
+        (doseq [kind [:non-member :admin :anon]]
+          (is (world/refused? (world/inbound! (world/principal w kind)
+                               "load-workflow-readiness!" {:room-id-str (str (:room w))}))))
+        (is (empty? @calls))
+        (doseq [kind [:owner :member]]
+          (let [party (get w kind) handle (str (:room w))]
+            (is (= {:models [] :allowance {:status :unavailable :reason :room-not-active}}
+                   (:result (world/inbound! (world/principal w kind)
+                              "load-workflow-readiness!" {:room-id-str handle}))))
+            (is (= [[:prepared party handle] [:executed party handle]] @calls))
+            (reset! calls [])))))))

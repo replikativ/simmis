@@ -50,6 +50,9 @@
                         (:selected (state))
                         (select-keys (:requests (state)) [[:save (:selected (state))]
                                                           [:source (:selected (state))]])]))
+        readiness-generation (fn []
+                               [(authority-generation) (:retry (state)) (:stream-registered (state))
+                                (:readiness-revision (state))])
         change! (fn [name f & args] (apply update! update-in [:drafts name] f args))
         request!
         (fn [slot selected invoke consume & [stale-consume]]
@@ -102,7 +105,7 @@
                         ;; Retire transport bookkeeping, NOT original request
                         ;; payloads kept with each draft for identical retries.
                         (update! #(-> % (assoc :observation-owner owner :loading {} :requests {})
-                                      (dissoc :activations :activation-status))))
+                                      (dissoc :activations :activation-status :readiness :readiness-status))))
                     gen (generation)]
                 (when (not= (not allowed?) (:access-denied? (state)))
                   (update! assoc :access-denied? (not allowed?)))
@@ -112,12 +115,18 @@
                                    (not= gen (get-in s [:observations :activations :completed]))
                                    (assoc :activation-status :checking))
                                  (update :drafts (fn [drafts] (into {} (map (fn [[n d]] [n (editor/unverified d)])) drafts)))))))
+                (let [read-gen (readiness-generation)]
+                  (when (not= read-gen (:observed-readiness-generation (state)))
+                    (update! (fn [s]
+                               (cond-> (assoc s :observed-readiness-generation read-gen)
+                                 (not= read-gen (get-in s [:observations :readiness :completed]))
+                                 (assoc :readiness-status :checking))))))
                 (when (or (nil? socket) (not allowed?))
                   ;; Retire read frames as well as their projections. If the
                   ;; exact same roster returns, its old completed generation
                   ;; must not suppress a fresh authorized observation. Keep
                   ;; all command/uncertain-setup journals in the drafts.
-                  (update! #(dissoc % :permissions :list :activations :activation-status
+                  (update! #(dissoc % :permissions :list :activations :activation-status :readiness :readiness-status
                                    :observations :observation-accepted)))
                 (when (and socket allowed?)
                   (observe! :stream #(vector (:retry (state)))
@@ -131,6 +140,12 @@
                             (fn [s reply] (-> s (assoc :list reply :permissions (:permissions reply))
                                               (update :errors dissoc :list)))
                             (fn [s error] (-> s (dissoc :permissions :list) (assoc-in [:errors :list] error))))
+                  (observe! :readiness readiness-generation
+                            #(remote/load-workflow-readiness! web/server-id room)
+                            (fn [s reply] (-> s (assoc :readiness reply :readiness-status :ready)
+                                              (update :errors dissoc :readiness)))
+                            (fn [s _] (-> s (dissoc :readiness) (assoc :readiness-status :unavailable)
+                                          (assoc-in [:errors :readiness] "Model and allowance observations are unavailable. Retry updates when the connection is ready."))))
                   (observe! :wiki-setup generation
                             #(remote/inspect-wiki-maintenance-setup! web/server-id room)
                             editor/observe-wiki-setup
@@ -235,8 +250,10 @@
                                   :knowledge? (contains? (get-in draft [:source :files]) "input-selection.edn")}))
                     (request! :submit name
                               #((submitter backend mode) web/server-id room payload)
-                              (fn [s reply] (assoc-in s [:drafts name :submission :reply] (dissoc reply :permissions)))
-                              (fn [s reply] (assoc-in s [:drafts name :submission :reply] (dissoc reply :permissions)))))
+                              (fn [s reply] (-> s (assoc-in [:drafts name :submission :reply] (dissoc reply :permissions))
+                                                (update :readiness-revision (fnil inc 0))))
+                              (fn [s reply] (-> s (assoc-in [:drafts name :submission :reply] (dissoc reply :permissions))
+                                                (update :readiness-revision (fnil inc 0))))))
                   (catch :default error (update! assoc-in [:errors :submit] (rem/error-text error))))))
             (schedule! [name retry?]
               (try
@@ -256,8 +273,10 @@
                       (change! name assoc :schedule-submission (if retry? pending {:payload payload}))
                       (request! :schedule name #(remote/create-workflow-schedule! web/server-id room payload)
                                 (fn [s reply]
-                                  (-> s (assoc-in [:drafts name :schedule-submission :reply] (dissoc reply :permissions))))
-                                (fn [s reply] (assoc-in s [:drafts name :schedule-submission :reply] (dissoc reply :permissions)))))))
+                                  (-> s (assoc-in [:drafts name :schedule-submission :reply] (dissoc reply :permissions))
+                                         (update :readiness-revision (fnil inc 0))))
+                                (fn [s reply] (-> s (assoc-in [:drafts name :schedule-submission :reply] (dissoc reply :permissions))
+                                                (update :readiness-revision (fnil inc 0))))))))
                 (catch :default error (update! assoc-in [:errors :schedule] (rem/error-text error)))))
             (inspect-setup! []
               (request! :wiki-setup-inspect nil
@@ -304,9 +323,11 @@
                                              "local" remote/provision-local-workflow-allowance!
                                              remote/provision-workflow-allowance!) web/server-id room payload)
                               (fn [s reply] (-> s (assoc-in [:drafts name :funded?] true)
-                                                (assoc-in [:drafts name :fund-reply] (dissoc reply :permissions))))
+                                                (assoc-in [:drafts name :fund-reply] (dissoc reply :permissions))
+                                                (update :readiness-revision (fnil inc 0))))
                               (fn [s reply] (-> s (assoc-in [:drafts name :funded?] true)
-                                                (assoc-in [:drafts name :fund-reply] (dissoc reply :permissions)))))))
+                                                (assoc-in [:drafts name :fund-reply] (dissoc reply :permissions))
+                                                (update :readiness-revision (fnil inc 0)))))))
                 (catch :default error (update! assoc-in [:errors :fund] (rem/error-text error)))))]
       {:observe observe-all!
        :refresh #(do (update! update :retry (fnil inc 0))
