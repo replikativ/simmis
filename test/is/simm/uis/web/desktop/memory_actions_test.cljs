@@ -6,6 +6,7 @@
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.memory-actions :as actions]
             [is.simm.uis.web.desktop.memory-editor :as editor]
+            [is.simm.uis.web.desktop.memory-owner :as owner]
             [is.simm.uis.web.desktop.memory-cells :as cells]
             [is.simm.uis.web.desktop.memory-remote :as remote]
             [is.simm.uis.web.desktop.memory-reference-remote :as reference-remote]
@@ -320,6 +321,86 @@
                            ((:ok (last (:metadata @calls)))
                             (wire target {:folders {"" {:entries []}} :entries {"x.clj" (:entry file)}
                                           :revision (random-uuid) :permissions {:write? true :evaluate? true}})))}))))))
+
+(defn- memory-tab-layout []
+  [{:id :column :active-tab :one
+    :tabs [{:id :one :type :memory :data {:room-id "test-room" :path "x.clj"}}
+           {:id :keep :type :home :data {}}]}
+   {:id :other :active-tab :other-home :tabs [{:id :other-home :type :home :data {}}]}])
+
+(defn- move-memory-tab! [new-column?]
+  (if new-column?
+    (sig/create-column-with-tab! :column :one :end)
+    (sig/move-tab! :column :one :other)))
+
+(deftest moving-a-memory-tab-keeps-its-draft-selection-and-original-save-callback
+  (doseq [new-column? [false true]]
+    (with-client
+      (fn [{:keys [a data states state seed! stamp last-call calls]}]
+        (with-redefs [sig/active-column-id (signal runtime :column)
+                      sig/active-nav-keys (signal runtime #{})]
+          (reset! sig/layout-columns (memory-tab-layout))
+          (seed!)
+          ((:edit a) "x.clj" editor/changed "Submitted" {:anchor 2 :head 4})
+          (let [original (last-call :save) before (get @states (:owner a))]
+            (move-memory-tab! new-column?)
+            (let [location (owner/current-tab @sig/layout-columns "test-room" :one)
+                  moved (actions/controller (assoc data :col-id (:col-id location)))]
+              (is (some? location))
+              (is (not= :column (:col-id location)))
+              (is (= (:owner a) (:owner moved)))
+              (is (= before (get @states (:owner moved))))
+              (is (= 1 (count @states)))
+              ((:edit moved) "x.clj" editor/changed "Later typing" {:anchor 5 :head 8})
+              (is (= 1 (count (:save @calls))))
+              ((:ok original) (wire stamp {:entry {:content :submitted}}))
+              (is (= "Later typing" (get-in (state) [:drafts "x.clj" :text])))
+              (is (= {:anchor 5 :head 8} (get-in (state) [:drafts "x.clj" :selection])))
+              (is (= "Submitted" (get-in (state) [:drafts "x.clj" :source :text])))
+              (is (= 2 (count (:save @calls))))
+              (is (= "Later typing" (get-in (last-call :save) [:request :text])))
+              ((:ok (last-call :save)) (wire stamp {:entry {:content :later}}))
+              (is (not (editor/dirty? (get-in (state) [:drafts "x.clj"])))))))))))
+
+(deftest a-file-move-ack-retargets-the-tabs-current-column
+  (doseq [new-column? [false true]]
+    (with-client
+      (fn [{:keys [a seed! stamp file state last-call]}]
+        (with-redefs [sig/active-column-id (signal runtime :column)
+                      sig/active-nav-keys (signal runtime #{})]
+          (reset! sig/layout-columns (memory-tab-layout))
+          (seed!)
+          ((:move a) "x.clj" "renamed.clj")
+          (move-memory-tab! new-column?)
+          (let [location (owner/current-tab @sig/layout-columns "test-room" :one)]
+            ((:ok (last-call :move)) (wire stamp {:path "renamed.clj" :entry (:entry file)}))
+            (is (= "renamed.clj" (:selected (state))))
+            (is (= "renamed.clj" (get-in (owner/current-tab @sig/layout-columns "test-room" :one)
+                                          [:tab :data :path])))
+            (is (= (:col-id location) (:col-id (owner/current-tab @sig/layout-columns "test-room" :one))))
+            (is (= "Original" (get-in (state) [:drafts "renamed.clj" :text])))
+            (is (nil? (get-in (state) [:drafts "x.clj"])))))))))
+
+(deftest late-move-acks-do-not-retarget-closed-repurposed-or-ambiguous-tabs
+  (doseq [scenario [:closed :other-type :other-room :duplicate]]
+    (with-client
+      (fn [{:keys [a seed! stamp file state last-call]}]
+        (with-redefs [sig/active-column-id (signal runtime :column)
+                      sig/active-nav-keys (signal runtime #{})]
+          (reset! sig/layout-columns (memory-tab-layout))
+          (seed!)
+          ((:move a) "x.clj" "renamed.clj")
+          (swap! sig/layout-columns
+                 (fn [columns]
+                   (case scenario
+                     :closed (update-in columns [0 :tabs] #(filterv (fn [tab] (not= :one (:id tab))) %))
+                     :other-type (assoc-in columns [0 :tabs 0 :type] :chat)
+                     :other-room (assoc-in columns [0 :tabs 0 :data :room-id] "another-room")
+                     :duplicate (update-in columns [1 :tabs] conj {:id :one :type :home :data {}}))))
+          (let [before @sig/layout-columns]
+            ((:ok (last-call :move)) (wire stamp {:path "renamed.clj" :entry (:entry file)}))
+            (is (= before @sig/layout-columns))
+            (is (= "renamed.clj" (:selected (state))) "Retain the old owner's receipt without navigating an unrelated tab")))))))
 
 (deftest a-retargeted-file-view-retains-the-original-pending-cell-receipt-once
   (with-client

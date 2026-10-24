@@ -5,8 +5,11 @@
             [org.replikativ.spindel.dom.router :as spin-router]
             [is.simm.uis.web.desktop.runtime :as runtime]
             [is.simm.uis.web.desktop.signals :as sig]
+            [is.simm.uis.web.desktop.db-signal :as db]
+            [is.simm.uis.web.desktop.datahike-query :as query]
             [is.simm.uis.web.desktop.refs :as refs]
-            [is.simm.uis.web.desktop.router :as router]))
+            [is.simm.uis.web.desktop.router :as router])
+  (:require-macros [org.replikativ.spindel.signal :refer [signal]]))
 
 (def room #uuid "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 (def proposal #uuid "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
@@ -105,3 +108,76 @@
         (sig/open-tab! :proposals {:proposal-id (str proposal)}))
       (is (= :proposals (:type (focused))))
       (is (= [:push (str "/proposal/" proposal)] (last @history))))))
+
+(deftest selecting-existing-tabs-and-singletons-preserves-the-callers-world
+  (with-navigation
+    (fn [{:keys [live history]}]
+      (swap! sig/layout-columns update-in [0 :tabs] conj
+             {:id "existing-proposal" :type :proposals :data {:proposal-id (str proposal)}})
+      (let [before @sig/layout-columns fork (context/fork-context live)]
+        (try
+          (binding [ec/*execution-context* fork]
+            (sig/set-active-tab! "first" "existing-proposal")
+            (is (= "existing-proposal" (get-in @sig/layout-columns [0 :active-tab])))
+            (sig/set-active-tab! "first" "first-tab")
+            (sig/open-or-activate-tab! :proposals {:proposal-id (str proposal)} {})
+            (is (= "existing-proposal" (get-in @sig/layout-columns [0 :active-tab]))))
+          (is (= before @sig/layout-columns))
+          (is (empty? @history))
+          (binding [ec/*execution-context* nil]
+            (sig/open-or-activate-tab! :proposals {:proposal-id (str proposal)} {}))
+          (is (= "existing-proposal" (get-in @sig/layout-columns [0 :active-tab])))
+          (is (= [:push (str "/proposal/" proposal)] (last @history)))
+          (finally (context/close-context! fork)))))))
+
+(deftest invalid-column-placement-never-removes-the-source-tab
+  (with-navigation
+    (fn [_]
+      (let [before @sig/layout-columns]
+        (is (try (sig/create-column-with-tab! "first" "first-tab" :right) false
+                 (catch :default error
+                   (= :is.simm.uis.web.desktop.signals/invalid-column-position (:type (ex-data error))))))
+        (is (= before @sig/layout-columns))))))
+
+(deftest same-column-and-invalid-tab-moves-preserve-the-original-layout
+  (with-navigation
+    (fn [{:keys [history]}]
+      (let [before @sig/layout-columns]
+        (doseq [[from tab to] [["first" "first-tab" "first"]
+                               ["first" "missing-tab" "second"]
+                               ["first" "first-tab" "missing-column"]
+                               ["missing-column" "first-tab" "second"]]]
+          (sig/move-tab! from tab to)
+          (is (= before @sig/layout-columns)))
+        (is (empty? @history))))))
+
+(deftest fork-tab-closes-keep-semantic-state-local-and-do-not-release-live-replicas
+  (with-navigation
+    (fn [{:keys [live history]}]
+      (let [page #uuid "cccccccc-cccc-4ccc-8ccc-cccccccccccc" calls (atom [])]
+        (with-redefs [sig/drive-data (signal live {})
+                      query/evict-cache-for-entity! (fn [id] (swap! calls conj [:query id]))
+                      db/disconnect-kb! (fn [scope] (swap! calls conj [:disconnect scope]))
+                      db/evict-view-db-for-scope! (fn [scope] (swap! calls conj [:view scope]))]
+          (swap! sig/layout-columns update-in [0 :tabs] into
+                 [{:id "wiki" :type :wiki :data {:page-uuid page :db-scope "kb-scope"}}
+                  {:id "chat" :type :chat :data {:room-id (str room) :db-scope "chat-scope"}}
+                  {:id "files" :type :files :data {:room-id (str room)}}
+                  {:id "memory" :type :memory :data {:room-id (str room)}}])
+          (reset! sig/drive-data {(str room) {:retained true}})
+          (let [before @sig/layout-columns drive-before @sig/drive-data fork (context/fork-context live)]
+            (try
+              (binding [ec/*execution-context* fork]
+                (sig/close-tab! "first" "wiki")
+                (sig/close-tab! "first" "chat")
+                (sig/close-tab! "first" "files")
+                (sig/close-tab-of-type! :memory)
+                (is (= ["first-tab"] (mapv :id (get-in @sig/layout-columns [0 :tabs]))))
+                (is (nil? (get @sig/drive-data (str room)))))
+              (is (= before @sig/layout-columns))
+              (is (= drive-before @sig/drive-data))
+              (is (empty? @calls))
+              (is (empty? @history))
+              (binding [ec/*execution-context* nil] (sig/close-tab! "first" "wiki"))
+              (is (= [[:query page] [:disconnect "kb-scope"] [:view "kb-scope"]] @calls))
+              (finally (context/close-context! fork)))))))))

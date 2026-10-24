@@ -67,6 +67,17 @@ Forks update their own roster-derived tabs, selection and chat-scroll state.
 Native focus classes and URL notifications belong only to the live world's
 stable home, including ordinary execution-frame copies of that world.
 
+Memory buffers use stable session/room/tab identity, so moving a tab between
+columns retains its draft, selection and pending request callbacks. Late file
+selection/rename callbacks locate the tab's current column and require its
+unique ID, Memory type and original room before retargeting it. Closed,
+repurposed or ambiguous tabs are not redirected. This preserves semantic
+buffers; native editor undo history across a DOM-parent move is separate.
+Tab close and direct move/activation helpers preserve the caller's context.
+Physical replica disconnection and shared query-cache eviction on close run
+only in the live home; a fork may close its local view without releasing the
+live browser's resources.
+
 Selected-region Markdown is a continuously validated source presentation, not
 an Apply/Save transaction. Accepted input reprojects the exact span, retaining
 the native source editor and current caret; invalid/intermediate input stays in

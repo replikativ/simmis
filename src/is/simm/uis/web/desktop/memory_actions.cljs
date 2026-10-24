@@ -6,6 +6,7 @@
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.memory-editor :as editor]
+            [is.simm.uis.web.desktop.memory-owner :as owner]
             [is.simm.uis.web.desktop.memory-cells :as cells]
             [is.simm.uis.web.desktop.memory-tree :as tree]
             [is.simm.uis.web.desktop.memory-declarations :as declarations]
@@ -19,7 +20,7 @@
             [is.simm.runtimes.web :as web]))
 
 (defn state-key [data]
-  [(:id (web/current-session)) (str (:room-id data)) (:col-id data) (:tab-id data)])
+  (owner/key (:id (web/current-session)) data))
 
 (defn- parent [path] (str/join "/" (butlast (str/split path #"/"))))
 
@@ -105,9 +106,12 @@
                             (not preserve?) (update :errors dissoc :reference)))
                 (when (and (current?) (:tab-id data))
                   (binding [ec/*execution-context* ctx]
-                    (sig/retarget-tab! (:col-id data) (:tab-id data)
-                                       #(if (= :memory (:type %)) (references/selected-tab % path preserve?) %)
-                                       (if retain-reference? :passive :navigate))))))
+                    (when-let [location (owner/current-tab @sig/layout-columns room (:tab-id data))]
+                      (sig/retarget-tab! (:col-id location) (:tab-id data)
+                                         #(if (and (= :memory (:type %))
+                                                   (= room (str (get-in % [:data :room-id]))))
+                                            (references/selected-tab % path preserve?) %)
+                                         (if retain-reference? :passive :navigate)))))))
             (connected! []
               (let [c (connection)]
                 (when (and (current?) (not= c (:connection (state))))
