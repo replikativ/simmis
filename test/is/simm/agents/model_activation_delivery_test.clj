@@ -97,61 +97,64 @@
               (future
                 (await-spin room
                             #(discourse/ask % actor-id {:content "first request"})
-                            10000))]
-          (is (fn? (deref first-call-entered 3000 ::timeout)))
-        ;; A distinct root is queued by the active arbiter rather than steering
-        ;; away the first request. The following model directive must survive
-        ;; behind it in the same participant inbox.
-        (discourse/post!
-         room (discourse/message :human actor-id "queued request"))
-        (reset! joined-atom #{[room-id agent-id]})
-        (with-redefs [model-selection/describe-resolution
-                      (constantly {:configured? false})
-                      parties/get-party
-                      (fn [id]
-                        (cond
-                          (= id agent-id) {:party/id agent-id
-                                           :party/owner {:party/id owner-id}}
-                          (= id owner-id) {:party/id owner-id
-                                           :party/preferred-model preference}))
-                      room-agents/describe-model-resolution
-                      (constantly {:available? true
-                                   :provider :openai
-                                   :model "gpt-new"})
-                      rooms/get-room (constantly {:room/slug "activation-delivery"})
-                      room-registry/lookup (constantly room)]
-          (is (= :activated
-                 (:status
-                  (room-agents/activate-agent-model! agent-id preference)))))
-        (let [cancel? (deref first-call-entered 1000 ::timeout)]
-          (is (true? (await-condition cancel? 3000))
-              "the live participant consumed the switch directive"))
-        (is (identical? participant-before (get @(:participants room) actor-id))
-            "activation does not replace the participant or its inbox")
-        (deliver release-first-call true)
-        (is (= "first reply on new model" (:content (deref first-reply 5000 ::timeout))))
-        (is (true? (await-condition
-                    #(some (fn [message]
-                             (= "queued reply on new model" (:content message)))
-                           (discourse/messages room))
-                    5000)))
-        (is (identical? participant-before (get @(:participants room) actor-id)))
-        (let [contents (mapv :content (discourse/messages room))]
-          (is (some #{"first request"} contents))
-          (is (some #{"queued request"} contents))
-          (is (some #{"first reply on new model"} contents))
-          (is (some #{"queued reply on new model"} contents)))
-          (is (= [{:provider :openai
-                   :model "gpt-old"
-                   :spec {:provider :openai :model "gpt-old"}}
-                  {:provider :openai
-                   :model "gpt-new"
-                   :spec {:provider :openai :model "gpt-new"}}
-                  {:provider :openai
-                   :model "gpt-new"
-                   :spec {:provider :openai :model "gpt-new"}}]
-                 @calls)
-              "both restarted and queued work admit the switched flat policy")))
+                            30000))
+              ;; This is a cold native-startup guard, not a model-switch latency
+              ;; assertion. Keep the outer ask alive through startup + delivery.
+              cancel? (deref first-call-entered 10000 ::timeout)]
+          (is (fn? cancel?) "The first native model call entered within the startup guard")
+          (when (fn? cancel?)
+            ;; A distinct root is queued by the active arbiter rather than steering
+            ;; away the first request. The following model directive must survive
+            ;; behind it in the same participant inbox.
+            (discourse/post!
+             room (discourse/message :human actor-id "queued request"))
+            (reset! joined-atom #{[room-id agent-id]})
+            (with-redefs [model-selection/describe-resolution
+                          (constantly {:configured? false})
+                          parties/get-party
+                          (fn [id]
+                            (cond
+                              (= id agent-id) {:party/id agent-id
+                                               :party/owner {:party/id owner-id}}
+                              (= id owner-id) {:party/id owner-id
+                                               :party/preferred-model preference}))
+                          room-agents/describe-model-resolution
+                          (constantly {:available? true
+                                       :provider :openai
+                                       :model "gpt-new"})
+                          rooms/get-room (constantly {:room/slug "activation-delivery"})
+                          room-registry/lookup (constantly room)]
+              (is (= :activated
+                     (:status
+                      (room-agents/activate-agent-model! agent-id preference)))))
+            (is (true? (await-condition cancel? 3000))
+                "the live participant consumed the switch directive")
+            (is (identical? participant-before (get @(:participants room) actor-id))
+                "activation does not replace the participant or its inbox")
+            (deliver release-first-call true)
+            (is (= "first reply on new model" (:content (deref first-reply 5000 ::timeout))))
+            (is (true? (await-condition
+                        #(some (fn [message]
+                                 (= "queued reply on new model" (:content message)))
+                               (discourse/messages room))
+                        5000)))
+            (is (identical? participant-before (get @(:participants room) actor-id)))
+            (let [contents (mapv :content (discourse/messages room))]
+              (is (some #{"first request"} contents))
+              (is (some #{"queued request"} contents))
+              (is (some #{"first reply on new model"} contents))
+              (is (some #{"queued reply on new model"} contents)))
+            (is (= [{:provider :openai
+                     :model "gpt-old"
+                     :spec {:provider :openai :model "gpt-old"}}
+                    {:provider :openai
+                     :model "gpt-new"
+                     :spec {:provider :openai :model "gpt-new"}}
+                    {:provider :openai
+                     :model "gpt-new"
+                     :spec {:provider :openai :model "gpt-new"}}]
+                   @calls)
+                "both restarted and queued work admit the switched flat policy"))))
       (finally
         (deliver release-first-call true)
         (reset! joined-atom joined-before)
