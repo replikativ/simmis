@@ -2,6 +2,7 @@
   "Serializable, execution-context-owned document drafts and conflict rules."
   (:require [is.simm.documents.rich-text :as rich]
             [is.simm.documents.rich-document :as document]
+            [is.simm.uis.web.desktop.memory-cells :as cells]
             [is.simm.uis.web.desktop.memory-tree :as tree]))
 
 (def max-rich-regions 200)
@@ -28,8 +29,14 @@
          (= (:requested-namespace receipt) (get-in state [:repl :namespace] "user")))
     (assoc-in [:repl :namespace] (:namespace receipt))))
 
+(defn evaluation-slot? [slot]
+  (or (= :repl slot) (and (vector? slot) (#{:evaluate :cell} (first slot)))))
+
+(defn keep-evaluation-slots [entries]
+  (into {} (filter (comp evaluation-slot? key)) entries))
+
 (defn evaluation-receipt? [slot reply]
-  (and (or (= :repl slot) (and (vector? slot) (= :evaluate (first slot))))
+  (and (evaluation-slot? slot)
        (= :human-sci (:target reply)) (uuid? (:id reply))
        (or (true? (:success reply)) (false? (:success reply)))))
 
@@ -136,7 +143,7 @@
 (defn draft [file]
   (let [d {:source file :text (:text file) :analysis (:analysis file) :analysis-text (:text file) :generation 0
            :mode (if (= :markdown (:kind file)) :rich :source) :selection {:anchor 0 :head 0}}]
-    (if (= :markdown (:kind file)) (begin-rich d) d)))
+    (if (= :markdown (:kind file)) (cells/ensure-projection (begin-rich d)) d)))
 
 (defn dirty? [d]
   (or (and (:source d) (nil? (get-in d [:source :entry])))
@@ -171,7 +178,8 @@
   "Inactive pure target-epoch transition, for the stamped adapter rollout.
    A stamp is identity, not authority. Invalidate file I/O/cache identities even
    for identical bytes, retaining every draft and its original source/Office/
-   rich model for explicit conflict handling. Generic Room REPL is not retargeted."
+   rich model for explicit conflict handling. Pending human evaluations keep
+   their original input/receipt; a new file target never retargets that work."
   [state stamp]
   (when-not (uuid? stamp)
     (throw (ex-info "A Memory target needs an exact stamp" {:type ::invalid-target})))
@@ -184,9 +192,9 @@
                     (into {} (map (fn [[path d]]
                                     [path (-> d (assoc :target-stale? true :current-target-stamp stamp)
                                               (update :generation (fnil inc 0)))])) drafts)))
-          (update :requests #(select-keys % [:repl]))
-          (update :loading #(select-keys % [:repl]))
-          (update :errors #(select-keys % [:repl]))
+          (update :requests keep-evaluation-slots)
+          (update :loading keep-evaluation-slots)
+          (update :errors keep-evaluation-slots)
           (dissoc :folders :workspace :observed-entries :history :history-preview
                   :search :download :evaluations :permissions :opened-path
                   :watch-connection :sync))))
@@ -349,9 +357,9 @@
                  (= (:revision analysis) (get-in d [:source :entry :content]))
                  (uuid? (:revision analysis)))
             (assoc-in [:source :analysis] analysis))]
-    (if (= text (:text d))
+    (cells/ensure-projection (if (= text (:text d))
       (cond-> (assoc d :analysis analysis :analysis-text text)
-        (= :rich (:mode d)) begin-rich) d)))
+        (= :rich (:mode d)) begin-rich) d))))
 
 (defn saved [d sent reply]
   (-> d
@@ -361,7 +369,8 @@
       (update :generation (fnil inc 0))
       (cond-> (same-document? reply (:incoming d)) (dissoc :incoming)
         (and (same-target? reply (:source d)) (= (:entry reply) (:incoming-entry d)))
-        (dissoc :incoming-entry))))
+        (dissoc :incoming-entry))
+      cells/ensure-projection))
 
 (defn moved
   "Move the acknowledged baseline, retaining concurrent typing. Observations of

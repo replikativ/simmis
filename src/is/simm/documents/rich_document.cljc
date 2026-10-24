@@ -2,6 +2,7 @@
   "Source-backed continuous editing. Semantic containers and opaque nodes are
    immutable boundaries; ordinary paragraphs may split/join within a region."
   (:require [clojure.string :as str]
+            [is.simm.documents.code-cells :as cells]
             [is.simm.documents.rich-text :as rich]))
 
 (def boundary-types #{"memoryBlock" "memoryRegion" "memoryOpaque"})
@@ -59,7 +60,8 @@
                      (parts (get-in analysis [:semantic :blocks]) nil)
                      (empty-region (or (:body-from analysis) 0) nil))]
         (when (seq (:content result))
-          {:model {:type "doc" :content (:content result)} :regions (:regions result)})))))
+          (let [projection {:model {:type "doc" :content (:content result)} :regions (:regions result)}]
+            (assoc projection :cells (cells/descriptors analysis projection))))))))
 
 (defn topology [model]
   (rich/validate-model! model)

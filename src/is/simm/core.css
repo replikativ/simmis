@@ -9249,3 +9249,12 @@ body.tab-dragging .column-drop-zone {
 .memory-block-link:focus-visible { opacity: 1; }
 .memory-block-link[hidden] { display: none; }
 .memory-semantic-block[data-linked-block] { box-shadow: inset 2px 0 var(--accent); }
+
+/* Cell controls/results are native editor chrome, never Markdown content. */
+.memory-code-cell { position: relative; }
+.memory-code-cell > pre { padding-right: 4rem; }
+.memory-code-cell-controls { position: absolute; top: 0.25rem; right: 0.25rem; }
+.memory-code-cell-controls button { font-size: 0.75rem; padding: 0.15rem 0.4rem; }
+.memory-code-cell-result { font-size: 0.8rem; color: var(--mono-text-muted); margin-bottom: 0.6rem; }
+.memory-code-cell-result pre { max-height: 15rem; overflow: auto; white-space: pre-wrap; }
+.memory-code-cell-controls[hidden], .memory-code-cell-result[hidden] { display: none; }
