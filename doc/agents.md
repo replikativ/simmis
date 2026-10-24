@@ -335,7 +335,7 @@ existing page or a new page, and accepts empty output for a no-change case.
 Existing explicit identities, metadata and block ancestry/order must survive;
 fresh blocks may be inserted, and new identities must be unique against the
 frozen inputs and other proposed pages. Citations must resolve to frozen source
-paths using inline Markdown links. Required/forbidden text and quote checks are
+paths using inline or defined reference Markdown links. Required/forbidden text and quote checks are
 mechanical synthetic-fixture checks, not evidence that arbitrary prose is true.
 The automated score does not authorize adoption of a wiki proposal.
 

@@ -163,6 +163,21 @@
     (is (= ["Target"] (mapv :target refs)))
     (is (= ["alias"] (mapv :label refs)))))
 
+(deftest ordinary-link-extraction-resolves-used-definitions-and-keeps-source-coordinates
+  (let [source (str "🦋 [Inline](wiki/One.md) and [Defined][note] and [[Plan]].\n\n"
+                    "[note]: <wiki/Two.md> \"A title\"\n[unused]: wiki/Fake.md\n\n"
+                    "`[Code](wiki/Code.md)`\n\n```markdown\n[Code][note]\n```\n\n"
+                    "<!-- [Comment](wiki/Comment.md) -->\n")
+        parsed (md/parse source)
+        links (md/link-references parsed)]
+    (is (= ["wiki/One.md" "wiki/Two.md" "Plan"] (mapv :target links)))
+    (is (= [:link :link :wikilink] (mapv :kind links)))
+    (is (= ["[Inline](wiki/One.md)" "[Defined][note]" "[[Plan]]"]
+           (mapv #(subs source (:from %) (:to %)) links)))
+    (is (every? #(= (:revision parsed) (:revision %)) links))
+    (is (= ["Plan"] (mapv :target (md/references parsed))) "Existing wiki-only extraction keeps its contract")
+    (is (= source (:source parsed)))))
+
 (deftest target-span-edits-preserve-reference-labels-fragments-and-literal-examples
   (let [source "See [[Old/Plan#^evidence|Our plan]]. `[[Old/Plan]]` stays literal.\n"
         doc (md/parse source)

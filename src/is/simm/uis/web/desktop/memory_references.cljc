@@ -3,7 +3,7 @@
   (:require [is.simm.uis.web.desktop.memory-charts :as charts]
             [clojure.string :as str]
             [is.simm.uis.web.desktop.memory-editor :as editor]
-            [is.simm.uis.web.desktop.memory-links :as links]))
+            [is.simm.documents.links :as links]))
 
 (defn selected-tab [tab path preserve-reference?]
   (-> tab

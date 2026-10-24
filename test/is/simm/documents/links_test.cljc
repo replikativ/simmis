@@ -1,11 +1,18 @@
-(ns is.simm.uis.web.desktop.memory-links-test
+(ns is.simm.documents.links-test
   (:require [clojure.test :refer [deftest is]]
             [clojure.string :as str]
-            [is.simm.uis.web.desktop.memory-links :as links]))
+            [is.simm.documents.links :as links]))
 
 (def room "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 (def repository "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 (def block "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+
+(deftest route-parser-never-borrows-an-external-host-or-fragment
+  (let [ref {:kind :memory-file :room room :path "wiki/A+B.md"} route (links/route ref)]
+    (is (= ref (links/parse-route route)))
+    (doseq [bad [(str "https://another.example" route) (str "/" route) (str route "#anchor")
+                 (str route "&path=other.md") (str route "&permission=owner")]]
+      (is (nil? (links/parse-route bad))))))
 
 (deftest file-and-block-links-round-trip-special-paths-in-both-runtimes
   (doseq [path ["wiki/Note.md" "wiki/A B+C%#&=?.md" "研究/🦋.md" "notes/a!'()*~.md"
