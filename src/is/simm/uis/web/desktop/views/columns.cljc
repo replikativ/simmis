@@ -1441,6 +1441,7 @@
                                    (subs id 0 (min 8 (count id))))))}))]
          (run-inspector/view
           {:detail detail
+           :room-id room-id
            :live-run active-run
            :fallback-run (or recent-run (:run data))
            :room-name room-name

@@ -8,11 +8,13 @@
             [is.simm.ops.knowledge-publish :as publish]
             [is.simm.ops.knowledge-output-service :as service]
             [is.simm.ops.owned-reads :as reads]
-            [is.simm.runtimes.application-ops :as application]))
+            [is.simm.runtimes.application-ops :as application]
+            [is.simm.runtimes.operation-lifetime :as lifetime]))
 
 (defn- exercise [options f]
   (let [party (random-uuid) room-id (random-uuid) request (random-uuid) proposal (random-uuid)
-        conn (atom {}) room (Object.) host {:execution-ctx (Object.)}
+        conn (atom {}) room (Object.) ctx (Object.)
+        host {:execution-ctx ctx ::reads/owner {:control-conn conn :execution-ctx ctx}}
         calls (atom []) app? (atom false) room? (atom false)
         note! #(swap! calls conj %)
         row (merge {:work.request/id request :work.request/by party :work.request/room room-id
@@ -25,6 +27,7 @@
                     (when (:stopped? options) (throw (ex-info "Stopped" {})))
                     (reset! app? true)
                     (try (body host) (finally (reset! app? false) (note! :application-exit))))
+                  lifetime/check-current! (fn [] (is @app?))
                   system-db/get-conn (fn [] (is @app?) conn)
                   reads/current-host-control-db! (fn [h] (is @app?) (is (identical? host h)) @conn)
                   reads/authorize-read! (fn [_ principal handle]

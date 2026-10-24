@@ -5,6 +5,7 @@
             [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.run-detail :as run-detail]
             [is.simm.uis.web.desktop.views.chat :as chat]
+            #?(:cljs [is.simm.uis.web.desktop.workflow-output :as workflow-output])
             [is.simm.uis.web.desktop.views.core :as vc])
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el])))
 
@@ -249,7 +250,7 @@
 (defn view
   "Render one Run. `live-run` wins for transient :cancelling status; durable
    detail supplies history, effects, outputs, and structural relations."
-  [{:keys [detail live-run fallback-run room-name syntax-pref on-back-room
+  [{:keys [detail live-run fallback-run room-id room-name syntax-pref on-back-room
            on-open-message on-open-run on-cancel on-promote
            captured-result on-load-results on-more-results on-preview-result on-download-result]}]
   (let [durable-run (:run detail)
@@ -317,6 +318,9 @@
                                 :input on-open-run)))
 
             (settlement-view run on-promote)
+
+            (when (and room-id (= :workflow (:kind run)))
+              #?(:cljs (workflow-output/view room-id run) :clj nil))
 
             (captured-results-view {:attempt-id (:attempt-id detail) :captured-result captured-result
                                     :on-load-results on-load-results :on-more-results on-more-results

@@ -361,6 +361,14 @@ Recurring benchmarks require installation-operator authority as well as room
 merge authority. CLI and local-worker executions are not scheduled by this path.
 
 For LIVE knowledge work, a completed orchestration Job is not candidate success.
+The root workflow Run inspector can discover its author's canonical request
+and collect checked wiki output into the existing proposal mechanism, including
+work started through MCP or in another tab. The work-profile MCP operation
+`simmis_workflow-output-collect` accepts the canonical room and request UUIDs.
+Both paths recheck current human read/merge authority and original application
+ownership, and retry the same durable disposition. Collection never reruns
+inference or adopts files. Discovery returns no descriptor to other authors;
+opening an existing proposal still requires its normal current authority.
 A strictly certified failed direct candidate holds the activation as
 `:execution-failed`, without filing its partial output or advancing the input
 cursor. Reconciliation atomically disables the activation and releases only

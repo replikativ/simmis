@@ -15,6 +15,7 @@
             [is.simm.ops.owned-workflow-admission :as owned-admission]
             [is.simm.ops.owned-workflow-authoring :as owned-authoring]
             [is.simm.ops.owned-workflows :as owned-workflows]
+            [is.simm.ops.owned-knowledge-output :as knowledge-output]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflow-runs]
             [is.simm.ops.workflow-schedules :as workflow-schedules]
@@ -37,6 +38,7 @@
 (def cli-allowance-schema (external-schema benchmarks/cli-allowance-schema))
 (def allowance-schema (external-schema work/allowance-schema))
 (def status-schema [:map {:closed true} room-entry [:id uuid-string]])
+(def workflow-output-schema [:map {:closed true} [:room uuid-string] [:id uuid-string]])
 (def post-schema
   [:map {:closed true} room-entry [:id uuid-string]
    [:content [:string {:min 1 :max 16000}]]
@@ -521,6 +523,14 @@
                                                         (-> (dissoc args :room)
                                                             (update :request-id uuid!)
                                                             (update :expected-bundle uuid!))))))))}
+    :simmis/workflow-output-collect
+    {:kind :write :schema workflow-output-schema :authz {:action :merge}
+     :doc "Collect an existing certified wiki-workflow output into a Proposal for review. room is the canonical Simmis room UUID; id is the canonical work-request UUID returned by workflow-run, not the caller's request-id or an Attempt ID. Requires the original request author and current room read/merge authority. Idempotent collection never starts inference, changes funding, recaptures inputs or adopts files."
+     :impl (fn [host args]
+             (checked! workflow-output-schema args)
+             (when-not (owned-reads/owned-host? host)
+               (ops/op-error! "Owned workflow collection unavailable" ::owned-workflow-unavailable 503))
+             (knowledge-output/collect! host ops/*principal* (uuid! (:room args)) (uuid! (:id args))))}
     :simmis/workflow-run
     {:kind :write :schema workflow-run-route-schema :authz {:action :merge}
      :doc "Run ONE exact inspected saved workflow in an inherited room fork, with explicit case, literal declared string params, optional bounded canonical file inputs and finite limits. Same read/merge authority and file-worker policy as simmis_task. Pinned bundle source and selected inputs are materialized ONLY inside the fork and appear in its proposed diff. Never executes checker/calibration or claims correctness; uses ordinary completion capture under /out. review/discard only, no automatic merge. Identical request-id retries observe the old Job even after source edits; changed intent conflicts. Not benchmark isolation: other inherited room files remain visible. On the Simmis owned host, fresh execution also REQUIRES expected-owned-source: copy the source revision UUID from the same workflow-check inspection as expected-bundle. Retain both original guards on retry."
