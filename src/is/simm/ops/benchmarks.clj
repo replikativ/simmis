@@ -132,7 +132,7 @@
                              [:judge :web :fetched :allowed-sources :blocked-sources]))
       (invalid! "Initial benchmarks require offline developer workflows, /out capture and discard settlement; no judge or web effects"))
     (let [setup (checkers/world-setup bundle selection-policy)
-          evaluator (checkers/evaluator bundle)
+          evaluator (checkers/evaluator bundle selection-policy)
           verifier (evaluation/evaluator-ref evaluator)
           cell-limits (assoc limits :budget-microdollars dollars :max-dispatches dispatches)
           plan (catalog/experiment-plan bundle

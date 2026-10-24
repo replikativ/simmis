@@ -67,6 +67,19 @@
   (is (false? (:ok? (checkers/calibrate (assoc-in calibrated-bundle [:calibration :damaged :wrong :files "/out/answer"] "answer")))))
   (is (nil? (checkers/calibrate (dissoc calibrated-bundle :calibration)))))
 
+(deftest unprofiled-calibration-preserves-nil-params-and-exact-case-gold
+  (doseq [gold [nil false]]
+    (let [bundle (-> calibrated-bundle
+                     (assoc :definition {} :gold "root gold must not replace case gold"
+                            :cases {"selected" {:gold gold}})
+                     (assoc-in [:calibration :case] "selected")
+                     (assoc :checker
+                            (str "(ns checker) (defn check [{:keys [params gold files]}] "
+                                 "(let [ok (and (nil? params) (= gold " (pr-str gold) ") "
+                                 "(= \"answer\" (get files \"/out/answer\")))] "
+                                 "{:checks {:correct? ok} :reward (if ok 1 0)}))")))]
+      (is (:ok? (checkers/calibrate bundle))))))
+
 (deftest calibration-validates-all-inputs-before-executing-code
   (doseq [bad [false {}
                {:reference {} :damaged {}}
