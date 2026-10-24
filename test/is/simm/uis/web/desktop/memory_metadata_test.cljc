@@ -1,5 +1,7 @@
 (ns is.simm.uis.web.desktop.memory-metadata-test
   (:require [is.simm.uis.web.desktop.memory-metadata :as metadata]
+            [is.simm.uis.web.desktop.memory-metadata-view :as view]
+            [is.simm.uis.web.desktop.memory-editor :as editor]
             #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is]])))
 
@@ -53,3 +55,64 @@
     (is (try (metadata/batches {:good (request []) :bad bad}) false
              (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
                (= :is.simm.uis.web.desktop.memory-metadata/invalid-demand (:type (ex-data e))))))))
+
+(deftest one-observation-reconciles-each-views-dispatch-generation
+  (let [stamp (random-uuid) path "wiki/a.md"
+        draft (assoc (editor/draft {:path path :text "saved" :kind :text
+                                   :target-stamp stamp :entry {:content :old}})
+                     :generation 1)
+        state {:target-stamp stamp :drafts {path draft}}
+        reply {:protocol-version 2 :target-stamp stamp :entries {path {:content :new}}
+               :folders {} :permissions {:write? true}}
+        frame {:connection :socket :generations {path 1}}
+        first-view (view/consume state reply frame)
+        edited-view (view/consume (assoc-in state [:drafts path :generation] 2) reply frame)]
+    (is (= {:content :new} (get-in first-view [:drafts path :incoming-entry])))
+    (is (nil? (get-in edited-view [:drafts path :incoming-entry])))
+    (is (= "saved" (get-in first-view [:drafts path :text])))
+    (is (= "saved" (get-in edited-view [:drafts path :text])))
+    (is (= :socket (:verified-connection first-view)))))
+
+(deftest superseded-stream-cannot-refill-closed-folders-or-lose-current-intents
+  (let [stamp (random-uuid)
+        current {:target-stamp stamp :stream-marker :new
+                 :file-intents {"new.md" true "missing.md" true}
+                 :loading {[:file "new.md"] true}}
+        reply {:protocol-version 2 :target-stamp stamp :folders {"closed" {:entries [:old]}}
+               :entries {"missing.md" nil}}
+        result (view/consume current reply {:stream-marker :old})]
+    (is (nil? (get-in result [:folders "closed"])))
+    (is (= {"new.md" true} (:file-intents result)))
+    (is (= {[:file "new.md"] true} (:metadata-followups result)))
+    (is (false? (get-in result [:loading [:file "new.md"]])))
+    (is (string? (get-in result [:errors [:file "missing.md"]])))))
+
+(deftest target-change-retires-target-reads-but-keeps-evaluation-receipts
+  (let [stamp (random-uuid) next-stamp (random-uuid) receipt {:success true}
+        state {:target-stamp stamp :upload-intent {:path "a.md"}
+               :request-contexts {[:cell "a.md" "x"] {:scope :target}
+                                  [:file "a.md"] {:scope :target}}
+               :accepted {[:cell "a.md" "x"] :receipt [:file "a.md"] :old}
+               :evaluations {"a.md" receipt} :evaluation-history [receipt]}
+        result (view/consume state {:protocol-version 2 :target-stamp next-stamp
+                                    :entries {} :folders {}} {})]
+    (is (= next-stamp (:target-stamp result)))
+    (is (= {:path "a.md"} (:cancelled-upload result)))
+    (is (= {[:cell "a.md" "x"] :receipt} (:accepted result)))
+    (is (= [receipt] (:evaluation-history result)))
+    (is (nil? (:evaluations result)) "Current-file results retire; historical receipts remain")
+    (is (nil? (:upload-intent result)))))
+
+(deftest followups-use-current-intents-and-distinguish-absence-from-omission
+  (let [state {:file-intents {"new.md" true "gone.md" true}
+               :folder-intents {"new-folder" true}
+               :metadata-followups {[:office "report.docx"] true}
+               :drafts {"report.docx" {:office {:part "word/document.xml"}}}
+               :history {"old.md" {}} :query "current"}
+        plan (view/followups state {:target-stamp (random-uuid)
+                                    :entries {"gone.md" nil}})]
+    (is (= #{"new.md"} (:files plan)))
+    (is (= #{"new-folder"} (:folders plan)))
+    (is (= [{:path "report.docx" :part "word/document.xml" :reading? false}] (:office plan)))
+    (is (= ["old.md"] (:histories plan)))
+    (is (:search? plan))))

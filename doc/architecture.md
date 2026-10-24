@@ -367,6 +367,12 @@ from that final control snapshot. A same-target source write may leave an older
 coherent observation; private hints drive catch-up. Metadata hashes are neither
 ordered versions nor a guarantee that several requests saw one atomic snapshot.
 Discovery does not read file bodies or grant authority to later operations.
+The client separates pure per-view metadata reconciliation from followup reads.
+Each observation uses draft generations captured at dispatch; a reply cannot
+relabel newer typing as its baseline. Followup planning uses current pending
+intents, distinguishing omitted paths from explicitly observed absence. Target
+changes retire current-file evaluation displays while retaining historical
+receipts and outstanding evaluation bookkeeping.
 
 Metadata also carries a separate conservative `:definition-basis` token from
 the physical store/branch, commit ID and max-tx. Schema-only native transactions
