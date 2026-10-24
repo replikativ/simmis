@@ -1,11 +1,10 @@
 (ns is.simm.uis.web.desktop.views.schedules
-  "Pinned workflow activations and the separate legacy agent-task agenda."
+  "Workflows overview over existing saved activations, agent code and room links."
   (:require [org.replikativ.spindel.dom.elements :as el]
-            [org.replikativ.spindel.dom.foreach]
-            [org.replikativ.spindel.incremental.interval :as iv]
-            [org.replikativ.spindel.effects.track :refer [track]]
-            [is.simm.uis.web.desktop.views.core :as vc]
-            [is.simm.uis.web.desktop.signals :as sig]
+            #?(:cljs [org.replikativ.spindel.incremental.interval :as iv])
+            #?(:cljs [org.replikativ.spindel.effects.track :refer [track]])
+            #?(:cljs [is.simm.uis.web.desktop.signals :as sig])
+            [is.simm.uis.web.desktop.disclosure :as disclosure]
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
@@ -16,8 +15,7 @@
             #?(:cljs [is.simm.uis.web.desktop.refs :as refs])
             #?(:cljs [is.simm.uis.web.desktop.views.mermaid :as mmd])
             #?(:cljs [is.simm.runtimes.web :as web]))
-  #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
-                            [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
+  #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 
 ;; =============================================================================
 ;; Loading
@@ -46,7 +44,8 @@
            observe! (observation-io/controller ctx session state update!)
            generation #(binding [rtc/*execution-context* ctx]
                          (let [stream @sync/state]
-                           [(:connection stream) (:status stream) (:control-dirty stream)
+                           [(connection/snapshot) (:fork-id (rtc/home-context ctx))
+                            (:connection stream) (:status stream) (:control-dirty stream)
                             @sig/user-rooms (:retry (state)) (:updating (state))
                             (:stream-registered (state))]))]
        (letfn [(observe-all! []
@@ -62,13 +61,16 @@
                                            (update :stream-registered (fnil inc 0))))
                              (fn [s error] (assoc s :stream-error error))
                              (fn [_] (sync/ensure! socket)))
+                   (let [current-generation (generation)]
+                     (when (not= current-generation (:index-generation (state)))
+                       (update! assoc :index-generation current-generation :index-status :checking)))
                    (when-not (:updating (state))
                      (observe! :index generation
                                #(chat-remote/load-schedules! web/server-id)
                                (fn [s reply] (-> (merge s (select-keys reply [:schedules :workflow-schedules :diagrams :shapes]))
-                                                 (assoc :loaded-at (js/Date.now)) (dissoc :error)))
+                                                 (assoc :loaded-at (js/Date.now) :index-status :ready) (dissoc :error)))
                                (fn [s error] (-> s (dissoc :schedules :workflow-schedules :diagrams :shapes)
-                                                 (assoc :error error)))))))
+                                                 (assoc :error error :index-status :unavailable)))))))
                (load! []
                  (ensure!)
                  (update! update :retry (fnil inc 0)))
@@ -106,8 +108,22 @@
                               fail!)))
                        (catch :default error (fail! error))))))]
          {:session-id session-id :observe observe-all!
+          :index-current? #(= (:index-generation %) (generation))
+          :set-expanded (fn [kind id open?]
+                          (when (and (current?) (contains? #{:history :map :code} kind))
+                            (update! update-in [:disclosures kind]
+                                     (fn [ids] (if open? (conj (set ids) id) (disj (set ids) id))))))
           :refresh #(do (load!) (binding [rtc/*execution-context* ctx] (sync/retry! (connection/snapshot))))
           :toggle toggle!
+          :open-room (fn [room event]
+                       (binding [rtc/*execution-context* ctx]
+                         (when (current?)
+                           (let [column (some-> event .-currentTarget (.closest ".column[data-col-id]")
+                                                (.getAttribute "data-col-id"))]
+                             (sig/open-tab! :workflows
+                                            {:room-id (str (:room/id room)) :room-name (:room/name room)}
+                                            (cond-> {:title (str (:room/name room) " · Workflows") :new-tab? true}
+                                              column (assoc :col-id column)))))))
           :open-proposal (fn [proposal]
                            (binding [rtc/*execution-context* ctx]
                              (when (current?) (refs/open! {:kind :proposal :id proposal}))))
@@ -127,41 +143,49 @@
 (declare cadence-str)
 
 #?(:cljs
+   (defn- occurrence-view [row occurrence]
+     (el/div {:class "workflow-occurrence" :key (:id occurrence)}
+             (el/span {} (str (.toLocaleString (js/Date. (:intended-at occurrence))) " · "
+                              (name (or (:status occurrence) (:state occurrence) :unknown))))
+             (when-let [job (:job occurrence)]
+               (el/button {:on-click (fn [event] ((:on-open-run row) row job event))} "Results"))
+             (case (get-in occurrence [:filing :status])
+               :proposed (el/button {:on-click (fn [_] ((:on-open-proposal row) (get-in occurrence [:filing :proposal])))}
+                                    "Review proposal")
+               :no-op (el/span {:class "schedule-outcome"} "No wiki changes")
+               nil))))
+
+#?(:cljs
    (defn workflow-row [row]
-     (el/div {:class "schedule-row" :key (:id row)}
-             (el/div {:class "schedule-main"}
-                     (el/h3 {} (str (:room-name row) " · " (:name row)))
-                     (el/p {} (str (if (:enabled? row) "Active" "Paused") " · " (name (:kind row))
-                                   " · " (cadence-str (:cadence row)) " · " (get-in row [:cadence :tz])))
-                     (el/p {:title "Immutable source, execution settings and firing policy together identify this deployment."}
-                           (str "Deployment revision: " (:revision row)))
-                     (el/p {} (str "Workflow bundle: " (:bundle row)))
-                     (el/p {} (str "Next due: " (.toLocaleString (js/Date. (:next-fire row)))))
-                     (when-let [reason (:reason row)] (el/p {:role "status"} (str "Held: " (name reason))))
-                     (when (= :legacy-recreate (:resume-blocked row))
-                       (el/p {:role "status"}
-                             "This older deployment is held. Recreate it from the workflow editor to run it; existing Runs are unchanged."))
-                     (when (= :reconciliation-required (:resume-blocked row))
-                       (el/p {:role "status"}
-                             "This deployment has an unresolved admission. Resume is unavailable until it is reconciled; adding allowance does not resolve it."))
-                     (el/button {:disabled (boolean (or (:updating? row)
-                                                        (and (not (:enabled? row)) (:resume-blocked row))))
-                                 :on-click (fn [_] ((:on-toggle row) row))}
-                                (if (:this-updating? row) "Updating…" (if (:enabled? row) "Pause" "Resume")))
-                     (for [o (:occurrences row)]
-                       (el/div {:key (:id o)}
-                               (el/span {} (str (.toLocaleString (js/Date. (:intended-at o))) " · "
-                                                (name (:state o))
-                                                (when (:status o) (str " · " (name (:status o))))
-                                                (when (pos? (:coalesced o)) (str " · coalesced " (:coalesced o)))))
-                               (when-let [job (:job o)]
-                                 (el/button {:on-click (fn [event] ((:on-open-run row) row job event))}
-                                            "Open Run and results"))
-                               (case (get-in o [:filing :status])
-                                 :proposed (el/button {:on-click (fn [_] ((:on-open-proposal row) (get-in o [:filing :proposal])))}
-                                                      "Review wiki proposal")
-                                 :no-op (el/span {:class "schedule-outcome"} "No wiki changes")
-                                 nil)))))))
+     (let [occurrences (sort-by :intended-at > (:occurrences row))]
+       (el/div {:class "schedule-row workflow-card" :key (:id row)}
+               (el/div {:class "schedule-main"}
+                       (el/h3 {} (:name row))
+                       (el/p {:class "workflow-note"}
+                             (str (:room-name row) " · " (if (= :benchmark (:kind row)) "Benchmark" "Saved workflow")
+                                  " · " (if (:enabled? row) "Scheduled" "Paused")))
+                       (el/p {} (str (cadence-str (:cadence row)) " · " (get-in row [:cadence :tz])
+                                     (when (:enabled? row) (str " · Next: " (.toLocaleString (js/Date. (:next-fire row)))))))
+                       (when-let [reason (:reason row)] (el/p {:role "status"} (str "Held: " (name reason))))
+                       (when (:resume-blocked row)
+                         (el/p {:role "status"} (if (= :legacy-recreate (:resume-blocked row))
+                                                 "Open the room workflow to recreate this older activation."
+                                                 "Admission needs reconciliation before this workflow can resume; adding allowance does not resolve it.")))
+                       (el/button {:disabled (boolean (or (:updating? row)
+                                                          (and (not (:enabled? row)) (:resume-blocked row))))
+                                   :on-click (fn [_] ((:on-toggle row) row))}
+                                  (if (:this-updating? row) "Updating…" (if (:enabled? row) "Pause" "Resume")))
+                       (when (:on-open-room row)
+                         (el/button {:on-click (fn [event] ((:on-open-room row)
+                                                           {:room/id (:room-id row) :room/name (:room-name row)} event))}
+                                    "Open room workflows"))
+                       (when-let [latest (first occurrences)] (occurrence-view row latest))
+                       (el/details {:class "workflow-disclosure" :open (boolean (:history-open? row))
+                                    :on-toggle #(disclosure/remember-open! % (fn [open?] ((:on-expand row) :history (:id row) open?)))}
+                                   (el/summary {} "History and execution details")
+                                   (el/p {} (str "Deployment revision: " (:revision row)))
+                                   (el/p {} (str "Workflow bundle: " (:bundle row)))
+                                   (for [occurrence (rest occurrences)] (occurrence-view row occurrence))))))))
 
 ;; =============================================================================
 ;; Formatting
@@ -173,25 +197,6 @@
                    pad #(if (< % 10) (str "0" %) (str %))]
                (str (pad (.getHours d)) ":" (pad (.getMinutes d)))))
      :clj nil))
-
-(defn- day-key
-  "Group key: days-from-today (0 today, 1 tomorrow, ...), nil when no fire."
-  [epoch-ms]
-  #?(:cljs (when epoch-ms
-             (let [now (js/Date.)
-                   today (.setHours (js/Date.) 0 0 0 0)
-                   that (.setHours (js/Date. epoch-ms) 0 0 0 0)]
-               (js/Math.round (/ (- that today) 86400000))))
-     :clj nil))
-
-(defn- day-label [days epoch-ms]
-  #?(:cljs (cond
-             (nil? days) "Unscheduled"
-             (zero? days) "Today"
-             (= 1 days) "Tomorrow"
-             :else (.toLocaleDateString (js/Date. epoch-ms) js/undefined
-                                        #js {:weekday "long" :month "short" :day "numeric"}))
-     :clj (str days)))
 
 (defn cadence-str
   "Format both normalized workflow specs and legacy schedule rows exactly."
@@ -222,12 +227,61 @@
                           (el/span {:class "schedule-room"} (:room-name s))
                           (when (:agent-name s)
                             (el/span {:class "schedule-agent"} (:agent-name s)))
-                          (el/span {:class "schedule-cadence"} (cadence-str s))))))
+                          (el/span {:class "schedule-cadence"} (cadence-str s)))
+                  (when-let [shape (:shape s)]
+                    #?(:cljs (mmd/diagram shape) :clj (el/pre {} shape)))
+                  (when (:code s)
+                    (el/details {:class "workflow-disclosure" :open (boolean (:code-open? s))
+                                 :on-toggle #(disclosure/remember-open! % (fn [open?] ((:on-expand s) :code (:id s) open?)))}
+                                (el/summary {} "Invoked code")
+                                (el/pre {} (if (string? (:code s)) (:code s) (pr-str (:code s)))))))))
+
+#?(:cljs
+   (defn overview [data rooms actions stream-problem]
+     (let [index-ready? (= :ready (:index-status data))
+           rows (mapv #(assoc % :updating? (boolean (:updating data))
+                              :this-updating? (= (:id %) (:updating data))
+                              :on-toggle (:toggle actions) :on-open-run (:open-run actions)
+                              :on-open-room (:open-room actions) :on-open-proposal (:open-proposal actions)
+                              :history-open? (contains? (get-in data [:disclosures :history]) (:id %))
+                              :on-expand (:set-expanded actions))
+                      (when index-ready? (:workflow-schedules data)))
+           schedules (sort-by #(or (:next-fire %) js/Number.MAX_SAFE_INTEGER) (when index-ready? (:schedules data)))]
+       (el/div {:class "content-schedules workflow-overview"}
+               (el/div {:class "schedules-header"}
+                       (el/h2 {} "Workflows")
+                       (when (or (:error data) (:stream-error data) stream-problem)
+                         (el/button {:disabled (boolean (:updating data))
+                                     :on-click (fn [_] ((:refresh actions)))} "Retry updates")))
+               (el/p {:class "workflow-note"} "Reusable code agents can invoke. Open a room’s saved workflows, or review scheduled work and its results.")
+               (when-let [error (:error data)] (el/p {:role "alert"} error))
+               (when-let [error (or (:stream-error data) stream-problem)] (el/p {:role "alert"} error))
+               (el/h3 {} "Saved workflows")
+               (el/p {:class "workflow-note"} "Workflows can run on demand. Open a room to inspect its saved code or discuss changes with its agents.")
+               (el/div {:class "workflow-room-links"}
+                       (for [room (sort-by :room/name rooms)]
+                         (el/button {:key (str (:room/id room))
+                                     :on-click (fn [event] ((:open-room actions) room event))} (:room/name room))))
+               (when (and data (empty? rooms)) (el/p {} "No rooms available."))
+               (el/h3 {} "Scheduled work")
+               (when (and (not index-ready?) (not (:error data))) (el/p {:role "status"} "Checking scheduled work…"))
+               (when (and index-ready? (empty? rows) (empty? schedules))
+                 (el/p {} "No scheduled work. Ask an agent to prepare a recurring workflow in its room."))
+               (for [row rows] (workflow-row row))
+               (for [[room-name code] (sort-by key (when index-ready? (:diagrams data)))]
+                 (el/details {:key room-name :class "workflow-disclosure workflow-room"
+                              :open (contains? (get-in data [:disclosures :map]) room-name)
+                              :on-toggle #(disclosure/remember-open! % (fn [open?] ((:set-expanded actions) :map room-name open?)))}
+                             (el/summary {} (str room-name " · Workflow map"))
+                             (mmd/diagram code)))
+               (for [schedule schedules]
+                 (schedule-row (assoc schedule :shape (get-in data [:shapes (:id schedule)])
+                                               :code-open? (contains? (get-in data [:disclosures :code]) (:id schedule))
+                                               :on-expand (:set-expanded actions))))))))
 
 #?(:cljs
    (defn render-schedules
-     "Agenda tab content. Spin tracking sig/schedules-data; triggers a
-      load when the signal is still empty (idempotent via loading?)."
+     "Existing reactive tab identity; Workflows projects saved code and triggers."
      []
      (spin
       (let [data-i (track sig/schedules-data)
@@ -236,80 +290,13 @@
             roster-i (track sig/user-rooms)
             raw-data (iv/get-new data-i)
             _socket (iv/get-new socket-i)
-            _stream (iv/get-new stream-i)
-            _roster (iv/get-new roster-i)
+            stream (iv/get-new stream-i)
+            roster (iv/get-new roster-i)
             actions (controller)
             data (when (and (:session-id actions)
                             (= (:session-id actions) (:id (web/current-session)))
-                            (= (:session-id actions) (:session-id raw-data))) raw-data)
-            _ ((:observe actions))
-            schedules (vec (sort-by #(or (:next-fire %) js/Number.MAX_SAFE_INTEGER)
-                                    (:schedules data)))
-            groups (->> schedules
-                        (group-by #(day-key (:next-fire %)))
-                        (sort-by (fn [[k _]] (if (nil? k) 9999999 k)))
-                        vec)
-            workflow-rows (mapv #(assoc % :updating? (boolean (:updating data))
-                                        :this-updating? (= (:id %) (:updating data))
-                                        :on-toggle (:toggle actions) :on-open-run (:open-run actions)
-                                        :on-open-proposal (:open-proposal actions))
-                                (:workflow-schedules data))]
-        (el/div {:class "content-schedules"}
-                (el/div {:class "schedules-header"}
-                        (el/h2 {} "Schedules")
-                        (when (or (:error data) (:stream-error data) (= :error (:status _stream)))
-                          (el/button {:class "schedules-refresh"
-                                      :disabled (boolean (or (:loading? data) (:updating data)))
-                                      :title "Retry updates"
-                                      :on-click (fn [_] ((:refresh actions)))}
-                                     "Retry updates")))
-                (when-let [error (:error data)] (el/p {:role "alert"} error))
-                (when-let [error (or (:stream-error data) (sync/problem _stream))]
-                  (el/p {:role "alert"} error))
-                (el/h3 {} "Pinned workflow deployments")
-                (el/p {} "Create an activation from a saved workflow. These use the shared room allowance and never merge automatically.")
-                (if (seq workflow-rows)
-                  (ifor-each :id workflow-rows workflow-row)
-                  (el/p {} "No pinned workflow schedules yet."))
-                (el/h3 {} "Legacy agent tasks")
-           ;; Per-room workflow topology diagrams (katzen → mermaid). The map
-           ;; view above the agenda: one node per background workflow → the KB
-           ;; it feeds — so you see WHAT is running at a glance, not per-line.
-                (when-let [diagrams (seq (:diagrams data))]
-                  (let [shapes  (:shapes data)
-                        by-room (group-by :room-name (:schedules data))]
-                    (el/div {:class "workflow-diagrams"}
-                            (el/div {:class "workflow-diagrams-title"} "Workflows")
-                            (ifor-each first (vec diagrams)
-                                       (fn [[room-name code]]
-                                         (el/div {:key (str "wf-" room-name) :class "workflow-room"}
-                                                 (el/div {:class "workflow-room-label"} room-name)
-                                                 (mmd/diagram code)
-                       ;; agent-authored per-workflow shapes (design B): the
-                       ;; actual steps of each workflow that has declared one
-                                                 (ifor-each :id
-                                                            (vec (filter #(contains? shapes (:id %)) (get by-room room-name)))
-                                                            (fn [s]
-                                                              (el/div {:key (str "shape-" (:id s)) :class "workflow-shape"}
-                                                                      (el/div {:class "workflow-shape-label"}
-                                                                              (or (:description s) (:task s)))
-                                                                      (mmd/diagram (get shapes (:id s))))))))))))
-                (cond
-                  (nil? data)
-                  (el/p {:class "schedules-empty"} "Loading schedules…")
-
-                  (empty? schedules)
-                  (el/div {:class "schedules-empty"}
-                          (el/p {} "No legacy agent tasks.")
-                          (el/p {:class "schedules-hint"}
-                                "Ask an agent to schedule a recurring task — e.g. “run the research flow every morning at 9”."))
-
-                  :else
-                  (el/div {:class "schedules-groups"}
-                          (ifor-each first groups
-                                     (fn [[days ss]]
-                                       (el/div {:key (str "day-" days) :class "schedule-group"}
-                                               (el/div {:class "schedule-day-label"}
-                                                       (day-label days (:next-fire (first ss))))
-                                               (el/div {:class "schedule-group-rows"}
-                                                       (ifor-each :id (vec ss) schedule-row))))))))))))
+                            (= (:session-id actions) (:session-id raw-data))) raw-data)]
+        ((:observe actions))
+        (overview (cond-> data
+                    (and data (not ((:index-current? actions) data))) (assoc :index-status :checking))
+                  (when data (:rooms roster)) actions (sync/problem stream))))))

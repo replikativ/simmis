@@ -797,3 +797,24 @@ One native-provider quirk is load-bearing here: on OpenAI's configured
 tools work and server-side reasoning does not; an arbitrary compatible endpoint
 does not receive an OpenAI-native field. Agents that need both belong on
 `gpt-5.5` until the Responses API is spoken.
+
+## Workflow views
+
+The global Workflows view retains the existing schedules tab identity and reads
+the existing agent tasks and saved workflow activations. Room links open the
+ordinary saved workflow browser, including methods with no schedule; opening the
+overview does not scan or hydrate every room repository. Agent-authored schedule
+diagrams retain their existing schedule identities and appear with the code task.
+
+A room workflow opens with its saved title, activity and result controls.
+Instructions and code, execution settings and benchmarking use separate
+disclosures whose preferences belong to the room's context-owned editor draft.
+A saved `diagram.mmd` file supplies an optional Mermaid overview of the same
+saved revision (up to 32,000 characters); it is explanatory and never executed.
+The saved source remains authoritative and agents can maintain it through the
+existing file and workflow operations. Opening a view does not provision or run.
+
+Existing named agents remain ordinary parties. Agent-task schedules display
+their real agent identity; saved-workflow activations still use the admitted
+generic worker defined by the current workflow execution policy. Their human
+creator is not presented as an executing agent.

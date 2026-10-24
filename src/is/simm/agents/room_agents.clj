@@ -1943,10 +1943,11 @@
          "When you draw a process YOU maintain (e.g. an intake workflow you scheduled), keep its "
          "diagram up to date whenever the steps change — a stale diagram is worse than none.\n"
          "For a background workflow you scheduled, attach its overview diagram so it shows in the "
-         "Schedules view: `(workflow/schedules)` lists this room's workflows (id + description), "
+         "Workflows view: `(workflow/schedules)` lists this room's workflows (id + description), "
          "then `(workflow/set-shape! \"<schedule-id>\" \"flowchart LR\\n  ...\")` stores/updates a "
          "few-node mermaid of its real steps (sources → dedup → write → which KB). Re-call it when "
-         "you change the workflow.\n\n"
+         "you change the workflow. For a saved file-based workflow, keep its optional `diagram.mmd` "
+         "beside `workflow.edn`; the room Workflows view shows that saved diagram. The code remains authoritative.\n\n"
          "## Links\n\n"
          "Inside a wiki, `[[Title]]` links to a page in the SAME KB — keep using it there.\n"
          "To link ACROSS databases — e.g. mention a wiki page in a CHAT message, or link "
@@ -2324,7 +2325,7 @@
 (defn- add-workflow-ns!
   "Install the `workflow/*` vocab: an agent declares/updates the OVERVIEW
    diagram (mermaid) for a background workflow (schedule) it maintains in THIS
-   room. Stored in the system DB (schedule uuid → mermaid). The Schedules view
+   room. Stored in the system DB (schedule uuid → mermaid). The Workflows view
    renders it; the KB-named topology template is the fallback (design B). The
    agent should keep it current when the workflow's steps change."
   [sci-ctx room-uuid]

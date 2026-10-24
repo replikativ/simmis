@@ -616,7 +616,7 @@
     :files "folder"
     :memory "folder"
     :mail "mail"
-    :schedules "calendar"
+    :schedules "workflow"
     :proposals "git-pull-request"
     :proposal-source "file-search"
     :tasks "circle-check"
@@ -2340,7 +2340,7 @@
     :schedules
     #?(:cljs (schedules-view/render-schedules)
        :clj (el/div {:class "content-schedules"}
-              (el/h2 {} "Schedules")))
+              (el/h2 {} "Workflows")))
 
     :proposals
     ;; `:proposal-id` focuses one ForkSet — how a Task or Feed row opens the

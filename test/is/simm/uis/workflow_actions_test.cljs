@@ -706,3 +706,23 @@
           ((:ok (second @reads)) {:models [] :allowance {:status :unavailable}})
           (is (= :ready (get-in @sig/workflow-editor-state [k :readiness-status])))
           (is (nil? (get-in @sig/workflow-editor-state [k :errors :readiness]))))))))
+
+(deftest disclosure-preferences-follow-the-ui-world-and-preserve-drafts-and-pending-intent
+  (with-state
+    (fn [_ key]
+      (let [pending {:payload {:request-id "original" :model "original-model"}}
+            original (assoc (get-in @sig/workflow-editor-state [key :drafts "a"])
+                            :files {"workflow.edn" "unsaved code"} :submission pending)
+            _ (swap! sig/workflow-editor-state assoc-in [key :drafts "a"] original)
+            child (context/fork-context ec/*execution-context*)]
+        (try
+          (binding [ec/*execution-context* child]
+            (let [ui (actions/controller {:room-id "room"})]
+              ((:change ui) "a" assoc :source-open? true :execution-open? true)
+              (let [draft (get-in @sig/workflow-editor-state [key :drafts "a"])]
+                (is (true? (:source-open? draft)))
+                (is (true? (:execution-open? draft)))
+                (is (= (:files original) (:files draft)))
+                (is (= pending (:submission draft))))))
+          (is (= original (get-in @sig/workflow-editor-state [key :drafts "a"])))
+          (finally (context/close-context! child)))))))

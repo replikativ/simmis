@@ -337,6 +337,7 @@
        :workers #(load-workers! nil) :more-workers #(load-workers! (get-in (state) [:workers :next-after]))
        :select #(select! % false) :reload #(select! % true)
        :new-name #(update! assoc :new-name %)
+       :new-authoring-open #(update! assoc :new-authoring-open? %)
        :create (fn []
                  (let [name (:new-name (state))]
                    (if (and (string? name) (re-matches #"[a-z0-9][a-z0-9-]{0,63}" name))
@@ -349,8 +350,14 @@
                          (binding [ec/*execution-context* ctx]
                            (when (web/current-session? session)
                              (sig/open-tab! :schedules {}
-                                            {:title "Schedules" :new-tab? true
+                                            {:title "Workflows" :new-tab? true
                                              :col-id (:col-id room-data)}))))
+       :open-room (fn []
+                    (binding [ec/*execution-context* ctx]
+                      (when (web/current-session? session)
+                        (sig/open-tab! :chat room-data
+                                       {:title (or (:room-name room-data) "Room") :new-tab? true
+                                        :col-id (:col-id room-data)}))))
        :open-proposal (fn [proposal]
                         (binding [ec/*execution-context* ctx]
                           (when (web/current-session? session)

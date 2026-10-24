@@ -8,6 +8,8 @@
             #?(:cljs [org.replikativ.spindel.effects.track :refer [track]])
             #?(:cljs [org.replikativ.spindel.incremental.interval :as iv])
             #?(:cljs [is.simm.uis.web.desktop.source-editor :as source-editor])
+            #?(:cljs [is.simm.uis.web.desktop.views.mermaid :as mmd])
+            [is.simm.uis.web.desktop.disclosure :as disclosure]
             [clojure.string :as str])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 
@@ -68,7 +70,7 @@
                                     (el/button {:on-click (fn [_] ((:open-run actions) job))} "Latest Run"))
                                   (when-let [proposal (get-in latest [:filing :proposal])]
                                     (el/button {:on-click (fn [_] ((:open-proposal actions) proposal))} "Review proposal")))))
-                      (el/button {:on-click (fn [_] ((:open-schedules actions)))} "Manage schedules"))))))
+                      (el/button {:on-click (fn [_] ((:open-schedules actions)))} "Manage in Workflows"))))))
 
 (defn view [room-name state actions]
   (let [selected (:selected state) draft (get-in state [:drafts selected])
@@ -96,7 +98,7 @@
                     (when (seq (:errors state))
                       (el/button {:on-click (fn [_] ((:refresh actions))) :disabled (:list loading)} "Retry updates")))
             (el/p {:class "workflow-note"} "A workflow is a reusable task saved in this room. Each Run executes it separately and produces results or a proposal to review. Ordinary chat does not require a workflow.")
-            (el/p {:class "workflow-note"} "This is the source editor: instructions and inputs are versioned room files. The optional checker is for benchmarking; inspecting source never executes it.")
+            (el/p {:class "workflow-note"} "Ask an agent to create or improve a workflow. Its instructions and code remain ordinary versioned room files; you can inspect or edit them below.")
             (let [{:keys [status observed-status]} (:wiki-setup state)]
               (when setup-card-visible?
                 (el/div {:class "workflow-note"}
@@ -125,18 +127,37 @@
                             (when (get-in state [:list :next-offset])
                               (el/button {:on-click (fn [_] ((:more actions))) :disabled (:list loading)} "More workflows"))
                             (when write?
-                              (el/div {:class "workflow-new"}
+                              (el/details {:class "workflow-new workflow-disclosure" :open (boolean (:new-authoring-open? state))
+                                                   :on-toggle #(disclosure/remember-open! % (:new-authoring-open actions))}
+                                      (el/summary {} "Create from code")
                                       (field "New workflow name" (:new-name state) (:new-name actions))
                                       (el/button {:on-click (fn [_] ((:create actions))) :disabled (:source loading)} "Create workflow"))))
                     (el/div {:class "workflow-detail"}
                             (cond
                               (:source loading) (el/p {} "Loading source…")
-                              (nil? source) (el/p {} "Load the room's workflows, then select one or create a draft.")
+                              (nil? source) (el/p {} "Select a saved workflow. Ask an agent in the room to create one, or open the manual authoring tools.")
                               :else
                               (el/div {}
-                                      (el/h3 {} selected)
+                                      (el/h3 {} (or (get-in source [:definition :title]) selected))
+                                      (el/p {:class "workflow-note"} "Saved code agents can invoke. Review activity and outputs here, or discuss changes in the room.")
+                                      (when (editor/dirty? draft) (el/p {:role "status"} "Unsaved code draft · executions use the saved version."))
+                                      (when-not (editor/source-current? draft)
+                                        (el/p {:role "status"} "Saved source is unverified or changed. Your draft is preserved; reconcile it before starting work."))
+                                      (when-let [diagram (get-in source [:files "diagram.mmd"])]
+                                        (el/div {:class "workflow-overview-diagram"}
+                                                (el/p {:class "workflow-note"} "Workflow overview · saved version")
+                                                (if (and (string? diagram) (<= (count diagram) 32000))
+                                                  #?(:cljs (mmd/diagram diagram) :clj (el/pre {} diagram))
+                                                  (el/p {} "Inspect the diagram in Instructions and code."))))
+                                      (when (:open-room actions)
+                                        (el/button {:on-click (fn [_] ((:open-room actions)))} "Discuss in room"))
                                       (when-not (and (= "maintain-wiki" selected) setup-card-visible?)
                                         (activation-status state actions selected))
+                                      (el/details {:class "workflow-disclosure" :open (boolean (:source-open? draft))
+                                                   :on-toggle (fn [event]
+                                                                (disclosure/remember-open! event #(change assoc :source-open? %)))}
+                                                  (el/summary {} "Instructions and code"
+                                                              (when (editor/dirty? draft) (el/span {:class "workflow-draft-label"} " · Unsaved draft")))
                                       (el/div {:class "workflow-toolbar"}
                                               (el/span {} (if (editor/dirty? draft) "Unsaved changes" "Saved source"))
                                               (when-not (editor/source-current? draft)
@@ -193,9 +214,14 @@
                                               (el/p {} (str "Source revision: " (:revision source)))
                                               (when-let [bundle (get-in source [:inspection :bundle])]
                                                 (el/p {} (str "Execution bundle: " bundle))))
+                                      )
                                       (when merge?
                                         (el/div {:class "workflow-launch"}
-                                                (el/h3 {} "Launch saved revision")
+                                                (el/details {:class "workflow-disclosure" :open (boolean (:execution-open? draft))
+                                                             :on-toggle (fn [event]
+                                                                          (disclosure/remember-open! event #(change assoc :execution-open? %)))}
+                                                            (el/summary {} "Run, schedule, or benchmark")
+                                                (el/p {:class "workflow-note"} "Configure an explicit execution of the saved code. Opening this section never starts work.")
                                                 (el/label {:class "workflow-field"}
                                                           (el/span {} "Execution backend")
                                                           (el/select {:value (get form :backend "hosted")
@@ -292,7 +318,8 @@
                                                 (el/div {:class "workflow-toolbar"}
                                                         (el/button {:disabled (or (not model-selected?) (:submit loading) uncertain? (editor/dirty? draft) (not (editor/source-current? draft)) (not (get-in source [:inspection :ok])))
                                                                     :on-click (fn [_] ((:submit actions) selected false))} "Confirm and submit")
-                                                        (when submission
+                                                        )
+                                                (when submission
                                                           (el/button {:disabled (:submit loading) :on-click (fn [_] ((:submit actions) selected true))}
                                                                      "Retry identical request"))
                                                         (when (:fund? permissions)
@@ -321,7 +348,7 @@
                                                                       (el/p {} (str "Saved revision " (:expected-owned-source execution)))
                                                                       (el/p {} (:resources description))
                                                                       (el/p {} (str (:execution-ceilings description) " " (:results description))))))
-                                                          (el/p {:class "workflow-note"} "Pins saved source and the execution settings above. Uses the shared room allowance; no automatic funding or merging. Overlapping work is skipped. Manage activations and inspect occurrences in Schedules.")
+                                                          (el/p {:class "workflow-note"} "Pins saved source and the execution settings above. Uses the shared room allowance; no automatic funding or merging. Overlapping work is skipped. Manage activations and inspect occurrences in Workflows.")
                                                           (el/button {:disabled (or (nil? (editor/deployment-preview draft)) (:schedule loading) (editor/dirty? draft) (not (editor/source-current? draft))
                                                                                     (not (get-in source [:inspection :ok]))
                                                                                     (and (:schedule-submission draft)
@@ -336,7 +363,7 @@
                                                             (el/div {}
                                                                     (el/p {} (str "Created schedule: " (:id reply)
                                                                                   ". Current status and occurrences are in Schedules."))
-                                                                    (el/button {:on-click (fn [_] ((:open-schedules actions)))} "Open Schedules")))))
+                                                                    (el/button {:on-click (fn [_] ((:open-schedules actions)))} "Open Workflows")))))
                                                 (when submission
                                                   (el/p {} (str "Request: " (get-in submission [:payload :request-id]))))
                                                 (when-let [reply (:reply submission)]

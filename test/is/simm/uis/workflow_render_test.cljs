@@ -37,7 +37,7 @@
           (is (str/includes? text "Created schedule: created-id. Current status"))
           (is (str/includes? text "This receipt is not its current balance"))
           (is (not (str/includes? text "Schedule: created-id · Active"))))
-        (.click (first (filter #(= "Open Schedules" (.-textContent %))
+        (.click (first (filter #(= "Open Workflows" (.-textContent %))
                                (array-seq (.querySelectorAll container "button")))))
         (is (= 1 @opened)))
       (finally
@@ -133,5 +133,33 @@
                            (array-seq (.querySelectorAll container "button")))]
           (is (some? button))
           (is (false? (.-disabled button)))))
+      (finally (when @discharge (browser/unmount! @discharge))
+               (.remove container) (context/stop-context! ctx)))))
+
+(deftest overview-keeps-source-and-execution-controls-in-closed-context-owned-disclosures
+  (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+        source {:name "maintain-wiki" :revision "c1d56a1b-63f9-414c-a6ad-feb35d5e709d"
+                :files {"workflow.edn" "{}"} :definition {:title "Keep knowledge current" :params {}}
+                :inspection {:ok true :bundle "bundle" :cases []}}
+        draft (assoc (editor/draft source) :path nil)
+        changes (atom []) discharge (atom nil)]
+    (.appendChild (.-body js/document) container)
+    (try
+      (binding [ec/*execution-context* ctx]
+        (reset! discharge (browser/mount! container
+                           (workflows/view "Lab" {:selected "maintain-wiki" :drafts {"maintain-wiki" draft}
+                                                   :permissions {:merge? true}}
+                                                 {:room-id "room" :change (fn [& args] (swap! changes conj args))})))
+        (is (= "Keep knowledge current" (.-textContent (.querySelector container ".workflow-detail h3"))))
+        (let [[source execution] (array-seq (.querySelectorAll container ".workflow-detail details.workflow-disclosure"))]
+          (is (false? (.-open source)))
+          (is (false? (.-open execution)))
+          (is (= "Instructions and code" (.-textContent (.querySelector source "summary")))))
+        (is (empty? @changes) "Rendering does not change a draft or start an operation")
+        (let [details (.querySelector container ".workflow-detail details.workflow-disclosure")]
+          (.remove container)
+          (set! (.-open details) true)
+          (.dispatchEvent details (js/Event. "toggle"))
+          (is (empty? @changes) "Queued native toggles after detach cannot recreate or mutate the draft")))
       (finally (when @discharge (browser/unmount! @discharge))
                (.remove container) (context/stop-context! ctx)))))
