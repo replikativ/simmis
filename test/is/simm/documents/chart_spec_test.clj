@@ -70,3 +70,59 @@
   (is (= spec/max-points
          (count (get-in (spec/decode (encode "line" [(row (vec (repeat spec/max-points [0 1])))]))
                         [:series 0 :points])))))
+
+(deftest already-realized-data-reuses-the-json-contract
+  (let [raw (json/read-value valid)]
+    (is (= (spec/decode valid) (spec/validate-data raw))))
+  (doseq [raw [{"version" 1 "kind" "line" "series" []}
+               {"version" 1 "kind" "point" "series" [(row [[0 ##Inf]])]}
+               {"version" 1 "kind" "point" "series" [(row [[0 "1"]])]}
+               {"version" 1 "kind" "bar" "series" [(row [["A" 1] ["A" 2]])]}
+               {"version" 1 "kind" "line" "series" [(row [[0 1]])] "url" "https://example.com"}]]
+    (is (= ::spec/refused
+           (try (spec/validate-data raw) nil
+                (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))))
+  (let [called (atom false)
+        custom (proxy [Number] []
+                 (doubleValue [] (reset! called true) 1.0)
+                 (floatValue [] (float 1)) (intValue [] 1) (longValue [] 1))]
+    (is (= ::spec/refused
+           (try (spec/validate-data {"version" 1 "kind" "point" "series" [(row [[0 custom]])]}) nil
+                (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
+    (is (false? @called))))
+
+(defrecord DirectChart [])
+(defrecord DirectSeries [])
+
+(deftest direct-values-have-bounded-numeric-representations-and-no-records
+  (let [raw (fn [n] {"version" 1 "kind" "point" "series" [(row [[0 n]])]})
+        huge (.shiftLeft java.math.BigInteger/ONE 10000)
+        inflated (java.math.BigDecimal. huge 3011)
+        ;; A Ratio constructor deliberately retains huge, nearly equal terms.
+        ratio (clojure.lang.Ratio. huge (.add huge java.math.BigInteger/ONE))]
+    (doseq [value [(raw huge) (raw (bigint huge)) (raw inflated) (raw ratio)
+                   ;; Neither root nor series records are data-only maps.
+                   (into (->DirectChart) (raw 1))
+                   (assoc (raw 1) "series" [(into (->DirectSeries) (row [[0 1]]))])]]
+      (is (= ::spec/refused
+             (try (spec/validate-data value) nil
+                  (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))))
+    ;; Existing legitimate short JSON numerals retain identical direct results.
+    (doseq [token ["0.12345678901234567890123456789012345678901234567890123456789012"
+                   "1.00000000000000000000000000000000000000000000000000000000000000"
+                   "1e-100" "1000000000000"]]
+      (let [text (str "{\"version\":1,\"kind\":\"point\",\"series\":[{\"label\":\"Sales\",\"points\":[[0," token "]]}]}")]
+        (is (= (spec/decode text) (spec/validate-data (raw (bigdec token)))))))
+    (is (= (/ 1.0 3.0) (get-in (spec/validate-data (raw 1/3)) [:series 0 :points 0 1])))))
+
+
+(deftest rational-coordinate-boundaries-are-exact
+  (let [raw (fn [n] {"version" 1 "kind" "point" "series" [(row [[0 n]])]})]
+    (doseq [value [1/3 -1/3 2999999999999/3 -2999999999999/3]]
+      (is (= (double value) (get-in (spec/validate-data (raw value)) [:series 0 :points 0 1]))))
+    (doseq [value [3000000000001/3 -3000000000001/3
+                   ;; Malformed direct Ratio objects are refused before conversion.
+                   (clojure.lang.Ratio. java.math.BigInteger/ONE java.math.BigInteger/ZERO)]]
+      (is (= ::spec/refused
+             (try (spec/validate-data (raw value)) nil
+                  (catch clojure.lang.ExceptionInfo error (:type (ex-data error)))))))))

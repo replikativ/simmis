@@ -19,6 +19,7 @@
             [is.simm.uis.web.desktop.office-view :as office-view]
             [is.simm.uis.web.desktop.rich-editor :as rich-editor]
             [is.simm.uis.web.desktop.chart-view :as charts]
+            [is.simm.uis.web.desktop.cell-result-view :as cell-result]
             [is.simm.uis.web.desktop.math-view :as math]
             [is.simm.uis.web.desktop.rich-controls :as rich-controls]
             [is.simm.uis.web.desktop.markdown :as md]
@@ -160,6 +161,12 @@
                                                   (str (:path source) " · revision " (:revision source)
                                                        " · source span " (:from source) "–" (:to source)))
                                             (el/pre {} (:original source))))
+                              (when-let [diagnostic (:presentation-diagnostic receipt)]
+                                (el/p {:class "memory-note"} diagnostic))
+                              (when (and (= (:id receipt) (:id (first history)))
+                                         (= :table (get-in receipt [:presentation :kind]))
+                                         (= :saved-current (cells/receipt-status state receipt)))
+                                (cell-result/table-view (:presentation receipt)))
                               (el/pre {} (if (:success receipt) (:value receipt) (:error receipt)))
                               (when (:value-truncated? receipt) (el/p {:class "memory-note"} "Value preview is truncated."))
                               (when (:partial? receipt) (el/p {} "Earlier forms may have executed; inspect the session before retrying."))
@@ -204,7 +211,7 @@
         source (if rich? (:text base) (:text draft))
         chart-models (when-let [models (:chart-models a)] (models path))
         inline-previews (when-let [previews (:inline-chart-previews a)] (previews path))
-        inline-limit (max 0 (- chart-contract/max-mounted (count chart-models)))
+        inline-limit (max 0 (- (if-let [budget (:chart-budget a)] (budget path) chart-contract/max-mounted) (count chart-models)))
         outline-blocks (when (= :outline (:mode draft))
                          (loop [remaining (editor/outline (get-in analysis [:semantic :blocks])) index 0 out []]
                            (if-let [block (first remaining)]

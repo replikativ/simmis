@@ -48,7 +48,7 @@
     data))
 
 (defn- closed! [value required optional]
-  (when-not (and (map? value) (every? #(contains? value %) required)
+  (when-not (and (map? value) (not (record? value)) (every? #(contains? value %) required)
                  (every? (into required optional) (keys value)))
     (refuse! :unsupported-shape)))
 
@@ -60,13 +60,68 @@
   value)
 
 (defn- number! [value]
-  (when-not (number? value) (refuse! :invalid-coordinate))
+  (when-not (contains? #{Byte Short Integer Long Float Double java.math.BigInteger
+                         java.math.BigDecimal clojure.lang.BigInt clojure.lang.Ratio}
+                       (class value))
+    (refuse! :invalid-coordinate))
+  ;; The JSON decoder already limits numeric tokens to 64 characters. Direct
+  ;; cell values need the equivalent representation bound BEFORE conversion.
+  ;; 216 bits admits every 64-digit integer; precision bounds decimals further.
+  (when (or (and (instance? java.math.BigInteger value)
+                 (> (.bitLength ^java.math.BigInteger value) 216))
+            (and (instance? clojure.lang.BigInt value)
+                 (> (.bitLength (.toBigInteger ^clojure.lang.BigInt value)) 216))
+            (and (instance? java.math.BigDecimal value)
+                 (or (> (.bitLength (.unscaledValue ^java.math.BigDecimal value)) 216)
+                     (> (.precision ^java.math.BigDecimal value) 64)))
+            (and (instance? clojure.lang.Ratio value)
+                 (or (zero? (.signum ^java.math.BigInteger (denominator value)))
+                     (> (.bitLength ^java.math.BigInteger (numerator value)) 216)
+                     (> (.bitLength ^java.math.BigInteger (denominator value)) 216))))
+    (refuse! :invalid-coordinate))
   (let [n (double value)]
-    (when-not (and (Double/isFinite n) (<= -1000000000000M value 1000000000000M)
+    (when-not (and (Double/isFinite n) (<= -1000000000000 value 1000000000000)
                    ;; Never silently turn a tiny nonzero measurement into zero.
                    (or (not (zero? n)) (zero? value)))
       (refuse! :invalid-coordinate))
     n))
+
+(defn validate-data
+  "Validate an already-realized string-keyed ChartData v1 map. Returns the same
+   bounded projection as decode; never serializes, reads or evaluates values."
+  [raw]
+  (closed! raw #{"version" "kind" "series"} #{"title" "x-label" "y-label"})
+  (when-not (and (integer? (get raw "version")) (= 1 (get raw "version")))
+    (refuse! :unsupported-version))
+  (let [kind (case (get raw "kind") "line" :line "bar" :bar "point" :point
+                   (refuse! :unsupported-kind))
+        series (get raw "series")]
+    (when-not (and (vector? series) (<= 1 (count series) max-series))
+      (refuse! :invalid-series))
+    (let [series (mapv (fn [row]
+                         (closed! row #{"label" "points"} #{})
+                         (let [points (get row "points")]
+                           (when-not (and (vector? points) (<= 1 (count points) max-points))
+                             (refuse! :invalid-points))
+                           {:label (label! (get row "label"))
+                            :points (mapv (fn [point]
+                                            (when-not (and (vector? point) (= 2 (count point)))
+                                              (refuse! :invalid-point))
+                                            [(if (= :bar kind) (label! (first point))
+                                                 (number! (first point)))
+                                             (number! (second point))]) points)})) series)]
+      (when (> (reduce + (map (comp count :points) series)) max-points)
+        (refuse! :too-many-points))
+      (when-not (= (count series) (count (set (map :label series))))
+        (refuse! :duplicate-series-label))
+      (when (and (= :bar kind)
+                 (some #(not= (count (:points %)) (count (set (map first (:points %))))) series))
+        (refuse! :duplicate-category))
+      (reduce (fn [result [source-key key]]
+                (if (contains? raw source-key)
+                  (assoc result key (label! (get raw source-key))) result))
+              {:profile profile :kind kind :series series}
+              [["title" :title] ["x-label" :x-label] ["y-label" :y-label]]))))
 
 (defn decode
   "Decode at most 64 KiB of UTF-8 JSON into a fixed projection DTO. Strings and
@@ -84,35 +139,4 @@
                   (catch java.nio.charset.CharacterCodingException _ (refuse! :invalid-utf8)))
         raw (try (json/read-value text ^ObjectMapper mapper)
                  (catch com.fasterxml.jackson.core.JacksonException _ (refuse! :invalid-json)))]
-    (closed! raw #{"version" "kind" "series"} #{"title" "x-label" "y-label"})
-    (when-not (and (integer? (get raw "version")) (= 1 (get raw "version")))
-      (refuse! :unsupported-version))
-    (let [kind (case (get raw "kind") "line" :line "bar" :bar "point" :point
-                     (refuse! :unsupported-kind))
-          series (get raw "series")]
-      (when-not (and (vector? series) (<= 1 (count series) max-series))
-        (refuse! :invalid-series))
-      (let [series (mapv (fn [row]
-                           (closed! row #{"label" "points"} #{})
-                           (let [points (get row "points")]
-                             (when-not (and (vector? points) (<= 1 (count points) max-points))
-                               (refuse! :invalid-points))
-                             {:label (label! (get row "label"))
-                              :points (mapv (fn [point]
-                                              (when-not (and (vector? point) (= 2 (count point)))
-                                                (refuse! :invalid-point))
-                                              [(if (= :bar kind) (label! (first point))
-                                                   (number! (first point)))
-                                               (number! (second point))]) points)})) series)]
-        (when (> (reduce + (map (comp count :points) series)) max-points)
-          (refuse! :too-many-points))
-        (when-not (= (count series) (count (set (map :label series))))
-          (refuse! :duplicate-series-label))
-        (when (and (= :bar kind)
-                   (some #(not= (count (:points %)) (count (set (map first (:points %))))) series))
-          (refuse! :duplicate-category))
-        (reduce (fn [result [source-key key]]
-                  (if (contains? raw source-key)
-                    (assoc result key (label! (get raw source-key))) result))
-                {:profile profile :kind kind :series series}
-                [["title" :title] ["x-label" :x-label] ["y-label" :y-label]])))))
+    (validate-data raw)))

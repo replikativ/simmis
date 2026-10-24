@@ -137,11 +137,11 @@
             evaluate evaluation/repl-evaluate later "```clojure\n(+ cell-base 200)\n```\n"]
         (try
           (with-redefs [evaluation/repl-evaluate
-                        (fn [input]
+                        (fn [& args]
                           (deliver entered true)
                           (when-not (.await release 30 TimeUnit/SECONDS)
                             (throw (ex-info "Finite body gate expired" {})))
-                          (evaluate input))]
+                          (apply evaluate args))]
             (reset! caller (future (run request)))
             (is (= true (deref entered 30000 ::expired)))
             (write! owned later)

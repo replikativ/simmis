@@ -229,3 +229,38 @@
           (is (= "3" (:value (run child :clojure "factor"))))
           (finally (discourse/close-room! child))))
       (finally (discourse/close-room! room)))))
+
+(deftest structured-cell-output-uses-the-existing-owned-worker-and-keeps-textual-evidence
+  (let [room (discourse/make-room {:id (keyword (str "cell-result-" (random-uuid))) :store (memory/make)})
+        human (random-uuid)
+        run (fn [text structured?]
+              (evaluation/evaluate-repl! room human {:syntax :clojure :text text :namespace "result.lab"}
+                                         (constantly true) (fn [f] (f)) structured?))
+        table "(do (println \"calculated\") (def amount 9007199254740993) {:simmis/presentation {:version 1 :kind :table :columns [\"Amount\"] :rows [[amount]]}})"
+        chart "{:simmis/presentation {:version 1 :kind :chart :data {\"version\" 1 \"kind\" \"line\" \"series\" [{\"label\" \"Forecast\" \"points\" [[0 10] [1 12]]}]}}}"]
+    (try
+      (let [receipt (run table true)]
+        (is (:success receipt) (pr-str receipt))
+        (is (:worker-finished? receipt))
+        (is (= [["9007199254740993"]] (get-in receipt [:presentation :rows])))
+        (is (re-find #"9007199254740993" (:value receipt)))
+        (is (= "calculated\n" (:stdout receipt)))
+        (is (nil? (:presentation-diagnostic receipt))))
+      (is (= "9007199254740993" (:value (run "amount" false))) "Same human session retains definitions")
+      (let [receipt (run table false)]
+        (is (:success receipt))
+        (is (nil? (:presentation receipt)))
+        (is (re-find #"presentation" (:value receipt))))
+      (let [receipt (run "{:simmis/presentation {:version 99 :kind :table}}" true)]
+        (is (:success receipt))
+        (is (string? (:presentation-diagnostic receipt)))
+        (is (nil? (:presentation receipt)))
+        (is (re-find #"99" (:value receipt))))
+      (let [receipt (run chart true)]
+        (is (:success receipt))
+        (is (= :chart (get-in receipt [:presentation :kind])))
+        (is (= [[0.0 10.0] [1.0 12.0]] (get-in receipt [:presentation :data :series 0 :points]))))
+      (let [receipt (run "(throw (ex-info \"ordinary failure\" {}))" true)]
+        (is (false? (:success receipt)))
+        (is (nil? (:presentation receipt))))
+      (finally (discourse/close-room! room)))))
