@@ -74,7 +74,8 @@
         selected (assoc-in forwarded [:kaocha/tests 0 :kaocha/ns-patterns] patterns)
         roundtrip (config/merge-config (config/load-config) (config/normalize selected))
         plan (api/test-plan roundtrip)
-        namespaces (map :kaocha.ns/name (get-in plan [:kaocha.test-plan/tests 0 :kaocha.test-plan/tests]))]
+        ;; Kaocha plugins may return a sequence rather than a vector of suites.
+        namespaces (map :kaocha.ns/name (-> plan :kaocha.test-plan/tests first :kaocha.test-plan/tests))]
     (is (= 1 (count patterns)))
     (is (= ['is.simm.ci-runner-test] (vec namespaces)))
     (is (= (dissoc effective :kaocha/tests) (dissoc roundtrip :kaocha/tests)))))
