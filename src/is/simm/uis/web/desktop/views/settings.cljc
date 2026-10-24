@@ -12,7 +12,6 @@
             [is.simm.uis.web.desktop.views.model-picker :as model-picker]
             [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [is.simm.uis.web.desktop.settings-remote :as sr])
-            #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
             #?(:cljs [is.simm.uis.web.desktop.mail-remote :as mail-remote])
             #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.uis.web.desktop.message-notify-sync :as mns])
@@ -298,9 +297,9 @@
         (let [kbs (:knowledge-bases data)]
           (el/div {:class "settings-section"}
             (el/h3 {:class "settings-section-title"}
-              (str "Wikis (" (count kbs) ")"))
+              (str "Legacy wikis (" (count kbs) ")"))
             (el/p {:class "settings-section-desc"}
-              "Your personal wikis. Each wiki is a separate database for pages and data.")
+              "Existing wikis remain available. New knowledge workspaces keep Markdown pages and files together.")
             (el/div {:class "settings-env-list"}
               (if (seq kbs)
                 (ifor-each #(str (:kb/id %)) kbs
@@ -313,27 +312,12 @@
                           "owned"
                           "shared")))))
                 (el/div {:class "settings-empty"} "No wikis")))
-            ;; Create new KB
             (el/div {:class "settings-env-add"}
-              (el/input {:id "new-kb-name"
-                         :type "text"
-                         :class "settings-input"
-                         :placeholder "New wiki name"})
-              (el/button {:class "settings-btn settings-btn--primary"
-                          :on-click (fn [_]
-                                      #?(:cljs
-                                         (let [input (.getElementById js/document "new-kb-name")
-                                               kb-name (.-value input)]
-                                           (when (and kb-name (seq kb-name))
-                                             (when-let [user @sig/current-user]
-                                               (let [s (chat-remote/create-kb!
-                                                         web/server-id (:id user) kb-name)]
-                                                 (s (rem/on-ok "Could not create the wiki." (fn [_]
-                                                      (set! (.-value input) "")
-                                                      (reload-settings!)))
-                                                    (rem/on-error "Could not create the wiki."))))))
-                                         :clj nil))}
-                "Create"))))
+                    (el/button {:class "settings-btn settings-btn--primary"
+                                :on-click (fn [_]
+                                            #?(:cljs (sig/open-or-activate-tab! :new-kb nil {:title "New workspace"})
+                                               :clj nil))}
+                               "New knowledge workspace"))))
 
         ;; --- Notifications Section ---
         (el/div {:class "settings-section"}

@@ -224,6 +224,8 @@
    "load-room-drive!"        [(c :room MEMBERS)]
    ;; --- self ---------------------------------------------------------------------
    "create-room!"            [(c :owner-self OWNER)]
+   "create-workspace!"       [(c :none AUTH)]
+   "observe-workspace-creation!" [(c :none AUTH)]
    "load-rooms!"             [(c :owner-self OWNER)]
    "create-drive!"           [(c :none AUTH)]
    "add-contact!"            [(c :owner-self OWNER)]

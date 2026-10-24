@@ -191,29 +191,6 @@
                  (js/console.error "[admin] load error:" err)
                  (reset! sig/admin-data ok)))))))))
 
-#?(:cljs (defonce ^:private new-room-humans-loading (atom false)))
-
-#?(:cljs
-   (defn load-new-room-humans-into-signal!
-     "Fire-and-forget load of the human roster (member picker) into
-      sig/admin-data. Root-spin go-block pattern — see
-      load-room-details-into-signal!."
-     []
-     (when-not @new-room-humans-loading
-       (reset! new-room-humans-loading true)
-       (go
-         (let [ch (promise-chan)]
-           (binding [rtc/*execution-context* runtime]
-             (let [s (chat-remote/list-parties! web/server-id :human)]
-               (s (fn [result] (put! ch {:ok result}))
-                  (fn [err] (put! ch {:err err})))))
-           (let [{:keys [ok err]} (<! ch)]
-             (reset! new-room-humans-loading false)
-             (binding [rtc/*execution-context* runtime]
-               (if err
-                 (js/console.error "[new-room] list parties error:" err)
-                 (reset! sig/admin-data {:all-humans ok})))))))))
-
 #?(:cljs (defonce ^:private video-token-loading (atom #{})))
 
 #?(:cljs
@@ -1029,7 +1006,7 @@
                                                (cond-> (assoc (:data active-tab-data)
                                                               :conversation-captures conversation-captures
                                                               :capture-connection capture-connection)
-                                                 (= :memory (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
+                                                 (#{:memory :new-room :new-kb} (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
                                                local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
@@ -2451,14 +2428,7 @@
          (el/p {} "Admin (CLJ mode)")))
 
     :new-room
-    #?(:cljs
-       (do
-         ;; Load all human parties for member picker
-         (when (nil? (:all-humans admin-data))
-           (when @sig/current-user
-             (load-new-room-humans-into-signal!)))
-         (new-room-view/render-new-room-content
-           (when admin-data (:all-humans admin-data))))
+    #?(:cljs (new-room-view/render-new-room-content (assoc data :col-id col-id))
        :clj
        (el/div {:class "content-new-room"}
          (el/p {} "New Room (CLJ mode)")))
@@ -2501,7 +2471,7 @@
 
     :new-kb
     #?(:cljs
-       (new-kb-view/render-new-kb-content)
+       (new-kb-view/render-new-kb-content (assoc data :col-id col-id))
        :clj
        (el/div {:class "content-new-kb"}
          (el/p {} "New Wiki (CLJ mode)")))

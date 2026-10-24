@@ -817,6 +817,10 @@
      ;; --- room create + rooms list (self) ---
      ;; the initial members pass the same check as `add-room-party!`'s party
      "create-room!"            {:action W :resource (self :creator-id-str)}
+     ;; Fixed human handlers derive their creator from the connection; no
+     ;; client-selected party, profile or native path is accepted.
+     "create-workspace!"       {:action W :resource (always :authenticated)}
+     "observe-workspace-creation!" {:action R :resource (always :authenticated)}
      "load-rooms!"             {:action R :resource (self :party-id-str)}
      ;; --- drives (create) ---
      "create-drive!"           {:action W :resource (always :authenticated)}

@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
             [datahike.db :as value-db]
+            [dvergr.chat.schema :as chat-schema]
             [dvergr.system.db :as registry]
             [dvergr.system.room-intent :as intent]
             [dvergr.system.rooms :as native]
@@ -12,6 +13,7 @@
             [is.simm.model.knowledge-rooms :as rooms]
             [is.simm.model.rooms :as legacy]
             [is.simm.model.system-db :as system-db]
+            [is.simm.model.workspace-intent :as creation]
             [org.replikativ.spindel.engine.core :as ec]))
 
 (defn- fixture []
@@ -23,9 +25,10 @@
                                  :system/owner [:party/id creator]}
                           (= :repo type) (assoc :system/repository-profile space/profile))) [:repo :msgs :kb])
         by-type (into {} (map (juxt :system/type identity)) systems)
-        schema (vals (into {} (map (juxt :db/ident identity)) (concat registry/schema system-db/schema)))
+        schema (vals (into {} (map (juxt :db/ident identity))
+                           (concat registry/schema chat-schema/actor-schema system-db/schema)))
         db (d/db-with (value-db/empty-db schema {:schema-flexibility :write})
-                      (into [{:party/id creator} {:party/id member}]
+                      (into [{:party/id creator :party/type :human} {:party/id member :party/type :human}]
                             (concat systems
                                     [{:room/id id :room/slug "fixture" :room/name "Fixture" :room/type :project
                                       :room/owner [:party/id creator] :room/provisioning-state :ready
@@ -110,3 +113,38 @@
                                    (catch Throwable error error))))
       (is (identical? failure (try (agents/live-room id)
                                    (catch Throwable error error)))))))
+
+(deftest explicit-creation-receipt-and-membership-publish-in-one-transaction
+  (let [{:keys [db creator member id provisioned]} (fixture)
+        request (creation/request! {:id (str (random-uuid)) :name "Fixture" :members [(str member)]})
+        prepared (d/db-with db [[:db/add [:room/id id] :room/slug (creation/slug creator request)]])
+        expected (@#'rooms/prepared-basis! prepared provisioned creator)
+        scope (random-uuid)
+        tx [[:db.fn/call @#'rooms/publish-tx expected creator #{creator member} scope :project request]]
+        after (d/db-with prepared tx)]
+    (is (= (creation/receipt creator request)
+           (dissoc (d/pull after [:room/creation-intent :room/creation-basis] [:room/id id]) :db/id)))
+    (is (= {:status :created :room {:room/id (str id) :room/name "Fixture" :room/type :project}}
+           (creation/observe after creator request)))
+    (is (nil? (:room/creation-intent (d/entity prepared [:room/id id]))))
+    (is (nil? (:room/content-db-scope (d/entity prepared [:room/id id]))))
+    (is (thrown? clojure.lang.ExceptionInfo (d/db-with after tx)))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (d/db-with (d/db-with prepared [[:db/add [:party/id creator] :party/type :agent]]) tx)))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (@#'rooms/publish-tx prepared expected creator #{creator member} scope :project
+                  (assoc request :name "Changed"))))))
+
+(deftest final-publication-rechecks-agent-ownership-after-native-preparation
+  (let [{:keys [db creator member id provisioned]} (fixture)
+        agent (random-uuid)
+        request (creation/request! {:id (str (random-uuid)) :name "Fixture" :members [(str agent)]})
+        prepared (d/db-with db [{:party/id agent :party/type :agent :party/owner [:party/id creator]}
+                                [:db/add [:room/id id] :room/slug (creation/slug creator request)]])
+        expected (@#'rooms/prepared-basis! prepared provisioned creator)
+        tx [[:db.fn/call @#'rooms/publish-tx expected creator #{creator agent} (random-uuid) :project request]]]
+    (is (= :created (:status (creation/observe (d/db-with prepared tx) creator request))))
+    (doseq [change [[[:db/add [:party/id agent] :party/owner [:party/id member]]]
+                    [[:db/retractEntity [:party/id agent]]]
+                    [[:db/retractEntity [:party/id creator]]]]]
+      (is (thrown? clojure.lang.ExceptionInfo (d/db-with (d/db-with prepared change) tx))))))
