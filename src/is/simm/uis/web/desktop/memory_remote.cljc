@@ -10,13 +10,46 @@
             #?(:clj [is.simm.model.db :as db])
             #?(:clj [is.simm.agents.room-agents :as rooms])
             #?(:clj [is.simm.ops.owned-files :as owned-files])
+            #?(:clj [is.simm.ops.owned-metadata :as metadata])
+            #?(:clj [is.simm.documents.files :as files])
             #?(:clj [is.simm.ops.owned-cells :as owned-cells])
+            #?(:clj [is.simm.ops.file-output-adoption :as adoption])
             #?(:clj [is.simm.documents.evaluation :as evaluation])
             #?(:clj [is.simm.ops.owned-reads :as reads])
             #?(:clj [is.simm.runtimes.application-ops :as application])
             #?(:clj [is.simm.runtimes.operation-lifetime :as lifetime])
             #?(:clj [org.replikativ.spindel.engine.impl.simple :as simple])
             #?(:clj [is.simm.runtimes.context :as context])))
+
+#?(:clj (declare file-action))
+
+#?(:clj
+   (defn- metadata-unavailable! [error]
+     (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)))
+     (case (:type (ex-data error))
+       :memory/target-changed
+       (throw (ex-info "The Memory repository changed; refresh before editing."
+                       {:type :memory/target-changed}))
+       :is.simm.ops.owned-reads/refused
+       (throw (ex-info "Room permission required" {:type :not-authorized}))
+       (throw (ex-info "Memory metadata is unavailable" {:type :memory/metadata-unavailable})))))
+
+#?(:clj
+   (defn prepare-metadata
+     "Capture the authenticated human and original App BEFORE queuing work."
+     [party room-id request]
+     (when-not (uuid? party)
+       (throw (ex-info "Authentication required" {:type :authentication-required})))
+     (when-not (and (string? room-id) (= room-id (some-> (parse-uuid room-id) str)))
+       (throw (ex-info "Invalid room identity" {:type :validation-error})))
+     (files/metadata-request! request)
+     (try
+       (let [invoke (application/capture-operation)
+             principal {:principal/kind :human :principal/id (str "party/" party)}]
+         (fn []
+           (try (file-action :metadata #(invoke (fn [host] (metadata/read! host principal room-id request))))
+                (catch Throwable error (metadata-unavailable! error)))))
+       (catch Throwable error (metadata-unavailable! error)))))
 
 #?(:clj
    (defn prepare-evaluation
@@ -81,8 +114,10 @@
      (when-not party (throw (ex-info "Authentication required" {:type :authentication-required})))
      (when (simple/on-drain-thread?)
        (throw (ex-info "Memory actions require a host worker" {:type :validation-error})))
-     (if (#{:evaluate :repl :cell} operation)
-       ((prepare-evaluation party room-id operation args))
+     (cond
+       (= :metadata operation) ((prepare-metadata party room-id args))
+       (#{:evaluate :repl :cell} operation) ((prepare-evaluation party room-id operation args))
+       :else
        (context/with-server-context
          (let [id (when (string? room-id) (parse-uuid room-id))
                action (cond (#{:evaluate :repl} operation) :merge
@@ -105,7 +140,6 @@
              (let [reply
                    (file-action operation
                                 (fn [] (case operation
-                                         :metadata (assoc (owned-files/metadata! conn party id room args) :protocol-version 2)
                                          :watch (do
                                                   (when-not (= {} args)
                                                     (throw (ex-info "Invalid Memory watch" {:type :validation-error})))
@@ -144,8 +178,8 @@
 (defn-spin-remote load-memory-metadata!
   [server-id room-id-str request]
   (spin-remote server-id [room-id-str request]
-               #?(:clj (let [party (access/authenticated-party-id)]
-                         (await (blocking/blocking #(invoke-memory party room-id-str :metadata request))))
+               #?(:clj (let [body (prepare-metadata (access/authenticated-party-id) room-id-str request)]
+                         (await (blocking/blocking body)))
                   :cljs nil)))
 
 (defn-spin-remote evaluate-memory-code!

@@ -35,7 +35,7 @@
                         (reset! configs (mapv #(-> % deref :config) [conn owned attached chat])))
                       (let [hydrations (atom 0)
                             owner (doto (lifetime/create) lifetime/open!)
-                            installation (atom {:host (mcp/host conn (:ctx room)) :owner owner})
+                            installation (atom {:host (mcp/host conn (:ctx room) owner) :owner owner})
                             inbound (fn [kind name request]
                                       (world/inbound! (world/principal w kind) name
                                                       (cond-> {:room-id-str (str (:room w))}

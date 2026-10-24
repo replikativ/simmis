@@ -348,6 +348,15 @@ Per-view read epochs fence old folder/file replies against newer metadata;
 background refresh never changes the selected file. Metadata requests cover up
 to 64 folders and buffers per view; collapsing a folder releases its listing.
 
+Metadata discovery captures the authenticated human and original application
+before entering its blocking worker. A fixed host service leases the actual
+Room, projects one owned-default snapshot, and rechecks current read authority,
+Room incarnation and default binding before returning. Permission flags come
+from that final control snapshot. A same-target source write may leave an older
+coherent observation; private hints drive catch-up. Metadata hashes are neither
+ordered versions nor a guarantee that several requests saw one atomic snapshot.
+Discovery does not read file bodies or grant authority to later operations.
+
 Metadata also carries a separate conservative `:definition-basis` token from
 the physical store/branch, commit ID and max-tx. Schema-only native transactions
 change it even when file descriptors and logical HEAD do not. It is an
