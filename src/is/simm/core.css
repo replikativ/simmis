@@ -9135,7 +9135,7 @@ body.tab-dragging .column-drop-zone {
 .memory-navigation .memory-tree-item.selected { color: var(--mono-text-primary); background: var(--accent-subtle); box-shadow: inset 2px 0 var(--accent); }
 .memory-navigation .memory-file-kind { width: 14px; height: 14px; flex-shrink: 0; }
 .memory-navigation .memory-tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.memory-navigation .memory-kind-knowledge .memory-file-kind { color: var(--accent); }
+.memory-navigation .memory-kind-knowledge .memory-file-kind { color: var(--mono-text-secondary); }
 .memory-detail { min-width: 0; }
 .memory-detail h3 { overflow-wrap: anywhere; }
 .memory-note, .memory-properties, .memory-outline small, .memory-source-region small { font-size: 12px; opacity: .75; }
@@ -9262,3 +9262,18 @@ body.tab-dragging .column-drop-zone {
 .memory-code-cell-result { font-size: 0.8rem; color: var(--mono-text-tertiary); margin-bottom: 0.6rem; }
 .memory-code-cell-result pre { max-height: 15rem; overflow: auto; white-space: pre-wrap; }
 .memory-code-cell-controls[hidden], .memory-code-cell-result[hidden] { display: none; }
+
+/* Lists keep normal Markdown nesting in Edit, Read and Structure views. */
+.memory-document ul:not(.memory-chart-legend), .memory-document ol, .memory-outline ul:not(.memory-chart-legend), .memory-outline ol {
+  padding-inline-start: 1.5em; margin-block: .4em;
+}
+.memory-document ul:not(.memory-chart-legend), .memory-outline ul:not(.memory-chart-legend) { list-style-type: disc; }
+.memory-document ol, .memory-outline ol { list-style-type: decimal; }
+.memory-document ul ul:not(.memory-chart-legend), .memory-outline ul ul:not(.memory-chart-legend) { list-style-type: circle; }
+.memory-document ul ul ul:not(.memory-chart-legend), .memory-outline ul ul ul:not(.memory-chart-legend) { list-style-type: square; }
+.memory-document li > p, .memory-outline li > p { margin-block: .2em; }
+.memory-property-status { min-width: 5em; color: var(--mono-text-tertiary); font-size: 11px; }
+.memory-reference-field { display: inline-flex; align-items: baseline; gap: 6px; }
+.memory-reference-field summary { cursor: pointer; color: var(--mono-text-secondary); font-size: 11px; }
+.memory-reference-field details[open] { display: flex; flex-wrap: wrap; gap: 6px; }
+.memory-property-readonly { color: var(--mono-text-secondary); }

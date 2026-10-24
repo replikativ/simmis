@@ -104,16 +104,45 @@
           :editable? (nil? reason) :reason reason}))
      (:properties compiled))))
 
+(defn- reference-options [db fields]
+  ;; Resolve source-backed pages through the existing immutable knowledge view,
+  ;; never by treating a source UUID as a native Datahike entity id.
+  (let [codomains (set (keep #(get-in % [:relation :codomain]) fields))]
+    (when (seq codomains)
+      (let [prepared (view/prepare db {:roots [""] :schema-revision :property-references-v1
+                                       :entity-profile space/profile})
+            projected (:db prepared)]
+        (into {}
+              (for [codomain codomains]
+                [codomain
+                 (if-not (= :ready (:status prepared))
+                   {:status :unavailable :items []}
+                   (let [type-eid (:e (first (d/datoms projected :avet :entity/uuid codomain)))
+                         rows (vec (take 201 (when type-eid
+                                               (d/datoms projected :avet :instance/of-role type-eid))))
+                         items (keep (fn [datom]
+                                       (let [row (d/pull projected [:entity/uuid :entity/name :document/path] (:e datom))
+                                             path (:document/path row)]
+                                         (when-let [id (:entity/uuid row)]
+                                           {:id (str id) :path path
+                                            :label (or (:entity/name row)
+                                                       (when path (str/replace (last (str/split path #"/")) #"(?i)\.(md|markdown)$" ""))
+                                                       "Unnamed entity")})))
+                                     (take 200 rows))]
+                     {:status :ready :complete? (<= (count rows) 200)
+                      :items (vec (sort-by (juxt :label :id) items))}))]))))))
+
 (defn inspect-in
   "Safe field DTOs from actual source/trusted definitions, not executable
    definitions or a permission grant. Host must authorize/own DB and pin blobs."
   [db path target]
-  (let [{:keys [file compiled candidate scope] :as captured} (capture db path target)]
+  (let [{:keys [file compiled candidate scope] :as captured} (capture db path target)
+        fields (fields captured)]
     {:profile profile :path path :target target :expected (:entry file)
      :revision (get-in file [:analysis :revision]) :scope-revision (:revision compiled)
      :assigned-types (:types scope [])
      :types (mapv (fn [[id row]] {:id id :name (:entity/name row)}) (:types compiled))
-     :fields (fields captured)
+     :fields fields :reference-options (reference-options db fields)
      :diagnostics (:diagnostics candidate)}))
 
 (defn input-value

@@ -7,6 +7,7 @@
             [geschichte.repo :as repo]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.property-model :as property-model]
+            [is.simm.ops.owned-files :as owned-files]
             [is.simm.documents.space :as space]
             [is.simm.documents.view :as view]
             [is.simm.model.crud :as crud]
@@ -277,6 +278,9 @@
                         uuid-edit (property-model/prepare-edit-in person-base options (edit-request model "external-id" uuid-value))]
                     (is (nil? (:reason relation)))
                     (is (true? (:editable? relation)))
+                    (is (= :ready (get-in model [:reference-options person-type :status])))
+                    (is (some #(= (str person-id) (:id %)) (get-in model [:reference-options person-type :items])))
+                    (is (not-any? #(= (str page-b) (:id %)) (get-in model [:reference-options person-type :items])))
                     (is (= {:text (str person-id)} (:input relation)))
                     (is (= {:representation :mapping :target (str person-id) :path-hint "research/a.md"
                             :codomain person-type :clearable? false} (:relation relation)))
@@ -370,3 +374,20 @@
                                        [:S.ProjectionCompany/founder :entity/uuid])))
                   (is (view/current? (:db result) options result)))))))
         (finally (governance/ungovern! conn) (d/release conn) (d/delete-database cfg))))))
+
+(deftest malformed-typed-metadata-does-not-replace-an-otherwise-readable-file-with-an-error
+  (let [cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write
+             :keep-history? false :max-string-length 0 :max-bytes-length 0 :max-tuple-string-length 0}]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (try
+        (space/provision! conn)
+        (let [text (source {"simmis-id" (str page-a) "simmis" "invalid declaration"} "# Retained source\n")]
+          (write! conn "wiki/a.md" text)
+          (let [before @conn
+                result (@#'owned-files/property-projection before "wiki/a.md" {:kind :page})]
+            (is (= :unavailable (:status result)))
+            (is (= :invalid-declarations (:reason result)))
+            (is (= text (:text (is.simm.documents.files/read-file-in before "wiki/a.md"))))
+            (is (= before @conn))))
+        (finally (d/release conn) (d/delete-database cfg))))))

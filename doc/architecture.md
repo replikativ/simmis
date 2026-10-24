@@ -343,7 +343,9 @@ human history, including the executed input, exact original source span, saved
 entry/revision, target stamp and Room incarnation. They never enter Markdown,
 pretend to be stable cell IDs across revisions, or become durable workflow Runs.
 
-Below the file buffer, Markdown and code-file panels include a dual-input **Room REPL**.
+The Context footer for Markdown and code-file panels includes a dual-input **Room REPL**.
+It uses the same tab-owned buffers and human SCI session; the file body contains only
+its document and explicit code-cell controls.
 Separate Clojure and Superficie scratch buffers follow the Code View preference unless locally
 overridden; switching syntax never converts a buffer or changes the file draft.
 Both inputs use the same human SCI world component, with an explicit namespace
@@ -493,6 +495,15 @@ Bare Markdown list markers project to a list item containing an empty paragraph,
 as required by Tiptap. This lets the empty item created by Enter round-trip and
 save while retaining its place in the list; it is not discarded as blank layout.
 
+List indentation uses the native Tiptap list keymap: Tab sinks beneath a preceding
+sibling, Shift+Tab lifts one level, within the same protected semantic region.
+Scoped list styles preserve visible indentation through successive nesting levels.
+Block handles expose a separate **Copy reference** action producing a portable
+canonical Markdown link; the ordinary link still supports browser sharing/menu
+commands. Plain canonical URLs from this app, and copied reference Markdown,
+paste as link marks in one undo step. Foreign origins, arbitrary HTML and code
+pastes keep their ordinary behavior; clipboard data never imports block identities.
+
 Saved data-only charts use a separate fixed read RPC. It captures the original
 application owner before queuing work, holds the native Room operation lifetime,
 and checks current human read authority without requiring merge permission.
@@ -505,8 +516,10 @@ a constant unavailable error without forwarding helper messages, data or causes.
 
 Chart state uses the existing session/room/column/tab Spindel ownership and
 socket/target/generation request fences. Room notifications invalidate all
-displayed charts through the existing Memory read epoch, including spec-only
-commits whose JSON file is not an open buffer. No extra polling or file cache
+displayed charts through the existing Memory stream marker and definition basis,
+including spec-only commits whose JSON file is not an open buffer. A metadata-interest
+refresh with the same source/definition basis keeps an accepted chart visible;
+request acceptance still uses the exact read epoch. No extra polling or file cache
 is added. Optional analysis follows a saved baseline once per identity; a
 baseline-only reply cannot replace newer prose, selection or `rich-base`.
 Analysis is usable only when its revision matches the saved content identity.

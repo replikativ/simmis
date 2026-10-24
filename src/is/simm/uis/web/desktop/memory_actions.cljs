@@ -326,6 +326,7 @@
                     (request! [:file path] #(remote/load-memory-file! web/server-id room
                                                                       {:path path :expected-target-stamp stamp})
                               #(-> %1 (update-in [:drafts path] editor/loaded-at-generation generation %2)
+                                   (editor/install-page-properties path %2)
                                    (update :file-intents dissoc path))
                               (fn [_]
                                 (let [draft (get-in (state) [:drafts path])]
@@ -344,8 +345,7 @@
                                                                       (and saved-baseline?
                                                                            (= text (get-in s [:drafts path :source :text]))))))}))))
             (property-marker [s path target]
-              [(:connection s) (:target-stamp s) (:read-epoch s) (:definition-basis s)
-               (get-in s [:observed-entries path]) target])
+              (editor/property-marker s path target))
             (chart! [path block]
               (let [s (state) marker (charts/marker s path block) scope [path block]
                     slot [:chart path block] draft (get-in s [:drafts path])]
@@ -377,7 +377,7 @@
               (let [s (state) scope [path target] model (get-in s [:property-models scope])
                     pd (get-in s [:property-drafts scope (:id field)]) draft (get-in s [:drafts path])
                     slot [:property-save path] input (editor/property-input model field pd)]
-                (when (and (not (get-in s [:loading slot])) (not (get-in s [:loading [:save path]]))
+                (when (and pd (not (get-in s [:loading slot])) (not (get-in s [:loading [:save path]]))
                            (not (get-in s [:loading [:move path]]))
                            (:editable? field) (not (editor/dirty? draft)) (not (declarations/drafts? s path))
                            (= (:request-marker model) (property-marker s path target))
@@ -388,8 +388,7 @@
                                       (assoc :expected-target-stamp stamp :property (:id field) :alias (:alias field) :input input))]
                       (request! slot #(remote/save-memory-property! web/server-id room command)
                                 (fn [current reply]
-                                  (cond-> (-> current (update :property-models dissoc scope)
-                                              (update :property-attempts dissoc scope))
+                                  (cond-> (-> current (update :property-attempts dissoc scope))
                                     (some? (get-in current [:drafts path]))
                                     (update-in [:drafts path] editor/property-saved (:generation draft) reply)
                                     (= pd (get-in current [:property-drafts scope (:id field)]))
@@ -661,6 +660,7 @@
                                     #(if % (assoc % :input input)
                                          (assoc (editor/property-draft model input)
                                                 :alias (:alias field) :label (:label field))))))
+       :reference-search (fn [path target id query] (update! assoc-in [:reference-search [path target id]] query))
        :property-discard (fn [path target id] (update! update-in [:property-drafts [path target]] dissoc id))
        :property-current? (fn [path target model] (= (:request-marker model) (property-marker (state) path target)))
        :property-save property-save!

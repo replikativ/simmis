@@ -37,14 +37,15 @@
     (is (= {(str block) (:chart reply)} (charts/visible populated "wiki/a.md")))
     (doseq [changed [(assoc populated :connection :socket-2)
                      (assoc populated :target-stamp revision)
-                     ;; A SPEC-ONLY room commit advances this same epoch even
-                     ;; when the JSON file has never been opened in a buffer.
-                     (update populated :read-epoch inc)
                      (assoc populated :definition-basis stamp)
                      (assoc-in populated [:drafts "wiki/a.md" :source :entry] nil)
                      (assoc-in populated [:drafts "wiki/a.md" :source :analysis :revision] stamp)]]
       (is (not (charts/reply-current? changed "wiki/a.md" block marker reply)))
       (is (empty? (charts/visible changed "wiki/a.md"))))
+    (let [checking (update populated :read-epoch inc)]
+      (is (not (charts/reply-current? checking "wiki/a.md" block marker reply)))
+      (is (= {(str block) (:chart reply)} (charts/visible checking "wiki/a.md"))
+          "unrelated folder-interest reads do not remove the accepted chart"))
     (is (empty? (charts/visible (assoc populated :target-verified? false) "wiki/a.md")))
     (is (empty? (charts/visible (assoc-in populated [:drafts "wiki/a.md" :mode] :source) "wiki/a.md")))
     (is (empty? (charts/visible (assoc-in populated [:drafts "wiki/a.md" :local-source] {}) "wiki/a.md")))

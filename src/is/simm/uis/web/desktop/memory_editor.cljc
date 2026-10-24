@@ -276,6 +276,18 @@
 
 (defn property-entries [properties] (sort-by (comp pr-str key) properties))
 
+(defn property-marker [state path target]
+  [(:connection state) (:target-stamp state) (:read-epoch state) (:definition-basis state)
+   (get-in state [:observed-entries path]) target])
+
+(defn install-page-properties [state path file]
+  (if-let [model (:page-properties file)]
+    (let [scope [path {:kind :page}] marker (property-marker state path {:kind :page})]
+      (if (= (:entry file) (get-in state [:drafts path :source :entry]))
+        (-> state
+            (assoc-in [:property-models scope] (assoc model :target-stamp (:target-stamp file) :request-marker marker))
+            (assoc-in [:property-attempts scope] marker)) state)) state))
+
 (defn property-baseline [model]
   (select-keys model [:path :target :expected :revision :scope-revision :target-stamp]))
 

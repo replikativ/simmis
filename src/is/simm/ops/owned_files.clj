@@ -62,9 +62,25 @@
   (project! conn principal room-id room request #{:query} (contains? request :expected-target-stamp)
             #(files/search-paths-in % (:query request))))
 
+(defn- property-projection [db path target]
+  (try (property-model/inspect-in db path target)
+       (catch clojure.lang.ExceptionInfo error
+         (if (contains? #{:is.simm.documents.property-model/refused
+                          :is.simm.documents.properties/invalid-schema
+                          :is.simm.documents.canonical/refused
+                          :is.simm.documents.view/refused
+                          :is.simm.documents.constraints/refused} (:type (ex-data error)))
+           {:path path :target target :status :unavailable
+            :reason (or (:reason (ex-data error)) :invalid-property-definitions)}
+           (throw error)))))
+
 (defn read! [conn principal room-id room request]
   (project! conn principal room-id room request #{:path} (contains? request :expected-target-stamp)
-            #(files/read-file-in % (:path request))))
+            (fn [db]
+              (let [file (files/read-file-in db (:path request))]
+                (cond-> file
+                  (= :markdown (:kind file))
+                  (assoc :page-properties (property-projection db (:path request) {:kind :page})))))))
 
 (defn history! [conn principal room-id room request]
   (project! conn principal room-id room request #{:path} true
@@ -113,13 +129,7 @@
    readable without falsely exposing canonical typed editing."
   [conn principal room-id room request]
   (project! conn principal room-id room request #{:path :target} true
-            #(try (property-model/inspect-in % (:path request) (:target request))
-                  (catch clojure.lang.ExceptionInfo error
-                    (if (and (= :is.simm.documents.property-model/refused (:type (ex-data error)))
-                             (#{:unprovisioned-canonical-space :invalid-or-provisional-document} (:reason (ex-data error))))
-                      {:path (:path request) :target (:target request)
-                       :status :unavailable :reason (:reason (ex-data error))}
-                      (throw error))))))
+            #(property-projection % (:path request) (:target request))))
 
 (defn declaration-preview!
   "Authenticated prospective declaration DTOs; same owned snapshot and target
