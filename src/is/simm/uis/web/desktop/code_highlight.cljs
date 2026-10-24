@@ -15,7 +15,8 @@
   (when (and (string? info) (<= (count info) 512))
     (let [token (some-> (re-find #"^\s*([A-Za-z0-9_+-]+)(?:\s|$)" info) second str/lower-case)
           name (get {"clj" "clojure" "cljs" "clojure" "cljc" "clojure" "edn" "clojure" "bb" "clojure"
-                     "js" "javascript" "py" "python" "sh" "bash" "shell" "bash" "yml" "yaml" "md" "markdown"}
+                     "js" "javascript" "py" "python" "sh" "bash" "shell" "bash" "yml" "yaml" "md" "markdown"
+                     "simmis-chart" "json"}
                     token token)]
       (when (contains? #{"clojure" "javascript" "python" "bash" "json" "css" "html" "xml"
                          "sql" "diff" "yaml" "markdown" "superficie"} name)

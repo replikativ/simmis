@@ -34,8 +34,8 @@
 
 (defn- refuse! [message] (throw (ex-info message {:type ::invalid})))
 
-(defn- evaluator [bundle config limits basis]
-  (let [checker (checkers/evaluator bundle)]
+(defn- evaluator [bundle config limits basis selection-policy]
+  (let [checker (checkers/evaluator bundle selection-policy)]
     (evaluation/make-evaluator
      {:id :simmis/local-worker-benchmark :version 1 :tier (evaluation/evaluator-tier checker)
       :basis {:worker basis :checker (evaluation/evaluator-ref checker)}
@@ -100,7 +100,7 @@
                                                                  (vec (keys (:files frozen))) limits))
                                  (refuse! "Benchmark fixtures differ from the pinned worker input"))
                                result))})
-          evaluator (evaluator bundle config limits basis)
+          evaluator (evaluator bundle config limits basis (knowledge-inputs/declaration (:files snapshot)))
           verifier (evaluation/evaluator-ref evaluator)
           protocol-ref {:protocol/id :simmis/local-worker-benchmark :protocol/version 1 :protocol/basis basis}
           environments

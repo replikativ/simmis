@@ -14,9 +14,13 @@
             [is.simm.uis.web.desktop.memory-cells :as cells]
             [is.simm.uis.web.desktop.memory-remote :as remote]
             [is.simm.uis.web.desktop.memory-reference-remote :as reference-remote]
+            [is.simm.uis.web.desktop.refs :as refs]
+            [is.simm.documents.links :as links]
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.connection-epoch :as connection-epoch]
             [is.simm.uis.web.desktop.views.memory-navigation :as navigation]
+            [is.simm.uis.web.desktop.views.nav :as nav]
+            [is.simm.uis.web.desktop.db-signal :as db-signal]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.runtimes.web :as web])
   (:require-macros [org.replikativ.spindel.signal :refer [signal]]))
@@ -362,6 +366,7 @@
                     remote/load-memory-folder! (deferred :folder) remote/load-memory-file! (deferred :file)
                     remote/search-memory-files! (deferred :search) remote/analyze-memory-text! (deferred :analyze)
                     remote/load-memory-history! (deferred :history) remote/load-memory-history-file! (deferred :history-file)
+                    reference-remote/load-memory-backlinks! (deferred :backlinks)
                     remote/download-memory-file! (deferred :download) remote/load-memory-office-part! (deferred :office)
                     remote/save-memory-file! (deferred :save) remote/save-memory-rich-file! (deferred :rich-save)
                     remote/load-memory-properties! (deferred :properties) remote/save-memory-property! (deferred :property-save)
@@ -381,6 +386,79 @@
                            (reply! (:ok (last (:metadata @calls)))
                             (wire target {:folders {"" {:entries []}} :entries {"x.clj" (:entry file)}
                                           :revision (random-uuid) :permissions {:write? true :evaluate? true}})))}))))))
+
+(defn- with-backlink-client [f]
+  (with-client
+    (fn [{:keys [data states stamp connection] :as fixture}]
+      (let [room "39bb0b7b-938d-46d7-8a96-5e2f1061c5a5"
+            path "wiki/Target.md" repository (random-uuid)
+            data (assoc data :room-id room)
+            a (actions/controller data)
+            state #(get @states (:owner a))
+            file (wire stamp {:path path :repository-id repository :kind :markdown
+                              :entry {:content (random-uuid) :mode 33188 :size 8} :text "# Target"})
+            response (fn [results] (wire stamp {:status :ready :complete? true :results results
+                                                :repository-id repository :source-basis (random-uuid)
+                                                :target {:kind :file :path path}}))]
+        (reset! sig/user-rooms {:rooms [{:room/id room :room/name "Knowledge"}]})
+        (reset! sig/layout-columns [{:id :column :active-tab :one
+                                    :tabs [{:id :one :type :memory :data {:room-id room :path path}}]}])
+        (swap! states assoc (:owner a) (assoc (verified connection stamp)
+                                             :selected path :read-epoch 0 :definition-basis (random-uuid)
+                                             :drafts {path (editor/draft file)}))
+        (f (assoc fixture :a a :data data :state state :room room :path path
+                          :repository repository :response response))))))
+
+(deftest backlink-observations-reopen-locally-and-follow-metadata-without-a-refresh-button
+  (with-backlink-client
+    (fn [{:keys [a data states state calls last-call response]}]
+      ((:ensure-backlinks a))
+      (is (empty? (:backlinks @calls)))
+      ((:backlinks-open a) true) ((:ensure-backlinks a))
+      (is (= 1 (count (:backlinks @calls))))
+      (reply! (:ok (last-call :backlinks)) (response []))
+      (is (= :ready (get-in ((:backlinks a)) [:reply :status])))
+      ((:backlinks-open a) false) ((:backlinks-open a) true) ((:ensure-backlinks a))
+      (is (= 1 (count (:backlinks @calls))))
+      (swap! states assoc-in [(:owner a) :definition-basis] (random-uuid))
+      (is (nil? (:reply ((:backlinks a)))))
+      ((:ensure-backlinks a))
+      (is (= 2 (count (:backlinks @calls))))
+      (reply! (:ok (last-call :backlinks)) (response []))
+      (is (= :ready (get-in ((:backlinks a)) [:reply :status]))))))
+
+(deftest a-new-read-epoch-can-replace-a-pending-backlink-read-and-reject-its-late-reply
+  (with-backlink-client
+    (fn [{:keys [a states calls last-call response]}]
+      ((:backlinks-open a) true) ((:ensure-backlinks a))
+      (let [old (last-call :backlinks)]
+        (swap! states update-in [(:owner a) :read-epoch] inc)
+        ((:ensure-backlinks a))
+        (is (= 2 (count (:backlinks @calls))) "An old loading flag cannot stall the new marker")
+        (reply! (:ok old) (response []))
+        (is (nil? (:reply ((:backlinks a)))))
+        (let [new (response [])]
+          (reply! (:ok (last-call :backlinks)) new)
+          (is (= (:source-basis new) (get-in ((:backlinks a)) [:reply :source-basis]))))))))
+
+(deftest backlink-navigation-follows-tab-moves-and-rejects-a-retired-tab
+  (with-backlink-client
+    (fn [{:keys [a room stamp calls last-call response]}]
+      ((:backlinks-open a) true) ((:ensure-backlinks a))
+      (let [opened (atom []) result {:path "wiki/Source.md" :url (links/route {:kind :memory-file :room room :path "wiki/Source.md"})}]
+        (reply! (:ok (last-call :backlinks)) (response [result]))
+        (swap! sig/layout-columns assoc-in [0 :id] :moved)
+        (with-redefs [refs/open! (fn ([ref] (swap! opened conj [ref {}]))
+                                 ([ref opts] (swap! opened conj [ref opts])))]
+          ((:open-backlink a) result)
+          (is (= :moved (get-in @opened [0 1 :col-id])))
+          (is (= "wiki/Source.md" (get-in @opened [0 0 :path])))
+          (swap! sig/layout-columns assoc-in [0 :tabs 0 :type] :home)
+          ((:open-backlink a) result)
+          (is (= 1 (count @opened)))
+          (is (nil? (:reply ((:backlinks a)))))
+          ((:ensure-backlinks a))
+          (is (= 1 (count (:backlinks @calls)))))))))
 
 (defn- memory-tab-layout []
   [{:id :column :active-tab :one
@@ -1426,6 +1504,56 @@
             (is (empty? (:envelopes (first (vals @sig/memory-room-metadata)))))
             (is (not (.includes (.-textContent container) "Result.md")))
             (finally ((:stop! handle)))))))))
+
+(deftest memory-sidebar-uses-room-trees-without-opening-legacy-sources
+  (with-client
+    (fn [_]
+      (let [container (.createElement js/document "div")
+            legacy {:knowledge-bases [{:kb/id "legacy" :kb/name "Old Research Wiki" :kb/db-scope "legacy-store"}]
+                    :drives [{:id "old-drive" :name "Old Drive" :room-id "test-room"}]}]
+        (with-redefs [sig/nav-collapsed-projects (signal runtime #{})
+                      sig/active-nav-keys (signal runtime #{})
+                      db-signal/connect-kb! (fn [& _] (throw (js/Error. "No legacy replica connection")))]
+          (reset! sig/user-rooms (assoc legacy :rooms [{:room/id "test-room" :room/name "Knowledge"}]))
+          (let [handle (render/render-spin! container (nav/render-memory-section-spin)
+                                            (browser/make-dom-discharge js/document))]
+            (try
+              (simple/drain-events! runtime nil)
+              (is (.includes (.-textContent container) "Knowledge"))
+              (is (not (.includes (.-textContent container) "Old Research Wiki")))
+              (is (not (.includes (.-textContent container) "Old Drive")))
+              (is (.includes (.-textContent container) "Add memory"))
+              (reset! sig/user-rooms (assoc legacy :rooms []))
+              (simple/drain-events! runtime nil)
+              (is (.includes (.-textContent container) "No workspaces yet"))
+              (is (not (.includes (.-textContent container) "Knowledge")))
+              (reset! sig/nav-collapsed-projects #{"memory"})
+              (simple/drain-events! runtime nil)
+              (is (not (.includes (.-textContent container) "Add memory")))
+              (finally ((:stop! handle))))))))))
+
+(deftest memory-sidebar-clicks-stay-in-the-rendering-context
+  (with-client
+    (fn [_]
+      (with-redefs [sig/nav-collapsed-projects (signal runtime #{"parent-only"})
+                    sig/active-nav-keys (signal runtime #{})]
+        (let [child (context/fork-context runtime)
+              container (.createElement js/document "div")
+              handle (binding [ec/*execution-context* child]
+                       (reset! sig/user-rooms {:rooms []})
+                       (reset! sig/nav-collapsed-projects #{"memory"})
+                       (render/render-spin! container (nav/render-memory-section-spin)
+                                            (browser/make-dom-discharge js/document)))]
+          (try
+            (simple/drain-events! child nil)
+            (.dispatchEvent (.querySelector container ".nav-title") (js/MouseEvent. "click" #js {:bubbles true}))
+            (simple/drain-events! child nil)
+            (is (= #{"parent-only"} @sig/nav-collapsed-projects))
+            (is (= #{} (binding [ec/*execution-context* child] @sig/nav-collapsed-projects)))
+            (is (.includes (.-textContent container) "Add memory"))
+            (finally
+              (binding [ec/*execution-context* child] ((:stop! handle)))
+              (context/close-context! child))))))))
 
 (deftest a-new-target-in-another-batch-immediately-retires-old-verification
   (with-client

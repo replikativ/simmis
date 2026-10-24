@@ -65,17 +65,17 @@
    :quotes [{:source evidence-path :text "No paying customers were interviewed."}]})
 
 (defn- verdict [files held-gold]
-  (checkers/run-checker (get (starter/source) "checker.clj")
+  (checkers/run-checker (get (starter/source 1) "checker.clj")
                         {:files files :gold held-gold :params {} :fetched {} :judgements {}}))
 
 (deftest shipped-source-is-inert-ordinary-and-does-not-contain-synthetic-evidence
-  (let [source (starter/source)
+  (let [source (starter/source 1)
         snapshot {:files source}
         bundle (catalog/bundle starter/name source)
         capture (frozen {"inbox/interview.md" evidence})
         selection {:name starter/name :expected-bundle (:id bundle) :inputs capture}
         prepared (runs/prepare-source snapshot selection)]
-    (is (= source (starter/source)))
+    (is (= source (starter/source 1)))
     (is (:ok (workflows/inspect-snapshot starter/name snapshot)))
     (is (= inputs/default-policy (inputs/declaration source)))
     (is (empty? (:cases bundle)))
@@ -128,15 +128,15 @@
   ;; Mock only this loader's resource seams, never JVM-wide io/resource or
   ;; io/input-stream while another runtime may be reading its own files.
   (with-redefs-fn {#'starter/packaged-resource (constantly nil)}
-    #(is (thrown? clojure.lang.ExceptionInfo (starter/source))))
+    #(is (thrown? clojure.lang.ExceptionInfo (starter/source 1))))
   (with-redefs-fn {#'starter/resource-stream (fn [& _] (java.io.ByteArrayInputStream. (byte-array [(unchecked-byte 0xff)])))}
-    #(is (thrown? java.nio.charset.CharacterCodingException (starter/source))))
+    #(is (thrown? java.nio.charset.CharacterCodingException (starter/source 1))))
   (with-redefs [starter/policy {:max-file-bytes 8 :max-bundle-bytes 32}
                 starter/resource-stream (fn [& _] (java.io.ByteArrayInputStream. (byte-array 9)))]
-    (is (thrown? clojure.lang.ExceptionInfo (starter/source))))
+    (is (thrown? clojure.lang.ExceptionInfo (starter/source 1))))
   (with-redefs [starter/policy {:max-file-bytes 8 :max-bundle-bytes 2}
                 starter/resource-stream (fn [& _] (java.io.ByteArrayInputStream. (.getBytes "a" "UTF-8")))]
-    (is (thrown? clojure.lang.ExceptionInfo (starter/source)))))
+    (is (thrown? clojure.lang.ExceptionInfo (starter/source 1)))))
 
 (deftest installing-the-live-bundle-preserves-the-canonical-knowledge-view
   (let [cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write
@@ -148,7 +148,7 @@
         (space/provision! conn)
         (repo/write! conn "wiki/existing.md" (markdown/source-bytes original))
         (is (= :ready (:status (view/prepare @conn profile/selection-options))))
-        (doseq [[path text] (starter/source)]
+        (doseq [[path text] (starter/source 1)]
           (repo/write! conn (str "workflows/" starter/name "/" path) (markdown/source-bytes text)))
         (let [prepared (view/prepare @conn profile/selection-options)]
           (is (= :ready (:status prepared)) (pr-str (:diagnostics prepared)))
@@ -190,7 +190,7 @@
                         [:checks :forbidden-content?])))))
 
 (deftest derived-benchmark-is-explicitly-a-different-bundle-with-the-same-task-and-checker
-  (let [source (starter/source)
+  (let [source (starter/source 1)
         capture (frozen {"inbox/interview.md" evidence})
         held-gold (gold {target expected} {evidence-path evidence})
         calibration {:reference {target reference}
@@ -209,13 +209,13 @@
     (is (= (:checker live) (:checker benchmark)))
     (is (= evidence (get-in prepared [:inputs evidence-path])))
     (is (:ok? (checkers/calibrate benchmark)))
-    (is (= source (starter/source)))))
+    (is (= source (starter/source 1)))))
 
 (deftest ordinary-benchmark-api-pins-the-shipped-maintainer-and-each-frozen-case
   ;; Integration/preparation evidence, not inference or a model-quality score.
   ;; This derived evaluation bundle is explicit: never add gold to the live
   ;; user workflow or silently compare its bundle id with the live revision.
-  (let [source (starter/source)
+  (let [source (starter/source 1)
         cases {"supported" {:inputs (frozen {"inbox/interview.md" evidence})
                              :gold (gold {target expected} {evidence-path evidence})}
                "no-change" {:inputs (frozen {"inbox/interview.md" "Synthetic evidence: no new information."})
@@ -271,4 +271,4 @@
           (is (thrown? clojure.lang.ExceptionInfo
                        (benchmarks/prepare {:files damaged}
                                            (assoc request :expected-bundle (:id (catalog/bundle starter/name damaged)))))))))
-    (is (= source (starter/source)))))
+    (is (= source (starter/source 1)))))

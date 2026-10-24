@@ -164,6 +164,7 @@
    "load-memory-properties!" [(c :room MEMBERS)]
    "load-memory-chart!"      [(c :room MEMBERS)]
    "resolve-memory-block!"   [(c :room MEMBERS)]
+   "load-memory-backlinks!"  [(c :room MEMBERS)]
    "save-memory-property!"   [(c :room MEMBERS)]
    "preview-memory-declaration!" [(c :room MEMBERS)]
    "save-memory-declaration!" [(c :room MEMBERS)]

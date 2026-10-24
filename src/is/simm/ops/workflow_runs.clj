@@ -17,6 +17,7 @@
             [is.simm.ops.knowledge-outputs :as knowledge-outputs]
             [is.simm.ops.knowledge-workspace :as knowledge-workspace]
             [is.simm.ops.workflow-policy :as source-policy]
+            [is.simm.ops.wiki-scoring :as wiki-scoring]
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]))
@@ -76,7 +77,10 @@
 (defn- byte-count [^String s] (alength (.getBytes s "UTF-8")))
 
 (defn- effective-parameters [definition overrides]
-  (let [defaults (:params definition {})]
+  (wiki-scoring/selected-profile {:definition definition})
+  ;; The fixed grading observation selector is not a task-template parameter
+  ;; and cannot be overridden through the ordinary string-parameter surface.
+  (let [defaults (dissoc (:params definition {}) :simmis/checker-profile)]
     (when-not (and (<= (count defaults) (:max-params policy))
                    (every? (fn [[k v]]
                              (and (keyword? k) (nil? (namespace k))

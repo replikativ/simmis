@@ -19,7 +19,7 @@
    an agent writes into a digest page and a row in a dashboard should be the
    same act, not two parallel systems."
   (:require [clojure.string :as str]
-            [is.simm.uis.web.desktop.memory-links :as memory-links]
+            [is.simm.documents.links :as memory-links]
             [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [datahike.reference :as dh-ref])
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
@@ -102,6 +102,9 @@
        ;; discard the ref and open the Tasks tab the row was already on — a
        ;; dead end in the one view whose docstring promises navigation. Falls
        ;; through to nil without an id, so `open!` warns rather than pretending.
+       :proposal-source (when (memory-links/source-route _ref)
+                          [:proposal-source {:proposal-id (:proposal _ref) :component-id (:component _ref) :path path}
+                           (or title (last (str/split path #"/")))])
        :proposal (when id
                    [:proposals {:proposal-id (str id)} (or title "Proposal")])
        nil)
@@ -143,6 +146,6 @@
             (sig/open-tab! tab-type tab-data
                            (cond-> {:title (or title tab-title)
                                     :new-column? (boolean new-column?)}
-                             (or new-tab? (#{:memory-file :memory-block} (:kind ref))) (assoc :new-tab? true)
+                             (or new-tab? (#{:memory-file :memory-block :proposal-source} (:kind ref))) (assoc :new-tab? true)
                              col-id (assoc :col-id col-id)))
             (js/console.warn "[refs] cannot open reference:" (pr-str ref))))))))

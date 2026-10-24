@@ -1,11 +1,18 @@
-(ns is.simm.uis.web.desktop.memory-links-test
+(ns is.simm.documents.links-test
   (:require [clojure.test :refer [deftest is]]
             [clojure.string :as str]
-            [is.simm.uis.web.desktop.memory-links :as links]))
+            [is.simm.documents.links :as links]))
 
 (def room "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 (def repository "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 (def block "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+
+(deftest route-parser-never-borrows-an-external-host-or-fragment
+  (let [ref {:kind :memory-file :room room :path "wiki/A+B.md"} route (links/route ref)]
+    (is (= ref (links/parse-route route)))
+    (doseq [bad [(str "https://another.example" route) (str "/" route) (str route "#anchor")
+                 (str route "&path=other.md") (str route "&permission=owner")]]
+      (is (nil? (links/parse-route bad))))))
 
 (deftest file-and-block-links-round-trip-special-paths-in-both-runtimes
   (doseq [path ["wiki/Note.md" "wiki/A B+C%#&=?.md" "研究/🦋.md" "notes/a!'()*~.md"
@@ -45,3 +52,15 @@
          (links/parse-query room "path=a+b%2fc.md")))
   (is (= {:kind :memory-file :room room :path "研究/a=b?.md"}
          (links/parse-query room "p%61th=研究/a=b?.md"))))
+
+(deftest frozen-source-addresses-name-an-exact-proposal-component-and-input
+  (let [proposal "12345678-1234-1234-1234-123456789abc"
+        component "abcdefab-1234-1234-1234-123456789abc"
+        path "/in/knowledge/sources/inbox/A 🦋.md"
+        ref {:kind :proposal-source :proposal proposal :component component :path path}
+        url (links/source-route ref)]
+    (is (= ref (links/parse-source-query proposal component (subs url (inc (.indexOf url "?"))))))
+    (doseq [path ["inbox/A.md" "/in/knowledge/manifest.edn" "/in/knowledge/sources/../A.md"]]
+      (is (nil? (links/source-route (assoc ref :path path)))))
+    (is (nil? (links/parse-source-query proposal component "path=%2Fin%2Fknowledge%2Fsources%2FA.md&path=other")))
+    (is (nil? (links/parse-source-query proposal component "path=%2Fin%2Fknowledge%2Fsources%2FA.md&scope=other")))))

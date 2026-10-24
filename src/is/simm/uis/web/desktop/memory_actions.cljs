@@ -17,6 +17,9 @@
             [is.simm.uis.web.desktop.chart-remote :as chart-remote]
             [is.simm.uis.web.desktop.memory-charts :as charts]
             [is.simm.uis.web.desktop.memory-references :as references]
+            [is.simm.uis.web.desktop.memory-backlinks :as backlinks]
+            [is.simm.documents.links :as links]
+            [is.simm.uis.web.desktop.refs :as refs]
             [is.simm.uis.web.desktop.memory-reference-remote :as reference-remote]
             [is.simm.uis.web.desktop.remote :as rem]
             [is.simm.runtimes.web :as web]))
@@ -271,6 +274,33 @@
                     (do (update! assoc-in [:errors slot] "This draft belongs to another workspace. Choose its current copy explicitly before publishing.") nil))))
             (generation? [path generation]
               (fn [s _] (= generation (get-in s [:drafts path :generation]))))
+            (backlink-marker [s]
+              (binding [ec/*execution-context* ctx]
+                (when (and (current?) (owner/current-tab @sig/layout-columns room (:tab-id data)))
+                  (backlinks/marker room s (connection) @sig/user-rooms))))
+            (ensure-backlinks! []
+              (connected!)
+              (let [s (state) marker (backlink-marker s)]
+                (when (get-in s [:backlinks :open?])
+                  (cond
+                    (nil? marker)
+                    (when (get-in s [:backlinks :marker])
+                      (update! #(-> % (update :backlinks dissoc :marker :reply :error) (update :errors dissoc :backlinks))))
+                    (not= marker (get-in s [:backlinks :marker]))
+                    (do
+                      (update! #(-> % (assoc-in [:backlinks :marker] marker) (update :backlinks dissoc :reply :error)))
+                      (request! :backlinks #(reference-remote/load-memory-backlinks! web/server-id room (backlinks/request marker))
+                                (fn [current result]
+                                  (let [updated (assoc-in current [:backlinks :reply] result)]
+                                    (when-not (backlinks/reply updated marker)
+                                      (throw (ex-info "Backlinks returned an unexpected workspace observation." {})))
+                                    updated)) nil
+                                {:stamp (:target-stamp marker) :read? true
+                                 :accept? (fn [current _] (= marker (backlink-marker current)))
+                                 :error-current? (fn [current] (= marker (backlink-marker current)))
+                                 :failure-state (fn [current error]
+                                                  (-> current (update :errors dissoc :backlinks)
+                                                      (assoc-in [:backlinks :error] (rem/error-text error))))}))))))
             (navigation-refresh! []
               ((:invalidate shared))
               (when-not (= :navigation (:col-id data))
@@ -691,6 +721,24 @@
                                  #(editor/file-evaluation-result %1 path (:generation draft) (:text draft) %2) nil
                                  {:scope :sandbox}))))
        :block-links (fn [path] (references/block-links room path (get-in (state) [:drafts path])))
+       :inline-chart-previews (fn [path]
+                                (let [s (state)]
+                                  (when (and (current?) (verified? s (connection)) (draft-current? s path))
+                                    (mapv #(select-keys % [:language :text :status :data])
+                                          (:inline-charts (charts/saved-analysis (get-in s [:drafts path])))))))
+       :ensure-backlinks ensure-backlinks!
+       :backlinks-open (fn [open?]
+                         (when (not= (boolean open?) (boolean (get-in (state) [:backlinks :open?])))
+                           (update! assoc-in [:backlinks :open?] (boolean open?))))
+       :backlinks #(when (current?) (backlinks/observation (state) (backlink-marker (state))))
+       :retry-backlinks #(update! update :backlinks dissoc :marker :reply :error)
+       :open-backlink (fn [result]
+                        (when-let [reply (when (and (current?) (get-in (state) [:backlinks :open?]))
+                                          (backlinks/reply (state) (backlink-marker (state))))]
+                          (when (some #{result} (:results reply))
+                            (binding [ec/*execution-context* ctx]
+                              (when-let [location (owner/current-tab @sig/layout-columns room (:tab-id data))]
+                                (refs/open! (links/parse-route (:url result)) {:col-id (:col-id location) :new-tab? true}))))))
        :jump (fn [path] (references/jump (state) path))
        :linked-block (fn [path] (references/linked-block (state) path))
        :retry-reference (fn [] (update! #(-> % (dissoc :block-reference) (update :errors dissoc :reference))))

@@ -42,7 +42,7 @@
    changing these addresses — as would `?tx=`/`?branch=` for
    time-travel links, which dh:// already models."
   (:require [clojure.string :as str]
-            [is.simm.uis.web.desktop.memory-links :as memory-links]))
+            [is.simm.documents.links :as memory-links]))
 
 (defn ref->route
   "Path for a ref, or nil when the ref is not addressable."
@@ -55,6 +55,7 @@
     :files (when room (str "/room/" room "/files"))
     (:memory-file :memory-block) (memory-links/route ref)
     :proposal (when id (str "/proposal/" id))
+    :proposal-source (memory-links/source-route ref)
     nil))
 
 (defn route->ref
@@ -70,8 +71,12 @@
                   (remove str/blank?)
                   vec)]
     (if (some? query)
-      (when (and (= 3 (count segs)) (= "room" (first segs)) (= "files" (segs 2)))
-        (memory-links/parse-query (segs 1) query))
+      (cond
+        (and (= 3 (count segs)) (= "room" (first segs)) (= "files" (segs 2)))
+        (memory-links/parse-query (segs 1) query)
+        (and (= 4 (count segs)) (= "proposal" (first segs)) (= "source" (segs 2)))
+        (memory-links/parse-source-query (segs 1) (segs 3) query)
+        :else nil)
       (case (first segs)
       "page" (when (= 3 (count segs))
                {:kind :page :scope (segs 1) :page (segs 2)})
@@ -101,8 +106,9 @@
    one focused proposal). A nil ref means the URL simply does not change."
   [{:keys [type data]}]
   (let [{:keys [page-uuid db-scope room-id anchor-message thread-root-id
-                proposal-id path reference]} data]
+                proposal-id path reference component-id]} data]
     (case type
+      :proposal-source {:kind :proposal-source :proposal proposal-id :component component-id :path path}
       :wiki (when (and page-uuid db-scope)
               {:kind :page :scope (str db-scope) :page (str page-uuid)})
       ;; a chat windowed on one message is a DIFFERENT address from the room —

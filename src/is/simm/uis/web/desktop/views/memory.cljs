@@ -7,6 +7,8 @@
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.effects.track :refer [track]]
             [is.simm.documents.rich-text :as rich]
+            [is.simm.documents.inline-charts :as inline-charts]
+            [is.simm.documents.chart-contract :as chart-contract]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.memory-actions :as actions]
             [is.simm.uis.web.desktop.memory-editor :as editor]
@@ -28,11 +30,11 @@
 
 (declare model-node)
 
-(defn- children [node]
+(defn- children [node options]
   ;; Recursive children must be constructed inside their actual parent element,
   ;; with distinct sibling slots. Prebuilding them aliases per-address caches.
   (mapv (fn [index child]
-          (addressing/with-slot-fn index #(model-node child)))
+          (addressing/with-slot-fn index #(model-node child (update options :path (fnil conj []) index))))
         (range) (:content node)))
 
 (defn- marked-text [node]
@@ -55,27 +57,36 @@
               (:text node)))]
     (render (vec (:marks node)))))
 
-(defn- model-node [node]
+(defn- model-node
+  ([node] (model-node node {}))
+  ([node options]
   ;; Deliberately no innerHTML, scripts, embedded images, or widget execution.
   (case (:type node)
-    "doc" (el/div {} (children node))
+    "doc" (el/div {} (children node options))
     "text" (marked-text node)
     ("inlineMath" "displayMath") (math/view node)
     "footnoteReference" (el/sup {:class "memory-footnote-reference"
                                  :title (get-in node [:attrs :raw])
                                  :aria-label (str "Footnote " (get-in node [:attrs :label]))}
                                 (marked-text (assoc node :text (get-in node [:attrs :label]))))
-    "paragraph" (el/p {} (children node))
+    "paragraph" (el/p {} (children node options))
     "heading" (case (get-in node [:attrs :level])
-                1 (el/h1 {} (children node)) 2 (el/h2 {} (children node)) 3 (el/h3 {} (children node))
-                4 (el/h4 {} (children node)) 5 (el/h5 {} (children node)) (el/h6 {} (children node)))
-    "bulletList" (el/ul {} (children node))
-    "orderedList" (el/ol {:start (get-in node [:attrs :start] 1)} (children node))
-    "listItem" (el/li {} (children node))
-    "codeBlock" (el/pre {} (el/code {} (children node)))
+                1 (el/h1 {} (children node options)) 2 (el/h2 {} (children node options)) 3 (el/h3 {} (children node options))
+                4 (el/h4 {} (children node options)) 5 (el/h5 {} (children node options)) (el/h6 {} (children node options)))
+    "bulletList" (el/ul {} (children node options))
+    "orderedList" (el/ol {:start (get-in node [:attrs :start] 1)} (children node options))
+    "listItem" (el/li {} (children node options))
+    "codeBlock" (if-let [preview (get (:previews options) (:path options))]
+                  (el/div {:class "memory-inline-chart"}
+                          (el/pre {} (el/code {} (children node options)))
+                          (el/div {:class "memory-note"} "Chart preview")
+                          (if (= :ready (:status preview))
+                            (charts/view (:path options) (:data preview))
+                            (el/p {:class "memory-note"} "Chart JSON is invalid or exceeds the supported bounds.")))
+                  (el/pre {} (el/code {} (children node options))))
     "hardBreak" (el/br {})
     "horizontalRule" (el/hr {})
-    nil))
+    nil)))
 
 (defn- source-view [path draft a write?]
   (source/view {:id [(:owner a) path] :path path :label "Memory file source"
@@ -192,13 +203,27 @@
         analysis (if rich? (:analysis base) (:analysis draft))
         source (if rich? (:text base) (:text draft))
         chart-models (when-let [models (:chart-models a)] (models path))
+        inline-previews (when-let [previews (:inline-chart-previews a)] (previews path))
+        inline-limit (max 0 (- chart-contract/max-mounted (count chart-models)))
+        outline-blocks (when (= :outline (:mode draft))
+                         (loop [remaining (editor/outline (get-in analysis [:semantic :blocks])) index 0 out []]
+                           (if-let [block (first remaining)]
+                             (let [models (mapv rich/model (:syntax block))]
+                               (recur (next remaining) (+ index (count models))
+                                      (conj out (assoc block :models models :model-start index
+                                                      :chart (get chart-models (str (:id block)))))))
+                             out)))
         chart-ends (into {} (for [block (mapcat #(tree-seq (comp seq :children) :children %)
                                                  (get-in analysis [:semantic :blocks]))
                                   :let [chart (get chart-models (str (:id block)))] :when chart]
                               [(:to block) [(:id block) chart]]))
         ;; Chart data is an explicit item dependency, not an invisible closure
         ;; beside an unchanged syntax slot in the incremental loop.
-        slots (mapv #(assoc % :chart (get chart-ends (:to %))) (:slots analysis))]
+        slots (mapv #(assoc % :chart (get chart-ends (:to %))) (:slots analysis))
+        read-models (if outline-blocks (vec (mapcat :models outline-blocks))
+                       (mapv #(or (when rich? (get-in base [:models (:from %)])) (:model %)) slots))
+        inline-positions (inline-charts/positions read-models inline-previews inline-limit)
+        slots (mapv #(assoc % :inline-positions inline-positions) slots)]
     (el/div {:class "memory-document"}
             (when rich? (rich-toolbar write? (:document-selection base) #((:local-source-open a) path %)))
             (when (and (= :rich (:mode draft)) (not base) analysis)
@@ -218,6 +243,7 @@
                                    :model (or (:document-model base) (get-in base [:document :model]))
                                    :selection (:document-selection base) :document? true
                                    :charts chart-models
+                                   :inline-charts (when (seq inline-previews) {:entries inline-previews :limit inline-limit})
                                    :cell-config ((:cell-config a) path)
                                    :on-run-cell #((:run-cell a) path %)
                                    :block-links ((:block-links a) path)
@@ -231,8 +257,7 @@
                                                 ((:document-change a) path (:id base) model selection))})
               (if (= :outline (:mode draft))
                 (el/div {:class "memory-outline"}
-                        (for [block (mapv #(assoc % :chart (get chart-models (str (:id %))))
-                                          (editor/outline (get-in analysis [:semantic :blocks])))]
+                        (for [block (mapv #(assoc % :inline-positions inline-positions) outline-blocks)]
                           (el/div {:key (str (:id block)) :class "memory-outline-block"
                                    :style {:margin-left (str (* 18 (:depth block)) "px")}}
                                   (el/details {:class "memory-properties"}
@@ -241,19 +266,20 @@
                                   (when (= :explicit (:identity-status block))
                                     (el/button {:on-click (fn [_] ((:open-properties a) path {:kind :block :id (:id block)}))}
                                                "Block properties"))
-                                  (mapv (fn [index node]
+                                  (mapv (fn [index node model]
                                           (addressing/with-slot-fn
                                             index
-                                            #(if-let [model (rich/model node)]
-                                               (model-node model)
+                                            #(if model
+                                               (model-node model {:path [(+ (:model-start block) index)]
+                                                                  :previews (:inline-positions block)})
                                                (el/pre {} (subs source (:from node) (:to node))))))
-                                        (range) (:syntax block))
+                                        (range) (:syntax block) (:models block))
                                   (when-let [chart (:chart block)] (charts/view [path (:id block)] chart))
                                   (el/button {:on-click (fn [_]
                                                           ((:change a) path assoc :mode :source
                                                                        :selection {:anchor (:from block) :head (:to block)}))}
                                              "Edit source"))))
-                (for [slot slots]
+                (for [[slot-index slot] (map-indexed vector slots)]
                   (let [model (or (when rich? (get-in base [:models (:from slot)])) (:model slot))
                         text (subs source (:from slot) (:to slot))
                         structural? (boolean (re-matches #"(?s)\s*<!-- /?simmis:block[^>]*-->\s*" text))]
@@ -267,7 +293,7 @@
                                                    :read-only? (not write?)
                                                    :on-change (fn [model selection]
                                                                 ((:rich-change a) path (:id base) (:from slot) model selection))})
-                                model (model-node model)
+                                model (model-node model {:path [slot-index] :previews (:inline-positions slot)})
                                 :else (el/div {:class "memory-source-region"}
                                               (el/small {} (str (name (:kind slot)) " · preserved source"))
                                               (el/pre {} text)))
@@ -724,6 +750,31 @@
      ((:ensure-charts a))
      (view data state a syntax-pref))))
 
+(defn- backlinks-view [a]
+  (let [{:keys [open? reply error loading?]} ((:backlinks a))]
+    (el/details {:class "memory-backlinks" :open open?
+                 :on-toggle (fn [event] ((:backlinks-open a) (.. event -target -open)))}
+                (el/summary {} "Backlinks")
+                (when open?
+                  (el/div {}
+                          (el/p {:class "memory-note"} "Links from saved pages in this workspace.")
+                          (cond
+                            error (el/div {:class "proposal-error" :role "status"}
+                                          error (el/button {:on-click (fn [_] ((:retry-backlinks a)))} "Try again"))
+                            (or loading? (nil? reply)) (el/p {:class "memory-note" :role "status"} "Checking saved links…")
+                            (= :missing (:status reply)) (el/p {:class "memory-note"} "This page is not in the saved workspace.")
+                            (empty? (:results reply)) (el/p {:class "memory-note"} "No saved Simmis links to this page yet."))
+                          (when (and reply (not (:complete? reply)))
+                            (el/p {:class "memory-note"} "Only part of the matching links fits in this view."))
+                          (for [result (:results reply)]
+                            (el/div {:key [(:path result) (:from result)]}
+                                    (el/a {:href (:url result) :title (:path result)
+                                           :on-click (fn [event]
+                                                       (when-not (or (.-metaKey event) (.-ctrlKey event) (.-shiftKey event) (.-altKey event))
+                                                         (.preventDefault event) ((:open-backlink a) result)))}
+                                          (:path result)
+                                          (when (:block-id result) " · block")))))))))
+
 (defn render-context [data]
   (spin
    (let [connection (iv/get-new (track sig/memory-connection))
@@ -739,7 +790,9 @@
          history (get-in state [:history path]) preview (get-in state [:history-preview path])]
      ((:ensure-path a))
      ((:ensure-sync a) connection stream)
+     ((:ensure-backlinks a))
      (el/div {:class "memory-history context-section"}
+             (when (= :markdown (get-in draft [:source :kind])) (backlinks-view a))
              (el/div {:class "context-section-title"} "File history")
              (when (seq (:evaluation-history state))
                (el/details {:class "memory-evaluation-history"}

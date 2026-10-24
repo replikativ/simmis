@@ -339,6 +339,10 @@
             Tab owners survive column moves; non-tab owners remain distinct."
            (signal runtime {})))
 
+#?(:cljs (def retained-source-state
+           "Session/tab-owned bounded frozen-source observations; no live handles."
+           (signal runtime {})))
+
 #?(:cljs (def memory-room-metadata
            "Session/Room owned immutable metadata observations; no bodies or callbacks."
            (signal runtime {})))
@@ -1139,6 +1143,8 @@
                            (dq/evict-cache-for-entity! (uuid rid)))
                    :files (when-let [rid (:room-id data)]
                             (swap! drive-data dissoc (str rid)))
+                   :proposal-source (swap! retained-source-state
+                                           #(into {} (remove (fn [[[_session owner-tab] _]] (= tab-id owner-tab))) %))
                    nil))]
          (swap! layout-columns
                 room-actions/close-tab-in-layout col-id tab-id default-layout)
@@ -1369,7 +1375,7 @@
      (doseq [s [room-details screens-results recordings-results web-captures-results video-call-info
                 drive-data files-upload-status unread-counts notify-prefs
                 block-conflicts orphaned-blocks room-app-status leaderboards
-                books book-ledgers book-ui workflow-editor-state workflow-output-reviews memory-editor-state conversation-captures
+                books book-ledgers book-ui workflow-editor-state workflow-output-reviews memory-editor-state retained-source-state conversation-captures
                 memory-navigation-state memory-room-metadata workspace-creation-state run-server-facts chat-scroll-windows
                 chat-reply-targets active-kb-branch kb-branches projected-branch-dbs]]
        (reset! s {}))

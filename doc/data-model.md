@@ -15,11 +15,9 @@ carry stable block identities and child grouping; ordinary unmarked Markdown
 has provisional blocks. A list inside a block does not implicitly become its
 Simmis children. File YAML properties, typed property projections, and the
 source-selected disposable query view do not install untrusted schema or
-execute imported code/widgets. Existing legacy KB entities are retained; this
-surface is not a completed migration of their identity or widget semantics.
-Startup account provisioning ensures the personal room without creating or
-attaching an additional legacy Wiki. Existing DB-backed wikis remain accessible
-and are labelled as legacy in navigation; their content and grants are retained.
+execute imported code/widgets. Navigation exposes canonical Room workspaces.
+Account provisioning ensures the personal room without creating a separate
+DB-backed Wiki. This surface does not import the old outliner stores.
 
 New Team and Memory forms create the same canonical `:project` Room. The owner
 and client creation UUID determine one native slug. `:room/creation-intent` holds
@@ -71,6 +69,32 @@ The intent, acknowledgement and selection belong to the tab's Spindel context.
 Native handles remain element-owned. Markdown source supports the same jump
 when rich projection is unavailable. Opening or copying a link never evaluates
 code or writes the file.
+
+The collapsed Backlinks section in file context lists canonical Simmis file and
+block URLs from saved Markdown in this workspace. Inline and defined reference
+links count; code, comments and unused link definitions do not. Relative paths,
+wiki-name spellings, external URLs and frozen experiment inputs are not resolved
+into live files. A block destination follows its explicit identity despite a
+stale path hint. Each origin opens its innermost explicitly identified block,
+or the source file when there is no such block.
+
+This is a bounded read of the selected repository, not another persistent index.
+The source scan uses the block-lookup limits above; it admits at most 5,000 links
+and returns at most 50 matches within 128 KiB, marking a truncated result as
+incomplete. Duplicate explicit page or block identities refuse the observation.
+The host checks the original application, room lease, current human authority,
+repository binding and complete source descriptor before replying. Parsed trees
+remain local to that read. The tab stores only a bounded reply and its marker in
+Spindel state. Saved metadata changes and reconnects invalidate it automatically;
+unsaved typing does not change the saved-workspace result. Closing a tab retires
+its reads and navigation; moving the tab preserves its current column owner.
+
+Frozen workflow sources have separate
+`/proposal/<proposal>/source/<component>?path=<encoded-input-path>` addresses.
+Proposal and component identify already-retained evidence; the path must appear
+in that evidence's source manifest. These URLs convey no permission and never
+select today's workspace file. The read-only source tab shows the original
+source path and content identity, including after Proposal resolution.
 
 Renaming retires old-path reads and history requests before reconciling current
 metadata; late replies cannot reopen the removed path. Typing during the move
@@ -150,6 +174,35 @@ SVG, legends and an accessible data table. Ordinary fences and provisional
 blocks stay inert. Source/local-source editing hides these projections until
 the saved declaration is available again. The legacy Vega/SCI widget path is
 not used to activate canonical charts.
+
+### Inline chart fences
+
+A `simmis-chart` fence embeds the same closed ChartData v1 directly in Markdown;
+it does not require a typed block declaration or another JSON file:
+
+````markdown
+```simmis-chart
+{"version":1,"kind":"line","series":[{"label":"Revenue","points":[[1,100],[2,140]]}]}
+```
+````
+
+File analysis validates at most the first four such parsed fences. The preview
+matches the exact language and projected code text shown in the editor, including
+Markdown nesting and newline handling. It remains stable during unrelated prose
+editing, hides immediately when its own text differs, and can return after
+matching analysis/autosave or undo. Read and Outline use the same data and
+source-independent SVG renderer. Invalid or oversized ChartData gets a bounded
+diagnostic while its original fence remains editable; other implementation
+failures propagate. `simmis-chart` code uses JSON syntax highlighting.
+
+Typed and inline charts share four mounted previews per document view, including
+repeated identical fences. Chart chrome and its native caches stay outside
+editor models and source serialization; preview updates do not create undo
+steps. Owner/target changes retire the presentation through existing Memory
+fences and native element lifecycle. This is a pure data preview, without a
+historical-provenance, execution, query or permission claim. Clojure cells retain
+their separate strict saved-source Run guard. Vega-Lite, Plotly, arbitrary HTML,
+URLs and SCI widgets are not activated by this fence.
 
 ### Portable typed declarations
 
@@ -416,6 +469,11 @@ not current authoring files, and retain the experiment identity for inspection.
 Calibrated WorldSetup references include the original bundle-bearing fixture
 identity and execution policies. Successful setup/calibration evidence stays in
 the existing Attempt evidence, not a separate calibration database.
+Opt-in wiki structural scoring derives bounded immutable facts from verified
+fixture bytes inside the scoring account. Facts do not persist parser ASTs or
+add a second document store. The verifier/setup basis pins the observation and
+selection profiles; multi-reference calibration verdicts remain in the same
+Attempt setup evidence as single-reference calibration.
 Restart recovery retires settled fixtures even if the wallet-return write
 completed immediately before a process crash.
 

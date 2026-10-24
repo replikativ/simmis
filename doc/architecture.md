@@ -153,8 +153,10 @@ states do not prove an active worker or a completed workspace; an absent record
 may mean the original request is still queued. Reconnect never resends creation.
 An interrupted observation can be checked again, with old-socket replies fenced.
 The form's recovery state is session-local: browser reload persistence and native
-setup recovery are not implemented. Existing legacy sources remain available;
-normal new-workspace forms no longer create separate legacy Wiki/Drive entities.
+setup recovery are not implemented. Memory navigation lists canonical room
+workspaces; standalone legacy Wiki/Drive lists and legacy-wiki Settings controls
+are removed. Existing stores are not migrated or deleted. Normal new-workspace
+forms create canonical workspaces, without a separate Wiki/Drive entity.
 
 The experimental source-selected knowledge view derives semantic document/block
 rows from one immutable Geschichte snapshot without writing a second repository.
@@ -230,13 +232,28 @@ Its 128-MiB encoded-payload ceiling accommodates bounded duplicated workflow
 metadata; it does not widen admission limits. Missing/corrupt/oversized evidence
 fails closed. It reads no Attempt, live branch or current workspace selector,
 and confers no adoption authority or permanent storage retention guarantee.
-Authenticated proposal-source RPCs capture the caller before moving work off
-the engine drain. Proposal cards, including resolved audits, expose these frozen
+Authenticated proposal-source RPCs capture both the caller and original App
+before moving work off the engine drain. Current room permission and component
+ownership are checked again after the physical read and formatting. Proposal cards, including resolved audits, expose these frozen
 citations as read-only text, separately from current Memory. Client paging is
 bound to the exact proposal/component/request/selection and content identity;
 list/read tokens plus authenticated socket/session fences reject stale replies.
 Bytes stay in immutable signal state until strict UTF-8 decoding after the final
 chunk. Inspection does not execute code, navigate a current file or accept work.
+
+`/proposal/<proposal>/source/<component>?path=<encoded-input-path>` opens a
+separate read-only source tab. It lists the authorized retained manifest, then
+reads only the exact listed source path. Its bounded observation belongs to the
+session and stable tab ID in a Spindel signal, independently of the Proposal
+card's selected source. Connection, roster/control invalidation and the actual
+tab identity fence callbacks; moving a tab preserves its owner, while closure
+or repurposing retires it. Concurrent source tabs cannot replace each other's
+text. Actual tab closure releases that tab's text/partial-byte cache in its
+own execution context; moving a tab preserves it. Source links in the existing manifest list use ordinary anchors with
+native modifier-click/copy behavior; ordinary clicks open a Simmis tab. The
+viewer offers Open proposal and read retry, without edit/evaluate/adopt actions.
+A bare `/in/knowledge/...` path has no inferred live-file or historical origin.
+
 
 Setup replaces the collector-owned `/in/knowledge/` subtree so inherited stale
 staging cannot augment the manifest;
@@ -498,7 +515,17 @@ charts can remain visible during protected prose editing; Source editing hides
 them. One closed pure scene supplies Spindel's Read DOM and Tiptap's inert
 element-owned NodeView projection. Read/Outline roots are keyed by file path
 and block identity, and loop items carry their chart data as an explicit
-incremental dependency. Charts never become editor attributes,
+incremental dependency. Inline `simmis-chart` fences reuse the strict ChartData decoder during ordinary
+file analysis. At most four parsed previews are returned; native and Read
+renderers separately cap actual matching occurrences, including duplicates,
+within the remaining shared four-chart budget. Exact projected code text and
+language select pure presentation data; unrelated prose can change without
+invalidating it. No block identity, whole-document saved claim or additional
+RPC is needed. The native code node's element-owned cache uses current document
+and preview props, and its disposal clears the projection. Run controls still
+use their original strict saved-document correspondence.
+
+Charts never become editor attributes,
 editor clipboard serialization or source edits; element detach releases their
 native cache. The accessible chart table remains ordinary selectable content.
 
@@ -567,12 +594,19 @@ default `data`), and `user/shadow-config` applies the ports to shadow.
 boot — system DB, mail sync, room hydration, kabel + auth + sync, telegram,
 then the HTTP routes.
 
+Private room apps use `runtimes.room-apps` over Dvergr's native static handler.
+The HTTP route authenticates, then the native callback authorizes the exact
+room resolved for serving under an App operation. The synchronous read remains
+owned until permission and host identity are rechecked. Response CSP sandboxes
+scripts with an opaque origin and Referrer-Policy suppresses referrers. No
+capability/iframe or public-publishing endpoint is installed by this adapter.
+
 Two boot steps are switches. **Storage GC** (`runtimes/storage_gc.clj`, which
 drives dvergr's `gc-stores!` at boot and every 6h) is OFF unless
 `:storage-gc {:enabled? true}` or `SIMMIS_STORAGE_GC=true`: on datahike without
 #1117 a mark that dies on an Error comes back empty and the sweep deletes the
 whole store, which is how the dev.simm.is system DB was lost. simmis pins
-datahike 0.8.1906, the first release with #1117 (a mark that dies raises
+datahike 0.8.1910, which includes #1117 (a mark that dies raises
 `:gc-incomplete-mark` and nothing is swept); the switch stays off by default
 regardless. While enabled on an older datahike (or a source checkout) it warns on every sweep, and it logs a sweep that timed out,
 failed or skipped rooms as an error rather than as an empty one. dvergr refuses
