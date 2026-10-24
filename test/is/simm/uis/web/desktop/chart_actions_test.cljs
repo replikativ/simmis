@@ -5,6 +5,7 @@
             [is.simm.uis.web.desktop.memory-charts-test :as fixture]
             [is.simm.uis.web.desktop.memory-remote :as remote]
             [is.simm.uis.web.desktop.memory-sync :as sync]
+            [is.simm.uis.web.desktop.connection-epoch :as connection-epoch]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.runtimes.web :as web]
@@ -17,6 +18,12 @@
           states (signal runtime {}) chart-calls (atom []) analysis-calls (atom []) metadata-calls (atom [])]
       (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
                     sig/memory-connection (signal runtime connection)
+                    sig/memory-room-metadata (signal runtime {})
+                    sig/memory-editor-state states
+                    sig/memory-navigation-state (signal runtime {})
+                    sig/layout-columns (signal runtime []) sig/user-rooms (signal runtime nil)
+                    sync/state (signal runtime nil)
+                    connection-epoch/snapshot #(binding [ec/*execution-context* runtime] @sig/memory-connection)
                     sync/ensure! (fn [& _])
                     remote/load-memory-metadata! (fn [_ _ request]
                                                    (fn [ok fail] (swap! metadata-calls conj {:request request :ok ok :fail fail})))
@@ -52,9 +59,10 @@
       (let [old (:ok (first @charts)) slot [:chart "wiki/a.md" fixture/block]]
         (is (true? (get-in (state) [:loading slot])))
         ((:ensure-sync a) connection {:connection connection :status :ready :dirty {}})
-        ((:ok (first @metadata)) {:target-stamp fixture/stamp :protocol-version 2 :folders {}
+        ((:ok (first @metadata)) {:target-stamp fixture/stamp :protocol-version 2 :folders {"" {:entries []}}
                                  :entries {"wiki/a.md" fixture/entry} :definition-basis fixture/revision
                                  :revision :new-epoch})
+        ((:consume-metadata a))
         (is (false? (get-in (state) [:loading slot])))
         ((:ensure-charts a)) ((:ensure-charts a))
         (is (= 2 (count @charts)))
@@ -91,15 +99,17 @@
   (with-controller
     (fn [{:keys [a state charts metadata connection]}]
       (let [stream {:connection connection :status :ready :dirty {}}
-            metadata-reply {:target-stamp fixture/stamp :protocol-version 2 :folders {}
+            metadata-reply {:target-stamp fixture/stamp :protocol-version 2 :folders {"" {:entries []}}
                             :entries {"wiki/a.md" fixture/entry} :definition-basis fixture/revision}]
         ((:ensure-sync a) connection stream)
         ((:ok (first @metadata)) (assoc metadata-reply :revision :initial))
+        ((:consume-metadata a))
         ((:ensure-charts a))
         ((:ok (first @charts)) fixture/reply)
         (is (= 1 (count ((:chart-models a) "wiki/a.md"))))
         ((:ensure-sync a) connection (assoc-in stream [:dirty "chart-room"] 1))
         ((:ok (second @metadata)) (assoc metadata-reply :revision :spec-only-commit))
+        ((:consume-metadata a))
         (is (empty? ((:chart-models a) "wiki/a.md")))
         ((:ensure-charts a))
         (is (= 2 (count @charts)))

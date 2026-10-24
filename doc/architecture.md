@@ -67,6 +67,17 @@ Forks update their own roster-derived tabs, selection and chat-scroll state.
 Native focus classes and URL notifications belong only to the live world's
 stable home, including ordinary execution-frame copies of that world.
 
+Memory buffers use stable session/room/tab identity, so moving a tab between
+columns retains its draft, selection and pending request callbacks. Late file
+selection/rename callbacks locate the tab's current column and require its
+unique ID, Memory type and original room before retargeting it. Closed,
+repurposed or ambiguous tabs are not redirected. This preserves semantic
+buffers; native editor undo history across a DOM-parent move is separate.
+Tab close and direct move/activation helpers preserve the caller's context.
+Physical replica disconnection and shared query-cache eviction on close run
+only in the live home; a fork may close its local view without releasing the
+live browser's resources.
+
 Selected-region Markdown is a continuously validated source presentation, not
 an Apply/Save transaction. Accepted input reprojects the exact span, retaining
 the native source editor and current caret; invalid/intermediate input stays in
@@ -347,6 +358,44 @@ recreated. External renames are deletion/addition, not guessed from equal hashes
 Per-view read epochs fence old folder/file replies against newer metadata;
 background refresh never changes the selected file. Metadata requests cover up
 to 64 folders and buffers per view; collapsing a folder releases its listing.
+The sidebar and file tabs share one context/session/Room metadata coordinator.
+It derives live demand from the current layout and expanded navigation tree,
+combines whole view requests within those bounds, and serializes the reads.
+Separate batches retain separate immutable observations, including dispatch-time
+draft generations for each participating view. Their publication sequences are
+local ordering tokens; several batches never claim one atomic snapshot. A view
+consumes its own covered observation once before issuing followup reads.
+
+The shared Signal contains metadata, admission frames and bounded batch results,
+with no file bodies, mutable editor models, native handles or callbacks. File
+tabs and the sidebar track it at the top of their rendering Spins. Closed tabs
+and collapsed trees stop contributing demand; remaining navigation rendering
+prunes unused batches. Unsupported demands are refused per view rather than
+blocking valid siblings. Write acknowledgements invalidate the shared Room
+observation; private source hints and reconnects also trigger reconciliation.
+
+Socket identity, owning world, current Room roster and source-hint generations
+fence publication and consumption. Removing a Room from the loaded roster
+removes verification and eligible listings while preserving human drafts.
+Restored access requires a new observation. A newly observed workspace target
+immediately retires older verification in other batches, without inventing
+coverage for their files. Read replies also retain their original roster basis;
+original write and execution receipt ownership remains separate.
+
+Metadata discovery captures the authenticated human and original application
+before entering its blocking worker. A fixed host service leases the actual
+Room, projects one owned-default snapshot, and rechecks current read authority,
+Room incarnation and default binding before returning. Permission flags come
+from that final control snapshot. A same-target source write may leave an older
+coherent observation; private hints drive catch-up. Metadata hashes are neither
+ordered versions nor a guarantee that several requests saw one atomic snapshot.
+Discovery does not read file bodies or grant authority to later operations.
+The client separates pure per-view metadata reconciliation from followup reads.
+Each observation uses draft generations captured at dispatch; a reply cannot
+relabel newer typing as its baseline. Followup planning uses current pending
+intents, distinguishing omitted paths from explicitly observed absence. Target
+changes retire current-file evaluation displays while retaining historical
+receipts and outstanding evaluation bookkeeping.
 
 Metadata also carries a separate conservative `:definition-basis` token from
 the physical store/branch, commit ID and max-tx. Schema-only native transactions

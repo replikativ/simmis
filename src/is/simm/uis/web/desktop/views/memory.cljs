@@ -712,6 +712,9 @@
   (spin
    (let [connection (iv/get-new (track sig/memory-connection))
          stream (iv/get-new (track sync/state))
+         _metadata (iv/get-new (track sig/memory-room-metadata))
+         _layout (iv/get-new (track sig/layout-columns))
+         _rooms (iv/get-new (track sig/user-rooms))
          states (iv/get-new (track sig/memory-editor-state))
          syntax-pref (iv/get-new (track sig/syntax-pref))
          a (actions/controller data) state (get states (:owner a))]
@@ -725,6 +728,9 @@
   (spin
    (let [connection (iv/get-new (track sig/memory-connection))
          stream (iv/get-new (track sync/state))
+         _metadata (iv/get-new (track sig/memory-room-metadata))
+         _layout (iv/get-new (track sig/layout-columns))
+         _rooms (iv/get-new (track sig/user-rooms))
          states (iv/get-new (track sig/memory-editor-state))
          a (actions/controller data) state (get states (:owner a)) path (:selected state)
          draft (get-in state [:drafts path])

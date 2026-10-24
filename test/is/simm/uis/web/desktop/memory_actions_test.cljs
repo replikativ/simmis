@@ -1,26 +1,70 @@
 (ns is.simm.uis.web.desktop.memory-actions-test
-  (:require [cljs.test :refer-macros [deftest is]]
+  (:require [cljs.test :refer-macros [deftest is] :refer [use-fixtures]]
             [clojure.string :as str]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as context]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.dom.browser :as browser]
+            [org.replikativ.spindel.dom.render :as render]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.memory-actions :as actions]
             [is.simm.uis.web.desktop.memory-editor :as editor]
+            [is.simm.uis.web.desktop.memory-owner :as owner]
+            [is.simm.uis.web.desktop.memory-metadata-io :as metadata-io]
             [is.simm.uis.web.desktop.memory-cells :as cells]
             [is.simm.uis.web.desktop.memory-remote :as remote]
             [is.simm.uis.web.desktop.memory-reference-remote :as reference-remote]
             [is.simm.uis.web.desktop.memory-sync :as sync]
+            [is.simm.uis.web.desktop.connection-epoch :as connection-epoch]
             [is.simm.uis.web.desktop.views.memory-navigation :as navigation]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.runtimes.web :as web])
   (:require-macros [org.replikativ.spindel.signal :refer [signal]]))
 
-(defn- wire [stamp reply] (assoc reply :target-stamp stamp :protocol-version 2))
+(defn- wire [stamp reply]
+  (cond-> (assoc reply :target-stamp stamp :protocol-version 2)
+    (contains? reply :folders) (update :folders #(merge {"" {:entries []}} %))))
 
 (defn- verified [connection stamp]
   {:connection connection :verified-connection connection :watch-connection connection
    :target-stamp stamp :target-verified? true :target-epoch 0 :read-epoch 0
    :permissions {:write? true :evaluate? true} :sandbox-permissions {:evaluate? true}})
+
+(def ^:dynamic *controllers* nil)
+
+(defn- pump!
+  "Run production consumption as rendering would, with no callback subscribers."
+  []
+  (swap! *controllers* #(into {} (filter (fn [[owner _]] (= (:id (web/current-session)) (first owner)))) %))
+  (loop [remaining 20]
+    (let [before [@sig/memory-room-metadata
+                  (mapv (fn [a] ((:state a))) (vals @*controllers*))]]
+      (doseq [a (vals @*controllers*)] ((:consume-metadata a)))
+      (when (not= before [@sig/memory-room-metadata
+                         (mapv (fn [a] ((:state a))) (vals @*controllers*))])
+        (when (zero? remaining) (throw (ex-info "Metadata consumption did not settle" {})))
+        (recur (dec remaining))))))
+
+(defn- reply! [callback value]
+  (callback value)
+  (pump!))
+
+(use-fixtures :each
+  (fn [test-fn]
+    (let [make-controller actions/controller]
+      (binding [ec/*execution-context* runtime *controllers* (atom {})]
+        (with-redefs [sig/memory-room-metadata (signal runtime {})
+                      sig/memory-editor-state (signal runtime {})
+                      sig/memory-navigation-state (signal runtime {})
+                      sig/layout-columns (signal runtime [])
+                      sig/user-rooms (signal runtime nil)
+                      sync/state (signal runtime nil)
+                      connection-epoch/snapshot #(binding [ec/*execution-context* runtime]
+                                                   @sig/memory-connection)
+                      actions/controller (fn [data]
+                                           (let [a (make-controller data)]
+                                             (swap! *controllers* assoc (:owner a) a) a))]
+          (test-fn))))))
 
 (deftest reopening-a-fresh-folder-is-local-and-closed-caches-remain-bounded
   (binding [ec/*execution-context* runtime]
@@ -69,9 +113,9 @@
           ((:folder a) "slow")
           ((:ensure-sync a) connection stream)
           (is (nil? (get-in (state) [:folders "closed"])))
-          (@folder (wire stamp {:entries [:stale]}))
+          (reply! @folder (wire stamp {:entries [:stale]}))
           (is (nil? (get-in (state) [:folders "slow"])))
-          (@metadata (wire stamp {:folders {"" {:entries []} "slow" {:entries [:current]}} :entries {}}))
+          (reply! @metadata (wire stamp {:folders {"" {:entries []} "slow" {:entries [:current]}} :entries {}}))
           (is (= [:current] (get-in (state) [:folders "slow" :entries]))))))))
 
 (deftest a-superseded-metadata-snapshot-cannot-refill-a-closed-cache
@@ -113,10 +157,10 @@
           ((:ensure-path a)) ((:ensure-path a))
           (is (= 1 (count @requests)))
           (is (= (assoc intent :expected-target-stamp stamp) (:request (first @requests))))
-          ((:ok (first @requests)) (wire stamp {:status :resolved :path path :entry {:content :current}}))
+          (reply! (:ok (first @requests)) (wire stamp {:status :resolved :path path :entry {:content :current}}))
           (is (= path (:selected (state))))
           (is (= 1 (count @file-reads)) "Even an already open path receives a current read")
-          ((:ok (first @file-reads)) (wire stamp {:path path :kind :text :entry {:content :current} :text "Current source"}))
+          (reply! (:ok (first @file-reads)) (wire stamp {:path path :kind :text :entry {:content :current} :text "Current source"}))
           (is (= "Unsaved typing" (get-in (state) [:drafts path :text])))
           (is (= "Current source" (get-in (state) [:drafts path :incoming :text])))
           (is (nil? ((:jump a) path)))
@@ -141,6 +185,7 @@
                     remote/load-memory-file! (fn [_ _ request] (defer [:file (:path request)]))]
         (let [a (actions/controller data) key (:owner a) stream {:connection connection :status :ready :dirty {}}
               state #(get @states key)]
+          (reset! sig/layout-columns [{:id :test :tabs [{:id :file :type :memory :data {:room-id "test-room"}}]}])
           (swap! states assoc key (assoc (verified connection stamp)
                                          :selected "a.clj" :folders {"" {:entries []}}
                                          :drafts {"a.clj" (editor/draft a-file) "b.clj" (editor/draft b-file)}))
@@ -148,7 +193,7 @@
           (let [old-folder (:folder @replies)]
             ((:ensure-sync a) connection stream)
             ((:ensure-sync a) connection stream)
-            ((:metadata @replies) (wire stamp {:folders {"" {:entries [:new]} "slow" {:entries [:current]}}
+            (reply! (:metadata @replies) (wire stamp {:folders {"" {:entries [:new]} "slow" {:entries [:current]}}
                                                :entries {"a.clj" (:entry a-file) "b.clj" {:content :new-b}} :revision :v1}))
             (is (= "a.clj" (:selected (state))) "Background B refresh does not select B")
             (old-folder (wire stamp {:entries [:stale]}))
@@ -156,7 +201,7 @@
             ((:reload a) "a.clj")
             (let [old-file (get @replies [:file "a.clj"])]
               ((:ensure-sync a) connection (assoc-in stream [:dirty "test-room"] 1))
-              ((:metadata @replies) (wire stamp {:folders {"" {:entries []} "slow" {:entries []}}
+              (reply! (:metadata @replies) (wire stamp {:folders {"" {:entries []} "slow" {:entries []}}
                                                  :entries {"a.clj" nil "b.clj" (:entry b-file)} :revision :v2}))
               (old-file a-file)
               (is (:remote-deleted? (get-in (state) [:drafts "a.clj"])))
@@ -236,7 +281,7 @@
             ((:ensure-sync a) connection stream)
             ((:ensure-sync a) connection stream)
             (initial (wire stamp {:path "a.clj" :entry {:content :old} :text "old"}))
-            ((:metadata @replies) (wire stamp {:folders {} :entries {"a.clj" {:content :new}} :revision :new}))
+            (reply! (:metadata @replies) (wire stamp {:folders {} :entries {"a.clj" {:content :new}} :revision :new}))
             (is (= 2 @loads) "The newer metadata must trigger a fresh body read")
             ((:file @replies) (wire stamp {:path "a.clj" :entry {:content :new} :text "new"}))
             (is (= "new" (get-in @states [(:owner a) :drafts "a.clj" :text])))))))))
@@ -253,7 +298,8 @@
                       remote/prepare-memory-stream! (fn [& _] (fn [ok _] (ok {})))
                       remote/load-memory-metadata!
                       (fn [_ _ request]
-                        (is (not (some #{"uploaded.clj"} (:paths request))))
+                        (when-not (:metadata @replies)
+                          (is (not (some #{"uploaded.clj"} (:paths request)))))
                         (fn [ok _] (swap! replies assoc :metadata ok)))
                       remote/load-memory-file!
                       (fn [& _] (fn [ok _] (swap! loads conj ok)))]
@@ -270,15 +316,20 @@
             ((:open a) "uploaded.clj")
             ((:select-path a) "other.clj")
             (let [old-body (first @loads)]
-              (when body-first? (old-body file))
-              ((:metadata @replies) (wire stamp {:folders {} :entries {} :revision :snapshot-before-upload}))
+              (when body-first? (reply! old-body file))
+              (reply! (:metadata @replies) (wire stamp {:folders {} :entries {} :revision :snapshot-before-upload}))
+              ;; A changed demand retires that old batch. Consume the new
+              ;; complete observation, then check the same body-read race.
+              (reply! (:metadata @replies)
+                      (wire stamp {:folders {} :entries {"uploaded.clj" (:entry file) "other.clj" nil}
+                                   :revision :snapshot-after-upload}))
               (when-not body-first?
                 (is (= 2 (count @loads)) "Metadata must replace the invalidated, omitted body request")
-                (old-body (assoc file :text "Stale response"))
+                (reply! old-body (assoc file :text "Stale response"))
                 (is (nil? (get-in (state) [:drafts "uploaded.clj"])))
                 (is (true? (get-in (state) [:loading [:file "uploaded.clj"]]))
                     "The old callback must not finish its replacement request")
-                ((last @loads) file))
+                (reply! (last @loads) file))
               (is (= "Uploaded" (get-in (state) [:drafts "uploaded.clj" :text])))
               (is (= "other.clj" (:selected (state))) "Background retries must not navigate")
               (is (false? (get-in (state) [:loading [:file "uploaded.clj"]]))))))))))
@@ -291,10 +342,20 @@
           deferred (fn [kind]
                      (fn [_ _ request]
                        (fn [ok error]
-                         (swap! calls update kind (fnil conj []) {:request request :ok ok :error error}))))]
+                         (swap! calls update kind (fnil conj []) {:request request
+                                                                  :ok (if (= kind :metadata)
+                                                                        (fn [reply]
+                                                                          (ok (-> reply
+                                                                                  (update :folders #(merge (zipmap (:folders request) (repeat {:entries []})) %))
+                                                                                  (update :entries #(merge (zipmap (:paths request) (repeat nil)) %))))) ok)
+                                                                  :error error}))))]
       (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
                     sig/memory-connection (signal runtime connection)
-                    sig/memory-navigation-state (signal runtime {}) sig/layout-columns (signal runtime [])
+                    sig/memory-editor-state states
+                    sig/memory-navigation-state (signal runtime {})
+                    sig/layout-columns (signal runtime [{:id :column :active-tab :one
+                                                         :tabs [{:id :one :type :memory
+                                                                 :data {:room-id "test-room" :path "x.clj"}}]}])
                     sync/ensure! (fn [_]) sync/retry! #(swap! retries conj %)
                     remote/prepare-memory-stream! (fn [& _] (fn [ok _] (ok {:permissions {:evaluate? true}})))
                     remote/load-memory-metadata! (deferred :metadata)
@@ -316,10 +377,90 @@
                              (assoc (verified connection stamp) :selected "x.clj" :drafts {"x.clj" (editor/draft file)}))
               :last-call #(last (get @calls %))
               :metadata! (fn [target]
-                           ((:discover a))
-                           ((:ok (last (:metadata @calls)))
+                           ((:refresh a))
+                           (reply! (:ok (last (:metadata @calls)))
                             (wire target {:folders {"" {:entries []}} :entries {"x.clj" (:entry file)}
                                           :revision (random-uuid) :permissions {:write? true :evaluate? true}})))}))))))
+
+(defn- memory-tab-layout []
+  [{:id :column :active-tab :one
+    :tabs [{:id :one :type :memory :data {:room-id "test-room" :path "x.clj"}}
+           {:id :keep :type :home :data {}}]}
+   {:id :other :active-tab :other-home :tabs [{:id :other-home :type :home :data {}}]}])
+
+(defn- move-memory-tab! [new-column?]
+  (if new-column?
+    (sig/create-column-with-tab! :column :one :end)
+    (sig/move-tab! :column :one :other)))
+
+(deftest moving-a-memory-tab-keeps-its-draft-selection-and-original-save-callback
+  (doseq [new-column? [false true]]
+    (with-client
+      (fn [{:keys [a data states state seed! stamp last-call calls]}]
+        (with-redefs [sig/active-column-id (signal runtime :column)
+                      sig/active-nav-keys (signal runtime #{})]
+          (reset! sig/layout-columns (memory-tab-layout))
+          (seed!)
+          ((:edit a) "x.clj" editor/changed "Submitted" {:anchor 2 :head 4})
+          (let [original (last-call :save) before (get @states (:owner a))]
+            (move-memory-tab! new-column?)
+            (let [location (owner/current-tab @sig/layout-columns "test-room" :one)
+                  moved (actions/controller (assoc data :col-id (:col-id location)))]
+              (is (some? location))
+              (is (not= :column (:col-id location)))
+              (is (= (:owner a) (:owner moved)))
+              (is (= before (get @states (:owner moved))))
+              (is (= 1 (count @states)))
+              ((:edit moved) "x.clj" editor/changed "Later typing" {:anchor 5 :head 8})
+              (is (= 1 (count (:save @calls))))
+              (reply! (:ok original) (wire stamp {:entry {:content :submitted}}))
+              (is (= "Later typing" (get-in (state) [:drafts "x.clj" :text])))
+              (is (= {:anchor 5 :head 8} (get-in (state) [:drafts "x.clj" :selection])))
+              (is (= "Submitted" (get-in (state) [:drafts "x.clj" :source :text])))
+              (is (= 2 (count (:save @calls))))
+              (is (= "Later typing" (get-in (last-call :save) [:request :text])))
+              (reply! (:ok (last-call :save)) (wire stamp {:entry {:content :later}}))
+              (is (not (editor/dirty? (get-in (state) [:drafts "x.clj"])))))))))))
+
+(deftest a-file-move-ack-retargets-the-tabs-current-column
+  (doseq [new-column? [false true]]
+    (with-client
+      (fn [{:keys [a seed! stamp file state last-call]}]
+        (with-redefs [sig/active-column-id (signal runtime :column)
+                      sig/active-nav-keys (signal runtime #{})]
+          (reset! sig/layout-columns (memory-tab-layout))
+          (seed!)
+          ((:move a) "x.clj" "renamed.clj")
+          (move-memory-tab! new-column?)
+          (let [location (owner/current-tab @sig/layout-columns "test-room" :one)]
+            (reply! (:ok (last-call :move)) (wire stamp {:path "renamed.clj" :entry (:entry file)}))
+            (is (= "renamed.clj" (:selected (state))))
+            (is (= "renamed.clj" (get-in (owner/current-tab @sig/layout-columns "test-room" :one)
+                                          [:tab :data :path])))
+            (is (= (:col-id location) (:col-id (owner/current-tab @sig/layout-columns "test-room" :one))))
+            (is (= "Original" (get-in (state) [:drafts "renamed.clj" :text])))
+            (is (nil? (get-in (state) [:drafts "x.clj"])))))))))
+
+(deftest late-move-acks-do-not-retarget-closed-repurposed-or-ambiguous-tabs
+  (doseq [scenario [:closed :other-type :other-room :duplicate]]
+    (with-client
+      (fn [{:keys [a seed! stamp file state last-call]}]
+        (with-redefs [sig/active-column-id (signal runtime :column)
+                      sig/active-nav-keys (signal runtime #{})]
+          (reset! sig/layout-columns (memory-tab-layout))
+          (seed!)
+          ((:move a) "x.clj" "renamed.clj")
+          (swap! sig/layout-columns
+                 (fn [columns]
+                   (case scenario
+                     :closed (update-in columns [0 :tabs] #(filterv (fn [tab] (not= :one (:id tab))) %))
+                     :other-type (assoc-in columns [0 :tabs 0 :type] :chat)
+                     :other-room (assoc-in columns [0 :tabs 0 :data :room-id] "another-room")
+                     :duplicate (update-in columns [1 :tabs] conj {:id :one :type :home :data {}}))))
+          (let [before @sig/layout-columns]
+            (reply! (:ok (last-call :move)) (wire stamp {:path "renamed.clj" :entry (:entry file)}))
+            (is (= before @sig/layout-columns))
+            (is (= "renamed.clj" (:selected (state))) "Retain the old owner's receipt without navigating an unrelated tab")))))))
 
 (deftest a-retargeted-file-view-retains-the-original-pending-cell-receipt-once
   (with-client
@@ -356,26 +497,26 @@
         (let [old-metadata (last-call :metadata)]
           ((:reload a) "x.clj")
           ((:history a) "x.clj")
-          ((:ok (last-call :history)) (wire stamp {:versions []}))
+          (reply! (:ok (last-call :history)) (wire stamp {:versions []}))
           (let [metadata (wire stamp {:folders {} :entries {"x.clj" (when old-exists? (:entry file))}
                                       :revision :before-move :permissions {:write? true :evaluate? true}})]
             ((:move a) "x.clj" "moved.clj")
-            (when metadata-first? ((:ok old-metadata) metadata))
+            (when metadata-first? (reply! (:ok old-metadata) metadata))
             (let [old-bodies (filterv #(= "x.clj" (get-in % [:request :path])) (:file @calls))
                   old-histories (:history @calls)]
-            ((:ok (last-call :move)) (wire stamp {:path "moved.clj" :entry (:entry file)}))
-            (when-not metadata-first? ((:ok old-metadata) metadata))
+            (reply! (:ok (last-call :move)) (wire stamp {:path "moved.clj" :entry (:entry file)}))
+            (when-not metadata-first? (reply! (:ok old-metadata) metadata))
             (doseq [body old-bodies]
-              ((:error body) (ex-info "Old path has been removed" {}))
-              ((:ok body) (assoc file :text "Late original body")))
+              (reply! (:error body) (ex-info "Old path has been removed" {}))
+              (reply! (:ok body) (assoc file :text "Late original body")))
             (doseq [history old-histories]
-              ((:ok history) (wire stamp {:versions [{:old-history true}]})))
+              (reply! (:ok history) (wire stamp {:versions [{:old-history true}]})))
             (let [current (last (filter #(some #{"moved.clj"} (get-in % [:request :paths])) (:metadata @calls)))]
               (is (some? current) "Superseded discovery drains a current request")
               (is (not (some #{"x.clj"} (get-in current [:request :paths]))))
-              ((:ok current) (wire stamp {:folders {} :entries {"moved.clj" (:entry file)}
+              (reply! (:ok current) (wire stamp {:folders {} :entries {"moved.clj" (:entry file)}
                                          :revision :after-move :permissions {:write? true :evaluate? true}})))
-            ((:ok (last-call :file)) (assoc file :path "moved.clj"))
+            (reply! (:ok (last-call :file)) (assoc file :path "moved.clj"))
             (is (= "moved.clj" (:selected (state))))
             (is (= "Original" (get-in (state) [:drafts "moved.clj" :text])))
             (is (nil? (get-in (state) [:drafts "x.clj"])))
@@ -397,9 +538,9 @@
       ((:move a) "x.clj" "moved.clj")
       ((:edit a) "x.clj" editor/changed "Typed during move" {:anchor 17 :head 17})
       (is (empty? (:save @calls)) "Do not save the path while its move is in flight")
-      ((:ok metadata) (wire stamp {:folders {} :entries {"x.clj" old-entry}
+      (reply! (:ok metadata) (wire stamp {:folders {} :entries {"x.clj" old-entry}
                                   :revision :old-path :permissions {:write? true :evaluate? true}}))
-      ((:ok (last-call :move)) (wire stamp {:path "moved.clj" :entry (:entry file)}))
+      (reply! (:ok (last-call :move)) (wire stamp {:path "moved.clj" :entry (:entry file)}))
       (is (= "Typed during move" (get-in (state) [:drafts "moved.clj" :text])))
       (is (nil? (get-in (state) [:drafts "x.clj"])))
       (is (nil? (get-in (state) [:autosave "x.clj"])))
@@ -407,7 +548,7 @@
       (is (= "Typed during move" (get-in (last-call :save) [:request :text])))
       (is (not (get-in (state) [:drafts "moved.clj" :remote-deleted?])))
       (is (nil? (get-in (state) [:drafts "moved.clj" :incoming-entry])))
-      ((:ok (last-call :save)) (wire stamp {:path "moved.clj" :entry {:content :typed}}))
+      (reply! (:ok (last-call :save)) (wire stamp {:path "moved.clj" :entry {:content :typed}}))
       (is (not (editor/dirty? (get-in (state) [:drafts "moved.clj"])))))))))
 
 (deftest office-preview-refresh-retains-dirty-xml-and-fences-stale-revisions
@@ -422,10 +563,10 @@
           (swap! states assoc-in [(:owner a) :drafts "x.clj" :incoming-entry] next-entry)
           ((:office-open a) "x.clj" nil true)
           (let [current (last-call :office)]
-            ((:ok old) (wire stamp {:entry (:entry file) :reading {:status :ready :notice "old"}}))
+            (reply! (:ok old) (wire stamp {:entry (:entry file) :reading {:status :ready :notice "old"}}))
             (is (true? (get-in (state) [:loading [:office-reading "x.clj"]])))
             (is (nil? (get-in (state) [:drafts "x.clj" :office :reading])))
-            ((:ok current) (wire stamp {:entry next-entry :text "Server XML" :part "another.xml"
+            (reply! (:ok current) (wire stamp {:entry next-entry :text "Server XML" :part "another.xml"
                                        :reading {:status :ready :notice "current"}}))))
         (is (= xml (select-keys (get-in (state) [:drafts "x.clj" :office]) (keys xml))))
         (is (= (:entry file) (get-in (state) [:drafts "x.clj" :source :entry])))
@@ -433,7 +574,7 @@
         ((:office-open a) "x.clj" nil true)
         (let [pending (last-call :office)]
           (swap! states assoc-in [(:owner a) :drafts "x.clj" :remote-deleted?] true)
-          ((:ok pending) (wire stamp {:entry next-entry :reading {:status :ready :notice "deleted"}})))
+          (reply! (:ok pending) (wire stamp {:entry next-entry :reading {:status :ready :notice "deleted"}})))
         (is (= "current" (get-in (state) [:drafts "x.clj" :office :reading :notice])))
         (is (false? (get-in (state) [:loading [:office-reading "x.clj"]])))))))
 
@@ -445,10 +586,10 @@
       (let [old (last-call :office)]
         (metadata! stamp)
         (is (= 2 (count (:office @calls))))
-        ((:ok old) (wire stamp {:entry (:entry file) :text "Late XML"}))
+        (reply! (:ok old) (wire stamp {:entry (:entry file) :text "Late XML"}))
         (is (true? (get-in (state) [:loading [:office "x.clj"]])))
         (is (nil? (get-in (state) [:drafts "x.clj" :office])))
-        ((:ok (last-call :office)) (wire stamp {:entry (:entry file) :text "Current XML" :reading {:status :ready}}))
+        (reply! (:ok (last-call :office)) (wire stamp {:entry (:entry file) :text "Current XML" :reading {:status :ready}}))
         (is (= "Current XML" (get-in (state) [:drafts "x.clj" :office :text])))
         (is (false? (get-in (state) [:loading [:office "x.clj"]])))))))
 
@@ -461,9 +602,9 @@
       ((:office-save a) "x.clj")
       ((:change a) "x.clj" update :office assoc :text "Second XML edit" :selection {:anchor 3 :head 7})
       (let [entry {:content :saved-first}]
-        ((:ok (last-call :office-save)) (wire stamp {:entry entry :commit :saved}))
+        (reply! (:ok (last-call :office-save)) (wire stamp {:entry entry :commit :saved}))
         (is (= entry (get-in (last-call :office) [:request :expected])))
-        ((:ok (last-call :office)) (wire stamp {:entry entry :text "First XML edit" :reading {:status :ready}}))
+        (reply! (:ok (last-call :office)) (wire stamp {:entry entry :text "First XML edit" :reading {:status :ready}}))
         (is (= "Second XML edit" (get-in (state) [:drafts "x.clj" :office :text])))
         (is (= "First XML edit" (get-in (state) [:drafts "x.clj" :office :saved-text])))
         (is (= {:anchor 3 :head 7} (get-in (state) [:drafts "x.clj" :office :selection])))
@@ -486,7 +627,7 @@
           (is (= "Correction" (get-in (last-call :office-correct) [:request :replacement])))
           (when newer? ((:change a) "x.clj" assoc-in [:office-correction :text] "Later typing"))
           (let [entry {:content :corrected}]
-            ((:ok (last-call :office-correct)) (wire stamp {:entry entry :commit :corrected}))
+            (reply! (:ok (last-call :office-correct)) (wire stamp {:entry entry :commit :corrected}))
             (if newer?
               (do (is (= "Later typing" (get-in (state) (conj base :office-correction :text))))
                   (is (= (:entry file) (get-in (state) (conj base :source :entry))))
@@ -521,19 +662,18 @@
       (is (= 1 (count (:metadata @calls))))
       (is (empty? (:file @calls)) "No unbound body read before discovery")
       ((:ensure-sync a) connection {:connection connection :status :error})
-      ((:ok (last-call :metadata)) (wire stamp {:folders {} :entries {"x.clj" {:content :x}} :permissions {:write? true}}))
+      (reply! (:ok (last-call :metadata)) (wire stamp {:folders {} :entries {"x.clj" {:content :x}} :permissions {:write? true}}))
+      (is (not (actions/verified? (state) connection)) "The changed stream retires its old admission")
+      (reply! (:ok (last-call :metadata)) (wire stamp {:folders {} :entries {"x.clj" {:content :x}} :permissions {:write? true}}))
       (is (true? (actions/verified? (state) connection)))
       (is (= stamp (get-in (last-call :file) [:request :expected-target-stamp])))
-      ((:ok (last-call :file)) (wire stamp {:path "x.clj" :entry {:content :x} :text "Current"}))
+      (reply! (:ok (last-call :file)) (wire stamp {:path "x.clj" :entry {:content :x} :text "Current"}))
       (is (= "Current" (get-in (state) [:drafts "x.clj" :text])))
-      ;; The shared transport spy records BOTH owners: editor Refresh requests
-      ;; its open path, then navigation-refresh reconciles a separate tree-only
-      ;; controller. Count each request shape, not an assumed shared owner.
       ((:refresh a))
-      (is (= 2 (count (filter #(= ["x.clj"] (get-in % [:request :paths])) (:metadata @calls))))
-          "Exactly one initial and one manual discovery belong to the editor, despite the broken stream")
-      (is (= 1 (count (filter #(empty? (get-in % [:request :paths])) (:metadata @calls))))
-          "Refresh also reconciles the independently owned navigation tree once")
+      (is (= 3 (count (filter #(= ["x.clj"] (get-in % [:request :paths])) (:metadata @calls))))
+          "Initial admission, stream catch-up, and one shared manual refresh")
+      (is (zero? (count (filter #(empty? (get-in % [:request :paths])) (:metadata @calls))))
+          "The navigation root shares the editor's bounded request")
       (is (= 3 (count (:metadata @calls)))))))
 
 (deftest old-target-replies-and-errors-cannot-change-any-state-or-run-post-effects
@@ -562,10 +702,10 @@
           (is (= stamp (get-in old [:request :expected-target-stamp])) (str kind))
           (metadata! target)
           (let [before (state)]
-            ((:ok old) (wire stamp (assoc file :path "moved.clj" :saved? true
+            (reply! (:ok old) (wire stamp (assoc file :path "moved.clj" :saved? true
                                           :permissions {:write? false :evaluate? false})))
             (is (= before (state)) (str "Old success has no payload/permission/loading/effect authority: " kind))
-            ((:error old) (ex-info "Late failure" {}))
+            (reply! (:error old) (ex-info "Late failure" {}))
             (is (= before (state)) (str "Old failure has no authority: " kind))
             (is (= stamp (get-in (state) [:drafts "x.clj" :source :target-stamp])))
             (is (true? (get-in (state) [:drafts "x.clj" :target-stale?])))))))))
@@ -579,7 +719,7 @@
              :office {:text "Human XML" :saved-text "Old XML"})
       (let [target (random-uuid)]
         (metadata! target)
-        ((:ok (last-call :file)) (wire target file))
+        (reply! (:ok (last-call :file)) (wire target file))
         (is (= "Human draft" (get-in (state) [:drafts "x.clj" :text])))
         (is (= :human (get-in (state) [:drafts "x.clj" :rich-base :id])))
         (is (= "Human XML" (get-in (state) [:drafts "x.clj" :office :text])))
@@ -596,7 +736,7 @@
         (case kind :analyze ((:analyze a) "x.clj") :save ((:save a) "x.clj")
               :move ((:move a) "x.clj" "moved.clj"))
         (swap! states update-in [(:owner a) :drafts "x.clj" :generation] inc)
-        ((:ok (last-call kind)) (wire stamp (assoc file :path "moved.clj" :permissions {:write? false})))
+        (reply! (:ok (last-call kind)) (wire stamp (assoc file :path "moved.clj" :permissions {:write? false})))
         (is (false? (get-in (state) [:loading [(if (= kind :analyze) :analysis kind) "x.clj"]])))
         (is (= "x.clj" (:selected (state))))
         (is (nil? (get-in (state) [:drafts "moved.clj"])))
@@ -628,7 +768,7 @@
       (swap! states assoc-in [(:owner a) :repl] {:inputs {:clojure {:text "(+ 1 2)"}} :history [:receipt]})
       ((:change a) "x.clj" assoc :text "Human work")
       ((:discover a))
-      ((:error (last-call :metadata)) (ex-info "Default currently unavailable" {}))
+      (reply! (:error (last-call :metadata)) (ex-info "Default currently unavailable" {}))
       (is (not (actions/verified? (state) connection)))
       (is (nil? (:permissions (state))))
       (is (= "Human work" (get-in (state) [:drafts "x.clj" :text])))
@@ -652,10 +792,11 @@
   (with-client
     (fn [{:keys [a data states state stamp seed! calls last-call]}]
       (seed!)
+      (swap! sig/layout-columns update-in [0 :tabs] conj {:id :two :type :memory :data {:room-id "test-room"}})
       (let [other (actions/controller (assoc data :tab-id :two))]
         (is (not= (:owner a) (:owner other)))
         ((:create other) "new.md" stamp)
-        ((:ok (last-call :metadata)) (wire (random-uuid) {:folders {} :entries {} :permissions {:write? true}}))
+        (reply! (:ok (last-call :metadata)) (wire (random-uuid) {:folders {} :entries {} :permissions {:write? true}}))
         (is (= stamp (get-in ((:state other)) [:drafts "new.md" :source :target-stamp])))
         (is (true? (get-in ((:state other)) [:drafts "new.md" :target-stale?])))
         (is (nil? (get-in (state) [:drafts "new.md"])))
@@ -675,10 +816,11 @@
       (fn [{:keys [data states stamp calls last-call]}]
         (let [intent (assoc data :tab-id :fresh :path "fresh.md"
                             :create-origin-stamp stamp :create-intent-id (random-uuid))
+              _ (swap! sig/layout-columns update-in [0 :tabs] conj {:id :fresh :type :memory :data intent})
               fresh (actions/controller intent) target (if same? stamp (random-uuid))]
           ((:ensure-path fresh))
           (is (empty? (:file @calls)) "No body read can race ahead of create origin")
-          ((:ok (last-call :metadata))
+          (reply! (:ok (last-call :metadata))
            (wire target {:folders {} :entries {"fresh.md" nil} :permissions {:write? true}}))
           (let [draft (get-in ((:state fresh)) [:drafts "fresh.md"])]
             (is (= stamp (get-in draft [:source :target-stamp])))
@@ -696,12 +838,12 @@
       ((:save a) "x.clj")
       (let [save (last-call :save)]
         ((:change a) "x.clj" assoc :text "Newer human typing")
-        ((:ok save) (wire stamp (assoc file :entry {:content :submitted} :saved? true)))
+        (reply! (:ok save) (wire stamp (assoc file :entry {:content :submitted} :saved? true)))
         (is (= "Newer human typing" (get-in (state) [:drafts "x.clj" :text])))
         (is (= "Submitted" (get-in (state) [:drafts "x.clj" :source :text])))
         (is (editor/dirty? (get-in (state) [:drafts "x.clj"])))
         (let [before (state) before-calls @calls]
-          ((:ok save) (wire stamp (assoc file :entry {:content :duplicate} :saved? true)))
+          (reply! (:ok save) (wire stamp (assoc file :entry {:content :duplicate} :saved? true)))
           (is (= before (state)))
           (is (= before-calls @calls)))))))
 
@@ -710,7 +852,7 @@
     (fn [{:keys [a state seed! calls last-call]}]
       (seed!)
       ((:save a) "x.clj")
-      ((:error (last-call :save))
+      (reply! (:error (last-call :save))
        (ex-info "Changed" {:type :memory/target-changed
                            :data (pr-str {:error "Workspace changed" :correlation-id (str (random-uuid))})}))
       (is (false? (:target-verified? (state))))
@@ -726,18 +868,18 @@
           ((:create a) "late.md" stamp)
           (is (= 1 (count (:metadata @calls))) "At most one request physically pending")
           (if failed?
-            ((:error old) (ex-info "Obsolete metadata failure" {}))
-            ((:ok old) (wire stamp {:folders {} :entries {} :permissions {:write? true}})))
+            (reply! (:error old) (ex-info "Obsolete metadata failure" {}))
+            (reply! (:ok old) (wire stamp {:folders {} :entries {} :permissions {:write? true}})))
           (is (= 2 (count (:metadata @calls))) "Finish old token then issue freshest discovery")
           (is (not (:target-verified? (state))) "Superseded response cannot verify the target")
           (is (nil? (get-in (state) [:errors :metadata])) "Superseded errors are not current diagnostics")
           (is (true? (get-in (state) [:loading :metadata])))
           (let [before (state)]
-            ((:ok old) (wire stamp {:folders {} :entries {}}))
-            ((:error old) (ex-info "Duplicate obsolete failure" {}))
+            (reply! (:ok old) (wire stamp {:folders {} :entries {}}))
+            (reply! (:error old) (ex-info "Duplicate obsolete failure" {}))
             (is (= before (state)))
             (is (= 2 (count (:metadata @calls)))))
-          ((:ok (last-call :metadata))
+          (reply! (:ok (last-call :metadata))
            (wire stamp {:folders {} :entries {"late.md" nil} :permissions {:write? true}}))
           (is (true? (:target-verified? (state))))
           (is (= stamp (get-in (state) [:drafts "late.md" :source :target-stamp]))))))))
@@ -746,7 +888,7 @@
   (with-client
     (fn [{:keys [a state calls last-call]}]
       ((:discover a))
-      ((:error (last-call :metadata))
+      (reply! (:error (last-call :metadata))
        (ex-info "Changed" {:type :memory/target-changed :data (pr-str {:error "Changed during discovery"})}))
       (is (= 1 (count (:metadata @calls))))
       (is (false? (get-in (state) [:loading :metadata])))
@@ -761,10 +903,10 @@
       ((:reload a) "x.clj")
       (let [old (last-call :file)]
         ((:discover a))
-        ((:ok (last-call :metadata)) (wire stamp {:folders {} :entries {"x.clj" nil}}))
+        (reply! (:ok (last-call :metadata)) (wire stamp {:folders {} :entries {"x.clj" nil}}))
         (is (false? (get-in (state) [:loading [:file "x.clj"]])))
         (let [before (state)]
-          ((:ok old) (wire stamp {:path "x.clj" :entry {:content :old} :text "Stale"}))
+          (reply! (:ok old) (wire stamp {:path "x.clj" :entry {:content :old} :text "Stale"}))
           (is (= before (state))))
         (is (true? (get-in (state) [:drafts "x.clj" :remote-deleted?])))))))
 
@@ -772,7 +914,7 @@
   (with-client
     (fn [{:keys [a state stamp calls last-call]}]
       ((:open a) "missing.md")
-      ((:ok (last-call :metadata)) (wire stamp {:folders {} :entries {"missing.md" nil}}))
+      (reply! (:ok (last-call :metadata)) (wire stamp {:folders {} :entries {"missing.md" nil}}))
       (is (nil? (get-in (state) [:file-intents "missing.md"])))
       (is (string? (get-in (state) [:errors [:file "missing.md"]])))
       (is (empty? (:file @calls)))
@@ -791,8 +933,8 @@
             ((:upload a) "out" (:file second))
             (let [intent (:upload-intent (state)) token (:upload-token (state))]
               (if failed?
-                ((:error old) (ex-info "First upload failed" {}))
-                ((:ok old) (wire stamp {:path "out/upload.txt" :entry {:content :first} :saved? true})))
+                (reply! (:error old) (ex-info "First upload failed" {}))
+                (reply! (:ok old) (wire stamp {:path "out/upload.txt" :entry {:content :first} :saved? true})))
               (is (= intent (:upload-intent (state))))
               (is (= token (:upload-token (state))))
               (is (nil? (get-in (state) [:errors [:upload "out/upload.txt"]]))
@@ -800,7 +942,7 @@
               (is (= "x.clj" (:selected (state))) "Old ACK cannot open/navigate its file")
               ((:then @(:callbacks second)) (.-buffer (js/Uint8Array. #js [66])))
               (is (= 2 (count (:save @calls))) "New promise still owns its publication intent")
-              ((:error (last-call :save)) (ex-info "Second upload failed" {}))
+              (reply! (:error (last-call :save)) (ex-info "Second upload failed" {}))
               (is (nil? (:upload-token (state))))
               (is (nil? (:upload-intent (state)))))))))))
 
@@ -826,7 +968,7 @@
       (is (= [{:kind :page}] (mapv #(get-in % [:request :target]) (:properties @calls))))
       ((:ensure-properties a))
       (is (= 1 (count (:properties @calls))) "Loading renders do not duplicate reads")
-      ((:ok (last-call :properties)) (wire stamp {:path "x.clj" :target {:kind :page}
+      (reply! (:ok (last-call :properties)) (wire stamp {:path "x.clj" :target {:kind :page}
                                                 :status :unavailable :reason :unprovisioned-canonical-space}))
       ((:ensure-properties a))
       (is (= 1 (count (:properties @calls))) "Unavailable pages do not loop")
@@ -837,7 +979,7 @@
         (is (= 2 (count (:properties @calls))))
         (is (= target (get-in (state) [:property-targets "x.clj"])))
         (is (= page-model (get-in (state) [:property-models ["x.clj" {:kind :page}]])))
-        ((:ok (last-call :properties)) (wire stamp {:path "x.clj" :target target :expected (:entry file)}))
+        (reply! (:ok (last-call :properties)) (wire stamp {:path "x.clj" :target target :expected (:entry file)}))
         ((:ensure-properties a))
         (is (= 2 (count (:properties @calls))))
         (is (= target (get-in (state) [:property-targets "x.clj"])))))))
@@ -852,7 +994,7 @@
             model (wire stamp {:path "x.clj" :target target :expected (:entry file)
                                :revision (random-uuid) :scope-revision (random-uuid) :fields [field]})]
         ((:open-properties a) "x.clj" target)
-        ((:ok (last-call :properties)) model)
+        (reply! (:ok (last-call :properties)) model)
         ((:property-input a) "x.clj" target field (:input field))
         ((:property-save a) "x.clj" target field)
         (is (= {:text "9007199254740993"} (get-in (last-call :property-save) [:request :input])))
@@ -861,13 +1003,13 @@
         (swap! states update-in [(:owner a) :drafts "x.clj"] editor/changed "Typing while saving" {:anchor 3 :head 3})
         (let [reply (wire stamp {:entry {:content :new} :text "Property published" :analysis {}})
               saved (last-call :property-save)]
-          ((:ok saved) reply)
+          (reply! (:ok saved) reply)
           (is (= "Typing while saving" (get-in (state) [:drafts "x.clj" :text])))
           (is (= (:entry file) (get-in (state) [:drafts "x.clj" :source :entry])))
           (is (= "Property published" (get-in (state) [:drafts "x.clj" :incoming :text])))
           (is (= {:text "9007199254740995"} (get-in (state) [:property-drafts scope id :input])))
           (let [before (state) requests (count (:metadata @calls))]
-            ((:ok saved) reply)
+            (reply! (:ok saved) reply)
             (is (= before (state)))
             (is (= requests (count (:metadata @calls))))))))))
 
@@ -880,12 +1022,12 @@
             model (wire stamp {:path "x.clj" :target target :expected (:entry file)
                                :revision (random-uuid) :scope-revision (random-uuid) :fields [field]})]
         ((:open-properties a) "x.clj" target)
-        ((:ok (last-call :properties)) model)
+        (reply! (:ok (last-call :properties)) model)
         ((:property-input a) "x.clj" target field {:text "42"})
         (let [original (get-in (state) [:property-drafts scope id])]
           (metadata! stamp)
           ((:ensure-properties a))
-          ((:ok (last-call :properties)) (assoc model :scope-revision (random-uuid)))
+          (reply! (:ok (last-call :properties)) (assoc model :scope-revision (random-uuid)))
           (is (= original (get-in (state) [:property-drafts scope id])))
           (is (not (editor/property-draft-current? (get-in (state) [:property-models scope]) original)))
           ((:property-input a) "x.clj" target field {:text "43"})
@@ -904,7 +1046,7 @@
               model (wire stamp {:path "x.clj" :target target :expected (:entry file)
                                  :revision (random-uuid) :scope-revision (random-uuid) :fields [field]})]
           ((:open-properties a) "x.clj" target)
-          ((:ok (last-call :properties)) model)
+          (reply! (:ok (last-call :properties)) model)
           (when-not move-first? ((:property-input a) "x.clj" target field {:text "42"}))
           (if move-first?
             (do ((:move a) "x.clj" "moved.clj")
@@ -916,7 +1058,7 @@
                 (is (= 1 (count (:property-save @calls))))
                 (is (empty? (:move @calls)))
                 (swap! states update-in [(:owner a) :drafts] dissoc "x.clj")
-                ((:ok (last-call :property-save)) (wire stamp {:entry {:content :new} :text "Property saved" :analysis {}}))
+                (reply! (:ok (last-call :property-save)) (wire stamp {:entry {:content :new} :text "Property saved" :analysis {}}))
                 (is (not (contains? (:drafts (state)) "x.clj"))))))))))
 
 (deftest unapplied-property-drafts-refuse-move-instead-of-becoming-hidden
@@ -927,7 +1069,7 @@
             model (wire stamp {:path "x.clj" :target target :expected (:entry file)
                                :revision (random-uuid) :scope-revision (random-uuid) :fields [field]})]
         ((:open-properties a) "x.clj" target)
-        ((:ok (last-call :properties)) model)
+        (reply! (:ok (last-call :properties)) model)
         ((:property-input a) "x.clj" target field {:text "42"})
         ((:move a) "x.clj" "moved.clj")
         (is (empty? (:move @calls)))
@@ -971,15 +1113,15 @@
         ((:edit a) "x.clj" editor/changed "Second" nil)
         ((:edit a) "x.clj" editor/changed "Latest" nil)
         (is (= 1 (count (:save @calls))))
-        ((:ok first-save) (wire stamp {:entry entry}))
+        (reply! (:ok first-save) (wire stamp {:entry entry}))
         (is (= "First" (get-in (state) [:drafts "x.clj" :source :text])))
         (is (= "Latest" (get-in (state) [:drafts "x.clj" :text])))
         (is (= 2 (count (:save @calls))))
         (is (= entry (get-in (last-call :save) [:request :expected])))
         (is (= "Latest" (get-in (last-call :save) [:request :text])))
-        ((:ok first-save) (wire stamp {:entry (:entry file)}))
+        (reply! (:ok first-save) (wire stamp {:entry (:entry file)}))
         (is (= 2 (count (:save @calls))) "Duplicate ACK does not dispatch")
-        ((:ok (last-call :save)) (wire stamp {:entry {:content :latest}}))
+        (reply! (:ok (last-call :save)) (wire stamp {:entry {:content :latest}}))
         (is (not (editor/dirty? (get-in (state) [:drafts "x.clj"]))))))))
 
 (deftest simulated-ui-edits-never-automatically-publish-through-the-live-host
@@ -1015,7 +1157,7 @@
           (binding [ec/*execution-context* child]
             (let [simulated (actions/controller data)]
               ((:edit simulated) "x.clj" editor/changed "Child-only edit" nil)
-              ((:ok pending) (wire stamp {:entry {:content :parent-submission}}))
+              (reply! (:ok pending) (wire stamp {:entry {:content :parent-submission}}))
               (is (= "Child-only edit" (get-in ((:state simulated)) [:drafts "x.clj" :text])))))
           (is (= 1 (count (:save @calls))))
           (is (= "Parent submission" (get-in (state) [:drafts "x.clj" :source :text])))
@@ -1039,7 +1181,7 @@
               (swap! states assoc-in [(:owner a) :drafts "x.clj"] d)
               ((:local-source-open simulated) "x.clj" region)
               ((:local-source-change simulated) "x.clj" "Simulated source" nil)
-              ((:ok (last-call :analyze)) (wire stamp (analysis "Simulated source")))
+              (reply! (:ok (last-call :analyze)) (wire stamp (analysis "Simulated source")))
               (is (= "Simulated source" (get-in ((:state simulated)) [:drafts "x.clj" :text])))
               (is (empty? (:rich-save @calls)))
               (is (empty? (:save @calls)))))
@@ -1059,7 +1201,7 @@
           (when (= observation :own-body)
             (swap! states update-in [(:owner a) :drafts "x.clj"] editor/loaded
                    (wire stamp {:entry own :text "First"})))
-          ((:ok pending) (wire stamp {:entry own}))
+          (reply! (:ok pending) (wire stamp {:entry own}))
           (if (#{:own-entry :own-body} observation)
             (do (is (= 2 (count (:save @calls))))
                 (is (nil? (get-in (state) [:drafts "x.clj" :incoming-entry]))))
@@ -1072,11 +1214,11 @@
     (fn [{:keys [a state seed! calls last-call stamp]}]
       (seed!)
       ((:edit a) "x.clj" editor/changed "First" nil)
-      ((:error (last-call :save)) (ex-info "Connection lost after possible commit" {}))
+      (reply! (:error (last-call :save)) (ex-info "Connection lost after possible commit" {}))
       ((:edit a) "x.clj" editor/changed "Later" nil)
       (is (= 1 (count (:save @calls))))
       ((:refresh a))
-      ((:ok (last-call :metadata))
+      (reply! (:ok (last-call :metadata))
        (wire stamp {:folders {} :entries {} :permissions {:write? true}}))
       ((:edit a) "x.clj" editor/changed "Even later" nil)
       (is (= 1 (count (:save @calls))))
@@ -1095,7 +1237,7 @@
             :permission (swap! states assoc-in [(:owner a) :permissions :write?] false)
             :target (swap! states assoc-in [(:owner a) :drafts "x.clj" :target-stale?] true)
             :staging (swap! states assoc-in [(:owner a) :drafts "x.clj" :local-source] {:text "Incomplete"}))
-          ((:ok pending) (wire stamp {:entry {:content :first}}))
+          (reply! (:ok pending) (wire stamp {:entry {:content :first}}))
           (is (= 1 (count (:save @calls))) (str stop))
           (is (= (if (= stop :revert) "First" "Later") (get-in (state) [:drafts "x.clj" :text]))))))))
 
@@ -1109,8 +1251,8 @@
         ;; context-owned hold. A late old callback cannot release it.
         (swap! states assoc-in [(:owner a) :connection] :retired-connection)
         ((:ensure-sync a) connection {:connection connection :status :ready :dirty {}})
-        ((:ok old) (wire stamp {:entry {:content :possibly-committed}}))
-        ((:ok (last-call :metadata))
+        (reply! (:ok old) (wire stamp {:entry {:content :possibly-committed}}))
+        (reply! (:ok (last-call :metadata))
          (wire stamp {:folders {} :entries {"x.clj" (:entry file)} :permissions {:write? true}}))
         ((:edit a) "x.clj" editor/changed "Still paused" nil)
         (is (= 1 (count (:save @calls))))
@@ -1135,23 +1277,280 @@
         (is (= "Changed" (get-in (last-call :analyze) [:request :text])))
         (let [pending (last-call :analyze)]
           ((:local-source-change a) "x.clj" "Later" {:anchor 2 :head 2})
-          ((:ok pending) (wire (:target-stamp (state)) (analysis "Changed")))
+          (reply! (:ok pending) (wire (:target-stamp (state)) (analysis "Changed")))
           (is (= "Alpha" (get-in (state) [:drafts "x.clj" :text])))
           (is (= "Later" (get-in (state) [:drafts "x.clj" :local-source :text]))))
         (let [pending (last-call :analyze)]
           ((:local-source-cancel a) "x.clj")
-          ((:error pending) (ex-info "Cancelled preview failed" {}))
+          (reply! (:error pending) (ex-info "Cancelled preview failed" {}))
           (is (nil? (get-in (state) [:errors [:local-source "x.clj"]]))))
         ((:local-source-open a) "x.clj" key)
         ((:local-source-change a) "x.clj" "Changed" {:anchor 2 :head 2})
         ((:local-source-change a) "x.clj" "Changed" {:anchor 5 :head 5})
-        ((:ok (last-call :analyze)) (wire (:target-stamp (state)) (analysis "Changed")))
+        (reply! (:ok (last-call :analyze)) (wire (:target-stamp (state)) (analysis "Changed")))
         (is (= "Changed" (get-in (state) [:drafts "x.clj" :text])))
         (is (= "Changed" (get-in (state) [:drafts "x.clj" :local-source :opened-text])))
         (is (= {:anchor 5 :head 5} (get-in (state) [:drafts "x.clj" :local-source :selection])))
         (is (= "Changed" (get-in (last-call :rich-save) [:request :source])))
         ((:local-source-change a) "x.clj" "Incomplete" nil)
-        ((:ok (last-call :analyze)) (wire (:target-stamp (state)) {:semantic {:status :invalid}}))
+        (reply! (:ok (last-call :analyze)) (wire (:target-stamp (state)) {:semantic {:status :invalid}}))
         (is (= "Incomplete" (get-in (state) [:drafts "x.clj" :local-source :text])))
         (is (= "Changed" (get-in (state) [:drafts "x.clj" :text])))
         (is (= 1 (count (:rich-save @calls))))))))
+
+(deftest tabs-and-sidebar-share-publication-but-consume-their-own-generations
+  (with-client
+    (fn [{:keys [a data states state stamp seed! calls last-call connection]}]
+      (seed!)
+      (swap! sig/layout-columns update-in [0 :tabs] conj
+             {:id :two :type :memory :data {:room-id "test-room" :path "x.clj"}})
+      (let [second (actions/controller (assoc data :tab-id :two))
+            navigation (navigation/controller "test-room")
+            before (assoc (state) :drafts {"x.clj" (assoc (get-in (state) [:drafts "x.clj"]) :generation 7)})]
+        (swap! states assoc (:owner second) before)
+        (swap! sig/memory-navigation-state assoc (:owner navigation)
+               (assoc (verified connection stamp) :root-expanded? true))
+        ((:discover a))
+        ((:discover second))
+        ((:discover navigation))
+        (is (= 1 (count (:metadata @calls))))
+        (swap! states update-in [(:owner second) :drafts "x.clj"]
+               #(assoc % :generation 8 :text "New human typing"))
+        ;; Publish only. The transport must not directly mutate either view.
+        ((:ok (last-call :metadata))
+         (wire stamp {:folders {"" {:entries [:shared]}} :entries {"x.clj" {:content :changed}}
+                      :permissions {:write? true :evaluate? true}}))
+        (is (nil? (:metadata-consumed (state))))
+        (is (empty? (:file @calls)))
+        (pump!)
+        (is (= 1 (count (:metadata @calls))))
+        (is (= {:content :changed} (get-in (state) [:drafts "x.clj" :incoming-entry])))
+        (is (nil? (get-in ((:state second)) [:drafts "x.clj" :incoming-entry])))
+        (is (= "New human typing" (get-in ((:state second)) [:drafts "x.clj" :text])))
+        (is (= [:shared] (get-in ((:state navigation)) [:folders "" :entries])))
+        (let [reads (count (:file @calls))]
+          (pump!)
+          (is (= reads (count (:file @calls))) "An envelope is consumed once per view"))))))
+
+(deftest room-removal-fences-inflight-and-cached-observations-without-losing-drafts
+  (with-client
+    (fn [{:keys [a state seed! calls last-call stamp]}]
+      (seed!)
+      ((:discover a))
+      (let [pending (last-call :metadata)]
+        (reset! sig/user-rooms {:rooms [] :agents [] :knowledge-bases []})
+        ((:ok pending) (wire stamp {:folders {} :entries {"x.clj" {:content :changed}}
+                                   :permissions {:write? true :evaluate? true}}))
+        (pump!)
+        (is (not (:target-verified? (state))))
+        (is (nil? (:permissions (state))))
+        (is (nil? (:sandbox-permissions (state))))
+        (is (= "Original" (get-in (state) [:drafts "x.clj" :text])))
+        (is (empty? (:file @calls)))
+        ((:discover a))
+        (is (= 1 (count (:metadata @calls))) "A removed Room is not retried")
+        (is (every? #(empty? (:envelopes %)) (vals @sig/memory-room-metadata)))))))
+
+(deftest one-oversized-tab-does-not-block-a-valid-sibling
+  (with-client
+    (fn [{:keys [a data states state seed! calls last-call stamp]}]
+      (seed!)
+      (swap! states assoc-in [(:owner a) :file-intents] (zipmap (map #(str % ".md") (range 65)) (repeat true)))
+      (swap! sig/layout-columns update-in [0 :tabs] conj
+             {:id :two :type :memory :data {:room-id "test-room" :path "valid.md"}})
+      (let [second (actions/controller (assoc data :tab-id :two))]
+        ((:discover a))
+        (is (string? (get-in (state) [:errors :metadata])))
+        (is (not (:target-verified? (state))))
+        ((:discover second))
+        (is (= 1 (count (:metadata @calls))))
+        (is (= ["valid.md"] (get-in (last-call :metadata) [:request :paths])))
+        (reply! (:ok (last-call :metadata))
+                (wire stamp {:folders {} :entries {"valid.md" nil} :permissions {:write? true}}))
+        (is (:target-verified? ((:state second))))
+        (is (not (:target-verified? (state))))))))
+
+(deftest separate-batches-can-both-finish-before-either-view-consumes
+  (with-client
+    (fn [{:keys [a data states state seed! calls last-call stamp]}]
+      (seed!)
+      (swap! sig/layout-columns update-in [0 :tabs] conj
+             {:id :two :type :memory :data {:room-id "test-room"}})
+      (let [second (actions/controller (assoc data :tab-id :two))
+            make-state (fn [prefix]
+                         (let [paths (mapv #(str prefix % ".md") (range 40))]
+                           (assoc (state) :selected (first paths)
+                                  :drafts (zipmap paths (repeat {:text "Kept" :generation 0
+                                                               :source {:target-stamp stamp :entry nil}})))))
+            first-state (make-state "a") second-state (make-state "b")
+            coordinator (metadata-io/controller runtime (web/current-session) "test-room" (:owner a) states)]
+        (swap! states assoc (:owner a) first-state (:owner second) second-state)
+        ((:discover a))
+        ((:ok (last-call :metadata)) (wire stamp {:folders {} :entries {} :permissions {:write? true}}))
+        ((:ensure coordinator))
+        (is (= 2 (count (:metadata @calls))))
+        ((:ok (last-call :metadata)) (wire stamp {:folders {} :entries {} :permissions {:write? true}}))
+        (is (nil? (:metadata-consumed (state))))
+        (is (nil? (:metadata-consumed ((:state second)))))
+        (is (= 2 (count (:envelopes (first (vals @sig/memory-room-metadata))))))
+        (pump!)
+        (is (:target-verified? (state)))
+        (is (:target-verified? ((:state second))))
+        (is (not= (:metadata-consumed (state)) (:metadata-consumed ((:state second)))))
+        (is (= 2 (count (:metadata @calls))))))))
+
+(deftest mounted-sidebar-consumes-shared-publication-and-prunes-closed-owners
+  (with-client
+    (fn [{:keys [states calls last-call stamp]}]
+      (let [navigation (navigation/controller "test-room")
+            container (.createElement js/document "div")]
+        (reset! sig/user-rooms {:rooms [{:room/id "test-room"}] :agents [] :knowledge-bases []})
+        (swap! sig/memory-navigation-state assoc (:owner navigation) {:root-expanded? true})
+        (let [handle (render/render-spin! container
+                                          (navigation/render {:room/id "test-room" :room/name "Knowledge"})
+                                          (browser/make-dom-discharge js/document))]
+          (try
+            (simple/drain-events! runtime nil)
+            (is (= 1 (count (:metadata @calls))))
+            ;; No pump or controller callback here: the real rendering Spin
+            ;; must track the shared Signal and consume its publication.
+            ((:ok (last-call :metadata))
+             (wire stamp {:folders {"" {:entries [{:path "Result.md" :name "Result.md" :kind :file}]}}
+                          :entries {"x.clj" nil} :permissions {:write? true}}))
+            (simple/drain-events! runtime nil)
+            (is (.includes (.-textContent container) "Result.md"))
+            (is (= 1 (count (:metadata @calls))))
+            (reset! sig/layout-columns [])
+            ((:toggle-root navigation))
+            (simple/drain-events! runtime nil)
+            (is (empty? (:envelopes (first (vals @sig/memory-room-metadata)))))
+            (is (not (.includes (.-textContent container) "Result.md")))
+            (finally ((:stop! handle)))))))))
+
+(deftest a-new-target-in-another-batch-immediately-retires-old-verification
+  (with-client
+    (fn [{:keys [a data states state seed! calls last-call stamp]}]
+      (seed!)
+      (swap! sig/layout-columns update-in [0 :tabs] conj
+             {:id :two :type :memory :data {:room-id "test-room"}})
+      (let [second (actions/controller (assoc data :tab-id :two))
+            paths (mapv #(str "b" % ".md") (range 64))
+            second-state (assoc (state) :selected (first paths) :drafts {}
+                                :file-intents (zipmap paths (repeat true)))
+            next-stamp (random-uuid)
+            coordinator (metadata-io/controller runtime (web/current-session) "test-room" (:owner a) states)]
+        (swap! states assoc (:owner second) second-state)
+        ((:discover a))
+        ((:ok (last-call :metadata)) (wire stamp {:folders {} :entries {"x.clj" {:content :same}}}))
+        ;; Consume the first batch and dispatch the second without its view.
+        ((:consume-metadata a))
+        (is (:target-verified? (state)))
+        (is (= 2 (count (:metadata @calls))))
+        ((:ok (last-call :metadata)) (wire next-stamp {:folders {} :entries {}}))
+        ((:consume-metadata a))
+        (is (not (:target-verified? (state))))
+        (is (= next-stamp (:target-stamp (state))))
+        (is (:target-stale? (get-in (state) [:drafts "x.clj"])))
+        (is (= "Original" (get-in (state) [:drafts "x.clj" :text])))
+        (is (= 3 (count (:metadata @calls))) "Its own current-target snapshot is now pending")
+        (is (nil? ((:observation coordinator))))))))
+
+(deftest actual-roster-shape-admits-current-room-and-revokes-a-cached-observation
+  (with-client
+    (fn [{:keys [a state seed! last-call calls stamp file]}]
+      (seed!)
+      (reset! sig/user-rooms {:rooms [{:room/id "test-room" :room/name "Current"}]
+                              :agents [] :knowledge-bases []})
+      ((:discover a))
+      (is (= 1 (count (:metadata @calls))))
+      (reply! (:ok (last-call :metadata))
+              (wire stamp {:folders {} :entries {"x.clj" (:entry file)} :permissions {:write? true}}))
+      (is (:target-verified? (state)))
+      (reset! sig/user-rooms {:rooms [{:room/id "other-room" :room/name "Still visible"}]
+                              :agents [] :knowledge-bases []})
+      ;; A direct event before the next render must not reuse cached authority.
+      ((:save a) "x.clj")
+      (is (empty? (:save @calls)))
+      (is (not (:target-verified? (state))))
+      (is (nil? (:permissions (state))))
+      (is (= "Original" (get-in (state) [:drafts "x.clj" :text])))
+      (is (= 1 (count (:metadata @calls))))
+      (reset! sig/user-rooms {:rooms [{:room/id "test-room"}] :agents [] :knowledge-bases []})
+      ((:discover a))
+      (is (= 2 (count (:metadata @calls))) "Restoration requires a fresh observation")
+      (reply! (:ok (last-call :metadata))
+              (wire stamp {:folders {} :entries {"x.clj" (:entry file)} :permissions {:write? true}}))
+      (is (:target-verified? (state))))))
+
+(deftest a-copied-pending-read-is-replaced-in-the-fork-without-sharing-publications
+  (with-client
+    (fn [{:keys [a data seed! state last-call calls stamp file]}]
+      (seed!)
+      ((:discover a))
+      (let [parent-reply (:ok (last-call :metadata)) child (context/fork-context runtime)]
+        (try
+          (let [forked (binding [ec/*execution-context* child] (actions/controller data))]
+            ((:discover forked))
+            (is (= 2 (count (:metadata @calls))) "Fork has its own native request ownership")
+            (let [child-reply (:ok (last-call :metadata))
+                  payload (wire stamp {:folders {} :entries {"x.clj" (:entry file)} :permissions {:write? true}})]
+              (child-reply payload)
+              ((:consume-metadata forked))
+              (is (:metadata-consumed ((:state forked))))
+              (is (nil? (:metadata-consumed (state))))
+              (is (nil? (get-in (first (vals @sig/memory-room-metadata)) [:sequence])))
+              (parent-reply payload)
+              ((:consume-metadata a))
+              (is (:metadata-consumed (state)))
+              (is (not= (:metadata-consumed (state)) (:metadata-consumed ((:state forked)))))
+              (is (= "Original" (get-in (state) [:drafts "x.clj" :text])))))
+          (finally (context/close-context! child)))))))
+
+(deftest obsolete-shared-failure-is-not-consumed-by-a-new-owner
+  (with-client
+    (fn [{:keys [a data states state seed! calls last-call stamp connection file]}]
+      (seed!)
+      ((:discover a))
+      (reply! (:error (last-call :metadata)) (ex-info "Temporary failure" {}))
+      (is (string? (get-in (state) [:errors :metadata])))
+      (reset! sync/state {:connection connection :status :ready :dirty {"test-room" 1}})
+      ((:discover a))
+      (swap! sig/layout-columns update-in [0 :tabs] conj
+             {:id :two :type :memory :data {:room-id "test-room" :path "x.clj"}})
+      (let [second (actions/controller (assoc data :tab-id :two))]
+        (swap! states assoc (:owner second)
+               (assoc (verified connection stamp) :selected "x.clj" :drafts {"x.clj" (editor/draft file)}))
+        ((:discover second))
+        (is (= 2 (count (:metadata @calls))))
+        (is (nil? (:metadata-consumed ((:state second)))))
+        (is (nil? (get-in ((:state second)) [:errors :metadata])))
+        (is (true? (get-in ((:state second)) [:loading :metadata])))))))
+
+(deftest socket-replacement-fences-old-shared-reply-and-starts-without-waiting
+  (with-client
+    (fn [{:keys [a state seed! last-call calls stamp file]}]
+      (seed!)
+      ((:discover a))
+      (let [old (:ok (last-call :metadata)) next-connection {:epoch (random-uuid)}]
+        (reset! sig/memory-connection next-connection)
+        ((:discover a))
+        (is (= 2 (count (:metadata @calls))))
+        (let [before (state)]
+          (old (wire stamp {:folders {} :entries {"x.clj" nil} :permissions {:write? true}}))
+          (is (= before (state)))
+          (is (nil? (:sequence (first (vals @sig/memory-room-metadata))))))
+        (reply! (:ok (last-call :metadata))
+                (wire stamp {:folders {} :entries {"x.clj" (:entry file)} :permissions {:write? true}}))
+        (is (= next-connection (:verified-connection (state))))
+        (is (:target-verified? (state)))))))
+
+(deftest roster-update-that-retains-room-fences-old-body-read
+  (with-client
+    (fn [{:keys [a seed! state last-call stamp file]}]
+      (seed!)
+      (reset! sig/user-rooms {:rooms [{:room/id "test-room" :room/name "Before"}]})
+      ((:reload a) "x.clj")
+      (let [old (:ok (last-call :file)) before (state)]
+        (reset! sig/user-rooms {:rooms [{:room/id "test-room" :room/name "After"}]})
+        (old (wire stamp (assoc file :text "Obsolete body")))
+        (is (= before (state)))))))

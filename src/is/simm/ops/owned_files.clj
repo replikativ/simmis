@@ -40,12 +40,19 @@
   (let [binding (binding! conn principal :read room-id room request stamped?)]
     (assoc (projection (:db binding)) :target-stamp (:target-stamp binding))))
 
+(defn metadata-projection
+  "Pure DTO projection for an ALREADY authorized owned binding. No resolution,
+   authority or store selection; caller owns the binding's physical lifetime."
+  [db target-stamp request]
+  (let [result (assoc (files/metadata-in db request) :target-stamp target-stamp)]
+    (update result :revision #(hasch/uuid [:simmis/owned-memory-metadata-v1 (:target-stamp result) %]))))
+
 (defn metadata!
   "Fresh discovery, not a stale-buffer operation. One stamped immutable DB."
   [conn principal room-id room request]
-  (let [result (project! conn principal room-id room request #{:folders :paths} false
-                         #(files/metadata-in % request))]
-    (update result :revision #(hasch/uuid [:simmis/owned-memory-metadata-v1 (:target-stamp result) %]))))
+  (closed! request #{:folders :paths} false)
+  (let [binding (binding! conn principal :read room-id room request false)]
+    (metadata-projection (:db binding) (:target-stamp binding) request)))
 
 (defn folder! [conn principal room-id room request]
   (project! conn principal room-id room request #{:folder} (contains? request :expected-target-stamp)

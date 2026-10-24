@@ -335,7 +335,12 @@
            (signal runtime {})))
 
 #?(:cljs (def memory-editor-state
-           "Session/room/view keyed file drafts, folders and request fences."
+           "Session/room/tab keyed file drafts, folders and request fences.
+            Tab owners survive column moves; non-tab owners remain distinct."
+           (signal runtime {})))
+
+#?(:cljs (def memory-room-metadata
+           "Session/Room owned immutable metadata observations; no bodies or callbacks."
            (signal runtime {})))
 
 #?(:cljs (def conversation-captures
@@ -749,7 +754,7 @@
   "Ensure layout has at least one column. Reset to default if empty."
   []
   #?(:cljs
-     (binding [rtc/*execution-context* runtime]
+     (binding [rtc/*execution-context* (or rtc/*execution-context* runtime)]
        (when (empty? @layout-columns)
          (reset! layout-columns (default-layout))))
      :clj nil))
@@ -1085,7 +1090,7 @@
    Singleton tabs like :settings and :admin should use this to avoid duplicates."
   [tab-type tab-data opts]
   #?(:cljs
-     (binding [rtc/*execution-context* runtime]
+     (binding [rtc/*execution-context* (or rtc/*execution-context* runtime)]
        (let [cols @layout-columns
              ;; Search all columns for an existing tab of this type
              existing (some (fn [col]
@@ -1105,10 +1110,10 @@
 
 (defn close-tab!
   "Close a tab. If it's the last tab in a column, close the column too.
-   Also disconnects KB connections when no tabs use that KB anymore."
+   Live-home closes also release unused native replica/query resources."
   [col-id tab-id]
   #?(:cljs
-     (binding [rtc/*execution-context* runtime]
+     (binding [rtc/*execution-context* (or rtc/*execution-context* runtime)]
        ;; Find the tab's db-scope before closing (for KB cleanup)
        (let [cols @layout-columns
              closing-tab
@@ -1124,9 +1129,9 @@
              ;; accumulate for the whole session.
              _ (let [{:keys [type data]} closing-tab]
                  (case type
-                   :wiki (when-let [pu (:page-uuid data)]
+                   :wiki (when-let [pu (when (live-ui-context?) (:page-uuid data))]
                            (dq/evict-cache-for-entity! pu))
-                   :chat (when-let [rid (:room-id data)]
+                   :chat (when-let [rid (when (live-ui-context?) (:room-id data))]
                            (dq/evict-cache-for-entity! (uuid rid)))
                    :files (when-let [rid (:room-id data)]
                             (swap! drive-data dissoc (str rid)))
@@ -1137,7 +1142,7 @@
          ;; keep KBs the user owns/has access to connected for the session,
          ;; so the sidebar nav stays live for agent-side writes even when no
          ;; wiki tab is open. (See nav.cljc post-load-rooms eager connect.)
-         (when closing-tab-scope
+         (when (and closing-tab-scope (live-ui-context?))
            (let [all-tabs (mapcat :tabs @layout-columns)
                  scope-still-used? (some #(= (get-in % [:data :db-scope]) closing-tab-scope) all-tabs)
                  owned-scope? (some #(= (str (:kb/db-scope %)) closing-tab-scope)
@@ -1166,7 +1171,7 @@
    side, from having done nothing at all."
   [tab-type]
   #?(:cljs
-     (binding [rtc/*execution-context* runtime]
+     (binding [rtc/*execution-context* (or rtc/*execution-context* runtime)]
        (when-let [found (some (fn [col]
                                 (some (fn [tab]
                                         (when (= (:type tab) tab-type)
@@ -1180,7 +1185,7 @@
   "Set the active tab in a column."
   [col-id tab-id]
   #?(:cljs
-     (binding [rtc/*execution-context* runtime]
+     (binding [rtc/*execution-context* (or rtc/*execution-context* runtime)]
        (swap! layout-columns
               (fn [cols]
                 (let [col-idx (find-column-index cols col-id)]
@@ -1195,12 +1200,12 @@
   "Move a tab from one column to another."
   [from-col-id tab-id to-col-id & [{:keys [position]}]]
   #?(:cljs
-     (binding [rtc/*execution-context* runtime]
+     (binding [rtc/*execution-context* (or rtc/*execution-context* runtime)]
        (swap! layout-columns
               (fn [cols]
                 (let [from-idx (find-column-index cols from-col-id)
                       to-idx (find-column-index cols to-col-id)]
-                  (if (and from-idx to-idx)
+                  (if (and from-idx to-idx (not= from-col-id to-col-id))
                     (let [from-col (nth cols from-idx)
                           tab (first (filter #(= (:id %) tab-id) (:tabs from-col)))
                           was-active? (= (:active-tab from-col) tab-id)
@@ -1227,7 +1232,7 @@
                         (-> cols-after-remove
                             (update-in [to-idx' :tabs] conj tab)
                             (assoc-in [to-idx' :active-tab] (:id tab)))
-                        cols-after-remove))
+                        cols))
                     cols)))))
      :clj nil))
 
@@ -1235,7 +1240,10 @@
   "Create a new column from a tab (for drag to edge)."
   [from-col-id tab-id position]
   #?(:cljs
-     (binding [rtc/*execution-context* runtime]
+     (binding [rtc/*execution-context* (or rtc/*execution-context* runtime)]
+       (when-not (#{:start :end} position)
+         (throw (ex-info "A new column must be inserted at :start or :end"
+                         {:type ::invalid-column-position})))
        (swap! layout-columns
               (fn [cols]
                 (let [from-idx (find-column-index cols from-col-id)
@@ -1358,7 +1366,7 @@
                 drive-data files-upload-status unread-counts notify-prefs
                 block-conflicts orphaned-blocks room-app-status leaderboards
                 books book-ledgers book-ui workflow-editor-state workflow-output-reviews memory-editor-state conversation-captures
-                memory-navigation-state run-server-facts chat-scroll-windows
+                memory-navigation-state memory-room-metadata run-server-facts chat-scroll-windows
                 chat-reply-targets active-kb-branch kb-branches projected-branch-dbs]]
        (reset! s {}))
      (reset! global-ref :now)

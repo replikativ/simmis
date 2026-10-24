@@ -97,16 +97,22 @@
   [room folder]
   (with-workspace room #(list-folder-in @% folder)))
 
-(defn metadata-in
-  "One immutable, bounded workspace snapshot. No file bodies or content blobs.
-   Missing requested paths are explicit nil entries, not failed file reads."
-  [db request]
-  (when-not (and (= #{:folders :paths} (set (keys request)))
+(defn metadata-request!
+  "Validate a closed metadata demand without store or body IO."
+  [request]
+  (when-not (and (map? request) (= #{:folders :paths} (set (keys request)))
                  (vector? (:folders request)) (<= (count (:folders request)) 64)
                  (vector? (:paths request)) (<= (count (:paths request)) 64))
     (refuse! ::invalid "Request at most 64 open folders and 64 files"))
   (doseq [folder (:folders request)] (when-not (= "" folder) (path! folder)))
   (doseq [path (:paths request)] (path! path))
+  request)
+
+(defn metadata-in
+  "One immutable, bounded workspace snapshot. No file bodies or content blobs.
+   Missing requested paths are explicit nil entries, not failed file reads."
+  [db request]
+  (metadata-request! request)
   (let [repository (query/repository db)
         workspace {:repository-id (:geschichte.repo/id repository)
                    :workspace-id [(get-in db [:config :store :id])
