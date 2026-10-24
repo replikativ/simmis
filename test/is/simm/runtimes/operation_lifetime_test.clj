@@ -2,7 +2,102 @@
   (:require [clojure.test :refer [deftest is]]
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [org.replikativ.spindel.engine.impl.simple :as simple])
-  (:import [java.util.concurrent CountDownLatch]))
+  (:import [java.util.concurrent CountDownLatch TimeUnit]))
+
+(deftest retained-cleanup-keeps-the-original-slot-until-successful-retry
+  (let [owner (doto (lifetime/create) lifetime/open!)
+        attempts (atom 0) captured (atom nil)]
+    (with-redefs-fn {#'lifetime/capacity 1}
+      #(lifetime/with-operation!
+         owner
+         (fn []
+           (let [ticket lifetime/*ticket*]
+             (is (= :not-owner @(future (try (lifetime/retain-operation-cleanup! (constantly nil)) nil
+                                             (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))))
+             (reset! captured
+                     (lifetime/retain-operation-cleanup!
+                      (fn [_]
+                        (is (= :self-drain
+                               (try (lifetime/assert-not-owner! owner) nil
+                                    (catch clojure.lang.ExceptionInfo e (:reason (ex-data e))))))
+                        (when (= 1 (swap! attempts inc)) (throw (ex-info "Controlled cleanup failure" {}))))))
+             (is (= (:id ticket) (:id @captured)))
+             (is (not (realized? (:origin-completion @captured))))))))
+    (is (realized? (:origin-completion @captured)))
+    (is (not (realized? (:completion @captured))))
+    (lifetime/fence! owner)
+    (is (thrown-with-msg? Exception #"Controlled cleanup failure" (lifetime/join! owner 30000)))
+    (is (not (realized? (:completion @captured))))
+    (is (nil? (lifetime/join! owner 30000)))
+    (is (= 2 @attempts))
+    (is (realized? (:completion @captured)))
+    (is (nil? (lifetime/join! owner 0)))))
+
+(deftest cleanup-transfer-after-fencing-still-waits-for-the-original-body
+  (let [owner (doto (lifetime/create) lifetime/open!)
+        entered (promise) transferred (promise) release (CountDownLatch. 1)
+        allow-transfer (CountDownLatch. 1) calls (atom 0)
+        worker (future
+                 (lifetime/with-operation!
+                   owner
+                   (fn []
+                     (deliver entered true)
+                     (when-not (.await allow-transfer 30 TimeUnit/SECONDS) (throw (ex-info "Test expired" {})))
+                     (deliver transferred (lifetime/retain-operation-cleanup! (fn [_] (swap! calls inc))))
+                     (when-not (.await release 30 TimeUnit/SECONDS) (throw (ex-info "Test expired" {}))))))]
+    (try
+      (is (= true (deref entered 30000 ::expired)))
+      (lifetime/fence! owner)
+      (.countDown allow-transfer)
+      (is (map? (deref transferred 30000 ::expired)))
+      (is (= :physical-exit-unconfirmed
+             (try (lifetime/join! owner 0) nil (catch clojure.lang.ExceptionInfo e (:reason (ex-data e))))))
+      (is (zero? @calls))
+      (.countDown release)
+      (is (not= ::expired (deref worker 30000 ::expired)))
+      (is (nil? (lifetime/join! owner 30000)))
+      (is (= 1 @calls))
+      (finally (.countDown allow-transfer) (.countDown release) (deref worker 30000 nil)))))
+
+(deftest shutdown-rechecks-a-slot-transferred-after-its-ticket-snapshot
+  (let [owner (doto (lifetime/create) lifetime/open!) entered (promise) snapshotted (promise)
+        transfer (CountDownLatch. 1) resume-join (CountDownLatch. 1)
+        fail? (atom true) calls (atom 0) joining (atom nil)
+        original-join @#'lifetime/join-ticket!
+        worker (future
+                 (lifetime/with-operation!
+                   owner
+                   (fn []
+                     (deliver entered true)
+                     (when-not (.await transfer 30 TimeUnit/SECONDS) (throw (ex-info "Test expired" {})))
+                     (lifetime/retain-operation-cleanup!
+                      (fn [_] (swap! calls inc)
+                        (when @fail? (throw (ex-info "Replacement cleanup failed" {}))))))))]
+    (try
+      (is (= true (deref entered 30000 ::expired)))
+      (lifetime/fence! owner)
+      (with-redefs-fn
+        {#'lifetime/join-ticket!
+         (fn [o ticket deadline]
+           (when-not (:origin-completion ticket)
+             (deliver snapshotted true)
+             (when-not (.await resume-join 30 TimeUnit/SECONDS) (throw (ex-info "Test expired" {}))))
+           (original-join o ticket deadline))}
+        #(do
+           (reset! joining (future (try (lifetime/join! owner 30000) :incorrect-success
+                                        (catch Exception e (ex-message e)))))
+           (is (= true (deref snapshotted 30000 ::expired)))
+           (.countDown transfer)
+           (is (not= ::expired (deref worker 30000 ::expired)))
+           (.countDown resume-join)
+           (is (= "Replacement cleanup failed" (deref @joining 30000 ::expired)))))
+      (is (= 1 @calls))
+      (reset! fail? false)
+      (is (nil? (lifetime/join! owner 30000)))
+      (is (= 2 @calls))
+      (finally
+        (reset! fail? false) (.countDown transfer) (.countDown resume-join)
+        (deref worker 30000 nil) (when @joining (deref @joining 30000 nil))))))
 
 (defn- reason [f]
   (try (f) nil (catch clojure.lang.ExceptionInfo error (:reason (ex-data error)))))

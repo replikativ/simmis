@@ -247,9 +247,22 @@ is itself a fork-owned non-reactive world component: a following child's index
 must not observe a later parent retirement and lose its existing interpreter.
 Evaluation is
 owner/`:merge` gated, serialized per interpreter and bounded to 64K source
-characters and a ten-second evaluator timeout. Timeout retires the session so
-later requests cannot reuse its unwinding heap. Results, printed output and
-the exact evaluated source are retained in the editor signal, not as a durable
+characters and one ten-second deadline including admission. The actual worker
+owns the original application ticket, actual Room exclusive lease and interpreter
+monitor through execution, bounded value/output printing and cleanup. Current
+read/merge authority, original Room incarnation and application admission are
+checked again after waiting for that monitor. A caller receipt and physical
+worker exit are distinct: cancellation quarantines an entered heap, and retires
+its exact world reference only after evaluation and awaited cleanup exit. A
+cancelled admission waiter never enters SCI or retires an untouched heap.
+Failed retirement transfers the same Room and application native ownership slots
+to explicit cleanup recovery and fences application admission, including already
+admitted shared-interpreter waiters at their final entry check. Stop/restart
+cannot release the old installation until recovery acknowledges completion.
+These runtime handles are not retained in forkable session state. Results, printed output and
+the exact evaluated source are retained in a bounded twenty-receipt editor signal
+history even when the draft changes or moves; older replies are marked stale
+and do not overwrite newer draft text. They are not a durable
 Run or a deployed workflow. The old chat inspector Quick eval input is removed.
 
 Below the file buffer, the code-file panel includes a dual-input **Room REPL**.
@@ -269,7 +282,9 @@ The last 20 REPL receipts live in the context-owned editor signal, recording
 original input, syntax, namespace, printed value/output and generated Clojure
 (preview bounded to 64K characters). They are not durable Run receipts. Failed
 evaluation retains a receipt and warns that earlier forms may have executed;
-input is not transactional. A timeout retires the selected interpreter. The
+input is not transactional. A timeout quarantines the selected interpreter until
+physical exit and successful retirement; it does not claim hard termination of
+arbitrary inline native work or synchronous user cleanup. The
 UI targets the live room's human session; this does not introduce an arbitrary
 world picker or an agent-interpreter attachment. Underlying component-based
 fork isolation is covered by the evaluation tests. Superficie input is a

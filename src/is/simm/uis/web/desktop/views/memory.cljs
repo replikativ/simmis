@@ -135,8 +135,10 @@
                               (el/summary {} (str (if (:success receipt) "Result" "Failed") " · " (name (:input-syntax receipt))
                                                   " · " (:namespace receipt)))
                               (el/pre {} (if (:success receipt) (:value receipt) (:error receipt)))
+                              (when (:value-truncated? receipt) (el/p {:class "memory-note"} "Value preview is truncated."))
                               (when (:partial? receipt) (el/p {} "Earlier forms may have executed; inspect the session before retrying."))
-                              (when (:session-retired? receipt) (el/p {} "Timed out. This interpreter was retired; the next evaluation starts a fresh session."))
+                              (when (:session-quarantined? receipt)
+                                (el/p {} "Evaluation stopped. This session stays unavailable until its worker and cleanup finish; the next admitted evaluation starts fresh."))
                               (when (seq (:stdout receipt)) (el/pre {} (str "stdout\n" (:stdout receipt))))
                               (when (seq (:stderr receipt)) (el/pre {} (str "stderr\n" (:stderr receipt))))
                               (el/details {} (el/summary {} "Submitted input") (el/pre {} (:input-source receipt)))
@@ -716,6 +718,20 @@
      ((:ensure-sync a) connection stream)
      (el/div {:class "memory-history context-section"}
              (el/div {:class "context-section-title"} "File history")
+             (when (seq (:evaluation-history state))
+               (el/details {:class "memory-evaluation-history"}
+                           (el/summary {} "Recent file evaluations")
+                           (el/p {:class "memory-note"} "Last 20 receipts in this editor session, including earlier drafts and moved files. These are execution observations, not saved file revisions.")
+                           (for [receipt (:evaluation-history state)]
+                             (el/details {:key (str (:id receipt))}
+                                         (el/summary {} (str (:path receipt) " · " (if (:success receipt) "Result" "Failed")
+                                                             (when (:stale? receipt) " · draft changed before receipt arrived")))
+                                         (el/pre {} (if (:success receipt) (:value receipt) (:error receipt)))
+                                         (when (false? (:worker-finished? receipt))
+                                           (el/p {:class "memory-note"} "Worker exit had not been confirmed when this receipt arrived. Earlier forms may have executed."))
+                                         (when (seq (:stdout receipt)) (el/pre {} (str "stdout\n" (:stdout receipt))))
+                                         (when (seq (:stderr receipt)) (el/pre {} (str "stderr\n" (:stderr receipt))))
+                                         (el/details {} (el/summary {} "Evaluated source") (el/pre {} (:code receipt)))))))
              (when path
                (el/div {}
                        (el/button {:disabled (or (not coherent?) (get-in state [:loading [:history path]]))

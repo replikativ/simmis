@@ -2,6 +2,8 @@
   "Human SCI sessions, owned by the room's execution world, not an agent.
    Saving source never calls this namespace. No room tools are injected."
   (:require [dvergr.sandbox :as sandbox]
+            [dvergr.runtime.preparation :as preparation]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [clojure.string :as str]
             [clojure.tools.reader :as reader]
             [clojure.tools.reader.reader-types :as readers]
@@ -24,8 +26,8 @@
 
 (defn- update-session-index! [f & args]
   (ec/swap-state! [:world/components ::sessions]
-                 (fn [index]
-                   (component/forkable (apply f (component/realization index) args) copy-session-index))))
+                  (fn [index]
+                    (component/forkable (apply f (component/realization index) args) copy-session-index))))
 
 (defn- form-range [text cursor]
   (let [r (readers/indexing-push-back-reader text)
@@ -111,7 +113,7 @@
                   (loop [result nil]
                     (let [form (sci/parse-next interpreter r {:eof eof})]
                       (if (identical? eof form) result
-                        (recur (sci/eval-form interpreter form))))))
+                          (recur (sci/eval-form interpreter form))))))
                 (let [opts {:resolve-sym #(sci-symbol interpreter %)
                             :resolve-keyword #(sci/parse-string interpreter %)}
                       scanned (-> {:source text :opts opts} pipeline/scan pipeline/group)
@@ -120,14 +122,15 @@
                       parser (sup-reader/streaming-parser (:tokens scanned) opts text)]
                   (loop [result nil]
                     (if (sup-reader/parser-done? parser) result
-                      (let [raw (sup-reader/parse-next! parser)]
-                        (if (sup-reader/discarded? raw) (recur result)
-                          (let [form (first (expander/expand-forms [raw] opts))]
-                            (vswap! generated conj (printer/print-clj-string [form]))
-                            (recur (sci/eval-form interpreter form)))))))))
+                        (let [raw (sup-reader/parse-next! parser)]
+                          (if (sup-reader/discarded? raw) (recur result)
+                              (let [form (first (expander/expand-forms [raw] opts))]
+                                (vswap! generated conj (printer/print-clj-string [form]))
+                                (recur (sci/eval-form interpreter form)))))))))
               ;; Realize/print while the selected interpreter is still bound.
-              printed (binding [*print-length* 100 *print-level* 12] (pr-str value))]
-          (merge {:success true :value (clipped printed) :namespace (str @sci/ns)}
+              printed (binding [*print-length* 100 *print-level* 12] (sandbox/print-value value 12000))]
+          (merge {:success true :value (:text printed) :value-truncated? (:truncated? printed)
+                  :namespace (str @sci/ns)}
                  (generated-receipt @generated)))
         (catch Exception e
           (when (or (.isInterrupted (Thread/currentThread))
@@ -137,55 +140,104 @@
                   :namespace (str @sci/ns) :partial? true}
                  (generated-receipt @generated)))))))
 
-(defn- execute! [room party program realize? authorize!]
-    (binding [ec/*execution-context* (:ctx room)]
-      ;; Registration is serialized, and only a ComponentRef is retained. The
-      ;; component selects a separate SCI realization in descendant worlds.
-      (let [ref (locking (:ctx room)
-                  (or (get (session-index) party)
-                      (let [ref (sandbox/create-spindel-sci-world! (:ctx room))]
-                        (update-session-index! assoc party ref) ref)))
-            interpreter (sandbox/sci-context-in (:ctx room) ref)]
-        (locking interpreter
-          (when-not (= ref (get (session-index) party))
-            (throw (ex-info "SCI session was retired; retry in its replacement" {:type ::retired})))
-          (authorize!)
-          ;; A plain function using ctx-store at invocation time is fork-safe;
-          ;; no closure here retains this interpreter or its execution context.
-          (sci/merge-opts interpreter {:namespaces {'simmis.repl {'evaluate-source repl-evaluate}}})
-          (let [result (binding [*print-length* 100 *print-level* 12]
-                         (sandbox/eval-code interpreter program :execution-context (:ctx room)
-                                            :timeout-ms 10000 :realize? realize?))]
-            ;; A timed-out evaluator may still be unwinding. Never send the
-            ;; next request into that same heap, including already queued work.
-            (when (= "TimeoutException" (get-in result [:error :type]))
-              (locking (:ctx room)
-                (update-session-index! dissoc party)
-                (sandbox/release-spindel-sci-world! (:ctx room) ref)))
-            result)))))
+(defn- retire-session! [room party ref]
+  (binding [ec/*execution-context* (:ctx room)]
+    (locking (:ctx room)
+      (when (= ref (get (session-index) party))
+        (update-session-index! dissoc party)))
+    (sandbox/release-spindel-sci-world! (:ctx room) ref)))
 
-(defn evaluate! [room party request authorize!]
-  (let [{:keys [code from to]} (request-code request)
-        namespace (when-not (= :file (:scope request)) (file-namespace (:text request)))
-        program (if namespace (str "(in-ns '" namespace ")\n" code) code)
-        result (execute! room party program true authorize!)]
-    {:id (random-uuid) :target :human-sci :path (:path request)
-             :source-revision (markdown/revision (:text request))
-             :namespace (when namespace (str namespace))
-             :from from :to to :code code
-             :success (:success result) :value (when (:success result) (clipped (:value result)))
+(defn- retire-or-retain! [room party ref lease]
+  (try
+    (retire-session! room party ref)
+    (catch Throwable _
+      ;; Keep the original native slot/key if exact-ref release needs recovery.
+      (let [cleanup (preparation/retain-host-cleanup!
+                     lease {:session [room party ref]}
+                     (fn [[r p selected]] (retire-session! r p selected)))]
+        ;; Room ownership alone cannot fence an application restart. Retain
+        ;; BOTH original owners; failed index invalidation fences shared worlds.
+        (when lifetime/*ticket*
+          (lifetime/retain-operation-cleanup! (:join! cleanup)))))))
+
+(defn- with-human-session! [room party authorize! evaluate control]
+  (preparation/with-host-operation!
+    room {:exclusive-key [::human-sci party]}
+    (fn [lease]
+      (binding [ec/*execution-context* (:ctx room)]
+        ((:check! control))
+        (authorize!)
+        ;; Only stable ComponentRefs live in forkable state.
+        (let [ref (locking (:ctx room)
+                    (or (get (session-index) party)
+                        (let [ref (sandbox/create-spindel-sci-world! (:ctx room))]
+                          (update-session-index! assoc party ref) ref)))
+              interpreter (sandbox/sci-context-in (:ctx room) ref)]
+          ;; Distinct actual Rooms may share a world/interpreter. Keep this
+          ;; gate through actual evaluation and cleanup, even after a receipt.
+          (locking interpreter
+            ((:check! control))
+            (preparation/with-host-current! lease (constantly true))
+            (when-not (= ref (get (session-index) party))
+              (throw (ex-info "SCI session was retired" {:type ::retired})))
+            (authorize!)
+            (sci/merge-opts interpreter {:namespaces {'simmis.repl {'evaluate-source repl-evaluate}}})
+            (try
+              (binding [*print-length* 100 *print-level* 12] (evaluate interpreter))
+              (finally
+                ;; Room cancellation is independent of this invocation's
+                ;; watchdog/caller. SCI can catch and clear its interrupt;
+                ;; the actual lease state remains trusted stop evidence.
+                (when (= :cancelled @(:state lease))
+                  ((:cancel! control) :room-cancelled))
+                ;; A cancelled admission waiter never touched SCI. Once
+                ;; entered, retire only AFTER its body and awaited cleanup end.
+                (when (and ((:aborted? control)) ((:entered? control)))
+                  (retire-or-retain! room party ref lease))))))))))
+
+(defn- execute! [room party program realize? authorize! with-owner]
+  (let [handle (sandbox/start-evaluation!
+                program
+                {:timeout-ms 10000 :realize? realize?
+                 :with-interpreter
+                 (fn [evaluate control]
+                   ;; Fresh ticket on the ACTUAL worker; the trusted adapter
+                   ;; captures the original application, never its replacement.
+                   (with-owner #(with-human-session! room party authorize! evaluate control)))})]
+    (sandbox/await-evaluation! handle)))
+
+(defn evaluate!
+  ([room party request authorize!] (evaluate! room party request authorize! (fn [f] (f))))
+  ([room party request authorize! with-owner]
+   (let [{:keys [code from to]} (request-code request)
+         namespace (when-not (= :file (:scope request)) (file-namespace (:text request)))
+         program (if namespace (str "(in-ns '" namespace ")\n" code) code)
+         result (execute! room party program true authorize! with-owner)]
+     {:id (random-uuid) :target :human-sci :path (:path request)
+      :source-revision (markdown/revision (:text request))
+      :namespace (when namespace (str namespace))
+      :from from :to to :code code
+      :success (:success result) :value (when (:success result) (clipped (:value result)))
+      :stdout (clipped (:stdout result)) :stderr (clipped (:stderr result))
+      :error (when-not (:success result) (clipped (get-in result [:error :message])))
+      :error-type (get-in result [:error :type]) :stop-reason (get-in result [:error :data :cause])
+      :meter (:meter result)
+      :invocation-id (:invocation-id result) :worker-finished? (:worker-finished? result)
+      :evaluation-entered? (:evaluation-entered? result) :partial? (:partial? result)})))
+
+(defn evaluate-repl!
+  ([room party request authorize!] (evaluate-repl! room party request authorize! (fn [f] (f))))
+  ([room party request authorize! with-owner]
+   (validate-repl! request)
+   (let [result (execute! room party (str "(simmis.repl/evaluate-source " (pr-str request) ")") false authorize! with-owner)]
+     (merge {:id (random-uuid) :target :human-sci :input-source (:text request)
+             :input-syntax (:syntax request) :namespace (:namespace request)
+             :requested-namespace (:namespace request)
              :stdout (clipped (:stdout result)) :stderr (clipped (:stderr result))
-             :error (when-not (:success result) (clipped (get-in result [:error :message])))
-             :meter (:meter result)}))
-
-(defn evaluate-repl! [room party request authorize!]
-  (validate-repl! request)
-  (let [result (execute! room party (str "(simmis.repl/evaluate-source " (pr-str request) ")") false authorize!)]
-    (merge {:id (random-uuid) :target :human-sci :input-source (:text request)
-            :input-syntax (:syntax request) :namespace (:namespace request)
-            :requested-namespace (:namespace request)
-            :stdout (clipped (:stdout result)) :stderr (clipped (:stderr result))
-            :meter (:meter result)}
-           (if (:success result) (:value result)
-             {:success false :error (clipped (get-in result [:error :message]))
-              :session-retired? (= "TimeoutException" (get-in result [:error :type]))}))))
+             :meter (:meter result) :invocation-id (:invocation-id result)
+             :worker-finished? (:worker-finished? result) :evaluation-entered? (:evaluation-entered? result)}
+            (if (:success result) (:value result)
+                {:success false :error (clipped (get-in result [:error :message]))
+                 :error-type (get-in result [:error :type]) :stop-reason (get-in result [:error :data :cause])
+                 :partial? (:partial? result)
+                 :session-quarantined? (and (:evaluation-entered? result) (:partial? result))})))))

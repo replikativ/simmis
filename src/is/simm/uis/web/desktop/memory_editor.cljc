@@ -13,6 +13,15 @@
 
 (defn repl-input [state syntax] (get-in state [:repl :inputs syntax :text] ""))
 
+(defn file-evaluation-result [state path generation input receipt]
+  (let [receipt (assoc receipt :path path :input-text input
+                       :stale? (not= generation (get-in state [:drafts path :generation])))
+        history (vec (take 20 (cons receipt (:evaluation-history state))))
+        retained-paths (conj (set (keep :path history)) path)]
+    (-> state
+        (update :evaluations #(assoc (select-keys % retained-paths) path receipt))
+        (assoc :evaluation-history history))))
+
 (defn repl-result [state receipt]
   (cond-> (update-in state [:repl :history] #(vec (take 20 (cons receipt %))))
     (and (:namespace receipt)

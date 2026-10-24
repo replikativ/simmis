@@ -66,6 +66,26 @@
     (is (not (:remote-deleted? (editor/observed-entry missing (:entry file)))))
     (is (nil? (:incoming (editor/observed-entry missing (:entry file)))))))
 
+(deftest file-evaluation-receipts-survive-typing-moving-and-bounded-history
+  (let [receipt {:id (random-uuid) :target :human-sci :success false :code "(inc x)"}
+        state {:drafts {"a.clj" {:text "newer text" :generation 2}}}
+        result (editor/file-evaluation-result state "a.clj" 1 "(inc x)" receipt)]
+    (is (= "newer text" (get-in result [:drafts "a.clj" :text])))
+    (is (true? (get-in result [:evaluations "a.clj" :stale?])))
+    (is (= "(inc x)" (get-in result [:evaluation-history 0 :input-text])))
+    (let [moved (editor/file-evaluation-result (dissoc state :drafts) "a.clj" 1 "(inc x)" receipt)]
+      (is (= (:id receipt) (get-in moved [:evaluation-history 0 :id])))
+      (is (true? (get-in moved [:evaluations "a.clj" :stale?]))))
+    (is (= 20 (count (:evaluation-history
+                     (reduce (fn [s _] (editor/file-evaluation-result s "a.clj" 1 "(inc x)" receipt))
+                             result (range 30))))))
+    (let [many (reduce (fn [s n] (editor/file-evaluation-result s (str n ".clj") 1 "(inc x)" receipt))
+                       state (range 30))]
+      (is (= 20 (count (:evaluations many))))
+      (is (= 20 (count (:evaluation-history many))))
+      (is (not (contains? (:evaluations many) "0.clj")))
+      (is (contains? (:evaluations many) "29.clj")))))
+
 (deftest metadata-selection-recovers-an-initial-folder-failure-and-covers-pending-reads
   (is (= {:folders [""] :paths []}
          (editor/metadata-request {:root-expanded? true :errors {[:folder ""] "failed"}})))

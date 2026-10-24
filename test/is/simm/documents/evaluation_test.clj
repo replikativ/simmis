@@ -3,9 +3,91 @@
             [dvergr.discourse :as discourse]
             [dvergr.room.store.memory :as memory]
             [dvergr.sandbox :as sandbox]
+            [dvergr.runtime.preparation :as preparation]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [org.replikativ.spindel.engine.context :as context]
             [superficie.core :as superficie]
-            [is.simm.documents.evaluation :as evaluation]))
+            [is.simm.documents.evaluation :as evaluation])
+  (:import [java.util.concurrent CountDownLatch TimeUnit]))
+
+(defn- finite-hold! [^CountDownLatch gate]
+  (let [deadline (+ (System/nanoTime) 30000000000)]
+    (loop []
+      (let [remaining (- deadline (System/nanoTime))]
+        (when-not (pos? remaining) (throw (ex-info "Finite test hold expired" {})))
+        (let [done? (try (.await gate remaining TimeUnit/NANOSECONDS)
+                         (catch InterruptedException _ false))]
+          (when-not done? (recur)))))))
+
+(deftest a-timeout-retains-room-and-application-until-the-actual-worker-exits
+  (let [room (discourse/make-room {:id (keyword (str "owned-human-" (random-uuid))) :store (memory/make)})
+        party (random-uuid) owner (doto (lifetime/create) lifetime/open!)
+        with-owner #(lifetime/with-operation! owner %)
+        run #(evaluation/evaluate-repl! room party {:syntax :clojure :text % :namespace "user"}
+                                        (constantly true) with-owner)
+        entered (promise) release (CountDownLatch. 1) started (atom nil)
+        start sandbox/start-evaluation! caller (atom nil)]
+    (try
+      (is (:success (run "(def before-timeout 1)")))
+      (with-redefs [sandbox/start-evaluation!
+                    (fn [code options] (reset! started (start code (assoc options :timeout-ms 500))))
+                    evaluation/repl-evaluate
+                    (fn [_] (deliver entered true) (finite-hold! release) {:success true :value "late"})]
+        (reset! caller (future (run "ignored test input")))
+        (is (= true (deref entered 30000 ::expired)))
+        (let [receipt (deref @caller 30000 ::expired)]
+          (is (false? (:success receipt)))
+          (is (:session-quarantined? receipt))
+          (is (false? (:worker-finished? receipt))))
+        (is (thrown? Exception (preparation/assert-quiescent! room)))
+        (lifetime/fence! owner)
+        (is (thrown? Exception (lifetime/join! owner 0)))
+        (.countDown release)
+        (is (sandbox/join-evaluation! @started 30000)))
+      (is (nil? (lifetime/join! owner 30000)))
+      (is (false? (:success (evaluation/evaluate-repl! room party
+                                                       {:syntax :clojure :text "before-timeout" :namespace "user"}
+                                                       (constantly true)))))
+      (finally
+        (.countDown release) (when @caller (deref @caller 30000 nil))
+        (when @started (sandbox/cancel-evaluation! @started) (sandbox/join-evaluation! @started 30000))
+        (discourse/close-room! room)))))
+
+(deftest failed-interpreter-release-retains-both-native-owners-for-explicit-recovery
+  (let [room (discourse/make-room {:id (keyword (str "human-release-" (random-uuid))) :store (memory/make)})
+        party (random-uuid) owner (doto (lifetime/create) lifetime/open!)
+        run #(evaluation/evaluate-repl! room party {:syntax :clojure :text % :namespace "user"}
+                                        (constantly true) (fn [f] (lifetime/with-operation! owner f)))
+        entered (promise) release (CountDownLatch. 1) started (atom nil)
+        start sandbox/start-evaluation! release-world sandbox/release-spindel-sci-world!
+        failures (atom 2) caller (atom nil)]
+    (try
+      (is (:success (run "1")))
+      (with-redefs [sandbox/start-evaluation!
+                    (fn [code options] (reset! started (start code (assoc options :timeout-ms 500))))
+                    evaluation/repl-evaluate
+                    (fn [_] (deliver entered true) (finite-hold! release) {:success true :value "late"})
+                    sandbox/release-spindel-sci-world!
+                    (fn [world ref]
+                      (if (pos? @failures)
+                        (do (swap! failures dec) (throw (ex-info "Controlled interpreter release failure" {})))
+                        (release-world world ref)))]
+        (reset! caller (future (run "ignored test input")))
+        (is (= true (deref entered 30000 ::expired)))
+        (is (false? (:success (deref @caller 30000 ::expired))))
+        (.countDown release)
+        (is (sandbox/join-evaluation! @started 30000))
+        (is (false? (lifetime/ready? owner)))
+        (is (thrown? Exception (preparation/assert-quiescent! room)))
+        (is (thrown? Exception (lifetime/join! owner 30000)))
+        (is (nil? (lifetime/join! owner 30000)))
+        (is (nil? (preparation/assert-quiescent! room))))
+      (finally
+        (reset! failures 0) (.countDown release)
+        (when @caller (deref @caller 30000 nil))
+        (when @started (sandbox/cancel-evaluation! @started) (sandbox/join-evaluation! @started 30000))
+        (lifetime/fence! owner) (lifetime/join! owner 30000)
+        (discourse/close-room! room)))))
 
 (defn request [code] {:path "examples/scratch.clj" :text code :scope :file :from 0 :to 0})
 
@@ -23,12 +105,12 @@
       (is (= "49" (:value (run room :clojure "(square 7)"))))
       (is (:success (run room :clojure "(def factor 2)")))
       (is (= "18" (:value (run room :superficie "factor * square(3)"))))
-      (let [fork (context/fork-context (:ctx room)) child (assoc room :ctx fork)]
+      (let [child (discourse/fork-room room {:isolation :ctx :clone-participants? false})]
         (try
           (is (:success (run child :superficie "def factor: 3")))
           (is (= "2" (:value (run room :clojure "factor"))))
           (is (= "3" (:value (run child :superficie "factor"))))
-          (finally (context/close-context! fork))))
+          (finally (discourse/close-room! child))))
       (is (:success (run room :clojure "(defmacro twice [x] `(+ ~x ~x))")))
       (is (= "10" (:value (run room :superficie "twice(5)"))))
       (is (:success (run room :clojure "(require '[clojure.string :as s])")))
@@ -49,8 +131,8 @@
                  {:syntax :clojure :text "1" :namespace "user) (def bad 1)"}
                  {:syntax :clojure :text "1" :namespace "user" :party (random-uuid)}]]
         (is (thrown? Exception (evaluation/evaluate-repl! room human r (constantly true)))))
-      (is (thrown? Exception (evaluation/evaluate-repl! room human {:syntax :clojure :text "(def denied 1)" :namespace "user"}
-                                                      #(throw (ex-info "revoked" {})))))
+      (is (false? (:success (evaluation/evaluate-repl! room human {:syntax :clojure :text "(def denied 1)" :namespace "user"}
+                                                       #(throw (ex-info "revoked" {}))))))
       (finally (discourse/close-room! room)))))
 
 (deftest a-repl-timeout-retires-the-interpreter-without-affecting-other-humans
@@ -60,14 +142,26 @@
     (try
       (is (:success (run a "(def old-value 1)")))
       (is (:success (run b "(def old-value 2)")))
-      (let [fork (context/fork-context (:ctx room))]
+      (let [child (discourse/fork-room room {:isolation :ctx :clone-participants? false})
+            started (atom nil) start sandbox/start-evaluation!]
         (try
-          (with-redefs [sandbox/eval-code (fn [& _] {:success false :error {:type "TimeoutException" :message "test timeout"}})]
-            (is (:session-retired? (run a "old-value"))))
-          (let [result (evaluation/evaluate-repl! (assoc room :ctx fork) a
-                         {:syntax :clojure :text "old-value" :namespace "user"} (constantly true))]
+          (with-redefs [sandbox/start-evaluation!
+                        (fn [code options]
+                          (reset! started (start code (assoc options :timeout-ms 500))))]
+            ;; Plain promises are part of the human sandbox. The combinator
+            ;; namespace is not among its default exposed namespaces.
+            (let [result (run a "(deref (promise) 2000 :finished)")]
+              (is (false? (:success result)))
+              (is (= "TimeoutException" (:error-type result)))
+              (is (= :timeout (:stop-reason result)))
+              (is (:evaluation-entered? result))
+              (is (:session-quarantined? result)))
+            (is (sandbox/join-evaluation! @started 30000)))
+          (let [result (evaluation/evaluate-repl! child a
+                                                  {:syntax :clojure :text "old-value" :namespace "user"} (constantly true))]
             (is (= "1" (:value result)) (pr-str result)))
-          (finally (context/close-context! fork))))
+          (finally (when @started (sandbox/cancel-evaluation! @started) (sandbox/join-evaluation! @started 30000))
+                   (discourse/close-room! child))))
       (is (false? (:success (run a "old-value"))))
       (is (= "2" (:value (run b "old-value"))))
       (finally (discourse/close-room! room)))))
@@ -93,11 +187,11 @@
     (try
       (is (:success (run a "(def human-number 41)")))
       (is (= "42" (:value (run a "(inc human-number)"))))
-      (let [fork (context/fork-context (:ctx room))]
+      (let [child (discourse/fork-room room {:isolation :ctx :clone-participants? false})]
         (try
-          (is (:success (evaluation/evaluate! (assoc room :ctx fork) a (request "(def human-number 99)") (constantly true))))
+          (is (:success (evaluation/evaluate! child a (request "(def human-number 99)") (constantly true))))
           (is (= "41" (:value (run a "human-number"))))
-          (finally (context/close-context! fork))))
+          (finally (discourse/close-room! child))))
       (let [other (discourse/make-room {:id (keyword (str "other-human-eval-" (random-uuid))) :store (memory/make)})]
         (try
           (is (false? (:success (evaluation/evaluate! other a (request "human-number") (constantly true)))))
@@ -109,9 +203,9 @@
             from (.lastIndexOf text "(estimate")]
         (is (:success (run a text)))
         (is (= "6" (:value (evaluation/evaluate! room a
-                              (assoc (request text) :scope :selection :from from :to (count text)) (constantly true))))))
-      (is (thrown? Exception (evaluation/evaluate! room a (request "(def denied 1)")
-                                                   #(throw (ex-info "revoked" {})))))
+                                                 (assoc (request text) :scope :selection :from from :to (count text)) (constantly true))))))
+      (is (false? (:success (evaluation/evaluate! room a (request "(def denied 1)")
+                                                  #(throw (ex-info "revoked" {}))))))
       (is (false? (:success (run a "denied"))))
       (finally (discourse/close-room! room)))))
 
@@ -122,16 +216,16 @@
         human (random-uuid)
         run (fn [r syntax source]
               (evaluation/evaluate! r human
-                (request (if (= syntax :superficie) (superficie/sup->clj source) source)) (constantly true)))]
+                                    (request (if (= syntax :superficie) (superficie/sup->clj source) source)) (constantly true)))]
     (try
       (is (:success (run room :superficie "defn square [x]:\n  x * x\nend")))
       (is (= "49" (:value (run room :clojure "(square 7)"))))
       (is (:success (run room :clojure "(def factor 2)")))
       (is (= "18" (:value (run room :superficie "factor * square(3)"))))
-      (let [fork (context/fork-context (:ctx room)) child (assoc room :ctx fork)]
+      (let [child (discourse/fork-room room {:isolation :ctx :clone-participants? false})]
         (try
           (is (:success (run child :superficie "def factor: 3")))
           (is (= "2" (:value (run room :clojure "factor"))))
           (is (= "3" (:value (run child :clojure "factor"))))
-          (finally (context/close-context! fork))))
+          (finally (discourse/close-room! child))))
       (finally (discourse/close-room! room)))))
