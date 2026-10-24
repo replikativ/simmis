@@ -15,6 +15,7 @@
             [is.simm.documents.identity :as identity]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.rich-text :as rich]
+            [is.simm.documents.inline-charts :as inline-charts]
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.util Base64]))
 
@@ -177,7 +178,7 @@
         {:kind :markdown :revision (:revision parsed)
          :frontmatter (:frontmatter parsed) :body-from (:body-from parsed) :nodes (:nodes parsed)
          :document-id id :identity-status identity-status
-         :semantic semantic
+         :semantic semantic :inline-charts (inline-charts/analyze (:nodes parsed))
          :slots (mapv (fn [node] (assoc (select-keys node [:from :to :kind]) :model (rich/model node)))
                       (:nodes parsed))
          :diagnostics (into (vec (or (:diagnostics semantic) (:diagnostics parsed))) diagnostics)}))

@@ -3,6 +3,8 @@
   (:require ["@tiptap/core" :refer [Extension]]
             ["@tiptap/pm/state" :refer [Plugin]]
             [is.simm.documents.code-cells :as cells]
+            [is.simm.documents.inline-charts :as inline-charts]
+            [is.simm.uis.web.desktop.chart-view :as charts]
             [is.simm.documents.rich-document :as document]))
 
 (defn- portable [x] (js->clj (js/JSON.parse (js/JSON.stringify x)) :keywordize-keys true))
@@ -32,6 +34,22 @@
         (set! (.-simmisCellContext el) #js {:doc doc :raw raw :baseline baseline :value value})
         value))))
 
+(defn- inline-context [^js el ^js view]
+  (let [doc (.. view -state -doc) raw (.getAttribute el "data-inline-charts")
+        cached (.-simmisInlineChartContext el)]
+    (if (and cached (identical? doc (.-doc cached)) (= raw (.-raw cached)))
+      (.-positions cached)
+      (let [config (if (and cached (= raw (.-raw cached))) (.-config cached)
+                       (when raw
+                         (update (js->clj (js/JSON.parse raw) :keywordize-keys true)
+                                 :entries #(mapv inline-charts/normalize-preview %))))
+            matches (when (seq (:entries config))
+                      (inline-charts/positions [(portable (.toJSON doc))] (:entries config) (:limit config)))
+            positions (into {} (keep (fn [[path preview]]
+                                      (when-let [pos (position doc (rest path))] [pos preview]))) matches)]
+        (set! (.-simmisInlineChartContext el) #js {:doc doc :raw raw :config config :positions positions})
+        positions))))
+
 (defn refresh! [^js el]
   (when-let [views (.-simmisCellViews el)] (.forEach views (fn [paint] (paint)))))
 
@@ -40,12 +58,25 @@
     (let [dom (.createElement js/document "div") pre (.createElement js/document "pre")
           code (.createElement js/document "code") chrome (.createElement js/document "div")
           button (.createElement js/document "button") result (.createElement js/document "div")
+          chart (.createElement js/document "div")
           selected (volatile! nil)
           paint! (fn []
                    (let [config (context el view) cell (get (:positions config) (get-pos))
                          receipt (first (filter #(and (= (:from cell) (get-in % [:source :from]))
                                                        (= (:to cell) (get-in % [:source :to]))) (:receipts config)))
-                         running? (contains? (set (:running config)) (:key cell))]
+                         running? (contains? (set (:running config)) (:key cell))
+                         preview (get (inline-context el view) (get-pos))]
+                     (set! (.-hidden chart) (nil? preview))
+                     (when-not (identical? preview (.-simmisInlinePreview chart))
+                       (set! (.-simmisInlinePreview chart) preview)
+                       (.replaceChildren chart)
+                       (when preview
+                         (let [label (.createElement js/document "div") projection (.createElement js/document "div")]
+                           (set! (.-textContent label) "Chart preview")
+                           (.append chart label projection)
+                           (if (= :ready (:status preview))
+                             (charts/paint! projection (:data preview))
+                             (set! (.-textContent projection) "Chart JSON is invalid or exceeds the supported bounds.")))))
                      (vreset! selected cell)
                      (set! (.-hidden chrome) (nil? cell))
                      (set! (.-disabled button) (or (not (:enabled? config)) (not (:runnable? cell)) running?))
@@ -74,8 +105,10 @@
       (set! (.-className dom) "memory-code-cell")
       (set! (.-className chrome) "memory-code-cell-controls")
       (set! (.-className result) "memory-code-cell-result")
+      (set! (.-className chart) "memory-inline-chart memory-chart-projection")
       (.setAttribute chrome "contenteditable" "false")
       (.setAttribute result "contenteditable" "false")
+      (.setAttribute chart "contenteditable" "false")
       (.setAttribute button "type" "button")
       (.setAttribute button "aria-label" "Run saved Clojure cell")
       (set! (.-onclick button)
@@ -87,16 +120,18 @@
               (when (and @selected (not (.-disabled button)))
                 (.dispatchEvent el (js/CustomEvent. "simmis-run-cell"
                                                    #js {:detail #js {:key (:key @selected)}})))))
-      (.append pre code) (.append chrome button) (.append dom pre chrome result)
+      (.append pre code) (.append chrome button) (.append dom pre chrome result chart)
       (paint-language! node)
       #js {:dom dom :contentDOM code
            :update (fn [new-node]
                      (when (= "codeBlock" (.. new-node -type -name)) (paint-language! new-node) true))
-           :stopEvent (fn [event] (or (.contains chrome (.-target event)) (.contains result (.-target event))))
+           :stopEvent (fn [event] (or (.contains chrome (.-target event)) (.contains result (.-target event))
+                                    (.contains chart (.-target event))))
            :ignoreMutation (fn [mutation]
                              (and (not= "selection" (.-type mutation))
                                   (not (.contains code (.-target mutation)))))
-           :destroy (fn [] (.delete (.-simmisCellViews el) paint!) (set! (.-onclick button) nil))})))
+           :destroy (fn [] (.delete (.-simmisCellViews el) paint!) (set! (.-onclick button) nil)
+                      (.replaceChildren chart) (set! (.-simmisInlinePreview chart) nil))})))
 
 (defn extension [^js el]
   (.create Extension
@@ -110,4 +145,5 @@
     (.addEventListener el "simmis-run-cell" listener)
     (refresh! el)
     (fn [] (.removeEventListener el "simmis-run-cell" listener)
-      (set! (.-simmisCellContext el) nil))))
+      (set! (.-simmisCellContext el) nil)
+      (set! (.-simmisInlineChartContext el) nil))))

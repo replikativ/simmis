@@ -175,6 +175,35 @@ blocks stay inert. Source/local-source editing hides these projections until
 the saved declaration is available again. The legacy Vega/SCI widget path is
 not used to activate canonical charts.
 
+### Inline chart fences
+
+A `simmis-chart` fence embeds the same closed ChartData v1 directly in Markdown;
+it does not require a typed block declaration or another JSON file:
+
+````markdown
+```simmis-chart
+{"version":1,"kind":"line","series":[{"label":"Revenue","points":[[1,100],[2,140]]}]}
+```
+````
+
+File analysis validates at most the first four such parsed fences. The preview
+matches the exact language and projected code text shown in the editor, including
+Markdown nesting and newline handling. It remains stable during unrelated prose
+editing, hides immediately when its own text differs, and can return after
+matching analysis/autosave or undo. Read and Outline use the same data and
+source-independent SVG renderer. Invalid or oversized ChartData gets a bounded
+diagnostic while its original fence remains editable; other implementation
+failures propagate. `simmis-chart` code uses JSON syntax highlighting.
+
+Typed and inline charts share four mounted previews per document view, including
+repeated identical fences. Chart chrome and its native caches stay outside
+editor models and source serialization; preview updates do not create undo
+steps. Owner/target changes retire the presentation through existing Memory
+fences and native element lifecycle. This is a pure data preview, without a
+historical-provenance, execution, query or permission claim. Clojure cells retain
+their separate strict saved-source Run guard. Vega-Lite, Plotly, arbitrary HTML,
+URLs and SCI widgets are not activated by this fence.
+
 ### Portable typed declarations
 
 `documents.metadata` provides a separate inert declaration codec, identified by
