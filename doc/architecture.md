@@ -232,13 +232,28 @@ Its 128-MiB encoded-payload ceiling accommodates bounded duplicated workflow
 metadata; it does not widen admission limits. Missing/corrupt/oversized evidence
 fails closed. It reads no Attempt, live branch or current workspace selector,
 and confers no adoption authority or permanent storage retention guarantee.
-Authenticated proposal-source RPCs capture the caller before moving work off
-the engine drain. Proposal cards, including resolved audits, expose these frozen
+Authenticated proposal-source RPCs capture both the caller and original App
+before moving work off the engine drain. Current room permission and component
+ownership are checked again after the physical read and formatting. Proposal cards, including resolved audits, expose these frozen
 citations as read-only text, separately from current Memory. Client paging is
 bound to the exact proposal/component/request/selection and content identity;
 list/read tokens plus authenticated socket/session fences reject stale replies.
 Bytes stay in immutable signal state until strict UTF-8 decoding after the final
 chunk. Inspection does not execute code, navigate a current file or accept work.
+
+`/proposal/<proposal>/source/<component>?path=<encoded-input-path>` opens a
+separate read-only source tab. It lists the authorized retained manifest, then
+reads only the exact listed source path. Its bounded observation belongs to the
+session and stable tab ID in a Spindel signal, independently of the Proposal
+card's selected source. Connection, roster/control invalidation and the actual
+tab identity fence callbacks; moving a tab preserves its owner, while closure
+or repurposing retires it. Concurrent source tabs cannot replace each other's
+text. Actual tab closure releases that tab's text/partial-byte cache in its
+own execution context; moving a tab preserves it. Source links in the existing manifest list use ordinary anchors with
+native modifier-click/copy behavior; ordinary clicks open a Simmis tab. The
+viewer offers Open proposal and read retry, without edit/evaluate/adopt actions.
+A bare `/in/knowledge/...` path has no inferred live-file or historical origin.
+
 
 Setup replaces the collector-owned `/in/knowledge/` subtree so inherited stale
 staging cannot augment the manifest;

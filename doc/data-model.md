@@ -15,11 +15,9 @@ carry stable block identities and child grouping; ordinary unmarked Markdown
 has provisional blocks. A list inside a block does not implicitly become its
 Simmis children. File YAML properties, typed property projections, and the
 source-selected disposable query view do not install untrusted schema or
-execute imported code/widgets. Existing legacy KB entities are retained; this
-surface is not a completed migration of their identity or widget semantics.
-Startup account provisioning ensures the personal room without creating or
-attaching an additional legacy Wiki. Existing DB-backed wikis remain accessible
-and are labelled as legacy in navigation; their content and grants are retained.
+execute imported code/widgets. Navigation exposes canonical Room workspaces.
+Account provisioning ensures the personal room without creating a separate
+DB-backed Wiki. This surface does not import the old outliner stores.
 
 New Team and Memory forms create the same canonical `:project` Room. The owner
 and client creation UUID determine one native slug. `:room/creation-intent` holds
@@ -90,6 +88,13 @@ remain local to that read. The tab stores only a bounded reply and its marker in
 Spindel state. Saved metadata changes and reconnects invalidate it automatically;
 unsaved typing does not change the saved-workspace result. Closing a tab retires
 its reads and navigation; moving the tab preserves its current column owner.
+
+Frozen workflow sources have separate
+`/proposal/<proposal>/source/<component>?path=<encoded-input-path>` addresses.
+Proposal and component identify already-retained evidence; the path must appear
+in that evidence's source manifest. These URLs convey no permission and never
+select today's workspace file. The read-only source tab shows the original
+source path and content identity, including after Proposal resolution.
 
 Renaming retires old-path reads and history requests before reconciling current
 metadata; late replies cannot reopen the removed path. Typing during the move

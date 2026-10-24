@@ -92,3 +92,20 @@
   (when (and (string? route) (<= (count route) 9000))
     (when-let [[_ room query] (re-matches #"/room/([^/?#]+)/files\?([^#]+)" route)]
       (parse-query room query))))
+
+(def ^:private source-prefix "/in/knowledge/sources/")
+
+(defn source-path? [path]
+  (and (string? path) (str/starts-with? path source-prefix)
+       (path? (subs path (count source-prefix)))))
+
+(defn source-route [{:keys [proposal component path]}]
+  (let [proposal (str proposal) component (str component)]
+    (when (and (uuid-text? proposal) (uuid-text? component) (source-path? path))
+      (str "/proposal/" proposal "/source/" component "?path=" (encode path)))))
+
+(defn parse-source-query [proposal component query]
+  (let [fields (parameters query) path (get fields "path")]
+    (when (and (uuid-text? proposal) (uuid-text? component)
+               (= #{"path"} (set (keys fields))) (source-path? path))
+      {:kind :proposal-source :proposal proposal :component component :path path})))
