@@ -167,6 +167,23 @@
 (defn search-paths [room term]
   (with-workspace room #(search-paths-in @% term)))
 
+(defn- editable-model [node]
+  (when-let [model (rich/model node)]
+    (if-not (some #(= "table" (:type %)) (tree-seq (comp seq :content) :content model))
+      model
+      ;; Prove initial table representability, before advertising editable
+      ;; cells. A lossy inline codec must not wait for the first keystroke.
+      (try
+        (let [parsed (markdown/parse (rich/markdown model))
+              models (mapv rich/model (:nodes parsed))]
+          (when (and (every? some? models)
+                     (= (rich/roundtrip-normalize model)
+                        (rich/roundtrip-normalize {:type "doc" :content (vec (mapcat :content models))})))
+            model))
+        (catch clojure.lang.ExceptionInfo error
+          (when-not (contains? #{::markdown/invalid ::rich/unsupported} (:type (ex-data error)))
+            (throw error)))))))
+
 (defn analyze
   "Inert document analysis; never load/require/eval file code or widgets."
   [repository-id path text]
@@ -179,7 +196,7 @@
          :frontmatter (:frontmatter parsed) :body-from (:body-from parsed) :nodes (:nodes parsed)
          :document-id id :identity-status identity-status
          :semantic semantic :inline-charts (inline-charts/analyze (:nodes parsed))
-         :slots (mapv (fn [node] (assoc (select-keys node [:from :to :kind]) :model (rich/model node)))
+         :slots (mapv (fn [node] (assoc (select-keys node [:from :to :kind]) :model (editable-model node)))
                       (:nodes parsed))
          :diagnostics (into (vec (or (:diagnostics semantic) (:diagnostics parsed))) diagnostics)}))
     {:kind :text :revision (markdown/revision text) :diagnostics []}))

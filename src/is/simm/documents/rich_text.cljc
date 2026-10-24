@@ -6,6 +6,9 @@
 (defn- invalid! []
   (throw (ex-info "This rich-text structure needs Source editing" {:type ::unsupported})))
 
+(def max-table-rows 50)
+(def max-table-columns 20)
+
 (defn- attributes-size [attrs]
   (when-not (or (nil? attrs)
                 (and (map? attrs) (<= (count attrs) 32)
@@ -38,6 +41,32 @@
                    (not (some #(= "code" (:type %)) (:marks node))))
       (invalid!))))
 
+(defn- table-cell-attrs! [node]
+  (let [attrs (:attrs node)]
+    (when-not (and (not (seq (:marks node))) (nil? (:text node))
+                   (every? #{:colspan :rowspan :colwidth :align} (keys attrs))
+                   (= 1 (get attrs :colspan 1)) (= 1 (get attrs :rowspan 1))
+                   (nil? (:colwidth attrs)) (contains? #{nil "left" "right" "center"} (:align attrs))
+                   (= 1 (count (:content node))) (= "paragraph" (get-in node [:content 0 :type]))
+                   (empty? (get-in node [:content 0 :attrs]))
+                   (empty? (get-in node [:content 0 :marks])))
+      (invalid!))))
+
+(defn- table-shape! [node]
+  (let [rows (:content node) width (count (:content (first rows)))
+        aligns (mapv #(get-in % [:attrs :align]) (:content (first rows)))]
+    (when-not (and (empty? (:attrs node)) (not (seq (:marks node)))
+                   (<= 1 (count rows) max-table-rows) (<= 1 width max-table-columns)
+                   (every? #(and (= "tableRow" (:type %)) (empty? (:attrs %))
+                                  (not (seq (:marks %)))
+                                  (= width (count (:content %)))) rows))
+      (invalid!))
+    (doseq [[i row] (map-indexed vector rows)
+            [j cell] (map-indexed vector (:content row))]
+      (when-not (= (if (zero? i) "tableHeader" "tableCell") (:type cell)) (invalid!))
+      (table-cell-attrs! cell)
+      (when-not (= (nth aligns j) (get-in cell [:attrs :align])) (invalid!)))))
+
 (defn validate-model!
   "Bound the whole input before recursive normalization or serialization,
    including nodes such as list items and code text consumed by special cases."
@@ -50,6 +79,9 @@
         (invalid!))
       (when (= "footnoteReference" (:type node)) (footnote-shape! node))
       (when (contains? #{"inlineMath" "displayMath"} (:type node)) (math-shape! node))
+      ;; Validate representability BEFORE normalization can discard attrs.
+      (when (= "table" (:type node)) (table-shape! node))
+      (when (contains? #{"tableCell" "tableHeader"} (:type node)) (table-cell-attrs! node))
       (let [text (:text node) chars (+ chars (if (string? text) (count text) 0)
                                       (attributes-size (:attrs node))
                                       (reduce + 0 (map #(attributes-size (:attrs %)) (:marks node))))]
@@ -109,7 +141,7 @@
   (let [[_ before body after] (re-matches #"^(\s*)([\s\S]*?)(\s*)$" s)]
     (if (seq body) (str before marker body marker after) s)))
 
-(defn- marked [initial marks]
+(defn- marked [initial marks & [table?]]
   (reduce (fn [s mark]
             (case (:type mark)
               "code" s
@@ -118,34 +150,35 @@
               "strike" (delimited "~~" s)
               "link" (let [url (get-in mark [:attrs :href]) title (get-in mark [:attrs :title])]
                        (when-not (safe-link? url) (invalid!))
-                       (str "[" s "](<" url ">"
+                       (str "[" s "](<" (if table? (str/replace url "|" "\\|") url) ">"
                             (when (seq title)
-                              (str " \"" (str/replace title #"[\\\"]" #(str "\\" %)) "\"")) ")"))
+                              (let [title (str/replace title #"[\\\"]" #(str "\\" %))]
+                                (str " \"" (if table? (str/replace title "|" "\\|") title) "\""))) ")"))
               (invalid!))) initial marks))
 
-(defn- inline [node depth budget newline]
+(defn- inline [node depth budget newline & [table?]]
   (when (or (> depth 100) (neg? (vswap! budget dec))) (invalid!))
   (case (:type node)
     "hardBreak" (str "  " newline)
     "footnoteReference" (do (when (some #(= "code" (:type %)) (:marks node)) (invalid!))
-                             (marked (get-in node [:attrs :raw]) (:marks node)))
-    "inlineMath" (marked (get-in node [:attrs :raw]) (:marks node))
+                             (marked (get-in node [:attrs :raw]) (:marks node) table?))
+    "inlineMath" (marked (get-in node [:attrs :raw]) (:marks node) table?)
     "text" (let [text (:text node) marks (:marks node)
                  _ (when-not (string? text) (invalid!))
                  code? (some #(= "code" (:type %)) marks)
-                 initial (if code? (code-span text) (escaped text))]
-             (marked initial marks))
+                 initial (if code? (code-span (if table? (str/replace text "|" "\\|") text)) (escaped text))]
+             (marked initial marks table?))
     (invalid!)))
 
-(defn- inlines [node depth budget newline]
+(defn- inlines [node depth budget newline & [table?]]
   ;; An emphasized footnote and its adjacent text form ONE marked span. Closing
   ;; and reopening '*' at each inline atom creates ambiguous adjacent delimiters.
   (apply str
          (map (fn [run]
                 (let [marks (:marks (first run))]
                   (if (some #(= "code" (:type %)) marks)
-                    (apply str (map #(inline % (inc depth) budget newline) run))
-                    (marked (apply str (map #(inline (dissoc % :marks) (inc depth) budget newline) run)) marks))))
+                    (apply str (map #(inline % (inc depth) budget newline table?) run))
+                    (marked (apply str (map #(inline (dissoc % :marks) (inc depth) budget newline table?) run)) marks table?))))
               (partition-by #(vec (:marks %)) (:content node)))))
 
 (defn- emit [node depth budget newline & [list-marker]]
@@ -158,6 +191,19 @@
                 (str (apply str (repeat level "#")) " " (inlines node depth budget newline)))
     "horizontalRule" "---"
     "displayMath" (get-in node [:attrs :raw])
+    "table"
+    (let [rows (:content node)
+          cell (fn [node]
+                 (let [paragraph (first (:content node))]
+                   (when (some #(or (= "hardBreak" (:type %))
+                                    (and (= "text" (:type %)) (re-find #"[\r\n]" (:text %)))) (:content paragraph))
+                     (invalid!))
+                   (inlines paragraph (inc depth) budget newline true)))
+          row (fn [cells] (str "| " (str/join " | " cells) " |"))
+          separator (mapv #(case (get-in % [:attrs :align]) "left" ":---" "right" "---:" "center" ":---:" "---")
+                          (:content (first rows)))]
+      (str/join newline (concat [(row (mapv cell (:content (first rows)))) (row separator)]
+                                (map #(row (mapv cell (:content %))) (rest rows)))))
     "codeBlock" (let [language (or (get-in node [:attrs :language]) "")
                       _ (when-not (and (string? language) (re-matches #"[a-zA-Z0-9_+.-]{0,40}" language)) (invalid!))
                       text (apply str (map (fn [n] (when-not (= "text" (:type n)) (invalid!)) (:text n)) (:content node)))
@@ -223,7 +269,9 @@
       (cond-> {:type type :content content}
         (= type "heading") (assoc :attrs {:level (get-in node [:attrs :level])})
         (= type "orderedList") (assoc :attrs {:start (get-in node [:attrs :start] 1)})
-        (= type "codeBlock") (assoc :attrs {:language (or (get-in node [:attrs :language]) "")})))))
+        (= type "codeBlock") (assoc :attrs {:language (or (get-in node [:attrs :language]) "")})
+        (contains? #{"tableCell" "tableHeader"} type)
+        (assoc :attrs {:colspan 1 :rowspan 1 :colwidth nil :align (get-in node [:attrs :align])})))))
 
 (defn normalize [node] (normalize* (validate-model! node)))
 
@@ -292,6 +340,38 @@
 
 (declare block-model)
 
+(defn- table-inline-model [node]
+  (letfn [(decode-code [n]
+            (cond-> n
+              (= :Code (:kind n)) (update :literal str/replace "\\|" "|")
+              (contains? n :children) (update :children #(mapv decode-code %))))]
+    (inline-model (decode-code node) [])))
+
+(defn- table-model [node]
+  (let [head (filter #(= :TableHead (:kind %)) (:children node))
+        body (filter #(= :TableBody (:kind %)) (:children node))
+        separator (filter #(= :TableSeparator (:kind %)) (:children node))]
+    (when-not (and (= 1 (count head)) (<= (count body) 1) (= 1 (count separator))
+                   (= (count (:children node)) (+ (count head) (count body) (count separator))))
+      (invalid!))
+    (let [header-rows (:children (first head)) rows (concat header-rows (:children (first body)))]
+      (when-not (= 1 (count header-rows)) (invalid!))
+      {:type "table"
+       :content (mapv (fn [i row]
+                        (when-not (= :TableRow (:kind row)) (invalid!))
+                        {:type "tableRow"
+                         :content (mapv (fn [cell]
+                                          (when-not (and (= :TableCell (:kind cell)) (= 1 (:table-span cell))
+                                                         (= (zero? i) (:table-header? cell))
+                                                         (contains? #{nil :left :right :center} (:table-alignment cell)))
+                                            (invalid!))
+                                          {:type (if (zero? i) "tableHeader" "tableCell")
+                                           :attrs {:colspan 1 :rowspan 1 :colwidth nil
+                                                   :align (some-> (:table-alignment cell) name)}
+                                           :content [{:type "paragraph" :content (vec (mapcat table-inline-model (:children cell)))}]})
+                                        (:children row))})
+                      (range) rows)})))
+
 (defn- block-model [node]
   (let [inline #(vec (mapcat (fn [n] (inline-model n [])) (:children node)))
         children #(mapv block-model (:children node))]
@@ -312,6 +392,7 @@
        :content (let [text (str/replace (:literal node) #"(?:\r\n|\n|\r)$" "")]
                   (if (seq text) [{:type "text" :text text}] []))}
       :ThematicBreak {:type "horizontalRule"}
+      :TableBlock (table-model node)
       :DisplayMath {:type "displayMath"
                     :attrs {:sourceKey (str "math:" (:from node) ":" (:to node))
                             :raw (get-in node [:math :raw]) :tex (get-in node [:math :tex])}}
@@ -319,7 +400,7 @@
 
 (defn model
   "A supported region as inert Tiptap JSON, or nil (keep source-editable).
-   Importing arbitrary HTML, tasks/tables/widgets never guesses a lossy codec."
+   Importing arbitrary HTML, tasks or complex tables/widgets never guesses a lossy codec."
   [node]
   (try (let [result {:type "doc" :content [(block-model node)]}]
          (markdown result) result)

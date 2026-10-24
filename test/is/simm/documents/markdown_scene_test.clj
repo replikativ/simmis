@@ -25,7 +25,7 @@
     (is (some #(nil? (:scene %)) (vals previews)) "Comments are preserved, not displayed")
     (is (= source (document/apply-model source projection (:model projection))))
     (is (thrown? clojure.lang.ExceptionInfo
-                 (document/edits projection (assoc-in (:model projection) [:content 0 :attrs :label] "forged"))))))
+                 (document/edits projection (assoc-in (:model projection) [:content 1 :attrs :label] "forged"))))))
 
 (deftest raw-html-images-and-unsafe-links-never-create-active-elements
   (let [text "> [bad](javascript:alert(1)) <img src=https://example.test/x onerror=alert(1)>\n"

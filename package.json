@@ -25,6 +25,7 @@
     "@tiptap/core": "^3.6.6",
     "@tiptap/extension-link": "^3.6.6",
     "@tiptap/extension-placeholder": "^3.6.6",
+    "@tiptap/extension-table": "3.27.3",
     "@tiptap/pm": "^3.6.6",
     "@tiptap/starter-kit": "^3.6.6",
     "@tiptap/suggestion": "^3.6.6",

@@ -25,7 +25,7 @@
 
 (def syntax-profile
   "Pinned syntax projection, not a claim of complete Obsidian/plugin support."
-  {:id :simmis/markdown-syntax :version 6 :parser "flexmark/0.64.8"
+  {:id :simmis/markdown-syntax :version 7 :parser "flexmark/0.64.8"
    :features #{:tables :tasks :strikethrough :footnotes :wikilinks :wiki-embeds
                :inline-math :standalone-display-math :reference-links}})
 
@@ -138,7 +138,7 @@
       (instance? TaskListItem node) (assoc :checked? (.isItemDoneMarker ^TaskListItem node))
       (instance? TableCell node)
       (merge (let [alignment (.getAlignment ^TableCell node)]
-               (cond-> {:table-header? (.isHeader ^TableCell node)}
+               (cond-> {:table-header? (.isHeader ^TableCell node) :table-span (.getSpan ^TableCell node)}
                  alignment (assoc :table-alignment (keyword (.toLowerCase (.name alignment)))))))
       (instance? WikiNode node)
       (assoc :reference
