@@ -16,6 +16,8 @@
             #?(:clj [is.simm.ops.file-output-review :as file-review])
             #?(:clj [is.simm.ops.file-output-service :as file-service])
             #?(:clj [is.simm.ops.retained-knowledge-sources :as retained-sources])
+            #?(:clj [is.simm.ops.file-output-adoption :as adoption])
+            #?(:clj [is.simm.runtimes.application-ops :as application])
             #?(:clj [is.simm.ops.checks :as checks])
             #?(:clj [is.simm.runtimes.branching :as branching])
             #?(:clj [is.simm.model.access :as access])
@@ -243,22 +245,44 @@
                 (re-matches #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" value))
        (parse-uuid value))))
 
+#?(:clj
+   (defn prepare-source-operation
+     "Capture the original App before this fixed retained read is queued."
+     [party operation proposal component options]
+     (when-not (uuid? party)
+       (throw (ex-info "Authentication required" {:type :authentication-required})))
+     (when-not (#{:list :read} operation)
+       (throw (ex-info "Unknown retained source operation" {:type :validation-error})))
+     (let [unavailable (fn [error]
+                         (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)))
+                         {:status :unavailable})]
+       (try
+         (let [invoke (application/capture-operation)
+               proposal (wire-uuid proposal) component (wire-uuid component)]
+           (fn []
+             (try
+               (invoke (fn [host]
+                         (case operation
+                           :list (retained-sources/list! host party proposal component)
+                           :read (retained-sources/read! host party proposal component options))))
+               (catch Throwable error (unavailable error)))))
+         (catch Throwable error
+           (let [result (unavailable error)] (constantly result)))))))
+
 (defn-spin-remote list-proposal-sources!
   [server-id proposal-id-str component-id-str]
   (spin-remote server-id [proposal-id-str component-id-str]
-               #?(:clj (let [party (access/authenticated-party-id)]
-                         (await (blocking/blocking
-                                 #(retained-sources/list! party (wire-uuid proposal-id-str)
-                                                          (wire-uuid component-id-str)))))
+               #?(:clj (let [body (prepare-source-operation (access/authenticated-party-id) :list
+                                                            proposal-id-str component-id-str nil)]
+                         (await (blocking/blocking body)))
                   :cljs nil)))
 
 (defn-spin-remote read-proposal-source!
   [server-id proposal-id-str component-id-str options]
   (spin-remote server-id [proposal-id-str component-id-str options]
-               #?(:clj (let [party (access/authenticated-party-id)]
-                         (await (blocking/blocking
-                                 #(retained-sources/read! party (wire-uuid proposal-id-str)
-                                                          (wire-uuid component-id-str) options))))
+               #?(:clj (let [body (prepare-source-operation (access/authenticated-party-id) :read
+                                                            proposal-id-str component-id-str options)]
+                         (await (blocking/blocking body)))
                   :cljs nil)))
 
 (defn-spin-remote preview-file-proposal!

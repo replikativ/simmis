@@ -14,7 +14,7 @@
             [is.simm.ops.retained-knowledge-sources :as sources]
             [is.simm.runtimes.application-ops :as application]
             [is.simm.runtimes.context :as runtime-context]
-            [is.simm.uis.web.desktop.proposals-remote]
+            [is.simm.uis.web.desktop.proposals-remote :as remote]
             [konserve.core :as k]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec])
@@ -30,14 +30,15 @@
            owner-ctx (context/create-execution-context)
            host {:execution-ctx owner-ctx
                  ::reads/owner {:control-conn conn :execution-ctx owner-ctx}}
-           active (atom false) operations (atom 0)]
+           active (atom false) operations (atom 0)
+           invoke (fn [f]
+                    (swap! operations inc)
+                    (reset! active true)
+                    (try (f host) (finally (reset! active false))))]
        (try
          (with-redefs [runtime-context/server-context owner-ctx
-                       application/with-operation!
-                       (fn [f]
-                         (swap! operations inc)
-                         (reset! active true)
-                         (try (f host) (finally (reset! active false))))]
+                       application/with-operation! invoke
+                       application/capture-operation (fn [] invoke)]
            (f (assoc state :proposal (:proposal filing) :component (:manifest filing)
                      :active active :operations operations :host host :owner-ctx owner-ctx)))
          (finally (context/close-context! owner-ctx)))))))
@@ -144,7 +145,8 @@
                           (is (identical? owner-ctx ec/*execution-context*) "Never use ambient fork ownership")
                           (apply bounded store args))]
             (binding [ec/*execution-context* ambient]
-              (is (= :ok (:status (sources/list! party proposal component))))
+              (is (= {:status :unavailable} (sources/list! party proposal component))
+                  "Replacement during artifact access retires the original host before publication")
               (is (= {:status :unavailable} (sources/list! party proposal component))
                   "The next call refuses the stale original owner before artifact access")))
           (finally (context/close-context! ambient)))))))
@@ -188,3 +190,28 @@
             (is (= {:status :unavailable} result))
             (is interrupted?)))
         (finally (Thread/interrupted))))))
+
+(deftest queued-rpcs-use-the-original-captured-app-without-another-global-lookup
+  (with-sources
+   (fn [{:keys [party proposal component host]}]
+     (let [body (remote/prepare-source-operation party :list (str proposal) (str component) nil)]
+       (with-redefs [application/with-operation!
+                     (fn [& _] (throw (AssertionError. "Queued read reacquired the global App")))]
+         (is (= :ok (:status (body)))))
+       (let [opts {:path "/in/knowledge/sources/inbox/evidence.md" :length 1}
+             body (remote/prepare-source-operation party :read (str proposal) (str component) opts)]
+         (with-redefs [application/with-operation!
+                       (fn [& _] (throw (AssertionError. "Queued chunk reacquired the global App")))]
+           (is (= :ok (:status (body))))))))))
+
+(deftest permission-revoked-during-artifact-read-prevents-publication
+  (with-sources
+   (fn [{:keys [conn party room-id proposal component]}]
+     (let [read artifact/get-bounded-value]
+       (with-redefs [artifact/get-bounded-value
+                     (fn [& args]
+                       (let [result (apply read args)]
+                         (d/transact conn [[:db/retract [:room/id room-id] :room/owner [:party/id party]]
+                                           [:db/retract [:room/id room-id] :room/parties [:party/id party]]])
+                         result))]
+         (is (= {:status :unavailable} (sources/list! party proposal component))))))))

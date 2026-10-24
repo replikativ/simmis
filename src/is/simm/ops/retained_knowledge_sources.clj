@@ -99,31 +99,32 @@
         (unavailable!))
       {:request (:work.request/id row) :selection selection :captured captured})))
 
-(defn- with-sources! [party proposal component f]
+(defn- with-sources! [host party proposal component f]
   (when-not (every? uuid? [party proposal component]) (unavailable!))
-  (application/with-operation!
-    (fn [host]
-      (let [{conn :control-conn execution-ctx :execution-ctx} (::reads/owner host)]
-        (binding [ec/*execution-context* execution-ctx]
-          (let [db (reads/current-host-control-db! host)
-                owner (manifests/owner db component)
-                room (:room owner)
-                principal {:principal/kind :human :principal/id (str "party/" party)}]
-            (when-not (and owner (= proposal (:proposal owner))) (unavailable!))
-        ;; Reauthorize every chunk against this original host, before any
-        ;; artifact reads. No current room default/selected repository lookup.
-            (reads/authorize-read! db principal (str room))
-            (let [manifest (:manifest (storage/retained-in db component))
-                  header (d/pull db [:proposal/id :proposal/room :proposal/author :proposal/run]
-                                 (:proposal-eid owner))
-                  row (d/pull db '[*] [:work.request/id (:request manifest)])]
-              (when-not (= room (:proposal/room header)) (unavailable!))
-              (let [retained (:value (artifact/get-bounded-value
-                                      (artifact/datahike-store conn) (:work.request/payload-ref row)
-                                      max-payload-bytes))
-                    verified (verified! room proposal header manifest row retained)]
-            ;; Synchronous: original host lifetime covers validation AND DTO.
-                (f verified)))))))))
+  (let [{conn :control-conn execution-ctx :execution-ctx} (::reads/owner host)]
+    (binding [ec/*execution-context* execution-ctx]
+      (let [db (reads/current-host-control-db! host)
+            owner (manifests/owner db component)
+            room (:room owner)
+            principal {:principal/kind :human :principal/id (str "party/" party)}]
+        (when-not (and owner (= proposal (:proposal owner))) (unavailable!))
+        (reads/authorize-read! db principal (str room))
+        (let [manifest (:manifest (storage/retained-in db component))
+              header (d/pull db [:proposal/id :proposal/room :proposal/author :proposal/run]
+                             (:proposal-eid owner))
+              row (d/pull db '[*] [:work.request/id (:request manifest)])]
+          (when-not (= room (:proposal/room header)) (unavailable!))
+          (let [retained (:value (artifact/get-bounded-value
+                                  (artifact/datahike-store conn) (:work.request/payload-ref row)
+                                  max-payload-bytes))
+                verified (verified! room proposal header manifest row retained)
+                result (f verified)
+                current (reads/current-host-control-db! host)]
+            ;; Current permission and the component's original owner must still
+            ;; hold after reading/formatting; a URL is not a retained grant.
+            (reads/authorize-read! current principal (str room))
+            (when-not (= owner (manifests/owner current component)) (unavailable!))
+            result))))))
 
 (defn- safely [f]
   (try {:status :ok :data (f)}
@@ -136,27 +137,25 @@
    :selection (into {} (map (fn [key] [key (str (get selection key))]))
                     [:trigger-id :execution-id :manifest-id])})
 
-(defn list!
+(defn- listing
   "Current room readers inspect only original manifest-listed frozen sources.
    Resolved Proposals remain readable. No artifact id or path supplied by caller."
-  [party proposal component]
-  (safely
-   #(with-sources! party proposal component
+  [host party proposal component]
+  (with-sources! host party proposal component
       (fn [{:keys [captured] :as verified}]
         (assoc (identity-fields proposal component verified)
                :files (mapv (fn [{:keys [input path role size content]}]
                               {:path input :source-path path :role role :size size
                                :content-id (str content)})
-                            (get-in captured [:manifest :files])))))))
+                            (get-in captured [:manifest :files]))))))
 
-(defn read!
+(defn- chunk
   "One <=16 KiB base64 chunk from the exact retained selection. Reassemble
    bytes before UTF-8 decoding; a character may straddle chunk boundaries."
-  [party proposal component opts]
-  (safely
-   (fn []
+  [host party proposal component opts]
+  (do
      (when-not (m/validate results/file-options-schema opts) (unavailable!))
-     (with-sources! party proposal component
+     (with-sources! host party proposal component
        (fn [{:keys [captured] :as verified}]
          (let [{:keys [path offset length] :or {offset 0 length results/max-chunk-bytes}} opts
                entry (first (filter #(= path (:input %)) (get-in captured [:manifest :files])))
@@ -171,4 +170,18 @@
                              :eof? (= end size)
                              :base64 (.encodeToString (Base64/getEncoder)
                                                       (Arrays/copyOfRange ^bytes bytes (int offset) (int end)))})
-               (< end size) (assoc :next-offset end)))))))))
+               (< end size) (assoc :next-offset end))))))))
+
+(defn list!
+  "List exact frozen sources. The HOST arity requires an already-owned operation on the captured App."
+  ([party proposal component]
+   (safely #(application/with-operation! (fn [host] (listing host party proposal component)))))
+  ([host party proposal component]
+   (safely #(listing host party proposal component))))
+
+(defn read!
+  "Read one bounded frozen chunk. The HOST arity requires an already-owned operation on the captured App."
+  ([party proposal component opts]
+   (safely #(application/with-operation! (fn [host] (chunk host party proposal component opts)))))
+  ([host party proposal component opts]
+   (safely #(chunk host party proposal component opts))))

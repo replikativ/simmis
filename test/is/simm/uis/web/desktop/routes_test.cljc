@@ -151,3 +151,12 @@
 (deftest an-unaddressable-tab-has-no-route
   (is (nil? (routes/tab->route {:type :settings :data {}})))
   (is (nil? (routes/tab->route {:type :proposals :data {}}))))
+
+(deftest frozen-source-tabs-round-trip-with-their-own-immutable-request
+  (let [ref {:kind :proposal-source :proposal "11111111-1111-4111-8111-111111111111"
+             :component "22222222-2222-4222-8222-222222222222"
+             :path "/in/knowledge/sources/inbox/Study.md"}
+        tab {:type :proposal-source :data {:proposal-id (:proposal ref) :component-id (:component ref) :path (:path ref)}}]
+    (is (= ref (routes/route->ref (routes/ref->route ref))))
+    (is (= ref (routes/tab->ref tab)))
+    (is (nil? (routes/route->ref (str (routes/ref->route ref) "&other=1"))))))

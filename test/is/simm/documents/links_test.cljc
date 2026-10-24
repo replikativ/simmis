@@ -52,3 +52,15 @@
          (links/parse-query room "path=a+b%2fc.md")))
   (is (= {:kind :memory-file :room room :path "研究/a=b?.md"}
          (links/parse-query room "p%61th=研究/a=b?.md"))))
+
+(deftest frozen-source-addresses-name-an-exact-proposal-component-and-input
+  (let [proposal "12345678-1234-1234-1234-123456789abc"
+        component "abcdefab-1234-1234-1234-123456789abc"
+        path "/in/knowledge/sources/inbox/A 🦋.md"
+        ref {:kind :proposal-source :proposal proposal :component component :path path}
+        url (links/source-route ref)]
+    (is (= ref (links/parse-source-query proposal component (subs url (inc (.indexOf url "?"))))))
+    (doseq [path ["inbox/A.md" "/in/knowledge/manifest.edn" "/in/knowledge/sources/../A.md"]]
+      (is (nil? (links/source-route (assoc ref :path path)))))
+    (is (nil? (links/parse-source-query proposal component "path=%2Fin%2Fknowledge%2Fsources%2FA.md&path=other")))
+    (is (nil? (links/parse-source-query proposal component "path=%2Fin%2Fknowledge%2Fsources%2FA.md&scope=other")))))

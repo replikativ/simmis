@@ -5,6 +5,7 @@
    add/remove rails and before/after stacks) + Accept / Dismiss.
    doc/proposals-and-time-travel.md §S2."
   (:require [clojure.string :as str]
+            [is.simm.documents.links :as memory-links]
             [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.proposal-card :as card-model]
@@ -13,6 +14,7 @@
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]])
             #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
+            #?(:cljs [is.simm.uis.web.desktop.refs :as refs])
             #?(:cljs [is.simm.uis.web.desktop.proposals-remote :as pr])
             #?(:cljs [is.simm.uis.web.desktop.aggregate :as agg])
             #?(:cljs [is.simm.uis.web.desktop.connection-epoch :as connection-epoch])
@@ -897,7 +899,8 @@
                                (if (= :error (:status state)) "Retry comparison" "Inspect retained file"))))))
 
 (defn- retained-sources-view [pid scope state]
-  (el/div {:class "proposal-retained-files"}
+  (let [ctx #?(:cljs rtc/*execution-context* :clj nil)]
+   (el/div {:class "proposal-retained-files"}
           (if (nil? state)
             (el/button {:class "btn btn-secondary btn-sm"
                         :on-click #?(:cljs (fn [_] (load-proposal-sources! pid scope)) :clj nil)}
@@ -919,7 +922,18 @@
                                   (el/div {:key (:path file)}
                                           (el/button {:class "btn btn-secondary btn-sm"
                                                       :on-click #?(:cljs (fn [_] (load-proposal-source! pid scope (:path file))) :clj nil)}
-                                                     (:path file))))
+                                                     (:path file))
+                                          (el/a {:class "btn btn-secondary btn-sm"
+                                                 :href (memory-links/source-route {:proposal pid :component scope :path (:path file)})
+                                                 :title "Open this exact frozen source; use the browser menu to copy its link"
+                                                 :on-click #?(:cljs (fn [event]
+                                                                      (when-not (or (.-ctrlKey event) (.-metaKey event) (.-shiftKey event) (.-altKey event))
+                                                                        (.preventDefault event)
+                                                                        (binding [rtc/*execution-context* ctx]
+                                                                          (refs/open! {:kind :proposal-source :proposal pid :component scope :path (:path file)}
+                                                                                      {:new-tab? true}))))
+                                                              :clj nil)}
+                                                "Source link")))
                                 (when (empty? (:files listing))
                                   (el/p {:class "proposal-note-line"} "No frozen source files."))
                                 (when read
@@ -931,7 +945,7 @@
                                             :loading (el/p {} "Loading frozen source…")
                                             :ready (el/pre {:class "proposal-retained-source"} (:text read))
                                             (el/p {} "Frozen source is unavailable."))))))
-                      nil)))))
+                      nil))))))
 
 (defn- fork-diff-view
   "One fork as its own block: what it changed, and its own decision.

@@ -34,6 +34,7 @@
             [is.simm.uis.web.desktop.views.sandbox-panel :as sandbox-panel]
             #?(:cljs [is.simm.uis.web.desktop.views.schedules :as schedules-view])
             #?(:cljs [is.simm.uis.web.desktop.views.proposals :as proposals-view])
+            #?(:cljs [is.simm.uis.web.desktop.views.retained-source :as retained-source])
             #?(:cljs [is.simm.uis.web.desktop.views.tasks :as tasks-view])
             #?(:cljs [is.simm.uis.web.desktop.views.timelines :as timelines-view])
             #?(:cljs [is.simm.uis.web.desktop.views.accounting :as accounting-view])
@@ -617,6 +618,7 @@
     :mail "mail"
     :schedules "calendar"
     :proposals "git-pull-request"
+    :proposal-source "file-search"
     :tasks "circle-check"
     :timelines "git-branch"
     :accounting "wallet"
@@ -1006,7 +1008,7 @@
                                                (cond-> (assoc (:data active-tab-data)
                                                               :conversation-captures conversation-captures
                                                               :capture-connection capture-connection)
-                                                 (#{:memory :new-room :new-kb} (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
+                                                 (#{:memory :proposal-source :new-room :new-kb} (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
                                                local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
@@ -2435,6 +2437,9 @@
 
     :files
     (files-view/files-view data)
+
+    :proposal-source
+    #?(:cljs (retained-source/view data) :clj (el/p {} "Frozen source"))
 
     :memory
     #?(:cljs (memory-view/render (assoc data :col-id col-id))
