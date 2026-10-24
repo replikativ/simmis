@@ -65,9 +65,11 @@
                    inbound (fn [kind op more]
                              (world/inbound! (world/principal w kind) op (merge args more)))
                    source #(inbound % "load-workflow-source!" {:workflow-name "echo"})
-                   listing #(inbound % "load-workflow-list!" {:options {}})]
+                   listing #(inbound % "load-workflow-list!" {:options {}})
+                   schedules #(inbound % "load-workflow-schedules!" {})]
                (doseq [kind [:owner :member]]
                  (is (= ["echo"] (get-in (listing kind) [:result :names])))
+                 (is (= [] (:result (schedules kind))))
                  (let [loaded (:result (source kind))]
                    (is (= fixture/fixture (:files loaded)))
                    (is (false? (get-in loaded [:inspection :checker-executed?])))
@@ -79,6 +81,7 @@
                                     {:options {:room "different-room"}})))
                (doseq [kind [:non-member :admin :anon]]
                  (is (world/refused? (listing kind)))
+                 (is (world/refused? (schedules kind)))
                  (is (world/refused? (source kind)))
                  (is (world/refused?
                       (inbound kind "save-workflow-source!"
@@ -93,8 +96,11 @@
                                       {:edits {:name "echo" :expected-revision revision
                                                :files {"notes.md" "stale"}}}))))
                (is (:error (inbound :member "load-workflow-list!" {:options {:eval true}})))
+               (doseq [kind [:team-agent :stranger-agent]]
+                 (is (:error (schedules kind))))
                (d/transact conn [[:db/retract [:room/id (:room w)] :room/parties [:party/id (:member w)]]])
                (is (world/refused? (listing :member)))
+               (is (world/refused? (schedules :member)))
                (is (world/refused? (source :member)))
                (is (world/refused?
                     (inbound :member "save-workflow-source!"

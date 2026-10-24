@@ -40,6 +40,24 @@
 
 (defn dirty? [draft] (not= (:files draft) (get-in draft [:source :files])))
 
+(defn workflow-activations
+  "Room-scoped observations, including paused and old-source deployments.
+   An unknown observation is not an empty schedule list or execution authority."
+  [state room name]
+  (when (= :ready (:activation-status state))
+    (->> (:activations state)
+         (filter #(and (= room (:room-id %)) (= name (:name %))))
+         (sort-by :id)
+         vec)))
+
+(defn activation-label [row]
+  (cond
+    (:reason row) (str "Held · " (name (:reason row)))
+    (= :legacy-recreate (:resume-blocked row)) "Needs recreation · earlier schedule format"
+    (= :reconciliation-required (:resume-blocked row)) "Held · admission requires reconciliation"
+    (:enabled? row) "Active"
+    :else "Paused"))
+
 (defn observe-wiki-setup [state reply]
   (let [status (if (and (= "maintain-wiki" (:name reply)) (= :unchanged (:activation reply))
                         (= :current-source (:observation reply))

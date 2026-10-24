@@ -72,6 +72,25 @@
       (catch :default _ []))
     []))
 
+(defn segments [text info]
+  (loop [ranges (seq (token-ranges text info)) offset 0 out []]
+    (if-let [{:keys [from to class]} (first ranges)]
+      (recur (next ranges) to
+             (cond-> out (< offset from) (conj {:text (subs text offset from)})
+               true (conj {:text (subs text from to) :class class})))
+      (cond-> out (< offset (count text)) (conj {:text (subs text offset)})))))
+
+(defn document-segments [models]
+  (loop [nodes (map-indexed (fn [i model] [[i] model]) models) chars 0 out {}]
+    (if-let [[path node] (first nodes)]
+      (if (= "codeBlock" (:type node))
+        (let [text (apply str (map :text (:content node))) total (+ chars (count text))]
+          (recur (next nodes) total
+                 (cond-> out (<= total max-document-chars)
+                   (assoc path (segments text (get-in node [:attrs :language]))))))
+        (recur (concat (map-indexed (fn [i child] [(conj path i) child]) (:content node)) (rest nodes)) chars out))
+      out)))
+
 (defn- decorations [^js doc]
   (let [chars (volatile! 0) cells (volatile! 0) spans (volatile! [])]
     (.descendants doc

@@ -277,6 +277,12 @@
                #?(:clj (await (workflow-on-worker room-id-str :simmis/workflow-schedule-create request))
                   :cljs nil)))
 
+(defn-spin-remote load-workflow-schedules!
+  [server-id room-id-str]
+  (spin-remote server-id [room-id-str]
+               #?(:clj (await (workflow-on-worker room-id-str :simmis/workflow-schedule-list {}))
+                  :cljs nil)))
+
 (defn-spin-remote set-workflow-schedule-enabled!
   [server-id room-id-str request]
   (spin-remote server-id [room-id-str request]

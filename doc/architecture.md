@@ -19,7 +19,11 @@ workflow files, and room-local Clojure source share the same hierarchy.
 Filename search and folder-focus breadcrumbs avoid unbounded indentation.
 Files open in independent tabs. Markdown offers Read, directly editable Rich
 text, semantic Outline, and exact Source views; unsupported rich regions remain
-inert source. Rich typing patches supported source spans locally; each automatic
+source-backed. Tables and quotes have inert display previews in both Read and
+Edit, while their exact Markdown remains outside the editable rich codec.
+Comments stay in source without rendering as page content. Read shares Edit's
+compact spacing and bounded explicit-language code highlighting. Rich typing
+patches supported source spans locally; each automatic
 save validates the complete bounded batch on the server before one canonical
 publication. A compact file header carries path, persistence status and view
 selection; secondary file actions and properties live in its overflow menu.
@@ -748,8 +752,16 @@ their original base and expose incoming changes; known-stale source cannot
 start fresh work. Observation frames are immutable data scoped to the socket
 and owning execution world, not shared native futures or mutable UI gates.
 Workflow and Schedules views reconcile automatically from the private Memory
-hint stream. A watched room receives room-only source/control invalidations;
-the global dashboard registers a separate party interest in the SAME notifier
+hint stream. A watched room receives room-only source/control invalidations.
+Workflows also lists that room's existing activations beside the workflow,
+including paused, held and earlier-source revisions. Unknown or invalidated
+observations are shown as unverified, never as an empty schedule list. Opening
+the Maintain knowledge card does not install source, fund work or activate a
+schedule; configuration reuses the ordinary workflow form and admission ledger.
+The card links recent Runs and filed proposals through the existing authorized
+navigation. Evidence is the room's inbox and transcripts, not automatic chat
+ingestion, and outputs remain proposals for review.
+The global dashboard registers a separate party interest in the SAME notifier
 without opening room repositories. Its content-free schedule-index hint rechecks
 the current human identity before publication. Neither stream carries a raw
 control database, claims, wallets, files or read authority. Watch registration

@@ -16,6 +16,31 @@
             (el/span {} label)
             (el/input {:value (or value "") :on-input (fn [e] (change #?(:cljs (.. e -target -value) :clj "")))})))
 
+(defn- activation-status [state actions workflow]
+  (let [rows (editor/workflow-activations state (:room-id actions) workflow)
+        draft (get-in state [:drafts workflow])
+        revision (when (and draft (editor/source-current? draft)) (get-in draft [:source :revision]))]
+    (el/div {:class "workflow-activation-status" :aria-label (str workflow " schedules")}
+            (cond
+              (= :unavailable (:activation-status state))
+              (el/p {:role "status"} "Schedule status unavailable. No settings were changed.")
+              (nil? rows) (el/p {:role "status"} "Checking schedules…")
+              (empty? rows) (el/p {} "Not scheduled in this room. Choose a model and finite limits below to configure a schedule.")
+              :else
+              (el/div {}
+                      (for [row rows]
+                        (let [latest (first (sort-by :intended-at > (:occurrences row)))]
+                          (el/div {:key (:id row)}
+                                  (el/p {} (str (editor/activation-label row)
+                                                (when (= :benchmark (:kind row)) " · benchmark")
+                                                (when (and revision (:source-revision row)
+                                                           (not= revision (:source-revision row))) " · earlier source revision")))
+                                  (when-let [job (:job latest)]
+                                    (el/button {:on-click (fn [_] ((:open-run actions) job))} "Latest Run"))
+                                  (when-let [proposal (get-in latest [:filing :proposal])]
+                                    (el/button {:on-click (fn [_] ((:open-proposal actions) proposal))} "Review proposal")))))
+                      (el/button {:on-click (fn [_] ((:open-schedules actions)))} "Manage schedules"))))))
+
 (defn view [room-name state actions]
   (let [selected (:selected state) draft (get-in state [:drafts selected])
         source (:source draft) form (:form draft)
@@ -44,18 +69,19 @@
             (let [{:keys [status observed-status]} (:wiki-setup state)]
               (when (#{:missing :installed :customized :pending} status)
                 (el/div {:class "workflow-note"}
-                        (el/strong {} "Wiki maintenance · ")
+                        (el/strong {} "Maintain knowledge · ")
                         (case status
                           :missing (el/button {:on-click (fn [_] ((:install-wiki-setup actions)))} "Set up wiki maintenance")
-                          :installed (el/span {} "Saved workflow available. ")
+                          :installed (el/span {} "Starter workflow installed. ")
                           :customized (el/span {} "Customized workflow preserved. ")
                           :pending (el/span {} "Setup outcome is uncertain. Checking saved source does not repeat installation. "))
                         (when (or (#{:installed :customized} status) (#{:installed :customized} observed-status))
-                          (el/button {:on-click (fn [_] ((:select actions) "maintain-wiki"))} "Open wiki workflow"))
+                          (el/button {:on-click (fn [_] ((:select actions) "maintain-wiki"))} "Open workflow"))
                         (when (= :pending status)
                           (el/button {:on-click (fn [_] ((:inspect-wiki-setup actions)))
                                       :disabled (get-in state [:loading :wiki-setup-inspect])} "Check saved setup"))
-                        (el/p {} "No model, allowance or schedule is activated by setup."))))
+                        (activation-status state actions "maintain-wiki")
+                        (el/p {} "The starter uses this room’s inbox and transcripts as evidence and wiki files as context, then proposes changes for review. Chat is not automatically filed. Inspect customized source before use. Setup does not choose a model, add allowance or enable a schedule."))))
             (for [[slot error] (:errors state)]
               (el/div {:key (pr-str slot) :class "proposal-error" :role "alert"}
                       (str (when (vector? slot) (str (second slot) ": ")) error)))
@@ -245,7 +271,9 @@
                                                                      "Start a different request…")))
                                                 (when (and (not local?) (not cli?))
                                                   (el/div {:class "workflow-scheduling"}
-                                                          (el/h4 {} "Recurring deployment")
+                                                          (el/h4 {} "Schedule")
+                                                          (when-not (= "maintain-wiki" selected)
+                                                            (activation-status state actions selected))
                                                           (field "Interval · minutes (1–525600)" (:schedule-minutes form) #(set-form :schedule-minutes %))
                                                           (field "Timezone (e.g. Europe/Berlin)" (:schedule-tz form) #(set-form :schedule-tz %))
                                                           (when-let [{:keys [pending? payload]} (editor/deployment-preview draft)]

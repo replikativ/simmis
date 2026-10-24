@@ -155,6 +155,7 @@
    "load-attempt-files!"     [(c :room MEMBERS)]
    "load-attempt-file!"      [(c :room MEMBERS)]
    "load-workflow-list!"     [(c :room MEMBERS)]
+   "load-workflow-schedules!" [(c :room MEMBERS)]
    "load-workflow-source!"   [(c :room MEMBERS)]
    "save-workflow-source!"   [(c :room MEMBERS)]
    "load-memory-folder!"     [(c :room MEMBERS)]

@@ -1,7 +1,9 @@
 (ns is.simm.uis.workflow-actions-test
-  (:require [cljs.test :refer-macros [deftest is]]
+  (:require [cljs.test :refer-macros [deftest is async]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.dom.browser :as browser]
+            [org.replikativ.spindel.dom.render :as render]
             [is.simm.runtimes.web :as web]
             [is.simm.uis.web.desktop.runtime :as runtime]
             [is.simm.uis.web.desktop.signals :as sig]
@@ -10,7 +12,9 @@
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.memory-remote :as memory-remote]
             [is.simm.uis.web.desktop.workflow-editor :as editor]
-            [is.simm.uis.web.desktop.workflows-remote :as remote]))
+            [is.simm.uis.web.desktop.workflows-remote :as remote]
+            [is.simm.uis.web.desktop.views.workflows :as view])
+  (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn source [name revision]
   {:name name :revision revision :files {"workflow.edn" "{}"}
@@ -18,6 +22,39 @@
    :inspection {:ok true :bundle "bundle" :cases []}})
 
 (def initial-revision "c1d56a1b-63f9-414c-a6ad-feb35d5e709d")
+
+(deftest knowledge-card-renders-blocked-schedules-without-configuring-anything
+  (async done
+    (let [ctx (context/fork-context runtime/runtime) container (.createElement js/document "div")
+          handle (atom nil) invoked (atom [])
+          state {:wiki-setup {:status :customized} :activation-status :ready
+                 :activations [{:id "legacy" :room-id "room" :name "maintain-wiki" :enabled? true
+                                :resume-blocked :legacy-recreate}
+                               {:id "held" :room-id "room" :name "maintain-wiki" :enabled? false
+                                :resume-blocked :reconciliation-required}]}
+          observer (js/MutationObserver.
+                    (fn [_ observer]
+                      (when (.includes (.-textContent container) "Needs recreation")
+                        (.disconnect observer)
+                        (try
+                          (is (.includes (.-textContent container) "admission requires reconciliation"))
+                          (is (.includes (.-textContent container) "The starter uses"))
+                          (is (.includes (.-textContent container) "Inspect customized source"))
+                          (is (not-any? #(= "Active" (.-textContent %))
+                                        (array-seq (.querySelectorAll container ".workflow-activation-status p"))))
+                          (is (empty? @invoked))
+                          (finally
+                            (when-let [stop (:stop! @handle)] (stop))
+                            (.remove container) (context/close-context! ctx) (done))))))]
+      (set! (.. container -style -display) "none")
+      (.appendChild (.-body js/document) container)
+      (.observe observer container #js {:childList true :subtree true})
+      (binding [ec/*execution-context* ctx]
+        (reset! handle (render/render-spin! container
+                                           (spin (view/view "Room" state {:room-id "room"
+                                                                         :open-schedules #(swap! invoked conj :schedule)
+                                                                         :select #(swap! invoked conj %)}))
+                                           (browser/make-dom-discharge js/document)))))))
 
 (defn deferred [requests]
   (fn [& args]
@@ -33,6 +70,8 @@
                     connection/snapshot (constantly {:socket :fixture})
                     remote/inspect-wiki-maintenance-setup!
                     (fn [& _] (fn [ok _] (ok {:status :unavailable})))
+                    remote/load-workflow-schedules!
+                    (fn [& _] (fn [ok _] (ok [])))
                     actions/confirm! (constantly true)]
         (binding [ec/*execution-context* ctx]
           (reset! sig/workflow-editor-state {})
@@ -56,6 +95,83 @@
           ((:save ui) "a")
           (is (empty? @requests))
           (is (= before @sig/workflow-editor-state)))))))
+
+(deftest schedule-observation-is-inert-reactive-and-cannot-restore-revoked-access
+  (with-state
+    (fn [ui k]
+      (let [schedules (atom []) sources (atom []) lists (atom []) watches (atom []) writes (atom [])
+            row {:id "activation" :room-id "room" :name "maintain-wiki" :enabled? false}]
+        (with-redefs [remote/load-workflow-schedules! (deferred schedules)
+                      remote/load-workflow-source! (deferred sources)
+                      remote/load-workflow-list! (deferred lists)
+                      memory-remote/prepare-memory-stream! (deferred watches)
+                      remote/create-workflow-schedule! (deferred writes)
+                      remote/provision-workflow-allowance! (deferred writes)
+                      remote/install-wiki-maintenance! (deferred writes)]
+          ((:change ui) "a" assoc-in [:files "workflow.edn"] "unsaved")
+          ((:observe ui))
+          (is (= 1 (count @schedules)))
+          ((:ok (first @schedules)) [row])
+          (is (= [row] (editor/workflow-activations (get @sig/workflow-editor-state k) "room" "maintain-wiki")))
+          (reset! sync/state {:control-dirty 1})
+          ((:observe ui))
+          (is (= 2 (count @schedules)))
+          (is (nil? (editor/workflow-activations (get @sig/workflow-editor-state k) "room" "maintain-wiki")))
+          ;; A duplicate old reply cannot finish the replacement observation.
+          ((:ok (first @schedules)) [(assoc row :enabled? true)])
+          (is (= :checking (get-in @sig/workflow-editor-state [k :activation-status])))
+          ((:ok (second @schedules)) [(assoc row :reason :budget-exhausted)])
+          (is (= :budget-exhausted (get-in @sig/workflow-editor-state [k :activations 0 :reason])))
+          (reset! sync/state {:control-dirty 2})
+          ((:observe ui))
+          (is (= 3 (count @schedules)))
+          (reset! sig/user-rooms {:rooms []})
+          ((:observe ui))
+          ((:ok (last @schedules)) [row])
+          (is (nil? (get-in @sig/workflow-editor-state [k :activations])))
+          (is (true? (get-in @sig/workflow-editor-state [k :access-denied?])))
+          (is (= "unsaved" (get-in @sig/workflow-editor-state [k :drafts "a" :files "workflow.edn"])))
+          (is (empty? @writes)))))))
+
+(deftest immediate-schedule-reply-does-not-get-stuck-checking-after-stream-registration
+  (with-state
+    (fn [ui k]
+      (with-redefs [remote/load-workflow-list! (fn [& _] (fn [ok _] (ok {:names []})))
+                    remote/load-workflow-source! (fn [& _] (fn [ok _] (ok (source "a" initial-revision))))
+                    memory-remote/prepare-memory-stream! (fn [& _] (fn [ok _] (ok {:watching? true})))
+                    sync/ensure! (fn [& _])]
+        ((:observe ui))
+        ((:observe ui))
+        (is (= :ready (get-in @sig/workflow-editor-state [k :activation-status])))
+        (is (= [] (editor/workflow-activations (get @sig/workflow-editor-state k) "room" "maintain-wiki")))))))
+
+(deftest restored-identical-roster-fetches-schedules-again
+  (doseq [immediate? [true false]]
+    (with-state
+      (fn [ui k]
+        (let [roster {:rooms [{:room/id "room"}]} requests (atom [])
+              row {:id "activation" :room-id "room" :name "maintain-wiki" :enabled? false}
+              schedules (deferred requests) other (atom [])]
+          (with-redefs [remote/load-workflow-list! (deferred other)
+                        remote/load-workflow-source! (deferred other)
+                        memory-remote/prepare-memory-stream! (deferred other)
+                        remote/load-workflow-schedules!
+                        (fn [& args] (let [request (apply schedules args)]
+                                       (fn [ok error]
+                                         (request ok error)
+                                         (when immediate? (ok [row])))))]
+            (reset! sig/user-rooms roster)
+            ((:observe ui))
+            (when-not immediate? ((:ok (first @requests)) [row]))
+            (is (= [row] (editor/workflow-activations (get @sig/workflow-editor-state k) "room" "maintain-wiki")))
+            (reset! sig/user-rooms {:rooms []})
+            ((:observe ui))
+            (is (nil? (get-in @sig/workflow-editor-state [k :activations])))
+            (reset! sig/user-rooms roster)
+            ((:observe ui))
+            (is (= 2 (count @requests)))
+            (when-not immediate? ((:ok (second @requests)) [row]))
+            (is (= [row] (editor/workflow-activations (get @sig/workflow-editor-state k) "room" "maintain-wiki")))))))))
 
 (deftest schedule-navigation-retains-controller-context-and-rejects-replacement-session
   (with-state

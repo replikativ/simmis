@@ -10,6 +10,7 @@
             [is.simm.documents.links :as links]
             [is.simm.uis.web.desktop.rich-controls :as controls]
             [is.simm.uis.web.desktop.code-highlight :as code-highlight]
+            [is.simm.uis.web.desktop.source-preview :as source-preview]
             [is.simm.uis.web.desktop.rich-cells :as cells]
             [is.simm.uis.web.desktop.chart-view :as charts]
             [is.simm.uis.web.desktop.math-view :as math]
@@ -178,7 +179,10 @@
                                            :label #js {:default nil}})
                 ;; Copied HTML may carry text, never another block's identity.
                 :parseHTML (fn [] #js [])
-                :addNodeView (when (= name "memoryBlock") (fn [] (block-node-view el)))
+                :addNodeView (case name
+                               "memoryBlock" (fn [] (block-node-view el))
+                               "memoryOpaque" (fn [] (source-preview/node-view el))
+                               nil)
                 :renderHTML (fn [props]
                               (let [^js attrs (.. props -node -attrs)
                                     dom-attrs #js {:class (case name "memoryBlock" "memory-semantic-block"
@@ -394,6 +398,7 @@
                                (if href (.setAttribute link "href" href) (.removeAttribute link "href"))))
         "data-linked-block-id" (doseq [block (array-seq (.querySelectorAll el ".memory-semantic-block"))]
                                  (.toggleAttribute block "data-linked-block" (= new (.getAttribute block "data-block-id"))))
+        "data-source-previews" (source-preview/refresh! el)
         nil)
         (cells/refresh! el)
         (consume-jump! el (.-simmisRichEditor el))
@@ -405,15 +410,16 @@
              connectedCallback() { (~{})(this); }
              disconnectedCallback() { (~{})(this); }
              attributeChangedCallback(name, oldValue, newValue) { (~{})(this, name, oldValue, newValue); }
-             static get observedAttributes() { return ['data-owner', 'data-model', 'data-read-only', 'data-selection', 'data-charts', 'data-inline-charts', 'data-block-links', 'data-linked-block-id', 'data-jump', 'data-cells']; }
+             static get observedAttributes() { return ['data-owner', 'data-model', 'data-read-only', 'data-selection', 'data-charts', 'data-inline-charts', 'data-block-links', 'data-linked-block-id', 'data-jump', 'data-cells', 'data-source-previews']; }
            })" mount! disconnect! sync!)))
 
-(defn view [{:keys [id model selection read-only? on-change document? on-blocked charts inline-charts block-links linked-block jump before-jump on-jumped cell-config on-run-cell]}]
+(defn view [{:keys [id model selection read-only? on-change document? on-blocked charts inline-charts block-links linked-block jump before-jump on-jumped cell-config on-run-cell source-previews]}]
   (foreign-node
    {:tag :simmis-rich-editor :key id :class "memory-rich-editor"
     :data-owner (pr-str [id (:fork-id ec/*execution-context*)])
     :data-focus-scope (pr-str [(first id) (second id) (:fork-id ec/*execution-context*)])
     :data-model (js/JSON.stringify (clj->js model))
+    :data-source-previews (when source-previews (js/JSON.stringify (clj->js source-previews)))
     :data-cells (when cell-config (js/JSON.stringify (clj->js cell-config)))
     :data-inline-charts (when inline-charts (js/JSON.stringify (clj->js inline-charts)))
     :on-simmis-run-cell (fn [event]

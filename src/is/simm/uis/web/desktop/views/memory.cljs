@@ -7,6 +7,7 @@
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.effects.track :refer [track]]
             [is.simm.documents.rich-text :as rich]
+            [is.simm.documents.markdown-scene :as markdown-scene]
             [is.simm.documents.inline-charts :as inline-charts]
             [is.simm.documents.chart-contract :as chart-contract]
             [is.simm.uis.web.desktop.signals :as sig]
@@ -18,6 +19,8 @@
             [is.simm.uis.web.desktop.source-editor :as source]
             [is.simm.uis.web.desktop.office-view :as office-view]
             [is.simm.uis.web.desktop.rich-editor :as rich-editor]
+            [is.simm.uis.web.desktop.source-preview :as source-preview]
+            [is.simm.uis.web.desktop.code-highlight :as code-highlight]
             [is.simm.uis.web.desktop.chart-view :as charts]
             [is.simm.uis.web.desktop.cell-result-view :as cell-result]
             [is.simm.uis.web.desktop.math-view :as math]
@@ -58,6 +61,14 @@
               (:text node)))]
     (render (vec (:marks node)))))
 
+(defn- code-content [node options]
+  (el/code {}
+           (if-let [parts (get (:highlights options) (:path options))]
+             (mapv (fn [i {:keys [text class]}]
+                     (addressing/with-slot-fn i #(if class (el/span {:class class} text) text)))
+                   (range) parts)
+             (children node options))))
+
 (defn- model-node
   ([node] (model-node node {}))
   ([node options]
@@ -79,12 +90,12 @@
     "listItem" (el/li {} (children node options))
     "codeBlock" (if-let [preview (get (:previews options) (:path options))]
                   (el/div {:class "memory-inline-chart"}
-                          (el/pre {} (el/code {} (children node options)))
+                          (el/pre {} (code-content node options))
                           (el/div {:class "memory-note"} "Chart preview")
                           (if (= :ready (:status preview))
                             (charts/view (:path options) (:data preview))
                             (el/p {:class "memory-note"} "Chart JSON is invalid or exceeds the supported bounds.")))
-                  (el/pre {} (el/code {} (children node options))))
+                  (el/pre {} (code-content node options)))
     "hardBreak" (el/br {})
     "horizontalRule" (el/hr {})
     nil)))
@@ -229,6 +240,8 @@
         slots (mapv #(assoc % :chart (get chart-ends (:to %))) (:slots analysis))
         read-models (if outline-blocks (vec (mapcat :models outline-blocks))
                        (mapv #(or (when rich? (get-in base [:models (:from %)])) (:model %)) slots))
+        highlights (when-not rich? (code-highlight/document-segments read-models))
+        source-previews (markdown-scene/index source analysis)
         inline-positions (inline-charts/positions read-models inline-previews inline-limit)
         slots (mapv #(assoc % :inline-positions inline-positions) slots)]
     (el/div {:class "memory-document"}
@@ -250,6 +263,7 @@
                                    :model (or (:document-model base) (get-in base [:document :model]))
                                    :selection (:document-selection base) :document? true
                                    :charts chart-models
+                                   :source-previews source-previews
                                    :inline-charts (when (seq inline-previews) {:entries inline-previews :limit inline-limit})
                                    :cell-config ((:cell-config a) path)
                                    :on-run-cell #((:run-cell a) path %)
@@ -278,8 +292,11 @@
                                             index
                                             #(if model
                                                (model-node model {:path [(+ (:model-start block) index)]
+                                                                  :highlights highlights
                                                                   :previews (:inline-positions block)})
-                                               (el/pre {} (subs source (:from node) (:to node))))))
+                                               (if-let [preview (get source-previews (str "opaque:" (:from node)))]
+                                                 (source-preview/view (:from node) preview)
+                                                 (el/pre {} (subs source (:from node) (:to node)))))))
                                         (range) (:syntax block) (:models block))
                                   (when-let [chart (:chart block)] (charts/view [path (:id block)] chart))
                                   (el/button {:on-click (fn [_]
@@ -300,7 +317,9 @@
                                                    :read-only? (not write?)
                                                    :on-change (fn [model selection]
                                                                 ((:rich-change a) path (:id base) (:from slot) model selection))})
-                                model (model-node model {:path [slot-index] :previews (:inline-positions slot)})
+                                model (model-node model {:path [slot-index] :highlights highlights :previews (:inline-positions slot)})
+                                (get source-previews (str "opaque:" (:from slot)))
+                                (source-preview/view (:from slot) (get source-previews (str "opaque:" (:from slot))))
                                 :else (el/div {:class "memory-source-region"}
                                               (el/small {} (str (name (:kind slot)) " · preserved source"))
                                               (el/pre {} text)))
