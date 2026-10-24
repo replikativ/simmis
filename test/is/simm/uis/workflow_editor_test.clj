@@ -1,6 +1,8 @@
 (ns is.simm.uis.workflow-editor-test
   (:require [clojure.test :refer [deftest is]]
-            [is.simm.uis.web.desktop.workflow-editor :as editor]))
+            [is.simm.uis.web.desktop.workflow-editor :as editor]
+            [is.simm.ops.workflows :as workflows]
+            [is.simm.starter.wiki-maintenance :as starter]))
 
 (def source {:name "echo" :revision "c1d56a1b-63f9-414c-a6ad-feb35d5e709d" :files {"workflow.edn" "old"}
              :definition {:params {:goal "old default"}}
@@ -261,3 +263,24 @@
       (doseq [revision [nil "source" ""]]
         (is (thrown? clojure.lang.ExceptionInfo
                      (editor/submission (assoc-in draft [:source :revision] revision) "bad")))))))
+
+(deftest internal-checker-selector-is-not-a-user-parameter-or-a-name-collision
+  (let [source {:definition {:params {:simmis/checker-profile :wiki-structure-v1
+                                     :checker-profile "ordinary user parameter" :goal "Keep me"}}}]
+    (is (= {"checker-profile" "ordinary user parameter" "goal" "Keep me"}
+           (editor/parameters source)))
+    (is (= :wiki-structure-v1 (get-in source [:definition :params :simmis/checker-profile])))))
+
+(deftest shipped-wiki-supports-ordinary-and-benchmark-deployment-without-editing-internal-selector
+  (let [source (workflows/details-of starter/name {:files (starter/source 2)})
+        draft (assoc-in (editor/draft source) [:form :model] "codex-subscription-luna-6")
+        run (editor/submission draft (random-uuid))
+        scheduled (editor/deployment-preview draft)
+        benchmark (assoc-in draft [:form :mode] "benchmark")]
+    (is (= :wiki-structure-v1 (get-in source [:definition :params :simmis/checker-profile])))
+    (is (= {} (get-in draft [:form :params])))
+    (is (= {} (:params run)))
+    (is (= {} (get-in scheduled [:payload :execution :params])))
+    (is (= "workflow" (get-in scheduled [:payload :kind])))
+    (is (= "benchmark" (get-in (editor/deployment-preview benchmark) [:payload :kind])))
+    (is (= ["codex-subscription-luna-6"] (:models (editor/submission benchmark (random-uuid)))))))

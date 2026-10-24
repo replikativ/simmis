@@ -211,3 +211,9 @@ is unavailable. A blank model disables new Run and schedule activation requests;
 retries still refer to their previously retained immutable payloads. Installing
 source, choosing execution settings, provisioning allowance and enabling a
 schedule remain separate explicit operations.
+
+The reserved `:simmis/checker-profile` selector stays in the saved definition and
+grading basis; it is excluded from editable task parameters, matching ordinary
+execution admission. Users can launch and preview schedules for the packaged
+workflow without editing that internal setting. An ordinary unqualified
+`:checker-profile` string parameter remains a user parameter.
