@@ -184,3 +184,30 @@ immutable role follows copies but is not adopted into the ordinary parent by
 system settlement. Ordinary room selection remains unchanged; retained evidence
 remains accessible as files, and `/out` pages do not become canonical knowledge
 merely because a Run wrote them.
+
+### Model choice and shared allowance
+
+The hosted execution form lists exact locally registered native models. Opening
+it reads local metadata and credential presence only: it does not refresh provider
+catalogs, initialize a model client or make an inference request. A detected login
+is not proof of account access, remaining quota or model reachability. An
+undetected default login/environment credential does not rule out a separately
+configured host connection. Existing selections absent from the current options
+are preserved, rather than silently changed to another model.
+
+**Shared room allowance** observes the actual Room root wallet, excluding funds
+already allocated to child Runs. It is separate from the form's per-Run or
+per-occurrence ceilings and from historical provisioning receipts. Amounts remain
+exact decimal strings. A real zero differs from an unavailable or inactive wallet;
+a metadata read never hydrates a Room, opens a wallet, mints resources or starts a
+Run. Observations are invalidated by existing connection/authority/room hints and
+reread after acknowledged grants, submissions and schedule creation. The displayed
+amount is a snapshot; execution admission checks current availability again.
+
+The browser read retains the original App and exact admitted native Room while
+reading the ledger, then rechecks current human read authority before returning.
+Schedule status remains visible to readers when the owner-only starter setup card
+is unavailable. A blank model disables new Run and schedule activation requests;
+retries still refer to their previously retained immutable payloads. Installing
+source, choosing execution settings, provisioning allowance and enabling a
+schedule remain separate explicit operations.

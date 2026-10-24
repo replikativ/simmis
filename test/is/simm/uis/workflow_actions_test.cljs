@@ -72,6 +72,9 @@
                     (fn [& _] (fn [ok _] (ok {:status :unavailable})))
                     remote/load-workflow-schedules!
                     (fn [& _] (fn [ok _] (ok [])))
+                    remote/load-workflow-readiness!
+                    (fn [& _] (fn [ok _] (ok {:models [] :models-truncated? false
+                                              :allowance {:status :unavailable :reason :room-not-active}})))
                     actions/confirm! (constantly true)]
         (binding [ec/*execution-context* ctx]
           (reset! sig/workflow-editor-state {})
@@ -143,6 +146,7 @@
         ((:observe ui))
         ((:observe ui))
         (is (= :ready (get-in @sig/workflow-editor-state [k :activation-status])))
+        (is (= :ready (get-in @sig/workflow-editor-state [k :readiness-status])))
         (is (= [] (editor/workflow-activations (get @sig/workflow-editor-state k) "room" "maintain-wiki")))))))
 
 (deftest restored-identical-roster-fetches-schedules-again
@@ -616,3 +620,89 @@
           (is (some? (:context (first @opened))))
           (with-redefs [web/current-session? (constantly false)] ((:open-run ui) "other-job"))
           (is (= 1 (count @opened))))))))
+
+(deftest readiness-observations-ignore-revoked-and-superseded-wallet-replies
+  (with-state
+    (fn [ui k]
+      (let [requests (atom []) other (atom [])
+            roster {:rooms [{:room/id "room"}]}
+            result {:models [] :allowance {:status :observed :microdollars "9007199254740993" :model-dispatches "8"}}]
+        (with-redefs [remote/load-workflow-readiness! (deferred requests)
+                      remote/load-workflow-list! (deferred other)
+                      remote/load-workflow-source! (deferred other)
+                      memory-remote/prepare-memory-stream! (deferred other)]
+          (reset! sig/user-rooms roster)
+          ((:observe ui))
+          (is (= 1 (count @requests)))
+          ((:ok (first @requests)) result)
+          (is (= :ready (get-in @sig/workflow-editor-state [k :readiness-status])))
+          (reset! sig/user-rooms {:rooms []})
+          ((:observe ui))
+          ((:ok (first @requests)) result)
+          (is (nil? (get-in @sig/workflow-editor-state [k :readiness])))
+          (reset! sig/user-rooms roster)
+          ((:observe ui))
+          (is (= 2 (count @requests)))
+          ((:ok (second @requests)) result)
+          (swap! sync/state assoc :dirty {"room" 1})
+          ((:observe ui))
+          (is (= 3 (count @requests)))
+          (is (= :checking (get-in @sig/workflow-editor-state [k :readiness-status])))
+          ((:ok (second @requests)) result)
+          (is (= :checking (get-in @sig/workflow-editor-state [k :readiness-status])))
+          ((:ok (nth @requests 2)) (assoc-in result [:allowance :model-dispatches] "7"))
+          (is (= "7" (get-in @sig/workflow-editor-state [k :readiness :allowance :model-dispatches]))))))))
+
+(deftest explicit-allowance-ack-causes-one-current-readiness-observation
+  (doseq [inflight? [false true]]
+    (with-state
+      (fn [ui k]
+        (let [reads (atom []) grants (atom []) other (atom [])
+              old {:models [] :allowance {:status :observed :microdollars "0" :model-dispatches "0"}}
+              funded (assoc old :allowance {:status :observed :microdollars "1000000" :model-dispatches "8"})]
+          (with-redefs [remote/load-workflow-readiness! (deferred reads)
+                        remote/load-workflow-list! (deferred other)
+                        remote/load-workflow-source! (deferred other)
+                        memory-remote/prepare-memory-stream! (deferred other)
+                        remote/provision-workflow-allowance! (deferred grants)]
+            ((:observe ui))
+            (is (= 1 (count @reads)))
+            (when-not inflight? ((:ok (first @reads)) old))
+            ((:fund ui) "a")
+            (is (= 1 (count @grants)))
+            ((:ok (first @grants)) {:id "fixture-grant"})
+            ((:observe ui))
+            (when inflight?
+              ;; Keep one physical fetch. Its acknowledgement releases the
+              ;; slot, but its pre-grant amount cannot complete the new epoch.
+              (is (= 1 (count @reads)))
+              ((:ok (first @reads)) old)
+              (is (nil? (get-in @sig/workflow-editor-state [k :readiness])))
+              ((:observe ui)))
+            (is (= 2 (count @reads)))
+            ((:observe ui))
+            (is (= 2 (count @reads)))
+            ((:ok (second @reads)) funded)
+            (is (= funded (get-in @sig/workflow-editor-state [k :readiness])))
+            (is (= :ready (get-in @sig/workflow-editor-state [k :readiness-status])))
+            (is (= 1 (count @grants)))))))))
+
+(deftest failed-readiness-can-use-existing-retry-updates-without-funding
+  (with-state
+    (fn [ui k]
+      (let [reads (atom []) other (atom [])]
+        (with-redefs [remote/load-workflow-readiness! (deferred reads)
+                      remote/load-workflow-list! (deferred other)
+                      remote/load-workflow-source! (deferred other)
+                      memory-remote/prepare-memory-stream! (deferred other)
+                      sync/retry! (fn [& _])]
+          ((:observe ui))
+          ((:error (first @reads)) (js/Error. "Unavailable"))
+          (is (= :unavailable (get-in @sig/workflow-editor-state [k :readiness-status])))
+          (is (string? (get-in @sig/workflow-editor-state [k :errors :readiness])))
+          ((:refresh ui))
+          ((:observe ui))
+          (is (= 2 (count @reads)))
+          ((:ok (second @reads)) {:models [] :allowance {:status :unavailable}})
+          (is (= :ready (get-in @sig/workflow-editor-state [k :readiness-status])))
+          (is (nil? (get-in @sig/workflow-editor-state [k :errors :readiness]))))))))
