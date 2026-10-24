@@ -133,11 +133,9 @@
       ;; The binding wraps EVERYTHING, including `ref->tab`. It used to start
       ;; only at `open-tab!`, and `ref->tab`'s `:room`/`:message` cases call
       ;; `room-scope`, which derefs `sig/user-rooms` — unbound, that throws.
-      ;; DOM handlers are installed raw, so no context is bound at click time:
-      ;; every ref WITHOUT a `:scope` (an Accounting book, a dvergr dispatch)
-      ;; threw on click, while `:page` refs carry one and short-circuited, which
-      ;; is why Feed looked fine.
-      (binding [rtc/*execution-context* runtime]
+      ;; Raw DOM handlers may have no context. Preserve an already selected
+      ;; world; only an unbound callback belongs to the live UI by default.
+      (binding [rtc/*execution-context* (or rtc/*execution-context* runtime)]
         (let [ref (cond-> ref
                     (string? ref) (uri->ref title)
                     title (assoc :title title))]

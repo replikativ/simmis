@@ -769,6 +769,14 @@
 
 #?(:cljs (defonce ^:private focus-listeners (atom {})))
 
+(defn- live-ui-context?
+  "Native DOM/history belongs to the live world's stable home, including its
+   execution-frame copies. Forks retain only their own semantic navigation."
+  []
+  #?(:cljs (and (some? rtc/*execution-context*)
+                (identical? (rtc/home-context rtc/*execution-context*) (rtc/home-context runtime)))
+     :clj false))
+
 (defn on-focus-change!
   "Register `f` under `k`, called as `(f reason)` after any mutation that
    changes WHICH tab is focused. `reason` is `:navigate` | `:passive` — see
@@ -787,10 +795,11 @@
    Never lets an observer's failure break a layout mutation: a broken URL
    writer must not make tabs unclickable."
   [reason]
-  #?(:cljs (doseq [[k f] @focus-listeners]
-             (try (f reason)
-                  (catch :default e
-                    (js/console.error "[signals] focus listener failed:" k e))))
+  #?(:cljs (when (live-ui-context?)
+             (doseq [[k f] @focus-listeners]
+               (try (f reason)
+                    (catch :default e
+                      (js/console.error "[signals] focus listener failed:" k e)))))
      :clj nil))
 
 (defn focused-tab
@@ -816,9 +825,7 @@
                         (if (= col-id (:id column))
                           (update column :tabs #(mapv (fn [tab] (if (= tab-id (:id tab)) (transform tab) tab)) %))
                           column)) columns)))
-       (when (and (some? rtc/*execution-context*)
-                  (identical? (rtc/home-context rtc/*execution-context*) (rtc/home-context runtime)))
-         (notify-focus-change! reason)))
+       (notify-focus-change! reason))
      :clj nil))
 
 (defn set-active-column!
@@ -827,14 +834,15 @@
 
    This updates both the signal AND directly manipulates the DOM to add/remove
    the 'active' class. This avoids triggering a full re-render just for a CSS
-   class change, which would disrupt ongoing interactions like TipTap editing."
+   class change, which would disrupt ongoing interactions like TipTap editing.
+   A fork changes its own active column without touching the live DOM/history."
   [col-id]
   #?(:cljs
-     (binding [rtc/*execution-context* runtime]
+     (binding [rtc/*execution-context* (or rtc/*execution-context* runtime)]
        ;; Update the signal (for any code that needs to query the active column)
        (reset! active-column-id col-id)
        ;; Direct DOM manipulation for the active class - avoids re-render
-       (when-let [container (js/document.getElementById "columns-container")]
+       (when-let [container (when (live-ui-context?) (js/document.getElementById "columns-container"))]
          ;; Remove active class from all columns
          (doseq [col-el (array-seq (.querySelectorAll container ".column.active"))]
            (.remove (.-classList col-el) "active"))
@@ -882,7 +890,7 @@
      - :new-tab? - Open in a new tab (default: false, navigates in current tab)"
   [tab-type tab-data & [{:keys [col-id title new-column? new-tab?]}]]
   #?(:cljs
-     (binding [rtc/*execution-context* runtime]
+     (binding [rtc/*execution-context* (or rtc/*execution-context* runtime)]
        ;; For chat tabs, initialize window to :end sentinel
        ;; This tells the render to start at the end of messages
        (when (#{:chat :chat-thread} tab-type)
