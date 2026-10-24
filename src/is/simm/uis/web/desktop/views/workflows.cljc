@@ -324,14 +324,7 @@
                                                                      "Retry identical request"))
                                                         (when (:fund? permissions)
                                                           (el/button {:disabled (:fund loading) :on-click (fn [_] ((:fund actions) selected))}
-                                                                     (if funded-here? "Provision more allowance…" "Provision allowance…"))))
-                                                (when uncertain?
-                                                  (el/div {:class "workflow-note"}
-                                                          (el/p {} "The submission receipt is unknown. Retry uses the original immutable payload, even if this form changed.")
-                                                          (el/button {:on-click (fn [_]
-                                                                                  #?(:cljs (when (js/confirm "Start a different request? The previous request may still be running; this does not cancel it and could create additional work.")
-                                                                                             (change dissoc :submission)) :clj nil))}
-                                                                     "Start a different request…")))
+                                                                     (if funded-here? "Provision more allowance…" "Provision allowance…")))
                                                 (when (and (not local?) (not cli?))
                                                   (el/div {:class "workflow-scheduling"}
                                                           (el/h4 {} "Schedule")
@@ -362,8 +355,15 @@
                                                           (when-let [reply (get-in draft [:schedule-submission :reply])]
                                                             (el/div {}
                                                                     (el/p {} (str "Created schedule: " (:id reply)
-                                                                                  ". Current status and occurrences are in Schedules."))
-                                                                    (el/button {:on-click (fn [_] ((:open-schedules actions)))} "Open Workflows")))))
+                                                                                  ". Current status and occurrences are in Workflows."))
+                                                                    (el/button {:on-click (fn [_] ((:open-schedules actions)))} "Open Workflows"))))))
+                                                (when uncertain?
+                                                  (el/div {:class "workflow-note"}
+                                                          (el/p {} "The submission receipt is unknown. Retry uses the original immutable payload, even if this form changed.")
+                                                          (el/button {:on-click (fn [_]
+                                                                                  #?(:cljs (when (js/confirm "Start a different request? The previous request may still be running; this does not cancel it and could create additional work.")
+                                                                                             (change dissoc :submission)) :clj nil))}
+                                                                     "Start a different request…")))
                                                 (when submission
                                                   (el/p {} (str "Request: " (get-in submission [:payload :request-id]))))
                                                 (when-let [reply (:reply submission)]

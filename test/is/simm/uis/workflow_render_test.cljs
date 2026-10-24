@@ -154,6 +154,11 @@
         (let [[source execution] (array-seq (.querySelectorAll container ".workflow-detail details.workflow-disclosure"))]
           (is (false? (.-open source)))
           (is (false? (.-open execution)))
+          (is (identical? execution (.closest (.querySelector container ".workflow-scheduling") "details"))
+              "Schedule configuration belongs to the execution disclosure")
+          (is (every? #(false? (.checkVisibility %))
+                      (array-seq (.querySelectorAll execution "input,select,button")))
+              "Closed execution controls do not occupy the overview")
           (is (= "Instructions and code" (.-textContent (.querySelector source "summary")))))
         (is (empty? @changes) "Rendering does not change a draft or start an operation")
         (let [details (.querySelector container ".workflow-detail details.workflow-disclosure")]
