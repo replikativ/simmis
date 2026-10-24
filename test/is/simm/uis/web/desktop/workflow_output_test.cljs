@@ -1,12 +1,16 @@
 (ns is.simm.uis.web.desktop.workflow-output-test
   (:require [cljs.test :refer-macros [deftest is]]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.dom.browser :as browser]
+            [org.replikativ.spindel.dom.render :as render]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.connection-epoch :as connection]
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.workflows-remote :as remote]
             [is.simm.uis.web.desktop.workflow-output :as output]
+            [is.simm.uis.web.desktop.views.run-inspector :as inspector]
             [is.simm.uis.web.desktop.refs :as refs]
             [is.simm.runtimes.web :as web])
   (:require-macros [org.replikativ.spindel.signal :refer [signal]]))
@@ -121,3 +125,52 @@
       (is (nil? (:collection ((:state a)))))
       ((:open a))
       (is (empty? @opened)))))
+
+(deftest mounted-inspector-awaits-the-reactive-output-view-and-late-descriptor
+  (with-client
+    (fn [{:keys [room job request proposal eligible calls opened last-call]}]
+      (let [container (.createElement js/document "div")
+            handle (render/render-spin! container
+                                        (inspector/view {:room-id room
+                                                         :fallback-run {:id job :kind :workflow :status :completed
+                                                                        :actor-name "Maintainer"}})
+                                        (browser/make-dom-discharge js/document))]
+        (try
+          ;; Drive the actual event drain at this test boundary. No timer or
+          ;; alternative renderer substitutes for composition/DOM discharge.
+          (simple/drain-events! runtime)
+          (is (some? (.querySelector container ".run-inspector")))
+          (is (not (.includes (.-textContent container) "#<Spin")))
+          (is (= 1 (count (:inspect @calls))))
+          (is (nil? (.querySelector container ".workflow-output-review")))
+          ((:ok (last-call :inspect)) eligible)
+          (simple/drain-events! runtime)
+          (let [review (.querySelector container ".workflow-output-review button")]
+            (is (some? review) "An acknowledged descriptor updates the actual mounted inspector")
+            (is (empty? (:collect @calls)) "Rendering never collects output")
+            (when review (.click review)))
+          (simple/drain-events! runtime)
+          (is (= 1 (count (:collect @calls))))
+          ((:ok (last-call :collect)) {:status :proposed :request request :proposal proposal})
+          (simple/drain-events! runtime)
+          (let [open (some #(when (= "Open wiki proposal" (.-textContent %)) %)
+                           (array-seq (.querySelectorAll container "button")))]
+            (is (some? open))
+            (when open (.click open)))
+          (is (= [{:kind :proposal :id proposal}] @opened))
+          (finally ((:stop! handle))))))))
+
+(deftest mounted-ordinary-run-does-not-inspect-knowledge-output
+  (with-client
+    (fn [{:keys [room job calls]}]
+      (let [container (.createElement js/document "div")
+            handle (render/render-spin! container
+                                        (inspector/view {:room-id room
+                                                         :fallback-run {:id job :kind :agent-task :status :completed}})
+                                        (browser/make-dom-discharge js/document))]
+        (try
+          (simple/drain-events! runtime)
+          (is (some? (.querySelector container ".run-inspector")))
+          (is (not (.includes (.-textContent container) "#<Spin")))
+          (is (empty? (:inspect @calls)))
+          (finally ((:stop! handle))))))))

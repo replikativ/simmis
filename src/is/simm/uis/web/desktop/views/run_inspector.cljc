@@ -2,12 +2,15 @@
   "Focused projection of one causal execution scope. The inspector is a lens
    over the room DB, not a second transcript or mutable workflow model."
   (:require [clojure.string :as str]
+            [org.replikativ.spindel.effects.await :refer [await]]
+            #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.run-detail :as run-detail]
             [is.simm.uis.web.desktop.views.chat :as chat]
             #?(:cljs [is.simm.uis.web.desktop.workflow-output :as workflow-output])
             [is.simm.uis.web.desktop.views.core :as vc])
-  #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el])))
+  #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el]
+                           [org.replikativ.spindel.spin.cps :refer [spin]])))
 
 (defn- status-label [status]
   (case status
@@ -248,111 +251,112 @@
              attempts)))))
 
 (defn view
-  "Render one Run. `live-run` wins for transient :cancelling status; durable
+  "Reactive rendering of one Run. `live-run` wins for transient :cancelling status; durable
    detail supplies history, effects, outputs, and structural relations."
   [{:keys [detail live-run fallback-run room-id room-name syntax-pref on-back-room
            on-open-message on-open-run on-cancel on-promote
            captured-result on-load-results on-more-results on-preview-result on-download-result]}]
-  (let [durable-run (:run detail)
-        run (when (or fallback-run durable-run live-run)
-              (merge fallback-run durable-run live-run))
-        tool-calls (:tool-calls detail)
-        activity (run-detail/group-tool-activity tool-calls)
-        outputs (remove #(= (:id %) (:id (:trigger detail))) (:messages detail))
-        {:keys [parent children inputs]} (run-detail/execution-relations detail run)
-        status (or (:status run) :loading)
-        active? (contains? #{:running :cancelling} status)]
-    (el/div {:class "run-inspector" :data-run-id (:id run)}
-      (el/header {:class "run-inspector-header"}
-        (el/button {:class "run-inspector-back"
-                    :title "Back to room"
-                    :on-click (fn [_] (when on-back-room (on-back-room)))}
-          (vc/icon "arrow-left"))
-        (el/div {:class "run-inspector-title-block"}
-          (el/div {:class "run-inspector-kicker"}
-            (vc/icon "orbit")
-            (or room-name "Room")
-            (el/span {} "Execution scope"))
-          (el/h2 {:class "run-inspector-title"}
-            (or (:actor-name run) (some-> (:actor run) name) "Agent Run"))
-          (el/div {:class "run-inspector-meta"}
-            (el/span {:class (str "run-status run-status--" (name status))}
-              (status-label status))
-            (when-let [duration (duration-label run)]
-              (el/span {} duration))
-            (el/span {:class "run-inspector-id"} (short-id (:id run)))))
-        ;; only for whoever may stop it (`:can-cancel?`, the server's answer)
-        (when (and active? (:can-cancel? run))
-          (el/button {:class "run-inspector-stop"
-                      :disabled (= :cancelling (:status run))
-                      :on-click (fn [_]
-                                  (when on-cancel (on-cancel (:id run))))}
-            (vc/icon "square")
-            (if (= :cancelling (:status run)) "Stopping" "Stop"))))
+  (spin
+    (let [durable-run (:run detail)
+          run (when (or fallback-run durable-run live-run)
+                (merge fallback-run durable-run live-run))
+          tool-calls (:tool-calls detail)
+          activity (run-detail/group-tool-activity tool-calls)
+          outputs (remove #(= (:id %) (:id (:trigger detail))) (:messages detail))
+          {:keys [parent children inputs]} (run-detail/execution-relations detail run)
+          status (or (:status run) :loading)
+          active? (contains? #{:running :cancelling} status)]
+      (el/div {:class "run-inspector" :data-run-id (:id run)}
+        (el/header {:class "run-inspector-header"}
+          (el/button {:class "run-inspector-back"
+                      :title "Back to room"
+                      :on-click (fn [_] (when on-back-room (on-back-room)))}
+            (vc/icon "arrow-left"))
+          (el/div {:class "run-inspector-title-block"}
+            (el/div {:class "run-inspector-kicker"}
+              (vc/icon "orbit")
+              (or room-name "Room")
+              (el/span {} "Execution scope"))
+            (el/h2 {:class "run-inspector-title"}
+              (or (:actor-name run) (some-> (:actor run) name) "Agent Run"))
+            (el/div {:class "run-inspector-meta"}
+              (el/span {:class (str "run-status run-status--" (name status))}
+                (status-label status))
+              (when-let [duration (duration-label run)]
+                (el/span {} duration))
+              (el/span {:class "run-inspector-id"} (short-id (:id run)))))
+          ;; only for whoever may stop it (`:can-cancel?`, the server's answer)
+          (when (and active? (:can-cancel? run))
+            (el/button {:class "run-inspector-stop"
+                        :disabled (= :cancelling (:status run))
+                        :on-click (fn [_]
+                                    (when on-cancel (on-cancel (:id run))))}
+              (vc/icon "square")
+              (if (= :cancelling (:status run)) "Stopping" "Stop"))))
 
-      (el/main {:class "run-inspector-body"}
-        (cond
-          (nil? run)
-          (el/div {:class "run-inspector-empty"}
-            (vc/icon "loader")
-            (el/h3 {} "Loading Run…")
-            (el/p {} "Waiting for this room replica to provide the execution record."))
+        (el/main {:class "run-inspector-body"}
+          (cond
+            (nil? run)
+            (el/div {:class "run-inspector-empty"}
+              (vc/icon "loader")
+              (el/h3 {} "Loading Run…")
+              (el/p {} "Waiting for this room replica to provide the execution record."))
 
-          :else
-          (el/div {:class "run-inspector-sections"}
-            (when-let [trigger (:trigger detail)]
-              (el/section {:class "run-section"}
-                (message-card trigger "Triggered by" on-open-message)))
+            :else
+            (el/div {:class "run-inspector-sections"}
+              (when-let [trigger (:trigger detail)]
+                (el/section {:class "run-section"}
+                  (message-card trigger "Triggered by" on-open-message)))
 
-            (when (or parent (seq children) (seq inputs))
-              (el/section {:class "run-section"}
-                (el/div {:class "run-section-heading"}
-                  (el/h3 {} "Execution graph")
-                  (el/p {} "Containment and observed results; message causality is shown above."))
-                (relation-group "Structural parent"
-                                (when parent [parent])
-                                :parent on-open-run)
-                (relation-group "Structural children" children
-                                :child on-open-run)
-                (relation-group "Causal inputs" inputs
-                                :input on-open-run)))
+              (when (or parent (seq children) (seq inputs))
+                (el/section {:class "run-section"}
+                  (el/div {:class "run-section-heading"}
+                    (el/h3 {} "Execution graph")
+                    (el/p {} "Containment and observed results; message causality is shown above."))
+                  (relation-group "Structural parent"
+                                  (when parent [parent])
+                                  :parent on-open-run)
+                  (relation-group "Structural children" children
+                                  :child on-open-run)
+                  (relation-group "Causal inputs" inputs
+                                  :input on-open-run)))
 
-            (settlement-view run on-promote)
+              (settlement-view run on-promote)
 
-            (when (and room-id (= :workflow (:kind run)))
-              #?(:cljs (workflow-output/view room-id run) :clj nil))
+              (when (and room-id (= :workflow (:kind run)))
+                #?(:cljs (await (workflow-output/view room-id run)) :clj nil))
 
-            (captured-results-view {:attempt-id (:attempt-id detail) :captured-result captured-result
-                                    :on-load-results on-load-results :on-more-results on-more-results
-                                    :on-preview-result on-preview-result :on-download-result on-download-result})
+              (captured-results-view {:attempt-id (:attempt-id detail) :captured-result captured-result
+                                      :on-load-results on-load-results :on-more-results on-more-results
+                                      :on-preview-result on-preview-result :on-download-result on-download-result})
 
-            (el/section {:class "run-section"}
-              (el/div {:class "run-section-heading"}
-                (el/h3 {} "Activity")
-                (el/p {}
-                  (cond
-                    (seq tool-calls)
-                    (str (count tool-calls) " exact tool call"
-                         (when (not= 1 (count tool-calls)) "s")
-                         ", compressed without hiding failures.")
-                    active? "Waiting for the first recorded effect."
-                    :else "No tool effects were recorded for this Run.")))
-              (when (seq activity)
-                (el/div {:class "run-activity"}
-                  (map #(activity-segment % (:actor-name run) syntax-pref)
-                       activity))))
-
-            (when (seq outputs)
               (el/section {:class "run-section"}
                 (el/div {:class "run-section-heading"}
-                  (el/h3 {} "Messages")
-                  (el/p {} "Durable room messages produced inside this Run."))
-                (el/div {:class "run-output-list"}
-                  (map #(message-card % "Output" on-open-message) outputs))))
+                  (el/h3 {} "Activity")
+                  (el/p {}
+                    (cond
+                      (seq tool-calls)
+                      (str (count tool-calls) " exact tool call"
+                           (when (not= 1 (count tool-calls)) "s")
+                           ", compressed without hiding failures.")
+                      active? "Waiting for the first recorded effect."
+                      :else "No tool effects were recorded for this Run.")))
+                (when (seq activity)
+                  (el/div {:class "run-activity"}
+                    (map #(activity-segment % (:actor-name run) syntax-pref)
+                         activity))))
 
-            (when (or (:reason run) (:error run))
-              (el/section {:class "run-section run-section--diagnostic"}
-                (el/h3 {} (if (:error run) "Run failed" "Run ended"))
-                (el/p {} (or (:error run) (some-> (:reason run) name) (:reason run)))))
+              (when (seq outputs)
+                (el/section {:class "run-section"}
+                  (el/div {:class "run-section-heading"}
+                    (el/h3 {} "Messages")
+                    (el/p {} "Durable room messages produced inside this Run."))
+                  (el/div {:class "run-output-list"}
+                    (map #(message-card % "Output" on-open-message) outputs))))
 
-            (provenance-view run)))))))
+              (when (or (:reason run) (:error run))
+                (el/section {:class "run-section run-section--diagnostic"}
+                  (el/h3 {} (if (:error run) "Run failed" "Run ended"))
+                  (el/p {} (or (:error run) (some-> (:reason run) name) (:reason run)))))
+
+              (provenance-view run))))))))
