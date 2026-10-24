@@ -515,7 +515,17 @@ charts can remain visible during protected prose editing; Source editing hides
 them. One closed pure scene supplies Spindel's Read DOM and Tiptap's inert
 element-owned NodeView projection. Read/Outline roots are keyed by file path
 and block identity, and loop items carry their chart data as an explicit
-incremental dependency. Charts never become editor attributes,
+incremental dependency. Inline `simmis-chart` fences reuse the strict ChartData decoder during ordinary
+file analysis. At most four parsed previews are returned; native and Read
+renderers separately cap actual matching occurrences, including duplicates,
+within the remaining shared four-chart budget. Exact projected code text and
+language select pure presentation data; unrelated prose can change without
+invalidating it. No block identity, whole-document saved claim or additional
+RPC is needed. The native code node's element-owned cache uses current document
+and preview props, and its disposal clears the projection. Run controls still
+use their original strict saved-document correspondence.
+
+Charts never become editor attributes,
 editor clipboard serialization or source edits; element detach releases their
 native cache. The accessible chart table remains ordinary selectable content.
 

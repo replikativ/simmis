@@ -721,6 +721,11 @@
                                  #(editor/file-evaluation-result %1 path (:generation draft) (:text draft) %2) nil
                                  {:scope :sandbox}))))
        :block-links (fn [path] (references/block-links room path (get-in (state) [:drafts path])))
+       :inline-chart-previews (fn [path]
+                                (let [s (state)]
+                                  (when (and (current?) (verified? s (connection)) (draft-current? s path))
+                                    (mapv #(select-keys % [:language :text :status :data])
+                                          (:inline-charts (charts/saved-analysis (get-in s [:drafts path])))))))
        :ensure-backlinks ensure-backlinks!
        :backlinks-open (fn [open?]
                          (when (not= (boolean open?) (boolean (get-in (state) [:backlinks :open?])))
