@@ -25,7 +25,7 @@
 
 (def syntax-profile
   "Pinned syntax projection, not a claim of complete Obsidian/plugin support."
-  {:id :simmis/markdown-syntax :version 7 :parser "flexmark/0.64.8"
+  {:id :simmis/markdown-syntax :version 8 :parser "flexmark/0.64.8"
    :features #{:tables :tasks :strikethrough :footnotes :wikilinks :wiki-embeds
                :inline-math :standalone-display-math :reference-links}})
 
@@ -113,11 +113,19 @@
 (defn- syntax-node [^Node node offset depth remaining]
   (when (or (> depth max-syntax-depth) (neg? (vswap! remaining dec)))
     (invalid! "Document syntax exceeds the projection limit"))
-  (let [link (link-data node)]
+  (let [link (link-data node)
+        projected-children (mapv #(syntax-node % offset (inc depth) remaining) (children node))
+        ;; Flexmark represents an empty table cell with a literal padding-space
+        ;; Text node. GFM cell padding is not content. Keep explicit entities
+        ;; and code spans distinct so a deliberately entered space survives.
+        projected-children (if (and (instance? TableCell node)
+                                     (every? #(and (= :Text (:kind %))
+                                                    (re-matches #"[ \t]*" (:text %))) projected-children))
+                             [] projected-children)]
     (cond-> {:kind (keyword (.getNodeName node))
              :from (+ offset (.getStartOffset node))
              :to (+ offset (.getEndOffset node))
-             :children (mapv #(syntax-node % offset (inc depth) remaining) (children node))}
+             :children projected-children}
       (instance? Heading node) (assoc :heading-level (.getLevel ^Heading node))
       (instance? Text node) (assoc :text (Escaping/unescapeString (.getChars node)))
       ;; Decode exactly once into inert text; never reparse it as HTML/Markdown.

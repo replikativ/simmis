@@ -415,8 +415,8 @@ this restriction. Read uses the same compact table styling.
 The supported subset is rectangular, at most 50 rows including the first header
 row and 20 columns, with one paragraph per cell and consistent column alignment.
 Merged cells, captions, nested tables, resizing and multiple paragraphs require
-**Markdown** source editing. Unsupported source stays intact. Syntax profile 7
-retains source-derived cell spans so merged syntax cannot masquerade as a basic
+**Markdown** source editing. Unsupported source stays intact. Syntax profile 8 treats empty-cell padding as layout, preserving explicit space
+entities and code content, and retains source-derived cell spans so merged syntax cannot masquerade as a basic
 table; disposable view fingerprints change, without rewriting stored files.
 
 Opening or selecting an unchanged table preserves its exact source bytes. An edit

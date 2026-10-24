@@ -93,3 +93,28 @@
       (is (some? original) source)
       (is (= (str "a" slashes "|b") (get-in original [:content 0 :content 0 :content 0 :content 0 :content 0 :text])))
       (is (= (rich/roundtrip-normalize original) (rich/roundtrip-normalize decoded))))))
+
+(deftest native-empty-row-passes-the-real-host-save-roundtrip
+  (let [source (str "---\nsimmis-id: " repository "\n---\n"
+                    "<!-- simmis:block " block-id " -->\n\n"
+                    "# A table\n\n| Name | Amount | Status |\n|:---|---:|:---:|\n| Reviewed | 42 | Draft |\n\n"
+                    "Unchanged tail.\n\n<!-- /simmis:block -->\n")
+        projection (document/project source (analysis source))
+        edited (letfn [(walk [node]
+                         (if (= "table" (:type node))
+                           (update node :content conj
+                                   (update (last (:content node)) :content
+                                           #(mapv (fn [cell] (assoc cell :content [{:type "paragraph"}])) %)))
+                           (cond-> node (:content node) (update :content #(mapv walk %)))))]
+                 (walk (:model projection)))
+        saved (host/apply-edits repository "wiki/table.md" source (md/revision source)
+                               (document/edits projection edited))
+        reopened (document/project saved (analysis saved))]
+    (is (= (document/normalized edited) (document/normalized (:model reopened))))
+    (is (str/includes? saved "Unchanged tail."))
+    (is (str/includes? saved (str "<!-- simmis:block " block-id " -->")))))
+
+(deftest empty-padding-and-explicit-space-have-distinct-table-content
+  (let [m (model "| Empty | Space |\n|---|---|\n|  | &#32; |\n")]
+    (is (= [] (get-in m [:content 0 :content 1 :content 0 :content 0 :content])))
+    (is (= " " (get-in m [:content 0 :content 1 :content 1 :content 0 :content 0 :text])))))
