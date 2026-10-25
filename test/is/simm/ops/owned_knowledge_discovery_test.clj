@@ -47,7 +47,7 @@
 (defn- request [{:keys [host w]}]
   (let [binding (reads/resolve-host-read! host (ops/party-principal (:owner w)) (str (:room w)))]
     {:name "wiki" :expected-source (owned-workflows/source-id binding "wiki" (workflows/manifest-in (:db binding) "wiki"))
-     :expected-bundle (:id (catalog/bundle "wiki" source)) :epoch (random-uuid)}))
+     :expected-bundle (:id (catalog/bundle "wiki" (:files (workflows/snapshot-in (:db binding) "wiki")))) :epoch (random-uuid)}))
 
 (defn- refresh [{:keys [host w]} input]
   (discovery/refresh! host (ops/party-principal (:owner w)) (str (:room w)) input))

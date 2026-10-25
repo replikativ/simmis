@@ -18,6 +18,16 @@
 (defn- reason [f]
   (try (f) nil (catch clojure.lang.ExceptionInfo error (:reason (ex-data error)))))
 
+(deftest batching-declarations-are-explicit-closed-data
+  (let [decl {:version 2 :epoch (random-uuid) :policy batches/default-policy}]
+    (is (nil? (batches/declaration {})))
+    (is (= decl (batches/declaration {"input-batching.edn" (pr-str decl)})))
+    (doseq [text [(str (pr-str decl) " {}") "#=(System/exit 0)"
+                  "#unknown {}" (pr-str (assoc-in decl [:policy :max-trigger-files] 0))
+                  (pr-str (assoc decl :execute "arbitrary")) (pr-str (dissoc decl :epoch))
+                  (pr-str (assoc decl :version 1))]]
+      (is (= :invalid-declaration (reason #(batches/declaration {"input-batching.edn" text})))))))
+
 (defn- fixture
  ([n f] (fixture n (constantly nil) f))
  ([n initialize! f]
@@ -97,6 +107,10 @@
         (is (thrown? Exception
                      (batches/verify (assoc-in frozen [:captured :inputs "/in/knowledge/sources/inbox/000.md"] "Forged"))))
         (is (thrown? Exception (batches/verify (update-in frozen [:batch :items] pop))))
+        (let [basis (assoc-in (:publication-basis frozen) [:target :ref] "refs/heads/other")
+              basis (assoc basis :id (hasch/uuid [:simmis/knowledge-publication-basis-v1 (dissoc basis :id)]))]
+          (is (= :publication-source-mismatch
+                 (reason #(batches/verify (assoc frozen :publication-basis basis))))))
         (doseq [mutate [#(assoc-in % [:expected :knowledge.stream/active-batch] (random-uuid))
                         #(assoc % :remaining streams/max-changes)
                         #(assoc-in % [:items 0 :order] (get-in % [:expected :knowledge.stream/next-order]))]]

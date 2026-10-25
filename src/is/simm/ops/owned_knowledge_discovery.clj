@@ -8,9 +8,11 @@
             [dvergr.substrate.geschichte :as workspace]
             [dvergr.system.rooms :as native-rooms]
             [hasch.core :as hasch]
+            [is.simm.model.knowledge-batches :as batches]
             [is.simm.model.knowledge-pins :as pins]
             [is.simm.model.knowledge-streams :as streams]
             [is.simm.ops.knowledge-changes :as changes]
+            [is.simm.ops.knowledge-batch-inputs :as batch-inputs]
             [is.simm.ops.knowledge-checkpoint-roots :as checkpoints]
             [is.simm.ops.knowledge-inputs :as inputs]
             [is.simm.ops.owned-reads :as reads]
@@ -84,13 +86,14 @@
   (let [db (:db binding) manifest (workflows/manifest-in db name)]
     (when-not (= expected-source (owned-workflows/source-id binding name manifest))
       (refuse! :program-changed))
-    (let [planned (runs/plan-source (workflows/snapshot-in db name)
+    (let [snapshot (workflows/snapshot-in db name)
+          planned (runs/plan-source snapshot
                                     {:name name :expected-bundle expected-bundle})
           policy (some-> (:selection-policy planned) inputs/normalize-policy)]
       (when-not policy (refuse! :missing-knowledge-policy))
       (when (contains? (:inputs planned) "/in/knowledge/manifest.edn")
         (refuse! :benchmark-inputs-are-not-a-live-stream))
-      {:policy policy
+      {:policy policy :planned planned :snapshot snapshot
        :origin {:target (:target binding) :target-stamp (:target-stamp binding)
                 :workflow name :source-revision expected-source}
        :value (streams/descriptor
@@ -129,6 +132,27 @@
         (when-not (= :retained (:knowledge.pin/state finished)) (refuse! :cleanup-unconfirmed))
         {:status :retained :operation (:knowledge.pin/id intent)}))))
 
+(defn- stream-context! [host principal handle request resolved lease ticket room-check!]
+  (let [control (get-in host [::reads/owner :control-conn])
+        binding (reads/resolve-host-read! host principal handle)
+        _ (when-not (identical? (:room resolved) (:room binding)) (refuse! :room-changed))
+        captured (capture! binding request)
+        mapping (owned/control-revision @control (:room-id binding) (get-in binding [:target :registry-system]))
+        check! (fn []
+                 (room-check!)
+                 (owned/validate! (reads/current-host-control-db! host) principal :merge
+                                  (:room-id binding) (:room binding) binding)
+                 (when-not (= (:expected-source request) (source-revision binding (:name request)))
+                   (refuse! :program-changed)))
+        transact! (fn [fragment]
+                    (d/transact control
+                      [[:db.fn/call (fn [db]
+                                     (writer-current! host principal handle resolved lease ticket db)
+                                     (owned/validate-control-in! db principal (:room-id binding) binding mapping)
+                                     (fragment db))]]))]
+    (check!)
+    (assoc captured :control control :binding binding :check! check! :transact! transact!)))
+
 (defn refresh!
   "Metadata-only refresh of the current authorized default workflow stream.
    Closed internal input; no override parameters/cases, provider or execution."
@@ -136,23 +160,8 @@
   (when-not (m/validate refresh-schema request) (refuse! :invalid-request))
   (with-room! host principal handle
     (fn [resolved lease ticket room-check!]
-      (let [control (get-in host [::reads/owner :control-conn])
-            binding (reads/resolve-host-read! host principal handle)
-            _ (when-not (identical? (:room resolved) (:room binding)) (refuse! :room-changed))
-            {:keys [value policy origin]} (capture! binding request)
-            mapping (owned/control-revision @control (:room-id binding) (get-in binding [:target :registry-system]))
-            check! (fn []
-                     (room-check!)
-                     (owned/validate! (reads/current-host-control-db! host) principal :merge
-                                      (:room-id binding) (:room binding) binding)
-                     (when-not (= (:expected-source request) (source-revision binding (:name request)))
-                       (refuse! :program-changed)))
-            transact! (fn [fragment]
-                        (d/transact control
-                          [[:db.fn/call (fn [db]
-                                         (writer-current! host principal handle resolved lease ticket db)
-                                         (owned/validate-control-in! db principal (:room-id binding) binding mapping)
-                                         (fragment db))]]))]
+      (let [{:keys [control binding value policy origin check! transact!]}
+            (stream-context! host principal handle request resolved lease ticket room-check!)]
         (check!)
         (let [expected (streams/stream @control (:id value))
               active (pins/active @control (:id value))
@@ -199,6 +208,96 @@
                                         (d/transact control [[:db.fn/call fragment]])))]
                   (assoc result :stream (:id value)
                          :pending (count (streams/pending-items @control (:id value)))))))))))))
+
+(defn- with-stream! [host principal handle request f]
+  (with-room! host principal handle
+    (fn [resolved lease ticket room-check!]
+      (f (stream-context! host principal handle request resolved lease ticket room-check!)))))
+
+(defn- batch-declaration! [request context]
+  (let [declaration (batch-inputs/declaration (get-in context [:snapshot :files]))]
+    (when-not (and declaration (= (:epoch request) (:epoch declaration)))
+      (refuse! :batching-not-enabled-for-this-epoch))
+    declaration))
+
+(defn- active-batch-reply [control value expected]
+  (when-let [id (:knowledge.stream/active-batch expected)]
+    (let [row (batches/batch @control id)]
+      (when-not (and row (= (:by value) (:knowledge.batch/by row))
+                     (= (:room value) (:knowledge.batch/room row))
+                     (= (:target value) (:knowledge.batch/target row))
+                     (= (:id value) (:knowledge.batch/stream row)))
+        (refuse! :batch-binding-mismatch))
+      {:status :held :reason :active-batch :stream (:id value) :batch id
+       :batch-state (:knowledge.batch/state row)})))
+
+(defn prepare-batch!
+  "Internal opt-in claim and durable freeze, with NO request or dispatch.
+   Returns only resource-independent source/byte data after releasing its source
+   lease. The later canonical admission must reauthorize and verify this exact
+   origin in its hashed intent. Active retries revalidate bounded workflow
+   source, but never recapture evidence/context or manufacture dispatch ownership."
+  [host principal handle request]
+  (when-not (m/validate refresh-schema request) (refuse! :invalid-request))
+  ;; Validate opt-in before any discovery effect; do not acquire the discovery
+  ;; gate recursively. Every subsequent physical extent repeats current gates.
+  (if-let [held (with-stream! host principal handle request
+                 (fn [{:keys [control value] :as context}]
+                   (batch-declaration! request context)
+                   (active-batch-reply control value (streams/stream @control (:id value)))))]
+    held
+    (do
+     (refresh! host principal handle request)
+  (with-stream! host principal handle request
+    (fn [{:keys [control binding value policy planned snapshot origin check! transact!] :as context}]
+      (let [declaration (batch-declaration! request context)
+            expected (streams/stream @control (:id value))]
+        (if-let [held (active-batch-reply control value expected)]
+          held
+          (let [pinned (checkpoints/verify! control (:db binding) (:knowledge.stream/cursor-root expected))
+                _ (when-not (= value (get-in pinned [:body :stream])) (refuse! :cursor-pin-mismatch))
+                reserved {:files (count (:inputs planned))
+                          :bytes (reduce + 0 (map #(alength (.getBytes ^String % "UTF-8")) (vals (:inputs planned))))}
+                selection (batch-inputs/selection (:db pinned) value expected
+                            (streams/pending-items @control (:id value)) policy (:policy declaration) reserved)]
+            (if (= :empty (:status selection))
+              (do (check!) {:status :empty :stream (:id value)})
+              (let [selected (:batch selection) claim (random-uuid)
+                    ;; Reject deterministic occupancy bounds before claiming.
+                    ;; Capture repeats this bounded metadata read on the SAME
+                    ;; immutable snapshot when forming its retained envelope.
+                    _ (inputs/publication-basis (:db pinned)
+                                               (select-keys (:target binding) [:registry-system :runtime-system]))]
+                (check!)
+                (artifact/publish-value! (artifact/datahike-store control) selected
+                  (fn [ref]
+                    (check!)
+                    (transact! #(batches/claim-tx % selected ref claim))))
+                (let [{:keys [batch new?]} (batches/claim-result @control (:id selected) claim)]
+                  (when-not new? (refuse! :capture-not-owned))
+                  (check!)
+                  (let [frozen (batch-inputs/capture (:db pinned) selection
+                                                   (select-keys (:target binding) [:registry-system :runtime-system]))
+                        digest (hasch/uuid frozen)]
+                    (check!)
+                    (artifact/publish-value! (artifact/datahike-store control) frozen
+                      (fn [ref]
+                        (check!)
+                        (transact! #(batches/freeze-tx % batch ref digest))))
+                    (let [current (batches/batch @control (:id selected))
+                          retained (:value (artifact/get-bounded-value (artifact/datahike-store control)
+                                              (:knowledge.batch/frozen current) batch-inputs/max-frozen-bytes))]
+                      (when-not (and (= :ready (:knowledge.batch/state current))
+                                     (= digest (:knowledge.batch/frozen-id current) (hasch/uuid retained))
+                                     (= selected (:batch retained)))
+                        (refuse! :frozen-inputs-unconfirmed))
+                      (batch-inputs/verify retained)
+                      (check!)
+                      {:status :ready :stream (:id value) :batch (:id selected)
+                       :batch-origin {:batch (:id selected) :selection (:id selected) :frozen digest}
+                       :captured (:captured retained) :publication-basis (:publication-basis retained)
+                       :remaining (:remaining selected)
+                       :snapshot snapshot :source-origin origin})))))))))))))
 
 (defn recover!
   "Finish only a committed cleanup on its exact original registered source.

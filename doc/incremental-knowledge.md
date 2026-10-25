@@ -80,6 +80,16 @@ Envelope hashes and byte verification confer no authority to claim a live stream
 The source cursor pin must remain retained until the HOST has durably frozen the
 inputs, and while the active batch prevents discovery from advancing it.
 
+The internal HOST preparation requires an explicit `input-batching.edn` sidecar
+containing `{:version 2 :epoch #uuid "..." :policy {...}}`. It validates opt-in
+before discovery effects, claims before copying source bodies, and verifies the
+durably retained artifact before returning resource-independent data. It freezes
+complete wiki publication occupancy from that same pinned snapshot, including
+excluded and non-Markdown targets. Deterministic occupancy bounds are checked
+before claiming. Active retries revalidate bounded workflow/fixture source but
+never recapture evidence/context; unknown claim/freeze acknowledgements hold.
+This preparation does not submit a request or grant dispatch ownership.
+
 Source-backed output proposals require retained admission-time BEFORE bytes for
 existing wiki targets. A bounded context therefore limits edits to existing
 targets included in that context; omitted existing targets cannot be treated as
