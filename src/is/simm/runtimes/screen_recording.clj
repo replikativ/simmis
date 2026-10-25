@@ -4,7 +4,7 @@
 
    Two tiers, deliberately, because they do different jobs:
 
-     screen-intake   a described frame every ~8s behind a scene-change gate.
+     screen-intake   changed browser frames at most once every ~20s.
                      Cheap, immediate, small enough to sit in a tool result.
                      Agents read it NOW, through `screen_look`. It DISCARDS —
                      that is its purpose.
