@@ -19,6 +19,7 @@
             [is.simm.runtimes.application-ops :as application-ops]
             [is.simm.runtimes.room-apps :as room-apps]
             [is.simm.runtimes.workspace-media :as workspace-media]
+            [is.simm.runtimes.http-options :as http-options]
             [is.simm.runtimes.memory-changes :as memory-changes]
             ;; System DB (must init before auth)
             [is.simm.model.system-db :as system-db]
@@ -606,7 +607,7 @@
   (let [bind-address (instance/development-bind-address)
         hk-handler (http-kit/create-http-kit-handler!
                     S url server-id (atom {}) (atom {})
-                    (cond-> {} bind-address (assoc :server-opts {:ip bind-address})))
+                    {:server-opts (http-options/server-options bind-address)})
         ;; Wrap the start-fn to use composite handler
         original-start-fn (:start-fn hk-handler)
         composite-start-fn (fn [volatile]

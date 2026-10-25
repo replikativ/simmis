@@ -685,7 +685,13 @@
                                 (when draft
                                   (el/button {:on-click (fn [_] ((:reload a) path))} "Check for changes"))
                                 (when (get-in draft [:source :entry])
-                                  (el/button {:disabled (not coherent?) :on-click (fn [_] ((:download a) path))} "Download"))
+                                  (if (get-in draft [:source :media])
+                                    (when coherent?
+                                      (el/a {:href (links/media-route {:room (:room-id data) :path path
+                                                                       :content (get-in draft [:source :entry :content])
+                                                                       :target (get-in draft [:source :target-stamp])})
+                                             :download (last (str/split path #"/"))} "Download"))
+                                    (el/button {:disabled (not coherent?) :on-click (fn [_] ((:download a) path))} "Download")))
                                 (when (and draft write?)
                                   (el/button {:disabled (or (editor/dirty? draft) (editor/property-drafts? state path)
                                                             (declarations/drafts? state path) (get-in state [:loading [:property-save path]]))

@@ -18,6 +18,9 @@ existing short-lived blob-read cookie; cached bytes never convey room access.
 Safe image/audio/video formats have generic native viewers; HTML and SVG are
 excluded. The media transport currently supports files up to 2 GiB minus one
 byte, single byte ranges for seeking, and metadata-only HEAD requests.
+The application enables the maintained HTTP-kit transport's non-legacy
+Content-Length behavior, preserving the handler's exact HEAD length without
+materializing a response body.
 
 The application owns a disposable POSIX materialization cache, separate from
 forkable room state. It verifies complete content hashes and sizes before
