@@ -39,7 +39,7 @@
         value (bytes-of "expected") id (blob/blob-id value)]
     (try
       (is (= :content-mismatch (reason #(cache/materialize! resource id 8
-                                                                             (fn [out] (.write out (bytes-of "unwanted")))))))
+                                                            (fn [out] (.write out (bytes-of "unwanted")))))))
       (is (empty? (:entries @(:state resource))))
       (is (empty? (:paths @(:state resource))))
       (is (= :size-mismatch (reason #(cache/materialize! resource id 8 (fn [out] (.write out (byte-array 9)))))))
@@ -48,7 +48,7 @@
       (is (empty? (:paths @(:state resource))))
       (let [failure (ex-info "Producer failed" {})]
         (is (identical? failure (try (cache/materialize! resource id 8 (fn [_] (throw failure)))
-                                    (catch Exception error error)))))
+                                     (catch Exception error error)))))
       (is (zero? (:bytes @(:state resource))))
       (finally (cache/close! resource)))))
 
@@ -87,14 +87,14 @@
     (try
       (with-redefs [cache/remove-path! (fn [& _] (throw (java.io.IOException. "unlink failed")))]
         (let [failure (try (cache/materialize! resource id 8
-                                              (fn [out] (swap! copies inc) (.write out (bytes-of "unwanted"))))
+                                               (fn [out] (swap! copies inc) (.write out (bytes-of "unwanted"))))
                            nil (catch Exception error error))]
           (is (= :content-mismatch (:reason (ex-data failure))))
           (is (= 1 (count (.getSuppressed failure))))
           (is (:closed? @(:state resource)))
           (is (seq (:paths @(:state resource)))))
         (is (= :closed (reason #(cache/materialize! resource id 8
-                                                  (fn [out] (swap! copies inc) (.write out value))))))
+                                                    (fn [out] (swap! copies inc) (.write out value))))))
         (is (= 1 @copies)))
       (is (true? (cache/close! resource)))
       (is (empty? (:paths @(:state resource))))
@@ -130,3 +130,21 @@
         (is (:closed? @(:state resource)))
         (is (empty? (:paths @(:state resource)))))
       (finally (deliver release true) @produced (cache/close! resource)))))
+
+(deftest verified-file-borrow-is-outside-cache-lock-and-has-owned-cleanup
+  (let [resource (cache/create {:max-file-bytes 100 :max-bytes 200 :max-entries 2})
+        value (bytes-of "expected") id (blob/blob-id value) borrowed (atom nil)]
+    (try
+      (is (= :consumed
+             (cache/with-materialized-file! resource id 8 #(.write % value)
+               (fn [file]
+                 (reset! borrowed file)
+                 (is (false? (Thread/holdsLock (:guard resource))))
+                 (is (= "expected" (slurp file)))
+                 :consumed))))
+      (is (.exists ^java.io.File @borrowed))
+      (cache/close! resource)
+      (is (false? (.exists ^java.io.File @borrowed)))
+      (is (= :closed (reason #(cache/with-materialized-file! resource id 8
+                                (fn [_] (throw (AssertionError. "must not copy"))) identity))))
+      (finally (cache/close! resource)))))

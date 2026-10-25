@@ -40,6 +40,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [datahike.api :as d]
+            [hasch.core :as hasch]
             [is.simm.model.blobs :as blobs]
             [is.simm.model.system-db :as system-db]
             [taoensso.telemere :as log])
@@ -82,7 +83,14 @@
    {:db/ident :recording.segment/blob-id :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one}
    {:db/ident :recording.segment/status :db/valueType :db.type/keyword
-    :db/cardinality :db.cardinality/one}])
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :recording.segment/archive-claim :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}
+   {:db/ident :recording.segment/archive-snapshot :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}
+   {:db/ident :recording.segment/archive-target :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}
+   {:db/ident :recording.segment/archive-room :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}
+   {:db/ident :recording.segment/archive-state :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+   {:db/ident :recording.segment/archive-note :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :recording.segment/archive-content :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}])
 
 (defonce ^:private conns (atom {}))
 
@@ -94,7 +102,7 @@
            ;; is at best meaningless and at worst how a writer ends up fatally
            ;; confused about which store it is writing.
            :id (java.util.UUID/nameUUIDFromBytes
-                 (.getBytes (str "simmis-recordings/" owner-uuid) "UTF-8"))}
+                (.getBytes (str "simmis-recordings/" owner-uuid) "UTF-8"))}
    :schema-flexibility :write
    :keep-history? false
    :crypto-hash? true})
@@ -156,6 +164,138 @@
 
 (defn- segment-path [owner-uuid session-id idx mime]
   (str (root) "/" owner-uuid "/" session-id "/seg-" idx "." (ext-for mime)))
+
+(defn- archive-refuse! [reason]
+  (throw (ex-info "Recording archive selection unavailable" {:type ::archive-refused :reason reason})))
+
+(defn- archive-ids! [owner sid idx]
+  (when-not (and (uuid? owner) (uuid? sid) (integer? idx) (<= 0 idx 999999))
+    (archive-refuse! :invalid-selection)))
+
+(defn- archive-selection-in [db owner sid idx]
+  (archive-ids! owner sid idx)
+  (let [session (d/entity db [:recording.session/id sid])
+        segs (vec (take 2 (d/q '[:find [?e ...] :in $ ?session ?idx
+                                 :where [?e :recording.segment/session ?session]
+                                 [?e :recording.segment/idx ?idx]] db (:db/id session) idx)))
+        segment (when (= 1 (count segs)) (d/entity db (first segs)))
+        start (:recording.session/started-at session) end (:recording.session/ended-at session)
+        mime (:recording.session/mime session)
+        size (:recording.segment/bytes segment) offset (:recording.segment/offset-ms segment)
+        duration (:recording.segment/duration-ms segment) legacy (:recording.segment/blob-id segment)]
+    (when-not (and (= :ready (:recording.segment/status segment))
+                   (integer? start) (integer? end) (<= 0 start end)
+                   (string? mime) (#{"mp4" "webm"} (ext-for mime))
+                   (integer? size) (<= 1 size Integer/MAX_VALUE)
+                   (integer? offset) (<= 0 offset) (integer? duration) (pos? duration)
+                   (<= offset (- Long/MAX_VALUE start)) (<= duration (- Long/MAX_VALUE start offset))
+                   (string? legacy) (re-matches #"[0-9a-f]{64}" legacy))
+      (archive-refuse! :not-finalized))
+    (let [facts (fn [eid attrs]
+                  (mapcat (fn [attr]
+                            (map (fn [datom] [eid attr (:v datom) (:tx datom)])
+                                 (d/datoms db :eavt eid attr))) attrs))
+          revision (hasch/uuid
+                    [:simmis/completed-recording-source-v1 owner sid idx
+                     (vec (concat (facts (:db/id session) [:recording.session/id :recording.session/started-at
+                                                           :recording.session/ended-at :recording.session/mime])
+                                  (facts (:db/id segment) [:recording.segment/session :recording.segment/idx
+                                                           :recording.segment/status :recording.segment/offset-ms
+                                                           :recording.segment/duration-ms :recording.segment/bytes
+                                                           :recording.segment/blob-id])))])]
+      {:owner owner :session {:id sid :owner owner :started-at start :ended-at end}
+       :segment {:index idx :offset-ms offset :duration-ms duration :size size :extension (ext-for mime)}
+       :legacy-blob legacy :segment-eid (:db/id segment) :revision revision})))
+
+(defn archive-selection!
+  "HOST INTERNAL closed ready interval. Owner comes from authenticated human
+   identity, not a client-supplied path. The File stays inside the original App
+   operation and must be verified/staged before native publication."
+  [owner sid idx]
+  (archive-ids! owner sid idx)
+  (let [source (archive-selection-in @(conn-for owner) owner sid idx)]
+    (assoc source :file (File. (segment-path owner sid idx (:extension (:segment source)))))))
+
+(defn assert-unclaimed-archive!
+  "HOST INTERNAL metadata-only refusal before hashing or hydrating a repeated
+   attempt. This does not reserve anything or adopt a stored claim token."
+  [owner sid idx]
+  (archive-ids! owner sid idx)
+  (let [db @(conn-for owner) source (archive-selection-in db owner sid idx)
+        row (d/entity db (:segment-eid source))]
+    (when (or (:recording.segment/archive-claim row) (:recording.segment/archive-state row))
+      (archive-refuse! :already-claimed))
+    true))
+
+(defn- validate-archive-claim-in
+  [db {:keys [owner session segment revision segment-eid token snapshot target room note-path] :as claim}]
+  (let [current (archive-selection-in db owner (:id session) (:index segment))
+        row (d/entity db segment-eid)]
+    (when-not (and (uuid? token) (= revision (:revision current)) (= segment-eid (:segment-eid current))
+                   (= token (:recording.segment/archive-claim row))
+                   (= snapshot (:recording.segment/archive-snapshot row))
+                   (= target (:recording.segment/archive-target row))
+                   (= room (:recording.segment/archive-room row))
+                   (= note-path (:recording.segment/archive-note row))
+                   (= :pending (:recording.segment/archive-state row)))
+      (archive-refuse! :claim-changed))
+    claim))
+
+(defn validate-archive-claim!
+  "HOST INTERNAL: inspect current source and the original one-shot claim.
+   No operation acknowledgement is recovered from an observed row."
+  [claim]
+  (archive-ids! (:owner claim) (get-in claim [:session :id]) (get-in claim [:segment :index]))
+  (validate-archive-claim-in @(conn-for (:owner claim)) claim))
+
+(def ^:private claim-fields
+  [:owner :session :segment :revision :segment-eid :token :snapshot :target :room :note-path])
+
+(defn- claim-archive-tx [db {:keys [owner session segment segment-eid token snapshot target room note-path] :as claim}]
+  (let [current (archive-selection-in db owner (:id session) (:index segment))
+        row (d/entity db segment-eid)]
+    (when-not (and (= (select-keys claim [:revision :segment-eid])
+                      (select-keys current [:revision :segment-eid]))
+                   (nil? (:recording.segment/archive-claim row))
+                   (nil? (:recording.segment/archive-state row)))
+      (archive-refuse! :already-claimed-or-changed))
+    [{:db/id segment-eid :recording.segment/archive-claim token
+      :recording.segment/archive-snapshot snapshot :recording.segment/archive-target target
+      :recording.segment/archive-room room :recording.segment/archive-state :pending
+      :recording.segment/archive-note note-path}]))
+
+(defn- finish-archive-tx [db claim note-content]
+  (validate-archive-claim-in db claim)
+  [{:db/id (:segment-eid claim) :recording.segment/archive-state :complete
+    :recording.segment/archive-content note-content}])
+
+(defn claim-archive!
+  "HOST INTERNAL one-shot claim after inspecting a frozen preview. A failed or
+   lost transaction acknowledgement never authorizes publication. Existing
+   claims are refused, including completed claims; no automatic replay."
+  [{:keys [owner] :as source} snapshot target room note-path]
+  (archive-ids! owner (get-in source [:session :id]) (get-in source [:segment :index]))
+  (when-not (and (every? uuid? [snapshot target room]) (string? note-path) (<= 1 (count note-path) 512))
+    (archive-refuse! :invalid-claim))
+  (let [conn (conn-for owner)
+        claim (assoc (select-keys source claim-fields) :token (random-uuid) :snapshot snapshot
+                     :target target :room room :note-path note-path)]
+    ;; Direct transaction: do not use the legacy capture writer's reconnect/retry
+    ;; wrapper for a one-shot publication claim.
+    (d/transact conn [[:db.fn/call claim-archive-tx claim]])
+    (validate-archive-claim! claim)))
+
+(defn finish-archive!
+  "HOST INTERNAL. Call only after all native writes returned positive closed
+   receipts and current owner/default authority was revalidated. Returns after
+   this transaction's acknowledgement; never retry an uncertain finish."
+  [{:keys [owner] :as claim} note-content]
+  (when-not (uuid? note-content) (archive-refuse! :invalid-content))
+  ;; Fast refusal avoids even submitting a known completed/stale claim. The
+  ;; transaction repeats the guard atomically against its own writer snapshot.
+  (validate-archive-claim! claim)
+  (d/transact (conn-for owner) [[:db.fn/call finish-archive-tx (select-keys claim claim-fields) note-content]])
+  {:state :complete :content note-content})
 
 (defn- ffprobe-duration-ms
   "Actual duration of a finalized segment. The browser does not tell us — and

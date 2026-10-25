@@ -32,7 +32,9 @@
 (defn observation-note
   "One bounded, immutable observation note for a finalized video interval.
    Frames must already have exact canonical content identities. Descriptions
-   may finish after the interval; membership is their capture timestamp.
+   may finish after the interval; membership uses server receipt timestamps.
+   Legacy recordings have separate client timing anchors, so alignment is
+   explicitly estimated, not an exact common capture clock.
    Returns document source plus the asset destinations it references."
   [session {:keys [index offset-ms duration-ms content size extension] :as segment} frames]
   (let [root (folder session) start (:started-at session)]
@@ -57,20 +59,22 @@
           id (hasch/uuid [:simmis/screen-observation-note-v1 (:owner session) (:id session) index])
           path (str root "/observations/" (stamp "HH-mm-ss" from) "--" (format "%06d" index) ".md")
           source (str (frontmatter (array-map :simmis-id (str id) :source-kind "screen-observation"
+                                              :timestamp-basis "server-received" :recording-alignment "estimated"
                                               :capture-owner (str (:owner session)) :capture-session (str (:id session))
                                               :started-at (instant from) :until (instant until)
                                               :recording (assoc (select-keys video [:path :size]) :content (str content)
                                                                 :offset-ms offset-ms :duration-ms duration-ms)
                                               :screenshots (mapv #(-> (select-keys % [:path :size :at])
-                                                                     (assoc :id (str (:id %)) :content (str (:content %)))) assets)))
+                                                                      (assoc :id (str (:id %)) :content (str (:content %)))) assets)))
                       "# Screen observations · " (instant from) "\n\n" evidence-notice "\n\n"
+                      "Stored sampled observations, ordered by server receipt time. Recording positions are estimates: the screenshot and recording clocks were anchored separately.\n\n"
                       "[Original recording](" (relative video) ") · " duration-ms " ms\n\n"
                       (apply str
                              (map (fn [frame asset]
                                     (str "## " (instant (:at frame)) "\n\n"
                                          "![Screenshot at " (instant (:at frame)) "](" (relative asset) ")\n\n"
                                          "[Open original screenshot](" (relative asset) ")\n\n"
-                                         "Recording time: " (- (:at frame) from) " ms into this segment.\n\n"
+                                         "Estimated recording position: " (- (:at frame) from) " ms into this segment.\n\n"
                                          (when-let [model (:model frame)] (str "Transcription model: " (json/write-str model) "\n\n"))
                                          (quoted (or (:text frame) (str "Transcription failed: " (:failed frame)))) "\n")) frames assets)))]
       (when (or (> (count source) 1500000) (> (alength (.getBytes ^String source "UTF-8")) 1500000)) (invalid!))
