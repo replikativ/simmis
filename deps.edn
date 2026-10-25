@@ -317,7 +317,9 @@
         ;; Keep the explicit Spindel/Yggdrasil Git pins above: Maven's POM cannot
         ;; express those coordinates. Alpha stores require classified wallets;
         ;; no legacy wallet migration is implied.
-        org.replikativ/dvergr {:mvn/version "0.1.356"
+        ;; 0.1.361 distinguishes repeated-tool failures from completed no-ops
+        ;; and includes the upstream fork/future retention fixes.
+        org.replikativ/dvergr {:mvn/version "0.1.361"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.
