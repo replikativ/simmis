@@ -44,3 +44,11 @@
     (is (str/includes? (:text note) "Transcription failed: provider unavailable"))
     (is (str/includes? (:text note) "![Screenshot at"))
     (is (= (:content frame) (:content (second (:assets note)))))))
+
+(deftest archived-observations-do-not-claim-a-shared-capture-clock
+  (let [note (capture/observation-note session (assoc segment :offset-ms 990) [frame])
+        properties (get-in (markdown/parse (:text note)) [:frontmatter :properties])]
+    (is (= "server-received" (get properties "timestamp-basis")))
+    (is (= "estimated" (get properties "recording-alignment")))
+    (is (str/includes? (:text note) "Estimated recording position: 1437 ms"))
+    (is (str/includes? (:path note) "/observations/01-23-44--000000.md"))))

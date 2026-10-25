@@ -114,6 +114,20 @@
                      (.addSuppressed error cleanup-error)))
               (throw error))))))))
 
+(defn with-materialized-file!
+  "HOST INTERNAL. Borrow a verified private file for synchronous ingestion.
+   The caller MUST retain its original App operation through callback completion;
+   App cleanup joins that operation before closing this cache. The callback
+   runs outside the cache lock and must neither mutate nor retain the file.
+   No authority follows from this materialization or its content identity."
+  [{:keys [guard state] :as cache} content size copy! consume!]
+  (when-not (fn? consume!) (refuse! :invalid-consumer))
+  (materialize! cache content size copy!)
+  (let [path (locking guard
+               (when (:closed? @state) (refuse! :closed))
+               (or (get-in @state [:entries content :path]) (refuse! :missing)))]
+    (consume! (.toFile ^Path path))))
+
 (defn slice
   "Independent, read-only logical range over an already authorized response."
   [{:keys [size buffer]} offset length]
