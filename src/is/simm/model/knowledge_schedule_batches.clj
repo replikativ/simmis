@@ -7,6 +7,7 @@
             [hasch.core :as hasch]
             [is.simm.model.knowledge-batches :as batches]
             [is.simm.model.knowledge-streams :as streams]
+            [is.simm.model.work-request-identity :as identity]
             [malli.core :as m]))
 
 (def max-binding-bytes (* 16 1024))
@@ -150,3 +151,88 @@
         (validate! value)
         (matches! occurrence value ref)
         value))))
+
+
+(defn- anchored! [db retained]
+  (when-not (and (map? retained) (= #{:value :reference} (set (keys retained)))
+                 (uuid? (:reference retained)))
+    (refuse! :invalid-retained-anchor))
+  (let [value (validate! (:value retained))
+        o (row db :schedule.occurrence/id (:occurrence value))]
+    (matches! o value (:reference retained))
+    (when (some #(contains? o %) [:schedule.occurrence/input-id :schedule.occurrence/input-ref
+                                 :schedule.occurrence/input-revision])
+      (refuse! :mixed-input-binding))
+    [o value]))
+
+(defn- request-markers! [value request intent]
+  (let [origin (:knowledge/batch intent)
+        schedule (:schedule-origin intent)]
+    ;; The fixed HOST verifies the original deployment, complete submission,
+    ;; source, and creation channel against this SAME immutable basis off-writer.
+    ;; Only finite identity facts are inspected here; no body hashing or IO.
+    (when-not (and (= (:batch value) origin)
+                   (= {:binding (:id value)} (:knowledge/schedule intent))
+                   (map? schedule)
+                   (= #{:activation :revision :occurrence :creation-channel} (set (keys schedule)))
+                   (= [(:activation value) (:revision value) (:occurrence value)]
+                      [(:activation schedule) (:revision schedule) (:occurrence schedule)])
+                   (#{:host :mcp} (:creation-channel schedule))
+                   (= :workflow (:work.request/kind request))
+                   (= [(:by value) (:room value) (:occurrence value)]
+                      [(:work.request/by request) (:work.request/room request) (:work.request/client-id request)])
+                   (= (:occurrence value) (get-in intent [:submission :request-id]))
+                   (= (:work.request/id request) (identity/request-id (:by value) (:room value) (:occurrence value)))
+                   (= [(:batch origin) (:frozen origin)]
+                      [(:work.request/knowledge-batch request) (:work.request/knowledge-frozen request)]))
+      (refuse! :request-binding-mismatch))))
+
+(defn request-tx
+  "Fixed first-claim fragment, intended for EVERY native batch request claim,
+   not conditional on a caller's schedule marker. Compose with canonical request
+   insertion and batch linkage in the SAME transaction. Sets the occurrence's
+   request pointer jointly, leaving it admitting until native reconciliation.
+   Not wired to work admission yet."
+  [db retained request intent]
+  ;; Reservation lookup follows the ACTUAL inserted row. Removing or changing
+  ;; the intent origin must not hide that row's reserved scheduled batch.
+  (let [origin (:knowledge/batch intent)]
+    (when-not (and (m/validate batches/origin-schema origin)
+                   (= [(:batch origin) (:frozen origin)]
+                      [(:work.request/knowledge-batch request) (:work.request/knowledge-frozen request)]))
+      (refuse! :request-binding-mismatch)))
+  (let [reverse (bound-occurrence db (:work.request/knowledge-batch request))]
+    (if-not reverse
+      (do
+        (when (or retained (contains? intent :knowledge/schedule) (contains? intent :schedule-origin))
+          (refuse! :unbound-schedule-marker))
+        [])
+      (let [[o value] (anchored! db retained)]
+        (when-not (= (:db/id reverse) (:db/id o)) (refuse! :foreign-binding))
+        (request-markers! value request intent)
+        (claimed! db value)
+        (ready! db value)
+        (when (or (:schedule.occurrence/request o)
+                  (row db :work.request/id (:work.request/id request)))
+          (refuse! :partial-request-link))
+        [{:db/id (:db/id o) :schedule.occurrence/request (:work.request/id request)}]))))
+
+(def ^:private request-fields
+  [:work.request/id :work.request/client-id :work.request/by :work.request/room :work.request/kind
+   :work.request/intent-id :work.request/payload-ref :work.request/publication-basis-id
+   :work.request/knowledge-batch :work.request/knowledge-frozen :work.request/claim :work.request/created-at])
+
+(defn linked!
+  "Historical metadata check ONLY. HOST separately verifies the bounded retained
+   deployment and request payload. Requires complete joint request/batch/occurrence
+   linkage; no fresh active/ready gate, pointer repair or dispatch authority."
+  [db retained request intent]
+  (let [[o value] (anchored! db retained)
+        actual (row db :work.request/id (:work.request/id request))]
+    (request-markers! value request intent)
+    (when-not (and actual (= (select-keys actual request-fields) (select-keys request request-fields))
+                   (= (:work.request/id request) (:schedule.occurrence/request o))
+                   (= (:db/id o) (:db/id (bound-occurrence db (get-in value [:batch :batch]))))
+                   (empty? (batches/request-tx db (:batch value) request (:work.request/intent-id request))))
+      (refuse! :partial-request-link))
+    value))

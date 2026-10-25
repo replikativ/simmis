@@ -6,13 +6,14 @@
             [is.simm.model.knowledge-batches :as batches]
             [is.simm.model.knowledge-schedule-batches :as binding]
             [is.simm.model.knowledge-streams :as streams]
-            [is.simm.model.workflow-schedules :as schedules]))
+            [is.simm.model.workflow-schedules :as schedules]
+            [is.simm.model.work-requests :as requests]))
 
 (defn- with-db [f]
   (let [config {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write :keep-history? false}]
     (d/create-database config)
     (let [conn (d/connect config)]
-      (try (d/transact conn (concat schedules/schema streams/schema batches/schema binding/schema))
+      (try (d/transact conn (concat schedules/schema streams/schema batches/schema binding/schema requests/schema))
            (f conn)
            (finally (d/release conn))))))
 
@@ -133,3 +134,90 @@
         (is (= :already-retained (held #(tx! conn value))))
         (is (nil? (binding/bound-occurrence @conn (get-in value [:batch :batch]))))
         (is (nil? (binding/bound-occurrence @conn nil)))))))
+
+
+(defn- request-fixture [conn]
+  (let [value (seed! conn) o (binding/retain! conn value)
+        anchor {:value value :reference (:schedule.occurrence/batch-ref o)}
+        intent {:knowledge/batch (:batch value) :knowledge/schedule {:binding (:id value)}
+                :schedule-origin {:activation (:activation value) :revision (:revision value)
+                                  :occurrence (:occurrence value) :creation-channel :host}
+                :submission {:request-id (:occurrence value)}}
+        p (requests/prepare-claim {:party (:by value) :room (:room value) :client-id (:occurrence value)
+                                   :kind :workflow :intent intent})
+        request (assoc (:row (requests/claim-row p)) :work.request/payload-ref (random-uuid))]
+    {:value value :anchor anchor :intent intent :request request :digest (:digest p)}))
+
+(defn- joint! [conn {:keys [anchor intent request digest]}]
+  (d/transact conn
+    [[:db.fn/call
+      (fn [db]
+        (vec (concat (binding/request-tx db anchor request intent)
+                     (requests/claim-tx db request digest)
+                     (batches/request-tx db (:knowledge/batch intent) request digest))))]]))
+
+(deftest joint-request-links-all-three-records-and-historical-replay-is-not-fresh-admission
+  (with-db
+    (fn [conn]
+      (let [{:keys [value anchor intent request] :as f} (request-fixture conn)]
+        (joint! conn f)
+        (is (= (:work.request/id request) (:schedule.occurrence/request (schedules/occurrence conn (:occurrence value)))))
+        (is (= (:work.request/id request) (:knowledge.batch/request (batches/batch @conn (get-in value [:batch :batch])))))
+        (is (= value (binding/linked! @conn anchor (requests/get-request conn (:work.request/id request)) intent)))
+        (d/transact conn [{:db/id [:knowledge.batch/id (get-in value [:batch :batch])] :knowledge.batch/state :closed}
+                         {:db/id [:schedule.activation/id (:activation value)] :schedule.activation/active-occurrence (random-uuid)}])
+        (is (= value (binding/linked! @conn anchor request intent)))
+        (is (some? (held #(joint! conn f))))))))
+
+(deftest schedule-markers-cannot-be-omitted-or-invented-to-cross-the-reservation
+  (with-db
+    (fn [conn]
+      (let [{:keys [value anchor intent request]} (request-fixture conn)]
+        (doseq [changed [(dissoc intent :schedule-origin) (dissoc intent :knowledge/schedule)
+                         (dissoc intent :schedule-origin :knowledge/schedule)
+                         (assoc-in intent [:knowledge/schedule :binding] (random-uuid))
+                         (assoc-in intent [:schedule-origin :occurrence] (random-uuid))]]
+          (is (= :request-binding-mismatch (held #(binding/request-tx @conn anchor request changed)))))
+        (is (= :invalid-retained-anchor (held #(binding/request-tx @conn nil request intent))))
+        (doseq [changed [(dissoc intent :knowledge/batch :schedule-origin :knowledge/schedule)
+                         (-> intent (assoc-in [:knowledge/batch :batch] (random-uuid))
+                             (dissoc :schedule-origin :knowledge/schedule))]]
+          (is (= :request-binding-mismatch (held #(binding/request-tx @conn nil request changed)))))
+        (let [id (random-uuid) unbound (assoc-in intent [:knowledge/batch :batch] id)
+              unbound-row (assoc request :work.request/knowledge-batch id)]
+          (is (= :unbound-schedule-marker (held #(binding/request-tx @conn nil unbound-row unbound))))
+          (is (= [] (binding/request-tx @conn nil unbound-row (dissoc unbound :knowledge/schedule :schedule-origin)))))
+        (is (nil? (requests/get-request conn (:work.request/id request))))
+        (is (nil? (:schedule.occurrence/request (schedules/occurrence conn (:occurrence value)))))))))
+
+(deftest changed-storage-anchor-or-request-identity-refuses-joint-insert
+  (doseq [change [:reference :claim :revision :client :party :pointer]]
+    (with-db
+      (fn [conn]
+        (let [{:keys [value anchor intent request] :as f} (request-fixture conn)]
+          (case change
+            :reference (d/transact conn [{:db/id [:schedule.occurrence/id (:occurrence value)] :schedule.occurrence/batch-ref (random-uuid)}])
+            :claim (d/transact conn [{:db/id [:schedule.occurrence/id (:occurrence value)] :schedule.occurrence/claim (random-uuid)}])
+            :revision (d/transact conn [{:db/id [:schedule.activation/id (:activation value)] :schedule.activation/revision (random-uuid)}])
+            :pointer (d/transact conn [{:db/id [:schedule.occurrence/id (:occurrence value)] :schedule.occurrence/request (random-uuid)}])
+            nil)
+          (let [actual (cond-> f
+                         (= change :client) (assoc-in [:request :work.request/client-id] (random-uuid))
+                         (= change :party) (assoc-in [:request :work.request/by] (random-uuid)))]
+            (is (some? (held #(joint! conn actual))) (str change)))
+          (is (nil? (requests/get-request conn (:work.request/id request))))
+          (is (nil? (:knowledge.batch/request (batches/batch @conn (get-in value [:batch :batch]))))))))))
+
+(deftest joint-request-lost-ack-preserves-complete-inspectable-linkage
+  (with-db
+    (fn [conn]
+      (let [{:keys [value anchor intent request] :as f} (request-fixture conn)
+            transact! d/transact lost (ex-info "Lost joint request ACK" {})]
+        (with-redefs [d/transact (fn [c tx] (transact! c tx) (throw lost))]
+          (is (identical? lost (try (joint! conn f) nil (catch Exception error error)))))
+        (is (= value (binding/linked! @conn anchor request intent)))
+        (is (some? (held #(joint! conn f))))
+        ;; Missing occurrence linkage is not an invitation to repair it.
+        (d/transact conn [[:db/retract [:schedule.occurrence/id (:occurrence value)] :schedule.occurrence/request (:work.request/id request)]])
+        (is (= :partial-request-link (held #(binding/linked! @conn anchor request intent))))
+        (is (some? (held #(joint! conn f))))))))

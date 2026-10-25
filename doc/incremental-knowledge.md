@@ -244,11 +244,19 @@ owns its claim. Changed claims, revisions or active pointers do invalidate it.
 The first retention acknowledgement is required to continue dispatch. Finding
 an identical artifact or row after uncertainty does not recreate that ownership.
 
-The native batch-claim composition must consult the reverse binding even when
-the supplied intent omits its schedule marker. Dropping that marker must not
+The inactive request fragment consults the reverse binding from the actual
+request row and requires its batch markers to agree with the intent, including
+when the intent omits its schedule marker. The native batch-claim composition
+still needs to invoke this fragment unconditionally. Dropping that marker must not
 turn a reserved scheduled batch into a manual request. Deployment artifacts are
 bounded and verified before entering the writer; only inert identity facts and
 pure comparisons belong in the serialized transition.
+
+The first request fragment jointly records the occurrence request pointer with
+canonical request insertion and batch linkage, leaving the occurrence admitting
+until ordinary native reconciliation. Its historical metadata check requires
+all three links; neither a partial link nor an identical first-claim replay can
+repair the relationship or grant dispatch ownership.
 
 Historical reconciliation is a different check from fresh admission. It verifies
 the original deployment, occurrence, canonical request, and complete batch
