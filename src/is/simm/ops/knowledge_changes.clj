@@ -48,26 +48,34 @@
       (refuse! :unpublished-snapshot)))
   db)
 
-(defn basis
-  "Published physical identity and cardinality, without content bodies.
-   A descriptor is not a pin, capability or ancestry proof. Plain PSS database
-   values only: counting a temporal/filter view can scan its entire index."
+(defn source-identity
+  "HOST physical metadata only, without enumerating the source. This is not a
+   published checkpoint, authorization or lease. Retention cleanup may inspect
+   an authorized current head larger than the discovery cardinality limit."
   [db]
-  (snapshot! db)
+  (when-not (and (instance? DB db)
+                 (= :datahike.index/persistent-set (get-in db [:config :index])))
+    (refuse! :unsupported-snapshot))
   (let [value {:repository (:geschichte.repo/id (query/repository db))
                :store (get-in db [:config :store :id])
                :backend (get-in db [:config :store :backend])
                :branch (get-in db [:config :branch]) :ref (query/current-ref db)
-               :commit (d/commit-id db) :max-tx (:max-tx db)
                :configuration (hasch/uuid (select-keys (:config db)
-                                                       [:store :branch :index :attribute-refs? :crypto-hash?]))
-               :datoms (count db)}]
-    (when-not (and (every? uuid? (map value [:repository :store :commit]))
+                                                       [:store :branch :index :attribute-refs? :crypto-hash?]))}]
+    (when-not (and (every? uuid? (map value [:repository :store]))
                    (keyword? (:backend value)) (keyword? (:branch value))
-                   (string? (:ref value)) (not (str/blank? (:ref value)))
-                   (integer? (:max-tx value)))
+                   (string? (:ref value)) (not (str/blank? (:ref value))))
       (refuse! :invalid-basis))
     value))
+
+(defn basis
+  "Verified published checkpoint and bounded cardinality, without file bodies.
+   A descriptor is not a pin, capability or ancestry proof."
+  [db]
+  (snapshot! db)
+  (let [commit (d/commit-id db)]
+    (when-not (and (uuid? commit) (integer? (:max-tx db))) (refuse! :invalid-basis))
+    (assoc (source-identity db) :commit commit :max-tx (:max-tx db) :datoms (count db))))
 
 (defn- role [policy path]
   (when (and (string? path) (re-find #"(?i)\.(md|markdown)$" path)

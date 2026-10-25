@@ -5,7 +5,9 @@
   (:require [datahike.api :as d]
             [dvergr.artifact :as artifact]
             [hasch.core :as hasch]
-            [is.simm.model.knowledge-streams :as streams]))
+            [is.simm.model.knowledge-streams :as streams]
+            [is.simm.model.knowledge-publication :as publication]
+            [malli.core :as m]))
 
 (def schema
   (mapv (fn [[ident type]]
@@ -13,6 +15,7 @@
             (#{:knowledge.pin/id :knowledge.pin/active-stream} ident) (assoc :db/unique :db.unique/value)))
         [[:knowledge.pin/id :db.type/uuid] [:knowledge.pin/stream :db.type/uuid]
          [:knowledge.pin/active-stream :db.type/uuid] [:knowledge.pin/claim :db.type/uuid]
+         [:knowledge.pin/by :db.type/uuid] [:knowledge.pin/room :db.type/uuid] [:knowledge.pin/target :db.type/uuid]
          [:knowledge.pin/state :db.type/keyword] [:knowledge.pin/payload :db.type/store-ref]
          [:knowledge.pin/payload-id :db.type/uuid] [:knowledge.pin/discovery :db.type/uuid]]))
 
@@ -26,7 +29,26 @@
 (defn intent [db id] (row db :knowledge.pin/id id))
 (defn active [db stream] (row db :knowledge.pin/active-stream stream))
 
-(defn- prepare-tx [db value expected payload-id ref root claim]
+(def origin-schema
+  [:map {:closed true} [:target [:and publication/target-schema [:fn publication/host-target?]]]
+   [:target-stamp :uuid] [:workflow [:re #"^[a-z0-9][a-z0-9-]{0,63}$"]] [:source-revision :uuid]])
+
+(defn target-id [target]
+  (when-not (and (m/validate publication/target-schema target) (publication/host-target? target))
+    (refuse! :invalid-origin))
+  (hasch/uuid [:simmis/knowledge-owned-target-v1 target]))
+
+(defn- validate-origin! [value basis origin]
+  (when-not (and (m/validate origin-schema origin)
+                 (= (:target value) (target-id (:target origin)))
+                 (= (select-keys basis [:repository :store :backend :branch :ref])
+                    (select-keys (:target origin) [:repository :store :backend :branch :ref])))
+    (refuse! :origin-mismatch))
+  origin)
+
+(defn prepare-tx
+  "Internal pure fragment; HOST composes current authorization in its writer."
+  [db value expected payload-id ref root claim]
   (when-not (= value (streams/descriptor (dissoc value :id))) (refuse! :invalid-stream))
   (when-not (= expected (streams/stream db (:id value))) (refuse! :cursor-conflict))
   (when (:knowledge.stream/active-batch expected) (refuse! :batch-active))
@@ -44,26 +66,35 @@
     (do
       (when (intent db root) (refuse! :root-id-reused))
       [{:knowledge.pin/id root :knowledge.pin/stream (:id value) :knowledge.pin/active-stream (:id value)
+        :knowledge.pin/by (:by value) :knowledge.pin/room (:room value) :knowledge.pin/target (:target value)
         :knowledge.pin/claim claim :knowledge.pin/state :creating
         :knowledge.pin/payload ref :knowledge.pin/payload-id payload-id}])))
 
-(defn prepare!
-  "HOST must validate the published basis and owned target before calling.
-   Only :new? winner may invoke native pin!. Missing roots after uncertainty or
-   restart are held, never recreated. Payload retains original cursor/basis."
-  [conn value expected basis]
+(defn preparation
+  "Bounded inert publication plan. No native effect, authority or lease."
+  [value expected basis origin]
   (streams/validate-binding! value expected)
   (streams/validate-basis! basis)
-  (let [payload {:version 1 :stream value :expected expected :basis basis}
+  (validate-origin! value basis origin)
+  (let [payload {:version 1 :stream value :expected expected :basis basis :origin origin}
         digest (hasch/uuid payload) root (random-uuid) claim (random-uuid)]
     (when (> (alength (.getBytes ^String (pr-str payload) "UTF-8")) 16384)
       (refuse! :intent-too-large))
-    (artifact/publish-value!
-     (artifact/datahike-store conn) payload
-     (fn [ref] (d/transact conn [[:db.fn/call prepare-tx value expected digest ref root claim]])))
-    (let [stored (active @conn (:id value))]
+    {:payload payload :digest digest :root root :claim claim}))
+
+(defn preparation-result [db {:keys [payload digest root claim]}]
+  (let [value (:stream payload) stored (active db (:id value))]
       (when-not (= digest (:knowledge.pin/payload-id stored)) (refuse! :intent-changed))
-      {:intent stored :new? (and (= root (:knowledge.pin/id stored)) (= claim (:knowledge.pin/claim stored)))})))
+      {:intent stored :new? (and (= root (:knowledge.pin/id stored)) (= claim (:knowledge.pin/claim stored)))}))
+
+(defn prepare!
+  "Internal convenience after HOST authorization. Only the original :new?
+   winner may create a native pin; recovery never recreates missing roots."
+  [conn value expected basis origin]
+  (let [{:keys [payload digest root claim] :as prepared} (preparation value expected basis origin)]
+    (artifact/publish-value! (artifact/datahike-store conn) payload
+      (fn [ref] (d/transact conn [[:db.fn/call prepare-tx value expected digest ref root claim]])))
+    (preparation-result @conn prepared)))
 
 (defn payload
   "Read and verify one retained intent. Hash integrity alone grants no cleanup
@@ -73,10 +104,13 @@
         body (:value value)]
     (when-not (and (map? body) (= (:knowledge.pin/payload-id row) (hasch/uuid body))
                    (= (:knowledge.pin/stream row) (get-in body [:stream :id]))
-                   (= #{:version :stream :expected :basis} (set (keys body))) (= 1 (:version body)))
+                   (= [(:knowledge.pin/by row) (:knowledge.pin/room row) (:knowledge.pin/target row)]
+                      ((juxt :by :room :target) (:stream body)))
+                   (= #{:version :stream :expected :basis :origin} (set (keys body))) (= 1 (:version body)))
       (refuse! :invalid-retained-intent))
     (streams/validate-binding! (:stream body) (:expected body))
     (streams/validate-basis! (:basis body))
+    (validate-origin! (:stream body) (:basis body) (:origin body))
     body))
 
 (defn mark-pinned-tx
@@ -93,13 +127,16 @@
   "Compose with the existing discovery journal in the SAME writer transaction,
    after HOST pin/plan verification. An exact historical replay is harmless;
    original intent payload and expected stream must still match exactly."
-  [db expected-intent value expected-stream plan plan-ref]
+  [db expected-intent value expected-stream plan origin plan-ref]
+  (validate-origin! value (:after plan) origin)
   (let [root (:knowledge.pin/id expected-intent) current (intent db root)
         did (streams/discovery-id value expected-stream plan root)]
     (when-not (and (= (:knowledge.pin/stream current) (:id value))
+                   (= ((juxt :by :room :target) value)
+                      ((juxt :knowledge.pin/by :knowledge.pin/room :knowledge.pin/target) current))
                    (= (:knowledge.pin/claim current) (:knowledge.pin/claim expected-intent))
                    (= (:knowledge.pin/payload-id current) (:knowledge.pin/payload-id expected-intent)
-                      (hasch/uuid {:version 1 :stream value :expected expected-stream :basis (:after plan)})))
+                      (hasch/uuid {:version 1 :stream value :expected expected-stream :basis (:after plan) :origin origin})))
       (refuse! :intent-changed))
     (case (:knowledge.pin/state current)
       :pinned
@@ -123,6 +160,7 @@
         old (:knowledge.discovery/before-root event)
         old-intent (when old (intent db old))
         binding [:db/id :knowledge.pin/id :knowledge.pin/stream :knowledge.pin/claim
+                 :knowledge.pin/by :knowledge.pin/room :knowledge.pin/target
                  :knowledge.pin/payload :knowledge.pin/payload-id :knowledge.pin/discovery]]
     (if (and (#{:retained :released} (:knowledge.pin/state current))
              (= (select-keys current binding) (select-keys expected binding))

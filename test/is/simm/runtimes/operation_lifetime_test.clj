@@ -4,6 +4,22 @@
             [org.replikativ.spindel.engine.impl.simple :as simple])
   (:import [java.util.concurrent CountDownLatch TimeUnit]))
 
+(deftest retained-observation-does-not-admit-a-foreign-thread
+  (let [owner (doto (lifetime/create) lifetime/open!) captured (atom nil)]
+    (lifetime/with-operation! owner
+      (fn []
+        (reset! captured lifetime/*ticket*)
+        (is (true? (lifetime/retained? @captured)))
+        (let [result (future [(lifetime/retained? @captured)
+                              (try (lifetime/check-current!) :admitted
+                                   (catch clojure.lang.ExceptionInfo _ :refused))])]
+          (is (= [true :refused] (deref result 5000 ::expired))))
+        (deref (future (lifetime/fence! owner)) 5000 ::expired)
+        (is (true? (lifetime/retained? @captured)))
+        (is (false? (lifetime/ready? owner)))))
+    (is (false? (lifetime/retained? @captured)))
+    (lifetime/join! owner 1000)))
+
 (deftest retained-cleanup-keeps-the-original-slot-until-successful-retry
   (let [owner (doto (lifetime/create) lifetime/open!)
         attempts (atom 0) captured (atom nil)]

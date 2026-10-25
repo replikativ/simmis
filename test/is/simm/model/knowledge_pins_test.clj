@@ -7,14 +7,23 @@
             [is.simm.model.knowledge-streams :as streams]
             [is.simm.model.knowledge-streams-test :as fixtures]))
 
+(defn origin [basis]
+  {:target (merge (select-keys basis [:repository :store :backend :branch :ref])
+                  {:registry-system #uuid "4bfc3074-07af-4988-8b2c-b9aa4f7117d9" :runtime-system "fixture-memory"})
+   :target-stamp #uuid "c4011631-cf06-49e1-af82-f48c2cc57f72" :workflow "echo"
+   :source-revision #uuid "b021da12-4c67-4864-b5dd-cbd27cb58951"})
+
+(defn- prepare! [conn value expected basis]
+  (pins/prepare! conn value expected basis (origin basis)))
+
 (defn- fixture [f]
   (#'fixtures/fixture
    (fn [conn value]
      (d/transact conn pins/schema)
-     (f conn value))))
+     (f conn (streams/descriptor (assoc (dissoc value :id) :target (pins/target-id (:target (origin fixtures/basis)))))))))
 
 (defn- confirmed-pin! [conn value expected basis]
-  (let [{:keys [intent new?]} (pins/prepare! conn value expected basis)]
+  (let [{:keys [intent new?]} (prepare! conn value expected basis)]
     (is new?)
     ;; Model-only fixture. The production HOST must verify a real native root
     ;; and its full immutable record before composing this transition.
@@ -23,14 +32,14 @@
 
 (defn- publish! [conn prepared value expected plan]
   (artifact/publish-value! (artifact/datahike-store conn) plan
-                           (fn [ref] (d/transact conn [[:db.fn/call pins/discovery-tx prepared value expected plan ref]])))
+                           (fn [ref] (d/transact conn [[:db.fn/call pins/discovery-tx prepared value expected plan (origin (:after plan)) ref]])))
   (pins/intent @conn (:knowledge.pin/id prepared)))
 
 (deftest concurrent-intent-preparation-permits-one-native-pin-winner
   (fixture
    (fn [conn value]
      (let [gate (promise)
-           invoke (fn [] @gate (pins/prepare! conn value nil fixtures/basis))
+           invoke (fn [] @gate (prepare! conn value nil fixtures/basis))
            a (future (invoke)) b (future (invoke))]
        (deliver gate true)
        (let [results [@a @b]]
@@ -43,11 +52,11 @@
    (fn [conn value]
      (let [transact d/transact]
        (with-redefs [d/transact (fn [& args] (apply transact args) (throw (ex-info "Lost ACK" {})))]
-         (is (thrown? Exception (pins/prepare! conn value nil fixtures/basis))))
-       (let [prior (pins/active @conn (:id value)) retry (pins/prepare! conn value nil fixtures/basis)]
+         (is (thrown? Exception (prepare! conn value nil fixtures/basis))))
+       (let [prior (pins/active @conn (:id value)) retry (prepare! conn value nil fixtures/basis)]
          (is (= prior (:intent retry)))
          (is (false? (:new? retry)))
-         (is (= {:version 1 :stream value :expected nil :basis fixtures/basis} (pins/payload conn prior))))))))
+         (is (= {:version 1 :stream value :expected nil :basis fixtures/basis :origin (origin fixtures/basis)} (pins/payload conn prior))))))))
 
 (deftest pin-discovery-and-cleanup-receipts-bind-one-checkpoint-through-two-transitions
   (fixture
@@ -68,7 +77,7 @@
          (let [committed (publish! conn next-pin value before next-plan)
                active (pins/active @conn (:id value))]
            (is (= (:knowledge.pin/id next-pin) (:knowledge.pin/id active)))
-           (is (thrown? Exception (pins/prepare! conn value (streams/stream @conn (:id value)) (:after next-plan))))
+           (is (thrown? Exception (prepare! conn value (streams/stream @conn (:id value)) (:after next-plan))))
            ;; Native old-root release occurs BEFORE this model-only fixture's
            ;; cleanup ACK. No test here claims native GC behavior.
            (d/transact conn [[:db.fn/call pins/finish-tx committed]])
@@ -85,7 +94,7 @@
                   (fn [body] (assoc body :expected {:knowledge.stream/id (random-uuid)}))]]
     (fixture
      (fn [conn value]
-       (let [original (:intent (pins/prepare! conn value nil fixtures/basis))
+       (let [original (:intent (prepare! conn value nil fixtures/basis))
              bad (damage (pins/payload conn original))]
          (artifact/publish-value! (artifact/datahike-store conn) bad
            (fn [ref] (d/transact conn [{:db/id (:db/id original) :knowledge.pin/payload ref
@@ -96,16 +105,17 @@
   (fixture
    (fn [conn value]
      (let [oversized (assoc fixtures/basis :branch (keyword (apply str (repeat 20000 "x"))))
+           value (streams/descriptor (assoc (dissoc value :id) :target (pins/target-id (:target (origin oversized)))))
            calls (atom 0)]
        (with-redefs [artifact/publish-value! (fn [& _] (swap! calls inc) (throw (AssertionError. "No oversize publication")))]
-         (is (thrown? Exception (pins/prepare! conn value nil oversized))))
+         (is (thrown? Exception (prepare! conn value nil oversized))))
        (is (zero? @calls))
        (is (nil? (pins/active @conn (:id value))))))))
 
 (deftest stale-claims-and-premature-cleanup-cannot-advance-the-lifecycle
   (fixture
    (fn [conn value]
-     (let [creating (:intent (pins/prepare! conn value nil fixtures/basis))
+     (let [creating (:intent (prepare! conn value nil fixtures/basis))
            foreign (assoc creating :knowledge.pin/claim (random-uuid))]
        (is (thrown? Exception (d/transact conn [[:db.fn/call pins/mark-pinned-tx foreign]])))
        (is (thrown? Exception (d/transact conn [[:db.fn/call pins/finish-tx creating]])))
@@ -125,5 +135,5 @@
      (streams/discover! conn value nil fixtures/initial (random-uuid))
      (d/transact conn [{:db/id [:knowledge.item/id (streams/item-id (:id value) "inbox/a.md" fixtures/file-a)]
                         :knowledge.item/state :claimed}])
-     (is (thrown? Exception (pins/prepare! conn value (streams/stream @conn (:id value)) fixtures/basis)))
+     (is (thrown? Exception (prepare! conn value (streams/stream @conn (:id value)) fixtures/basis)))
      (is (nil? (pins/active @conn (:id value)))))))

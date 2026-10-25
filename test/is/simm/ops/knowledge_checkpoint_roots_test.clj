@@ -4,6 +4,7 @@
             [datahike.gc-roots :as roots]
             [geschichte.repo :as repo]
             [is.simm.model.knowledge-pins :as pins]
+            [is.simm.model.knowledge-streams :as streams]
             [is.simm.model.knowledge-pins-test :as fixtures]
             [is.simm.ops.knowledge-changes :as changes]
             [is.simm.ops.knowledge-checkpoint-roots :as checkpoints]
@@ -17,11 +18,11 @@
                    :max-bytes-length 0 :max-tuple-string-length 0}]
        (d/create-database config)
        (let [source (d/connect config)]
-         (try (repo/init! source {:name "Disposable native pin tests"}) (f control value source)
+         (try (repo/init! source {:name "Disposable native pin tests"}) (f control (streams/descriptor (assoc (dissoc value :id) :target (pins/target-id (:target (fixtures/origin (changes/basis @source)))))) source)
               (finally (d/release source) (d/delete-database config))))))))
 
 (defn- prepare [control value source]
-  (pins/prepare! control value nil (changes/basis @source)))
+  (let [basis (changes/basis @source)] (pins/prepare! control value nil basis (fixtures/origin basis))))
 
 (defn- reason [f]
   (try (f) nil (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))

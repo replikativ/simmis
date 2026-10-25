@@ -18,6 +18,17 @@
 
 (defn ready? [owner] (= :ready (:phase @(::state owner))))
 
+(defn retained?
+  "HOST writer-side liveness observation of one captured native ticket. This
+   does NOT admit a calling thread or permit user computation: check-current!
+   remains the actual-thread gate. Cleanup may remain retained after fencing;
+   new admission must additionally check ready? on this same owner."
+  [ticket]
+  (when-let [state (::state (:owner ticket))]
+    (locking state
+      (and (identical? ticket (get-in @state [:tickets (:id ticket)]))
+           (not (realized? (:completion ticket)))))))
+
 (defn check-current!
   "Actual-thread admission check before entering new user computation after
    waiting on its interpreter gate. A previously admitted waiter cannot reuse

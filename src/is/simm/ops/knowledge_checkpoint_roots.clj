@@ -5,6 +5,7 @@
    No distributed-GC or independent root-replacement guarantee is claimed."
   (:require [datahike.api :as d]
             [datahike.gc-roots :as roots]
+            [hasch.core :as hasch]
             [is.simm.model.knowledge-pins :as pins]
             [is.simm.ops.knowledge-changes :as changes]
             [konserve.core :as k]))
@@ -12,7 +13,7 @@
 (defn- refuse! [reason]
   (throw (ex-info "Knowledge checkpoint retention is unavailable" {:type ::held :reason reason})))
 
-(defn- source-keys [] [:repository :store :backend :branch :ref :configuration])
+(defn- source-keys [] [:store :backend :branch :configuration])
 
 (defn- registry! [db]
   (let [store (:store db) present? (k/exists? store roots/registry-key {:sync? true})
@@ -22,7 +23,7 @@
 
 (defn- load! [conn source-db intent]
   (let [body (pins/payload conn intent)
-        basis (:basis body) physical (changes/basis source-db)]
+        basis (:basis body) physical (changes/source-identity source-db)]
     (when-not (= (select-keys basis (source-keys)) (select-keys physical (source-keys)))
       (refuse! :physical-source-changed))
     (let [snapshot (d/commit-as-db source-db (:commit basis))]
@@ -36,6 +37,7 @@
   [intent body]
   {:simmis/knowledge-stream (:knowledge.pin/stream intent)
    :simmis/pin-intent (:knowledge.pin/id intent) :claim (:knowledge.pin/claim intent)
+   :origin (hasch/uuid (:origin body))
    :source (:configuration (:basis body)) :commit (:commit (:basis body))
    :by (get-in body [:stream :by]) :room (get-in body [:stream :room])})
 
@@ -79,6 +81,12 @@
     (refuse! :intent-changed))
   (let [id (:knowledge.pin/id intent)
         {:keys [body snapshot]} (load! control-conn source-db intent)]
+    ;; Creating a new retention root is stricter than disposing of an old one
+    ;; after a logical ref switch. The original published checkpoint is checked
+    ;; in full by load!, including its repository and logical ref.
+    (when-not (= (select-keys (:basis body) [:repository :ref])
+                 (select-keys (changes/source-identity source-db) [:repository :ref]))
+      (refuse! :physical-source-changed))
     ;; root! overwrites explicit IDs, so never call it after a partial outcome
     ;; or recovery, even if only the record (not registry) became visible.
     (when (or (contains? (registry! source-db) id)
@@ -87,3 +95,31 @@
     (when-not (= id (roots/pin! snapshot {:id id :ttl-ms nil :owner (owner intent body)} {:sync? true}))
       (refuse! :pin-ack-mismatch))
     (verify! control-conn source-db id)))
+
+(defn release-previous!
+  "Internal cleanup on an exclusively owned original physical store. Require
+   the exact committed journal and a verified replacement BEFORE releasing its
+   predecessor. Absence after uncertain release permits cleanup acknowledgement,
+   never infers an old caller ACK or recreates a missing root."
+  [control-conn source-db intent]
+  (pins/finish-tx @control-conn intent)
+  (when-not (= :committed (:knowledge.pin/state intent)) (refuse! :not-committed))
+  (verify! control-conn source-db (:knowledge.pin/id intent))
+  (let [event (d/pull @control-conn '[*] [:knowledge.discovery/id (:knowledge.pin/discovery intent)])
+        old (:knowledge.discovery/before-root event)]
+    (when old
+      (let [old-intent (pins/intent @control-conn old)]
+        (when-not (and (= :retained (:knowledge.pin/state old-intent))
+                       (= (:knowledge.pin/stream intent) (:knowledge.pin/stream old-intent)))
+          (refuse! :previous-intent-mismatch))
+        ;; After a lost release ACK, GC may already have collected the old
+        ;; commit. Its full live record is required only while still rooted.
+        ;; Always bind the original physical source from the retained payload.
+        (when-not (= (select-keys (:basis (pins/payload control-conn old-intent)) (source-keys))
+                     (select-keys (changes/source-identity source-db) (source-keys)))
+          (refuse! :physical-source-changed))
+        (when (contains? (registry! source-db) old)
+          (verify! control-conn source-db old)
+          (roots/release! source-db old {:sync? true}))
+        (when (contains? (registry! source-db) old) (refuse! :release-unconfirmed))))
+    true))
