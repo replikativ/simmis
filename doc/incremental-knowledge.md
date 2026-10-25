@@ -126,12 +126,30 @@ linkage without opening current source files or preparing providers. A provider
 preparation failure leaves a ready batch held for explicit recovery; it does
 not silently recapture or dispatch a replacement. An interrupted post-claim
 handoff leaves an interrupted request with its exact batch linkage intact.
-Successful Job completion alone still does not mark sources processed: the
-certified filing and proposal-review integration below remains required.
+Successful Job completion alone does not mark sources processed.
+
+Certified filing now composes the existing hashed disposition and optional
+retained-file Proposal with the exact batch transition. The disposition includes
+the batch identity, and the writer compares the original verified batch's
+immutable row, including artifact references and claim/owner/request fields.
+The complete selected-item membership is checked through a bounded batch index;
+context and later pending items cannot be processed accidentally.
+
+A certified no-op marks precisely those selected items processed, closes the
+batch, and clears only its own active pointer. A proposed update keeps the batch
+in review and its selected items claimed. Historical and lost-acknowledgement
+replays require the whole joint receipt; partial states are refused rather than
+repaired. An exact closed no-op replay leaves a later active batch untouched.
+
+A deterministic, model-free runtime test exercises actual owned admission,
+world fork/setup, evaluation, durable Attempt certification, and no-op filing
+with discard settlement. Provider preparation and registry-to-memory provisioning
+remain fixture seams; this does not prove a provisioned deployment, scheduled backlog drain, or native
+file adoption of a proposed change.
 
 Freeze bounded batches and context independently; claim one batch per stream
 across manual and scheduled invocations; reuse existing work-request admission;
-and compose exact source-processing receipts with certified knowledge filing.
-Pending proposals must hold the next batch. Benchmarks use explicit frozen cases
+and finish proposal-resolution integration with the existing positive native
+file-adoption and guarded dismissal transactions. Pending proposals hold the next batch. Benchmarks use explicit frozen cases
 and must never claim or advance a live stream. No default schedule is enabled by
 this foundation.

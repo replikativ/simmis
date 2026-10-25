@@ -22,7 +22,7 @@
            [:knowledge.batch/selection :db.type/store-ref] [:knowledge.batch/selection-id :db.type/uuid]
            [:knowledge.batch/frozen :db.type/store-ref] [:knowledge.batch/frozen-id :db.type/uuid]
            [:knowledge.batch/request :db.type/uuid] [:knowledge.batch/request-intent :db.type/uuid]])
-    [{:db/ident :knowledge.item/batch :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}]))
+    [{:db/ident :knowledge.item/batch :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one :db/index true}]))
 
 (defn- refuse! [reason]
   (throw (ex-info "Knowledge batch transition is held" {:type ::held :reason reason})))

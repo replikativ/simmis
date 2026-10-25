@@ -25,7 +25,7 @@
    :environment (environment/make-environment
                   {:id :test/model-free-batch :task task
                    :verifier {:id :simmis/work-completion :version 1 :basis "simmis-work-completion-v1"}
-                   :world {:isolation :ctx :settlement :review :effects work/effects :resources (work/resources limits)}
+                   :world {:isolation :ctx :settlement (keyword (:settlement limits)) :effects work/effects :resources (work/resources limits)}
                    :limits {:timeout-ms 30000}})
    :evaluator work/completion})
 

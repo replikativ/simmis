@@ -5,6 +5,8 @@
   (:require [datahike.api :as d]
             [is.simm.model.file-outputs :as manifests]
             [is.simm.model.knowledge-dispositions :as dispositions]
+            [is.simm.model.knowledge-processing :as processing]
+            [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.model.system-db :as sdb]
             [is.simm.ops.file-output-storage :as storage]
             [is.simm.ops.knowledge-filing :as filing]
@@ -39,10 +41,13 @@
            (= (:output value) (:output manifest))
            (seq (:entries manifest))))))
 
-(defn- complete-disposition! [db row]
+(defn- complete-disposition! [db row batch]
   (when-let [value (dispositions/disposition row)]
     (when (and (= :proposed (:kind value)) (not (linked-proposal? db row value)))
       (refuse! :partial-filing))
+    (when (:batch value)
+      (when-not (and batch (empty? (processing/filing-tx db batch value)))
+        (refuse! :partial-batch-filing)))
     value))
 
 (defn- authorize-request! [db principal room-id row]
@@ -64,7 +69,10 @@
           _ (when-not (= party current-party) (refuse! :author-changed))
           _ (when-not (= target (filing/current-target db room-id room))
               (refuse! :target-changed))
-          existing (complete-disposition! db row)
+          _ (when-not (= (:batch disposition) (get-in prepared [:batch :origin :batch])
+                         (:work.request/knowledge-batch row))
+              (refuse! :batch-proof-mismatch))
+          existing (complete-disposition! db row (:batch prepared))
           disposition-tx (dispositions/tx-data db request-binding disposition)
           proposal-tx (when entity (proposals/filing-tx-data db entity))]
       (case (:kind disposition)
@@ -78,7 +86,9 @@
         ;; silently adopted as this host filing, even with matching UUIDs.
           (when-not (= (boolean existing) (empty? proposal-tx))
             (refuse! :partial-filing))))
-      (into (vec proposal-tx) disposition-tx))))
+      (into (vec proposal-tx)
+            (concat disposition-tx (when-let [batch (:batch prepared)]
+                                     (processing/filing-tx db batch disposition)))))))
 
 (defn- record! [conn principal room-id room prepared entity]
   (let [value (:disposition prepared)]
@@ -95,7 +105,7 @@
         ;; conflicting or partial row is not permission to execute work again.
         (let [db @conn row (request-row db (:request value))]
           (authorize-request! db principal room-id row)
-          (when-not (= value (complete-disposition! db row)) (throw error)))))
+          (when-not (= value (complete-disposition! db row (:batch prepared))) (throw error)))))
     value))
 
 (defn- proposal-entity [prepared retained]
@@ -131,15 +141,18 @@
   (canonical-connection! conn)
   (let [db @conn row (request-row db request-id)]
     (authorize-request! db principal room-id row)
-    (if-let [existing (complete-disposition! db row)]
-      (announce! existing)
-      (let [{:keys [plan] :as prepared} (filing/prepare conn principal room-id room request-id)
-            value (if plan
-                    (storage/publish!
-                     conn plan
-                     (fn [retained]
-                       (record! conn principal room-id room prepared
-                                (proposal-entity prepared retained))))
-                    (record! conn principal room-id room prepared nil))]
-        ;; Only after the joint transaction ACK (or its exact durable recovery).
-        (announce! value)))))
+    (let [batch (when (or (:work.request/knowledge-batch row) (:work.request/knowledge-frozen row)
+                          (:batch (dispositions/disposition row)))
+                  (processing/expected (batch-proof/request! conn row)))]
+      (if-let [existing (complete-disposition! db row batch)]
+        (announce! existing)
+        (let [{:keys [plan] :as prepared} (filing/prepare conn principal room-id room request-id)
+              value (if plan
+                      (storage/publish!
+                       conn plan
+                       (fn [retained]
+                         (record! conn principal room-id room prepared
+                                  (proposal-entity prepared retained))))
+                      (record! conn principal room-id room prepared nil))]
+          ;; Only after the joint transaction ACK (or its exact durable recovery).
+          (announce! value))))))
