@@ -38,5 +38,5 @@
                        ;; display hrefs never become the edited/clipboard model.
                        #js {:dom dom :contentDOM dom
                             :ignoreMutation (fn [record] (and (= "attributes" (.-type record)) (identical? dom (.-target record))))
-                            :destroy (fn [] (set! (.-onclick dom) nil))}))))})
+                            :destroy (fn [] (set! (.-onclick dom) nil))})))})
    #js {:openOnClick false :autolink false :linkOnPaste false :isAllowedUri rich/safe-link?}))
