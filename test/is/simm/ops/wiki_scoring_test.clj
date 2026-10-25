@@ -149,17 +149,17 @@
                             :loses [:forbidden-content?]}
                     :missing {:case "supported" :files {} :loses [:expected-change? :required-content? :citations?]}}}))
 
-(deftest shipped-default-is-v2-with-explicit-profile-and-unchanged-v1-source
+(deftest shipped-default-is-v3-with-explicit-profile-and-unchanged-v1-source
   (let [current (starter/source)
         old (starter/source 1)]
-    (is (= 2 starter/version))
+    (is (= 3 starter/version))
     (is (= (set (keys old)) (set (keys current))))
     (is (= :wiki-structure-v1 (get-in (catalog/bundle starter/name current) [:definition :params :simmis/checker-profile])))
     (is (nil? (get-in (catalog/bundle starter/name old) [:definition :params :simmis/checker-profile])))
     (is (not= (:id (catalog/bundle starter/name current)) (:id (catalog/bundle starter/name old))))))
 
 (deftest ordinary-v2-workflows-do-not-execute-checkers-or-template-the-profile
-  (let [program-source (starter/source)
+  (let [program-source (starter/source 2)
         snapshot {:files program-source}
         input {:name starter/name :expected-bundle (:id (catalog/bundle starter/name program-source))
                :inputs (frozen {"wiki/Company.md" original "inbox/note.md" source})}
@@ -227,10 +227,10 @@
     (into {} (for [file (file-seq root) :when (.isFile file)]
                [(str (.relativize (.toPath root) (.toPath file))) (slurp file)]))))
 
-(deftest reusable-development-example-calibrates-the-exact-shipped-program
+(deftest reusable-development-example-calibrates-the-exact-shipped-v2-program
   (let [source (example-source)
         bundle (catalog/bundle starter/name source)]
-    (is (= (starter/source) (select-keys source (keys (starter/source)))))
+    (is (= (starter/source 2) (select-keys source (keys (starter/source 2)))))
     (is (:ok (workflows/inspect-snapshot starter/name {:files source})))
     (is (:ok? (checkers/calibrate bundle checkers/calibration-policy (inputs/declaration source))))
     (is (= #{"supported" "no-change"} (set (keys (:cases bundle)))))

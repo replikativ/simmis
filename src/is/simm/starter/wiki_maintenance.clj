@@ -6,7 +6,7 @@
             [is.simm.documents.markdown :as markdown]))
 
 (def name "maintain-wiki")
-(def version 2)
+(def version 3)
 (def policy {:max-file-bytes 524288 :max-bundle-bytes 2097152})
 
 (def ^:private paths
@@ -26,7 +26,7 @@
    initializer; never overwrite user edits implicitly."
   ([] (source version))
   ([version]
-   (when-not (#{1 2} version)
+   (when-not (#{1 2 3} version)
      (throw (ex-info "Unknown shipped wiki workflow version" {})))
    (:files
     (reduce (fn [{:keys [files size]} path]

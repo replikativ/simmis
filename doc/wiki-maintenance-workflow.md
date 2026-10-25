@@ -1,6 +1,6 @@
 # Wiki maintenance as an ordinary workflow
 
-The version-1 starter is source data returned by
+The version-3 starter is source data returned by
 `is.simm.starter.wiki-maintenance/source`. It contains the files for
 `/workflows/maintain-wiki/`, not a second agent, scheduler or resource ledger.
 Loading it does not install anything, choose a model, allocate money or enable
@@ -23,7 +23,7 @@ automatic replay. This operation never discovers/creates rooms, converts legacy
 stores, runs a model, allocates resources or changes any schedule activation.
 
 ```text
-inbox/ + transcripts/ ── evidence ─┐
+inbox/ + transcripts/ + captures/ ── evidence ─┐
 wiki/ ──────────────── context ────┴─> frozen manifest + byte copies
                                         │
                  ┌──────────────────────┼──────────────────────┐
@@ -43,6 +43,32 @@ a wiki update must not by itself retrigger maintenance. Empty/unchanged schedule
 inputs can be skipped by existing admission before submitting a funded Run.
 Chat messages are not collected directly; they need an explicit evidence-file
 ingestion step. An overview is ordinary Markdown, not a new schema entity.
+
+Capture inputs are the Markdown observation notes. Their relative image and
+recording links and exact asset identities remain in the source, while binary
+media stays outside the frozen model inputs. A visual description is sampled
+model evidence: it can misread text and cannot establish that every event was
+captured. Server receipt timestamps and estimated recording positions retain
+their qualifications. An agent must verify an asset's recorded identity before
+treating a retrieved current file as the original.
+
+This is a finite whole-selection workflow. The current input envelope admits
+at most 99 Markdown documents plus its manifest, 512 KiB per input file and
+2 MiB in total including the manifest. Workflow instruction fixtures also
+consume the final input budget. Exceeding a limit refuses admission;
+files are not silently truncated or skipped. The source policy can explicitly
+select narrower roots or exclusions. A growing archive needs a separate
+versioned batch policy and durable per-source processing receipts before it
+can drain continuously. The whole-selection fingerprint is not a source cursor.
+Installation leaves schedules inactive and supplies no execution resources.
+
+For agent retrieval of canonical files, use `memory/search` and `memory/read`.
+They return paths, source/content identifiers, semantic structure and preserved
+properties in the caller's current file world. Capture metadata remains
+ordinary source data; a media link does not inject an image into a model.
+The legacy `wiki/*` vocabulary continues to address explicitly attached KBs.
+Canonical search is currently literal and bounded; it does not promise a
+full-text index or an unlimited archive scan. Non-ready views carry diagnostics.
 
 The starter asks for small source-backed notes and useful overviews, conservative
 updates to existing documents, stable identities/properties, explicit uncertainty

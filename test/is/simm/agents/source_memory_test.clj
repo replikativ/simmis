@@ -171,3 +171,45 @@
                 (is (= :is.simm.agents.source-memory/wrong-proposal-repository
                        (try ((api 'documents))
                             (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))))))))))
+
+(deftest captured-observation-search-and-read-retain-provenance-in-the-selected-world
+  (with-room
+    (fn [room]
+      (let [path "captures/2026-10-25/session/observations/interval.md"
+            id (random-uuid) image (random-uuid) video (random-uuid) session (random-uuid)
+            text (str "---\nsimmis-id: " id "\nsource-kind: screen-observation\ncapture-session: \"" session
+                      "\"\ntimestamp-basis: server-received\nrecording-alignment: estimated\n"
+                      "screenshots: [{\"path\": \"captures/session/images/frame.jpg\", \"content\": \"" image "\", \"size\": 32, \"at\": 1100}]\n"
+                      "recording: {\"path\": \"captures/session/recordings/interval.mp4\", \"content\": \"" video "\", \"size\": 64, \"offset-ms\": 10}\n"
+                      "---\n# Screen observations\n\nEstimated recording position: 90 ms.\n\n```text\nThe delivery date remains unconfirmed.\n```\n")
+            _ (files/save-file! room {:path path :text text :expected nil})
+            allowed? (atom true)
+            api (install! room {:authorize! (fn [_] (when-not @allowed? (throw (ex-info "Revoked" {}))))})
+            read (api 'read) search (api 'search)
+            result (search "delivery date remains unconfirmed")
+            hit (first (:matches result))
+            document (:document (read (:path hit)))]
+        (is (= :ready (:status result)))
+        (is (= path (:path hit)))
+        (is (= id (:id hit)))
+        (is (= (:content hit) (:content document)))
+        (is (uuid? (:content hit)))
+        (is (= text (:source document)))
+        (is (= (str session) (get-in document [:properties :raw "capture-session"])))
+        (is (= (str image) (get (first (get-in document [:properties :raw "screenshots"])) "content")))
+        (is (= 32 (get (first (get-in document [:properties :raw "screenshots"])) "size")))
+        (is (= (str video) (get-in document [:properties :raw "recording" "content"])))
+        (is (= "estimated" (get-in document [:properties :raw "recording-alignment"])))
+        (is (nil? (:db document)))
+        (let [fork (ygg/fork!)]
+          (try
+            (binding [ec/*execution-context* (:child-ctx fork)]
+              (repo/write! (:conn (geschichte/current-workspace)) path (.getBytes (str text "\nChild-only hypothesis.\n") "UTF-8"))
+              (is (= path (get-in (search "Child-only hypothesis") [:matches 0 :path])))
+              (is (not= (:content document) (get-in (read path) [:document :content]))))
+            (is (empty? (:matches (search "Child-only hypothesis"))))
+            (is (= text (get-in (read path) [:document :source])))
+            (finally (ygg/discard-fork! fork))))
+        (reset! allowed? false)
+        (is (thrown? Exception (search "delivery date")))
+        (is (thrown? Exception (read path)))))))

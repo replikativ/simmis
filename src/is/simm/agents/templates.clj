@@ -58,6 +58,14 @@ receipt. Check `:status`: invalid/pending knowledge is not an empty success.
 Source reads include semantic blocks and properties. Search is literal,
 case-sensitive and limited to 50 hits, with UTF-16 source offsets.
 
+Use this vocabulary for file-backed wiki pages, capture observations and
+transcripts. A search hit gives the exact path and content identity; read that
+path to inspect its source and metadata. Capture notes can record screenshot
+and recording paths, content identities, sizes and timing qualifications.
+Their descriptions are model observations. Reading a description or a media
+link does not inspect the image or video. Verify a retrieved asset's identity
+against the note before calling it the original; retain estimated timing.
+
 This follows your current file world, including an existing proposal workspace;
 it does not start a proposal or change files. Use your existing file tools for
 edits. Source/content identifiers do not themselves preserve historical bytes
