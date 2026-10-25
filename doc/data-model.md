@@ -30,6 +30,21 @@ mappings. App shutdown joins native operations before unlinking cache files.
 Failed cleanup retains a closed resource for explicit retry. Unix unlink does
 not invalidate queued buffers or promise immediate disk/RSS reclamation.
 
+Relative Markdown images and reference images use bounded metadata dependencies
+from the same admitted workspace as the document. The active document can add
+up to32 distinct image references within its64-path metadata demand. Unknown
+or deleted images remain inert; replacement content changes the guarded image
+URL. No image body is fetched through file-source RPCs. Only owned image routes
+render automatically, while external image URLs remain source text. Rich and
+read previews preserve the original image Markdown and its source spans.
+
+The capture-note formatter emits bounded chronological Markdown notes for
+finalized recording intervals, with readable relative screenshot/video links
+and exact content identities in quoted frontmatter. Full transcriptions and
+failure descriptions stay in inert text fences. The formatter performs no
+publication or inference; its caller supplies settled source facts and retains
+the ordinary authorization and CAS publication responsibilities.
+
 The Markdown codec retains exact source and derives source-positioned syntax
 nodes separately from semantic Simmis blocks. Explicit paired block markers
 carry stable block identities and child grouping; ordinary unmarked Markdown

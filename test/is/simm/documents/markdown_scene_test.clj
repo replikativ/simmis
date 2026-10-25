@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is]]
             [clojure.string :as str]
             [is.simm.documents.files :as files]
+            [is.simm.documents.attachments :as attachments]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.markdown-scene :as scene]
             [is.simm.documents.rich-document :as document]))
@@ -47,3 +48,18 @@
         projection (document/project text analysis)
         edited (assoc-in (:model projection) [:content 0 :content 0 :content 0 :text] "Revised")]
     (is (= (str/replace-first text "Before" "Revised") (document/apply-model text projection edited)))))
+
+(deftest relative-images-use-resolved-metadata-without-changing-original-markdown
+  (let [text "Before\r\n\r\n![Screen](images/frame.png)\r\n\r\n![Ref][frame]\r\n\r\n[frame]: images/frame.png\r\n"
+        id (random-uuid) analysis (files/analyze id "captures/observations.md" text)
+        urls (attachments/urls (str id) "captures/observations.md" analysis
+                               {"captures/images/frame.png" {:content id :size 12 :mode 33188}} id)
+        previews (scene/index text analysis urls)
+        images (mapcat #(filter (fn [node] (= :img (:tag node)))
+                                (tree-seq map? :children (:scene %))) (vals previews))
+        projection (document/project text analysis)]
+    (is (= 2 (count images)))
+    (is (every? #(= (get urls "images/frame.png") (get-in % [:attrs :src])) images))
+    (is (= text (document/apply-model text projection (:model projection))))
+    (is (not-any? #(some (fn [node] (= :img (:tag node))) (tree-seq map? :children (:scene %)))
+                  (vals (scene/index text analysis))))))

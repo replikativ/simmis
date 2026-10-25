@@ -1,14 +1,22 @@
 (ns is.simm.uis.web.desktop.memory-metadata-view
   "Pure per-view reconciliation for independently admitted metadata snapshots."
-  (:require [is.simm.uis.web.desktop.memory-editor :as editor]
+  (:require [is.simm.documents.attachments :as attachments]
+            [is.simm.uis.web.desktop.memory-editor :as editor]
             [is.simm.uis.web.desktop.memory-tree :as tree]))
 
-(defn request [state]
+(defn- file-request [state]
   (let [base (editor/metadata-request state)]
     {:folders (:folders base)
      :paths (vec (sort (set (concat (:paths base) (keys (:file-intents state))
                                     (keys (:create-intents state))
                                     (when-let [path (:selected state)] [path])))))}))
+
+(defn request [state]
+  (let [base (file-request state) path (:selected state)
+        images (attachments/images path (get-in state [:drafts path :analysis]))
+        extra (take (max 0 (- 64 (count (:paths base))))
+                    (remove (set (:paths base)) (distinct (map :path images))))]
+    (update base :paths #(vec (sort (concat % extra))))))
 
 (defn admission [connection state]
   (let [request (request state) stream-marker (:stream-marker state)
@@ -81,7 +89,7 @@
               next (:create-intents current))
         next (reduce-kv
               (fn [s path entry]
-                (if (some? entry) s
+                (if (or (some? entry) (not (contains? (set (:paths (file-request current))) path))) s
                     (cond-> (update s :file-intents dissoc path)
                       (nil? (get-in s [:drafts path]))
                       (assoc-in [:errors [:file path]] "No file at this path in the current workspace."))))
@@ -108,11 +116,12 @@
    Omitted entries stay unknown; explicit nil never triggers an implicit load."
   [s reply]
   (let [stamp (:target-stamp reply)
+      requested-files (set (:paths (file-request s)))
       files (set (concat (keys (:file-intents s))
                          (keep (fn [[[kind p] _]] (when (= :file kind) p)) (:metadata-followups s))
                          (keep (fn [[p entry]]
                                  (let [d (get-in s [:drafts p])]
-                                   (when (and entry
+                                   (when (and entry (contains? requested-files p)
                                               (or (nil? d)
                                                   (not= [stamp entry] [(get-in d [:source :target-stamp])
                                                                        (get-in d [:source :entry])]))

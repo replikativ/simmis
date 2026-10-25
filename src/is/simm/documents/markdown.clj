@@ -8,7 +8,7 @@
             [is.simm.documents.math :as math]
             [hasch.core :as hasch])
   (:import [com.vladsch.flexmark.parser Parser]
-           [com.vladsch.flexmark.ast Heading Text HtmlEntity Code FencedCodeBlock IndentedCodeBlock Link LinkRef Reference OrderedList]
+           [com.vladsch.flexmark.ast Heading Text HtmlEntity Code FencedCodeBlock IndentedCodeBlock Link LinkRef Image ImageRef Reference OrderedList]
            [com.vladsch.flexmark.util.sequence Escaping]
            [com.vladsch.flexmark.ext.tables TablesExtension TableCell]
            [com.vladsch.flexmark.ext.gfm.tasklist TaskListExtension TaskListItem]
@@ -25,7 +25,7 @@
 
 (def syntax-profile
   "Pinned syntax projection, not a claim of complete Obsidian/plugin support."
-  {:id :simmis/markdown-syntax :version 8 :parser "flexmark/0.64.8"
+  {:id :simmis/markdown-syntax :version 9 :parser "flexmark/0.64.8"
    :features #{:tables :tasks :strikethrough :footnotes :wikilinks :wiki-embeds
                :inline-math :standalone-display-math :reference-links}})
 
@@ -101,11 +101,16 @@
 (defn- link-data [^Node node]
   (let [target (cond
                  (instance? Link node) node
-                 (instance? LinkRef node) (.getReferenceNode ^LinkRef node (.getDocument node)))]
+                 (instance? Image node) node
+                 (instance? LinkRef node) (.getReferenceNode ^LinkRef node (.getDocument node))
+                 (instance? ImageRef node) (.getReferenceNode ^ImageRef node (.getDocument node)))]
     (cond
       (instance? Link target)
       {:url (Escaping/unescapeString (.getUrl ^Link target))
        :title (Escaping/unescapeString (.getTitle ^Link target))}
+      (instance? Image target)
+      {:url (Escaping/unescapeString (.getUrl ^Image target))
+       :title (Escaping/unescapeString (.getTitle ^Image target))}
       (instance? Reference target)
       {:url (Escaping/unescapeString (.getUrl ^Reference target))
        :title (Escaping/unescapeString (.getTitle ^Reference target))})))

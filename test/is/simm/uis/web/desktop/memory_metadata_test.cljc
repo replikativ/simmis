@@ -1,5 +1,6 @@
 (ns is.simm.uis.web.desktop.memory-metadata-test
   (:require [is.simm.uis.web.desktop.memory-metadata :as metadata]
+            [is.simm.documents.attachments :as attachments]
             [is.simm.uis.web.desktop.memory-metadata-view :as view]
             [is.simm.uis.web.desktop.memory-editor :as editor]
             #?(:clj [clojure.test :refer [deftest is]]
@@ -146,3 +147,33 @@
     (is (nil? (metadata/observation-for state plans [:socket :fork] :a)))
     (is (nil? (metadata/observation-for state (metadata/plans owners :new-hint) epoch :a)))
     (is (nil? (metadata/observation-for state plans epoch :closed-owner)))))
+
+(deftest image-dependencies-use-metadata-without-implicit-file-source-loads
+  (let [stamp (random-uuid) id (random-uuid)
+        analysis {:nodes [{:kind :Paragraph :children [{:kind :Image :url "images/frame.png"}]}]}
+        state {:selected "captures/source.md" :target-stamp stamp
+               :drafts {"captures/source.md" {:analysis analysis :generation 1}}}
+        image "captures/images/frame.png" entry {:content id :size 12 :mode 33188}
+        reply {:protocol-version 2 :target-stamp stamp :folders {} :entries {image entry}}
+        observed (view/consume state reply {:connection :socket :generations {"captures/source.md" 1}})
+        urls #(attachments/urls (str id) "captures/source.md" analysis (:observed-entries %) (:target-stamp %))]
+    (is (= [image "captures/source.md"] (:paths (view/request state))))
+    (is (empty? (:files (view/followups observed reply))))
+    (is (= 1 (count (urls observed))))
+    (let [replacement (view/consume observed (assoc-in reply [:entries image :content] (random-uuid)) {})
+          deleted (view/consume replacement (assoc-in reply [:entries image] nil) {})]
+      (is (not= (urls observed) (urls replacement)))
+      (is (empty? (urls deleted)))
+      (is (nil? (get-in deleted [:errors [:file image]]))))
+    (is (empty? (urls (editor/observe-target observed (random-uuid)))))))
+
+(deftest image-dependency-budget-does-not-overflow-an-existing-owner-demand
+  (let [paths (mapv #(str "existing" % ".md") (range 63))
+        selected (first paths)
+        state {:selected selected :drafts (zipmap paths (repeat {}))}
+        state (assoc-in state [:drafts selected :analysis]
+                        {:nodes (mapv #(hash-map :kind :Image :url (str "image" % ".png")) (range 100))})
+        demand (view/request state)]
+    (is (= 64 (count (:paths demand))))
+    (is (every? (set (:paths demand)) paths))
+    (is (= demand (metadata/normalize-request demand)))))

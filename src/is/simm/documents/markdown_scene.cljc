@@ -6,8 +6,16 @@
 (def max-preview-chars 65536)
 (def max-preview-nodes 5000)
 
-(defn preview [source node]
-  (when (and (contains? preview-kinds (:kind node))
+(defn- previewable? [node]
+  (or (contains? preview-kinds (:kind node))
+      (and (= :Paragraph (:kind node))
+           (some #(#{:Image :ImageRef} (:kind %))
+                 (tree-seq (comp seq :children) :children node)))))
+
+(defn preview
+  ([source node] (preview source node {}))
+  ([source node image-urls]
+  (when (and (previewable? node)
              (<= 0 (:from node) (:to node) (count source))
              (<= (- (:to node) (:from node)) max-preview-chars))
     (let [remaining (volatile! max-preview-nodes)
@@ -28,6 +36,11 @@
                     :Link (if (rich/safe-link? (:url n))
                             (element :a {:href (:url n) :rel "noopener noreferrer" :target "_blank"})
                             (element :span))
+                    (:Image :ImageRef)
+                    (if-let [url (get image-urls (:url n))]
+                      {:tag :img :attrs {:src url :alt (apply str (keep :text (:children n))) :loading "lazy"}
+                       :children []}
+                      (raw n))
                     :Paragraph (element :p)
                     :Heading (element (get {1 :h1 2 :h2 3 :h3 4 :h4 5 :h5 6 :h6} (:heading-level n) :p))
                     :BlockQuote (element :blockquote)
@@ -49,24 +62,27 @@
                     {:tag :pre :attrs {} :children [{:tag :code :attrs {:data-language (or (:language n) "")}
                                                     :children [(:literal n)]}]}
                     ;; Unknown syntax stays visible as text, including raw
-                    ;; HTML and images. No image/network/iframe/widget effect.
+                    ;; HTML and unresolved images. Only explicitly resolved
+                    ;; owned images above may issue a media request.
                     (raw n))))]
         (try
           {:source (raw node) :scene (walk node 0)}
           (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) error
-            (if (= ::limit (:type (ex-data error))) nil (throw error))))))))
+            (if (= ::limit (:type (ex-data error))) nil (throw error)))))))))
 
-(defn index [source analysis]
+(defn index
+  ([source analysis] (index source analysis {}))
+  ([source analysis image-urls]
   ;; Limit the whole page, not merely one table. This is disposable display
   ;; data derived from the same frozen source as the editor's opaque labels.
   (loop [nodes (mapcat #(tree-seq (comp seq :children) :children %) (:nodes analysis))
          remaining max-preview-chars out {}]
     (if-let [node (first nodes)]
-      (if (and (contains? preview-kinds (:kind node))
+      (if (and (previewable? node)
                (<= (- (:to node) (:from node)) remaining))
-        (if-let [projection (preview source node)]
+        (if-let [projection (preview source node image-urls)]
           (recur (next nodes) (- remaining (count (:source projection)))
                  (assoc out (str "opaque:" (:from node)) projection))
           (recur (next nodes) remaining out))
         (recur (next nodes) remaining out))
-      out)))
+      out))))

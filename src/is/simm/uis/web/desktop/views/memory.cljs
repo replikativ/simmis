@@ -8,6 +8,7 @@
             [org.replikativ.spindel.effects.track :refer [track]]
             [is.simm.documents.rich-text :as rich]
             [is.simm.documents.links :as links]
+            [is.simm.documents.attachments :as attachments]
             [is.simm.documents.markdown-scene :as markdown-scene]
             [is.simm.documents.inline-charts :as inline-charts]
             [is.simm.documents.chart-contract :as chart-contract]
@@ -221,7 +222,7 @@
                                 :on-click (fn [_] (source! (:region selection)))}
                                (vc/icon :file-code {:aria-hidden "true"}))))))
 
-(defn- document-view [path draft a write?]
+(defn- document-view [path draft a write? image-urls]
   (let [base (:rich-base draft) rich? (and (= :rich (:mode draft)) base)
         analysis (if rich? (:analysis base) (:analysis draft))
         source (if rich? (:text base) (:text draft))
@@ -246,7 +247,7 @@
         read-models (if outline-blocks (vec (mapcat :models outline-blocks))
                        (mapv #(or (when rich? (get-in base [:models (:from %)])) (:model %)) slots))
         highlights (when-not rich? (code-highlight/document-segments read-models))
-        source-previews (markdown-scene/index source analysis)
+        source-previews (markdown-scene/index source analysis image-urls)
         inline-positions (inline-charts/positions read-models inline-previews inline-limit)
         slots (mapv #(assoc % :inline-positions inline-positions) slots)]
     (el/div {:class "memory-document"}
@@ -823,7 +824,10 @@
                                         (not text?) (el/p {:class "memory-note"} "Binary file. Download preserves the original bytes; document-specific editing is not available in this view yet.")
                                         (and clojure? (= :superficie code-view)) (superficie-view (:text draft))
                                         (= :source (:mode draft)) (source-view path draft a write?)
-                                        :else (document-view path draft a write?)))))))))
+                                        :else (document-view path draft a write?
+                                                             (when coherent?
+                                                               (attachments/urls (:room-id data) path (:analysis draft)
+                                                                                 (:observed-entries state) (:target-stamp state))))))))))))
 
 (defn render [data]
   (spin

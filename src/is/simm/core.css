@@ -9287,6 +9287,7 @@ body.tab-dragging .column-drop-zone {
 .memory-document > .memory-region p { margin: 8px 0; }
 .memory-markdown-preview { display: block; max-width: 100%; overflow-x: auto; }
 .memory-markdown-preview:empty { display: none; }
+.memory-markdown-preview img { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; margin: 8px 0; }
 .memory-markdown-preview table { border-collapse: collapse; width: 100%; margin: 8px 0; }
 .memory-markdown-preview th, .memory-markdown-preview td { border: 1px solid var(--mono-border); padding: 6px 8px; text-align: left; vertical-align: top; }
 .memory-markdown-preview .memory-align-right { text-align: right; }
