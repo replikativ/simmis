@@ -12,7 +12,9 @@
             [is.simm.uis.web.desktop.connection-epoch :as connection]
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.refs :as refs]
-            [is.simm.uis.web.desktop.views.schedules :as schedules])
+            [is.simm.uis.web.desktop.views.schedules :as schedules]
+            [is.simm.uis.web.desktop.views.mermaid :as mermaid]
+            [org.replikativ.spindel.dom.elements :as el])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (def row {:id "activation" :room-id "room" :room-name "Room" :enabled? true})
@@ -146,13 +148,13 @@
                              {:id "no-op" :intended-at 1 :state :linked :coalesced 0 :filing {:status :no-op}}]}
           observer (js/MutationObserver.
                     (fn [_ observer]
-                      (when-let [button (some #(when (= "Review wiki proposal" (.-textContent %)) %)
+                      (when-let [button (some #(when (= "Review proposal" (.-textContent %)) %)
                                              (array-seq (.querySelectorAll container "button")))]
                         (when (.includes (.-textContent container) "No wiki changes")
                           (.disconnect observer)
                           (try
                             (is (empty? @opened) "Rendering never collects, opens or adopts anything")
-                            (is (.includes (.-textContent container) "Open Run and results"))
+                            (is (.includes (.-textContent container) "Results"))
                             (is (.includes (.-textContent container) "adding allowance does not resolve it"))
                             (let [resume (some #(when (= "Resume" (.-textContent %)) %)
                                                (array-seq (.querySelectorAll container "button")))]
@@ -172,3 +174,71 @@
       (binding [ec/*execution-context* ctx]
         (reset! handle (render/render-spin! container (spin (schedules/workflow-row row))
                                            (browser/make-dom-discharge js/document)))))))
+
+(deftest workflows-overview-keeps-manual-room-discovery-and-agent-authored-diagrams
+  (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+        diagram-calls (atom []) opened (atom []) discharge (atom nil)
+        room {:room/id "manual-room" :room/name "Manual only"}
+        data {:index-status :ready :workflow-schedules []
+              :schedules [{:id "code-task" :room-name "Research" :task "Maintain evidence"
+                           :agent-name "Mira" :code "(maintain!)" :next-fire 0}]
+              :diagrams {"Research" "flowchart LR; A-->B"}
+              :shapes {"code-task" "flowchart LR; Source-->Review"}}]
+    (.appendChild (.-body js/document) container)
+    (try
+      (with-redefs [mermaid/diagram
+                    (fn [code] (swap! diagram-calls conj code)
+                      (el/div {} "Diagram"))]
+        (binding [ec/*execution-context* ctx]
+          (reset! discharge (browser/mount! container
+                             (schedules/overview data [room]
+                               {:open-room (fn [room _] (swap! opened conj room))
+                                :toggle (fn [& _] (throw (js/Error. "Opening overview changed a schedule")))} nil)))
+          (is (= "Workflows" (.-textContent (.querySelector container "h2"))))
+          (is (.includes (.-textContent container) "Mira"))
+          (is (.includes (.-textContent container) "Invoked code"))
+          (is (= #{"flowchart LR; A-->B" "flowchart LR; Source-->Review"} (set @diagram-calls)))
+          (is (empty? @opened))
+          (.click (some #(when (= "Manual only" (.-textContent %)) %)
+                        (array-seq (.querySelectorAll container "button"))))
+          (is (= [room] @opened))))
+      (finally (when @discharge (browser/unmount! @discharge))
+               (.remove container) (context/stop-context! ctx)))))
+
+(deftest global-workflows-room-link-uses-the-existing-room-workflows-tab
+  (with-state
+    (fn [ui _]
+      (let [opened (atom [])]
+        (with-redefs [sig/open-tab! (fn [type data & options] (swap! opened conj [type data options]))]
+          ((:open-room ui) {:room/id "room" :room/name "Research"} nil)
+          (is (= :workflows (ffirst @opened)))
+          (is (= {:room-id "room" :room-name "Research"} (second (first @opened)))))))))
+
+(deftest invalidated-workflow-index-does-not-present-obsolete-cards-or-diagrams-as-current
+  (doseq [cause [:roster :connection]]
+    (with-state
+      (fn [ui ctx]
+        (let [loads (atom []) streams (atom []) replaced? (atom false)
+              container (.createElement js/document "div") discharge (atom nil)]
+          (.appendChild (.-body js/document) container)
+          (try
+            (with-redefs [connection/snapshot #(if @replaced? {:socket :replacement} {:socket :fixture})
+                          chat/load-schedules! (deferred loads)
+                          remote/prepare-workflow-metadata-stream! (deferred streams)
+                          mermaid/diagram (fn [_] (throw (js/Error. "Stale diagram was rendered")))]
+              ((:refresh ui))
+              ((:ok (first @loads)) {:workflow-schedules [(assoc row :name "Obsolete workflow")]
+                                    :diagrams {"Removed room" "flowchart LR; Secret-->Output"}})
+              (is (= :ready (:index-status @sig/schedules-data)))
+              (if (= :connection cause) (reset! replaced? true)
+                  (reset! sig/user-rooms {:rooms []}))
+              ((:observe ui))
+              (is (= :checking (:index-status @sig/schedules-data)))
+              (reset! discharge (browser/mount! container (schedules/overview @sig/schedules-data [] ui nil)))
+              (is (not (.includes (.-textContent container) "Obsolete workflow")))
+              (is (.includes (.-textContent container) "Checking scheduled work"))
+              (is (not (.includes (.-textContent container) "No scheduled work.")))
+              (is (= 2 (count @loads)))
+              ((:ok (last @loads)) {:workflow-schedules [] :schedules [] :diagrams {} :shapes {}})
+              (is (= :ready (:index-status @sig/schedules-data))))
+            (finally (when @discharge (browser/unmount! @discharge)) (.remove container))))))))

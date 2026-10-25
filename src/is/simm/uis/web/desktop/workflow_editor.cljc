@@ -31,7 +31,10 @@
       :else updated)))
 
 (defn parameters [source]
-  (into (sorted-map) (map (fn [[k v]] [(name k) v])) (get-in source [:definition :params])))
+  (into (sorted-map) (map (fn [[k v]] [(name k) v]))
+        ;; Match ordinary admission: this reserved selector configures grading,
+        ;; not a user task parameter. Exclude it before stripping namespaces.
+        (dissoc (get-in source [:definition :params]) :simmis/checker-profile)))
 
 (defn draft [source]
   {:source source :files (:files source) :path (or (when (contains? (:files source) "workflow.edn") "workflow.edn")

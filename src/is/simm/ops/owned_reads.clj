@@ -184,6 +184,18 @@
                      (true? (registry/admitted-incarnation? room))) (refuse!))
       room)))
 
+(defn resolve-registered-host-read-room!
+  "Read an already admitted native Room under current human read authority.
+   A missing Room remains nil: this metadata path never hydrates or installs.
+   Present bindings use the ordinary exact-incarnation validation boundary."
+  [host principal original-handle]
+  (let [{:keys [control-conn execution-ctx] :as owner} (original-owner! host)]
+    (binding [ec/*execution-context* execution-ctx]
+      (let [db (current-control-db! control-conn execution-ctx)
+            current (authorize-read! db principal original-handle)]
+        (assoc current :room (registered-native-room (:room-id current) (:slug current))
+               :control-db db ::room-owner owner)))))
+
 (defn preflight-host-install!
   "Fixed metadata-only human governance gate before Room hydration."
   [host principal original-handle]

@@ -568,7 +568,7 @@
              ;; what needs ME
              (item :tasks "circle-check" "Tasks" (when (pos? n-tasks) n-tasks))
              ;; what runs WITHOUT me
-             (item :schedules "calendar" "Schedules" nil)
+             (item :schedules "workflow" "Workflows" nil)
              ;; what we owe, own and spent — one book per store, one view
              (item :accounting "wallet" "Accounting" nil)))))))
 

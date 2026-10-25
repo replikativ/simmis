@@ -9300,3 +9300,20 @@ body.tab-dragging .column-drop-zone {
 .memory-data-table .selectedCell::after { content: ""; position: absolute; inset: 0; background: var(--mono-border); opacity: .4; pointer-events: none; }
 
 .memory-rich-editor .tableWrapper { max-width: 100%; overflow-x: auto; }
+
+/* Workflows: activity first, code and execution controls on demand. */
+.workflow-disclosure { margin: 12px 0; border: 1px solid var(--mono-border); border-radius: 8px; }
+.workflow-disclosure > summary { padding: 10px 12px; cursor: pointer; color: var(--mono-text-primary); font-size: var(--text-sm); }
+.workflow-disclosure[open] > summary { border-bottom: 1px solid var(--mono-border); margin-bottom: 10px; }
+.workflow-disclosure > :not(summary) { margin-left: 12px; margin-right: 12px; }
+.workflow-disclosure > :last-child { margin-bottom: 12px; }
+.workflow-draft-label { color: var(--mono-text-secondary); }
+.workflow-card { padding: 14px; margin: 10px 0; border: 1px solid var(--mono-border); border-radius: 8px; }
+.workflow-card .schedule-main { flex: 1; }
+.workflow-card h3 { margin: 0 0 6px; }
+.workflow-card button, .workflow-room-links button { border: 1px solid var(--mono-border); border-radius: 6px; padding: 6px 10px; color: inherit; background: transparent; cursor: pointer; }
+.workflow-card button { margin-right: 6px; }
+.workflow-room-links { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 24px; }
+.workflow-occurrence { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; font-size: var(--text-sm); }
+.workflow-overview-diagram { margin: 14px 0; }
+.workflow-disclosure pre { white-space: pre-wrap; overflow-wrap: anywhere; }
