@@ -220,13 +220,24 @@
       (refuse! :batching-not-enabled-for-this-epoch))
     declaration))
 
-(defn- active-batch-reply [control value expected]
+(defn- active-batch-reply [db value expected]
   (when-let [id (:knowledge.stream/active-batch expected)]
-    (let [row (batches/batch @control id)]
+    (let [row (batches/batch db id)]
       (when-not (and row (= (:by value) (:knowledge.batch/by row))
                      (= (:room value) (:knowledge.batch/room row))
                      (= (:target value) (:knowledge.batch/target row))
-                     (= (:id value) (:knowledge.batch/stream row)))
+                     (= (:id value) (:knowledge.batch/stream row))
+                     (#{:capturing :ready :submitted :review} (:knowledge.batch/state row))
+                     (= id (:knowledge.batch/selection-id row))
+                     (every? uuid? [(:knowledge.batch/claim row) (:knowledge.batch/selection row)])
+                     (let [state (:knowledge.batch/state row)
+                           frozen [(:knowledge.batch/frozen row) (:knowledge.batch/frozen-id row)]
+                           request [(:knowledge.batch/request row) (:knowledge.batch/request-intent row)]]
+                       (case state
+                         :capturing (every? nil? (concat frozen request))
+                         :ready (and (every? uuid? frozen) (every? nil? request))
+                         (:submitted :review) (every? uuid? (concat frozen request))
+                         false)))
         (refuse! :batch-binding-mismatch))
       {:status :held :reason :active-batch :stream (:id value) :batch id
        :batch-state (:knowledge.batch/state row)})))
@@ -244,15 +255,17 @@
   (if-let [held (with-stream! host principal handle request
                  (fn [{:keys [control value] :as context}]
                    (batch-declaration! request context)
-                   (active-batch-reply control value (streams/stream @control (:id value)))))]
+                   (let [db @control]
+                     (active-batch-reply db value (streams/stream db (:id value))))))]
     held
     (do
      (refresh! host principal handle request)
   (with-stream! host principal handle request
     (fn [{:keys [control binding value policy planned snapshot origin mapping check! transact!] :as context}]
       (let [declaration (batch-declaration! request context)
-            expected (streams/stream @control (:id value))]
-        (if-let [held (active-batch-reply control value expected)]
+            db @control
+            expected (streams/stream db (:id value))]
+        (if-let [held (active-batch-reply db value expected)]
           held
           (let [pinned (checkpoints/verify! control (:db binding) (:knowledge.stream/cursor-root expected))
                 _ (when-not (= value (get-in pinned [:body :stream])) (refuse! :cursor-pin-mismatch))

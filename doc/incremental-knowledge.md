@@ -187,8 +187,9 @@ Separate proposed-output fixtures substitute Attempt certification while testing
 real canonical-memory provisioning, native scoped publication, joint acceptance,
 lost acknowledgements, and positive receipt recovery.
 
-Remaining integration includes shared manual/scheduled invocation, explicit
-failed-batch/retirement recovery, and runtime activation. Pending
+Manual and scheduled invocation now share frozen preparation and native request
+admission. Remaining integration includes explicit failed-batch/retirement
+recovery and runtime activation. Pending
 proposals hold the next batch. Benchmarks use explicit frozen cases and must
 never claim or advance a live stream. No default schedule is enabled by this
 foundation.
@@ -223,16 +224,17 @@ pending publication intent available for explicit retry.
 These are host effect boundaries around the existing Spindel/Dvergr computation,
 not a second workflow executor. They do not make the host clock forkable or
 provide automatic retry for every unrelated concurrent preparation operation.
-The incremental batch-to-occurrence binding is still pending; the lifetime
-changes preserve ordinary owned schedules without enabling any new schedule.
+The incremental batch-to-occurrence binding now uses this same lifetime boundary.
+Ordinary owned schedules retain their prior behavior. No new live schedule is
+enabled by these internal changes.
 
-### Scheduled batch binding (next integration)
+### Scheduled batch binding
 
 The inactive `knowledge-schedule-batches` model now retains a separately
 versioned occurrence artifact pointing to the existing selection and frozen
 evidence, with typed occurrence-to-batch columns. Its fixed request fragment is
-now composed by native batch admission; schema activation and scheduled batch
-selection are still pending. It must not reuse the legacy scheduled-input
+now composed by native batch admission and owned dispatcher selection. Schema
+activation in the application is still pending. It must not reuse the legacy scheduled-input
 fingerprint or `last-processed-input`: those record certified filing for the
 older whole-selection path, not an incremental discovery cursor.
 
@@ -288,9 +290,11 @@ removed before retaining deferred execution and settlement closures.
 Model-free tests now exercise actual frozen source, original deployment artifacts,
 the fixed native claim composition, historical proof after a newer deployment,
 and real native Job start/settlement. Altering the claim or deleting/corrupting
-joint linkage at the Job boundary prevents the body from starting. This still
-does not prove a scheduled backlog drain: dispatcher batch selection, batch-aware
-completion, explicit failed-batch recovery and runtime activation remain pending.
+joint linkage at the Job boundary prevents the body from starting. Disposable
+native echo tests now drain two bounded batches and then skip empty; scripted
+provider/SCI tests file a proposal, hold the stream for review, dismiss it, and
+process the next prefix. Explicit failed-batch recovery and runtime activation
+remain pending.
 
 Certified candidate failure is staged under the native read extent, then reconciled
 from its captured immutable outcome only after completion announcement is durable.
@@ -299,3 +303,45 @@ input facts. A failed candidate therefore disables its activation and clears its
 slot on the first completion pass, without advancing processing or rereading an
 Attempt after notification. Scripted shipped-workflow tests cover actual native
 certification and first-pass failure, alongside successful no-op and proposal paths.
+
+
+The dispatcher checks an exact historical request before discovery or provider
+preparation. A retained binding without the original positive acknowledgement
+and complete canonical request remains held; a later pass cannot recapture or
+reissue it. A fresh admission checks current model/host policy, invocation shape,
+and finite Room allowance before reserving the shared stream. For this alpha,
+stale or unfunded activations hold before learning whether input is busy/empty.
+The same checks repeat before preparation. The current named source must match
+the retained deployment at discovery and after potentially blocking provider
+preparation; execution still consumes the retained source and frozen evidence.
+
+Only explicit, structurally valid busy/empty outcomes skip. Busy observation uses
+one control snapshot for both stream and batch, refusing closed or partial holds.
+The skip transaction verifies the original activation identity, revision, claim
+and active pointer, plus absence of request, batch-binding and legacy input state.
+It clears only that slot and preserves enabled/paused state and processing data.
+A lost skip acknowledgement cannot overwrite the committed skip or disable the
+activation. Concurrent manual/scheduled preparation shares one active stream.
+
+Batch completion is mandatory when the retained deployment declares batching,
+even if mutable markers have disappeared. Filing updates selected items through
+the canonical processing receipt and never calls the legacy input-cursor writer.
+A proposed filing completes the occurrence while holding the stream in review;
+later due occurrences skip busy. Acceptance processes the selected versions;
+dismissal skips them. A later normal occurrence may then take the next prefix.
+
+```mermaid
+flowchart LR
+  Manual[Manual invocation] --> Stream[Shared discovery stream]
+  Clock[Clock wake] --> Occurrence[Durable due occurrence]
+  Occurrence --> Stream
+  Stream --> Frozen[Claim and freeze bounded prefix]
+  Frozen --> Claim[Joint request / batch / occurrence]
+  Claim --> Job[Native Job and forked Run]
+  Job --> Attempt[Certified Attempt]
+  Attempt --> Filing[Canonical filing]
+  Filing -->|no-op| Processed[Selected versions processed]
+  Filing -->|proposed| Review[Review hold]
+  Review -->|accepted| Processed
+  Review -->|dismissed| Skipped[Selected versions skipped]
+```

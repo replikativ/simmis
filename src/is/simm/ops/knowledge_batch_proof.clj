@@ -225,8 +225,8 @@
                   [(:work.request/knowledge-batch row) (:work.request/knowledge-frozen row)])
        (refuse! :request-marker-mismatch))
      (verify-input! proof input)
-     (when-let [anchor (schedule-input! conn (:work.request/by row) (:work.request/room row) input)]
-       (scheduled/linked! @conn anchor row input))
-     (when-not (empty? (batches/request-tx @conn origin row (:work.request/intent-id row)))
-       (refuse! :partial-request-link))
-     proof)))
+     (let [anchor (schedule-input! conn (:work.request/by row) (:work.request/room row) input)]
+       (when anchor (scheduled/linked! @conn anchor row input))
+       (when-not (empty? (batches/request-tx @conn origin row (:work.request/intent-id row)))
+         (refuse! :partial-request-link))
+       (cond-> proof anchor (assoc :schedule anchor))))))

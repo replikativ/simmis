@@ -257,6 +257,30 @@
     ;; Pausing withdraws PENDING work, not this already-owned admission.
     [o a]))
 
+(def ^:private batch-skip-identity
+  [:schedule.activation/id :schedule.activation/by :schedule.activation/room
+   :schedule.activation/revision :schedule.activation/target-ref])
+
+(defn- skip-batch-tx [db expected oid claim reason]
+  (when-not (#{:stream-busy :no-inputs} reason)
+    (throw (ex-info "Invalid incremental schedule skip" {:type ::conflict})))
+  (let [[o a] (claimed-occurrence! db oid claim)]
+    (when-not (and (= expected (select-keys a batch-skip-identity))
+                   (not-any? #(contains? o %)
+                             [:schedule.occurrence/request
+                              :schedule.occurrence/input-id :schedule.occurrence/input-ref :schedule.occurrence/input-revision
+                              :schedule.occurrence/knowledge-batch :schedule.occurrence/batch-ref :schedule.occurrence/batch-revision]))
+      (throw (ex-info "Incremental schedule skip no longer owns an empty admission" {:type ::conflict})))
+    [{:db/id (:db/id o) :schedule.occurrence/state :skipped :schedule.occurrence/reason reason}
+     [:db/retract (:db/id a) :schedule.activation/active-occurrence oid]]))
+
+(defn skip-batch!
+  "Fixed HOST busy/empty result before any batch binding or request. Clear only
+   this claimed slot atomically; never disable the activation or alter cursors.
+   The caller classifies the trusted discovery outcome, not exception tags."
+  [conn activation oid claim reason]
+  (d/transact conn [[:db.fn/call skip-batch-tx (select-keys activation batch-skip-identity) oid claim reason]]))
+
 (defn- select-input-tx [db oid claim input-id empty-input?]
   (let [[o a] (claimed-occurrence! db oid claim)
         prior (:schedule.activation/last-processed-input a)

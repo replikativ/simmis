@@ -17,6 +17,7 @@
             [is.simm.model.access :as access]
             [is.simm.model.work-requests :as requests]
             [is.simm.model.knowledge-dispositions :as dispositions]
+            [is.simm.model.knowledge-schedule-batches :as scheduled]
             [is.simm.model.workflow-schedules :as schedules]
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.ops.benchmarks :as benchmarks]
@@ -24,6 +25,9 @@
             [is.simm.ops.knowledge-publish :as knowledge-publish]
             [is.simm.ops.knowledge-filing :as knowledge-filing]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
+            [is.simm.ops.knowledge-batch-inputs :as batch-inputs]
+            [is.simm.ops.knowledge-batch-proof :as batch-proof]
+            [is.simm.ops.owned-knowledge-discovery :as discovery]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-room-operation :as room-operation]
             [is.simm.ops.owned-workflows :as owned-sources]
@@ -432,11 +436,40 @@
     (when (and policy (nil? retained)) (owned-unavailable!))
     retained))
 
+(def ^:private batch-binding-fields
+  [:schedule.occurrence/knowledge-batch :schedule.occurrence/batch-ref :schedule.occurrence/batch-revision])
+
+(defn- batching [target]
+  (when (= :workflow (:kind target)) (batch-inputs/declaration (get-in target [:snapshot :files]))))
+
+(defn- owned-batch-proof! [conn target occurrence request]
+  ;; Declaration makes batching mandatory even if every mutable marker vanished.
+  (when-not (and (= 2 (:version target)) (batching target)) (owned-unavailable!))
+  (let [actual (schedules/occurrence conn (:schedule.occurrence/id occurrence))
+        proof (batch-proof/request! conn request)
+        {:keys [value reference]} (:schedule proof)]
+    (when-not (and value actual
+                   (= (select-keys occurrence [:schedule.occurrence/id :schedule.occurrence/activation :schedule.occurrence/revision])
+                      (select-keys actual [:schedule.occurrence/id :schedule.occurrence/activation :schedule.occurrence/revision]))
+                   (= [(:activation value) (:occurrence value) (:revision value)]
+                      [(:schedule.occurrence/activation actual) (:schedule.occurrence/id actual)
+                       (:schedule.occurrence/revision actual)])
+                   (= (:revision value) (hasch/uuid target))
+                   (= reference (:schedule.occurrence/batch-ref actual))
+                   (= (:id value) (:schedule.occurrence/batch-revision actual))
+                   (= (get-in value [:batch :batch]) (:schedule.occurrence/knowledge-batch actual))
+                   (not-any? #(contains? actual %) [:schedule.occurrence/input-id :schedule.occurrence/input-ref
+                                                   :schedule.occurrence/input-revision]))
+      (owned-unavailable!))
+    proof))
+
 (defn- publication-required?
   "Classify the frozen deployment, not a mutable request's truthy marker.
    Live knowledge cannot silently become an unbound fixture when its journal
    or retained publication binding is missing/corrupt."
   [conn target occurrence request]
+  (if (batching target)
+    (do (owned-batch-proof! conn target occurrence request) true)
   (let [retained (when (:schedule.occurrence/input-ref occurrence)
                    ((if (= 2 (:version target)) schedules/retained-owned-input schedules/retained-input) conn occurrence))
         planned (when (= :workflow (:kind target))
@@ -452,7 +485,7 @@
         (when-not (and live? retained basis (= basis (:publication-basis retained)))
           (throw (ex-info "Scheduled knowledge publication binding is unavailable"
                           {:type ::publication-binding-unavailable}))))
-      true)))
+      true))))
 
 (defn- durable-completion
   "Restart fallback after the canonical physical-return flag is false. A
@@ -487,6 +520,15 @@
     (schedules/mark-input-processed! conn (:schedule.occurrence/id occurrence) proof)
     value))
 
+(defn- file-batch! [conn row occurrence request room target]
+  (owned-batch-proof! conn target occurrence request)
+  (let [value (knowledge-publish/file-completed-request-unannounced!
+               conn (principals/party-principal (:schedule.activation/by row))
+               (:schedule.activation/room row) room (:work.request/id request))]
+    ;; Canonical filing owns item processing. Never update last-processed-input.
+    (owned-batch-proof! conn target occurrence request)
+    value))
+
 (defn- process-input! [conn row occurrence request job room target & [notification-mode]]
   (if (= :completed (:status job))
     (if (publication-required? conn target occurrence request)
@@ -497,7 +539,9 @@
           (if (= :deferred notification-mode)
             {::certified-failure outcome}
             (schedules/fail-certified! conn row occurrence outcome))
-          (file-input! conn row occurrence request room notification-mode)))
+          (if (batching target)
+            (file-batch! conn row occurrence request room target)
+            (file-input! conn row occurrence request room notification-mode))))
       (if (input-processed? conn request room)
         (schedules/mark-input-processed! conn (:schedule.occurrence/id occurrence))
         (schedules/block! conn row :execution-failed)))
@@ -698,6 +742,12 @@
                        (= (:room target) (:work.request/room request))
                        (= (:kind target) (:work.request/kind request)))
           (owned-unavailable!))
+        (when (batching target)
+          (let [proof (owned-batch-proof! conn target o request)
+                value (get-in proof [:schedule :value])]
+            (when-not (and (= (:activation value) (:schedule.activation/id row))
+                           (= (:target-ref value) (:schedule.activation/target-ref row)))
+              (owned-unavailable!))))
         request))))
 
 (defn- owned-link! [conn row o request]
@@ -727,6 +777,22 @@
                  (= (:model-policy target) (model-policy (:kind target) (:execution target))))
     (owned-unavailable!)))
 
+(defn- owned-execution-ready! [host target context room-binding]
+  ;; These cheap fresh-admission checks precede discovery/claims. For alpha,
+  ;; stale policy or insufficient allowance holds before learning busy/empty.
+  ;; Exact canonical retries remain above this boundary and do not enter it.
+  (owned-storage! #(owned-policy-current! target))
+  (owned-storage! #(execution! (:kind target) (dissoc (:execution target) :expected-owned-source)))
+  (owned-storage!
+   #(room-operation/with-current!
+     host (:principal context) (:handle context) room-binding
+     (fn []
+       (binding [ec/*execution-context* (:ctx (:room room-binding))]
+         (let [balance (resource/balance (:room room-binding))]
+           (when-not (every? (fn [[unit amount]] (>= (get balance unit 0M) amount))
+                             (work/resources (get-in target [:execution :limits])))
+             (owned-unavailable!))))))))
+
 (defn- owned-submit! [host conn row o claim target context room-binding rich resolution]
   (let [{:keys [principal original]} context
         room (:room room-binding)
@@ -735,23 +801,17 @@
         legacy-input (dissoc original-input :expected-owned-source)]
     (owned-claim! host row o claim)
     (owned-room-current! host context target room-binding rich)
-    ;; Fresh admissions only: no current model, policy, balance or provider work
-    ;; is reachable through the canonical exact-retry branch above.
-    (owned-storage! #(owned-policy-current! target))
-    (owned-storage! #(execution! (:kind target) (dissoc legacy-input :request-id)))
-    (owned-storage!
-     #(room-operation/with-current!
-       host principal (:handle context) room-binding
-       (fn []
-         (binding [ec/*execution-context* (:ctx room)]
-           (let [balance (resource/balance room)]
-             (when-not (every? (fn [[unit amount]] (>= (get balance unit 0M) amount))
-                               (work/resources (:limits legacy-input)))
-               (owned-unavailable!)))))))
+    (owned-execution-ready! host target context room-binding)
     (let [prepared (owned-storage!
-                    #(if (= :benchmark (:kind target))
+                    #(cond
+                       (:batch-proof resolution)
+                       (workflows-run/prepare-frozen-batch
+                        (:snapshot target) original-input (:batch-proof resolution) (:control-revision resolution)
+                        {:host host :original room-binding :handle (:handle context) :ticket lifetime/*ticket*})
+                       (= :benchmark (:kind target))
                        (benchmarks/adapter execution-ctx room
                                            (benchmarks/prepare (:snapshot target) legacy-input) principal)
+                       :else
                        (workflows-run/bind-publication
                         (if-let [captured (:captured resolution)]
                           (workflows-run/prepare (:snapshot target) legacy-input captured)
@@ -767,9 +827,18 @@
                                   :occurrence (:schedule.occurrence/id o)
                                   :creation-channel (:creation-channel target)})
                        (cond-> (:knowledge-origin resolution)
-                         (assoc-in [:basis :knowledge-origin] (:knowledge-origin resolution))))]
+                         (assoc-in [:basis :knowledge-origin] (:knowledge-origin resolution)))
+                       (cond-> (:schedule-binding resolution)
+                         (assoc-in [:basis :knowledge/schedule] {:binding (get-in resolution [:schedule-binding :id])})))]
       (owned-claim! host row o claim)
       (owned-room-current! host context target room-binding rich)
+      (when (:batch-proof resolution)
+        ;; Provider preparation may block. Recheck the named source afterwards,
+        ;; then release its short extent before native submission/world fork.
+        (let [current (capture-owned-source! host principal (:handle context) :workflow original
+                                             (:execution target) room-binding)]
+          (when-not (and (= :captured (:status current)) (= (:snapshot target) (:snapshot current)))
+            (owned-unavailable!))))
       (owned-storage! #(work/submit-prepared! conn execution-ctx principal (:room-id original)
                                               room original-input prepared))
       ;; Canonical submission, not the interceptor's arbitrary returned answer,
@@ -809,6 +878,49 @@
             :publication-basis (knowledge-inputs/publication-basis
                                 (:db rich) (select-keys (:target rich) [:registry-system :runtime-system]))}))))))
 
+(defn- dispatch-owned-batch! [host conn row o claim target context room-binding declaration]
+  (let [{:keys [principal handle original]} context
+        execution (:execution target)]
+    (when (or (:case execution) (seq (:params execution)) (seq (:inputs execution)))
+      (throw (ex-info "Incremental schedules currently use default inputs" {:type ::invalid})))
+    (owned-claim! host row o claim)
+    (owned-execution-ready! host target context room-binding)
+    (let [reply (owned-storage!
+                 #(discovery/prepare-batch!
+                   host principal handle
+                   {:name (:name execution) :expected-source (:expected-owned-source execution)
+                    :expected-bundle (:expected-bundle execution) :epoch (:epoch declaration)}))]
+      (cond
+        (and (= #{:status :reason :stream :batch :batch-state} (set (keys reply)))
+             (= :held (:status reply)) (= :active-batch (:reason reply))
+             (every? uuid? [(:stream reply) (:batch reply)])
+             (#{:capturing :ready :submitted :review} (:batch-state reply)))
+        (schedules/skip-batch! conn row (:schedule.occurrence/id o) claim :stream-busy)
+
+        (and (= #{:status :stream} (set (keys reply))) (= :empty (:status reply)) (uuid? (:stream reply)))
+        (schedules/skip-batch! conn row (:schedule.occurrence/id o) claim :no-inputs)
+
+        (= :ready (:status reply))
+        (let [_ (when-not (= (:snapshot target) (:snapshot reply)) (owned-unavailable!))
+              proof (owned-storage! #(batch-proof/ready! conn (:party original) (:room-id original) (:batch-origin reply)))
+              frozen (:frozen proof)
+              _ (when-not (and (= (:source-origin proof) (:source-origin reply))
+                               (= (:captured frozen) (:captured reply))
+                               (= (:publication-basis frozen) (:publication-basis reply)))
+                  (owned-unavailable!))
+              value (scheduled/binding-value
+                     {:activation (:schedule.activation/id row) :revision (:schedule.activation/revision row)
+                      :target-ref (:schedule.activation/target-ref row) :by (:party original) :room (:room-id original)
+                      :occurrence (:schedule.occurrence/id o) :claim claim :batch (:origin proof)})]
+          (owned-claim! host row o claim)
+          (owned-room-current! host context target room-binding nil)
+          (let [ack (owned-storage! #(scheduled/retain! conn value))
+                retained (owned-storage! #(scheduled/retained conn ack))]
+            (when-not (= value retained) (owned-unavailable!))
+            (owned-submit! host conn row o claim target context room-binding nil
+                           {:batch-proof proof :control-revision (:control-revision reply) :schedule-binding value})))
+        :else (owned-unavailable!)))))
+
 (defn- owned-dispatch! [host conn row o target]
   (let [context (owned-row! host row target)
         {:keys [principal handle]} context]
@@ -816,9 +928,12 @@
       (do (owned-row! host row target) (owned-link! conn row o request))
       ;; A retained root without this call's original first-install ACK can be
       ;; inspected, but is never resumed/re-published as a fresh admission.
-      (if (:schedule.occurrence/input-ref o)
-        (do (owned-storage! #(owned-resolution! target (schedules/retained-owned-input conn o)))
-            (owned-unavailable!))
+      (if (or (:schedule.occurrence/input-ref o) (some #(contains? o %) batch-binding-fields))
+        (do
+          (if (some #(contains? o %) batch-binding-fields)
+            (owned-storage! #(scheduled/retained conn o))
+            (owned-storage! #(owned-resolution! target (schedules/retained-owned-input conn o))))
+          (owned-unavailable!))
         (let [_ (owned-owner! host)
               claim (owned-storage! #(schedules/admit! conn (:schedule.occurrence/id o)))]
           (when-not (or (nil? claim) (uuid? claim)) (owned-unavailable!))
@@ -827,7 +942,10 @@
               (owned-claim! host row o claim)
               (let [room-binding (owned-storage! #(reads/resolve-host-room! host principal handle))
                     _ (owned-room-current! host context target room-binding nil)
-                    planned (when (= :workflow (:kind target))
+                    declaration (batching target)]
+                (if declaration
+                  (dispatch-owned-batch! host conn row o claim target context room-binding declaration)
+                  (let [planned (when (= :workflow (:kind target))
                               (owned-storage!
                                #(workflows-run/plan-source (:snapshot target)
                                                            (select-keys (:execution target) workflows-run/source-fields))))
@@ -859,7 +977,7 @@
                                 retained (owned-storage! #(schedules/retained-owned-input conn ack))]
                             (when-not (= value retained) (owned-unavailable!))
                             (owned-storage! #(owned-resolution! target retained))))]
-                    (owned-submit! host conn row o claim target context room-binding rich resolution))))
+                    (owned-submit! host conn row o claim target context room-binding rich resolution))))))
               (catch Throwable error
               ;; Once admitted, missing ACKs or unknown outcomes hold the active
               ;; pointer. Existing canonical work may reconcile, never replay.
@@ -867,10 +985,15 @@
                   (.interrupt (Thread/currentThread))
                   (throw error))
                 (owned-owner! host)
-                (if-let [request (owned-storage! #(owned-retry! conn row o target))]
-                  (owned-link! conn row o request)
-                  (do (schedules/finish-admission! conn (:schedule.occurrence/id o) :interrupted nil :interrupted)
-                      (schedules/block! conn row :interrupted)))
+                (let [actual (schedules/occurrence conn (:schedule.occurrence/id o))
+                      skipped? (and (= claim (:schedule.occurrence/claim actual))
+                                    (= :skipped (:schedule.occurrence/state actual))
+                                    (#{:stream-busy :no-inputs} (:schedule.occurrence/reason actual)))]
+                  (when-not skipped?
+                    (if-let [request (owned-storage! #(owned-retry! conn row o target))]
+                      (owned-link! conn row o request)
+                      (do (schedules/finish-admission! conn (:schedule.occurrence/id o) :interrupted nil :interrupted)
+                          (schedules/block! conn row :interrupted)))))
                 (when (.isInterrupted (Thread/currentThread)) (throw error))))))))))
 
 (defn- announce-owned-result! [host conn context row o request job room-binding target value]
@@ -901,13 +1024,16 @@
               room-binding (owned-storage! #(reads/resolve-host-room! host (:principal context) (:handle context)))
               room (:room room-binding)
               _ (owned-room-current! host context target room-binding nil)
-              filed (when (:schedule.occurrence/input-ref o) (schedules/processing-proof conn oid))]
+              batch? (boolean (batching target))
+              filed (if batch? (dispositions/disposition request)
+                        (when (:schedule.occurrence/input-ref o) (schedules/processing-proof conn oid)))]
           (if (and filed (true? (:schedule.occurrence/announced? o)))
             (do
               (when-not (publication-required? conn target o request) (owned-unavailable!))
               (let [value (room-operation/with-current!
                            host (:principal context) (:handle context) room-binding
-                           #(file-input! conn row o request room :deferred))]
+                           #(if batch? (file-batch! conn row o request room target)
+                                (file-input! conn row o request room :deferred)))]
                 (announce-owned-result! host conn context row o request nil room-binding target value))
               (schedules/clear-active! conn row oid))
             (let [job (room-operation/with-current!
@@ -917,7 +1043,7 @@
               (when (and filed (nil? job)) (owned-unavailable!))
               (when (and (:settled? job) (#{:completed :failed :cancelled} (:status job)))
                 (let [result (try
-                               {:value (when (:schedule.occurrence/input-ref o)
+                               {:value (when (or batch? (:schedule.occurrence/input-ref o))
                                          (room-operation/with-current!
                                           host (:principal context) (:handle context) room-binding
                                           #(process-input! conn row o request job room target :deferred)))}

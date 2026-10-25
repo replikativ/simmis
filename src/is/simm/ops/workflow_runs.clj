@@ -335,6 +335,27 @@
            :basis (assoc (:basis prepared) :submission input :environment env
                          :source source :inputs inputs :workflow workflow))))
 
+(defn prepare-frozen-batch
+  "Shared fixed manual/scheduled builder after original-owner and ready-proof
+   checks. Prepare ONLY verified frozen evidence and retained source. This
+   performs ordinary provider preparation, not a claim or execution. Native
+   owner data remains outside the persisted basis and is rechecked by work."
+  [snapshot input proof mapping owner]
+  (let [{:keys [frozen source-origin origin]} proof
+        prepared (bind-publication
+                  (prepare snapshot (dissoc input :expected-owned-source) (:captured frozen))
+                  (select-keys frozen [:captured :publication-basis]))
+        prepared (-> prepared
+                     (assoc-in [:basis :submission] input)
+                     (assoc-in [:basis :knowledge/batch] origin)
+                     (assoc-in [:basis :knowledge/batch-control] {:mapping mapping})
+                     (assoc-in [:basis :source-origin]
+                               {:revision (:source-revision source-origin) :target-stamp (:target-stamp source-origin)
+                                :target (:target source-origin) :manifest (:manifest snapshot)})
+                     (assoc :knowledge/owner owner))]
+    (batch-proof/verify-input! proof (:basis prepared))
+    prepared))
+
 (defn retry-request
   "HOST workflow journal comparison only. NORMAL conflict is data, not an
    exception classification. No authorization, source, provider or hydration."

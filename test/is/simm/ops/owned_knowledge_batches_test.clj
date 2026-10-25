@@ -141,3 +141,24 @@
       (with-redefs [inputs/capture (fn [& _] (throw (AssertionError. "No source bytes for empty work")))]
         (is (= :empty (:status (prepare data)))))
       (is (empty? (d/datoms @conn :avet :knowledge.batch/id))))))
+
+(deftest active-batch-busy-replies-use-one-snapshot-and-refuse-corrupt-holds
+  (doseq [damage [:closed :missing-frozen :missing-request]]
+    (with-fixture
+      (fn [{:keys [conn w] :as data}]
+        (let [ready (prepare data) before @conn
+              batch (batches/batch before (:batch ready))
+              expected (streams/stream before (:stream ready))
+              descriptor {:id (:stream ready) :by (:owner w) :room (:room w) :target (:knowledge.batch/target batch)}]
+          (is (= :ready (:batch-state (@#'discovery/active-batch-reply before descriptor expected))))
+          (d/transact conn
+            [(case damage
+               :closed {:db/id (:db/id batch) :knowledge.batch/state :closed}
+               :missing-frozen [:db/retract (:db/id batch) :knowledge.batch/frozen (:knowledge.batch/frozen batch)]
+               :missing-request {:db/id (:db/id batch) :knowledge.batch/state :submitted})])
+          ;; The old source event remains a consistent ready observation; do not
+          ;; mix its stream row with a later batch row during concurrent closing.
+          (is (= :ready (:batch-state (@#'discovery/active-batch-reply before descriptor expected))))
+          (is (thrown? Exception (@#'discovery/active-batch-reply @conn descriptor (streams/stream @conn (:stream ready)))))
+          (with-redefs [inputs/capture (fn [& _] (throw (AssertionError. "Corrupt hold may not recapture")))]
+            (is (thrown? Exception (prepare data)))))))))

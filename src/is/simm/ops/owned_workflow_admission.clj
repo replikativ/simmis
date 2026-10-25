@@ -100,21 +100,10 @@
                 (unavailable!))
             _ (current! host principal handle original binding original-room)
             _ (lifetime/check-current!)
-            prepared (storage! #(workflows-run/bind-publication
-                                 (workflows-run/prepare (:snapshot ready) (dissoc input :expected-owned-source)
-                                                       (:captured frozen))
-                                 (select-keys frozen [:captured :publication-basis])))
-            prepared (-> prepared
-                         (assoc :submission-channel (if (:principal/mcp? principal) :mcp :host))
-                         (assoc-in [:basis :submission] input)
-                         (assoc-in [:basis :knowledge/batch] (:batch-origin ready))
-                         (assoc-in [:basis :knowledge/batch-control] {:mapping (:control-revision ready)})
-                         (assoc-in [:basis :source-origin]
-                                   {:revision (:source-revision source) :target-stamp (:target-stamp source)
-                                    :target (:target source) :manifest (:manifest snapshot)})
-                         (assoc :knowledge/owner {:host host :original original-room :handle handle
-                                                  :ticket lifetime/*ticket*}))]
-        (storage! #(batch-proof/verify-input! proof (:basis prepared)))
+            prepared (storage! #(workflows-run/prepare-frozen-batch
+                                 snapshot input proof (:control-revision ready)
+                                 {:host host :original original-room :handle handle :ticket lifetime/*ticket*}))
+            prepared (assoc prepared :submission-channel (if (:principal/mcp? principal) :mcp :host))]
         (current! host principal handle original binding original-room)
         (storage! #(work/submit-prepared! control-conn execution-ctx principal
                                           (:room-id original) (:room original-room) input prepared))))))

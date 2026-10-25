@@ -221,3 +221,43 @@
         (d/transact conn [[:db/retract [:schedule.occurrence/id (:occurrence value)] :schedule.occurrence/request (:work.request/id request)]])
         (is (= :partial-request-link (held #(binding/linked! @conn anchor request intent))))
         (is (some? (held #(joint! conn f))))))))
+
+
+(deftest busy-and-empty-skips-release-only-the-empty-claimed-slot
+  (doseq [reason [:stream-busy :no-inputs] paused? [false true]]
+    (with-db
+      (fn [conn]
+        (let [value (seed! conn) a (schedules/activation conn (:activation value))]
+          (when paused?
+            (d/transact conn [{:db/id (:db/id a) :schedule.activation/enabled? false}]))
+          (schedules/skip-batch! conn a (:occurrence value) (:claim value) reason)
+          (let [after (schedules/activation conn (:activation value))
+                o (schedules/occurrence conn (:occurrence value))]
+            (is (= :skipped (:schedule.occurrence/state o)))
+            (is (= reason (:schedule.occurrence/reason o)))
+            (is (= (not paused?) (:schedule.activation/enabled? after)))
+            (is (nil? (:schedule.activation/active-occurrence after)))
+            (is (nil? (:schedule.activation/last-processed-input after)))
+            (is (= :ready (:knowledge.batch/state (batches/batch @conn (get-in value [:batch :batch])))))))))))
+
+(deftest bound-or-changed-occurrences-cannot-be-skipped-as-busy-or-empty
+  (doseq [damage [:bound :partial-binding :request :legacy-input :claim :revision :active :owner :deployment]]
+    (with-db
+      (fn [conn]
+        (let [value (seed! conn) a (schedules/activation conn (:activation value))
+              oid (:occurrence value)]
+          (case damage
+            :bound (binding/retain! conn value)
+            :partial-binding (d/transact conn [{:db/id [:schedule.occurrence/id oid] :schedule.occurrence/batch-ref (random-uuid)}])
+            :request (d/transact conn [{:db/id [:schedule.occurrence/id oid] :schedule.occurrence/request (random-uuid)}])
+            :legacy-input (d/transact conn [{:db/id [:schedule.occurrence/id oid] :schedule.occurrence/input-id (random-uuid)}])
+            :claim (d/transact conn [{:db/id [:schedule.occurrence/id oid] :schedule.occurrence/claim (random-uuid)}])
+            :revision (d/transact conn [{:db/id (:db/id a) :schedule.activation/revision (random-uuid)}])
+            :active (d/transact conn [{:db/id (:db/id a) :schedule.activation/active-occurrence (random-uuid)}])
+            :owner (d/transact conn [{:db/id (:db/id a) :schedule.activation/by (random-uuid)}])
+            :deployment (d/transact conn [{:db/id (:db/id a) :schedule.activation/target-ref (random-uuid)}]))
+          (let [before @conn]
+            (is (thrown? Exception (schedules/skip-batch! conn a oid (:claim value) :stream-busy)))
+            (is (= (schedules/occurrence (atom before) oid) (schedules/occurrence conn oid)))
+            (is (= (schedules/activation (atom before) (:activation value))
+                   (schedules/activation conn (:activation value))))))))))
