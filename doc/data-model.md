@@ -9,6 +9,27 @@ Markdown is recognized by extension at any path. `wiki/` is an organizational
 convention, not a separate database boundary. Room-local source and workflows
 use these same files; the loaded SCI interpreter state is not a file entity.
 
+Opening an image, audio or video file returns its regular-file metadata and an
+exact repository/path/content/size reference, without reading its payload.
+The separate media read checks the current human's room permission, canonical
+workspace target and expected content identity on every GET or HEAD. These
+identities are read preconditions, not capabilities. The browser uses the
+existing short-lived blob-read cookie; cached bytes never convey room access.
+Safe image/audio/video formats have generic native viewers; HTML and SVG are
+excluded. The media transport currently supports files up to 2 GiB minus one
+byte, single byte ranges for seeking, and metadata-only HEAD requests.
+The application enables the maintained HTTP-kit transport's non-legacy
+Content-Length behavior, preserving the handler's exact HEAD length without
+materializing a response body.
+
+The application owns a disposable POSIX materialization cache, separate from
+forkable room state. It verifies complete content hashes and sizes before
+publishing read-only mapped response buffers. Its fixed lifetime limits are
+8 GiB and 4096 entries; there is no eviction while HTTP responses may retain
+mappings. App shutdown joins native operations before unlinking cache files.
+Failed cleanup retains a closed resource for explicit retry. Unix unlink does
+not invalidate queued buffers or promise immediate disk/RSS reclamation.
+
 The Markdown codec retains exact source and derives source-positioned syntax
 nodes separately from semantic Simmis blocks. Explicit paired block markers
 carry stable block identities and child grouping; ordinary unmarked Markdown

@@ -10,6 +10,7 @@
             [is.simm.ops.worker-api :as worker-api]
             [is.simm.ops.worker-control :as worker-control]
             [is.simm.runtimes.context :as context]
+            [is.simm.runtimes.media-cache :as media-cache]
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [is.simm.runtimes.workflow-schedules :as workflow-schedules]
             [org.replikativ.spindel.engine.impl.simple :as simple]))
@@ -102,7 +103,9 @@
       ;; resource for an explicit retry if either unregister or host release
       ;; throws. The unregister functions are idempotent.
         (release-all! [worker-control/uninstall! worker-api/uninstall!
-                       work-api/uninstall! results/uninstall!])
+                       work-api/uninstall! results/uninstall!
+                       #(when-let [resource (:media-cache (:host @installation))]
+                          (media-cache/close! resource))])
         (server/set-host! nil)
         (reset! installation nil)))))
 
@@ -121,7 +124,8 @@
         (when (workflow-schedules/held?)
           (throw (ex-info "Prior scheduled-work resource must be stopped first" {:type ::held})))
         (let [owner (lifetime/create)
-              host (owned-mcp/host (system-db/get-conn) context/server-context owner)]
+              host (assoc (owned-mcp/host (system-db/get-conn) context/server-context owner)
+                          :media-cache (media-cache/create))]
           (reads/current-host-control-db! host)
           (reset! installation {:host host :owner owner})
           (try

@@ -14,6 +14,7 @@
             [is.simm.documents.blocks :as blocks]
             [is.simm.documents.identity :as identity]
             [is.simm.documents.markdown :as markdown]
+            [is.simm.documents.media :as media]
             [is.simm.documents.rich-text :as rich]
             [is.simm.documents.inline-charts :as inline-charts]
             [org.replikativ.spindel.engine.core :as ec])
@@ -53,7 +54,7 @@
   (cond
     (re-find #"(?i)\.(md|markdown)$" path) :markdown
     (re-find #"(?i)\.(docx|xlsx|pptx|odt|ods|odp)$" path) :office
-    (re-find #"(?i)\.(png|jpe?g|gif|webp)$" path) :image
+    (media/kind path) (media/kind path)
     (re-find #"(?i)\.(clj[cs]?|edn|bb|js|jsx|ts|tsx|json|ya?ml|xml|html?|css|sh|py|sql|csv|txt|log)$" path) :text
     :else :file))
 
@@ -201,22 +202,45 @@
          :diagnostics (into (vec (or (:diagnostics semantic) (:diagnostics parsed))) diagnostics)}))
     {:kind :text :revision (markdown/revision text) :diagnostics []}))
 
+(defn media-metadata-in
+  "Metadata only for inert media. Payload delivery is a separately authorized
+   request; opening a media file does not replicate or reconstruct its bytes."
+  [db path]
+  (path! path)
+  (let [selected (entry db path)
+        kind (media/kind path)
+        repository (:geschichte.repo/id (query/repository db))]
+    (when-not selected (refuse! ::missing "This file no longer exists"))
+    (when-not (and kind (uuid? (:content selected)) (integer? (:size selected))
+                   (<= 0 (:size selected) Long/MAX_VALUE)
+                   (integer? (:mode selected))
+                   (= 0x8000 (bit-and (long (:mode selected)) 0xF000)))
+      (refuse! ::invalid "Only regular media files can be previewed"))
+    (when-not (= (:size selected)
+                 (:geschichte.content/size (d/entity db [:geschichte.content/id (:content selected)])))
+      (refuse! ::corrupt "File metadata disagrees with content size"))
+    {:path path :entry selected :kind kind :repository-id repository :execution-policy :source-only
+     :media {:content-type (media/content-type path)
+             :reference (media/reference repository path selected)}}))
+
 (defn read-file-in
   "Project one file from an explicit immutable target DB. Internal storage
    primitive, NOT an authorization endpoint: the host must resolve and validate
    the canonical target and current authority before supplying this snapshot.
-   No workspace selection, connection lookup, interpreter or write is involved."
+   Media returns metadata only; document source reads remain bounded."
   [db path]
   (path! path)
-  (let [selected (entry db path) bytes (source-bytes db path selected)
-        kind (file-kind path)
-        text (when (and (not (#{:office :image} kind)) (<= (alength ^bytes bytes) markdown/max-source-bytes))
-               (try (markdown/decode bytes) (catch Exception _ nil)))
-        repo-id (:geschichte.repo/id (query/repository db))]
-    (cond-> {:path path :entry selected :kind (if text (if (= kind :markdown) :markdown :text)
-                                                  (if (= kind :text) :file kind))
-             :repository-id repo-id :execution-policy :source-only}
-      text (assoc :text text :analysis (analyze repo-id path text)))))
+  (if (media/kind path)
+    (media-metadata-in db path)
+    (let [selected (entry db path) bytes (source-bytes db path selected)
+          kind (file-kind path)
+          text (when (and (not= :office kind) (<= (alength ^bytes bytes) markdown/max-source-bytes))
+                 (try (markdown/decode bytes) (catch Exception _ nil)))
+          repo-id (:geschichte.repo/id (query/repository db))]
+      (cond-> {:path path :entry selected :kind (if text (if (= kind :markdown) :markdown :text)
+                                                    (if (= kind :text) :file kind))
+               :repository-id repo-id :execution-policy :source-only}
+        text (assoc :text text :analysis (analyze repo-id path text))))))
 
 (defn read-file [room path]
   (path! path)

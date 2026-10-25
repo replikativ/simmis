@@ -133,3 +133,11 @@
     (when (and (uuid-text? proposal) (uuid-text? component)
                (= #{"path"} (set (keys fields))) (source-path? path))
       {:kind :proposal-source :proposal proposal :component component :path path})))
+
+(defn media-route
+  "Authenticated owned-file bytes. The browser supplies its blob-read cookie;
+   identity fields are read preconditions, never bearer capabilities."
+  [{:keys [room path content target]}]
+  (when (and (uuid-text? (str room)) (path? path) (uuid? content) (uuid? target))
+    (str "/blobs/workspaces/" room "?path=" (encode path)
+         "&content=" content "&target=" target)))
