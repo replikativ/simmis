@@ -4,6 +4,7 @@
   (:require [datahike.api :as d]
             [dvergr.artifact :as artifact]
             [is.simm.model.knowledge-publication :as publication]
+            [is.simm.model.work-request-identity :as identity]
             [hasch.core :as hasch]))
 
 (def schema
@@ -33,7 +34,7 @@
          [:work.request/incident :db.type/uuid]]))
 
 (defn request-id [party room client-id]
-  (hasch/uuid [:simmis/work-request-v1 party room client-id]))
+  (identity/request-id party room client-id))
 
 (defn- publication-id
   "Integrity of host-retained metadata, not a proof of current authorization."

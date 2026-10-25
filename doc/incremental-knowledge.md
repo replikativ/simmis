@@ -66,6 +66,34 @@ it does not prove deployed filesystem provisioning.
 
 ## Remaining integration
 
+The inactive batch input planner now selects deterministic pending-order prefixes
+without the canonical view's 200-document body limit. Context is either the whole
+declared context selection or explicit named paths, with independent count/byte
+bounds; exceeding them holds rather than truncating. Ordinary workflow fixtures
+reserve both file slots and UTF-8 bytes. An oversized later source preserves the
+valid prefix; an oversized head holds for an explicit decision.
+
+A version-2 HOST envelope binds stream/cursor/item identity, context, limits and
+remaining count to the existing version-1 exact frozen-evidence format. That
+format already supports explicit subsets; it is not a live progress cursor.
+Envelope hashes and byte verification confer no authority to claim a live stream.
+The source cursor pin must remain retained until the HOST has durably frozen the
+inputs, and while the active batch prevents discovery from advancing it.
+
+Source-backed output proposals require retained admission-time BEFORE bytes for
+existing wiki targets. A bounded context therefore limits edits to existing
+targets included in that context; omitted existing targets cannot be treated as
+absent. The separate publication basis still inventories all wiki occupancy.
+
+The inactive batch journal provides `capturing -> ready -> submitted` fragments.
+Claiming compares the complete current stream, retained cursor-pin receipt, exact
+canonical pending prefix and remaining count, then sets the active hold and item
+claims together. Freeze attaches the HOST-verified artifact. First request linkage
+must compose with canonical request insertion; it refuses a preexisting partial
+request. Historical replay requires the actual matching canonical request and
+cannot manufacture a replacement if that request is missing. These fragments are
+not yet called by production admission and do not mark any source processed.
+
 Freeze bounded batches and context independently; claim one batch per stream
 across manual and scheduled invocations; reuse existing work-request admission;
 and compose exact source-processing receipts with certified knowledge filing.
