@@ -838,7 +838,13 @@
          stream (iv/get-new (track sync/state))
          _metadata (iv/get-new (track sig/memory-room-metadata))
          _layout (iv/get-new (track sig/layout-columns))
-         _rooms (iv/get-new (track sig/user-rooms))
+         rooms (iv/get-new (track sig/user-rooms))
+         room-name (or (some (fn [room]
+                              (when (= (str (:room-id data)) (str (:room/id room)))
+                                (not-empty (:room/name room))))
+                            (:rooms rooms))
+                       (not-empty (:room-name data))
+                       (str "Memory · " (:room-id data)))
          states (iv/get-new (track sig/memory-editor-state))
          syntax-pref (iv/get-new (track sig/syntax-pref))
          a (actions/controller data) state (get states (:owner a))]
@@ -846,7 +852,7 @@
      ((:ensure-sync a) connection stream)
      ((:ensure-properties a))
      ((:ensure-charts a))
-     (view data state a syntax-pref))))
+     (view (assoc data :room-name room-name) state a syntax-pref))))
 
 (defn- backlinks-view [a]
   (let [{:keys [open? reply error loading?]} ((:backlinks a))]
