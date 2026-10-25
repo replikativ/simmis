@@ -561,7 +561,8 @@
 (def ^:private failure-occurrence-fields
   [:schedule.occurrence/id :schedule.occurrence/activation :schedule.occurrence/revision
    :schedule.occurrence/state :schedule.occurrence/request :schedule.occurrence/claim
-   :schedule.occurrence/input-id :schedule.occurrence/input-ref :schedule.occurrence/input-revision])
+   :schedule.occurrence/input-id :schedule.occurrence/input-ref :schedule.occurrence/input-revision
+   :schedule.occurrence/knowledge-batch :schedule.occurrence/batch-ref :schedule.occurrence/batch-revision])
 
 (defn- fail-certified-tx [db id expected occurrence outcome]
   (let [row (pull-row db :schedule.activation/id id)

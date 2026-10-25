@@ -230,8 +230,9 @@ changes preserve ordinary owned schedules without enabling any new schedule.
 
 The inactive `knowledge-schedule-batches` model now retains a separately
 versioned occurrence artifact pointing to the existing selection and frozen
-evidence, with typed occurrence-to-batch columns. It is not registered in the
-runtime or wired to request admission yet. It must not reuse the legacy scheduled-input
+evidence, with typed occurrence-to-batch columns. Its fixed request fragment is
+now composed by native batch admission; schema activation and scheduled batch
+selection are still pending. It must not reuse the legacy scheduled-input
 fingerprint or `last-processed-input`: those record certified filing for the
 older whole-selection path, not an incremental discovery cursor.
 
@@ -246,8 +247,8 @@ an identical artifact or row after uncertainty does not recreate that ownership.
 
 The inactive request fragment consults the reverse binding from the actual
 request row and requires its batch markers to agree with the intent, including
-when the intent omits its schedule marker. The native batch-claim composition
-still needs to invoke this fragment unconditionally. Dropping that marker must not
+when the intent omits its schedule marker. Native batch-claim composition now
+invokes this fragment unconditionally. Dropping that marker must not
 turn a reserved scheduled batch into a manual request. Deployment artifacts are
 bounded and verified before entering the writer; only inert identity facts and
 pure comparisons belong in the serialized transition.
@@ -266,3 +267,35 @@ occurrence may have a proposed filing whose batch is still in review. Later due
 occurrences skip a busy stream before provider preparation; acceptance processes
 its selected versions, while dismissal skips them. Neither result is inferred
 from Job completion alone.
+
+
+Original deployment verification uses bounded control artifacts and the binding's
+retained target reference and revision. Source bytes, UTF-8, paths, blob IDs,
+manifest order, bundle and source identities share the ordinary owned-schedule
+validator. The additional scheduled proof checks the exact default invocation,
+original limits, source, creation channel and markers. Historical filing and
+recovery use this through the existing batch proof reader; they do not load
+current source, provider configuration, model installations or host policy.
+
+The native handoff keeps the verified binding anchor only during admission.
+Before starting a Job and again inside its synchronous admission callback, it
+checks original App/Room authority, claim/active ownership, and the complete
+original request/batch/occurrence linkage. A deleted link cannot be mistaken for
+the valid pre-claim absence of a request pointer. These checks do no artifact I/O
+inside the writer or native callback. Owner and admission-anchor fields are
+removed before retaining deferred execution and settlement closures.
+
+Model-free tests now exercise actual frozen source, original deployment artifacts,
+the fixed native claim composition, historical proof after a newer deployment,
+and real native Job start/settlement. Altering the claim or deleting/corrupting
+joint linkage at the Job boundary prevents the body from starting. This still
+does not prove a scheduled backlog drain: dispatcher batch selection, batch-aware
+completion, explicit failed-batch recovery and runtime activation remain pending.
+
+Certified candidate failure is staged under the native read extent, then reconciled
+from its captured immutable outcome only after completion announcement is durable.
+The guarded failure writer compares typed batch-binding fields as well as legacy
+input facts. A failed candidate therefore disables its activation and clears its
+slot on the first completion pass, without advancing processing or rereading an
+Attempt after notification. Scripted shipped-workflow tests cover actual native
+certification and first-pass failure, alongside successful no-op and proposal paths.

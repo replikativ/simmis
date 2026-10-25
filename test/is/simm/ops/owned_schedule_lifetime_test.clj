@@ -12,6 +12,7 @@
             [dvergr.discourse :as discourse]
             [dvergr.runtime.preparation :as preparation]
             [is.simm.model.workflow-schedules :as schedules]
+            [is.simm.model.knowledge-dispositions :as dispositions]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.knowledge-inputs :as knowledge]
@@ -247,3 +248,39 @@
                           (@#'operations/announce-owned-result!
                            host nil {} nil nil nil {:settled? true} nil nil {:kind :proposed}))))))
        (is (= [:completion] @posted))))))
+
+
+(deftest certified-failure-reconciles-on-the-first-completion-pass-after-announcement
+  (@#'occurrences/with-occurrence true saved/knowledge-source
+   (fn [{:keys [conn host room due row]}]
+     (with-redefs [work/submit-prepared! settled-request-only]
+       (operations/tick-owned! host due))
+     (let [activation (schedules/activation conn (:schedule.activation/id row))
+           o (schedules/occurrence conn (:schedule.activation/active-occurrence activation))
+           request (requests/get-request conn (:schedule.occurrence/request o))
+           ;; Synthetic certified-outcome reader seam, not a fabricated native
+           ;; Attempt. This test isolates scheduling order around the reader.
+           outcome {:outcome :failed :candidate (random-uuid) :attempt-content (random-uuid)
+                    :request-binding (dispositions/request-binding request)}
+           events (atom []) fail! schedules/fail-certified!]
+       (with-redefs [jobs/status (constantly {:status :completed :settled? true :finished-at due})
+                     filing/candidate-outcome
+                     (fn [& _]
+                       (is (seq (get @(:meta room) preparation/leases-key)))
+                       (swap! events conj :certified)
+                       outcome)
+                     schedules/fail-certified!
+                     (fn [c a occurrence value]
+                       (is (empty? (get @(:meta room) preparation/leases-key)))
+                       (is (true? (:schedule.occurrence/announced? (schedules/occurrence c (:schedule.occurrence/id occurrence)))))
+                       (swap! events conj :failed)
+                       (fail! c a occurrence value))]
+         (operations/tick-owned! host due)
+         (let [after (schedules/activation conn (:schedule.activation/id row))]
+           (is (= [:certified :failed] @events))
+           (is (false? (:schedule.activation/enabled? after)))
+           (is (= :execution-failed (:schedule.activation/reason after)))
+           (is (nil? (:schedule.activation/active-occurrence after)))
+           (is (nil? (:schedule.activation/last-processed-input after))))
+         (operations/tick-owned! host due)
+         (is (= [:certified :failed] @events)))))))

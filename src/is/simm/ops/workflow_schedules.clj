@@ -2,7 +2,6 @@
   "Pinned scheduled work through canonical admission. No new wallet, evaluator
    or execution status; finite allowance is the existing shared room allowance."
   (:require [datahike.api :as d]
-            [datahike.blob :as blob]
             [dvergr.artifact :as artifact]
             [dvergr.agent.attempt :as attempt]
             [dvergr.agent.episode :as episode]
@@ -13,8 +12,6 @@
             [dvergr.model.registry :as models]
             [dvergr.resource :as resource]
             [dvergr.room.store :as room-store]
-            [dvergr.catalog.room :as catalog]
-            [dvergr.rooms.files :as native-files]
             [dvergr.scheduler.cron :as cron]
             [hasch.core :as hasch]
             [is.simm.model.access :as access]
@@ -30,6 +27,7 @@
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-room-operation :as room-operation]
             [is.simm.ops.owned-workflows :as owned-sources]
+            [is.simm.ops.owned-workflow-snapshot :as source-snapshot]
             [is.simm.ops.owned-workspace :as owned-workspace]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflows-run]
@@ -38,9 +36,7 @@
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.simple :as simple]
-            [taoensso.telemere :as log])
-  (:import [java.nio CharBuffer]
-           [java.nio.charset CodingErrorAction StandardCharsets]))
+            [taoensso.telemere :as log]))
 
 (def cadence-schema
   [:map {:closed true}
@@ -159,22 +155,7 @@
                 [[:expected-owned-source :uuid]])))
 (def ^:private owned-workflow-schema (owned-execution-schema workflows-run/schema))
 (def ^:private owned-benchmark-schema (owned-execution-schema benchmarks/schema))
-(def ^:private retained-entry-schema
-  [:map {:closed true} [:path [:string {:min 1 :max 512}]] [:content :uuid]
-   [:size [:int {:min 0 :max workflows/max-file-bytes}]] [:mode [:int {:min 0 :max Integer/MAX_VALUE}]]])
-(def ^:private owned-target-schema
-  [:map {:closed true}
-   [:version [:= 2]] [:kind [:enum :workflow :benchmark]] [:room :uuid] [:by :uuid]
-   [:cadence :map] [:execution :map] [:host-policy :map]
-   [:model-policy [:map-of {:max 4} [:string {:min 1 :max 200}] :uuid]]
-   [:creation-channel [:enum :host :mcp]]
-   [:snapshot [:map {:closed true}
-               [:files [:map-of {:max workflows/max-files} [:string {:min 1 :max 512}]
-                        [:string {:max workflows/max-file-bytes}]]]
-               [:manifest [:vector {:max workflows/max-files} retained-entry-schema]]]]
-   [:source-origin [:map {:closed true} [:revision :uuid] [:target-stamp :uuid]
-                    [:target publication/target-schema]
-                    [:manifest [:vector {:max workflows/max-files} retained-entry-schema]]]]])
+(def ^:private owned-target-schema source-snapshot/deployment-schema)
 
 (defn- owned-unavailable! []
   (throw (ex-info "Owned schedule admission unavailable; inspect activation before retrying"
@@ -234,39 +215,10 @@
                  (m/validate (if (= :benchmark (:kind target)) owned-benchmark-schema owned-workflow-schema) (:execution target))
                  (re-matches #"[a-z0-9][a-z0-9-]{0,63}" (get-in target [:execution :name])))
     (owned-unavailable!))
-  (let [{:keys [execution snapshot source-origin kind]} target
-        {:keys [files manifest]} snapshot
-        expected-models (if (= :benchmark kind) (:models execution) [(:model execution)])
-        _ (when-not (and (= (set expected-models) (set (keys (:model-policy target))))
-                         (= (:manifest source-origin) manifest)
-                         (= (mapv :path manifest) (vec (sort (keys files))))
-                         (publication/host-target? (:target source-origin)))
-            (owned-unavailable!))
-        sizes
-        (mapv (fn [{:keys [path size mode content]}]
-                (let [encoder (doto (.newEncoder StandardCharsets/UTF_8)
-                                (.onMalformedInput CodingErrorAction/REPORT)
-                                (.onUnmappableCharacter CodingErrorAction/REPORT))
-                      ;; EDN publication must not replace a malformed path's
-                      ;; surrogate and silently change retained file identity.
-                      _ (.encode encoder (CharBuffer/wrap ^String path))
-                      buffer (.encode encoder (CharBuffer/wrap ^String (get files path)))
-                      bytes (byte-array (.remaining buffer))
-                      full-path (str "/workflows/" (:name execution) "/" path)]
-                  (.get buffer bytes)
-                  (when-not (and (= full-path (native-files/workspace-path full-path))
-                                 (<= (count full-path) 512)
-                                 (= 0x8000 (bit-and mode 0xF000))
-                                 (= size (alength ^bytes bytes)) (= content (blob/blob-id bytes)))
-                    (owned-unavailable!))
-                  size)) manifest)
-        source-id (owned-sources/source-id {:room-id (:room target) :target-stamp (:target-stamp source-origin)}
-                                           (:name execution) manifest)]
-    (when-not (and (<= (reduce + 0 sizes) workflows/max-bundle-bytes)
-                   (uuid? source-id)
-                   (= source-id (:revision source-origin) (:expected-owned-source execution))
-                   (= (:expected-bundle execution) (:id (catalog/bundle (:name execution) files))))
-      (owned-unavailable!)))
+  (let [{:keys [execution kind]} target
+        expected-models (if (= :benchmark kind) (:models execution) [(:model execution)])]
+    (when-not (= (set expected-models) (set (keys (:model-policy target)))) (owned-unavailable!)))
+  (source-snapshot/verify! (:room target) (:execution target) (:snapshot target) (:source-origin target))
   target)
 
 (defn- capture-owned-source! [host principal handle kind original execution room-binding]
@@ -542,7 +494,9 @@
                      conn (principals/party-principal (:schedule.activation/by row))
                      (:schedule.activation/room row) room (:work.request/id request))]
         (if (= :failed (:outcome outcome))
-          (schedules/fail-certified! conn row occurrence outcome)
+          (if (= :deferred notification-mode)
+            {::certified-failure outcome}
+            (schedules/fail-certified! conn row occurrence outcome))
           (file-input! conn row occurrence request room notification-mode)))
       (if (input-processed? conn request room)
         (schedules/mark-input-processed! conn (:schedule.occurrence/id occurrence))
@@ -978,7 +932,12 @@
                         (do (.addSuppressed ^Throwable original error) (throw original))
                         (throw error))))
                   (when-let [error (:error result)] (throw error))
-                  (schedules/clear-active! conn row oid))))))))))
+                  (if-let [outcome (::certified-failure (:value result))]
+                    ;; Attempt IO ended before posting. Failure reconciliation
+                    ;; requires the durable announcement ACK, then only these
+                    ;; already certified immutable facts and control metadata.
+                    (schedules/fail-certified! conn row o outcome)
+                    (schedules/clear-active! conn row oid)))))))))))
 
 (defn- recover-owned-in!
   "Startup reconciliation after the old dispatcher physically exits.

@@ -7,6 +7,8 @@
             [dvergr.runtime.preparation :as preparation]
             [geschichte.repo :as repo]
             [is.simm.model.knowledge-batches :as batches]
+            [is.simm.model.knowledge-schedule-batches :as scheduled]
+            [is.simm.model.workflow-schedules :as schedules]
             [is.simm.model.knowledge-streams :as streams]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.knowledge-batch-inputs :as inputs]
@@ -18,7 +20,7 @@
   (@#'fixture/with-fixture
    (fn [{:keys [conn owned] :as data}]
      (let [epoch (random-uuid)]
-       (d/transact conn batches/schema)
+       (d/transact conn (concat batches/schema scheduled/schema schedules/schema))
        (@#'fixture/write! owned "inbox/second.md" "Another source")
        (@#'fixture/write! owned "workflows/wiki/input-batching.edn"
                         (pr-str {:version 2 :epoch epoch :policy (assoc inputs/default-policy :max-trigger-files 1)}))

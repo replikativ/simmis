@@ -187,6 +187,18 @@
                       [(:work.request/knowledge-batch request) (:work.request/knowledge-frozen request)]))
       (refuse! :request-binding-mismatch))))
 
+(defn current!
+  "Native admission/handoff metadata gate. The original claim must still own
+   its active occurrence. After joint insertion the batch is submitted, so this
+   intentionally does not require ready state or a missing request pointer."
+  [db retained]
+  (let [[o value] (anchored! db retained)
+        expected (identity/request-id (:by value) (:room value) (:occurrence value))]
+    (claimed! db value)
+    (when (and (:schedule.occurrence/request o) (not= expected (:schedule.occurrence/request o)))
+      (refuse! :foreign-request-link))
+    value))
+
 (defn request-tx
   "Fixed first-claim fragment, intended for EVERY native batch request claim,
    not conditional on a caller's schedule marker. Compose with canonical request

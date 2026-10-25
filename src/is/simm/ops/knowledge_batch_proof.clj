@@ -6,15 +6,20 @@
             [dvergr.agent.environment :as environment]
             [dvergr.artifact :as artifact]
             [dvergr.catalog.room :as catalog]
+            [dvergr.scheduler.cron :as cron]
             [hasch.core :as hasch]
             [is.simm.model.knowledge-batches :as batches]
+            [is.simm.model.knowledge-schedule-batches :as scheduled]
+            [is.simm.model.workflow-schedules :as schedules]
             [is.simm.model.knowledge-pins :as pins]
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.model.knowledge-streams :as streams]
             [is.simm.model.work-requests :as requests]
+            [is.simm.model.work-limits :as work-limits]
             [is.simm.ops.knowledge-batch-inputs :as inputs]
             [is.simm.ops.knowledge-inputs :as evidence]
             [is.simm.ops.owned-workflows :as sources]
+            [is.simm.ops.owned-workflow-snapshot :as snapshot]
             [is.simm.ops.workflow-policy :as policy]
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m]))
@@ -137,6 +142,54 @@
         (refuse! :prepared-program-mismatch)))
     proof))
 
+(def ^:private scheduled-execution-schema
+  ;; Incremental batching currently admits only defaults. Ordinary workflow
+  ;; case/input/parameter DTOs remain unchanged; no legacy re-interpretation.
+  [:map {:closed true} [:name workflows/name-schema] [:expected-bundle :uuid]
+   [:expected-owned-source :uuid] [:model [:string {:min 1 :max 200}]]
+   [:limits work-limits/schema]
+   [:params {:optional true} [:map {:closed true}]]
+   [:inputs {:optional true} [:map {:closed true}]]])
+
+(defn schedule-input!
+  "Additional original-deployment verification after verify-input!. Caller has
+   already authorized the exact party/Room. Bounded control artifacts only;
+   no current source, provider, active/ready gate, or dispatch ownership.
+   Returns a storage-anchored binding for the fixed writer, or nil for manual."
+  [conn party room input]
+  (if-let [o (scheduled/bound-occurrence @conn (get-in input [:knowledge/batch :batch]))]
+    (let [a (schedules/activation conn (:schedule.occurrence/activation o))]
+      (when-not (and a (= [party room] [(:schedule.activation/by a) (:schedule.activation/room a)]))
+        (refuse! :schedule-owner-mismatch))
+      (let [value (scheduled/retained conn o)
+            anchor {:value value :reference (:schedule.occurrence/batch-ref o)}
+            target (:value (artifact/get-bounded-value (artifact/datahike-store conn)
+                            (:target-ref value) schedules/max-managed-target-bytes))]
+        (when-not (and value (= [party room] [(:by value) (:room value)])
+                       (m/validate snapshot/deployment-schema target)
+                       (m/validate scheduled-execution-schema (:execution target))
+                       (= (:revision value) (hasch/uuid target))
+                       (= (:cadence target) (cron/normalize-spec (:cadence target)))
+                       (= #{(get-in target [:execution :model])} (set (keys (:model-policy target))))
+                       (= :workflow (:kind target))
+                       (= [party room] [(:by target) (:room target)])
+                       (= :owned-retained-source-v2 (get-in target [:host-policy :source]))
+                       (= (:batch value) (:knowledge/batch input))
+                       (= {:binding (:id value)} (:knowledge/schedule input))
+                       (= {:activation (:activation value) :revision (:revision value)
+                           :occurrence (:occurrence value) :creation-channel (:creation-channel target)}
+                          (:schedule-origin input))
+                       (= (assoc (:execution target) :request-id (:occurrence value)) (:submission input))
+                       (= (get-in target [:snapshot :files]) (:source input))
+                       (= (:source-origin target) (:source-origin input)))
+          (refuse! :scheduled-deployment-mismatch))
+        (snapshot/verify! room (:execution target) (:snapshot target) (:source-origin target))
+        anchor))
+    (do
+      (when (or (contains? input :knowledge/schedule) (contains? input :schedule-origin))
+        (refuse! :unbound-schedule-marker))
+      nil)))
+
 (def ^:private request-binding-fields
   [:work.request/id :work.request/client-id :work.request/by :work.request/room :work.request/kind
    :work.request/intent-id :work.request/payload-ref :work.request/publication-basis-id
@@ -172,6 +225,8 @@
                   [(:work.request/knowledge-batch row) (:work.request/knowledge-frozen row)])
        (refuse! :request-marker-mismatch))
      (verify-input! proof input)
+     (when-let [anchor (schedule-input! conn (:work.request/by row) (:work.request/room row) input)]
+       (scheduled/linked! @conn anchor row input))
      (when-not (empty? (batches/request-tx @conn origin row (:work.request/intent-id row)))
        (refuse! :partial-request-link))
      proof)))
