@@ -106,7 +106,9 @@
    [:branch :keyword] [:ref [:string {:min 1 :max 512}]] [:commit :uuid] [:configuration :uuid]
    [:max-tx [:int {:min 0 :max Long/MAX_VALUE}]] [:datoms [:int {:min 0 :max Long/MAX_VALUE}]]])
 
-(defn- source-id [basis]
+(defn source-id
+  "Internal physical source/config identity, not authorization or retention."
+  [basis]
   (hasch/uuid [:simmis/knowledge-source-v1
                (select-keys basis [:repository :store :backend :branch :ref :configuration])]))
 

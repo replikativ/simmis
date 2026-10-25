@@ -213,23 +213,77 @@
       {:trigger-id trigger-id :execution-id execution-id :empty? (empty? (:files trigger))
        :manifest manifest :manifest-text manifest-text})))
 
+(defn selection-of-files
+  "Internal explicit frozen-subset plan from ONE authorized immutable DB.
+   Does not enumerate the canonical body projection, read bodies or establish
+   stream authority. The v1 evidence codec already supports exact subsets;
+   live batch ownership is retained separately in its versioned HOST envelope."
+  [db policy selected-files]
+  (let [policy (normalize-policy policy)
+        entry-schema [:map {:closed true} [:path [:string {:min 1 :max 512}]]
+                      [:role [:enum :trigger :context]] [:content :uuid]
+                      [:size [:int {:min 0 :max workflows/max-file-bytes}]] [:mode [:= repo/default-mode]]]
+        _ (when-not (m/validate [:vector {:max 99} entry-schema] selected-files)
+            (refuse! :invalid-explicit-selection))
+        entries (vec (sort-by :path selected-files))
+        _ (when-not (= (count entries) (count (set (map :path entries))))
+            (refuse! :duplicate-input-path))
+        _ (doseq [{:keys [path role content size] :as entry} entries]
+            (files/path! path)
+            (when-not (and (re-find #"(?i)\.(md|markdown)$" path)
+                           (= (select-keys entry [:content :size :mode]) (files/entry db path))
+                           (= size (:geschichte.content/size (d/entity db [:geschichte.content/id content])))
+                           (some #(str/starts-with? path %)
+                                 (prefixes! (get policy (if (= role :trigger) :trigger-roots :context-roots))))
+                           (not-any? #(str/starts-with? path %) (prefixes! (:exclude-prefixes policy)))
+                           (<= (count (str "/in/knowledge/sources/" path)) 512))
+              (refuse! :explicit-source-mismatch)))
+        by-role (fn [role]
+                  (into (sorted-map)
+                        (for [entry entries :when (= role (:role entry))]
+                          [(:path entry) (select-keys entry [:content :size :mode])])))
+        trigger (by-role :trigger) context (by-role :context)
+        repository (:geschichte.repo/id (query/repository db))
+        _ (when-not (uuid? repository) (refuse! :invalid-repository))
+        trigger-id (hasch/uuid {:version 1 :repository repository :policy policy :files trigger})
+        execution-id (hasch/uuid {:trigger trigger-id :context context})
+        manifest {:version 1 :repository repository :policy policy
+                  :trigger-id trigger-id :execution-id execution-id
+                  :files (mapv #(assoc % :input (str "/in/knowledge/sources/" (:path %))) entries)}
+        text (pr-str manifest) size (byte-count text)
+        total (+ size (reduce + 0 (map :size entries)))]
+    (when (> size workflows/max-file-bytes) (refuse! :manifest-too-large))
+    (when (> total (:max-input-bytes workflow-policy/policy)) (refuse! :too-many-input-bytes))
+    {:trigger-id trigger-id :execution-id execution-id :empty? (empty? trigger)
+     :manifest manifest :manifest-text text}))
+
+(defn- capture-selected [db {:keys [manifest manifest-text] :as selected}]
+  (-> selected
+      (dissoc :manifest-text)
+      (assoc :inputs
+             (into (sorted-map "/in/knowledge/manifest.edn" manifest-text)
+                   (map (fn [{:keys [input content size]}]
+                          (let [bytes (content/read-by-id (atom db) content)]
+                            (when-not (and bytes (= size (alength ^bytes bytes)))
+                              (refuse! :source-unavailable))
+                            [input (markdown/decode bytes)])))
+                   (:files manifest)))))
+
+(declare verify-capture)
+
+(defn capture-files
+  "Freeze an explicit exact subset; no live batch claim or processing receipt.
+   Call only while the HOST owns and retains this original source checkpoint."
+  [db policy selected-files]
+  (verify-capture policy (capture-selected db (selection-of-files db policy selected-files))))
+
 (defn capture
   "Frozen byte copies from ONE authorized immutable DB. Manual, scheduled and
    benchmark callers pass the same :inputs map to ordinary workflow admission.
    Persist it before execution; this function neither pins blobs nor submits.
    :empty? means no selected trigger evidence."
   [db policy]
-  (let [{:keys [manifest manifest-text] :as selected} (selection db policy)]
-    (-> selected
-        (dissoc :manifest-text)
-        (assoc :inputs
-               (into (sorted-map "/in/knowledge/manifest.edn" manifest-text)
-                     (map (fn [{:keys [input content size]}]
-                            (let [bytes (content/read-by-id (atom db) content)]
-                              (when-not (and bytes (= size (alength ^bytes bytes)))
-                                (refuse! :source-unavailable))
-                              [input (markdown/decode bytes)])))
-                     (:files manifest))))))
+  (capture-selected db (selection db policy)))
 
 (defn verify-capture
   "Verify retained frozen evidence without looking up the live room. Content
