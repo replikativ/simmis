@@ -1,5 +1,5 @@
 (ns is.simm.model.knowledge-batch-recovery
-  "Fixed unlinked-ready abandonment fragments. HOST verifies frozen artifacts,
+  "Fixed unlinked capturing/ready abandonment. HOST verifies retained artifacts,
    retains the original physical discovery gate and reauthorizes in the writer.
    No execution, request repair, refund, source release or activation resume."
   (:require [datahike.api :as d]
@@ -39,7 +39,7 @@
 (defn- binding [row] (into {} (map (fn [k] [k (get row k)])) binding-fields))
 
 (defn expected
-  "Inert comparison facts from a bounded, HOST-verified frozen proof."
+  "Inert facts from a bounded, HOST-verified selection or frozen proof."
   [{:keys [row selection]} schedule]
   {:binding (binding row) :selection selection :schedule schedule})
 
@@ -47,7 +47,7 @@
   {:id (:knowledge.item/id row) :order (:knowledge.item/order row) :path (:knowledge.item/path row)
    :content (:knowledge.item/content row) :size (:knowledge.item/size row) :mode (:knowledge.item/mode row)})
 
-(defn- checked! [db expected value]
+(defn- checked! [db expected value from]
   (when-not (and (= #{:binding :selection :schedule} (set (keys expected)))
                  (= (set binding-fields) (set (keys (:binding expected))))
                  (m/validate decision-schema value)
@@ -66,7 +66,13 @@
                    (= (:room value) (:knowledge.batch/room b))
                    (every? uuid? (map b [:knowledge.batch/id :knowledge.batch/stream :knowledge.batch/by
                                         :knowledge.batch/room :knowledge.batch/target :knowledge.batch/claim
-                                        :knowledge.batch/selection :knowledge.batch/frozen :knowledge.batch/frozen-id]))
+                                        :knowledge.batch/selection]))
+                   (case from
+                     :ready (every? uuid? (map b [:knowledge.batch/frozen :knowledge.batch/frozen-id]))
+                     :capturing (and (not-any? #(contains? b %) [:knowledge.batch/frozen :knowledge.batch/frozen-id
+                                                                :knowledge.batch/scheduled-occurrence])
+                                     (nil? (:schedule expected)))
+                     false)
                    (= (:items selection) (mapv item rows))
                    (every? #(and (= (:knowledge.batch/stream b) (:knowledge.item/stream %))
                                   (nil? (:knowledge.item/pending-stream %))) rows))
@@ -96,16 +102,14 @@
      (mapv b [:knowledge.batch/recovery-id :knowledge.batch/recovery-client :knowledge.batch/recovery-by
               :knowledge.batch/recovery-reason :knowledge.batch/recovery-mode])))
 
-(defn abandon-tx
-  "Atomic skip of EXACT selected versions, terminal audit and original scheduled
-   slot. Historical replay verifies the joint result and returns no mutations."
-  [db expected value]
-  (let [{:keys [batch stream items]} (checked! db expected value)
+(defn- abandon-from-tx
+  [db expected value from]
+  (let [{:keys [batch stream items]} (checked! db expected value from)
         bid (:batch value) schedule (:schedule expected)]
     (if (= :closed (:knowledge.batch/state batch))
       (do
         (when-not (and (= :abandoned-skip (:knowledge.batch/outcome batch))
-                       (= :ready (:knowledge.batch/recovery-from batch))
+                       (= from (:knowledge.batch/recovery-from batch))
                        (inst? (:knowledge.batch/recovery-at batch)) (same-decision? batch value)
                        (not= bid (:knowledge.stream/active-batch stream))
                        (every? #(= :skipped (:knowledge.item/state %)) items))
@@ -113,7 +117,7 @@
         (when schedule (scheduled/withdrawn! db schedule))
         [])
       (let [original (:expected (:selection expected))]
-        (when-not (and (= :ready (:knowledge.batch/state batch))
+        (when-not (and (= from (:knowledge.batch/state batch))
                        (not-any? #(contains? batch %) [:knowledge.batch/outcome
                                                       :knowledge.batch/recovery-id :knowledge.batch/recovery-client
                                                       :knowledge.batch/recovery-by :knowledge.batch/recovery-at
@@ -126,8 +130,20 @@
         (into [{:db/id (:db/id batch) :knowledge.batch/state :closed :knowledge.batch/outcome :abandoned-skip
                 :knowledge.batch/recovery-id (:id value) :knowledge.batch/recovery-client (:client value)
                 :knowledge.batch/recovery-by (:by value) :knowledge.batch/recovery-at (:at value)
-                :knowledge.batch/recovery-reason (:reason value) :knowledge.batch/recovery-from :ready
+                :knowledge.batch/recovery-reason (:reason value) :knowledge.batch/recovery-from from
                 :knowledge.batch/recovery-mode :skip}
                [:db/retract [:knowledge.stream/id (:knowledge.batch/stream batch)] :knowledge.stream/active-batch bid]]
               (concat (map (fn [i] {:db/id (:db/id i) :knowledge.item/state :skipped}) items)
                       (when schedule (scheduled/withdraw-unlinked-tx db schedule))))))))
+
+(defn abandon-tx
+  "Atomic skip of EXACT ready versions, terminal audit and original scheduled
+   slot. Historical replay verifies the joint result and returns no mutations."
+  [db expected value]
+  (abandon-from-tx db expected value :ready))
+
+(defn abandon-capturing-tx
+  "Skip a physically abandoned capture, with explicit absent frozen/scheduled
+   fields. HOST must retain the original publisher's exclusive gate throughout."
+  [db expected value]
+  (abandon-from-tx db expected value :capturing))

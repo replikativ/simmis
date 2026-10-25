@@ -293,7 +293,7 @@ and real native Job start/settlement. Altering the claim or deleting/corrupting
 joint linkage at the Job boundary prevents the body from starting. Disposable
 native echo tests now drain two bounded batches and then skip empty; scripted
 provider/SCI tests file a proposal, hold the stream for review, dismiss it, and
-process the next prefix. Recovery for capturing or linked batches and runtime
+process the next prefix. Recovery for linked batches and runtime
 activation remain pending.
 
 Certified candidate failure is staged under the native read extent, then reconciled
@@ -346,11 +346,11 @@ flowchart LR
   Review -->|dismissed| Skipped[Selected versions skipped]
 ```
 
-Explicit recovery currently supports abandoning an unlinked, frozen `ready`
+Explicit recovery supports abandoning an unlinked `capturing` or frozen `ready`
 batch and skipping its selected source versions. This is a deliberate decision
 by a currently authorized Room merger, recorded with a stable operation ID,
 actor, reason and original timestamp. It neither retries the old Run nor changes
-budgets. Capturing, submitted, review and uncertain adoption states are refused.
+budgets. Submitted, review and uncertain adoption states are refused.
 
 The HOST operation captures the original App and Room, acquires the original
 stream author's physical discovery gate, and verifies retained frozen evidence.
@@ -359,6 +359,22 @@ batch binding, bounded claimed membership, and absence of a canonical request in
 both directions. It closes the batch, skips only its selected items and clears
 only its active stream pointer in one transaction. Discovery cursors and retained
 source roots remain intact.
+
+Capturing recovery is a separate inspected operation. It verifies the retained
+selection and original pin payload without requiring nonexistent frozen bytes or
+opening a historical source root. Both frozen attributes and any scheduled
+binding must be absent, in the writer as well as at inspection. The same physical
+publisher gate spans body reads, artifact publication and freeze acknowledgement;
+a cancelled future does not release it while its underlying operation continues.
+If a freeze committed but its acknowledgement was lost, capturing recovery
+refuses: the caller must inspect and explicitly choose ready recovery. A failed
+publication's unreferenced artifact remains ordinary artifact-GC work.
+
+Evidence validation shares a metadata-only manifest/selection validator and a
+separate frozen-byte validator. The latter still checks exact copied membership,
+content hashes, actual UTF-8 input sizes with ordinary workflow reservations, and
+the original publication target. Equal Clojure values do not imply equal serialized
+byte sizes. Metadata consistency alone never grants source or dispatch authority.
 
 Scheduled batches have reciprocal occurrence/batch links installed atomically.
 Recovery verifies the original occurrence's complete retained origin before
@@ -371,7 +387,8 @@ Repeating the same recovery intent observes its original result without writing.
 It rejects changed reasons, partial terminal records, request links or conflicting
 adoption records, and leaves later stream and schedule work untouched. A lost
 acknowledgement remains an error until the caller explicitly repeats that intent.
-Recovery does not resume a disabled schedule. Requeue needs a distinct batch
-generation and is separate work, as are capturing/submitted recovery and final
-source-root retirement. This alpha operation is not yet exposed or activated in
-the running UI.
+Recovery does not resume a disabled schedule. Capturing batches have no installed
+scheduled binding, so recovery does not infer or repair their unbound occurrences.
+Requeue needs a distinct batch generation and is separate work, as are submitted
+recovery and final source-root retirement. These alpha operations are not yet
+exposed or activated in the running UI.

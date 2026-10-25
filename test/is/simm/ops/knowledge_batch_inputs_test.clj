@@ -140,3 +140,42 @@
         (is (<= (+ size (:bytes reservation)) 2097152)))
       (is (= :execution-envelope-exceeds-budget
              (reason #(select @conn value expected pending batches/default-policy {:files 0 :bytes 2097151})))))))
+
+(deftest retained-selection-validation-is-source-free-and-refuses-rehashed-malformed-metadata
+  (fixture 2
+    (fn [conn value expected pending]
+      (let [selected (select @conn value expected pending)
+            batch (:batch selected)
+            frozen (batches/capture @conn selected)]
+        (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Metadata verification opened source bytes")))]
+          (is (= batch (batches/verify-selection batch)))
+          (is (= (:evidence batch) (inputs/verify-manifest inputs/default-policy (:evidence batch))))
+          (doseq [mutate [#(assoc-in % [:evidence :files 0 :input] "/out/forged.md")
+                          #(assoc-in % [:evidence :trigger-id] (random-uuid))
+                          #(assoc-in % [:evidence :unexpected] true)
+                          #(assoc-in % [:items 0 :order] (get-in % [:expected :knowledge.stream/next-order]))
+                          #(assoc-in % [:reserved :files] 100)
+                          #(assoc-in % [:batch-policy :max-trigger-bytes] 1)]]
+            (let [changed (mutate batch)
+                  changed (assoc changed :id (hasch/uuid [:simmis/knowledge-batch-selection-v2 (dissoc changed :id)]))]
+              (is (thrown? Exception (batches/verify-selection changed)))))
+          ;; Metadata validation deliberately cannot replace copied-byte checks.
+          (is (thrown? Exception
+                       (batches/verify (assoc-in frozen [:captured :inputs "/in/knowledge/sources/inbox/000.md"] "Forged")))))))))
+
+(deftest equal-manifest-values-cannot-hide-longer-copied-text-from-reservation-accounting
+  (fixture 1
+    (fn [conn value expected pending]
+      (let [frozen (batches/capture @conn (select @conn value expected pending))
+            actual-size (reduce + 0 (map #(alength (.getBytes ^String % "UTF-8"))
+                                         (vals (get-in frozen [:captured :inputs]))))
+            batch (assoc-in (:batch frozen) [:reserved :bytes] (- 2097152 actual-size))
+            batch (assoc batch :id (hasch/uuid [:simmis/knowledge-batch-selection-v2 (dissoc batch :id)]))
+            exact (assoc frozen :batch batch)
+            manifest (assoc (get-in exact [:captured :manifest]) :version (bigint 1))
+            changed (-> exact
+                        (assoc-in [:captured :manifest] manifest)
+                        (assoc-in [:captured :inputs "/in/knowledge/manifest.edn"] (pr-str manifest)))]
+        (is (= exact (batches/verify exact)))
+        (is (= (:evidence batch) manifest))
+        (is (= :frozen-batch-exceeds-budget (reason #(batches/verify changed))))))))

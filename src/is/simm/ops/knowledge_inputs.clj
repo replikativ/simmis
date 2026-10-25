@@ -285,11 +285,10 @@
   [db policy]
   (capture-selected db (selection db policy)))
 
-(defn verify-capture
-  "Verify retained frozen evidence without looking up the live room. Content
-   hashes check copied bytes, not the truth of an authored claim or authority
-   to the original repository. Benchmark fixtures may use the same contract."
-  [policy {:keys [manifest inputs trigger-id execution-id empty?] :as captured}]
+(defn verify-manifest
+  "Validate retained evidence metadata without reading source or copied text.
+   Identity consistency is not proof of source selection or execution authority."
+  [policy manifest]
   (let [policy (normalize-policy policy)
         entry-schema [:map {:closed true}
                       [:path [:string {:min 1 :max 512}]] [:input [:string {:min 1 :max 512}]]
@@ -298,15 +297,7 @@
         manifest-schema [:map {:closed true} [:version [:= 1]] [:repository :uuid]
                          [:policy policy-schema] [:trigger-id :uuid] [:execution-id :uuid]
                          [:files [:vector {:max 99} entry-schema]]]]
-    (when-not (and (map? inputs) (<= (count inputs) (:max-input-files workflow-policy/policy))
-                   (every? string? (keys inputs)) (every? string? (vals inputs))
-                   (every? #(<= (byte-count %) workflows/max-file-bytes) (vals inputs))
-                   (<= (reduce + 0 (map byte-count (vals inputs)))
-                       (:max-input-bytes workflow-policy/policy))
-                   (m/validate manifest-schema manifest)
-                   (= policy (:policy manifest))
-                   (= trigger-id (:trigger-id manifest)) (= execution-id (:execution-id manifest))
-                   (= (pr-str manifest) (get inputs "/in/knowledge/manifest.edn")))
+    (when-not (and (m/validate manifest-schema manifest) (= policy (:policy manifest)))
       (refuse! :invalid-frozen-inputs))
     (let [entries (:files manifest)
           by-role (fn [role]
@@ -318,24 +309,42 @@
           expected-trigger (hasch/uuid {:version 1 :repository (:repository manifest)
                                         :policy policy :files trigger})]
       (when-not (and (= (count entries) (count (set (map :path entries))))
-                     (= (set (keys inputs))
-                        (conj (set (map :input entries)) "/in/knowledge/manifest.edn"))
-                     (= trigger-id expected-trigger)
-                     (= execution-id (hasch/uuid {:trigger trigger-id :context context}))
-                     (= empty? (clojure.core/empty? trigger)))
+                     (= (count entries) (count (set (map :input entries))))
+                     (= (:trigger-id manifest) expected-trigger)
+                     (= (:execution-id manifest) (hasch/uuid {:trigger expected-trigger :context context})))
         (refuse! :invalid-frozen-identity))
-      (doseq [{:keys [path input content size role]} entries]
+      (doseq [{:keys [path input role]} entries]
         (files/path! path)
         (let [prefixes (prefixes! (get policy (if (= role :trigger) :trigger-roots :context-roots)))
-              excluded (prefixes! (:exclude-prefixes policy))
-              text (get inputs input)
-              bytes (.getBytes ^String text "UTF-8")]
+              excluded (prefixes! (:exclude-prefixes policy))]
           (when-not (and (= input (str "/in/knowledge/sources/" path))
                          (some #(str/starts-with? path %) prefixes)
-                         (not-any? #(str/starts-with? path %) excluded)
-                         (= size (alength bytes)) (= content (blob/blob-id bytes)))
+                         (not-any? #(str/starts-with? path %) excluded))
             (refuse! :invalid-frozen-source))))
-      captured)))
+      manifest)))
+
+(defn verify-capture
+  "Verify retained frozen evidence without looking up the live room. Content
+   hashes check copied bytes, not the truth of an authored claim or authority
+   to the original repository. Benchmark fixtures may use the same contract."
+  [policy {:keys [manifest inputs trigger-id execution-id empty?] :as captured}]
+  (verify-manifest policy manifest)
+  (when-not (and (map? inputs) (<= (count inputs) (:max-input-files workflow-policy/policy))
+                 (every? string? (keys inputs)) (every? string? (vals inputs))
+                 (every? #(<= (byte-count %) workflows/max-file-bytes) (vals inputs))
+                 (<= (reduce + 0 (map byte-count (vals inputs))) (:max-input-bytes workflow-policy/policy))
+                 (= trigger-id (:trigger-id manifest)) (= execution-id (:execution-id manifest))
+                 (= (pr-str manifest) (get inputs "/in/knowledge/manifest.edn")))
+    (refuse! :invalid-frozen-inputs))
+  (when-not (and (= (set (keys inputs))
+                   (conj (set (map :input (:files manifest))) "/in/knowledge/manifest.edn"))
+                 (= empty? (not-any? #(= :trigger (:role %)) (:files manifest))))
+    (refuse! :invalid-frozen-identity))
+  (doseq [{:keys [input content size]} (:files manifest)]
+    (let [bytes (.getBytes ^String (get inputs input) "UTF-8")]
+      (when-not (and (= size (alength bytes)) (= content (blob/blob-id bytes)))
+        (refuse! :invalid-frozen-source))))
+  captured)
 
 (defn from-inputs
   "Reconstruct retained evidence from ordinary workflow/case inputs. This

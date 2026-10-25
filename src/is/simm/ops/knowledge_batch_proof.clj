@@ -29,32 +29,26 @@
 
 (def control-schema [:map {:closed true} [:mapping :uuid]])
 
-(defn retained!
-  "Verified data, NOT permission. Header ownership is checked before artifacts.
-   The original checkpoint's retained metadata remains usable after its native
-   root is released; no historical source DB or live default is opened."
-  [conn party room origin]
-  (when-not (and (every? uuid? [party room]) (m/validate batches/origin-schema origin))
+(defn retained-selection!
+  "Bounded metadata proof, NOT permission or copied-byte validation. Caller
+   authorizes first. Uses retained pin payloads; never opens or recreates a root."
+  [conn party room batch-id]
+  (when-not (every? uuid? [party room batch-id])
     (refuse! :invalid-origin))
-  (let [db @conn row (batches/batch db (:batch origin))]
+  (let [db @conn row (batches/batch db batch-id)]
     (when-not (and row (= party (:knowledge.batch/by row)) (= room (:knowledge.batch/room row))
-                   (= (:selection origin) (:knowledge.batch/selection-id row))
-                   (= (:frozen origin) (:knowledge.batch/frozen-id row))
-                   (#{:ready :submitted :review :closed} (:knowledge.batch/state row)))
+                   (= batch-id (:knowledge.batch/selection-id row))
+                   (#{:capturing :ready :submitted :review :closed} (:knowledge.batch/state row)))
       (refuse! :batch-header-mismatch))
     (let [store (artifact/datahike-store conn)
-          selected (:value (artifact/get-bounded-value store (:knowledge.batch/selection row) (* 2 1024 1024)))
-          frozen (:value (artifact/get-bounded-value store (:knowledge.batch/frozen row) inputs/max-frozen-bytes))]
-      (when-not (and (= (:frozen origin) (hasch/uuid frozen))
-                     (= selected (:batch frozen)) (= (:selection origin) (:id selected) (:batch origin)))
-        (refuse! :frozen-artifact-mismatch))
-      (inputs/verify frozen)
+          selected (:value (artifact/get-bounded-value store (:knowledge.batch/selection row) (* 2 1024 1024)))]
+      (inputs/verify-selection selected)
+      (when-not (= batch-id (:id selected)) (refuse! :selection-artifact-mismatch))
       (let [value (:stream selected) current (streams/stream db (:id value))
-            pin (pins/intent db (get-in selected [:expected :knowledge.stream/cursor-root]))
-            target (get-in frozen [:publication-basis :target])]
+            pin (pins/intent db (get-in selected [:expected :knowledge.stream/cursor-root]))]
         (when-not (and (= party (:by value)) (= room (:room value))
                        (= (:id value) (:knowledge.batch/stream row))
-                       (= (:target value) (:knowledge.batch/target row) (pins/target-id target))
+                       (= (:target value) (:knowledge.batch/target row))
                        (= [party room (:target value)]
                           [(:knowledge.pin/by pin) (:knowledge.pin/room pin) (:knowledge.pin/target pin)])
                        (= (:id value) (:knowledge.pin/stream pin)))
@@ -63,9 +57,35 @@
         (streams/validate-binding! value current)
         (let [original (pins/payload conn pin)]
           (when-not (and (= value (:stream original)) (= (:basis selected) (:basis original))
-                         (= target (get-in original [:origin :target])))
+                         (= (:target value) (pins/target-id (get-in original [:origin :target]))))
             (refuse! :original-source-mismatch))
-          {:row row :origin origin :frozen frozen :selection selected :source-origin (:origin original)})))))
+          {:row row :selection selected :source-origin (:origin original)})))))
+
+(defn retained!
+  "Verified data, NOT permission. Header ownership is checked before artifacts.
+   The original checkpoint's retained metadata remains usable after its native
+   root is released; no historical source DB or live default is opened."
+  [conn party room origin]
+  (when-not (and (every? uuid? [party room]) (m/validate batches/origin-schema origin))
+    (refuse! :invalid-origin))
+  (let [row (batches/batch @conn (:batch origin))]
+    (when-not (and row (= party (:knowledge.batch/by row)) (= room (:knowledge.batch/room row))
+                   (= (:selection origin) (:knowledge.batch/selection-id row))
+                   (= (:frozen origin) (:knowledge.batch/frozen-id row))
+                   (#{:ready :submitted :review :closed} (:knowledge.batch/state row)))
+      (refuse! :batch-header-mismatch)))
+  (let [{:keys [row selection source-origin] :as proof} (retained-selection! conn party room (:batch origin))]
+    (when-not (and (= (:frozen origin) (:knowledge.batch/frozen-id row))
+                   (#{:ready :submitted :review :closed} (:knowledge.batch/state row)))
+      (refuse! :batch-header-mismatch))
+    (let [frozen (:value (artifact/get-bounded-value (artifact/datahike-store conn)
+                          (:knowledge.batch/frozen row) inputs/max-frozen-bytes))]
+      (when-not (and (= (:frozen origin) (hasch/uuid frozen))
+                     (= selection (:batch frozen)) (= (:selection origin) (:id selection))
+                     (= (:target source-origin) (get-in frozen [:publication-basis :target])))
+        (refuse! :frozen-artifact-mismatch))
+      (inputs/verify frozen)
+      (assoc proof :origin origin :frozen frozen))))
 
 (defn ready!
   "Before provider preparation: require a verified, unlinked ready batch.

@@ -148,12 +148,11 @@
                   :remaining (- (count items) (count chosen)) :evidence (:manifest evidence)}]
         {:status :selected :batch (assoc body :id (digest body))}))))
 
-(defn verify
-  "Integrity and frozen-byte validation only. A benchmark or caller can create
-   matching data; only the canonical HOST journal can authorize consumption."
-  [{:keys [batch captured publication-basis] :as envelope}]
-  (when-not (and (= #{:version :batch :captured :publication-basis} (set (keys envelope))) (= 2 (:version envelope))
-                 (= #{:version :stream :expected :basis :batch-policy :reserved :items :remaining :evidence :id}
+(defn verify-selection
+  "Validate retained selection metadata without copied bytes or a source DB.
+   This cannot prove complete source inventory selection or authorize a claim."
+  [batch]
+  (when-not (and (= #{:version :stream :expected :basis :batch-policy :reserved :items :remaining :evidence :id}
                     (set (keys batch)))
                  (= 2 (:version batch)) (= (:id batch) (digest (dissoc batch :id)))
                  (m/validate policy-schema (:batch-policy batch))
@@ -165,15 +164,8 @@
     (refuse! :invalid-envelope))
   (streams/validate-binding! (:stream batch) (:expected batch))
   (streams/validate-basis! (:basis batch))
-  (publication/validate! publication-basis)
-  (when-not (and (= (select-keys (:target publication-basis) [:repository :store :backend :branch :ref])
-                   (select-keys (:basis batch) [:repository :store :backend :branch :ref]))
-                 (or (not (publication/host-target? (:target publication-basis)))
-                     (= (get-in batch [:stream :target]) (pins/target-id (:target publication-basis)))))
-    (refuse! :publication-source-mismatch))
-  (inputs/verify-capture (get-in batch [:evidence :policy]) captured)
-  (when-not (and (= (:evidence batch) (:manifest captured))
-                 (= (get-in batch [:stream :policy]) (hasch/uuid (get-in batch [:evidence :policy])))
+  (inputs/verify-manifest (get-in batch [:evidence :policy]) (:evidence batch))
+  (when-not (and (= (get-in batch [:stream :policy]) (hasch/uuid (get-in batch [:evidence :policy])))
                  (= (get-in batch [:basis :repository]) (get-in batch [:evidence :repository]))
                  (= (streams/source-id (:basis batch)) (get-in batch [:expected :knowledge.stream/source]))
                  (= ((juxt :commit :max-tx) (:basis batch))
@@ -194,16 +186,44 @@
         (refuse! :invalid-item-identity))))
   (let [context (filterv #(= :context (:role %)) (get-in batch [:evidence :files]))
         config (:batch-policy batch) requested (:context-paths config)
-        size (reduce + 0 (map utf8-size (vals (:inputs captured))))]
+        manifest-size (utf8-size (pr-str (:evidence batch)))
+        size (+ manifest-size (reduce + 0 (map :size (get-in batch [:evidence :files]))))]
     (when-not (and (<= (count context) (:max-context-files config))
                    (<= (reduce + 0 (map :size context)) (:max-context-bytes config))
                    (<= (reduce + 0 (map :size (:items batch))) (:max-trigger-bytes config))
                    (or (nil? requested) (and (= (count requested) (count (set requested)))
                                             (= (set requested) (set (map :path context)))))
-                   (<= (+ (get-in batch [:reserved :files]) (count (:inputs captured)))
+                   (<= manifest-size workflows/max-file-bytes)
+                   (<= (+ (get-in batch [:reserved :files]) (inc (count (get-in batch [:evidence :files]))))
                        (:max-input-files workflow-policy/policy))
                    (<= (+ (get-in batch [:reserved :bytes]) size) (:max-input-bytes workflow-policy/policy)))
       (refuse! :frozen-batch-exceeds-budget)))
+  batch)
+
+(defn verify
+  "Integrity and frozen-byte validation only. A benchmark or caller can create
+   matching data; only the canonical HOST journal can authorize consumption."
+  [{:keys [batch captured publication-basis] :as envelope}]
+  (when-not (and (= #{:version :batch :captured :publication-basis} (set (keys envelope)))
+                 (= 2 (:version envelope)))
+    (refuse! :invalid-envelope))
+  (verify-selection batch)
+  (publication/validate! publication-basis)
+  (when-not (and (= (select-keys (:target publication-basis) [:repository :store :backend :branch :ref])
+                   (select-keys (:basis batch) [:repository :store :backend :branch :ref]))
+                 (or (not (publication/host-target? (:target publication-basis)))
+                     (= (get-in batch [:stream :target]) (pins/target-id (:target publication-basis)))))
+    (refuse! :publication-source-mismatch))
+  (inputs/verify-capture (get-in batch [:evidence :policy]) captured)
+  (when-not (= (:evidence batch) (:manifest captured)) (refuse! :frozen-batch-mismatch))
+  ;; Equal Clojure metadata can have different serialized lengths (1 vs 1N).
+  ;; Metadata estimates cannot replace the actual copied-input reservation check.
+  (when-not (and (<= (+ (get-in batch [:reserved :files]) (count (:inputs captured)))
+                     (:max-input-files workflow-policy/policy))
+                 (<= (+ (get-in batch [:reserved :bytes])
+                        (reduce + 0 (map utf8-size (vals (:inputs captured)))))
+                     (:max-input-bytes workflow-policy/policy)))
+    (refuse! :frozen-batch-exceeds-budget))
   envelope)
 
 (defn capture

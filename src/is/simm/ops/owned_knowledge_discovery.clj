@@ -358,6 +358,10 @@
   [:map {:closed true} [:batch :uuid] [:expected-claim :uuid] [:expected-frozen :uuid]
    [:request-id :uuid] [:reason [:string {:min 1 :max 1000}]]])
 
+(def ^:private abandon-capturing-schema
+  [:map {:closed true} [:batch :uuid] [:expected-claim :uuid]
+   [:request-id :uuid] [:reason [:string {:min 1 :max 1000}]]])
+
 (defn- rethrow-interrupted! [error]
   (when (or (.isInterrupted (Thread/currentThread))
             (loop [cause error seen #{}]
@@ -368,13 +372,10 @@
     (.interrupt (Thread/currentThread)))
   (throw error))
 
-(defn abandon-ready!
-  "Explicit human skip of an inspected unlinked ready batch. Current Room
-   merge authority precedes artifacts and repeats in the writer. No current
-   source/default/model lookup, inference, refund or automatic schedule resume.
-   Lost ACK may throw; repeat the SAME request-id to inspect the joint result."
-  [host principal handle request]
-  (when-not (m/validate abandon-ready-schema request) (refuse! :invalid-recovery))
+(defn- abandon-unlinked!
+  [host principal handle request from]
+  (when-not (m/validate (case from :ready abandon-ready-schema :capturing abandon-capturing-schema) request)
+    (refuse! :invalid-recovery))
   (try
     (room-operation/with-app!
      host
@@ -391,17 +392,21 @@
           (fn [resolved lease ticket check!]
             (let [db (reads/current-host-control-db! host)
                   _ (work/authorize-in! db principal room-id)
-                  b (batches/batch db (:batch request))]
-              (when-not (and b (= [author room-id (:expected-claim request) (:expected-frozen request)]
-                               (mapv b [:knowledge.batch/by :knowledge.batch/room :knowledge.batch/claim :knowledge.batch/frozen-id]))
-                             (or (= :ready (:knowledge.batch/state b))
+                  b (batches/batch db (:batch request))
+                  transition (case from :ready recovery/abandon-tx :capturing recovery/abandon-capturing-tx)]
+              (when-not (and b (= [author room-id (:expected-claim request)]
+                               (mapv b [:knowledge.batch/by :knowledge.batch/room :knowledge.batch/claim]))
+                             (or (= :capturing from) (= (:expected-frozen request) (:knowledge.batch/frozen-id b)))
+                             (or (= from (:knowledge.batch/state b))
                                  (and (= :closed (:knowledge.batch/state b))
                                       (= :abandoned-skip (:knowledge.batch/outcome b))
-                                      (= :ready (:knowledge.batch/recovery-from b)))))
-                (refuse! :batch-not-ready-for-recovery))
+                                      (= from (:knowledge.batch/recovery-from b)))))
+                (refuse! :batch-not-recoverable))
               (let [origin {:batch (:knowledge.batch/id b) :selection (:knowledge.batch/selection-id b)
                             :frozen (:knowledge.batch/frozen-id b)}
-                    proof (batch-proof/retained! control author room-id origin)
+                    proof (case from
+                            :ready (batch-proof/retained! control author room-id origin)
+                            :capturing (batch-proof/retained-selection! control author room-id (:batch request)))
                     o (scheduled/bound-occurrence @control (:batch request))
                     anchor (when o {:value (scheduled/retained control o) :reference (:schedule.occurrence/batch-ref o)})
                     expected (recovery/expected proof anchor)
@@ -409,16 +414,31 @@
                                               :client (:request-id request) :at (java.util.Date.)
                                               :mode :skip :reason (:reason request)})]
                 (check!)
-                (when (seq (recovery/abandon-tx @control expected value))
+                (when (seq (transition @control expected value))
                   (d/transact control
                     [[:db.fn/call
                       (fn [current]
                         (writer-current! host principal handle resolved lease ticket current)
-                        (recovery/abandon-tx current expected value))]]))
+                        (transition current expected value))]]))
                 (check!)
                 (work/authorize-in! (reads/current-host-control-db! host) principal room-id)
                 ;; This is observation of the complete terminal result, never a
                 ;; new native action or a reconstructed dispatch acknowledgement.
-                (when-not (empty? (recovery/abandon-tx @control expected value)) (refuse! :recovery-unconfirmed))
+                (when-not (empty? (transition @control expected value)) (refuse! :recovery-unconfirmed))
                 {:status :abandoned :batch (:batch request) :operation (:id value) :mode :skip})))))))
     (catch Throwable error (rethrow-interrupted! error))))
+
+(defn abandon-ready!
+  "Explicit human skip of an inspected unlinked ready batch. Current Room
+   merge authority precedes artifacts and repeats in the writer. No current
+   source/default/model lookup, inference, refund or automatic schedule resume.
+   Lost ACK may throw; repeat the SAME request-id to inspect the joint result."
+  [host principal handle request]
+  (abandon-unlinked! host principal handle request :ready))
+
+(defn abandon-capturing!
+  "Explicit skip after capture physically exits. A ready batch requires the
+   separately inspected ready API, even if its freeze acknowledgement was lost.
+   Never infer the unbound scheduler slot, retry capture, or release source roots."
+  [host principal handle request]
+  (abandon-unlinked! host principal handle request :capturing))

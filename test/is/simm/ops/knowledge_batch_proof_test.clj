@@ -56,6 +56,30 @@
                         (assoc :knowledge/owner {:host host :original original-room :handle handle :ticket lifetime/*ticket*}))]
        (f (assoc data :ready ready :prepared prepared :submission submission))))))))
 
+(deftest retained-selection-proof-does-not-require-frozen-artifacts-or-source-bodies
+  (fixture
+   (fn [{:keys [conn w ready]}]
+     (let [origin (:batch-origin ready)
+           original (proof/retained! conn (:owner w) (:room w) origin)
+           b (:row original)
+           get! artifact/get-bounded-value]
+       ;; Model-only pre-freeze state: leave the old artifact unreachable. The
+       ;; later HOST tests exercise actual failed capture and physical exclusion.
+       (d/transact conn [{:db/id (:db/id b) :knowledge.batch/state :capturing}
+                         [:db/retract (:db/id b) :knowledge.batch/frozen (:knowledge.batch/frozen b)]
+                         [:db/retract (:db/id b) :knowledge.batch/frozen-id (:knowledge.batch/frozen-id b)]])
+       (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Selection proof read source bodies")))
+                     artifact/get-bounded-value
+                     (fn [store ref limit]
+                       (when (= ref (:knowledge.batch/frozen b))
+                         (throw (AssertionError. "Selection proof read a frozen envelope")))
+                       (get! store ref limit))]
+         (let [p (proof/retained-selection! conn (:owner w) (:room w) (:batch origin))]
+           (is (= (:selection original) (:selection p)))
+           (is (= (:source-origin original) (:source-origin p)))
+           (is (= :capturing (get-in p [:row :knowledge.batch/state])))
+           (is (not (contains? p :frozen)))))))))
+
 (defn- joint-claim! [{:keys [conn w prepared submission]}]
   (let [p (requests/prepare-claim {:party (:owner w) :room (:room w) :client-id (:request-id submission)
                                    :kind :workflow :intent (:basis prepared) :limits (update limits :settlement keyword)})
