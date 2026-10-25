@@ -293,8 +293,8 @@ and real native Job start/settlement. Altering the claim or deleting/corrupting
 joint linkage at the Job boundary prevents the body from starting. Disposable
 native echo tests now drain two bounded batches and then skip empty; scripted
 provider/SCI tests file a proposal, hold the stream for review, dismiss it, and
-process the next prefix. Explicit failed-batch recovery and runtime activation
-remain pending.
+process the next prefix. Recovery for capturing or linked batches and runtime
+activation remain pending.
 
 Certified candidate failure is staged under the native read extent, then reconciled
 from its captured immutable outcome only after completion announcement is durable.
@@ -345,3 +345,33 @@ flowchart LR
   Review -->|accepted| Processed
   Review -->|dismissed| Skipped[Selected versions skipped]
 ```
+
+Explicit recovery currently supports abandoning an unlinked, frozen `ready`
+batch and skipping its selected source versions. This is a deliberate decision
+by a currently authorized Room merger, recorded with a stable operation ID,
+actor, reason and original timestamp. It neither retries the old Run nor changes
+budgets. Capturing, submitted, review and uncertain adoption states are refused.
+
+The HOST operation captures the original App and Room, acquires the original
+stream author's physical discovery gate, and verifies retained frozen evidence.
+The serialized control writer rechecks current merge authority, exact immutable
+batch binding, bounded claimed membership, and absence of a canonical request in
+both directions. It closes the batch, skips only its selected items and clears
+only its active stream pointer in one transaction. Discovery cursors and retained
+source roots remain intact.
+
+Scheduled batches have reciprocal occurrence/batch links installed atomically.
+Recovery verifies the original occurrence's complete retained origin before
+jointly skipping that occurrence and clearing its matching activation slot.
+It preserves the schedule's enabled or paused state. Late admission failures and
+startup reconciliation use conditional writer checks; they cannot overwrite the
+withdrawal or disable a later occurrence.
+
+Repeating the same recovery intent observes its original result without writing.
+It rejects changed reasons, partial terminal records, request links or conflicting
+adoption records, and leaves later stream and schedule work untouched. A lost
+acknowledgement remains an error until the caller explicitly repeats that intent.
+Recovery does not resume a disabled schedule. Requeue needs a distinct batch
+generation and is separate work, as are capturing/submitted recovery and final
+source-root retirement. This alpha operation is not yet exposed or activated in
+the running UI.

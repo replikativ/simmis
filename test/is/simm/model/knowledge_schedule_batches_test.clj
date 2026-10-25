@@ -261,3 +261,51 @@
             (is (= (schedules/occurrence (atom before) oid) (schedules/occurrence conn oid)))
             (is (= (schedules/activation (atom before) (:activation value))
                    (schedules/activation conn (:activation value))))))))))
+
+
+(deftest either-missing-direction-of-a-retained-binding-is-held
+  (doseq [side [:batch :occurrence]]
+    (with-db
+      (fn [conn]
+        (let [value (seed! conn) o (binding/retain! conn value) bid (get-in value [:batch :batch])]
+          (is (= (:occurrence value) (:knowledge.batch/scheduled-occurrence (batches/batch @conn bid))))
+          (d/transact conn
+            [(if (= :batch side)
+               [:db/retract [:knowledge.batch/id bid] :knowledge.batch/scheduled-occurrence (:occurrence value)]
+               [:db/retract (:db/id o) :schedule.occurrence/knowledge-batch bid])])
+          (is (= :partial-binding (held #(binding/bound-occurrence @conn bid))))
+          (is (= :partial-binding (held #(binding/retain! conn value)))))))))
+
+
+(deftest failed-admission-writes-are-serialized-and-cannot-overwrite-terminal-or-new-work
+  (doseq [damage [:none :terminal :new-active :new-revision :changed-claim :request]]
+    (with-db
+      (fn [conn]
+        (let [value (seed! conn) a (schedules/activation conn (:activation value)) oid (:occurrence value)]
+          (case damage
+            :none nil
+            :terminal (d/transact conn [{:db/id [:schedule.occurrence/id oid] :schedule.occurrence/state :skipped
+                                        :schedule.occurrence/reason :batch-abandoned}
+                                       [:db/retract (:db/id a) :schedule.activation/active-occurrence oid]])
+            :new-active (d/transact conn [{:db/id (:db/id a) :schedule.activation/active-occurrence (random-uuid)}])
+            :new-revision (d/transact conn [{:db/id (:db/id a) :schedule.activation/revision (random-uuid)}])
+            :changed-claim (d/transact conn [{:db/id [:schedule.occurrence/id oid] :schedule.occurrence/claim (random-uuid)}])
+            :request (requests/claim! conn {:party (:by value) :room (:room value) :client-id oid :kind :task :intent {}}))
+          (let [before-o (schedules/occurrence conn oid) before-a (schedules/activation conn (:activation value))]
+            (schedules/interrupt-owned! conn a oid (:claim value) :restart)
+            (if (= :none damage)
+              (do (is (= :interrupted (:schedule.occurrence/state (schedules/occurrence conn oid))))
+                  (is (false? (:schedule.activation/enabled? (schedules/activation conn (:activation value))))))
+              (do (is (= before-o (schedules/occurrence conn oid)) (str damage))
+                  (is (= before-a (schedules/activation conn (:activation value))) (str damage))))))))))
+
+(deftest stale-outer-dispatch-errors-cannot-disable-a-later-activation-slot
+  (with-db
+    (fn [conn]
+      (let [value (seed! conn) a (schedules/activation conn (:activation value))]
+        (d/transact conn [[:db/retract (:db/id a) :schedule.activation/active-occurrence (:occurrence value)]])
+        (schedules/block-owned! conn a :owned-dispatch-unavailable)
+        (is (true? (:schedule.activation/enabled? (schedules/activation conn (:activation value)))))
+        (let [current (schedules/activation conn (:activation value))]
+          (schedules/block-owned! conn current :owned-dispatch-unavailable)
+          (is (false? (:schedule.activation/enabled? (schedules/activation conn (:activation value))))))))))

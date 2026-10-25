@@ -562,6 +562,61 @@
      (throw (ex-info "Scheduled filing proof is required" {:type ::conflict})))
    (d/transact conn [[:db.fn/call processed-input-tx oid expected]])))
 
+(def ^:private owned-admission-identity
+  [:schedule.activation/id :schedule.activation/by :schedule.activation/room
+   :schedule.activation/revision :schedule.activation/target-ref])
+
+(defn- interrupt-owned-tx [db expected oid claim reason]
+  (let [o (pull-row db :schedule.occurrence/id oid)
+        a (pull-row db :schedule.activation/id (:schedule.activation/id expected))
+        rid (when a (requests/request-id (:schedule.activation/by a) (:schedule.activation/room a) oid))]
+    ;; A previous source operation can return after explicit abandonment wins.
+    ;; No pre-read grants permission to overwrite that terminal state or newer
+    ;; activation work. Check ownership and request linkage IN the writer.
+    (when (and (uuid? oid) (uuid? claim)
+               (= expected (select-keys a owned-admission-identity))
+               (= oid (:schedule.activation/active-occurrence a))
+               (= (:schedule.activation/id a) (:schedule.occurrence/activation o))
+               (= (:schedule.activation/revision a) (:schedule.occurrence/revision o))
+               (= :admitting (:schedule.occurrence/state o)) (= claim (:schedule.occurrence/claim o)))
+      (let [request? (or (:schedule.occurrence/request o) (pull-row db :work.request/id rid))
+            blocked {:db/id (:db/id a) :schedule.activation/enabled? false
+                     :schedule.activation/reason (if (= :restart reason) :interrupted reason)}]
+        (cond
+          ;; Unsupported targets hold their existing request without rewriting
+          ;; admission. The SAME occurrence/claim/active guard still applies.
+          (and request? (= :owned-dispatch-unavailable reason)) [blocked]
+          request? []
+          :else [{:db/id (:db/id o) :schedule.occurrence/state :interrupted :schedule.occurrence/reason reason}
+                 blocked])))))
+
+(defn interrupt-owned!
+  "Fixed failed/uncertain owned admission. Conditional metadata only; a
+   terminalized occurrence, lost claim or newer deployment wins. Existing requests
+   preserve admission; unsupported targets may only disable their own slot."
+  [conn activation oid claim reason]
+  (when-not (#{:interrupted :restart :owned-dispatch-unavailable} reason)
+    (throw (ex-info "Invalid owned interruption reason" {:type ::conflict})))
+  (d/transact conn [[:db.fn/call interrupt-owned-tx (select-keys activation owned-admission-identity) oid claim reason]]))
+
+(def ^:private owned-block-fields
+  (into owned-admission-identity
+        [:schedule.activation/enabled? :schedule.activation/active-occurrence
+         :schedule.activation/last-occurrence :schedule.activation/last-terminal-failure]))
+
+(defn- block-snapshot [a]
+  (into {} (map (fn [k] [k (get a k)])) owned-block-fields))
+
+(defn- block-owned-tx [db expected reason]
+  (let [a (pull-row db :schedule.activation/id (:schedule.activation/id expected))]
+    (when (and a (= expected (block-snapshot a)))
+      [{:db/id (:db/id a) :schedule.activation/enabled? false :schedule.activation/reason reason}])))
+
+(defn block-owned!
+  "Do not disable a newer/resumed activation after a stale pass fails."
+  [conn activation reason]
+  (d/transact conn [[:db.fn/call block-owned-tx (block-snapshot activation) reason]]))
+
 (defn finish-admission! [conn oid state request reason]
   (d/transact conn [(cond-> {:db/id [:schedule.occurrence/id oid] :schedule.occurrence/state state}
                       request (assoc :schedule.occurrence/request request)

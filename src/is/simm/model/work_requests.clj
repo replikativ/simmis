@@ -12,7 +12,8 @@
 (def schema
   (mapv (fn [[ident type]]
           (cond-> {:db/ident ident :db/valueType type :db/cardinality :db.cardinality/one}
-            (= ident :work.request/id) (assoc :db/unique :db.unique/value)))
+            (= ident :work.request/id) (assoc :db/unique :db.unique/value)
+            (= ident :work.request/knowledge-batch) (assoc :db/index true)))
         [[:work.request/id :db.type/uuid]
          [:work.request/client-id :db.type/uuid]
          [:work.request/by :db.type/uuid]

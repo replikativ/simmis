@@ -9,9 +9,13 @@
             [dvergr.system.rooms :as native-rooms]
             [hasch.core :as hasch]
             [is.simm.model.knowledge-batches :as batches]
+            [is.simm.model.knowledge-batch-recovery :as recovery]
+            [is.simm.model.knowledge-schedule-batches :as scheduled]
             [is.simm.model.knowledge-pins :as pins]
             [is.simm.model.knowledge-streams :as streams]
             [is.simm.ops.knowledge-changes :as changes]
+            [is.simm.ops.knowledge-batch-proof :as batch-proof]
+            [is.simm.ops.owned-room-operation :as room-operation]
             [is.simm.ops.knowledge-batch-inputs :as batch-inputs]
             [is.simm.ops.knowledge-checkpoint-roots :as checkpoints]
             [is.simm.ops.knowledge-inputs :as inputs]
@@ -36,26 +40,28 @@
 (defn- refuse! [reason]
   (throw (ex-info "Knowledge discovery is held" {:type ::held :reason reason})))
 
-(defn- with-room! [host principal handle f]
-  (let [with-operation (get-in host [:config :host-lifecycle :with-operation])]
-    (when-not (fn? with-operation) (refuse! :missing-lifetime))
-    (with-operation
-      (fn []
-        (lifetime/check-current!)
-        (let [resolved (reads/resolve-host-room! host principal handle) room (:room resolved)]
-          (binding [ec/*execution-context* (:execution-ctx host)]
-            (preparation/with-host-operation!
-              ;; One short metadata/native-retention operation per human Room
-              ;; owner. Recovery and refresh share the SAME physical gate even
-              ;; when the retained program/default is no longer current.
-              room {:exclusive-key [::discovery (:party resolved)]}
+(defn- with-room!
+  ([host principal handle f] (with-room! host principal handle nil f))
+  ([host principal handle original-author f]
+   (when-not (or (nil? original-author) (uuid? original-author)) (refuse! :invalid-discovery-owner))
+   (let [with-operation (get-in host [:config :host-lifecycle :with-operation])]
+     (when-not (fn? with-operation) (refuse! :missing-lifetime))
+     (with-operation
+       (fn []
+         (lifetime/check-current!)
+         (let [resolved (reads/resolve-host-room! host principal handle) room (:room resolved)]
+           (binding [ec/*execution-context* (:execution-ctx host)]
+             (preparation/with-host-operation!
+              ;; Recovery uses the original publisher's physical gate, derived
+              ;; from canonical batch metadata. Authorization stays with ACTOR.
+              room {:exclusive-key [::discovery (or original-author (:party resolved))]}
               (fn [lease]
                 (binding [ec/*execution-context* (:ctx room)]
                   (let [check! #(do (lifetime/check-current!)
                                     (preparation/with-host-current! lease (constantly true))
                                     (reads/validate-host-room! host principal handle resolved))]
                     (check!)
-                    (f resolved lease lifetime/*ticket* check!)))))))))))
+                    (f resolved lease lifetime/*ticket* check!))))))))))))
 
 (defn- writer-current!
   "Short observations on a writer thread, never thread-entry admission or
@@ -346,3 +352,73 @@
                          (fn [fragment]
                            (check!)
                            (d/transact control [[:db.fn/call fragment]]))))))))))
+
+
+(def ^:private abandon-ready-schema
+  [:map {:closed true} [:batch :uuid] [:expected-claim :uuid] [:expected-frozen :uuid]
+   [:request-id :uuid] [:reason [:string {:min 1 :max 1000}]]])
+
+(defn- rethrow-interrupted! [error]
+  (when (or (.isInterrupted (Thread/currentThread))
+            (loop [cause error seen #{}]
+              (cond (nil? cause) false
+                    (instance? InterruptedException cause) true
+                    (contains? seen cause) false
+                    :else (recur (.getCause ^Throwable cause) (conj seen cause)))))
+    (.interrupt (Thread/currentThread)))
+  (throw error))
+
+(defn abandon-ready!
+  "Explicit human skip of an inspected unlinked ready batch. Current Room
+   merge authority precedes artifacts and repeats in the writer. No current
+   source/default/model lookup, inference, refund or automatic schedule resume.
+   Lost ACK may throw; repeat the SAME request-id to inspect the joint result."
+  [host principal handle request]
+  (when-not (m/validate abandon-ready-schema request) (refuse! :invalid-recovery))
+  (try
+    (room-operation/with-app!
+     host
+     (fn []
+       (let [{:keys [control-db room-id]} (reads/preflight-host-read! host principal handle)
+             _ (work/authorize-in! control-db principal room-id)
+             control (get-in host [::reads/owner :control-conn])
+             initial (batches/batch control-db (:batch request))
+             author (:knowledge.batch/by initial)]
+         (when-not (and (uuid? author) (= room-id (:knowledge.batch/room initial)))
+           (refuse! :batch-unavailable))
+         (with-room!
+          host principal handle author
+          (fn [resolved lease ticket check!]
+            (let [db (reads/current-host-control-db! host)
+                  _ (work/authorize-in! db principal room-id)
+                  b (batches/batch db (:batch request))]
+              (when-not (and b (= [author room-id (:expected-claim request) (:expected-frozen request)]
+                               (mapv b [:knowledge.batch/by :knowledge.batch/room :knowledge.batch/claim :knowledge.batch/frozen-id]))
+                             (or (= :ready (:knowledge.batch/state b))
+                                 (and (= :closed (:knowledge.batch/state b))
+                                      (= :abandoned-skip (:knowledge.batch/outcome b))
+                                      (= :ready (:knowledge.batch/recovery-from b)))))
+                (refuse! :batch-not-ready-for-recovery))
+              (let [origin {:batch (:knowledge.batch/id b) :selection (:knowledge.batch/selection-id b)
+                            :frozen (:knowledge.batch/frozen-id b)}
+                    proof (batch-proof/retained! control author room-id origin)
+                    o (scheduled/bound-occurrence @control (:batch request))
+                    anchor (when o {:value (scheduled/retained control o) :reference (:schedule.occurrence/batch-ref o)})
+                    expected (recovery/expected proof anchor)
+                    value (recovery/decision {:batch (:batch request) :room room-id :by (:party resolved)
+                                              :client (:request-id request) :at (java.util.Date.)
+                                              :mode :skip :reason (:reason request)})]
+                (check!)
+                (when (seq (recovery/abandon-tx @control expected value))
+                  (d/transact control
+                    [[:db.fn/call
+                      (fn [current]
+                        (writer-current! host principal handle resolved lease ticket current)
+                        (recovery/abandon-tx current expected value))]]))
+                (check!)
+                (work/authorize-in! (reads/current-host-control-db! host) principal room-id)
+                ;; This is observation of the complete terminal result, never a
+                ;; new native action or a reconstructed dispatch acknowledgement.
+                (when-not (empty? (recovery/abandon-tx @control expected value)) (refuse! :recovery-unconfirmed))
+                {:status :abandoned :batch (:batch request) :operation (:id value) :mode :skip})))))))
+    (catch Throwable error (rethrow-interrupted! error))))

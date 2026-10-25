@@ -992,8 +992,7 @@
                   (when-not skipped?
                     (if-let [request (owned-storage! #(owned-retry! conn row o target))]
                       (owned-link! conn row o request)
-                      (do (schedules/finish-admission! conn (:schedule.occurrence/id o) :interrupted nil :interrupted)
-                          (schedules/block! conn row :interrupted)))))
+                      (schedules/interrupt-owned! conn row (:schedule.occurrence/id o) claim :interrupted))))
                 (when (.isInterrupted (Thread/currentThread)) (throw error))))))))))
 
 (defn- announce-owned-result! [host conn context row o request job room-binding target value]
@@ -1081,16 +1080,16 @@
               (if-let [request (owned-retry! control-conn row o target)]
                 (do (owned-owner! host) (owned-link! control-conn row o request))
                 (do (owned-owner! host)
-                    (schedules/finish-admission! control-conn (:schedule.occurrence/id o) :interrupted nil :restart)
-                    (schedules/block! control-conn row :interrupted))))
+                    (schedules/interrupt-owned! control-conn row (:schedule.occurrence/id o)
+                                                (:schedule.occurrence/claim o) :restart))))
             (catch Throwable error
               ;; One unsupported/corrupt activation cannot prevent unrelated
               ;; startup reconciliation. Expired owner/interruption is fatal.
               (when (or (causal-interruption? error) (.isInterrupted (Thread/currentThread)))
                 (.interrupt (Thread/currentThread)) (throw error))
               (owned-owner! host)
-              (schedules/finish-admission! control-conn (:schedule.occurrence/id o) :interrupted nil :owned-dispatch-unavailable)
-              (when row (schedules/block! control-conn row :owned-dispatch-unavailable)))))))))
+              (when row (schedules/interrupt-owned! control-conn row (:schedule.occurrence/id o)
+                                                  (:schedule.occurrence/claim o) :owned-dispatch-unavailable)))))))))
 
 (defn- tick-owned-in!
   "Fixed HOST pass. No callback resolver, startup or selected-source
@@ -1119,7 +1118,7 @@
               (.interrupt (Thread/currentThread))
               (throw error))
             (owned-owner! host)
-            (schedules/block! control-conn row :owned-dispatch-unavailable)
+            (schedules/block-owned! control-conn row :owned-dispatch-unavailable)
             (when (.isInterrupted (Thread/currentThread)) (throw error)))))
       nil)))
 

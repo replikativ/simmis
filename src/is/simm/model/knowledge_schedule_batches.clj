@@ -18,7 +18,9 @@
    {:db/ident :schedule.occurrence/batch-ref :db/valueType :db.type/store-ref
     :db/cardinality :db.cardinality/one}
    {:db/ident :schedule.occurrence/batch-revision :db/valueType :db.type/uuid
-    :db/cardinality :db.cardinality/one}])
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :knowledge.batch/scheduled-occurrence :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one :db/unique :db.unique/value}])
 
 (def ^:private value-schema
   [:map {:closed true} [:version [:= 1]] [:id :uuid]
@@ -36,9 +38,17 @@
       (d/pull db '[*] eid))))
 
 (defn bound-occurrence
-  "Internal reverse metadata lookup. Caller authorizes before observation."
+  "Internal bidirectional metadata lookup. Partial links are held, including
+   a missing occurrence-side marker. Caller authorizes before observation."
   [db batch-id]
-  (row db :schedule.occurrence/knowledge-batch batch-id))
+  (when (uuid? batch-id)
+    (let [reverse (row db :schedule.occurrence/knowledge-batch batch-id)
+          forward (:knowledge.batch/scheduled-occurrence (batches/batch db batch-id))]
+      (when (or reverse forward)
+        (when-not (and reverse (uuid? forward) (= forward (:schedule.occurrence/id reverse))
+                       (= (:db/id reverse) (:db/id (row db :schedule.occurrence/id forward))))
+          (refuse! :partial-binding))
+        reverse))))
 
 (defn binding-value
   "Finite inert deployment/claim facts supplied by the fixed HOST verifier.
@@ -98,15 +108,18 @@
   [db value ref]
   (validate! value)
   (when-not (uuid? ref) (refuse! :invalid-reference))
-  (let [o (claimed! db value)]
+  (let [o (claimed! db value)
+        prior (bound-occurrence db (get-in value [:batch :batch]))]
     (ready! db value)
     (when (or (some #(contains? o %) binding-fields)
               (some #(contains? o %) [:schedule.occurrence/input-id :schedule.occurrence/input-ref
                                       :schedule.occurrence/input-revision])
-              (bound-occurrence db (get-in value [:batch :batch])))
+              prior)
       (refuse! :already-retained))
     [{:db/id (:db/id o) :schedule.occurrence/knowledge-batch (get-in value [:batch :batch])
-      :schedule.occurrence/batch-ref ref :schedule.occurrence/batch-revision (:id value)}]))
+      :schedule.occurrence/batch-ref ref :schedule.occurrence/batch-revision (:id value)}
+     {:db/id (:db/id (batches/batch db (get-in value [:batch :batch])))
+      :knowledge.batch/scheduled-occurrence (:occurrence value)}]))
 
 (defn- matches! [o value ref]
   (when-not (and o
@@ -134,6 +147,9 @@
          (let [before (claimed! (:db-before report) value)
                after (claimed! (:db-after report) value)]
            (when (some #(contains? before %) binding-fields) (refuse! :missing-original-ack))
+           (when-not (= (:db/id after)
+                        (:db/id (bound-occurrence (:db-after report) (get-in value [:batch :batch]))))
+             (refuse! :missing-original-ack))
            (matches! after value ref)))))))
 
 (defn retained
@@ -150,6 +166,7 @@
             value (:value envelope)]
         (validate! value)
         (matches! occurrence value ref)
+        (matches! (bound-occurrence @conn (get-in value [:batch :batch])) value ref)
         value))))
 
 
@@ -247,4 +264,35 @@
                    (= (:db/id o) (:db/id (bound-occurrence db (get-in value [:batch :batch]))))
                    (empty? (batches/request-tx db (:batch value) request (:work.request/intent-id request))))
       (refuse! :partial-request-link))
+    value))
+
+
+(defn withdraw-unlinked-tx
+  "Fixed ready-batch abandonment composition. Resolve only its unlinked
+   original slot; leave enabled state and any later active occurrence alone."
+  [db retained]
+  (let [[o value] (anchored! db retained)
+        a (row db :schedule.activation/id (:activation value))]
+    (when-not (and (= (:db/id o) (:db/id (bound-occurrence db (get-in value [:batch :batch]))))
+                   (#{:admitting :interrupted} (:schedule.occurrence/state o))
+                   (nil? (:schedule.occurrence/request o)) (not (true? (:schedule.occurrence/announced? o)))
+                   a (= [(:by value) (:room value) (:revision value) (:target-ref value)]
+                        [(:schedule.activation/by a) (:schedule.activation/room a)
+                         (:schedule.activation/revision a) (:schedule.activation/target-ref a)]))
+      (refuse! :linked-or-changed-occurrence))
+    (cond-> [{:db/id (:db/id o) :schedule.occurrence/state :skipped :schedule.occurrence/reason :batch-abandoned}]
+      (= (:occurrence value) (:schedule.activation/active-occurrence a))
+      (conj [:db/retract (:db/id a) :schedule.activation/active-occurrence (:occurrence value)]))))
+
+(defn withdrawn!
+  "Historical terminal observation, not a new withdrawal or activation gate."
+  [db retained]
+  (let [[o value] (anchored! db retained)
+        a (row db :schedule.activation/id (:activation value))]
+    (when-not (and (= (:db/id o) (:db/id (bound-occurrence db (get-in value [:batch :batch]))))
+                   (= :skipped (:schedule.occurrence/state o)) (= :batch-abandoned (:schedule.occurrence/reason o))
+                   (nil? (:schedule.occurrence/request o)) (not (true? (:schedule.occurrence/announced? o)))
+                   a (= (:room value) (:schedule.activation/room a))
+                   (not= (:occurrence value) (:schedule.activation/active-occurrence a)))
+      (refuse! :partial-withdrawal))
     value))

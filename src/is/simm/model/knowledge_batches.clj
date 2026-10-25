@@ -144,7 +144,7 @@
 (defn request-tx
   "Fixed composition for the canonical workflow request claim. No benchmark
    or generic request can consume a live batch. A different request is held;
-   matching replay never starts a Job. Not yet wired into request admission."
+   matching replay never starts a Job. Used by guarded request admission."
   [db origin request intent-id]
   (when-not (and (m/validate origin-schema origin) (uuid? intent-id)
                  (= :workflow (:work.request/kind request))

@@ -206,7 +206,7 @@
                                 (model/claim-due! conn activation {:interval-ms 60000} due)
                                 (let [o (current-occurrence conn activation)]
                                   (is (uuid? (model/admit! conn (:schedule.occurrence/id o))))
-                                  o)) rows)
+                                  (current-occurrence conn activation))) rows)
             good (last occurrences)
             input (assoc (:execution target) :request-id (:schedule.occurrence/id good))
             {:keys [request]} (requests/claim! conn {:party (:owner w) :room (:room w)
@@ -274,7 +274,9 @@
             (is (= (dissoc (assoc before :schedule.activation/enabled? false) :schedule.activation/reason)
                    (dissoc after :schedule.activation/reason))))
           (is (= target (model/managed-target conn (model/activation conn id))))
-          (is (= (if (= :admitting phase) :interrupted
+          ;; An unsupported target cannot reconcile its existing canonical
+          ;; request. Keep admission held rather than claiming it never submitted.
+          (is (= (if (= :admitting phase) :admitting
                      (if (= :pending phase) :pending :linked))
                  (:schedule.occurrence/state (model/occurrence conn oid))))
           (when request

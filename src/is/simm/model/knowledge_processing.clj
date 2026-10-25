@@ -27,13 +27,21 @@
 (def ^:private batch-binding-keys
   [:db/id :knowledge.batch/id :knowledge.batch/stream :knowledge.batch/by :knowledge.batch/room
    :knowledge.batch/target :knowledge.batch/claim :knowledge.batch/selection :knowledge.batch/selection-id
-   :knowledge.batch/frozen :knowledge.batch/frozen-id :knowledge.batch/request :knowledge.batch/request-intent])
+   :knowledge.batch/frozen :knowledge.batch/frozen-id :knowledge.batch/request :knowledge.batch/request-intent
+   :knowledge.batch/scheduled-occurrence])
+
+(defn- batch-binding [row]
+  ;; Explicit nil is an inert comparison fact, never transaction data. Manual
+  ;; batches have no scheduled occurrence; its later insertion/removal must not
+  ;; disappear from the immutable writer expectation.
+  (assoc (select-keys row batch-binding-keys)
+         :knowledge.batch/scheduled-occurrence (:knowledge.batch/scheduled-occurrence row)))
 
 (defn expected
   "Inert writer input from a HOST-verified retained batch proof. This projection
    is not a certificate or authority; the writer compares its canonical rows."
   [{:keys [origin selection row]}]
-  {:origin origin :selection selection :binding (select-keys row batch-binding-keys)})
+  {:origin origin :selection selection :binding (batch-binding row)})
 
 (defn- item [row]
   {:id (:knowledge.item/id row) :order (:knowledge.item/order row)
@@ -57,7 +65,7 @@
         rows (->> members (map #(d/pull db '[*] (:e %)))
                   (sort-by (juxt :knowledge.item/order :knowledge.item/path)) vec)]
     (when-not (and row batch stream
-                   (= binding (select-keys batch batch-binding-keys))
+                   (= binding (batch-binding batch))
                    (= :workflow (:work.request/kind row))
                    (= [(:request value) (:intent value) (:job value) (:basis value)]
                       (mapv row [:work.request/id :work.request/intent-id :work.request/job
