@@ -6,6 +6,7 @@
             [dvergr.runtime.ctx :as rctx]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.workflow-schedules :as schedules]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [taoensso.telemere :as log])
@@ -42,6 +43,21 @@
         (.poll ^ArrayBlockingQueue queue)
         (.offer ^ArrayBlockingQueue queue now)))))
 
+(defn- original-operation! [host f]
+  (let [with-operation (get-in host [:config :host-lifecycle :with-operation])]
+    (when-not (fn? with-operation)
+      (throw (ex-info "Owned scheduler has no original App lifetime" {:type ::held})))
+    (with-operation #(do (lifetime/check-current!) (f)))))
+
+(defn- owned-pass!
+  "One actual worker operation, released before waiting for the next clock
+   notification. Neither a queue closure nor an inherited ticket owns the App."
+  [host operation now]
+  (original-operation!
+   host #(case operation
+           :recover (schedules/recover-owned! host)
+           :tick (schedules/tick-owned! host now))))
+
 (defn- start-service!
   "Start after canonical orphan/resource recovery. Recovery runs once on the
    owned worker before any admission; failure/timeout leaves ownership held
@@ -53,7 +69,8 @@
     (if-let [prior @service]
       (if (and (running?) (= mode (:mode prior)) (identical? conn (:conn prior))
                (if (= :owned mode)
-                 (identical? ctx (:ctx prior))
+                 (and (identical? ctx (:ctx prior))
+                      (identical? (:app-owner prior) (:owner lifetime/*ticket*)))
                  (identical? (ec/home-context ctx) (ec/home-context (:ctx prior)))))
         :started
         (throw (ex-info "Prior scheduled-work resource must be stopped first" {:type ::held})))
@@ -65,7 +82,9 @@
                         (newThread [_ runnable]
                           (doto (Thread. runnable "simmis-workflow-schedules") (.setDaemon true)))))
             ready (promise)
-            owned {:conn conn :ctx ctx :mode mode :root root :signal signal :watch-key key
+            owned {:conn conn :ctx ctx :mode mode
+                   :app-owner (when (= :owned mode) (:owner lifetime/*ticket*))
+                   :root root :signal signal :watch-key key
                    :executor executor :queue (ArrayBlockingQueue. 1)
                    :accepting (AtomicBoolean. true) :ready? false}]
         ;; Retain handles even after failed setup; only joined stop releases.
@@ -91,7 +110,7 @@
                                               simple/*in-drain?* false]
                                       (try
                                         (case mode
-                                          :owned (schedules/recover-owned! host)
+                                          :owned (owned-pass! host :recover nil)
                                           :legacy (schedules/recover! conn ctx))
                                         (deliver ready [:ready])
                                         (loop []
@@ -99,7 +118,7 @@
                                             (let [now (.take ^ArrayBlockingQueue (:queue owned))]
                                               (when (.get ^AtomicBoolean (:accepting owned))
                                                 (case mode
-                                                  :owned (schedules/tick-owned! host now)
+                                                  :owned (owned-pass! host :tick now)
                                                   :legacy (schedules/tick! conn ctx resolve-room now))))
                                             (recur)))
                                         (catch InterruptedException _
@@ -139,9 +158,10 @@
    resolver, new clock or parallel dispatcher; no startup installation here."
   [host]
   (off-engine!)
-  (reads/current-host-control-db! host)
-  (let [{:keys [control-conn execution-ctx]} (::reads/owner host)]
-    (start-service! control-conn execution-ctx nil :owned host)))
+  (original-operation!
+   host #(do (reads/current-host-control-db! host)
+             (let [{:keys [control-conn execution-ctx]} (::reads/owner host)]
+               (start-service! control-conn execution-ctx nil :owned host)))))
 
 (defn stop!
   "Unsubscribe, interrupt and physically join before releasing ownership. A

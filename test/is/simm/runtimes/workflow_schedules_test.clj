@@ -5,6 +5,7 @@
             [is.simm.ops.workflow-schedules :as schedules]
             [is.simm.runtimes.context :as context]
             [is.simm.runtimes.workflow-schedules :as runtime]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.engine.context :as execution]
             [org.replikativ.spindel.engine.core :as ec]
@@ -12,15 +13,19 @@
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.sync :as sync]))
 
+(def ^:dynamic *owners* nil)
+
 (use-fixtures :each
   (fn [f]
     ;; A diagnostic test must never touch the live demo's worker or clock.
-    (let [ctx (execution/create-execution-context)]
+    (let [ctx (execution/create-execution-context) owners (atom [])]
       (with-redefs-fn {#'runtime/service (atom nil) #'context/server-context ctx}
-        #(binding [ec/*execution-context* ctx]
+        #(binding [ec/*execution-context* ctx *owners* owners]
            (try (f)
                 (finally
                   (runtime/stop!)
+                  (doseq [owner @owners]
+                    (lifetime/fence! owner) (lifetime/join! owner 1000))
                   (execution/close-context! ctx))))))))
 
 (defn- await-event [p]
@@ -31,7 +36,11 @@
 (defn- owned-host [ctx]
   ;; Lifecycle-only fixture. The real original-owner/EACL checks and native
   ;; Jobs are independently exercised by owned-reads/occurrence tests.
-  {:execution-ctx ctx ::reads/owner {:control-conn ::conn :execution-ctx ctx}})
+  (let [owner (doto (lifetime/create) lifetime/open!)]
+    (swap! *owners* conj owner)
+    {:execution-ctx ctx ::reads/owner {:control-conn ::conn :execution-ctx ctx}
+     ::app-owner owner
+     :config {:host-lifecycle {:with-operation #(lifetime/with-operation! owner %)}}}))
 
 (deftest owned-mode-uses-the-same-joined-worker-with-fixed-domain-entries
   (let [ctx context/server-context host (owned-host ctx)
@@ -43,9 +52,17 @@
                   clock/minute-now (constantly (java.util.Date. 60000))
                   reads/current-host-control-db! (fn [h] (is (identical? host h)) (swap! checks inc) ::db)
                   schedules/recover! forbidden schedules/tick! forbidden
-                  schedules/recover-owned! (fn [h] (is (identical? host h)) (reset! recovered? true))
+                  schedules/recover-owned! (fn [h]
+                                             (is (identical? host h))
+                                             (is (identical? (::app-owner host) (:owner lifetime/*ticket*)))
+                                             (is (identical? (Thread/currentThread) (:thread lifetime/*ticket*)))
+                                             (is (lifetime/retained? lifetime/*ticket*))
+                                             (reset! recovered? true))
                   schedules/tick-owned! (fn [h now]
                                           (is (identical? host h)) (is @recovered?)
+                                          (is (identical? (::app-owner host) (:owner lifetime/*ticket*)))
+                                          (is (identical? (Thread/currentThread) (:thread lifetime/*ticket*)))
+                                          (is (lifetime/retained? lifetime/*ticket*))
                                           (is (identical? ctx ec/*execution-context*))
                                           (is (not (simple/on-drain-thread?)))
                                           (if (= 1 (count (swap! calls conj now)))
@@ -88,6 +105,8 @@
         (is (thrown? clojure.lang.ExceptionInfo (runtime/start-owned! host)))
         (is (= :stopped (runtime/stop!)))
         (is (= :started (runtime/start-owned! host)))
+        ;; Connection/context equality cannot borrow another App installation.
+        (is (thrown? clojure.lang.ExceptionInfo (runtime/start-owned! (owned-host ctx))))
         (is (thrown? clojure.lang.ExceptionInfo
                      (runtime/start-owned! (assoc-in host [::reads/owner :control-conn] (atom nil)))))
         (is (= :stopped (runtime/stop!)))
