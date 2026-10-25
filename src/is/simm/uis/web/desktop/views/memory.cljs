@@ -7,6 +7,7 @@
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.effects.track :refer [track]]
             [is.simm.documents.rich-text :as rich]
+            [is.simm.documents.links :as links]
             [is.simm.documents.markdown-scene :as markdown-scene]
             [is.simm.documents.inline-charts :as inline-charts]
             [is.simm.documents.chart-contract :as chart-contract]
@@ -797,6 +798,20 @@
                                                               (when (seq (:stderr result)) (el/pre {} (str "stderr\n" (:stderr result))))
                                                               (el/details {} (el/summary {} "Evaluated source") (el/pre {} (:code result)))))))
                                       (cond
+                                        (get-in draft [:source :media])
+                                        (let [kind (get-in draft [:source :kind])
+                                              url (when coherent?
+                                                    (links/media-route {:room (:room-id data) :path path
+                                                                        :content (get-in draft [:source :entry :content])
+                                                                        :target (get-in draft [:source :target-stamp])}))]
+                                          (if url
+                                            (el/div {:class "memory-media"}
+                                                    (case kind
+                                                      :image (el/img {:src url :alt path :style {:max-width "100%" :max-height "70vh" :object-fit "contain"}})
+                                                      :video (el/video {:src url :controls true :preload "metadata" :style {:max-width "100%" :max-height "70vh"}})
+                                                      :audio (el/audio {:src url :controls true :preload "metadata"}))
+                                                    (el/a {:href url :download (last (str/split path #"/"))} "Download original"))
+                                            (el/p {:class "memory-note"} "Reopen this media file in the current workspace.")))
                                         office?
                                         (office-view/view {:path path :draft draft :state state :actions a :write? write? :coherent? coherent?})
                                         (not text?) (el/p {:class "memory-note"} "Binary file. Download preserves the original bytes; document-specific editing is not available in this view yet.")

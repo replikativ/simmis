@@ -18,6 +18,7 @@
             [is.simm.runtimes.context :as ctx]
             [is.simm.runtimes.application-ops :as application-ops]
             [is.simm.runtimes.room-apps :as room-apps]
+            [is.simm.runtimes.workspace-media :as workspace-media]
             [is.simm.runtimes.memory-changes :as memory-changes]
             ;; System DB (must init before auth)
             [is.simm.model.system-db :as system-db]
@@ -443,6 +444,10 @@
                    {:auth :authenticated
                     :get  {:handler room-apps/handle}
                     :head {:handler room-apps/handle}}]
+                  ["/blobs/workspaces/:room"
+                   {:auth :blob-read
+                    :get (fn [req] (workspace-media/handle (assoc req :query-params (query-params req))))
+                    :head (fn [req] (workspace-media/handle (assoc req :query-params (query-params req))))}]
                   ["/blobs/:id"
                    ;; Reads were open until the blob cookie landed: the UI
                    ;; reaches blobs through `<img src>` and `<a href>`, which

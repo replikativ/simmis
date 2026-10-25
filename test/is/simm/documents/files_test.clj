@@ -217,3 +217,26 @@
     (let [analysis (files/analyze (random-uuid) "wiki/a.md" (str "---\nsimmis-id: " value "\n---\nbody"))]
       (is (= :invalid (:identity-status analysis)))
       (is (some #(= :invalid-document-id (:kind %)) (:diagnostics analysis))))))
+
+(deftest opening-media-is-metadata-only-even-above-the-document-buffer-limit
+  (with-room
+    (fn [room]
+      (let [id (random-uuid) size (* 10 1024 1024)
+            db (files/with-workspace room
+                 (fn [conn]
+                   ;; Deliberate metadata-only fixture: no payload is available.
+                   ;; Opening a preview must not fetch or reconstruct it.
+                   (d/transact conn [{:geschichte.content/id id :geschichte.content/size size
+                                      :geschichte.content/kind :full :geschichte.content/depth 0
+                                      :geschichte.content/payload (random-uuid)}
+                                     {:geschichte.work/path "captures/recording.mp4"
+                                      :geschichte.work/content [:geschichte.content/id id]
+                                      :geschichte.work/size size :geschichte.work/mode 33188}])
+                   @conn))]
+        (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Media metadata read a payload")))]
+          (let [file (files/read-file-in db "captures/recording.mp4")]
+            (is (= :video (:kind file)))
+            (is (= {:content id :size size :mode 33188} (:entry file)))
+            (is (= "video/mp4" (get-in file [:media :content-type])))
+            (is (= id (get-in file [:media :reference :content])))
+            (is (not (contains? file :text)))))))))
