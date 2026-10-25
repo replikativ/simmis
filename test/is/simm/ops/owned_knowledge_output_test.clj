@@ -7,6 +7,7 @@
             [dvergr.mcp.surface :as surface]
             [dvergr.mcp.json-rpc :as rpc]
             [dvergr.ops :as dops]
+            [dvergr.runtime.preparation :as preparation]
             [is.simm.ops.knowledge-output-service :as service]
             [is.simm.ops.knowledge-publish :as publish]
             [is.simm.ops.owned-knowledge-output :as output]
@@ -63,7 +64,7 @@
   (with-fixture
     (fn [{:keys [host owner w request job hydrations]}]
       (let [calls (atom 0)]
-        (with-redefs [publish/file-completed-request! (fn [& _] (swap! calls inc))]
+        (with-redefs [publish/file-completed-request-unannounced! (fn [& _] (swap! calls inc))]
           (doseq [party [(:member w) (:non-member w) (:admin w) (:team-agent w) nil]]
             (is (= {:status :none} ((service/prepare-inspect-job party (:room w) job))))
             (is (= {:status :unavailable} ((service/prepare-collect party (:room w) request)))))
@@ -82,7 +83,7 @@
         (try
           (lifetime/fence! owner)
           (with-redefs-fn {#'application/installation (atom {:host host :owner replacement})
-                          #'publish/file-completed-request! (fn [& _] (swap! calls inc))}
+                          #'publish/file-completed-request-unannounced! (fn [& _] (swap! calls inc))}
             #(do (is (= {:status :none} (inspect)))
                  (is (= {:status :unavailable} (collect)))
                  (is (zero? @calls)) (is (empty? @hydrations))))
@@ -104,7 +105,7 @@
 
 (deftest the-real-mcp-tool-keeps-its-closed-input-and-native-owner-lifetimes
   (with-fixture
-    (fn [{:keys [host w request hydrations]}]
+    (fn [{:keys [host w room request hydrations]}]
       (let [previous (dops/operations) previous-host @@#'server/embedded-host
             calls (atom 0) proposal (random-uuid)
             principal (fn [party] {:principal/kind :human :principal/id (str "party/" party)
@@ -121,12 +122,19 @@
             args {:room (str (:room w)) :id (str request)}]
         (try
           (work-api/install!) (server/set-host! host)
-          (with-redefs [publish/file-completed-request!
+          (with-redefs [publish/file-completed-request-unannounced!
                         (fn [_ _ _ _ actual]
                           (lifetime/check-current!)
                           (is (= request actual))
                           (swap! calls inc)
-                          {:kind :proposed :request request :proposal proposal})]
+                          (is (seq (get @(:meta room) preparation/leases-key)))
+                          {:kind :proposed :request request :proposal proposal})
+                        publish/announce-filed-original!
+                        (fn [_ _ original value]
+                          (lifetime/check-current!)
+                          (is (identical? room (:room original)))
+                          (is (empty? (get @(:meta room) preparation/leases-key)))
+                          value)]
             (let [result (call (:owner w) args)]
               (is (not (:error result)) (pr-str result))
               (is (not (get-in result [:result :isError])) (pr-str result))

@@ -15,6 +15,7 @@
             [dvergr.resource :as resource]
             [dvergr.runtime.clock :as clock]
             [dvergr.runtime.ctx :as rctx]
+            [dvergr.runtime.preparation :as preparation]
             [dvergr.room.store :as store]
             [dvergr.substrate.geschichte :as workspace]
             [geschichte.query :as query]
@@ -30,7 +31,7 @@
             [is.simm.ops.benchmarks-test :as benchmark-fixture]
             [is.simm.ops.knowledge-inputs :as knowledge]
             [is.simm.ops.owned-reads :as reads]
-            [is.simm.ops.owned-mcp-test :as fixture]
+            [is.simm.ops.owned-schedule-fixture :as fixture]
             [is.simm.ops.owned-schedule-admission-test :as activation-fixture]
             [is.simm.ops.owned-workflow-admission-test :as native]
             [is.simm.ops.owned-workflows :as sources]
@@ -492,6 +493,8 @@
                                                      nil)
                                                    result))
                          jobs/start! (fn [actual-room options actual-work & callbacks]
+                                       (is (empty? (get @(:meta actual-room) preparation/leases-key))
+                                           "Source/balance leases must end before the native Job/fork")
                                        (apply start actual-room options
                                               (fn [id]
                                                 (when (identical? actual-room room)
@@ -543,6 +546,8 @@
           (with-redefs [gateway/*request-fn* (fn [& _] (response (swap! calls inc)))
                         providers/providers (atom {:codex-subscription provider})
                         jobs/start! (fn [actual-room options actual-work & callbacks]
+                                      (is (empty? (get @(:meta actual-room) preparation/leases-key))
+                                          "No source lease may cross native fork admission")
                                       (apply start actual-room options
                                              (fn [id]
                                                (when (identical? actual-room room)

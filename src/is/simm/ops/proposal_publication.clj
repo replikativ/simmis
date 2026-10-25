@@ -16,47 +16,67 @@
   (str "Proposal ready: " title
        (when (seq summary) (str "\n\n" summary))))
 
+(defn- post-proposal! [{:proposal/keys [id room message-id] :as proposal} live-room]
+  (let [message (binding [rtc/*execution-context* (:ctx live-room)]
+                  (-> (discourse/message :simmis/proposals :_room-log (proposal-content proposal) nil
+                                         {:role :system :kind :proposal/filed :object {:kind :proposal :id id}})
+                      (assoc :id message-id :thread-root-id message-id)))]
+    ;; Native post owns enqueue/storage/quiescence ordering. A preparation
+    ;; lease here could refuse a subscriber's fork after durable visibility.
+    (binding [rtc/*execution-context* (:ctx live-room)] (discourse/post! live-room message))
+    (proposals/mark-message-published! id)
+    (log/log! {:level :info :id ::published :data {:proposal id :room room :message message-id}})
+    :published))
+
+(defn- pending! [id error]
+  (proposals/mark-message-publication-failed! id error)
+  (log/log! {:level :warn :id ::publication-failed :data {:proposal id :error error}})
+  :pending)
+
+(defn- pending-error! [id error & [propagate-interruption?]]
+  (let [interrupted? (or (.isInterrupted (Thread/currentThread))
+                         (loop [cause error seen #{}]
+                           (cond (nil? cause) false
+                                 (instance? InterruptedException cause) true
+                                 (contains? seen cause) false
+                                 :else (recur (.getCause ^Throwable cause) (conj seen cause)))))]
+    (when interrupted? (.interrupt (Thread/currentThread)))
+    ;; The existing durable publication intent is already pending. Do not
+    ;; turn cancellation of an owned native post into a normal return value.
+    (if (and propagate-interruption? interrupted?)
+      (throw error)
+      (pending! id (ex-message error)))))
+
 (defn publish!
   "Publish proposal-id's reserved room message, or leave it durably pending.
-
-   Returns :published when complete, :pending when the room is unavailable or
-   the post fails, and :missing for an unknown/roomless legacy proposal."
+   This convenience entry may resolve the current logical room. Owned native
+   operations use publish-original! to preserve their captured incarnation."
   [proposal-id]
   (if-let [{:proposal/keys [id room message-id message-status] :as proposal}
            (proposals/get-proposal proposal-id)]
     (cond
       (= :published message-status) :published
       (or (nil? room) (nil? message-id)) :missing
-      :else
-      (try
-        (if-let [live-room (room-agents/live-room room)]
-          (let [message (binding [rtc/*execution-context* (:ctx live-room)]
-                          (-> (discourse/message
-                               :simmis/proposals :_room-log
-                               (proposal-content proposal) nil
-                               {:role :system
-                                :kind :proposal/filed
-                                :object {:kind :proposal :id id}})
-                              (assoc :id message-id
-                                     :thread-root-id message-id)))]
-            ;; Room post is durability-before-visibility. Only after it returns
-            ;; may the system projection say :published.
-            (binding [rtc/*execution-context* (:ctx live-room)]
-              (discourse/post! live-room message))
-            (proposals/mark-message-published! id)
-            (log/log! {:level :info :id ::published
-                       :data {:proposal id :room room :message message-id}})
-            :published)
-          (do
-            (proposals/mark-message-publication-failed!
-             id "originating room is not available")
-            :pending))
-        (catch Throwable t
-          (proposals/mark-message-publication-failed! id (ex-message t))
-          (log/log! {:level :warn :id ::publication-failed
-                     :data {:proposal id :room room :message message-id
-                            :error (ex-message t)}})
-          :pending)))
+      :else (try
+              (if-let [live-room (room-agents/live-room room)]
+                (post-proposal! proposal live-room)
+                (pending! id "originating room is not available"))
+              (catch Throwable error (pending-error! id error))))
+    :missing))
+
+(defn publish-original!
+  "Fixed HOST notification to the already captured Room. No hydration or
+   adoption of a replacement incarnation. Native post refuses a fenced Room."
+  [proposal-id original-room]
+  (if-let [{:proposal/keys [id room message-id message-status] :as proposal}
+           (proposals/get-proposal proposal-id)]
+    (cond
+      (= :published message-status) :published
+      (or (nil? room) (nil? message-id)) :missing
+      (or (not= room (:room-id original-room)) (nil? (:room original-room)))
+      (pending! id "original room binding is unavailable")
+      :else (try (post-proposal! proposal (:room original-room))
+                 (catch Throwable error (pending-error! id error true))))
     :missing))
 
 (defn retry-pending!

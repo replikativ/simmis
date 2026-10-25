@@ -192,3 +192,68 @@ failed-batch/retirement recovery, and runtime activation. Pending
 proposals hold the next batch. Benchmarks use explicit frozen cases and must
 never claim or advance a live stream. No default schedule is enabled by this
 foundation.
+
+### Owned scheduler lifetime boundary
+
+The owned scheduler uses the same original App operation for activation,
+recovery, and each dispatcher pass. The runtime releases that operation before
+waiting for the next clock wake. The clock supplies a wake signal; the activation
+and occurrence rows remain the durable semantic state. A timer callback does not
+itself run a workflow or grant execution authority.
+
+Each pass captures an original Room incarnation. Native source, snapshot,
+selection, capture, balance, Job, and Attempt reads use short preparation extents
+which retain that Room through physical I/O completion. Current App, Room, and
+human authority checks surround those extents. Provider preparation and native
+work submission run after releasing the source extents, so a workflow can fork
+without competing with its own admission lease.
+
+Completion has two phases: certify and file under the native read extent, then
+release that extent before posting completion or proposal messages. Manual owned
+output collection follows the same rule. Subscribers may react as soon as a
+message becomes visible, including by forking a child world. Holding a preparation
+lease across the post would make that fork fail its quiescence check and could
+lose the reaction. Native posting supplies its own durable-write and Room-close
+ordering; it needs no preparation lease. Notifications retain the captured Room
+rather than resolving a replacement. The App and Room are checked again before
+each post, since a completion observer can retire the App before proposal
+notification begins. A causal interruption remains an interruption, with the
+pending publication intent available for explicit retry.
+
+These are host effect boundaries around the existing Spindel/Dvergr computation,
+not a second workflow executor. They do not make the host clock forkable or
+provide automatic retry for every unrelated concurrent preparation operation.
+The incremental batch-to-occurrence binding is still pending; the lifetime
+changes preserve ordinary owned schedules without enabling any new schedule.
+
+### Scheduled batch binding (next integration)
+
+A scheduled incremental invocation will retain a separately versioned occurrence
+artifact pointing to the existing selection and frozen evidence, with typed
+occurrence-to-batch columns. It must not reuse the legacy scheduled-input
+fingerprint or `last-processed-input`: those record certified filing for the
+older whole-selection path, not an incremental discovery cursor.
+
+The binding must have a unique reverse lookup from batch to occurrence. Before
+request insertion, the fixed writer must compare the activation's owner, Room,
+revision and retained deployment reference; the admitting occurrence's claim and
+active pointer; and the ready batch's exact artifacts and stream hold. A pause
+may withdraw pending work, but does not invalidate an admission which already
+owns its claim. Changed claims, revisions or active pointers do invalidate it.
+The first retention acknowledgement is required to continue dispatch. Finding
+an identical artifact or row after uncertainty does not recreate that ownership.
+
+The native batch-claim composition must consult the reverse binding even when
+the supplied intent omits its schedule marker. Dropping that marker must not
+turn a reserved scheduled batch into a manual request. Deployment artifacts are
+bounded and verified before entering the writer; only inert identity facts and
+pure comparisons belong in the serialized transition.
+
+Historical reconciliation is a different check from fresh admission. It verifies
+the original deployment, occurrence, canonical request, and complete batch
+linkage without opening today's source or requiring a now-closed batch to be
+ready again. A missing half of that relationship remains held. A completed
+occurrence may have a proposed filing whose batch is still in review. Later due
+occurrences skip a busy stream before provider preparation; acceptance processes
+its selected versions, while dismissal skips them. Neither result is inferred
+from Job completion alone.

@@ -1,8 +1,8 @@
 (ns is.simm.ops.owned-workflow-admission
   "Inactive fixed human HOST saved-workflow admission. No transport, alternate
    runner, selected fallback, journal or configurable authority/source loader."
-  (:require [dvergr.runtime.preparation :as preparation]
-            [is.simm.model.work-requests :as requests]
+  (:require [is.simm.model.work-requests :as requests]
+            [is.simm.ops.owned-room-operation :as room-operation]
             [is.simm.ops.knowledge-batch-inputs :as batch-inputs]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.ops.owned-knowledge-discovery :as discovery]
@@ -47,19 +47,9 @@
       current)))
 
 (defn- with-source! [host principal handle original-room f]
-  (if-not original-room
-    (f)
-    (do
-      (lifetime/check-current!)
-      (reads/validate-host-room! host principal handle original-room)
-      (preparation/with-host-operation!
-       (:room original-room) {}
-       (fn [lease]
-         (let [check! #(do (lifetime/check-current!)
-                           (preparation/with-host-current! lease (constantly true))
-                           (reads/validate-host-room! host principal handle original-room))]
-           (check!)
-           (let [result (f)] (check!) result)))))))
+  (if original-room
+    (room-operation/with-current! host principal handle original-room f)
+    (f)))
 
 (defn- current!
   ([host principal handle original binding]

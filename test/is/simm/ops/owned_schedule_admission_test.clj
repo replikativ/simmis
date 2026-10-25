@@ -17,7 +17,7 @@
             [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.knowledge-inputs :as knowledge]
-            [is.simm.ops.owned-mcp-test :as fixture]
+            [is.simm.ops.owned-schedule-fixture :as fixture]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-workflows :as sources]
             [is.simm.ops.workflow-runs :as workflow-runs]
