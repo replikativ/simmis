@@ -3,6 +3,9 @@
    frozen artifacts and authorizes on the writer DB before composing this with
    the canonical disposition and optional Proposal. No artifact IO or execution."
   (:require [datahike.api :as d]
+            [is.simm.model.file-adoptions :as adoptions]
+            [is.simm.model.file-outputs :as manifests]
+            [is.simm.model.knowledge-pins :as pins]
             [hasch.core :as hasch]
             [is.simm.model.knowledge-batches :as batches]
             [is.simm.model.knowledge-streams :as streams]
@@ -13,7 +16,8 @@
   (mapv (fn [[ident type]]
           {:db/ident ident :db/valueType type :db/cardinality :db.cardinality/one})
         [[:knowledge.batch/disposition :db.type/uuid]
-         [:knowledge.batch/outcome :db.type/keyword]]))
+         [:knowledge.batch/outcome :db.type/keyword]
+         [:knowledge.batch/adoption :db.type/uuid]]))
 
 (defn- refuse! [reason]
   (throw (ex-info "Knowledge processing receipt is incomplete"
@@ -77,6 +81,30 @@
     (streams/validate-binding! descriptor stream)
     {:request row :batch batch :stream stream :items rows}))
 
+(defn- adoption-binding! [selection value operation]
+  (adoptions/validate! operation)
+  (when-not (and (= :proposed (:kind value)) (= :accepted (:state operation))
+                 (= [(:proposal value) (:manifest value) (:id value) (get-in selection [:stream :room])]
+                    [(:proposal operation) (:manifest operation) (:disposition operation) (:room operation)])
+                 (= (get-in selection [:stream :target]) (pins/target-id (:target operation))))
+    (refuse! :adoption-binding-mismatch)))
+
+(defn- accepted-facts! [db selection value batch]
+  (when-not (uuid? (:knowledge.batch/adoption batch)) (refuse! :missing-adoption))
+  (let [operation (adoptions/operation db (:knowledge.batch/adoption batch))]
+    (adoption-binding! selection value operation)
+    (adoptions/terminal-facts! db operation)
+    operation))
+
+(defn- open-proposal? [db value]
+  (when-let [owner (manifests/owner db (:manifest value))]
+    (let [proposal (d/pull db [:proposal/status] (:proposal-eid owner))
+          fork (d/pull db [:proposal.fork/status] (:fork-eid owner))]
+      (and (= (:proposal value) (:proposal owner))
+           (= :open (:proposal/status proposal)) (nil? (:proposal.fork/status fork))
+           (contains? #{nil :claimed :applying :aborted}
+                      (:state (adoptions/current-operation db (:fork-eid owner))))))))
+
 (defn filing-tx
   "Compose with the exact canonical disposition insert on the SAME writer DB.
    A proposed update holds all selected items until actual adoption. A certified
@@ -89,25 +117,33 @@
         id (:knowledge.batch/id batch)
         proposed? (= :proposed (:kind value))
         expected-state (if proposed? :review :closed)
-        item-state (if proposed? :claimed :processed)
+        accepted? (and proposed? (= :closed (:knowledge.batch/state batch))
+                       (= :accepted (:knowledge.batch/outcome batch)))
+        item-state (if (and proposed? (not accepted?)) :claimed :processed)
         existing (:knowledge.batch/disposition batch)
         canonical (:knowledge.disposition/id request)]
     (if (or existing canonical)
       (do
         (when-not (and (= (:id value) existing canonical)
-                       (= expected-state (:knowledge.batch/state batch))
+                       (or accepted? (= expected-state (:knowledge.batch/state batch)))
                        (every? #(= item-state (:knowledge.item/state %)) items)
-                       (if proposed?
-                         (and (= id (:knowledge.stream/active-batch stream))
-                              (nil? (:knowledge.batch/outcome batch)))
-                         (and (= :no-op (:knowledge.batch/outcome batch))
-                              (not= id (:knowledge.stream/active-batch stream)))))
+                       (cond
+                         accepted? (and (not= id (:knowledge.stream/active-batch stream))
+                                        (accepted-facts! db (:selection expected) value batch))
+                         proposed? (and (= id (:knowledge.stream/active-batch stream))
+                                        (nil? (:knowledge.batch/outcome batch))
+                                        (nil? (:knowledge.batch/adoption batch))
+                                        (open-proposal? db value))
+                         :else (and (= :no-op (:knowledge.batch/outcome batch))
+                                    (nil? (:knowledge.batch/adoption batch))
+                                    (not= id (:knowledge.stream/active-batch stream)))))
           (refuse! :partial-filing))
         [])
       (do
         (when-not (and (= :submitted (:knowledge.batch/state batch))
                        (= id (:knowledge.stream/active-batch stream))
                        (nil? (:knowledge.batch/outcome batch))
+                       (nil? (:knowledge.batch/adoption batch))
                        (every? #(= :claimed (:knowledge.item/state %)) items))
           (refuse! :batch-not-submitted))
         (cond-> [{:db/id (:db/id batch) :knowledge.batch/state expected-state
@@ -117,3 +153,37 @@
                          [:db/retract [:knowledge.stream/id (:knowledge.stream/id stream)]
                           :knowledge.stream/active-batch id]]
                         (map (fn [row] {:db/id (:db/id row) :knowledge.item/state :processed}) items))))))))
+
+(defn acceptance-tx
+  "Fixed HOST composition AFTER observing the original scoped winning native
+   receipt. This fragment does not observe publication or authorize acceptance.
+   First acceptance composes with adoption/component/Proposal transitions on
+   this writer DB; replay requires the complete joint terminal facts."
+  [db expected value accepted]
+  (adoption-binding! (:selection expected) value accepted)
+  (let [{:keys [request batch stream items]} (binding! db expected value)
+        id (:knowledge.batch/id batch)]
+    (when-not (= (:id value) (:knowledge.batch/disposition batch) (:knowledge.disposition/id request))
+      (refuse! :missing-filing))
+    (if (= :closed (:knowledge.batch/state batch))
+      (do
+        (when-not (and (= :accepted (:knowledge.batch/outcome batch))
+                       (= accepted (accepted-facts! db (:selection expected) value batch))
+                       (every? #(= :processed (:knowledge.item/state %)) items)
+                       (not= id (:knowledge.stream/active-batch stream)))
+          (refuse! :partial-acceptance))
+        [])
+      (let [current (adoptions/operation db (:id accepted))
+            immutable #(dissoc % :state :updated-at :commit :head :noop? :reconciled-by)]
+        (when-not (and (= :review (:knowledge.batch/state batch))
+                       (nil? (:knowledge.batch/outcome batch)) (nil? (:knowledge.batch/adoption batch))
+                       (= id (:knowledge.stream/active-batch stream))
+                       (every? #(= :claimed (:knowledge.item/state %)) items)
+                       (= :applying (:state current))
+                       (= (immutable current) (immutable accepted))
+                       (not (.before ^java.util.Date (:updated-at accepted) (:updated-at current))))
+          (refuse! :acceptance-prestate-mismatch))
+        (into [{:db/id (:db/id batch) :knowledge.batch/state :closed
+                :knowledge.batch/outcome :accepted :knowledge.batch/adoption (:id accepted)}
+               [:db/retract [:knowledge.stream/id (:knowledge.stream/id stream)] :knowledge.stream/active-batch id]]
+              (map (fn [row] {:db/id (:db/id row) :knowledge.item/state :processed}) items))))))

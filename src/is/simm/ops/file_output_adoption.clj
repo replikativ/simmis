@@ -11,6 +11,9 @@
             [is.simm.model.file-adoptions :as adoptions]
             [is.simm.model.file-outputs :as manifests]
             [is.simm.model.knowledge-dispositions :as dispositions]
+            [is.simm.model.knowledge-processing :as processing]
+            [is.simm.model.work-requests :as requests]
+            [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.model.system-db :as sdb]
             [is.simm.ops.file-output-plan :as plans]
@@ -350,31 +353,32 @@
    current authorization or its original native invocation's ACK obligation."
   [db proof expected at]
   (when-not db (refuse! :finalization-report-unavailable))
-  (let [{:keys [proposal component room actor]} expected
-        fork-eid (get-in proof [:fork :db/id])
-        p (d/pull db [:db/id :proposal/id :proposal/status :proposal/resolved-by :proposal/resolved-at]
-                  [:proposal/id proposal])
-        f (d/pull db [:proposal.fork/status :proposal/resolved-by :proposal/resolved-at
-                      {:proposal.fork/file-adoption [:db/id :file.adoption/id]}] fork-eid)
-        link (:proposal.fork/file-adoption f)
-        owners (when (:db/id link)
-                 (vec (take 2 (d/datoms db :avet :proposal.fork/file-adoption (:db/id link)))))
-        owner (manifests/owner db component)]
-    (when-not (and (= expected (adoptions/operation db (:id expected)))
-                   (= (:id expected) (:file.adoption/id link))
-                   (= [fork-eid] (mapv :e owners))
-                   (= {:proposal proposal :room room :fork-eid fork-eid :proposal-eid (:db/id p)}
-                      (select-keys owner [:proposal :room :fork-eid :proposal-eid]))
-                   (= :accepted (:proposal/status p) (:proposal.fork/status f))
-                   (= actor (:proposal/resolved-by p) (:proposal/resolved-by f))
-                   (= at (:proposal/resolved-at p) (:proposal/resolved-at f)))
-      (refuse! :finalization-report-mismatch))
-    {:operation expected :proposal proposal :status :accepted}))
+  (try
+    (let [facts (adoptions/terminal-facts! db expected)]
+      (when-not (and (= at (:updated-at expected))
+                     (= (get-in proof [:fork :db/id]) (:fork-eid facts)))
+        (refuse! :finalization-report-mismatch))
+      (dissoc facts :fork-eid))
+    (catch Exception _ (refuse! :finalization-report-mismatch))))
+
+(defn- batch-proof!
+  "Original acknowledged publisher or currently authorized recovery ONLY.
+   Bounded control artifacts, outside the writer; no target/source lookup."
+  [conn proof]
+  (let [value (:disposition proof)]
+    (when (:batch value)
+      (let [row (requests/get-request conn (:request value))]
+        (when-not (= value (dispositions/disposition row)) (refuse! :batch-filing-changed))
+        {:expected (processing/expected (batch-proof/request! conn row)) :value value}))))
 
 (defn- finalized-report!
   "Original immutable ACK only. Do not substitute a live ownership readback."
-  [db proof expected at]
-  (terminal-facts! db proof expected at))
+  [db proof expected at & [batch]]
+  (let [facts (terminal-facts! db proof expected at)]
+    (when batch
+      (when-not (empty? (processing/acceptance-tx db (:expected batch) (:value batch) expected))
+        (refuse! :batch-finalization-report-mismatch)))
+    facts))
 
 (defn finalize!
   "INTERNAL original publisher's finalization, NOT an endpoint or recovery API.
@@ -408,7 +412,8 @@
                                  :let [attr (keyword "publication" (name key))]
                                  :when (contains? receipt attr)]
                              [key (get receipt attr)]))
-          expected (adoptions/validate! (merge operation outcome {:state :accepted :updated-at at}))]
+          expected (adoptions/validate! (merge operation outcome {:state :accepted :updated-at at}))
+          batch (batch-proof! conn proof)]
       (try
         (let [report (d/transact
                       conn
@@ -420,13 +425,15 @@
                             (refuse! :preflight-changed))
                           (into (adoptions/transition-tx-data db (get-in proof [:fork :db/id])
                                                               operation :accepted outcome at)
-                                [{:db/id (get-in proof [:fork :db/id])
-                                  :proposal.fork/status :accepted
-                                  :proposal/resolved-by actor :proposal/resolved-at at}
-                                 {:db/id (get-in proof [:proposal :db/id])
-                                  :proposal/status :accepted
-                                  :proposal/resolved-by actor :proposal/resolved-at at}]))]])]
-          (finalized-report! (:db-after report) proof expected at))
+                                (concat [{:db/id (get-in proof [:fork :db/id])
+                                          :proposal.fork/status :accepted
+                                          :proposal/resolved-by actor :proposal/resolved-at at}
+                                         {:db/id (get-in proof [:proposal :db/id])
+                                          :proposal/status :accepted
+                                          :proposal/resolved-by actor :proposal/resolved-at at}]
+                                        (when batch
+                                          (processing/acceptance-tx db (:expected batch) (:value batch) expected)))))]])]
+          (finalized-report! (:db-after report) proof expected at batch))
         (catch Throwable error
           (when (instance? InterruptedException error) (.interrupt (Thread/currentThread)))
           (throw (ex-info "File adoption finalization was not acknowledged; durable outcome may already be accepted"
@@ -499,7 +506,7 @@
              [key (get receipt attr)])))
 
 (defn- recovery-tx
-  [db party room-id room observation binding receipt at]
+  [db party room-id room observation binding receipt at batch]
   (let [{:keys [proof operation]} (reconciliation-snapshot db party room-id (get-in observation [:operation :proposal]))]
     (same-operation! (:operation observation) operation)
     (when-not (= (immutable-proof (:proof observation)) (immutable-proof proof))
@@ -508,14 +515,17 @@
     (native-publication/validate-receipt! operation (get-in proof [:retained :manifest]) receipt)
     (case (:state operation)
       :claimed (refuse! :receipt-without-dispatch-admission)
-      :accepted []
+      :accepted (if batch (processing/acceptance-tx db (:expected batch) (:value batch) operation) [])
       :applying
-      (into (adoptions/transition-tx-data db (get-in proof [:fork :db/id]) operation :accepted
-                                          (assoc (receipt-outcome receipt) :reconciled-by party) at)
-            [{:db/id (get-in proof [:fork :db/id]) :proposal.fork/status :accepted
-              :proposal/resolved-by (:actor operation) :proposal/resolved-at at}
-             {:db/id (get-in proof [:proposal :db/id]) :proposal/status :accepted
-              :proposal/resolved-by (:actor operation) :proposal/resolved-at at}]))))
+      (let [outcome (assoc (receipt-outcome receipt) :reconciled-by party)
+            accepted (adoptions/validate! (merge operation outcome {:state :accepted :updated-at at}))]
+        (into (adoptions/transition-tx-data db (get-in proof [:fork :db/id]) operation :accepted outcome at)
+              (concat [{:db/id (get-in proof [:fork :db/id]) :proposal.fork/status :accepted
+                        :proposal/resolved-by (:actor operation) :proposal/resolved-at at}
+                       {:db/id (get-in proof [:proposal :db/id]) :proposal/status :accepted
+                        :proposal/resolved-by (:actor operation) :proposal/resolved-at at}]
+                      (when batch
+                        (processing/acceptance-tx db (:expected batch) (:value batch) accepted))))))))
 
 (defn recover!
   "INTERNAL CURRENT-authorized positive receipt observation, not dispatch or a
@@ -547,11 +557,12 @@
          :observed-state (:state operation) :reason :receipt-not-observed})
       (do
         (native-publication/validate-receipt! operation (get-in proof [:retained :manifest]) receipt)
-        (let [at (java.util.Date.)]
+        (let [at (java.util.Date.)
+              batch (batch-proof! conn proof)]
           (try
             (let [report (d/transact conn [[:db.fn/call
                                             (fn [writer-db]
-                                              (recovery-tx writer-db party room-id room observation binding receipt at))]])]
+                                              (recovery-tx writer-db party room-id room observation binding receipt at batch))]])]
               (when-not (and (:db-before report) (:db-after report)) (refuse! :recovery-report-unavailable))
               (let [before (reconciliation-snapshot (:db-before report) party room-id proposal-id)
                     _ (same-operation! operation (:operation before))
@@ -565,7 +576,7 @@
                                                  {:state :accepted :updated-at at :reconciled-by party}))
                                (refuse! :recovery-report-mismatch))
                     _ (adoptions/accepted-operation (:db-after report) (get-in proof [:fork :db/id]))]
-                (finalized-report! (:db-after report) proof expected (:updated-at expected))
+                (finalized-report! (:db-after report) proof expected (:updated-at expected) batch)
                 {:status :accepted :proposal proposal-id :operation-id (:id expected)
                  :actor (:actor expected) :already-accepted? (= :accepted (:state previous))
                  :recovered? true :outcome (select-keys expected [:commit :head :noop? :reconciled-by])}))

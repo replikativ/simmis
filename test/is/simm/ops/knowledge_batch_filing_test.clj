@@ -77,12 +77,22 @@
        (is (thrown? Exception (file! data))))
      (is (nil? (dispositions/disposition (requests/get-request conn (:request value))))))))
 
-(deftest proposed-batch-uses-the-real-proposal-and-retained-body-writer
+(defn- proposed-output! []
+  ;; Agent output belongs to its execution world, not the canonical source.
+  (let [cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write}]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (try
+        (repo/init! conn {:name "Disposable proposed output"})
+        (repo/write! conn "out/wiki/from-batch.md" (.getBytes "Retained proposed knowledge" "UTF-8"))
+        (outputs/capture-db @conn)
+        (finally (d/release conn) (d/delete-database cfg))))))
+
+(defn- proposed-fixture [f]
   (@#'fixture/fixture :proposed
    (fn [{:keys [conn w room ready owned expected value binding]}]
-     (repo/write! owned "out/wiki/from-batch.md" (.getBytes "Retained proposed knowledge" "UTF-8"))
      (let [retained (:input (requests/payload conn (requests/get-request conn (:request value))))
-           output (outputs/capture-db @owned)
+           output (proposed-output!)
            plan (plans/plan {:request (:request value) :room (:room w) :attempt (:candidate value)
                              :environment (:environment retained) :workflow-bundle (parse-uuid (get-in retained [:workflow :bundle]))
                              :publication-basis (:publication-basis ready) :output output :retained-inputs (:inputs retained)})
@@ -97,11 +107,23 @@
                      filing/current-target (constantly (:target prepared))
                      filing/prepare (constantly prepared)
                      publication/publish! #(swap! publications conj %)]
-         (is (= value (file! data)))
-         (is (= [(:proposal plan)] @publications))
-         (is (= :review (:knowledge.batch/state (batches/batch @conn (:batch ready)))))
-         (is (= (:batch ready) (:knowledge.stream/active-batch (streams/stream @conn (:stream ready)))))
-         (is (= 1 (count (filter #(= :claimed (:knowledge.item/state %)) (streams/items @conn (:stream ready))))))
-         (is (not-any? #(= :processed (:knowledge.item/state %)) (streams/items @conn (:stream ready))))
-         (with-redefs [filing/prepare (fn [& _] (throw (AssertionError. "Historical proposal may not recertify")))]
-           (is (= value (file! data)))))))))
+         (f (assoc data :result (file! data) :ready ready :expected expected
+                   :prepared prepared :publications publications :owned owned)))))))
+
+(deftest proposed-batch-uses-the-real-proposal-and-retained-body-writer
+  (proposed-fixture
+   (fn [{:keys [conn value result ready prepared publications] :as data}]
+     (is (= value result))
+     (is (= [(:proposal (:plan prepared))] @publications))
+     (is (= :review (:knowledge.batch/state (batches/batch @conn (:batch ready)))))
+     (is (= (:batch ready) (:knowledge.stream/active-batch (streams/stream @conn (:stream ready)))))
+     (is (= 1 (count (filter #(= :claimed (:knowledge.item/state %)) (streams/items @conn (:stream ready))))))
+     (is (not-any? #(= :processed (:knowledge.item/state %)) (streams/items @conn (:stream ready))))
+     (with-redefs [filing/prepare (fn [& _] (throw (AssertionError. "Historical proposal may not recertify")))]
+       (is (= value (file! data)))))))
+
+(deftest review-replay-rejects-an-unrelated-adoption-link
+  (proposed-fixture
+   (fn [{:keys [conn ready] :as data}]
+     (d/transact conn [[:db/add [:knowledge.batch/id (:batch ready)] :knowledge.batch/adoption (random-uuid)]])
+     (is (thrown? Exception (file! data))))))

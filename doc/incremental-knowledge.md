@@ -141,15 +141,31 @@ in review and its selected items claimed. Historical and lost-acknowledgement
 replays require the whole joint receipt; partial states are refused rather than
 repaired. An exact closed no-op replay leaves a later active batch untouched.
 
+Accepted proposals close their batch only in the existing original-publisher
+finalization or explicitly authorized recovery transaction, after observing the
+original scoped winning native publication receipt. The disposition stays
+`proposed`; the batch records `accepted` and the adoption operation UUID. Exact
+selected items become processed together with adoption, component, and Proposal
+acceptance. Requester, adopting reviewer, and recovery actor remain distinct.
+
+Historical verification requires the complete accepted journal/component/
+Proposal linkage, canonical filing hash, batch closure, and exact item states.
+A bare accepted Proposal, partial batch transition, unrelated adoption link, or
+missing immutable acknowledgement cannot manufacture success. Explicit recovery
+observes the original native receipt; it does not repeat publication. Replays
+preserve a later active batch.
+
 A deterministic, model-free runtime test exercises actual owned admission,
 world fork/setup, evaluation, durable Attempt certification, and no-op filing
 with discard settlement. Provider preparation and registry-to-memory provisioning
-remain fixture seams; this does not prove a provisioned deployment, scheduled backlog drain, or native
-file adoption of a proposed change.
+remain fixture seams; this does not prove a provisioned deployment or scheduled
+backlog drain.
+Separate proposed-output fixtures substitute Attempt certification while testing
+real canonical-memory provisioning, native scoped publication, joint acceptance,
+lost acknowledgements, and positive receipt recovery.
 
-Freeze bounded batches and context independently; claim one batch per stream
-across manual and scheduled invocations; reuse existing work-request admission;
-and finish proposal-resolution integration with the existing positive native
-file-adoption and guarded dismissal transactions. Pending proposals hold the next batch. Benchmarks use explicit frozen cases
-and must never claim or advance a live stream. No default schedule is enabled by
-this foundation.
+Remaining integration includes guarded dismissal, shared manual/scheduled
+invocation, explicit failed-batch recovery, and runtime activation. Pending
+proposals hold the next batch. Benchmarks use explicit frozen cases and must
+never claim or advance a live stream. No default schedule is enabled by this
+foundation.

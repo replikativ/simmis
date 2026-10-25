@@ -57,7 +57,9 @@
      (is (= (:batch ready) (:knowledge.stream/active-batch (streams/stream @conn (:stream ready)))))
      (is (= 1 (count (filter #(= :claimed (:knowledge.item/state %)) (streams/items @conn (:stream ready))))))
      (is (not-any? #(= :processed (:knowledge.item/state %)) (streams/items @conn (:stream ready))))
-     (is (= [] (processing/filing-tx @conn expected value))))))
+     ;; This fragment-only fixture deliberately has no canonical Proposal.
+     ;; A historical read must refuse that partial joint publication.
+     (is (thrown? Exception (processing/filing-tx @conn expected value))))))
 
 (deftest exact-replay-never-clears-a-later-batch
   (fixture :no-op
@@ -83,7 +85,7 @@
          (is (thrown? Exception (processing/filing-tx @conn expected value))))))))
 
 (deftest complete-membership-and-source-identity-are-checked-in-the-writer
-  (doseq [damage [:extra-member :changed-content :changed-frozen :changed-owner :selection-ref :frozen-ref]]
+  (doseq [damage [:extra-member :changed-content :changed-frozen :changed-owner :selection-ref :frozen-ref :stray-adoption]]
     (fixture :no-op
      (fn [{:keys [conn ready expected value]}]
        (let [items (streams/items @conn (:stream ready))
@@ -97,5 +99,6 @@
              :changed-frozen [{:db/id (:db/id batch) :knowledge.batch/frozen-id (random-uuid)}]
              :changed-owner [{:db/id (:db/id batch) :knowledge.batch/by (random-uuid)}]
              :selection-ref [{:db/id (:db/id batch) :knowledge.batch/selection (random-uuid)}]
-             :frozen-ref [{:db/id (:db/id batch) :knowledge.batch/frozen (random-uuid)}]))
+             :frozen-ref [{:db/id (:db/id batch) :knowledge.batch/frozen (random-uuid)}]
+             :stray-adoption [{:db/id (:db/id batch) :knowledge.batch/adoption (random-uuid)}]))
          (is (thrown? Exception (processing/filing-tx @conn expected value))))))))
