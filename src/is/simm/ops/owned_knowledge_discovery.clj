@@ -373,7 +373,7 @@
   (throw error))
 
 (defn- abandon-unlinked!
-  [host principal handle request from]
+  [host principal handle request from mode]
   (when-not (m/validate (case from :ready abandon-ready-schema :capturing abandon-capturing-schema) request)
     (refuse! :invalid-recovery))
   (try
@@ -393,13 +393,18 @@
             (let [db (reads/current-host-control-db! host)
                   _ (work/authorize-in! db principal room-id)
                   b (batches/batch db (:batch request))
-                  transition (case from :ready recovery/abandon-tx :capturing recovery/abandon-capturing-tx)]
+                  transition (case [from mode]
+                               [:ready :skip] recovery/abandon-tx
+                               [:capturing :skip] recovery/abandon-capturing-tx
+                               [:ready :requeue] recovery/requeue-ready-tx
+                               [:capturing :requeue] recovery/requeue-capturing-tx)
+                  outcome (case mode :skip :abandoned-skip :requeue :abandoned-requeue)]
               (when-not (and b (= [author room-id (:expected-claim request)]
                                (mapv b [:knowledge.batch/by :knowledge.batch/room :knowledge.batch/claim]))
                              (or (= :capturing from) (= (:expected-frozen request) (:knowledge.batch/frozen-id b)))
                              (or (= from (:knowledge.batch/state b))
                                  (and (= :closed (:knowledge.batch/state b))
-                                      (= :abandoned-skip (:knowledge.batch/outcome b))
+                                      (= outcome (:knowledge.batch/outcome b))
                                       (= from (:knowledge.batch/recovery-from b)))))
                 (refuse! :batch-not-recoverable))
               (let [origin {:batch (:knowledge.batch/id b) :selection (:knowledge.batch/selection-id b)
@@ -412,7 +417,7 @@
                     expected (recovery/expected proof anchor)
                     value (recovery/decision {:batch (:batch request) :room room-id :by (:party resolved)
                                               :client (:request-id request) :at (java.util.Date.)
-                                              :mode :skip :reason (:reason request)})]
+                                              :mode mode :reason (:reason request)})]
                 (check!)
                 (when (seq (transition @control expected value))
                   (d/transact control
@@ -425,7 +430,7 @@
                 ;; This is observation of the complete terminal result, never a
                 ;; new native action or a reconstructed dispatch acknowledgement.
                 (when-not (empty? (transition @control expected value)) (refuse! :recovery-unconfirmed))
-                {:status :abandoned :batch (:batch request) :operation (:id value) :mode :skip})))))))
+                {:status :abandoned :batch (:batch request) :operation (:id value) :mode mode})))))))
     (catch Throwable error (rethrow-interrupted! error))))
 
 (defn abandon-ready!
@@ -434,11 +439,23 @@
    source/default/model lookup, inference, refund or automatic schedule resume.
    Lost ACK may throw; repeat the SAME request-id to inspect the joint result."
   [host principal handle request]
-  (abandon-unlinked! host principal handle request :ready))
+  (abandon-unlinked! host principal handle request :ready :skip))
 
 (defn abandon-capturing!
   "Explicit skip after capture physically exits. A ready batch requires the
    separately inspected ready API, even if its freeze acknowledgement was lost.
    Never infer the unbound scheduler slot, retry capture, or release source roots."
   [host principal handle request]
-  (abandon-unlinked! host principal handle request :capturing))
+  (abandon-unlinked! host principal handle request :capturing :skip))
+
+(defn requeue-ready!
+  "Explicitly restore an inspected ready batch's source-version eligibility.
+   Future discovery may supersede them; this never executes the old frozen Run."
+  [host principal handle request]
+  (abandon-unlinked! host principal handle request :ready :requeue))
+
+(defn requeue-capturing!
+  "Restore eligibility after physical capture exit. No inferred scheduler slot,
+   automatic resumption, old request replay, source rewind or budget reset."
+  [host principal handle request]
+  (abandon-unlinked! host principal handle request :capturing :requeue))

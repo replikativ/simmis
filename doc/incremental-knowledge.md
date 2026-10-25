@@ -389,6 +389,37 @@ adoption records, and leaves later stream and schedule work untouched. A lost
 acknowledgement remains an error until the caller explicitly repeats that intent.
 Recovery does not resume a disabled schedule. Capturing batches have no installed
 scheduled binding, so recovery does not infer or repair their unbound occurrences.
-Requeue needs a distinct batch generation and is separate work, as are submitted
-recovery and final source-root retirement. These alpha operations are not yet
-exposed or activated in the running UI.
+Explicit requeue is also available for either unlinked phase. Submitted recovery
+and final source-root retirement remain separate work. These alpha operations are
+not yet exposed or activated in the running UI.
+
+Requeue closes the old batch with an `abandoned-requeue` audit, restores the exact
+selected items to the pending index, removes their old batch associations, clears
+only the old stream hold, and increments `batch-generation` once in that same
+transaction. It preserves item order, discovery revision, source cursor/root,
+workflow identity and budget state. The complete expected stream belongs to the
+selection digest, so unchanged source versions now have a new batch identity.
+
+| Identity or counter | Meaning | Changes on requeue? |
+| --- | --- | --- |
+| Revisit epoch | Deliberate semantic revisit of source history | No |
+| Discovery revision | Published source-journal progress | No |
+| Batch generation | Explicitly restored eligibility after abandonment | Once |
+| Request / Run | A separate admitted execution | No execution is started |
+
+Requeue restores eligibility; it does not promise another execution of the old
+frozen bytes. The next invocation goes through ordinary discovery, fresh selection
+and admission. New source content can supersede or remove those versions before
+they run. The old batch and its frozen artifacts remain historical evidence.
+
+The old batch's atomic typed audit and retained selection form its recovery
+receipt. A repeated identical intent checks generation-before/after arithmetic,
+the current generation's monotonicity, absent old request/resolution links, no
+remaining items owned by the old batch, and any completed scheduled withdrawal.
+It performs no mutations, even when later discovery changes item order/state or
+another batch claims them. Conflicting decisions and exhausted generation bounds
+are held. This relies on canonical writers and atomic transactions; matching
+hashes do not authenticate arbitrarily fabricated database records.
+
+Generation is required in this inactive alpha's stream snapshots. Old private
+development snapshots need a fresh alpha home; this work adds no migration layer.

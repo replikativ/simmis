@@ -25,6 +25,7 @@
          [:knowledge.stream/source :db.type/uuid]
          [:knowledge.stream/program :db.type/uuid] [:knowledge.stream/epoch :db.type/uuid]
          [:knowledge.stream/revision :db.type/long] [:knowledge.stream/next-order :db.type/long]
+         [:knowledge.stream/batch-generation :db.type/long]
          [:knowledge.stream/cursor-commit :db.type/uuid] [:knowledge.stream/cursor-root :db.type/uuid]
          [:knowledge.stream/cursor-tx :db.type/long] [:knowledge.stream/last-discovery :db.type/uuid]
          [:knowledge.stream/active-batch :db.type/uuid]
@@ -169,6 +170,8 @@
                                                   :knowledge.stream/last-discovery :knowledge.stream/source]))
                      (pos-int? (:knowledge.stream/revision expected))
                      (< (:knowledge.stream/revision expected) Long/MAX_VALUE)
+                     (integer? (:knowledge.stream/batch-generation expected))
+                     (<= 0 (:knowledge.stream/batch-generation expected) Long/MAX_VALUE)
                      (integer? (:knowledge.stream/cursor-tx expected)) (<= 0 (:knowledge.stream/cursor-tx expected) Long/MAX_VALUE)
                      (integer? (:knowledge.stream/next-order expected))
                      (<= 0 (:knowledge.stream/next-order expected) (- Long/MAX_VALUE max-changes))
@@ -223,6 +226,8 @@
         (when (and current
                    (not (and (pos-int? (:knowledge.stream/revision current))
                              (< (:knowledge.stream/revision current) Long/MAX_VALUE)
+                             (integer? (:knowledge.stream/batch-generation current))
+                             (<= 0 (:knowledge.stream/batch-generation current) Long/MAX_VALUE)
                              (integer? (:knowledge.stream/next-order current))
                              (<= 0 (:knowledge.stream/next-order current) (- Long/MAX_VALUE max-changes)))))
           (refuse! :invalid-stream-counters))
@@ -266,6 +271,7 @@
               cursor (merge (entity "knowledge.stream" value)
                             {:knowledge.stream/revision (long revision)
                              :knowledge.stream/next-order (long (+ start (count eligible)))
+                             :knowledge.stream/batch-generation (long (or (:knowledge.stream/batch-generation current) 0))
                              :knowledge.stream/cursor-commit (get-in plan [:after :commit])
                              :knowledge.stream/source (source-id (:after plan))
                              :knowledge.stream/cursor-tx (long (get-in plan [:after :max-tx]))
