@@ -137,7 +137,7 @@
   '{documents {:arglists ([])
                :doc "Source-selected Markdown descriptors from the current file world, with status and selection receipt. Invalid/pending views are explicit."}
     read {:arglists ([path])
-          :doc "Exact Markdown source, semantic blocks and properties at a repository-relative path, with selection receipt. Missing document is nil; non-ready views carry diagnostics."}
+          :doc "Exact Markdown source, semantic blocks and properties at a repository-relative path, with selection receipt. Includes file-backed wiki and capture notes; media links/provenance are data, not visual inspection. Missing document is nil; non-ready views carry diagnostics."}
     search {:arglists ([text])
             :doc "Literal case-sensitive source search, at most 50 hits, with UTF-16 ranges and source/selection identifiers. Receipts borrow source lifetime, not archival retention."}})
 
