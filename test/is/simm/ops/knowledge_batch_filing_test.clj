@@ -90,7 +90,7 @@
 
 (defn- proposed-fixture [f]
   (@#'fixture/fixture :proposed
-   (fn [{:keys [conn w room ready owned expected value binding]}]
+   (fn [{:keys [conn w room ready owned expected value binding] :as state}]
      (let [retained (:input (requests/payload conn (requests/get-request conn (:request value))))
            output (proposed-output!)
            plan (plans/plan {:request (:request value) :room (:room w) :attempt (:candidate value)
@@ -101,7 +101,7 @@
                                                :output (:id output))))
            prepared {:request-binding binding :disposition value :plan plan :batch expected
                      :party (:owner w) :room (:room w) :target (get-in ready [:publication-basis :target])}
-           data {:conn conn :w w :room room :value value :principal (ops/party-principal (:owner w))}
+           data (assoc state :value value :principal (ops/party-principal (:owner w)))
            publications (atom [])]
        (with-redefs [sdb/get-conn (constantly conn)
                      filing/current-target (constantly (:target prepared))

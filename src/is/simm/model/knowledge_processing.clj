@@ -17,7 +17,8 @@
           {:db/ident ident :db/valueType type :db/cardinality :db.cardinality/one})
         [[:knowledge.batch/disposition :db.type/uuid]
          [:knowledge.batch/outcome :db.type/keyword]
-         [:knowledge.batch/adoption :db.type/uuid]]))
+         [:knowledge.batch/adoption :db.type/uuid]
+         [:knowledge.batch/decision-filing :db.type/string]]))
 
 (defn- refuse! [reason]
   (throw (ex-info "Knowledge processing receipt is incomplete"
@@ -105,6 +106,31 @@
            (contains? #{nil :claimed :applying :aborted}
                       (:state (adoptions/current-operation db (:fork-eid owner))))))))
 
+(defn- dismissal-facts! [db value batch]
+  (let [owner (manifests/owner db (:manifest value))
+        proposal (when owner (d/pull db [:proposal/status :proposal/filing-hash :proposal/resolved-by :proposal/resolved-at]
+                                     (:proposal-eid owner)))
+        fork (when owner (d/pull db [:proposal.fork/status :proposal/resolved-by :proposal/resolved-at]
+                                (:fork-eid owner)))
+        by (:proposal/resolved-by proposal) at (:proposal/resolved-at proposal)]
+    (when-not (and owner (= (:proposal value) (:proposal owner))
+                   (= :dismissed (:proposal/status proposal) (:proposal.fork/status fork))
+                   (uuid? by) (= by (:proposal/resolved-by fork))
+                   (instance? java.util.Date at) (= at (:proposal/resolved-at fork))
+                   (string? (:knowledge.batch/decision-filing batch))
+                   (re-matches #"[0-9a-f]{64}" (:knowledge.batch/decision-filing batch))
+                   (= (:knowledge.batch/decision-filing batch) (:proposal/filing-hash proposal))
+                   (nil? (:knowledge.batch/adoption batch)))
+      (refuse! :partial-dismissal))
+    (when-let [operation (adoptions/withdrawn-operation db (:fork-eid owner))]
+      (when-not (and (= [(:proposal value) (:manifest value) (:id value) (:knowledge.batch/room batch)
+                         (:knowledge.batch/decision-filing batch)]
+                        [(:proposal operation) (:manifest operation) (:disposition operation) (:room operation)
+                         (:filing operation)])
+                     (= (:knowledge.batch/target batch) (pins/target-id (:target operation))))
+        (refuse! :withdrawn-filing-mismatch)))
+    {:by by :at at}))
+
 (defn filing-tx
   "Compose with the exact canonical disposition insert on the SAME writer DB.
    A proposed update holds all selected items until actual adoption. A certified
@@ -119,23 +145,30 @@
         expected-state (if proposed? :review :closed)
         accepted? (and proposed? (= :closed (:knowledge.batch/state batch))
                        (= :accepted (:knowledge.batch/outcome batch)))
-        item-state (if (and proposed? (not accepted?)) :claimed :processed)
+        dismissed? (and proposed? (= :closed (:knowledge.batch/state batch))
+                        (= :dismissed (:knowledge.batch/outcome batch)))
+        item-state (cond dismissed? :skipped (and proposed? (not accepted?)) :claimed :else :processed)
         existing (:knowledge.batch/disposition batch)
         canonical (:knowledge.disposition/id request)]
     (if (or existing canonical)
       (do
         (when-not (and (= (:id value) existing canonical)
-                       (or accepted? (= expected-state (:knowledge.batch/state batch)))
+                       (or accepted? dismissed? (= expected-state (:knowledge.batch/state batch)))
                        (every? #(= item-state (:knowledge.item/state %)) items)
                        (cond
-                         accepted? (and (not= id (:knowledge.stream/active-batch stream))
+                         accepted? (and (nil? (:knowledge.batch/decision-filing batch))
+                                        (not= id (:knowledge.stream/active-batch stream))
                                         (accepted-facts! db (:selection expected) value batch))
+                         dismissed? (and (not= id (:knowledge.stream/active-batch stream))
+                                         (dismissal-facts! db value batch))
                          proposed? (and (= id (:knowledge.stream/active-batch stream))
                                         (nil? (:knowledge.batch/outcome batch))
                                         (nil? (:knowledge.batch/adoption batch))
+                                        (nil? (:knowledge.batch/decision-filing batch))
                                         (open-proposal? db value))
                          :else (and (= :no-op (:knowledge.batch/outcome batch))
                                     (nil? (:knowledge.batch/adoption batch))
+                                    (nil? (:knowledge.batch/decision-filing batch))
                                     (not= id (:knowledge.stream/active-batch stream)))))
           (refuse! :partial-filing))
         [])
@@ -144,6 +177,7 @@
                        (= id (:knowledge.stream/active-batch stream))
                        (nil? (:knowledge.batch/outcome batch))
                        (nil? (:knowledge.batch/adoption batch))
+                       (nil? (:knowledge.batch/decision-filing batch))
                        (every? #(= :claimed (:knowledge.item/state %)) items))
           (refuse! :batch-not-submitted))
         (cond-> [{:db/id (:db/id batch) :knowledge.batch/state expected-state
@@ -163,7 +197,8 @@
   (adoption-binding! (:selection expected) value accepted)
   (let [{:keys [request batch stream items]} (binding! db expected value)
         id (:knowledge.batch/id batch)]
-    (when-not (= (:id value) (:knowledge.batch/disposition batch) (:knowledge.disposition/id request))
+    (when-not (and (nil? (:knowledge.batch/decision-filing batch))
+                   (= (:id value) (:knowledge.batch/disposition batch) (:knowledge.disposition/id request)))
       (refuse! :missing-filing))
     (if (= :closed (:knowledge.batch/state batch))
       (do
@@ -187,3 +222,37 @@
                 :knowledge.batch/outcome :accepted :knowledge.batch/adoption (:id accepted)}
                [:db/retract [:knowledge.stream/id (:knowledge.stream/id stream)] :knowledge.stream/active-batch id]]
               (map (fn [row] {:db/id (:db/id row) :knowledge.item/state :processed}) items))))))
+
+(defn dismissal-tx
+  "Fixed composition with an authorized Proposal/component withdrawal. Skipped
+   is a terminal decision about this source version, not processed knowledge or
+   permission to replay/requeue it. Compare the original complete filing and
+   selected membership; exact replay verifies the existing joint decision."
+  [db expected value by at]
+  (when-not (and (= :proposed (:kind value)) (uuid? by) (instance? java.util.Date at))
+    (refuse! :invalid-dismissal))
+  (let [{:keys [request batch stream items]} (binding! db expected value)
+        id (:knowledge.batch/id batch)]
+    (when-not (= (:id value) (:knowledge.batch/disposition batch) (:knowledge.disposition/id request))
+      (refuse! :missing-filing))
+    (if (= :closed (:knowledge.batch/state batch))
+      (do
+        (when-not (and (= :dismissed (:knowledge.batch/outcome batch))
+                       (= {:by by :at at} (dismissal-facts! db value batch))
+                       (every? #(= :skipped (:knowledge.item/state %)) items)
+                       (not= id (:knowledge.stream/active-batch stream)))
+          (refuse! :partial-dismissal))
+        [])
+      (let [owner (manifests/owner db (:manifest value))
+            filing (when owner (:proposal/filing-hash (d/pull db [:proposal/filing-hash] (:proposal-eid owner))))]
+        (when-not (and (= :review (:knowledge.batch/state batch))
+                       (nil? (:knowledge.batch/outcome batch)) (nil? (:knowledge.batch/adoption batch))
+                       (nil? (:knowledge.batch/decision-filing batch))
+                       (= id (:knowledge.stream/active-batch stream))
+                       (every? #(= :claimed (:knowledge.item/state %)) items)
+                       (open-proposal? db value) (string? filing) (re-matches #"[0-9a-f]{64}" filing))
+          (refuse! :dismissal-prestate-mismatch))
+        (into [{:db/id (:db/id batch) :knowledge.batch/state :closed
+                :knowledge.batch/outcome :dismissed :knowledge.batch/decision-filing filing}
+               [:db/retract [:knowledge.stream/id (:knowledge.stream/id stream)] :knowledge.stream/active-batch id]]
+              (map (fn [row] {:db/id (:db/id row) :knowledge.item/state :skipped}) items))))))

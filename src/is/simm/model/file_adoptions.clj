@@ -228,6 +228,19 @@
       (when-not (= :accepted (:state row)) (refuse! :journal-not-accepted))
       row)))
 
+(defn withdrawn-operation
+  "INTERNAL terminal metadata only: a dismissed file component may retain an
+   absent or aborted publication history, never a claimed/applying/accepted one.
+   No authorization, native negative inference or ownership recovery occurs."
+  [db fork-eid]
+  (let [{:keys [fork link-installed?]} (operation-fork db fork-eid)]
+    (when-not (and (:db/id fork) (= :file-output (:proposal.fork/system-type fork))
+                   (uuid? (:proposal.fork/scope fork)) (= :dismissed (:proposal.fork/status fork)))
+      (refuse! :component-not-dismissed))
+    (let [row (checked-history db fork link-installed?)]
+      (when (and row (not= :aborted (:state row))) (refuse! :publication-not-withdrawn))
+      row)))
+
 (defn terminal-facts!
   "INTERNAL historical integrity of the complete joint acceptance. This does
    NOT observe a native publication receipt, authorize a caller or complete a

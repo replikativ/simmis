@@ -12,6 +12,8 @@
             [is.simm.model.forkset :as fs]
             #?(:clj [org.replikativ.spindel.blocking :as blocking])
             #?(:clj [is.simm.ops.proposals :as props])
+            #?(:clj [is.simm.ops.owned-reads :as owned-reads])
+            #?(:clj [org.replikativ.spindel.engine.core :as ec])
             #?(:clj [is.simm.ops.semantic-diff :as sdiff])
             #?(:clj [is.simm.ops.file-output-review :as file-review])
             #?(:clj [is.simm.ops.file-output-service :as file-service])
@@ -356,35 +358,53 @@
                                                    :fork-branch (when-not (str/blank? fb) fb)}))
                     :cljs nil))))
 
+#?(:clj
+   (defn prepare-decision-operation
+     "Capture authenticated identity and the exact original App before queuing.
+      This HOST-only thunk is not room state, a client capability or a callback
+      supplied by the user. The worker retains its original control connection."
+     [party verb proposal {:keys [scope branch note body]}]
+     (when-not (uuid? party)
+       (throw (ex-info "Authentication required" {:type :authentication-required})))
+     (let [id (wire-uuid proposal) scope-id (when scope (wire-uuid scope))
+           branch (if (and (string? branch) (str/blank? branch)) nil branch)]
+       (when-not (and id (#{:dismiss-proposal :dismiss-fork :request-changes} verb)
+                      (or (nil? note) (and (string? note) (<= (count note) 16000)))
+                      (or (nil? branch) (and (string? branch) (<= (count branch) 512)))
+                      (or (not= :dismiss-fork verb) (and scope-id branch))
+                      (or (not= :request-changes verb) (and (string? body) (<= (count body) 16000))))
+         (throw (ex-info "Invalid proposal decision" {:type :validation-error})))
+       (let [invoke (application/capture-operation)
+             action (case verb
+                      :dismiss-proposal {:verb verb}
+                      :dismiss-fork {:verb verb :scope scope-id :branch branch}
+                      :request-changes (cond-> {:verb verb} branch (assoc :branch branch)))]
+         (fn []
+           (invoke
+            (fn [host]
+              (binding [ec/*execution-context* (:execution-ctx host)]
+                (owned-reads/current-host-control-db! host)
+                (props/decide-in! (get-in host [::owned-reads/owner :control-conn])
+                                 id party action {:note note :body body})))))))))
+
 (defn-spin-remote request-changes!
   [server-id proposal-id-str body fork-branch]
   (spin-remote server-id [proposal-id-str body fork-branch]
-               (let [s (identity proposal-id-str) b (identity body) fb (identity fork-branch)]
-                 #?(:clj (ctx/with-server-context
-                ;; `reopen-fork!` reaches the room's overlay registry, and
-                ;; `head-id` resolves a system — both want a bound context
-                           (let [r (props/request-changes! (java.util.UUID/fromString s)
-                                                           {:body b
-                                                            :by (access/authenticated-party-id)
-                                                            :fork-branch (when-not (str/blank? fb) fb)})]
-                             (let [strs #(mapv (fn [x] (-> x
-                                                           (update :scope str)
-                                                           (update :author str)))
-                                               %)]
-                               (-> r
-                                   (update :comment str)
-                                   (update :reopened strs)
-                                   (update :not-reopened strs)))))
-                    :cljs nil))))
+               #?(:clj
+                  (let [operation (prepare-decision-operation (access/authenticated-party-id) :request-changes
+                                                              proposal-id-str {:body body :branch fork-branch})
+                        r (await (blocking/blocking operation))
+                        strs #(mapv (fn [x] (-> x (update :scope str) (update :author str))) %)]
+                    (-> r (update :comment str) (update :reopened strs) (update :not-reopened strs)))
+                  :cljs nil)))
 
 (defn-spin-remote dismiss-proposal!
   [server-id proposal-id-str note]
   (spin-remote server-id [proposal-id-str note]
-               (let [s (identity proposal-id-str) n (identity note)]
-                 #?(:clj (props/dismiss-proposal! (java.util.UUID/fromString s)
-                                                  :note n
-                                                  :by (access/authenticated-party-id))
-                    :cljs nil))))
+               #?(:clj (let [operation (prepare-decision-operation (access/authenticated-party-id) :dismiss-proposal
+                                                                   proposal-id-str {:note note})]
+                         (await (blocking/blocking operation)))
+                  :cljs nil)))
 
 ;; Per-fork decisions. The room decides who may SEE a ForkSet (`{:proposal id}`
 ;; in access/rpc-policy). Accepting additionally needs :merge on THAT fork's
@@ -411,11 +431,7 @@
 (defn-spin-remote dismiss-fork!
   [server-id proposal-id-str scope-str branch note]
   (spin-remote server-id [proposal-id-str scope-str branch note]
-               (let [s (identity proposal-id-str) sc (identity scope-str)
-                     b (identity branch) n (identity note)]
-                 #?(:clj (props/dismiss-fork! (java.util.UUID/fromString s)
-                                              (java.util.UUID/fromString sc)
-                                              (keyword b)
-                                              :note n
-                                              :by (access/authenticated-party-id))
-                    :cljs nil))))
+               #?(:clj (let [operation (prepare-decision-operation (access/authenticated-party-id) :dismiss-fork
+                                                                   proposal-id-str {:scope scope-str :branch branch :note note})]
+                         (await (blocking/blocking operation)))
+                  :cljs nil)))

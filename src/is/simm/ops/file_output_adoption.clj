@@ -12,8 +12,7 @@
             [is.simm.model.file-outputs :as manifests]
             [is.simm.model.knowledge-dispositions :as dispositions]
             [is.simm.model.knowledge-processing :as processing]
-            [is.simm.model.work-requests :as requests]
-            [is.simm.ops.knowledge-batch-proof :as batch-proof]
+            [is.simm.ops.knowledge-batch-resolution :as batch-resolution]
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.model.system-db :as sdb]
             [is.simm.ops.file-output-plan :as plans]
@@ -361,16 +360,6 @@
       (dissoc facts :fork-eid))
     (catch Exception _ (refuse! :finalization-report-mismatch))))
 
-(defn- batch-proof!
-  "Original acknowledged publisher or currently authorized recovery ONLY.
-   Bounded control artifacts, outside the writer; no target/source lookup."
-  [conn proof]
-  (let [value (:disposition proof)]
-    (when (:batch value)
-      (let [row (requests/get-request conn (:request value))]
-        (when-not (= value (dispositions/disposition row)) (refuse! :batch-filing-changed))
-        {:expected (processing/expected (batch-proof/request! conn row)) :value value}))))
-
 (defn- finalized-report!
   "Original immutable ACK only. Do not substitute a live ownership readback."
   [db proof expected at & [batch]]
@@ -413,7 +402,7 @@
                                  :when (contains? receipt attr)]
                              [key (get receipt attr)]))
           expected (adoptions/validate! (merge operation outcome {:state :accepted :updated-at at}))
-          batch (batch-proof! conn proof)]
+          batch (batch-resolution/retained! conn (:disposition proof))]
       (try
         (let [report (d/transact
                       conn
@@ -558,7 +547,7 @@
       (do
         (native-publication/validate-receipt! operation (get-in proof [:retained :manifest]) receipt)
         (let [at (java.util.Date.)
-              batch (batch-proof! conn proof)]
+              batch (batch-resolution/retained! conn (:disposition proof))]
           (try
             (let [report (d/transact conn [[:db.fn/call
                                             (fn [writer-db]

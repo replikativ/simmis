@@ -241,12 +241,12 @@
               pending (filterv #(and (get-in % [:after]) (= :trigger (get-in % [:after :role]))) (:changes plan))
               eligible (filterv #(let [metadata (:after %) iid (item-id id (:path %) metadata)
                                       old (row db :knowledge.item/id iid)]
-                                  (when (and old (not (#{:pending :processed :superseded :removed}
+                                  (when (and old (not (#{:pending :processed :skipped :superseded :removed}
                                                        (:knowledge.item/state old))))
                                     (refuse! :invalid-item-state))
                                   ;; Only an explicit future requeue operation
-                                  ;; may revisit an already processed version.
-                                  (not (#{:processed :claimed :pending} (:knowledge.item/state old)))) pending)
+                                  ;; may revisit an already processed/skipped version.
+                                  (not (#{:processed :skipped :claimed :pending} (:knowledge.item/state old)))) pending)
               new-ids (set (map #(item-id id (:path %) (:after %)) pending))
               superseded (mapcat (fn [{:keys [path after]}]
                                    (for [eid (pending-for-path db id path)

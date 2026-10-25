@@ -155,6 +155,29 @@ missing immutable acknowledgement cannot manufacture success. Explicit recovery
 observes the original native receipt; it does not repeat publication. Replays
 preserve a later active batch.
 
+Guarded retained-file withdrawal atomically closes the batch with outcome
+`dismissed`, marks only its selected items `skipped`, and clears its own active
+pointer. Skipped is not incorporated knowledge. The same source version stays
+skipped through later discovery; new content remains eligible. A deliberate
+revisit requires a future explicit requeue or new epoch, rather than an automatic
+retry loop. Requesting changes adds a comment and keeps the batch in review.
+
+Dismissal reuses existing Proposal/component decision facts and retains their
+filing hash as a scalar batch binding. Historical checks verify the complete
+joint decision and any matching absent/aborted publication history. Unresolved
+publication prevents withdrawal. Author withdrawal retains its original
+permissions and does not gain a merge requirement.
+
+Browser decisions capture the original App and authenticated party before
+queuing blocking work. Fresh decisions authorize the exact action and check App
+readiness before bounded control-artifact reads, repeat authority/liveness in the
+writer, and validate the joint immutable acknowledgement. They use one captured
+control connection and need no Room hydration or target/source lease. A lost
+acknowledgement remains uncertain; historical inspection does not manufacture
+success for the original invocation. In contrast, recording an already observed
+native publication may finish under its retained original App operation after
+shutdown has fenced new work.
+
 A deterministic, model-free runtime test exercises actual owned admission,
 world fork/setup, evaluation, durable Attempt certification, and no-op filing
 with discard settlement. Provider preparation and registry-to-memory provisioning
@@ -164,8 +187,8 @@ Separate proposed-output fixtures substitute Attempt certification while testing
 real canonical-memory provisioning, native scoped publication, joint acceptance,
 lost acknowledgements, and positive receipt recovery.
 
-Remaining integration includes guarded dismissal, shared manual/scheduled
-invocation, explicit failed-batch recovery, and runtime activation. Pending
+Remaining integration includes shared manual/scheduled invocation, explicit
+failed-batch/retirement recovery, and runtime activation. Pending
 proposals hold the next batch. Benchmarks use explicit frozen cases and must
 never claim or advance a live stream. No default schedule is enabled by this
 foundation.

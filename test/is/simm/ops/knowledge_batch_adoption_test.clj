@@ -24,7 +24,8 @@
             [is.simm.ops.file-output-controller :as controller]
             [is.simm.ops.knowledge-batch-filing-test :as fixture]
             [is.simm.ops.knowledge-filing :as filing]
-            [is.simm.ops.knowledge-publish :as publish]))
+            [is.simm.ops.knowledge-publish :as publish]
+            [is.simm.runtimes.operation-lifetime :as lifetime]))
 
 (defn- canonical-memory-workspace! [room]
   ;; Shared earlier fixtures use a bare Geschichte workspace. Adoption checks
@@ -153,3 +154,20 @@
        (d/transact conn [[:db/add [:proposal/id (:proposal value)] :proposal/filing-hash (apply str (repeat 64 "0"))]])
        (is (thrown? Exception (publish/file-completed-request! conn principal (:room w) room (:request value))))
        (is (thrown? Exception (adoption/recover! conn (:owner w) (:room w) room (:proposal value))))))))
+
+(deftest original-publisher-can-record-observed-facts-after-app-fencing
+  (fixture
+   (fn [{:keys [conn ready app-owner] :as data}]
+     (let [finalize! adoption/finalize!]
+       (with-redefs [adoption/finalize!
+                     (fn [& args]
+                       ;; Native publication has already returned positive
+                       ;; physical evidence. Shutdown must join this owner and
+                       ;; allow its fact recording, rather than require a new
+                       ;; admission into an installation that is now stopping.
+                       (is (nil? (deref (future (lifetime/fence! app-owner)) 5000 ::expired)))
+                       (apply finalize! args))]
+         (is (= :accepted (:status (accept! data)))))
+       (is (false? (lifetime/ready? app-owner)))
+       (is (lifetime/retained? lifetime/*ticket*))
+       (is (= :accepted (:knowledge.batch/outcome (batches/batch @conn (:batch ready)))))))))
