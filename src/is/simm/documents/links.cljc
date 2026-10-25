@@ -52,6 +52,12 @@
       (when (unicode? decoded) decoded))
     (catch #?(:clj Exception :cljs :default) _ nil)))
 
+(defn decode-path
+  "Strict UTF-8 percent decoding for a path component; literal + stays +.
+   Returns nil for malformed escapes or non-Unicode text on either platform."
+  [raw]
+  (when (string? raw) (decode (str/replace raw "+" "%2B"))))
+
 (defn- parameters [query]
   (when (and (string? query) (<= 1 (count query) 8192))
     (reduce

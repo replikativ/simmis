@@ -7,7 +7,11 @@
 
 (def ^:private tags #{:p :span :br :strong :em :s :code :pre :a :blockquote
                      :ul :ol :li :h1 :h2 :h3 :h4 :h5 :h6
-                     :table :thead :tbody :tr :th :td :caption})
+                     :table :thead :tbody :tr :th :td :caption :img})
+
+(defn- internal-media? [value]
+  (and (string? value)
+       (boolean (re-matches #"/blobs/workspaces/[0-9a-f-]{36}\?path=[^\s<>\"#]+&content=[0-9a-f-]{36}&target=[0-9a-f-]{36}" value))))
 
 (defn- native-node [scene]
   (if (string? scene)
@@ -16,8 +20,9 @@
       (when-not (contains? tags tag) (throw (js/Error. "Unsupported Markdown display element")))
       (let [dom (.createElement js/document (name tag))]
         (doseq [[key value] attrs]
-          (when (and (contains? #{:class :scope :start :href :rel :target :data-language} key)
-                     (some? value) (or (not= :href key) (rich/safe-link? value)))
+          (when (and (contains? #{:class :scope :start :href :rel :target :data-language :src :alt :loading} key)
+                     (some? value) (or (not= :href key) (rich/safe-link? value))
+                     (or (not= :src key) (and (= :img tag) (internal-media? value))))
             (.setAttribute dom (name key) (str value))))
         (doseq [child children] (.appendChild dom (native-node child)))
         (when (and (= :code tag) (contains? attrs :data-language))

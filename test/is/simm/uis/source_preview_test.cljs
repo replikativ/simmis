@@ -1,8 +1,9 @@
 (ns is.simm.uis.source-preview-test
   (:require [cljs.test :refer-macros [deftest is]]
             [is.simm.documents.markdown-scene :as scene]
+            [is.simm.documents.links :as links]
             [is.simm.uis.web.desktop.rich-editor]
-            [is.simm.uis.web.desktop.source-preview]))
+            [is.simm.uis.web.desktop.source-preview :as preview]))
 
 (def source "| Name | Value |\n|---|---|\n| Example | <script>literal</script> |\n")
 (defn projection []
@@ -59,3 +60,31 @@
       (finally
         (.remove read-el) (.remove edit-el)
         (is (zero? (.-size (.-simmisSourcePreviewViews edit-el))) "Detach releases every native paint callback")))))
+
+(deftest image-display-uses-only-owned-routes-and-keeps-the-editor-source-model
+  (let [id #uuid "0490e6e3-a857-48ae-a47f-d78fd328628e"
+        text "![Frame](images/frame.png)\n" el (.createElement js/document "simmis-rich-editor")
+        model {:type "doc" :content [{:type "memoryOpaque" :attrs {:key "opaque:0" :label text}}]}
+        url #(links/media-route {:room (str id) :path "images/frame.png" :content % :target id})
+        projection (fn [src] {:source text :scene {:tag :p :attrs {} :children [{:tag :img :attrs {:src src :alt "Frame" :loading "lazy"} :children []}]}})
+        display! (fn [src] (.setAttribute el "data-source-previews"
+                                         (js/JSON.stringify (clj->js {"opaque:0" (projection src)}))))]
+    (.setAttribute el "data-model" (js/JSON.stringify (clj->js model)))
+    (.setAttribute el "data-document" "true")
+    (.setAttribute el "data-read-only" "false")
+    (display! (url id))
+    (.appendChild (.-body js/document) el)
+    (try
+      (let [editor (.-simmisRichEditor el) before (js/JSON.stringify (.getJSON editor))]
+        (is (= (url id) (.getAttribute (.querySelector el "img") "src")))
+        (let [replacement (random-uuid)]
+          (display! (url replacement))
+          (is (= (url replacement) (.getAttribute (.querySelector el "img") "src"))))
+        (doseq [bad ["https://external.invalid/tracker.png" "//external.invalid/tracker.png" "data:image/png;base64,AA"]]
+          (display! bad)
+          (is (nil? (.getAttribute (.querySelector el "img") "src"))))
+        (is (= before (js/JSON.stringify (.getJSON editor))))
+        (.setAttribute el "data-source-previews" "{}")
+        (is (nil? (.querySelector el "img")))
+        (is (.includes (.-textContent el) text)))
+      (finally (.remove el)))))
