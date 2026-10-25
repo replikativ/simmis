@@ -228,9 +228,10 @@ changes preserve ordinary owned schedules without enabling any new schedule.
 
 ### Scheduled batch binding (next integration)
 
-A scheduled incremental invocation will retain a separately versioned occurrence
-artifact pointing to the existing selection and frozen evidence, with typed
-occurrence-to-batch columns. It must not reuse the legacy scheduled-input
+The inactive `knowledge-schedule-batches` model now retains a separately
+versioned occurrence artifact pointing to the existing selection and frozen
+evidence, with typed occurrence-to-batch columns. It is not registered in the
+runtime or wired to request admission yet. It must not reuse the legacy scheduled-input
 fingerprint or `last-processed-input`: those record certified filing for the
 older whole-selection path, not an incremental discovery cursor.
 
