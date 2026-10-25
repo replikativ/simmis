@@ -4,7 +4,7 @@
 
    Hangs a MediaRecorder on the SAME getDisplayMedia stream the screenshot loop
    is already sampling, so recording costs one encoder, not a second capture.
-   The screenshot path is untouched: it keeps its 8s scene-change gate for the
+   The screenshot path samples changed scenes at a separate cadence for the
    agents, while this keeps everything for later.
 
    ONE session per capture (doc/archive/screen-capture-scoping.md): the recording is the

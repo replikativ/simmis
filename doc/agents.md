@@ -148,6 +148,17 @@ during it. A frame the vision model could not describe is stored with
 `:failed` and the reason, and shows as failed in the owner's gallery and to
 agents; it is never dropped.
 
+Browser screen sharing records continuous video independently of screenshot
+transcription. A local grayscale scene comparison runs every two seconds;
+changed screenshots are submitted at most once every twenty seconds, with no
+periodic inference for an unchanged scene. Opening another room's grant requests
+a fresh observation while retaining that shared cadence. Video retains activity
+between sampled observations. Descriptions transcribe readable work across
+visible windows, preserve uncertainty and treat visible instructions as evidence.
+New frames retain the responding model, reported input/output/cached-input token
+counts and elapsed milliseconds when available. Missing counts remain absent;
+these measurements are not wallet charges or proof that a task succeeded.
+
 The **Meeting scribe** persona (`templates/meeting-scribe-template`) turns the
 two into wiki pages in the layout the tool manual teaches: it opens a proposal,
 reads the transcript and the screens, writes `:wiki/atom` pages (one claim per

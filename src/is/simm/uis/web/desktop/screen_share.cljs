@@ -20,6 +20,8 @@
             [is.simm.uis.web.desktop.login :as login]
             [is.simm.uis.web.desktop.chat-remote :as chat-remote]
             [is.simm.uis.web.desktop.remote :as rem]
+            [is.simm.uis.web.desktop.screen-sampling :as sampling]
+            [is.simm.uis.web.desktop.screen-delivery :as delivery]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.runtimes.web :as web]
             [org.replikativ.spindel.engine.core :as rtc]))
@@ -31,23 +33,21 @@
 ;; room-id → {:heartbeat interval-id} for every room currently granted.
 (defonce ^:private grants (atom {}))
 
-(def ^:private capture-interval-ms 8000)
-(def ^:private heartbeat-ms 60000)
+(def ^:private capture-interval-ms 2000) ;; cheap local inspection, not inference
 (def ^:private grant-beat-ms 10000)  ;; keep the server-side grant window fresh
-(def ^:private diff-threshold 7)     ;; mean abs gray delta (0-255) = a scene change
 
 (defn sharing? [room-id] (contains? @grants room-id))
 (defn any-active? [] (some? @capture))
 
 ;; ---------------------------------------------------------------------------
-;; Frame sampling (unchanged) — one video, posted to the user stream
+;; Frame sampling — one video, posted to the user stream
 ;; ---------------------------------------------------------------------------
 
 (defn- frame-signature
-  "Tiny grayscale thumbnail as a JS array — cheap frame fingerprint."
+  "Tiny grayscale thumbnail — cheap local frame fingerprint."
   [video]
   (let [c (js/document.createElement "canvas")
-        w 32 h 18]
+        w sampling/signature-width h sampling/signature-height]
     (set! (.-width c) w) (set! (.-height c) h)
     (let [ctx (.getContext c "2d")]
       (.drawImage ctx video 0 0 w h)
@@ -58,44 +58,37 @@
           (aset out i (+ (* 0.3 (aget d (* i 4)))
                          (* 0.6 (aget d (+ (* i 4) 1)))
                          (* 0.1 (aget d (+ (* i 4) 2))))))
-        out))))
-
-(defn- mean-abs-diff [a b]
-  (if (or (nil? a) (nil? b))
-    255
-    (let [n (.-length a)]
-      (loop [i 0 acc 0.0]
-        (if (< i n)
-          (recur (inc i) (+ acc (js/Math.abs (- (aget a i) (aget b i)))))
-          (/ acc n))))))
+        (vec out)))))
 
 (defn- post-frame! [video]
   (let [vw (.-videoWidth video) vh (.-videoHeight video)]
-    (when (pos? vw)
-      ;; Scale by AREA, not width: a width cap crushes ultrawide screens below
-      ;; OCR-readability. ~5.5MP keeps an ultrawide near-native (~4400px wide).
+    (if (pos? vw)
+      ;; Keep text readable at near-native resolution; cadence controls cost.
       (let [scale (min 1 (js/Math.sqrt (/ 5500000 (* vw vh))))
             c (js/document.createElement "canvas")]
         (set! (.-width c) (js/Math.round (* vw scale)))
         (set! (.-height c) (js/Math.round (* vh scale)))
         (.drawImage (.getContext c "2d") video 0 0 (.-width c) (.-height c))
-        (.toBlob c
-                 (fn [blob]
-                   (when blob
-                     (-> (js/fetch "/screen-frames"
-                                   #js {:method "POST"
-                                        ;; identity from the JWT; the frame lands
-                                        ;; in the caller's OWN stream
-                                        :headers (login/auth-header-map
-                                                   #js {"Content-Type" "image/jpeg"})
-                                        :body blob})
-                         (.then (fn [resp]
-                                  (when-not (.-ok resp)
-                                    (rem/report-error! "Your screen is not reaching the server."
-                                                       (ex-info (str "HTTP " (.-status resp))
-                                                                {:error (str "HTTP " (.-status resp))})))))
-                         (.catch (fn [e] (rem/report-error! "Your screen is not reaching the server." e))))))
-                 "image/jpeg" 0.85)))))
+        (js/Promise.
+         (fn [resolve reject]
+           (.toBlob c
+                    (fn [blob]
+                      (if blob
+                        (-> (js/fetch "/screen-frames"
+                                      #js {:method "POST"
+                                           :headers (login/auth-header-map
+                                                      #js {"Content-Type" "image/jpeg"})
+                                           :body blob})
+                            (.then (fn [resp]
+                                     (cond
+                                       (= 200 (.-status resp)) (resolve true)
+                                       (= 202 (.-status resp)) (resolve false)
+                                       :else (reject (ex-info (str "HTTP " (.-status resp))
+                                                              {:error (str "HTTP " (.-status resp))})))))
+                            (.catch reject))
+                        (resolve false)))
+                    "image/jpeg" 0.85))))
+      (js/Promise.resolve false))))
 
 ;; ---------------------------------------------------------------------------
 ;; Grants — open/heartbeat/close a room's window onto the running capture
@@ -160,8 +153,7 @@
         (.then
          (fn [stream]
            (let [video (js/document.createElement "video")
-                 last-sig (atom nil)
-                 last-post (atom 0)]
+                 sampler (atom (sampling/initial (random-uuid)))]
              (set! (.-srcObject video) stream)
              (set! (.-muted video) true)
              (.play video)
@@ -173,24 +165,20 @@
                     (fn []
                       (when (>= (.-readyState video) 2)
                         (let [sig (frame-signature video)
-                              now (js/Date.now)
-                              changed? (> (mean-abs-diff sig @last-sig) diff-threshold)
-                              stale? (> (- now @last-post) heartbeat-ms)]
-                          (when (or changed? stale?)
-                            (reset! last-sig sig)
-                            (reset! last-post now)
-                            (post-frame! video)))))
+                              prior @sampler
+                              next (sampling/request prior (js/Date.now) sig)]
+                          (when-not (identical? prior next)
+                            (reset! sampler next)
+                            (delivery/submit! #(:sampling @capture) (:pending next)
+                                              #(post-frame! video)
+                                              #(rem/report-error! "Your screen is not reaching the server." %))))))
                     capture-interval-ms)]
-               (reset! capture {:stream stream :interval interval :video video})
+               (reset! capture {:stream stream :interval interval :video video :sampling sampler})
                ;; Archive tier — same stream, one encoder. Recording is ALWAYS on
                ;; while sharing: the raw video is training data for dynamic
                ;; computer-use models, and it is the owner's own archive (per-user,
                ;; playable and deletable in the Screens tab).
                (rec/start! stream)
-               (js/setTimeout #(when (>= (.-readyState video) 2)
-                                 (reset! last-post (js/Date.now))
-                                 (reset! last-sig (frame-signature video))
-                                 (post-frame! video)) 1200)
                (js/console.log "[screen-share] capture started")
                true))))
         (.catch (fn [e]
@@ -237,5 +225,10 @@
                                 (when on-change (on-change false)))
                             (let [beat (js/setInterval #(grant-beat! room-id) grant-beat-ms)]
                               (swap! grants assoc room-id {:heartbeat beat :on-change on-change})
+                              ;; A newly granted room needs an observation inside
+                              ;; its own window even if the screen stays quiet.
+                              ;; Keep the shared rate limit across all rooms.
+                              (when-let [sampler (:sampling @capture)]
+                                (swap! sampler sampling/refresh))
                               (when on-change (on-change true))))))))
         (.catch (fn [_] nil)))))

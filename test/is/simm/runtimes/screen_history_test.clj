@@ -131,6 +131,48 @@
       (is (nil? desc))
       (is (re-find #"returned no description" failed)))))
 
+(deftest measured-description-usage-survives-storage-and-room-grants
+  (let [owner (random-uuid) room (random-uuid) other (random-uuid) done (promise)]
+    (sg/open-grant! owner room)
+    (with-redefs [blobs/store! (fn [_ _] {:blob/id "measured-frame"})
+                  task-models/model-opts (constantly {:model "configured-vision"})
+                  dvergr.media.vision/describe
+                  (fn [& _]
+                    (dvergr.media.vision/*on-response*
+                     {:model "resolved-vision" :usage {:input-tokens 6188 :output-tokens 55
+                                                       :cache-read-tokens 4992 :secret "omit"}
+                      :secret "do-not-store"})
+                    "Visible page title")
+                  intake/persist-frame! (let [persist @#'intake/persist-frame!]
+                                          (fn [p f] (persist p f) (deliver done f)))]
+      (is (= 200 (:status (intake/handle-frame! owner (byte-array 4) "image/png"))))
+      (is (not= ::timeout (deref done 10000 ::timeout))))
+    (let [[frame] (intake/search-own owner "" 10)
+          [shared] (intake/room-history room {:n 10})]
+      (is (= {:model "resolved-vision" :input-tokens 6188 :output-tokens 55 :cache-read-tokens 4992}
+             (select-keys frame [:model :input-tokens :output-tokens :cache-read-tokens])))
+      (is (= "Visible page title" (:text frame)))
+      (is (nat-int? (:elapsed-ms frame)))
+      (is (= (select-keys frame [:model :input-tokens :elapsed-ms])
+             (select-keys shared [:model :input-tokens :elapsed-ms])))
+      (is (empty? (intake/room-history other {:n 10})))
+      (is (not (re-find #"secret|do-not-store|omit" (pr-str frame)))))))
+
+(deftest empty-output-retains-reported-usage-without-inventing-missing-counts
+  (with-redefs [task-models/model-opts (constantly {})
+                dvergr.media.vision/describe
+                (fn [& _]
+                  (dvergr.media.vision/*on-response*
+                   {:model "vision" :usage {:input-tokens -1 :output-tokens 0
+                                            :cache-read-tokens "not-a-count"}})
+                  nil)]
+    (let [[desc failed measurement] (#'intake/describe-frame (byte-array 1) "image/png")]
+      (is (nil? desc))
+      (is (re-find #"returned no description" failed))
+      (is (= {:model "vision" :output-tokens 0}
+             (dissoc measurement :elapsed-ms)))
+      (is (nat-int? (:elapsed-ms measurement))))))
+
 (deftest provider-exceptions-become-recordable-failures-without-secret-text
   (doseq [failure [(ex-info "Configure vision, token=do-not-store" {:type :dvergr.media.vision/configuration})
                    (ex-info "secret token=do-not-store" {:type :task-model-unavailable})
