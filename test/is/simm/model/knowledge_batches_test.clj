@@ -15,6 +15,7 @@
   (@#'host-fixture/with-fixture
    (fn [{:keys [conn owned] :as data}]
      (d/transact conn batches/schema)
+     (d/transact conn requests/schema)
      (@#'host-fixture/write! owned "inbox/second.md" "Another source")
      (let [input (@#'host-fixture/request data)
            discovered (@#'host-fixture/refresh data input)
@@ -98,6 +99,7 @@
             digest (random-uuid) client (random-uuid)
             request {:work.request/id (requests/request-id (:owner w) (:room w) client)
                      :work.request/client-id client :work.request/intent-id digest :work.request/kind :workflow
+                     :work.request/knowledge-batch (:batch origin) :work.request/knowledge-frozen (:frozen origin)
                      :work.request/by (:owner w) :work.request/room (:room w)}]
         (doseq [request [(assoc request :work.request/kind :benchmark)
                          (assoc request :work.request/by (:member w))

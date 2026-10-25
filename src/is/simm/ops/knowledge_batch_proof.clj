@@ -1,0 +1,172 @@
+(ns is.simm.ops.knowledge-batch-proof
+  "Fixed HOST verification of retained batch/request data. Callers authorize
+   the human/room BEFORE entering. No source lookup, Room hydration, provider,
+   native source handle, request insertion or dispatch occurs here."
+  (:require [clojure.string :as str]
+            [dvergr.agent.environment :as environment]
+            [dvergr.artifact :as artifact]
+            [dvergr.catalog.room :as catalog]
+            [hasch.core :as hasch]
+            [is.simm.model.knowledge-batches :as batches]
+            [is.simm.model.knowledge-pins :as pins]
+            [is.simm.model.knowledge-publication :as publication]
+            [is.simm.model.knowledge-streams :as streams]
+            [is.simm.model.work-requests :as requests]
+            [is.simm.ops.knowledge-batch-inputs :as inputs]
+            [is.simm.ops.knowledge-inputs :as evidence]
+            [is.simm.ops.owned-workflows :as sources]
+            [is.simm.ops.workflow-policy :as policy]
+            [is.simm.ops.workflows :as workflows]
+            [malli.core :as m]))
+
+(defn- refuse! [reason]
+  (throw (ex-info "Retained knowledge batch proof is unavailable" {:type ::held :reason reason})))
+
+(defn retained!
+  "Verified data, NOT permission. Header ownership is checked before artifacts.
+   The original checkpoint's retained metadata remains usable after its native
+   root is released; no historical source DB or live default is opened."
+  [conn party room origin]
+  (when-not (and (every? uuid? [party room]) (m/validate batches/origin-schema origin))
+    (refuse! :invalid-origin))
+  (let [db @conn row (batches/batch db (:batch origin))]
+    (when-not (and row (= party (:knowledge.batch/by row)) (= room (:knowledge.batch/room row))
+                   (= (:selection origin) (:knowledge.batch/selection-id row))
+                   (= (:frozen origin) (:knowledge.batch/frozen-id row))
+                   (#{:ready :submitted :review :closed} (:knowledge.batch/state row)))
+      (refuse! :batch-header-mismatch))
+    (let [store (artifact/datahike-store conn)
+          selected (:value (artifact/get-bounded-value store (:knowledge.batch/selection row) (* 2 1024 1024)))
+          frozen (:value (artifact/get-bounded-value store (:knowledge.batch/frozen row) inputs/max-frozen-bytes))]
+      (when-not (and (= (:frozen origin) (hasch/uuid frozen))
+                     (= selected (:batch frozen)) (= (:selection origin) (:id selected) (:batch origin)))
+        (refuse! :frozen-artifact-mismatch))
+      (inputs/verify frozen)
+      (let [value (:stream selected) current (streams/stream db (:id value))
+            pin (pins/intent db (get-in selected [:expected :knowledge.stream/cursor-root]))
+            target (get-in frozen [:publication-basis :target])]
+        (when-not (and (= party (:by value)) (= room (:room value))
+                       (= (:id value) (:knowledge.batch/stream row))
+                       (= (:target value) (:knowledge.batch/target row) (pins/target-id target))
+                       (= [party room (:target value)]
+                          [(:knowledge.pin/by pin) (:knowledge.pin/room pin) (:knowledge.pin/target pin)])
+                       (= (:id value) (:knowledge.pin/stream pin)))
+          (refuse! :source-binding-mismatch))
+        (when-not current (refuse! :missing-stream))
+        (streams/validate-binding! value current)
+        (let [original (pins/payload conn pin)]
+          (when-not (and (= value (:stream original)) (= (:basis selected) (:basis original))
+                         (= target (get-in original [:origin :target])))
+            (refuse! :original-source-mismatch))
+          {:row row :origin origin :frozen frozen :selection selected :source-origin (:origin original)})))))
+
+(defn ready!
+  "Before provider preparation: require a verified, unlinked ready batch.
+   Only the original HOST handoff may use this; restart does not grant dispatch."
+  [conn party room origin]
+  (let [{:keys [row] :as proof} (retained! conn party room origin)
+        db @conn current (batches/batch db (:knowledge.batch/id row))
+        stream (streams/stream db (:knowledge.batch/stream row))]
+    (when-not (and (= row current) stream
+                   (= (:knowledge.batch/id row) (:knowledge.stream/active-batch stream))
+                   (= :ready (:knowledge.batch/state row)) (nil? (:knowledge.batch/request row)))
+      (refuse! :batch-not-ready))
+    proof))
+
+(defn- text-map! [entries max-count max-bytes]
+  (when-not (and (map? entries) (<= (count entries) max-count)
+                 (every? #(and (string? %) (<= (count %) 512)) (keys entries))
+                 (every? #(and (string? %) (<= (count %) workflows/max-file-bytes)) (vals entries)))
+    (refuse! :oversized-input))
+  (reduce (fn [total text]
+            (let [size (alength (.getBytes ^String text "UTF-8")) next (+ total size)]
+              (when (or (> size workflows/max-file-bytes) (> next max-bytes))
+                (refuse! :oversized-input))
+              next)) 0 (vals entries)))
+
+(defn verify-input!
+  "Match actual prepared/retained input to verified frozen bytes and the
+   original program. Pure revalidation, including actual fixture reservations;
+   this does not recapture, grant ownership or certify an Attempt."
+  [{:keys [origin frozen selection source-origin row] :as proof} input]
+  (let [submission (:submission input) name (:name submission)
+        workflow (:workflow input) env (environment/validate-environment (:environment input))
+        entries (:inputs input) source (:source input) declared (:source-origin input)]
+    (text-map! entries (:max-input-files policy/policy) (:max-input-bytes policy/policy))
+    (text-map! source workflows/max-files workflows/max-bundle-bytes)
+    (when-not (and (map? entries) (<= (count entries) (:max-input-files policy/policy))
+                   (every? string? (keys entries)) (every? string? (vals entries))
+                   (map? source) (<= 1 (count source) workflows/max-files) (every? string? (vals source))
+                   (= origin (:knowledge/batch input))
+                   (= (:workflow source-origin) name (:name workflow))
+                   (not (seq (:case submission))) (nil? (:case workflow))
+                   (not (seq (:params submission))) (not (seq (:inputs submission)))
+                   (= (:target source-origin) (:target declared))
+                   (= (:target-stamp source-origin) (:target-stamp declared))
+                   (= (:source-revision source-origin) (:revision declared) (:expected-owned-source submission))
+                   (= (:revision declared)
+                      (sources/source-id {:room-id (:knowledge.batch/room row) :target-stamp (:target-stamp declared)}
+                                         name (:manifest declared)))
+                   (= (:knowledge/publication-basis input) (:publication-basis frozen))
+                   (= workflow (get-in env [:environment/metadata :workflow]))
+                   (= (:policy workflow) policy/policy))
+      (refuse! :prepared-input-mismatch))
+    (let [knowledge (into (sorted-map) (filter #(str/starts-with? (key %) "/in/knowledge/")) entries)
+          auxiliary (into (sorted-map) (remove #(str/starts-with? (key %) "/in/knowledge/")) entries)
+          reserved {:files (count auxiliary)
+                    :bytes (reduce + 0 (map #(alength (.getBytes ^String % "UTF-8")) (vals auxiliary)))}
+          program (hasch/uuid [:simmis/knowledge-program-v1
+                              (select-keys workflow [:name :bundle :case :params])
+                              (:environment/task env) auxiliary])
+          bundle (catalog/bundle name source)
+          declaration (inputs/declaration source)
+          captured (:captured frozen)]
+      (when-not (and (= knowledge (:inputs captured)) (= reserved (:reserved selection))
+                     (= program (get-in selection [:stream :program]))
+                     (= (str (:id bundle)) (:bundle workflow) (str (:expected-bundle submission)))
+                     (= (:policy declaration) (:batch-policy selection))
+                     (= (:epoch declaration) (get-in selection [:stream :epoch]))
+                     (= (evidence/declaration source) (get-in captured [:manifest :policy]))
+                     (= (:input-selection workflow)
+                        {:kind :knowledge :policy (get-in captured [:manifest :policy])
+                         :trigger-id (:trigger-id captured) :execution-id (:execution-id captured)
+                         :manifest-id (hasch/uuid (:manifest captured))}))
+        (refuse! :prepared-program-mismatch)))
+    proof))
+
+(def ^:private request-binding-fields
+  [:work.request/id :work.request/client-id :work.request/by :work.request/room :work.request/kind
+   :work.request/intent-id :work.request/payload-ref :work.request/publication-basis-id
+   :work.request/knowledge-batch :work.request/knowledge-frozen :work.request/claim :work.request/created-at])
+
+(defn- canonical-request! [conn row]
+  (let [current (requests/request-in @conn (:work.request/id row))]
+    (when-not (and current (= (select-keys current request-binding-fields) (select-keys row request-binding-fields)))
+      (refuse! :canonical-request-mismatch))
+    current))
+
+(defn request!
+  "Historical/source-free exact proof, including both sides of joint request
+   linkage. No matching submission or request row alone permits a new Job."
+  ([conn row]
+   (let [row (canonical-request! conn row)]
+     (request! conn row (:value (artifact/get-bounded-value (artifact/datahike-store conn)
+                                   (:work.request/payload-ref row) (* 128 1024 1024))))))
+  ([conn row retained]
+   (canonical-request! conn row)
+   (when-not (and (= #{:kind :limits :input} (set (keys retained)))
+                  (= :workflow (:kind retained) (:work.request/kind row))
+                  (= (:work.request/intent-id row) (hasch/uuid retained))
+                  (= (:work.request/publication-basis-id row) (get-in retained [:input :knowledge/publication-basis :id]))
+                  (= (:work.request/id row) (requests/request-id (:work.request/by row) (:work.request/room row)
+                                                               (:work.request/client-id row))))
+     (refuse! :request-payload-mismatch))
+   (let [input (:input retained) origin (:knowledge/batch input)
+         proof (retained! conn (:work.request/by row) (:work.request/room row) origin)]
+     (when-not (= [(:batch origin) (:frozen origin)]
+                  [(:work.request/knowledge-batch row) (:work.request/knowledge-frozen row)])
+       (refuse! :request-marker-mismatch))
+     (verify-input! proof input)
+     (when-not (empty? (batches/request-tx @conn origin row (:work.request/intent-id row)))
+       (refuse! :partial-request-link))
+     proof)))

@@ -22,15 +22,18 @@
   (and (string? value) (<= 1 (count value) maximum)
        (not (str/blank? value)) (not (re-find #"[\p{Cntrl}]" value))))
 
+(defn- assert-control-owner! [conn host-ctx]
+  (when (or (simple/on-drain-thread?)
+            (not (and conn host-ctx (identical? conn (system-db/get-conn))
+                      (identical? host-ctx context/server-context))))
+    (refuse!)))
+
 (defn current-control-db!
   "HOST INTERNAL ownership guard shared with transport delegation. No endpoint
    or second resolver. Requires the actual current canonical connection/server
    context and physical host worker. Returned DB is ephemeral, not a lease."
   [conn host-ctx]
-  (when (or (simple/on-drain-thread?)
-            (not (and conn host-ctx (identical? conn (system-db/get-conn))
-                      (identical? host-ctx context/server-context))))
-    (refuse!))
+  (assert-control-owner! conn host-ctx)
   @conn)
 
 (defn- human! [db principal]
@@ -218,7 +221,7 @@
           (refuse!))
         (assoc current :room room :control-db after ::room-owner owner)))))
 
-(defn- validate-room! [host principal original-handle binding authorize]
+(defn- validate-room-in! [host principal original-handle binding authorize db]
   (let [{:keys [control-conn execution-ctx] :as owner} (original-owner! host)
         captured (::room-owner binding)]
     (when-not (and (map? binding)
@@ -228,14 +231,27 @@
                    (identical? execution-ctx (:execution-ctx captured)))
       (refuse!))
     (clojure.core/binding [ec/*execution-context* execution-ctx]
-      (let [db (current-control-db! control-conn execution-ctx)
-            current (authorize db principal original-handle)
+      ;; Recheck ownership without acquiring another control snapshot. Ordinary
+      ;; callers return the exact DB they authorized; writers use their own DB.
+      (assert-control-owner! control-conn execution-ctx)
+      (let [current (authorize db principal original-handle)
             room (registered-native-room (:room-id current) (:slug current))]
         (when-not (and (= current (select-keys binding [:party :room-id :slug]))
                        room (identical? room (:room binding))
                        (identical? (:ctx room) (:ctx (:room binding)))
                        (identical? (:meta room) (:meta (:room binding)))) (refuse!))
         (assoc current :room room :control-db db ::room-owner owner)))))
+
+(defn- validate-room! [host principal original-handle binding authorize]
+  (validate-room-in! host principal original-handle binding authorize (current-host-control-db! host)))
+
+(defn validate-host-room-in!
+  "Fixed HOST writer-side read+merge and exact original Room observation on
+   its own control DB. No hydration, source IO or thread-entry permission.
+   The caller separately retains the original App operation and validates its
+   actual-thread ownership outside this short serialized decision."
+  [host principal original-handle binding db]
+  (validate-room-in! host principal original-handle binding authorize-room! db))
 
 (defn resolve-host-read-room!
   "Fixed human read-only Room gate before taking the native operation lease.

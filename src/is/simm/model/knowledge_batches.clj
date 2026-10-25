@@ -150,6 +150,8 @@
                  (= :workflow (:work.request/kind request))
                  (every? uuid? (map request [:work.request/id :work.request/client-id :work.request/by :work.request/room]))
                  (= intent-id (:work.request/intent-id request))
+                 (= (:batch origin) (:work.request/knowledge-batch request))
+                 (= (:frozen origin) (:work.request/knowledge-frozen request))
                  (= (:work.request/id request)
                     (identity/request-id (:work.request/by request) (:work.request/room request) (:work.request/client-id request))))
     (refuse! :invalid-request-origin))
@@ -157,6 +159,7 @@
         stream (when current (streams/stream db (:knowledge.batch/stream current)))
         recorded (row db :work.request/id (:work.request/id request))
         binding [:work.request/id :work.request/client-id :work.request/intent-id
+                 :work.request/knowledge-batch :work.request/knowledge-frozen
                  :work.request/by :work.request/room :work.request/kind]]
     (when-not (and current
                    (= (:selection origin) (:knowledge.batch/selection-id current))

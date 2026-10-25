@@ -4,8 +4,10 @@
   (:require [datahike.api :as d]
             [dvergr.artifact :as artifact]
             [is.simm.model.knowledge-publication :as publication]
+            [is.simm.model.knowledge-batches :as batches]
             [is.simm.model.work-request-identity :as identity]
-            [hasch.core :as hasch]))
+            [hasch.core :as hasch]
+            [malli.core :as m]))
 
 (def schema
   (mapv (fn [[ident type]]
@@ -18,6 +20,8 @@
          [:work.request/kind :db.type/keyword]
          [:work.request/intent-id :db.type/uuid]
          [:work.request/publication-basis-id :db.type/uuid]
+         [:work.request/knowledge-batch :db.type/uuid]
+         [:work.request/knowledge-frozen :db.type/uuid]
          [:work.request/payload-ref :db.type/store-ref]
          [:work.request/claim :db.type/uuid]
          [:work.request/created-at :db.type/instant]
@@ -77,6 +81,9 @@
   [{:keys [party room client-id kind intent limits]}]
   (when-not (and (every? uuid? [party room client-id]) (keyword? kind) (map? intent))
     (throw (ex-info "Invalid work-request identity" {:type ::invalid})))
+  (when (contains? intent :knowledge/batch)
+    (when-not (and (= :workflow kind) (m/validate batches/origin-schema (:knowledge/batch intent)))
+      (throw (ex-info "Invalid live batch request origin" {:type ::invalid-batch}))))
   (let [basis-id (publication-id intent)
         id (request-id party room client-id)
         intent {:kind kind :limits (or limits {}) :input intent}
@@ -87,14 +94,17 @@
 (defn claim-row
   "Internal row for one original attempt; the random token is not a capability.
    Only positive serialized claim/readback under the owning HOST can schedule."
-  [{:keys [id party room client-id kind limits basis-id digest]}]
+  [{:keys [id party room client-id kind limits basis-id digest intent]}]
   (let [claim (random-uuid)
         base (merge (cond-> {:db/id -1
                          :work.request/id id :work.request/client-id client-id
                          :work.request/by party :work.request/room room :work.request/kind kind
                          :work.request/intent-id digest :work.request/claim claim
                          :work.request/created-at (java.util.Date.) :work.request/state :admitting}
-                          basis-id (assoc :work.request/publication-basis-id basis-id))
+                          basis-id (assoc :work.request/publication-basis-id basis-id)
+                          (get-in intent [:input :knowledge/batch])
+                          (assoc :work.request/knowledge-batch (get-in intent [:input :knowledge/batch :batch])
+                                 :work.request/knowledge-frozen (get-in intent [:input :knowledge/batch :frozen])))
                         (into {} (for [k [:budget-microdollars :max-dispatches :max-model-steps :max-worker-admissions :max-cli-runs
                                           :timeout-ms :settlement]
                                        :when (contains? limits k)]
@@ -127,6 +137,9 @@
    an upserting identity. Ambiguous transaction responses are resolved by the
    durable random claim token; a retry never blindly schedules another job."
   [conn input]
+  (when (some #(contains? (:intent input) %) [:knowledge/batch :knowledge/batch-control])
+    (throw (ex-info "Live batch requests require the fixed joint HOST admission"
+                    {:type ::batch-needs-joint-admission})))
   (let [{:keys [intent digest] :as prepared} (prepare-claim input)]
     (if-let [row (inspect-claim @conn prepared)]
       {:request row :claimed? false}
