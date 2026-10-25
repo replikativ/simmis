@@ -102,7 +102,32 @@ claims together. Freeze attaches the HOST-verified artifact. First request linka
 must compose with canonical request insertion; it refuses a preexisting partial
 request. Historical replay requires the actual matching canonical request and
 cannot manufacture a replacement if that request is missing. These fragments are
-not yet called by production admission and do not mark any source processed.
+not registered for default use and do not mark any source processed.
+
+The inactive owned-workflow adapter recognizes the explicit batching sidecar.
+It rejects case, parameter, and input overrides before discovery effects. It
+retains the original App operation, uses short original-Room extents for source
+reads and target checks, and releases each source lease before provider
+preparation or execution. Preparation consumes the frozen evidence and complete
+publication footprint read back from the verified artifact.
+
+Admission reuses the ordinary native Job lifecycle. One guarded serialized
+transaction inserts both the canonical request and the exact batch linkage.
+Only its acknowledged original claim winner may start a Job; a lost
+acknowledgement requires matching canonical receipts on both sides. The actual
+submission must equal the retained intent, including its request ID and limits.
+Original App/Room liveness, current human authority, and default mapping are
+checked again at the writer and native handoff. App/Room owner handles are
+removed before retaining execution and settlement closures.
+
+Exact workflow retries verify retained intent integrity. Batch retries also
+verify frozen bytes, typed request markers, and both sides of the original
+linkage without opening current source files or preparing providers. A provider
+preparation failure leaves a ready batch held for explicit recovery; it does
+not silently recapture or dispatch a replacement. An interrupted post-claim
+handoff leaves an interrupted request with its exact batch linkage intact.
+Successful Job completion alone still does not mark sources processed: the
+certified filing and proposal-review integration below remains required.
 
 Freeze bounded batches and context independently; claim one batch per stream
 across manual and scheduled invocations; reuse existing work-request admission;

@@ -22,6 +22,8 @@
 (defn- refuse! [reason]
   (throw (ex-info "Retained knowledge batch proof is unavailable" {:type ::held :reason reason})))
 
+(def control-schema [:map {:closed true} [:mapping :uuid]])
+
 (defn retained!
   "Verified data, NOT permission. Header ownership is checked before artifacts.
    The original checkpoint's retained metadata remains usable after its native
@@ -98,6 +100,7 @@
                    (every? string? (keys entries)) (every? string? (vals entries))
                    (map? source) (<= 1 (count source) workflows/max-files) (every? string? (vals source))
                    (= origin (:knowledge/batch input))
+                   (m/validate control-schema (:knowledge/batch-control input))
                    (= (:workflow source-origin) name (:name workflow))
                    (not (seq (:case submission))) (nil? (:case workflow))
                    (not (seq (:params submission))) (not (seq (:inputs submission)))
@@ -157,6 +160,8 @@
    (when-not (and (= #{:kind :limits :input} (set (keys retained)))
                   (= :workflow (:kind retained) (:work.request/kind row))
                   (= (:work.request/intent-id row) (hasch/uuid retained))
+                  (= (:work.request/client-id row) (get-in retained [:input :submission :request-id]))
+                  (= (:limits retained) (update (get-in retained [:input :submission :limits]) :settlement keyword))
                   (= (:work.request/publication-basis-id row) (get-in retained [:input :knowledge/publication-basis :id]))
                   (= (:work.request/id row) (requests/request-id (:work.request/by row) (:work.request/room row)
                                                                (:work.request/client-id row))))

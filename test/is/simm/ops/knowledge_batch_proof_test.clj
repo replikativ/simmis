@@ -9,9 +9,12 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.knowledge-batch-proof :as proof]
             [is.simm.ops.owned-knowledge-batches-test :as fixture]
+            [is.simm.ops.owned-reads :as reads]
+            [is.simm.ops.dvergr :as ops]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflows]
-            [is.simm.ops.workflows :as source]))
+            [is.simm.ops.workflows :as source]
+            [is.simm.runtimes.operation-lifetime :as lifetime]))
 
 (def limits {:budget-microdollars 10000 :max-dispatches 4 :max-model-steps 4 :timeout-ms 30000 :settlement "review"})
 
@@ -28,9 +31,13 @@
 
 (defn- fixture [f]
   (@#'fixture/with-fixture
-   (fn [{:keys [conn batch-input] :as data}]
+   (fn [{:keys [conn batch-input host w] :as data}]
      (d/transact conn requests/schema)
-     (let [ready (@#'fixture/prepare data)
+     ((get-in host [:config :host-lifecycle :with-operation])
+      (fn []
+       (let [handle (str (:room w))
+           original-room (reads/resolve-host-room! host (ops/party-principal (:owner w)) handle)
+           ready (@#'fixture/prepare data)
            submission {:request-id (random-uuid) :name "wiki" :expected-bundle (:expected-bundle batch-input)
                        :expected-owned-source (:expected-source batch-input)
                        :model "provider-must-not-be-resolved" :limits limits}
@@ -42,10 +49,12 @@
            prepared (-> prepared
                         (assoc-in [:basis :submission] submission)
                         (assoc-in [:basis :knowledge/batch] (:batch-origin ready))
+                        (assoc-in [:basis :knowledge/batch-control] {:mapping (:control-revision ready)})
                         (assoc-in [:basis :source-origin]
                                   {:revision (:source-revision original) :target-stamp (:target-stamp original)
-                                   :target (:target original) :manifest (get-in ready [:snapshot :manifest])}))]
-       (f (assoc data :ready ready :prepared prepared :submission submission))))))
+                                   :target (:target original) :manifest (get-in ready [:snapshot :manifest])})
+                        (assoc :knowledge/owner {:host host :original original-room :handle handle :ticket lifetime/*ticket*}))]
+       (f (assoc data :ready ready :prepared prepared :submission submission))))))))
 
 (defn- joint-claim! [{:keys [conn w prepared submission]}]
   (let [p (requests/prepare-claim {:party (:owner w) :room (:room w) :client-id (:request-id submission)
@@ -126,3 +135,17 @@
         (d/transact conn [{:db/id (:db/id row) :work.request/intent-id digest}
                           {:db/id (:db/id batch) :knowledge.batch/request-intent digest}])
         (is (thrown? Exception (proof/request! conn (requests/get-request conn (:work.request/id row)) changed)))))))
+
+(deftest workflow-retry-verifies-retained-joint-proof-before-returning-status
+  (fixture
+    (fn [{:keys [conn w submission ready] :as data}]
+      (let [row (joint-claim! data)
+            forbidden (fn [& _] (throw (AssertionError. "Retry may not reopen source or prepare providers")))]
+        (with-redefs [source/snapshot-in forbidden content/read-by-id forbidden work/prepare forbidden]
+          (is (= {:status :retry :id (:work.request/id row)}
+                 (workflows/retry-request conn (:owner w) (:room w) submission)))
+          (is (= :conflict (:status (workflows/retry-request conn (:owner w) (:room w)
+                                                            (assoc submission :model "different-model"))))))
+        (let [batch (batches/batch @conn (:batch ready))]
+          (d/transact conn [[:db/retract (:db/id batch) :knowledge.batch/request (:work.request/id row)]]))
+        (is (thrown? Exception (workflows/retry-request conn (:owner w) (:room w) submission)))))))

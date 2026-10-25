@@ -1,16 +1,23 @@
 (ns is.simm.ops.work
   "Bounded work uses Dvergr Jobs, Runs, wallets and certified Attempts.
    This host admission journal is not copied into the speculative world."
-  (:require [dvergr.agent.environment :as environment]
+  (:require [datahike.api :as d]
+            [dvergr.agent.environment :as environment]
             [dvergr.agent.evaluation :as evaluation]
             [dvergr.agent.run :as run]
             [dvergr.agent.workflow :as workflow]
+            [dvergr.artifact :as artifact]
             [dvergr.catalog.workspace :as workspace]
             [dvergr.jobs :as jobs]
             [dvergr.resource :as resource]
             [is.simm.model.access :as access]
+            [is.simm.model.knowledge-batches :as batches]
             [is.simm.model.work-requests :as requests]
+            [is.simm.ops.knowledge-batch-proof :as batch-proof]
+            [is.simm.ops.owned-reads :as reads]
+            [is.simm.ops.owned-workspace :as owned]
             [is.simm.ops.work-sandbox :as work-sandbox]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]))
 
@@ -179,12 +186,82 @@
   (binding [ec/*execution-context* host-ctx]
     (requests/mark-returned! conn (:work.request/id row))))
 
+(defn- batch-admission-current!
+  "Fixed native handoff observation, not a source lease across world fork.
+   Writer arity uses only captured liveness and its own control snapshot."
+  ([conn host-ctx principal room-id room prepared]
+   (let [{:keys [host original ticket handle]} (:knowledge/owner prepared)]
+     (when (.isInterrupted (Thread/currentThread)) (throw (InterruptedException. "Batch handoff interrupted")))
+     (when-not (identical? ticket lifetime/*ticket*) (invalid! "Batch handoff has no original App owner"))
+     (lifetime/check-current!)
+     (batch-admission-current! conn host-ctx principal room-id room prepared
+                               (:control-db (reads/validate-host-room! host principal handle original)))))
+  ([conn host-ctx principal room-id room prepared db]
+   (let [{:keys [host original ticket handle]} (:knowledge/owner prepared)
+         target (get-in prepared [:basis :source-origin :target])
+         control (get-in prepared [:basis :knowledge/batch-control])]
+     (when-not (and (map? host) (map? original) (identical? room (:room original))
+                    (= room-id (:room-id original))
+                    (identical? conn (get-in host [::reads/owner :control-conn]))
+                    (identical? host-ctx (:execution-ctx host))
+                    (lifetime/retained? ticket) (lifetime/ready? (:owner ticket))
+                    (m/validate batch-proof/control-schema control))
+       (invalid! "Batch handoff no longer owns its original App and Room"))
+     (reads/validate-host-room-in! host principal handle original db)
+     (let [party (authorize-in! db principal room-id)]
+       (owned/validate-control-in! db principal room-id {:room-id room-id :party party :target target} (:mapping control))
+       party))))
+
+(defn- claim-batch-prepared!
+  "Specific original-owner composition. Positive readback must prove BOTH
+   request and batch linkage. No arbitrary claim callback or new runner."
+  [conn host-ctx principal room-id room input prepared]
+  (let [party (batch-admission-current! conn host-ctx principal room-id room prepared)
+        intent (:basis prepared) origin (:knowledge/batch intent)
+        _ (when-not (= input (:submission intent))
+            (invalid! "Batch handoff submission differs from its retained intent"))
+        p (requests/prepare-claim {:party party :room room-id :client-id (:request-id input)
+                                   :kind (:request-kind prepared) :intent intent
+                                   :limits (update (:limits input) :settlement keyword)})]
+    (if-let [row (requests/inspect-claim @conn p)]
+      (do (batch-proof/request! conn row) {:request row :claimed? false})
+      (let [proof (batch-proof/ready! conn party room-id origin)
+            _ (batch-proof/verify-input! proof intent)
+            {:keys [claim row]} (requests/claim-row p)]
+        (batch-admission-current! conn host-ctx principal room-id room prepared)
+        (try
+          (artifact/publish-value! (artifact/datahike-store conn) (:intent p)
+            (fn [ref]
+              (batch-admission-current! conn host-ctx principal room-id room prepared)
+              (d/transact conn
+                [[:db.fn/call (fn [db]
+                               (batch-admission-current! conn host-ctx principal room-id room prepared db)
+                               (let [row (assoc row :work.request/payload-ref ref)]
+                                 (into (requests/claim-tx db row (:digest p))
+                                       (batches/request-tx db origin row (:digest p)))))]])))
+          (catch InterruptedException error
+            (.interrupt (Thread/currentThread))
+            (throw error))
+          (catch Exception error
+            (let [row (requests/inspect-claim @conn p)]
+              (when-not row (throw error))
+              (batch-proof/request! conn row))))
+        (let [result (requests/claim-result @conn p claim)]
+          (batch-proof/request! conn (:request result))
+          result)))))
+
 (defn submit-prepared!
   "Trusted adapter seam for an already validated/pinned candidate. Only the
    durable insert winner schedules; retries observe, including interruption.
    Jobs own status. The job wallet exists before the evaluation's child grant."
   [conn host-ctx principal room-id room input prepared]
-  (let [journal (fn [f] (binding [ec/*execution-context* host-ctx] (f)))
+  (let [admission-prepared prepared
+        ;; App/Room ownership is only a native admission handoff. Do not retain
+        ;; that host/ticket graph in the Job's settlement closure or world data.
+        prepared (dissoc prepared :knowledge/owner)
+        _ (when (contains? (:basis prepared) :knowledge/batch)
+            (batch-admission-current! conn host-ctx principal room-id room admission-prepared))
+        journal (fn [f] (binding [ec/*execution-context* host-ctx] (f)))
         party (journal #(authorize! conn principal room-id))
         settle! (fn [row]
                   (return-job! conn host-ctx room row)
@@ -193,13 +270,17 @@
                   (when-let [settled! (:settled! prepared)]
                     (settled! (:work.request/job row))))
         {:keys [request claimed?]}
-        (journal #(requests/claim!
-                   conn {:party party :room room-id :client-id (:request-id input)
-                         :kind (or (:request-kind prepared) :task) :intent (:basis prepared)
-                         :limits (update (:limits input) :settlement keyword)}))
+        (journal #(if (contains? (:basis prepared) :knowledge/batch)
+                    (claim-batch-prepared! conn host-ctx principal room-id room input admission-prepared)
+                    (requests/claim!
+                     conn {:party party :room room-id :client-id (:request-id input)
+                           :kind (or (:request-kind prepared) :task) :intent (:basis prepared)
+                           :limits (update (:limits input) :settlement keyword)})))
         id (:work.request/id request)]
     (when claimed?
       (try
+        (when (contains? (:basis prepared) :knowledge/batch)
+          (batch-admission-current! conn host-ctx principal room-id room admission-prepared))
         (let [job-ctx (if-let [context! (:job-context! prepared)]
                         (context! request) (:ctx room))]
           (jobs/start!
@@ -208,6 +289,8 @@
            (fn [job-id]
              (let [row (journal #(requests/record-job! conn id (:work.request/claim request) job-id))]
                (try
+                 (when (contains? (:basis prepared) :knowledge/batch)
+                   (batch-admission-current! conn host-ctx principal room-id room admission-prepared))
                  (binding [ec/*execution-context* (:ctx room)]
                    (when-let [admit! (:admit! prepared)] (admit! job-id))
                    (doseq [unit (or (:resource-units prepared)

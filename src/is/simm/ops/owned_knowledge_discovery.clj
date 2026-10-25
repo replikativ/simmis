@@ -151,7 +151,7 @@
                                      (owned/validate-control-in! db principal (:room-id binding) binding mapping)
                                      (fragment db))]]))]
     (check!)
-    (assoc captured :control control :binding binding :check! check! :transact! transact!)))
+    (assoc captured :control control :binding binding :mapping mapping :check! check! :transact! transact!)))
 
 (defn refresh!
   "Metadata-only refresh of the current authorized default workflow stream.
@@ -249,7 +249,7 @@
     (do
      (refresh! host principal handle request)
   (with-stream! host principal handle request
-    (fn [{:keys [control binding value policy planned snapshot origin check! transact!] :as context}]
+    (fn [{:keys [control binding value policy planned snapshot origin mapping check! transact!] :as context}]
       (let [declaration (batch-declaration! request context)
             expected (streams/stream @control (:id value))]
         (if-let [held (active-batch-reply control value expected)]
@@ -295,6 +295,7 @@
                       (check!)
                       {:status :ready :stream (:id value) :batch (:id selected)
                        :batch-origin {:batch (:id selected) :selection (:id selected) :frozen digest}
+                       :control-revision mapping
                        :captured (:captured retained) :publication-basis (:publication-basis retained)
                        :remaining (:remaining selected)
                        :snapshot snapshot :source-origin origin})))))))))))))
