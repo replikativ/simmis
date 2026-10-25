@@ -37,6 +37,11 @@ or deleted images remain inert; replacement content changes the guarded image
 URL. No image body is fetched through file-source RPCs. Only owned image routes
 render automatically, while external image URLs remain source text. Rich and
 read previews preserve the original image Markdown and its source spans.
+Relative file links navigate from the Markdown file's directory into the same
+room's Memory view. Link MarkViews keep their original relative hrefs in the
+editor/clipboard model; only the displayed DOM address is resolved. Ctrl/⌘-click
+opens links while editing. Retained drafts with an unverified file context keep
+relative navigation inert until the workspace is verified again.
 
 The capture-note formatter emits bounded chronological Markdown notes for
 finalized recording intervals, with readable relative screenshot/video links

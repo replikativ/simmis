@@ -69,6 +69,7 @@
                              (map (fn [frame asset]
                                     (str "## " (instant (:at frame)) "\n\n"
                                          "![Screenshot at " (instant (:at frame)) "](" (relative asset) ")\n\n"
+                                         "[Open original screenshot](" (relative asset) ")\n\n"
                                          "Recording time: " (- (:at frame) from) " ms into this segment.\n\n"
                                          (when-let [model (:model frame)] (str "Transcription model: " (json/write-str model) "\n\n"))
                                          (quoted (or (:text frame) (str "Transcription failed: " (:failed frame)))) "\n")) frames assets)))]

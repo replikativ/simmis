@@ -43,7 +43,7 @@
           (addressing/with-slot-fn index #(model-node child (update options :path (fnil conj []) index))))
         (range) (:content node)))
 
-(defn- marked-text [node]
+(defn- marked-text [node options]
   ;; Preserve the previous outer-last mark order, but construct each inner
   ;; wrapper under the outer wrapper's DOM scope, not as a prebuilt value.
   (letfn [(render [marks]
@@ -54,7 +54,7 @@
                   "italic" (el/em {} (render remaining))
                   "strike" (el/span {:style {:text-decoration "line-through"}} (render remaining))
                   "code" (el/code {} (render remaining))
-                  "link" (let [href (get-in mark [:attrs :href])]
+                  "link" (let [href (attachments/resolve-link (:file-base options) (get-in mark [:attrs :href]))]
                            (if (rich/safe-link? href)
                              (el/a {:href href :target "_blank" :rel "noopener noreferrer"}
                                    (render remaining))
@@ -77,12 +77,12 @@
   ;; Deliberately no innerHTML, scripts, embedded images, or widget execution.
   (case (:type node)
     "doc" (el/div {} (children node options))
-    "text" (marked-text node)
+    "text" (marked-text node options)
     ("inlineMath" "displayMath") (math/view node)
     "footnoteReference" (el/sup {:class "memory-footnote-reference"
                                  :title (get-in node [:attrs :raw])
                                  :aria-label (str "Footnote " (get-in node [:attrs :label]))}
-                                (marked-text (assoc node :text (get-in node [:attrs :label]))))
+                                (marked-text (assoc node :text (get-in node [:attrs :label])) options))
     "paragraph" (el/p {} (children node options))
     "heading" (case (get-in node [:attrs :level])
                 1 (el/h1 {} (children node options)) 2 (el/h2 {} (children node options)) 3 (el/h3 {} (children node options))
@@ -222,7 +222,7 @@
                                 :on-click (fn [_] (source! (:region selection)))}
                                (vc/icon :file-code {:aria-hidden "true"}))))))
 
-(defn- document-view [path draft a write? image-urls]
+(defn- document-view [path draft a write? image-urls file-base]
   (let [base (:rich-base draft) rich? (and (= :rich (:mode draft)) base)
         analysis (if rich? (:analysis base) (:analysis draft))
         source (if rich? (:text base) (:text draft))
@@ -247,7 +247,7 @@
         read-models (if outline-blocks (vec (mapcat :models outline-blocks))
                        (mapv #(or (when rich? (get-in base [:models (:from %)])) (:model %)) slots))
         highlights (when-not rich? (code-highlight/document-segments read-models))
-        source-previews (markdown-scene/index source analysis image-urls)
+        source-previews (markdown-scene/index source analysis image-urls file-base)
         inline-positions (inline-charts/positions read-models inline-previews inline-limit)
         slots (mapv #(assoc % :inline-positions inline-positions) slots)]
     (el/div {:class "memory-document"}
@@ -270,6 +270,7 @@
                                    :selection (:document-selection base) :document? true
                                    :charts chart-models
                                    :source-previews source-previews
+                                   :file-base file-base
                                    :inline-charts (when (seq inline-previews) {:entries inline-previews :limit inline-limit})
                                    :cell-config ((:cell-config a) path)
                                    :on-run-cell #((:run-cell a) path %)
@@ -299,7 +300,7 @@
                                             #(if model
                                                (model-node model {:path [(+ (:model-start block) index)]
                                                                   :highlights highlights
-                                                                  :previews (:inline-positions block)})
+                                                                  :previews (:inline-positions block) :file-base file-base})
                                                (if-let [preview (get source-previews (str "opaque:" (:from node)))]
                                                  (source-preview/view (:from node) preview)
                                                  (el/pre {} (subs source (:from node) (:to node)))))))
@@ -319,11 +320,12 @@
                               (cond
                                 (and rich? model)
                                 (rich-editor/view {:id [(:owner a) path (:id base) (:from slot)] :model model
+                                                   :file-base file-base
                                                    :selection (get-in base [:selections (:from slot)])
                                                    :read-only? (not write?)
                                                    :on-change (fn [model selection]
                                                                 ((:rich-change a) path (:id base) (:from slot) model selection))})
-                                model (model-node model {:path [slot-index] :highlights highlights :previews (:inline-positions slot)})
+                                model (model-node model {:path [slot-index] :highlights highlights :previews (:inline-positions slot) :file-base file-base})
                                 (get source-previews (str "opaque:" (:from slot)))
                                 (source-preview/view (:from slot) (get source-previews (str "opaque:" (:from slot))))
                                 :else (el/div {:class "memory-source-region"}
@@ -827,7 +829,8 @@
                                         :else (document-view path draft a write?
                                                              (when coherent?
                                                                (attachments/urls (:room-id data) path (:analysis draft)
-                                                                                 (:observed-entries state) (:target-stamp state))))))))))))
+                                                                                 (:observed-entries state) (:target-stamp state)))
+                                                             {:room (:room-id data) :path path :enabled? coherent?})))))))))
 
 (defn render [data]
   (spin

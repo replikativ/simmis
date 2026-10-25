@@ -6,7 +6,7 @@
 
 (def max-images 32)
 
-(defn relative-path [document url]
+(defn file-path [document url]
   (when (and (links/path? document) (string? url) (<= 1 (count url) 2048)
              (not (re-find #"^[a-zA-Z][a-zA-Z0-9+.-]*:|^[#/]|[?#\\\u0000-\u0020\u007f]" url)))
     (try
@@ -17,8 +17,24 @@
                                  (= ".." part) (if (seq out) (pop out) (reduced nil))
                                  :else (conj out part))) [] segments)
             result (when path (str/join "/" path))]
-        (when (and (links/path? result) (= :image (media/kind result))) result))
+        (when (links/path? result) result))
       (catch #?(:clj Exception :cljs :default) _ nil))))
+
+(defn relative-path [document url]
+  (when-let [path (file-path document url)]
+    (when (= :image (media/kind path)) path)))
+
+(defn resolve-link
+  "Render-only navigation; the original Markdown/model href stays portable.
+   A disabled file context keeps relative links inert until revalidated."
+  [base href]
+  (cond
+    (nil? base) href
+    (not (string? href)) nil
+    (re-find #"^[a-zA-Z][a-zA-Z0-9+.-]*:|^[/#?]" href) href
+    (false? (:enabled? base)) nil
+    :else (when-let [path (file-path (:path base) href)]
+            (links/route {:kind :memory-file :room (:room base) :path path}))))
 
 (defn images [document analysis]
   (->> (:nodes analysis)

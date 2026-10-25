@@ -30,3 +30,15 @@
     (is (= 1 (count (attachments/urls (str id) "captures/source.md" analysis entries id))))
     (is (= attachments/max-images
            (count (attachments/images "source.md" {:nodes (mapv #(hash-map :kind :Image :url (str % ".png")) (range 100))}))))))
+
+(deftest file-links-resolve-for-navigation-without-rewriting-source-links
+  (let [id #uuid "0490e6e3-a857-48ae-a47f-d78fd328628e"
+        base {:room (str id) :path "captures/session/observations/note.md" :enabled? true}
+        relative "../recordings/video.webm"]
+    (is (= (str "/room/" id "/files?path=captures%2Fsession%2Frecordings%2Fvideo.webm")
+           (attachments/resolve-link base relative)))
+    (is (= relative (attachments/resolve-link nil relative)))
+    (is (nil? (attachments/resolve-link (assoc base :enabled? false) relative)))
+    (is (nil? (attachments/resolve-link base "../../../../outside.txt")))
+    (doseq [absolute ["https://example.test/file" "mailto:person@example.test" "/room/explicit" "#heading"]]
+      (is (= absolute (attachments/resolve-link base absolute))))))

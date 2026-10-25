@@ -1,6 +1,7 @@
 (ns is.simm.documents.markdown-scene
   "Inert display of source-preserved Markdown. Never a serializer or HTML parser."
-  (:require [is.simm.documents.rich-text :as rich]))
+  (:require [is.simm.documents.rich-text :as rich]
+            [is.simm.documents.attachments :as attachments]))
 
 (def preview-kinds #{:TableBlock :BlockQuote :HtmlCommentBlock})
 (def max-preview-chars 65536)
@@ -14,7 +15,8 @@
 
 (defn preview
   ([source node] (preview source node {}))
-  ([source node image-urls]
+  ([source node image-urls] (preview source node image-urls nil))
+  ([source node image-urls file-base]
   (when (and (previewable? node)
              (<= 0 (:from node) (:to node) (count source))
              (<= (- (:to node) (:from node)) max-preview-chars))
@@ -33,9 +35,10 @@
                     :Emphasis (element :em)
                     :Strikethrough (element :s)
                     :Code {:tag :code :attrs {} :children [(:literal n)]}
-                    :Link (if (rich/safe-link? (:url n))
-                            (element :a {:href (:url n) :rel "noopener noreferrer" :target "_blank"})
-                            (element :span))
+                    (:Link :LinkRef) (let [href (attachments/resolve-link file-base (:url n))]
+                                      (if (rich/safe-link? href)
+                                        (element :a {:href href :rel "noopener noreferrer" :target "_blank"})
+                                        (element :span)))
                     (:Image :ImageRef)
                     (if-let [url (get image-urls (:url n))]
                       {:tag :img :attrs {:src url :alt (apply str (keep :text (:children n))) :loading "lazy"}
@@ -72,7 +75,8 @@
 
 (defn index
   ([source analysis] (index source analysis {}))
-  ([source analysis image-urls]
+  ([source analysis image-urls] (index source analysis image-urls nil))
+  ([source analysis image-urls file-base]
   ;; Limit the whole page, not merely one table. This is disposable display
   ;; data derived from the same frozen source as the editor's opaque labels.
   (loop [nodes (mapcat #(tree-seq (comp seq :children) :children %) (:nodes analysis))
@@ -80,7 +84,7 @@
     (if-let [node (first nodes)]
       (if (and (previewable? node)
                (<= (- (:to node) (:from node)) remaining))
-        (if-let [projection (preview source node image-urls)]
+        (if-let [projection (preview source node image-urls file-base)]
           (recur (next nodes) (- remaining (count (:source projection)))
                  (assoc out (str "opaque:" (:from node)) projection))
           (recur (next nodes) remaining out))
