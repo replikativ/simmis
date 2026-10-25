@@ -110,6 +110,10 @@
   (hasch/uuid [:simmis/knowledge-source-v1
                (select-keys basis [:repository :store :backend :branch :ref :configuration])]))
 
+(defn validate-basis! [value]
+  (when-not (m/validate basis-schema value) (refuse! :invalid-basis))
+  value)
+
 (defn- validate-plan! [plan]
   (when-not (and (map? plan) (= #{:before :after :changes} (set (keys plan)))
                  (or (nil? (:before plan)) (m/validate basis-schema (:before plan)))
@@ -148,6 +152,28 @@
   (into {} (map (fn [[k v]] [(keyword (name k)) v]))
         (select-keys value (map #(keyword "knowledge.stream" (name %))
                                 [:id :by :room :target :policy :program :epoch]))))
+
+(defn validate-binding!
+  "Integrity/shape only for an original cursor row; not current authorization."
+  [value expected]
+  (when-not (= value (descriptor (dissoc value :id))) (refuse! :invalid-descriptor))
+  (when (some? expected)
+    (let [allowed (set (map :db/ident (filter #(= "knowledge.stream" (namespace (:db/ident %))) schema)))
+          required (disj allowed :knowledge.stream/active-batch)]
+      (when-not (and (map? expected) (every? allowed (keys expected))
+                     (every? #(contains? expected %) required)
+                     (= (descriptor-fields value) (stored-descriptor expected))
+                     (every? uuid? (map expected [:knowledge.stream/cursor-commit :knowledge.stream/cursor-root
+                                                  :knowledge.stream/last-discovery :knowledge.stream/source]))
+                     (pos-int? (:knowledge.stream/revision expected))
+                     (< (:knowledge.stream/revision expected) Long/MAX_VALUE)
+                     (integer? (:knowledge.stream/cursor-tx expected)) (<= 0 (:knowledge.stream/cursor-tx expected) Long/MAX_VALUE)
+                     (integer? (:knowledge.stream/next-order expected))
+                     (<= 0 (:knowledge.stream/next-order expected) (- Long/MAX_VALUE max-changes))
+                     (or (not (contains? expected :knowledge.stream/active-batch))
+                         (uuid? (:knowledge.stream/active-batch expected))))
+        (refuse! :invalid-stream-binding))))
+  expected)
 
 (defn- pending-for-path [db id path]
   (d/q '[:find [?e ...] :in $ ?stream ?path
