@@ -390,7 +390,7 @@ acknowledgement remains an error until the caller explicitly repeats that intent
 Recovery does not resume a disabled schedule. Capturing batches have no installed
 scheduled binding, so recovery does not infer or repair their unbound occurrences.
 Explicit requeue is also available for either unlinked phase. Submitted recovery
-and final source-root retirement remain separate work. These alpha operations are
+remains separate work. These alpha operations are
 not yet exposed or activated in the running UI.
 
 Requeue closes the old batch with an `abandoned-requeue` audit, restores the exact
@@ -423,3 +423,49 @@ hashes do not authenticate arbitrarily fabricated database records.
 
 Generation is required in this inactive alpha's stream snapshots. Old private
 development snapshots need a fresh alpha home; this work adds no migration layer.
+
+Clean stream retirement has a separate `active → retiring → retired` lifecycle.
+It requires no active batch, claimed or pending items, stranded pending index,
+or unresolved pin intent. The exact cursor pin and its discovery must agree.
+Begin atomically records the decision and immutable binding hashes on that pin
+and fences the stream. Fresh discovery, pin creation, batch claims and requeue
+cannot cross that fence. Historical artifact readers and exact no-op replays
+remain available.
+
+The HOST cleanup uses current room merge authority and the original author's
+physical discovery gate. It resolves the original registered source from retained
+pin metadata, independently of current defaults. Native cleanup verifies the exact
+root record and owner before release, and repeats original App/Room and current
+actor checks after blocking verification, immediately before the effect. Revocation
+or fencing before release leaves the root present. Interruption during an already
+started release can leave the root absent and a durable retiring intent.
+
+Recovery of that intent verifies the original physical store and canonical audit.
+If its registry entry is absent, it does not reopen the old checkpoint or recreate
+the root: source GC may already have collected it. Only confirmed absence permits
+the final transaction marking the pin released and stream retired. An authorized
+new merger may finish cleanup while preserving the original audit author. Finished
+replay needs no original source lookup. Cursor facts, generation and control-side
+selection/frozen references remain as historical evidence.
+
+Retirement fences this stream identity; it does not retire all future streams on
+the repository or claim distributed GC safety. Pending backlog disposal and
+independently replaced stores require separate policies.
+
+The explicit `is.simm.ops.knowledge-retirement-gc-probe` runs `prepare`, `release`
+and `verify` in three JVMs against a fresh disposable manifest path:
+
+```sh
+clj -M:browser-tests -m is.simm.ops.knowledge-retirement-gc-probe prepare /tmp/simmis-retirement-proof/proof.edn
+clj -M:browser-tests -m is.simm.ops.knowledge-retirement-gc-probe release /tmp/simmis-retirement-proof/proof.edn
+clj -M:browser-tests -m is.simm.ops.knowledge-retirement-gc-probe verify /tmp/simmis-retirement-proof/proof.edn
+```
+
+It uses canonical pin/journal/batch helpers and real file-store GC, injects a lost
+release ACK, and checks historical frozen evidence after source and control GC.
+Fixture-only pruning of an unreferenced logical content entity makes old payload
+collection a positive observable result; this adds no production Geschichte
+pruning policy. This is a model/native GC proof, complemented by separate HOST
+authorization/lifetime tests. It does not prove persistent HOST registry
+reconstruction or public runtime activation. The probe is outside ordinary test
+discovery and invokes no models.

@@ -7,6 +7,8 @@
             [datahike.gc-roots :as roots]
             [hasch.core :as hasch]
             [is.simm.model.knowledge-pins :as pins]
+            [is.simm.model.knowledge-streams :as streams]
+            [is.simm.model.knowledge-stream-retirement :as retirement]
             [is.simm.ops.knowledge-changes :as changes]
             [konserve.core :as k]))
 
@@ -75,6 +77,7 @@
    authorization. Recovery uses verify!, never calls create! on missing roots."
   [control-conn source-db {:keys [intent new?]}]
   (when-not (true? new?) (refuse! :not-creation-winner))
+  (streams/admissible! (streams/stream @control-conn (:knowledge.pin/stream intent)))
   (when-not (and (= intent (pins/intent @control-conn (:knowledge.pin/id intent)))
                  (= :creating (:knowledge.pin/state intent))
                  (= intent (pins/active @control-conn (:knowledge.pin/stream intent))))
@@ -122,4 +125,32 @@
           (verify! control-conn source-db old)
           (roots/release! source-db old {:sync? true}))
         (when (contains? (registry! source-db) old) (refuse! :release-unconfirmed))))
+    true))
+
+(defn release-retiring!
+  "Dispose ONLY the recorded cursor root after the canonical stream fence.
+   An absent registry entry after a lost ACK needs no old commit: GC may have
+   collected it. Retained payload + original physical identity still gate IO.
+   CHECK! is a mandatory trusted internal HOST lifetime/authorization boundary,
+   never request/provider data. Retain the original physical extent throughout."
+  [control-conn source-db expected value check!]
+  (when-not (fn? check!) (refuse! :missing-host-boundary))
+  (check!)
+  (let [{:keys [pin]} (retirement/retiring! @control-conn expected value)
+        body (pins/payload control-conn pin)
+        id (:knowledge.pin/id pin)]
+    (when-not (and (= (:value expected) (:stream body)) (= (:basis expected) (:basis body))
+                   (= (select-keys (:basis body) (source-keys))
+                      (select-keys (changes/source-identity source-db) (source-keys))))
+      (refuse! :physical-source-changed))
+    (when (contains? (registry! source-db) id)
+      (verify! control-conn source-db id)
+      (retirement/retiring! @control-conn expected value)
+      ;; Verification can block. A fence or revoked merger must win before the
+      ;; native effect starts, even though the original lease is still retained.
+      (check!)
+      (roots/release! source-db id {:sync? true}))
+    (when (contains? (registry! source-db) id) (refuse! :release-unconfirmed))
+    (retirement/retiring! @control-conn expected value)
+    (check!)
     true))

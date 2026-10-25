@@ -141,6 +141,7 @@
         (when schedule (scheduled/withdrawn! db schedule))
         [])
       (do
+        (streams/admissible! stream)
         (when-not (and (= from (:knowledge.batch/state batch))
                        (not-any? #(contains? batch %) [:knowledge.batch/outcome
                                                       :knowledge.batch/recovery-id :knowledge.batch/recovery-client

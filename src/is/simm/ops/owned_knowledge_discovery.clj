@@ -13,6 +13,7 @@
             [is.simm.model.knowledge-schedule-batches :as scheduled]
             [is.simm.model.knowledge-pins :as pins]
             [is.simm.model.knowledge-streams :as streams]
+            [is.simm.model.knowledge-stream-retirement :as retirement]
             [is.simm.ops.knowledge-changes :as changes]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.ops.owned-room-operation :as room-operation]
@@ -170,6 +171,7 @@
             (stream-context! host principal handle request resolved lease ticket room-check!)]
         (check!)
         (let [expected (streams/stream @control (:id value))
+              _ (streams/admissible! expected)
               active (pins/active @control (:id value))
               basis (changes/basis (:db binding))]
           (if (and (nil? active) (= (:commit basis) (:knowledge.stream/cursor-commit expected)))
@@ -261,8 +263,9 @@
   (if-let [held (with-stream! host principal handle request
                  (fn [{:keys [control value] :as context}]
                    (batch-declaration! request context)
-                   (let [db @control]
-                     (active-batch-reply db value (streams/stream db (:id value))))))]
+                   (let [db @control row (streams/stream db (:id value))]
+                     (streams/admissible! row)
+                     (active-batch-reply db value row))))]
     held
     (do
      (refresh! host principal handle request)
@@ -270,7 +273,8 @@
     (fn [{:keys [control binding value policy planned snapshot origin mapping check! transact!] :as context}]
       (let [declaration (batch-declaration! request context)
             db @control
-            expected (streams/stream db (:id value))]
+            expected (streams/stream db (:id value))
+            _ (streams/admissible! expected)]
         (if-let [held (active-batch-reply db value expected)]
           held
           (let [pinned (checkpoints/verify! control (:db binding) (:knowledge.stream/cursor-root expected))
@@ -319,6 +323,14 @@
                        :remaining (:remaining selected)
                        :snapshot snapshot :source-origin origin})))))))))))))
 
+(defn- original-source-db! [host target]
+  (let [registered (native-rooms/registry-system-for (reads/current-host-control-db! host) (:runtime-system target))]
+    (when-not (and (= :repo (:system/type registered)) (= (:registry-system target) (:system/id registered)))
+      (refuse! :original-system-unavailable))
+    (let [system (ygg/system (:runtime-system target))]
+      (when-not system (refuse! :original-system-unavailable))
+      @(:conn (workspace/workspace-for-system! system)))))
+
 (defn recover!
   "Finish only a committed cleanup on its exact original registered source.
    Creating/pinned discovery resumes through refresh! with inspected program
@@ -340,15 +352,8 @@
             (if (#{:retained :released} (:knowledge.pin/state current))
               (do (pins/finish-tx @control current)
                   {:status (:knowledge.pin/state current) :operation operation})
-              (let [target (:target origin)
-                    registered (native-rooms/registry-system-for (reads/current-host-control-db! host) (:runtime-system target))
-                    _ (when-not (and (= :repo (:system/type registered))
-                                     (= (:registry-system target) (:system/id registered)))
-                        (refuse! :original-system-unavailable))
-                    system (ygg/system (:runtime-system target))
-                    _ (when-not system (refuse! :original-system-unavailable))
-                    source (workspace/workspace-for-system! system)]
-                (finish! control @(:conn source) current check!
+              (let [source-db (original-source-db! host (:target origin))]
+                (finish! control source-db current check!
                          (fn [fragment]
                            (check!)
                            (d/transact control [[:db.fn/call fragment]]))))))))))
@@ -459,3 +464,70 @@
    automatic resumption, old request replay, source rewind or budget reset."
   [host principal handle request]
   (abandon-unlinked! host principal handle request :capturing :requeue))
+
+(def ^:private retire-schema
+  [:map {:closed true} [:stream :uuid] [:expected-cursor :uuid]
+   [:request-id :uuid] [:reason [:string {:min 1 :max 1000}]]])
+
+(defn retire-stream!
+  "Explicit clean-stream retirement. Fence first, release the exact original
+   cursor root, then finish. Missing ACKs retain the intent; a newly authorized
+   reconciler preserves its original audit actor while acting under own rights.
+   No current default/program/model lookup or missing-root recreation."
+  [host principal handle request]
+  (when-not (m/validate retire-schema request) (refuse! :invalid-retirement))
+  (try
+    (room-operation/with-app!
+     host
+     (fn []
+       (let [{:keys [control-db room-id]} (reads/preflight-host-read! host principal handle)
+             _ (work/authorize-in! control-db principal room-id)
+             control (get-in host [::reads/owner :control-conn])
+             initial (streams/stream control-db (:stream request))
+             author (:knowledge.stream/by initial)]
+         (when-not (and (uuid? author) (= room-id (:knowledge.stream/room initial))
+                        (= (:expected-cursor request) (:knowledge.stream/cursor-root initial)))
+           (refuse! :stream-unavailable))
+         (with-room!
+          host principal handle author
+          (fn [resolved lease ticket check!]
+            (let [db (reads/current-host-control-db! host)
+                  _ (work/authorize-in! db principal room-id)
+                  stream (streams/stream db (:stream request))
+                  _ (when-not (= [author room-id (:expected-cursor request)]
+                                 (mapv stream [:knowledge.stream/by :knowledge.stream/room :knowledge.stream/cursor-root]))
+                      (refuse! :stream-changed))
+                  pin (pins/intent db (:expected-cursor request))
+                  body (pins/payload control pin)
+                  expected (retirement/expected stream pin body)
+                  audit-by (if (= :active (:knowledge.stream/state stream))
+                             (:party resolved) (:knowledge.pin/retirement-by pin))
+                  value (retirement/decision {:stream (:stream request) :root (:expected-cursor request)
+                                              :by audit-by :client (:request-id request) :at (java.util.Date.)
+                                              :reason (:reason request)})
+                  write! (fn [fragment]
+                           (check!)
+                           (d/transact control [[:db.fn/call
+                                                 (fn [current]
+                                                   (writer-current! host principal handle resolved lease ticket current)
+                                                   (fragment current expected value))]]))]
+              (check!)
+              (when (seq (retirement/begin-tx @control expected value)) (write! retirement/begin-tx))
+              (check!)
+              (work/authorize-in! (reads/current-host-control-db! host) principal room-id)
+              (when (= :retiring (:knowledge.stream/state (streams/stream @control (:stream request))))
+                (let [source-db (original-source-db! host (get-in body [:origin :target]))]
+                  (check!)
+                  (work/authorize-in! (reads/current-host-control-db! host) principal room-id)
+                  (checkpoints/release-retiring!
+                   control source-db expected value
+                   #(do (check!)
+                        (work/authorize-in! (reads/current-host-control-db! host) principal room-id)))
+                  (write! retirement/finish-tx)))
+              (check!)
+              (work/authorize-in! (reads/current-host-control-db! host) principal room-id)
+              (when-not (empty? (retirement/finish-tx @control expected value))
+                (refuse! :retirement-unconfirmed))
+              {:status :retired :stream (:stream request) :root (:expected-cursor request)
+               :operation (:id value)}))))))
+    (catch Throwable error (rethrow-interrupted! error))))

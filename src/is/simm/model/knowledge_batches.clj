@@ -79,6 +79,7 @@
             selected (vec (take (count items) pending))
             pin (when current (pins/intent db (:knowledge.stream/cursor-root current)))
             discovery (when current (row db :knowledge.discovery/id (:knowledge.stream/last-discovery current)))]
+        (streams/admissible! current)
         (when-not (and (= expected current)
                        (nil? (:knowledge.stream/active-batch current))
                        (nil? (pins/active db (:id stream)))

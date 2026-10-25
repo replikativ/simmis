@@ -51,6 +51,7 @@
   [db value expected payload-id ref root claim]
   (when-not (= value (streams/descriptor (dissoc value :id))) (refuse! :invalid-stream))
   (when-not (= expected (streams/stream db (:id value))) (refuse! :cursor-conflict))
+  (streams/admissible! expected)
   (when (:knowledge.stream/active-batch expected) (refuse! :batch-active))
   (when (d/q '[:find ?e . :in $ ?stream :where [?e :knowledge.item/stream ?stream]
                [?e :knowledge.item/state :claimed]] db (:id value))
