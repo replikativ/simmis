@@ -16,6 +16,7 @@
             [is.simm.uis.web.desktop.memory-saved-views-test :as page-view-fixture]
             [is.simm.uis.web.desktop.saved-view-remote :as saved-view-remote]
             [is.simm.documents.saved-view-contract :as saved-view-contract]
+            [is.simm.documents.saved-view-snapshot-test :as snapshot-fixture]
             [is.simm.uis.web.desktop.memory-remote :as remote]
             [is.simm.uis.web.desktop.memory-reference-remote :as reference-remote]
             [is.simm.uis.web.desktop.refs :as refs]
@@ -1920,3 +1921,88 @@
             (reply! (:ok call) reply)
             (is (nil? (page-views/visible (state) path view)))
             (is (= "Human dirty draft" (get-in (state) [:drafts (:path row) :text])))))))))
+
+(deftest explicit-snapshot-recovery-reuses-the-frozen-path-and-bytes-after-lost-ack
+  (binding [ec/*execution-context* runtime]
+    (let [session {:id (random-uuid)} connection {:epoch (random-uuid)} stamp page-view-fixture/stamp
+          path page-view-fixture/path view page-view-fixture/view-id
+          states (signal runtime {}) writes (atom []) reads (atom []) exists? (atom true)
+          delay-metadata? (atom false) metadata-calls (atom [])]
+      (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
+                    sig/memory-connection (signal runtime connection)
+                    remote/save-memory-file! (fn [_ _ request]
+                                               (fn [ok error] (swap! writes conj {:request request :ok ok :error error})))
+                    remote/load-memory-file! (fn [_ _ request]
+                                               (fn [ok error] (swap! reads conj {:request request :ok ok :error error})))
+                    remote/load-memory-folder! (fn [& _] (fn [_ _]))
+                    remote/load-memory-metadata! (fn [_ _ request]
+                                                   (fn [ok error]
+                                                     (if @delay-metadata?
+                                                       (swap! metadata-calls conj {:request request :ok ok :error error})
+                                                       (ok (wire stamp {:entries (into {} (map (fn [p] [p (when @exists? {:content (random-uuid) :size 10 :mode 33188})]) (:paths request)))})))))]
+        (let [a (actions/controller {:room-id (str (:room snapshot-fixture/context)) :tab-id :export :state-signal states})
+              key (:owner a) state #(get @states key)
+              base (merge page-view-fixture/state (verified connection stamp)
+                          {:selected path :stream-marker [nil nil 0]})
+              result (merge snapshot-fixture/reply
+                            (dissoc (page-views/request base path view) :expected-target-stamp)
+                            {:descriptor page-view-fixture/descriptor :target-stamp stamp})
+              initial (assoc-in base [:saved-views [path view]] {:reply result :marker (page-views/marker base path view)})]
+          (swap! states assoc key initial)
+          ((:save-view-snapshot a) path view)
+          (is (= 1 (count @writes)))
+          (let [request (:request (first @writes)) intent (get-in (state) [:snapshot-intents [path view]])]
+            (is (= (:path request) (:path intent)))
+            (is (nil? (:expected request)))
+            (is (= stamp (:expected-target-stamp request)))
+            (is (str/includes? (:text request) "Page collection snapshot"))
+            ((:save-view-snapshot a) path view)
+            (is (= 1 (count @writes)) "in-flight clicks cannot allocate another export")
+            (reply! (:error (first @writes)) (js/Error. "Connection lost after commit"))
+            ;; The frozen export remains meaningful even if the current report
+            ;; changes. Recovery must not silently format that newer report.
+            (swap! states assoc-in [key :stream-marker] [:newer :ready 2])
+            (swap! states assoc-in [key :saved-views [path view] :reply :basis] (random-uuid))
+            ((:save-view-snapshot a) path view)
+            (is (= 1 (count @reads)))
+            (is (= (:path request) (get-in @reads [0 :request :path])))
+            (reply! (:ok (first @reads)) (wire stamp {:text (:text request)}))
+            (is (= 1 (count @writes)) "exact existing bytes acknowledge the committed artifact without another write")
+            (is (= (:path request) (get-in (state) [:snapshot-exports [path view] :path])))
+            (is (nil? (get-in (state) [:snapshot-intents [path view]])))
+            (is (= path (:selected (state))) "completion does not navigate away from the user's current page")
+            ;; A confirmed absent destination retries the exact original CAS.
+            (swap! states assoc-in [key :snapshot-intents [path view]] intent)
+            (reset! exists? false)
+            ((:save-view-snapshot a) path view)
+            (is (= 2 (count @writes)))
+            (is (= request (:request (second @writes))))
+            (reply! (:error (second @writes)) (js/Error. "Uncertain write"))
+            (reset! exists? true)
+            ((:save-view-snapshot a) path view)
+            (is (= 2 (count @reads)))
+            (reply! (:ok (second @reads)) (wire stamp {:text "Different content"}))
+            (is (= 2 (count @writes)) "a differing destination is never overwritten")
+            (is (= intent (get-in (state) [:snapshot-intents [path view]])))
+            (is (str/includes? (get-in (state) [:errors [:snapshot path view]]) "different content"))
+            ;; A different target cannot replay an outstanding export.
+            (swap! states assoc-in [key :target-stamp] (random-uuid))
+            ((:save-view-snapshot a) path view)
+            (is (= 2 (count @reads)))
+            (is (= 2 (count @writes)))
+            (is (str/includes? (get-in (state) [:errors [:snapshot path view]]) "original workspace"))
+            (swap! states assoc-in [key :target-stamp] stamp)
+            (reset! delay-metadata? true)
+            ((:save-view-snapshot a) path view)
+            (is (= 1 (count @metadata-calls)))
+            (reply! (:error (first @metadata-calls)) (js/Error. "Metadata request settled"))
+            (reply! (:ok (first @metadata-calls)) (wire stamp {:entries {(:path request) nil}}))
+            (is (= 2 (count @writes)) "a callback after request settlement cannot start a nested write")
+            ((:save-view-snapshot a) path view)
+            (is (= 2 (count @metadata-calls)))
+            ;; The visible target UUID is A again, but the initiating epoch is
+            ;; obsolete after A -> B -> A. Do not send a nested write.
+            (swap! states update-in [key :target-epoch] + 2)
+            (reply! (:ok (second @metadata-calls)) (wire stamp {:entries {(:path request) nil}}))
+            (is (= 2 (count @writes)))
+            (is (= 2 (count @reads)))))))))

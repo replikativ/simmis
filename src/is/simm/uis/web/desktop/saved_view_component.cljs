@@ -124,4 +124,15 @@
                             (when (and pages? (or (false? (get-in reply [:display :complete?]))
                                                  (some #(false? (:label-complete? %)) (:columns reply))))
                               (el/p {:class "memory-note"} "Some previews are shortened. Open a page for its full source values."))
-                            (when pages? (row-form path id reply state a write?))))))))
+                            (when pages? (row-form path id reply state a write?))
+                            (when write?
+                              (el/div {:class "memory-snapshot-export"}
+                                      (el/button {:type "button" :disabled (boolean (get-in state [:loading [:snapshot path id]]))
+                                                  :on-click (fn [_] ((:save-view-snapshot a) path id))}
+                                                 (cond (get-in state [:loading [:snapshot path id]]) "Saving snapshot…"
+                                                       (get-in state [:snapshot-intents key]) "Recover pending snapshot"
+                                                       :else "Save Markdown snapshot"))
+                                      (when-let [export (get-in state [:snapshot-exports key])]
+                                        (table/page-link (:path export) "Open saved snapshot" a))
+                                      (when-let [message (get-in state [:errors [:snapshot path id]])]
+                                        (el/p {:class "memory-note" :role "status"} message))))))))))

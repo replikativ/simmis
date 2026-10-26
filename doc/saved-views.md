@@ -193,3 +193,34 @@ their data cannot install handlers or enroll page property controls. Recording
 links retain their observed content UUID through the existing authenticated
 media route, so a stale table refuses replacement bytes rather than silently
 following its current path.
+
+## Explicit Markdown snapshots
+
+An opened ready view offers **Save Markdown snapshot** when the workspace is
+writable. This is an explicit artifact operation, never part of rendering or
+refresh. The client requires a current accepted reply and saves one new file
+under `reports/snapshots/` through the ordinary owned file writer with an absent
+expected destination. It does not change the source declaration or its rows.
+
+The file contains a plain Markdown table and inert `simmis-snapshot` document
+properties. JSON flow syntax inside YAML frontmatter records view/source IDs,
+saved source entry and revision, display basis, selection and display limits,
+row identities, declared columns, native matrix/provenance facts when present,
+and explicit original-media path/content/size. Original links remain
+application-relative and authenticated; exporting does not embed recordings or
+publish access to them. Costs retain the same distinction between zero,
+unknown, measured usage and wallet/grant accounting as the live presentation.
+The file is a display snapshot, not another execution/adoption receipt or a
+live `simmis-view` declaration.
+
+Formatting has structural and cumulative text bounds before expansion and a
+262,144-character final output limit. Overflow refuses export rather than
+silently dropping rows. The client retains one pending destination and exact
+bytes before dispatch. After an uncertain response, **Recover pending snapshot**
+checks that same destination: exact existing bytes acknowledge the artifact,
+confirmed absence permits the same absent-destination write, and different
+content is never overwritten. Recovery keeps the original result even if the
+live report changes. Nested reads/writes retain the initiating request token,
+workspace epoch and operation ownership; a replacement context cannot continue
+the old operation. Completion provides an ordinary file link and does not
+navigate away from the user's current work.
