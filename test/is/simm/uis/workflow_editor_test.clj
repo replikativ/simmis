@@ -314,3 +314,11 @@
     (is (= :changed (get-in (editor/acknowledge-wiki-setup pending (assoc reply :status :changed :observation :acknowledged)) [:wiki-setup :status])))
     (doseq [bad [(dissoc reply :revision) (assoc reply :installed-version 4) (assoc reply :revision "not-a-revision")]]
       (is (= :unavailable (get-in (editor/observe-wiki-setup state bad) [:wiki-setup :status]))))))
+
+
+(deftest batch-status-is-an-observation-not-a-job-outcome
+  (is (nil? (editor/batch-label nil)))
+  (is (= "Input batch status unavailable" (editor/batch-label {:status :unavailable})))
+  (is (= "Input batch awaiting review" (editor/batch-label {:status :observed :phase :review})))
+  (is (= "Input batch closed" (editor/batch-label {:status :observed :phase :closed})))
+  (is (= "Input batch status unavailable" (editor/batch-label {:status :observed :phase :unexpected}))))

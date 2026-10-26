@@ -216,6 +216,11 @@
                 (is (nil? (:schedule.activation/last-processed-input after)))
                 (is (= :no-op (:kind (dispositions/disposition filed))))
                 (is (= :closed (:knowledge.batch/state (batches/batch @conn batch))))
+                (let [summary (first (schedules/list-owned! host
+                                      (principals/party-principal (:schedule.activation/by row))
+                                      (str (:schedule.activation/room row))))
+                      observed (first (filter #(= (str (:work.request/id request)) (:request %)) (:occurrences summary)))]
+                  (is (= {:status :observed :id (str batch) :phase :closed} (:batch observed))))
                 (is (= 1 (count (get-in (proof/request! conn filed) [:selection :items])))))))
           (schedules/tick-owned! host (later 2))
           (let [o (occurrence conn row) a (model/activation conn (:schedule.activation/id row))

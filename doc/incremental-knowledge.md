@@ -490,3 +490,20 @@ pruning policy. This is a model/native GC proof, complemented by separate HOST
 authorization/lifetime tests. It does not prove persistent HOST registry
 reconstruction or public runtime activation. The probe is outside ordinary test
 discovery and invokes no models.
+
+
+## Occurrence batch observations
+
+The existing schedule summaries expose an occurrence-specific batch observation:
+prepared, admitted, awaiting review, or closed. The metadata join uses one
+immutable control DB for occurrence, activation, batch, stream and request facts.
+Both association directions, author/room/target, canonical request identity and
+frozen markers must agree. Partial, ambiguous or mixed legacy links produce a
+fixed unavailable status without foreign identifiers. The join reads no source,
+frozen evidence, or artifact bodies and does not repair any link.
+
+These labels do not certify frozen artifacts, processing, factual correctness or
+adoption. Existing Run and Proposal links retain their own checked associations.
+An unbound occurrence does not establish that its stream is empty; capturing
+work, a different active batch, backlog and source-size diagnostics still need
+the separate bounded operational reader. No new polling or writer is introduced.

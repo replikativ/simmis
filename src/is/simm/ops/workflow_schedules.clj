@@ -18,6 +18,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.model.knowledge-dispositions :as dispositions]
             [is.simm.model.knowledge-schedule-batches :as scheduled]
+            [is.simm.model.knowledge-pins :as pins]
             [is.simm.model.workflow-schedules :as schedules]
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.ops.benchmarks :as benchmarks]
@@ -1163,7 +1164,8 @@
        (= (if (= :benchmark (:kind target)) :experiment :workflow) (:kind job))))
 
 (defn- schedule-summary [conn room-id row target]
-  (let [slug (:room/slug (d/pull @conn [:room/slug] [:room/id room-id]))
+  (let [db @conn
+        slug (:room/slug (d/pull db [:room/slug] [:room/id room-id]))
         native-room (when slug (room-store/slug->room-id slug))]
    {:id (str (:schedule.activation/id row)) :room-id (str room-id)
    :name (get-in target [:execution :name]) :kind (:kind target)
@@ -1175,11 +1177,14 @@
    :next-fire (.getTime ^java.util.Date (:schedule.activation/next-fire row))
    :occurrences
    (mapv (fn [o]
-           (let [candidate (when-let [rid (:schedule.occurrence/request o)] (requests/get-request conn rid))
+           (let [candidate (when-let [rid (:schedule.occurrence/request o)] (requests/request-in db rid))
                  r (when (occurrence-request? row o target candidate) candidate)
                  job (when-let [id (:work.request/job r)] (jobs/status id))
                  j (when (occurrence-job? native-room row target r job) job)
-                 filing (when r (filing-summary r))]
+                 filing (when r (filing-summary r))
+                 batch (scheduled/occurrence-summary
+                        db row o (when (and (= 2 (:version target)) (= :workflow (:kind target)))
+                                   (pins/target-id (get-in target [:source-origin :target]))))]
              (cond-> {:id (str (:schedule.occurrence/id o)) :state (:schedule.occurrence/state o)
               :input-id (some-> (:schedule.occurrence/input-id o) str)
               :input-revision (some-> (:schedule.occurrence/input-revision o) str)
@@ -1188,8 +1193,9 @@
               :request (some-> (:work.request/id r) str)
               :job (some-> (:id j) str) :status (:status j)
               :settled? (:settled? j)}
-               filing (assoc :filing filing))))
-         (schedules/recent-occurrences conn (:schedule.activation/id row) 12))}))
+               filing (assoc :filing filing)
+               batch (assoc :batch batch))))
+         (schedules/recent-occurrences-in db (:schedule.activation/id row) 12))}))
 
 (defn- owned-control-target! [conn original row]
   ;; Creation retries are creator-specific; room controls deliberately are not.

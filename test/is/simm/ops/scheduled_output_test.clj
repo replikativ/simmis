@@ -75,8 +75,9 @@
   "Run only in an isolated test JVM: native lookup functions are replaced."
   [{:keys [row occurrence target request]} status]
   (with-redefs [d/pull (fn [& _] {:room/slug "native-room"})
-                requests/get-request (fn [& _] request)
-                model/recent-occurrences (fn [& _] [(assoc occurrence :schedule.occurrence/intended-at (java.util.Date. 0)
+                d/datoms (fn [& _] [])
+                requests/request-in (fn [& _] request)
+                model/recent-occurrences-in (fn [& _] [(assoc occurrence :schedule.occurrence/intended-at (java.util.Date. 0)
                                                                     :schedule.occurrence/coalesced 0)])
                 jobs/status status]
     (@#'schedules/schedule-summary (atom :unused) (:schedule.activation/room row)

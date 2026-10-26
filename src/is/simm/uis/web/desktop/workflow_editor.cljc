@@ -61,6 +61,19 @@
     (:enabled? row) "Active"
     :else "Paused"))
 
+(defn batch-label
+  "A metadata observation, independent of model/Job completion or adoption."
+  [batch]
+  (case (:status batch)
+    :unavailable "Input batch status unavailable"
+    :observed (case (:phase batch)
+                :ready "Input batch prepared"
+                :submitted "Input batch admitted"
+                :review "Input batch awaiting review"
+                :closed "Input batch closed"
+                "Input batch status unavailable")
+    nil))
+
 (defn- setup-facts [reply status]
   (assoc (select-keys reply [:revision :installed-version :shipped-version]) :status status))
 

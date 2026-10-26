@@ -79,6 +79,8 @@
                                                 (when (= :benchmark (:kind row)) " · benchmark")
                                                 (when (and revision (:source-revision row)
                                                            (not= revision (:source-revision row))) " · earlier source revision")))
+                                  (when-let [label (editor/batch-label (:batch latest))]
+                                    (el/p {:class "workflow-note"} label))
                                   (when-let [job (:job latest)]
                                     (el/button {:on-click (fn [_] ((:open-run actions) job))} "Latest Run"))
                                   (when-let [proposal (get-in latest [:filing :proposal])]

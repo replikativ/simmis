@@ -296,3 +296,78 @@
                    (not= (:occurrence value) (:schedule.activation/active-occurrence a)))
       (refuse! :partial-withdrawal))
     value))
+
+
+(defn occurrence-summary
+  "Authorized HOST metadata observation on ONE immutable control DB. Not an
+   artifact proof, processing certificate, or claim of stream completeness.
+   HOST supplies the validated deployment's source target identity. Partial/foreign
+   joins return no identifiers. Absence means unbound, not empty."
+  [db activation occurrence target-id]
+  (let [markers [:schedule.occurrence/knowledge-batch :schedule.occurrence/batch-ref
+                 :schedule.occurrence/batch-revision]
+        present? (or (some #(contains? occurrence %) markers)
+                     (row db :knowledge.batch/scheduled-occurrence (:schedule.occurrence/id occurrence)))]
+    (when present?
+      (let [aid (:schedule.activation/id activation)
+            oid (:schedule.occurrence/id occurrence)
+            bid (:schedule.occurrence/knowledge-batch occurrence)
+            a (row db :schedule.activation/id aid)
+            o (row db :schedule.occurrence/id oid)
+            b (when (uuid? bid) (batches/batch db bid))
+            stream (when (uuid? (:knowledge.batch/stream b))
+                     (streams/stream db (:knowledge.batch/stream b)))
+            reverse (row db :schedule.occurrence/knowledge-batch bid)
+            rid (:knowledge.batch/request b)
+            request (row db :work.request/id rid)
+            request-links (when (uuid? bid)
+                            (vec (take 2 (d/datoms db :avet :work.request/knowledge-batch bid))))
+            phase (:knowledge.batch/state b)
+            activation-keys [:schedule.activation/id :schedule.activation/revision
+                             :schedule.activation/by :schedule.activation/room :schedule.activation/target-ref]
+            occurrence-keys (into markers [:schedule.occurrence/id :schedule.occurrence/activation
+                                           :schedule.occurrence/revision :schedule.occurrence/request])
+            common? (and (uuid? target-id)
+                         (every? uuid? [aid oid bid (:knowledge.batch/stream b)
+                                        (:schedule.activation/by a) (:schedule.activation/room a)
+                                        (:schedule.activation/revision a) (:schedule.activation/target-ref a)
+                                        (:knowledge.batch/selection-id b) (:knowledge.batch/frozen-id b)
+                                        (:knowledge.batch/selection b) (:knowledge.batch/frozen b)])
+                         (every? #(uuid? (get occurrence %)) markers)
+                         (not-any? #(contains? o %) [:schedule.occurrence/input-id :schedule.occurrence/input-ref
+                                                    :schedule.occurrence/input-revision])
+                         (= (select-keys a activation-keys) (select-keys activation activation-keys))
+                         (= (select-keys o occurrence-keys) (select-keys occurrence occurrence-keys))
+                         (= [aid (:schedule.activation/revision a)]
+                            [(:schedule.occurrence/activation o) (:schedule.occurrence/revision o)])
+                         (= oid (:knowledge.batch/scheduled-occurrence b))
+                         (= (:db/id o) (:db/id reverse))
+                         (= [(:schedule.activation/by a) (:schedule.activation/room a)]
+                            [(:knowledge.batch/by b) (:knowledge.batch/room b)]
+                            [(:knowledge.stream/by stream) (:knowledge.stream/room stream)])
+                         (= (:knowledge.batch/target b) (:knowledge.stream/target stream)
+                            target-id)
+                         (#{:ready :submitted :review :closed} phase)
+                         (if (= :closed phase)
+                           (not= bid (:knowledge.stream/active-batch stream))
+                           (= bid (:knowledge.stream/active-batch stream))))
+            linked? (and (= 1 (count request-links))
+                         (= (:db/id request) (:e (first request-links)))
+                         (uuid? rid) (= :submitted (:work.request/state request))
+                         (= :workflow (:work.request/kind request))
+                         (= rid (:schedule.occurrence/request o)
+                            (identity/request-id (:schedule.activation/by a) (:schedule.activation/room a) oid))
+                         (= [oid (:schedule.activation/by a) (:schedule.activation/room a)]
+                            [(:work.request/client-id request) (:work.request/by request) (:work.request/room request)])
+                         (every? uuid? [(:knowledge.batch/frozen-id b) (:knowledge.batch/request-intent b)])
+                         (= [bid (:knowledge.batch/frozen-id b) (:knowledge.batch/request-intent b)]
+                            [(:work.request/knowledge-batch request) (:work.request/knowledge-frozen request)
+                             (:work.request/intent-id request)]))
+            unlinked? (and (empty? request-links) (not-any? #(contains? b %) [:knowledge.batch/request :knowledge.batch/request-intent])
+                           (not (contains? o :schedule.occurrence/request))
+                           (or (= :ready phase)
+                               (and (= :closed phase)
+                                    (#{:abandoned-requeue :abandoned-skip} (:knowledge.batch/outcome b)))))]
+        (if (and common? (or (and (not= :ready phase) linked?) unlinked?))
+          {:status :observed :id (str bid) :phase phase}
+          {:status :unavailable})))))

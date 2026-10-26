@@ -73,15 +73,18 @@
        (sort-by (juxt :schedule.occurrence/intended-at :schedule.occurrence/id) #(compare %2 %1))
        vec))
 
-(defn recent-occurrences
+(defn recent-occurrences-in
   "Keep at most limit rows in memory while scanning this activation's index.
    Runtime passes use its active pointer, never historical occurrence scans."
-  [conn activation-id limit]
+  [db activation-id limit]
   (reduce (fn [recent datom]
-            (->> (conj recent (d/pull @conn '[*] (:e datom)))
+            (->> (conj recent (d/pull db '[*] (:e datom)))
                  (sort-by (juxt :schedule.occurrence/intended-at :schedule.occurrence/id) #(compare %2 %1))
                  (take limit) vec))
-          [] (d/datoms @conn :avet :schedule.occurrence/activation activation-id)))
+          [] (d/datoms db :avet :schedule.occurrence/activation activation-id)))
+
+(defn recent-occurrences [conn activation-id limit]
+  (recent-occurrences-in @conn activation-id limit))
 
 (defn admitting-occurrences [conn]
   (map #(d/pull @conn '[*] (:e %))

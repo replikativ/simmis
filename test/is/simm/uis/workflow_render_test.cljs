@@ -53,13 +53,17 @@
         draft (assoc (editor/draft source) :path nil)
         state {:selected "maintain-wiki" :drafts {"maintain-wiki" draft}
                :wiki-setup {:status :unavailable} :permissions {:merge? false}
-               :activation-status :ready :activations []}
+               :activation-status :ready
+               :activations [{:id "activation" :room-id "room" :name "maintain-wiki" :enabled? true
+                              :occurrences [{:id "occurrence" :intended-at 1 :status :completed
+                                             :batch {:status :observed :id "batch" :phase :review}}]}]}
         discharge (atom nil)]
     (.appendChild (.-body js/document) container)
     (try
       (binding [ec/*execution-context* ctx]
         (reset! discharge (browser/mount! container (workflows/view "Lab" state {:room-id "room"})))
-        (is (str/includes? (.-textContent container) "Not scheduled in this room."))
+        (is (str/includes? (.-textContent container) "Input batch awaiting review"))
+        (is (not (str/includes? (.-textContent container) "No wiki changes")))
         (is (not (str/includes? (.-textContent container) "Launch saved revision"))))
       (finally (when @discharge (browser/unmount! @discharge))
                (.remove container) (context/stop-context! ctx)))))
