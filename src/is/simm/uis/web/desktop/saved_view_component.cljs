@@ -1,10 +1,10 @@
-(ns is.simm.uis.web.desktop.page-view-component
+(ns is.simm.uis.web.desktop.saved-view-component
   "A fixed host table/form over saved-view DTOs. Controls stay outside the
    contenteditable document; the original fence remains ordinary Markdown."
   (:require [clojure.string :as str]
             [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.memory-editor :as editor]
-            [is.simm.uis.web.desktop.memory-page-views :as views]
+            [is.simm.uis.web.desktop.memory-saved-views :as views]
             [is.simm.uis.web.desktop.memory-declarations :as declarations]
             [is.simm.uis.web.desktop.memory-edit-owners :as edit-owners]
             [is.simm.uis.web.desktop.property-controls :as properties]
@@ -12,6 +12,8 @@
 
 (defn- unavailable [reason]
   (case reason
+    :scorecard-not-found "This Scorecard is absent from the current Room. No other Room was searched."
+    :display-limit "This Scorecard exceeds the bounded report presentation size."
     :invalid-source "Some selected documents need valid identities or properties before this view can be shown."
     :page-not-in-selection "This page is absent or outside the view’s folders or types."
     (:too-many-files :too-many-source-bytes :too-many-worktree-entries :too-many-syntax-nodes)
@@ -35,7 +37,7 @@
                          (not (editor/dirty? draft)) (not (declarations/drafts? state row-path))
                          (= (:expected model) (get-in draft [:source :entry])))]
       (el/section {:class "memory-page-form" :aria-label "Selected page properties"}
-                  (el/div {:class "memory-page-view-heading"}
+                  (el/div {:class "memory-saved-view-heading"}
                           (el/strong {} (or (:title row) "Selected page"))
                           (when identity? (table/page-link row-path "Open page" a))
                           (el/span {:role "status" :class "memory-note"} (when busy? "Saving…")))
@@ -66,44 +68,51 @@
 (defn view [path state a write?]
   (for [entry (views/entries state path)
         :let [id (:view entry) key [path id] opened? (get-in state [:page-view-open key])
-              reply (views/visible state path id) loading? (get-in state [:loading [:page-view path id]])
-              error (get-in state [:errors [:page-view path id]])
-              form? (= :form (get-in entry [:descriptor :presentation]))]]
-    (el/section {:key (str (:from entry) ":" id) :class "memory-page-view" :aria-label "Saved page view"}
-                (el/div {:class "memory-page-view-heading"}
-                        (el/strong {} (if form? "Page form" "Page table"))
+              reply (views/visible state path id) loading? (get-in state [:loading [:saved-view path id]])
+              error (get-in state [:errors [:saved-view path id]])
+              pages? (views/pages? state path id)
+              form? (and pages? (= :form (get-in entry [:descriptor :presentation])))]]
+    (el/section {:key (str (:from entry) ":" id) :class "memory-saved-view" :aria-label "Saved view"}
+                (el/div {:class "memory-saved-view-heading"}
+                        (el/strong {} (if pages? (if form? "Page form" "Page table") "Benchmark results"))
                         (when (= :ready (:status entry))
                           (el/span {:class "memory-note"}
                                    (str/join ", " (map #(if (= "" %) "Memory" %) (get-in entry [:descriptor :source :roots])))))
                         (if (= :ready (:status entry))
                           (el/button {:type "button" :aria-expanded (boolean opened?)
-                                      :on-click (fn [_] ((:toggle-page-view a) path id))}
+                                      :on-click (fn [_] ((:toggle-saved-view a) path id))}
                                      (if opened? "Hide view" "Open view"))
                           (el/span {:class "memory-note"} "Invalid declaration · edit its Markdown")))
                 (when opened?
                   (cond
+                    (and (not pages?) (nil? (:receipt-context state)))
+                    (el/p {:class "memory-note" :role "status"} "Waiting for current Room access and receipt store identity…")
                     (and (nil? reply) error)
                     (el/p {:class "memory-note" :role "status"}
                           "View unavailable. "
-                          (el/button {:on-click (fn [_] ((:retry-page-view a) path id))} "Try again"))
+                          (el/button {:on-click (fn [_] ((:retry-saved-view a) path id))} "Try again"))
                     (nil? reply) (el/p {:class "memory-note" :role "status"} "Loading view…")
                     (= :unavailable (:status reply))
                     (el/p {:class "memory-note" :role "status"} (unavailable (:reason reply)))
                     :else
                     (el/div {}
                             (el/p {:class "memory-note" :role "status"}
-                                  (str (count (:rows reply)) " of " (:total reply) " matching pages"
+                          (str (count (:rows reply)) " of " (:total reply) (if pages? " matching pages" " candidates · saved Scorecard")
                                        (when loading? " · Updating…")))
                             (when-not form?
                               (table/view (:columns reply) (:rows reply) a
-                                          {:control-label "Properties"
+                                          (when pages? {:control-label "Properties"
                                            :row-control
                                            (fn [row]
                                              (el/button {:type "button"
                                                          :aria-label (str "Inspect properties for " (:title row))
                                                          :on-click (fn [_] ((:edit-page-view-row a) path id row))}
-                                                        (if write? "Edit" "Inspect")))}))
-                            (when (or (false? (get-in reply [:display :complete?]))
-                                      (some #(false? (:label-complete? %)) (:columns reply)))
+                                                        (if write? "Edit" "Inspect")))})))
+                            (when-not pages?
+                              (el/p {:class "memory-note"}
+                                    "Model cost uses reported usage; it is not the wallet or grant total. A dash means unknown."
+                                    (when (false? (:complete? reply)) " Only the declared candidate prefix is shown; matrix statistics are unchanged.")))
+                            (when (and pages? (or (false? (get-in reply [:display :complete?]))
+                                                 (some #(false? (:label-complete? %)) (:columns reply))))
                               (el/p {:class "memory-note"} "Some previews are shortened. Open a page for its full source values."))
-                            (row-form path id reply state a write?)))))))
+                            (when pages? (row-form path id reply state a write?))))))))

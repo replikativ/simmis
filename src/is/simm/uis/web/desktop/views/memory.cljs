@@ -18,7 +18,8 @@
             [is.simm.uis.web.desktop.memory-cells :as cells]
             [is.simm.uis.web.desktop.memory-declarations :as declarations]
             [is.simm.uis.web.desktop.property-controls :as property-controls]
-            [is.simm.uis.web.desktop.page-view-component :as page-views]
+            [is.simm.uis.web.desktop.saved-view-component :as saved-views]
+            [is.simm.uis.web.desktop.memory-saved-views :as saved-view-state]
             [is.simm.uis.web.desktop.memory-edit-owners :as edit-owners]
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.source-editor :as source]
@@ -715,7 +716,7 @@
                                       (when (:earlier-save-receipt draft)
                                         (el/p {:class "memory-note"} "An earlier draft's save completed after this version was selected. This draft was kept unchanged; check the saved version before another save."))
                                       (when markdown? (properties-view path draft state a write?))
-                                      (when markdown? (page-views/view path state a write?))
+                                      (when markdown? (saved-views/view path state a write?))
                                       (retained-properties-view path state a)
                                       (retained-declarations-view path state a)
                                       (local-source-view path draft state a write?)
@@ -785,10 +786,11 @@
          syntax-pref (iv/get-new (track sig/syntax-pref))
          a (actions/controller data) state (get states (:owner a))]
      ((:ensure-path a))
+     ((:observe-receipt-context a) (saved-view-state/receipt-context (:room-id data) rooms))
      ((:ensure-sync a) connection stream)
      ((:ensure-properties a))
      ((:ensure-charts a))
-     ((:ensure-page-views a))
+     ((:ensure-saved-views a))
      (view (assoc data :room-name room-name) state a syntax-pref))))
 
 (defn- backlinks-view [a]

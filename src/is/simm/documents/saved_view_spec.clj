@@ -1,9 +1,9 @@
-(ns is.simm.documents.page-view-spec
-  "Inert bounded page-view declarations. No query evaluation, schema, source
+(ns is.simm.documents.saved-view-spec
+  "Inert bounded saved-view declarations. No query evaluation, schema, source
    access, renderer callbacks or edit authority."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
-            [is.simm.documents.page-view-contract :as contract])
+            [is.simm.documents.saved-view-contract :as contract])
   (:import [java.io PushbackReader StringReader]
            [java.nio CharBuffer]
            [java.nio.charset CodingErrorAction StandardCharsets]))
@@ -15,7 +15,7 @@
 (def max-mounted contract/max-mounted)
 
 (defn- refuse! [reason]
-  (throw (ex-info "Page view declaration is invalid" {:type ::refused :reason reason})))
+  (throw (ex-info "Saved view declaration is invalid" {:type ::refused :reason reason})))
 
 (defn- closed! [value required optional]
   (when-not (and (map? value) (not (record? value))
@@ -49,10 +49,7 @@
       (refuse! :invalid-label)))
   column)
 
-(defn validate
-  "Validate realized data and return canonical defaults. IDs identify saved
-   views/pages/properties; none is a permission or a writable field binding."
-  [value]
+(defn- validate-pages [value]
   (closed! value #{:version :id :source :presentation :columns} #{:order :limit})
   (when-not (= 1 (:version value)) (refuse! :unsupported-version))
   (when-not (uuid? (:id value)) (refuse! :invalid-identity))
@@ -83,6 +80,44 @@
       (when-not (= (count identities) (count (set identities))) (refuse! :duplicate-columns))
       (assoc value :source (assoc source :types (:types source [])) :columns columns
              :limit limit :order order))))
+
+(defn- validate-scorecard [value]
+  (closed! value #{:version :id :source :presentation :columns} #{:limit})
+  (when-not (= 1 (:version value)) (refuse! :unsupported-version))
+  (when-not (uuid? (:id value)) (refuse! :invalid-identity))
+  (when-not (= :table (:presentation value)) (refuse! :unsupported-presentation))
+  (let [source (:source value)
+        limit (get value :limit contract/max-scorecard-rows)
+        columns (:columns value)]
+    (closed! source #{:kind :room :scorecard} #{})
+    (when-not (and (= :scorecard (:kind source)) (= :current (:room source))
+                   (uuid? (:scorecard source)))
+      (refuse! :unsupported-scorecard-source))
+    (when-not (and (integer? limit) (<= 1 limit contract/max-scorecard-rows))
+      (refuse! :invalid-limit))
+    (when-not (and (vector? columns) (<= 1 (count columns) max-columns))
+      (refuse! :invalid-columns))
+    (doseq [column columns]
+      (closed! column #{:kind} #{:label})
+      (when-not (contains? contract/scorecard-columns (:kind column))
+        (refuse! :unsupported-column))
+      (when (contains? column :label)
+        (when-not (and (string? (:label column)) (<= 1 (count (:label column)) 128)
+                       (not (str/blank? (:label column)))
+                       (not (re-find #"[\p{Cntrl}]" (:label column))))
+          (refuse! :invalid-label))))
+    (when-not (= (count columns) (count (set (map :kind columns))))
+      (refuse! :duplicate-columns))
+    (assoc value :limit limit)))
+
+(defn validate
+  "Validate inert declarations for a fixed source. Neither source IDs nor
+   columns carry permission, executable queries or writable field bindings."
+  [value]
+  (case (get-in value [:source :kind])
+    :pages (validate-pages value)
+    :scorecard (validate-scorecard value)
+    (refuse! :unsupported-source)))
 
 (defn- bounded-source! [source]
   (when-not (and (string? source) (<= 1 (count source) max-characters))

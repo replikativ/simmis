@@ -12,10 +12,10 @@
             [is.simm.uis.web.desktop.memory-owner :as owner]
             [is.simm.uis.web.desktop.memory-metadata-io :as metadata-io]
             [is.simm.uis.web.desktop.memory-cells :as cells]
-            [is.simm.uis.web.desktop.memory-page-views :as page-views]
-            [is.simm.uis.web.desktop.memory-page-views-test :as page-view-fixture]
-            [is.simm.uis.web.desktop.page-view-remote :as page-view-remote]
-            [is.simm.documents.page-view-contract :as page-view-contract]
+            [is.simm.uis.web.desktop.memory-saved-views :as page-views]
+            [is.simm.uis.web.desktop.memory-saved-views-test :as page-view-fixture]
+            [is.simm.uis.web.desktop.saved-view-remote :as saved-view-remote]
+            [is.simm.documents.saved-view-contract :as saved-view-contract]
             [is.simm.uis.web.desktop.memory-remote :as remote]
             [is.simm.uis.web.desktop.memory-reference-remote :as reference-remote]
             [is.simm.uis.web.desktop.refs :as refs]
@@ -1720,43 +1720,43 @@
           path page-view-fixture/path view page-view-fixture/view-id states (signal runtime {}) calls (atom [])
           result (fn [request basis]
                    (merge (dissoc request :expected-target-stamp)
-                          {:profile page-view-contract/profile :descriptor page-view-fixture/descriptor
+                          {:profile saved-view-contract/profile :descriptor page-view-fixture/descriptor
                            :target-stamp stamp :status :ready :basis basis :total 0 :complete? true
                            :rows [] :columns [{:kind :title :label "Page"}]}))]
       (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
                     sig/memory-connection (signal runtime connection)
-                    page-view-remote/load-memory-page-view!
+                    saved-view-remote/load-memory-saved-view!
                     (fn [_ _ request]
                       (fn [ok error] (swap! calls conj {:request request :ok ok :error error})))]
         (let [a (actions/controller {:room-id "room" :tab-id :table :state-signal states})
               key (:owner a) state #(get @states key)]
           (swap! states assoc key (merge page-view-fixture/state (verified connection stamp) {:selected path}))
-          ((:toggle-page-view a) path view)
-          ((:ensure-page-views a))
+          ((:toggle-saved-view a) path view)
+          ((:ensure-saved-views a))
           (is (= 1 (count @calls)))
           (swap! states update-in [key :drafts path :generation] inc)
           (reply! (:ok (first @calls)) (result (:request (first @calls)) (random-uuid)))
-          (is (nil? (get-in (state) [:page-views [path view]])))
-          ((:ensure-page-views a))
+          (is (nil? (get-in (state) [:saved-views [path view]])))
+          ((:ensure-saved-views a))
           (is (= 2 (count @calls)))
           (let [call (second @calls) basis (random-uuid)]
             (reply! (:ok call) (result (:request call) basis))
             (is (= basis (:basis (page-views/visible (state) path view)))))
           (swap! states update-in [key :read-epoch] inc)
-          ((:ensure-page-views a))
+          ((:ensure-saved-views a))
           (is (= 3 (count @calls)))
           (is (page-views/visible (state) path view) "prior data remains during refresh")
           (reply! (:error (nth @calls 2)) (js/Error. "Read unavailable"))
           (is (nil? (page-views/visible (state) path view)) "uncertain failure clears prior data")
-          ((:ensure-page-views a))
+          ((:ensure-saved-views a))
           (is (= 3 (count @calls)) "an error does not create a render retry loop")
-          ((:retry-page-view a) path view)
+          ((:retry-saved-view a) path view)
           (is (= 4 (count @calls)))
-          ((:toggle-page-view a) path view)
-          ((:toggle-page-view a) path view)
+          ((:toggle-saved-view a) path view)
+          ((:toggle-saved-view a) path view)
           (is (= 5 (count @calls)) "explicit reopening starts a fresh read at an unchanged marker")
           (reply! (:ok (nth @calls 3)) (result (:request (nth @calls 3)) (random-uuid)))
-          (is (nil? (get-in (state) [:page-views [path view]])) "old read cannot win after reopening")
+          (is (nil? (get-in (state) [:saved-views [path view]])) "old read cannot win after reopening")
           (let [basis (random-uuid)]
             (reply! (:ok (nth @calls 4)) (result (:request (nth @calls 4)) basis))
             (is (= basis (:basis (page-views/visible (state) path view)))))
@@ -1812,18 +1812,18 @@
               base (merge page-view-fixture/state (verified connection stamp) {:selected path})
               query (page-views/request base path view)
               reply (merge (dissoc query :expected-target-stamp)
-                           {:profile page-view-contract/profile :descriptor page-view-fixture/descriptor
+                           {:profile saved-view-contract/profile :descriptor page-view-fixture/descriptor
                             :target-stamp stamp :status :ready :basis (random-uuid) :rows [row]
                             :columns [{:kind :title :label "Page"}]})]
           (swap! states assoc key (-> base
                                      (assoc-in [:page-view-open [path view]] true)
-                                     (assoc-in [:page-view-attempts [path view]] (page-views/marker base path view))
-                                     (assoc-in [:page-views [path view]] {:reply reply})))
+                                     (assoc-in [:saved-view-attempts [path view]] (page-views/marker base path view))
+                                     (assoc-in [:saved-views [path view]] {:reply reply})))
           ((:edit-page-view-row a) path view row)
           (is (= 1 (count @calls)))
           (is (= path (:selected (state))) "the report stays selected while its row is enrolled")
           (reply! (:error (first @calls)) (js/Error. "File unavailable"))
-          (dotimes [_ 3] ((:ensure-page-views a)))
+          (dotimes [_ 3] ((:ensure-saved-views a)))
           (is (= 1 (count @calls)) "render does not retry failed file reads")
           ((:retry-page-view-row a) path view)
           (is (= 2 (count @calls)))
@@ -1843,34 +1843,80 @@
           states (signal runtime {}) calls (atom [])]
       (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
                     sig/memory-connection (signal runtime connection)
-                    page-view-remote/load-memory-page-view!
+                    saved-view-remote/load-memory-saved-view!
                     (fn [_ _ request]
                       (fn [ok error] (swap! calls conj {:request request :ok ok :error error})))
                     remote/load-memory-file! (fn [& _] (fn [_ _]))]
         (let [a (actions/controller {:room-id "room" :tab-id :form :state-signal states})
               key (:owner a) state #(get @states key)
               base (-> (merge page-view-fixture/state (verified connection stamp) {:selected path})
-                       (assoc-in [:drafts path :source :analysis :page-views 0 :descriptor] descriptor))
+                       (assoc-in [:drafts path :source :analysis :saved-views 0 :descriptor] descriptor))
               result (fn [request]
                        (merge (dissoc request :expected-target-stamp)
-                              {:profile page-view-contract/profile :descriptor descriptor :target-stamp stamp
+                              {:profile saved-view-contract/profile :descriptor descriptor :target-stamp stamp
                                :status :ready :basis (random-uuid) :rows [row] :columns [{:kind :title}]}))]
           (swap! states assoc key
                  (-> base
                      (assoc-in [:page-view-open [path view]] true)
                      (assoc-in [:page-view-edits [path view]] row)
-                     (assoc-in [:page-view-attempts [path view]] (page-views/marker base path view))
-                     (assoc-in [:page-views [path view]] {:reply (result (page-views/request base path view))})
+                     (assoc-in [:saved-view-attempts [path view]] (page-views/marker base path view))
+                     (assoc-in [:saved-views [path view]] {:reply (result (page-views/request base path view))})
                      (assoc :page-view-enrolled #{(:path row)})
                      (assoc-in [:drafts (:path row)] {:source page-view-fixture/file :text "saved"})))
           (swap! states assoc-in [key :selected] "notes/elsewhere.md")
-          ((:ensure-page-views a))
+          ((:ensure-saved-views a))
           (is (nil? (get-in (state) [:page-view-edits [path view]])))
           (is (nil? (get-in (state) [:drafts (:path row)])))
           (swap! states assoc-in [key :selected] path)
-          ((:ensure-page-views a))
+          ((:ensure-saved-views a))
           (is (= 1 (count @calls)) "returning obtains a fresh read even with a compatible cached result")
           (let [call (first @calls)] (reply! (:ok call) (result (:request call))))
           (is (= row (get-in (state) [:page-view-edits [path view]])))
-          ((:ensure-page-views a))
+          ((:ensure-saved-views a))
           (is (= 1 (count @calls)) "selection restoration does not cause a query loop"))))))
+
+(deftest changing-a-page-view-to-a-scorecard-retains-drafts-without-enrolling-page-controls
+  (binding [ec/*execution-context* runtime]
+    (let [session {:id (random-uuid)} connection {:epoch (random-uuid)} stamp page-view-fixture/stamp
+          path page-view-fixture/path view page-view-fixture/view-id
+          row {:id (random-uuid) :path "companies/a.md"}
+          scorecard (random-uuid) receipt-context {:room (random-uuid) :store (random-uuid)}
+          descriptor {:version 1 :id view :source {:kind :scorecard :room :current :scorecard scorecard}
+                      :presentation :table :columns [{:kind :candidate}] :limit 32}
+          states (signal runtime {}) reads (atom []) file-reads (atom []) property-reads (atom [])]
+      (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
+                    sig/memory-connection (signal runtime connection)
+                    saved-view-remote/load-memory-saved-view!
+                    (fn [_ _ request] (fn [ok error] (swap! reads conj {:request request :ok ok :error error})))
+                    remote/load-memory-file!
+                    (fn [& args] (swap! file-reads conj args) (fn [_ _]))
+                    remote/load-memory-properties!
+                    (fn [& args] (swap! property-reads conj args) (fn [_ _]))]
+        (let [a (actions/controller {:room-id "room" :tab-id :report :state-signal states})
+              key (:owner a) state #(get @states key)
+              base (-> (merge page-view-fixture/state (verified connection stamp) {:selected path})
+                       (assoc-in [:drafts path :source :analysis :saved-views 0 :descriptor] descriptor)
+                       (assoc :page-view-open {[path view] true} :page-view-edits {[path view] row}
+                              :page-view-enrolled #{(:path row)})
+                       (assoc-in [:drafts (:path row)] {:source page-view-fixture/file :text "Human dirty draft"}))]
+          (swap! states assoc key base)
+          ((:ensure-saved-views a))
+          (is (empty? @reads) "no receipt request without authenticated Room/store context")
+          ((:observe-receipt-context a) receipt-context)
+          ((:ensure-saved-views a))
+          (is (= 1 (count @reads)))
+          ((:edit-page-view-row a) path view row)
+          ((:retry-page-view-row a) path view)
+          (is (empty? @file-reads))
+          (is (empty? @property-reads))
+          (is (= "Human dirty draft" (get-in (state) [:drafts (:path row) :text])))
+          (is (= row (get-in (state) [:page-view-edits [path view]])))
+          (let [call (first @reads)
+                reply (merge (dissoc (:request call) :expected-target-stamp)
+                             {:profile saved-view-contract/profile :descriptor descriptor :target-stamp stamp
+                              :status :ready :basis (random-uuid) :rows [] :columns []
+                              :source (assoc receipt-context :kind :scorecard :scorecard scorecard)})]
+            ((:observe-receipt-context a) nil)
+            (reply! (:ok call) reply)
+            (is (nil? (page-views/visible (state) path view)))
+            (is (= "Human dirty draft" (get-in (state) [:drafts (:path row) :text])))))))))

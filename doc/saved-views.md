@@ -1,9 +1,8 @@
-# Saved page tables and forms
+# Saved Markdown views
 
 A Markdown document can contain a `simmis-view` fence describing a table of
 source-backed pages. Opening its associated view reads the saved declaration;
-the fence itself remains ordinary portable Markdown. The first slice supports
-page tables and a form for one explicitly selected page.
+the fence itself remains ordinary portable Markdown. Fixed sources support page tables/forms and saved benchmark Scorecards.
 
 ```simmis-view
 {:version 1
@@ -57,7 +56,7 @@ rechecks that room and source after native reads before returning portable facts
 No derived database or native entity handles cross into the response.
 
 At most four declarations per document are mounted, each at most 16 KiB, with
-16 columns and 50 rows. The existing canonical projection bounds also apply:
+16 columns and at most 50 page rows. For page sources the canonical projection bounds also apply:
 200 Markdown files, 8 MiB of source and 20,000 worktree entries. Invalid selected
 source produces an unavailable result, not a table built from partial data.
 Narrowing folders can reduce read scope; property publication still uses its
@@ -70,6 +69,61 @@ other valid reference identities remain UUIDs. The view never expands arbitrary
 native entity labels. These are preview limits, not changes to stored values.
 
 The current frontend receives bounded file/projection reads rather than a full
-canonical database replica. Future query adapters, benchmark/media sources and
+canonical database replica. Future query adapters, media sources and
 simulation components should reuse these source, lifetime and property-writer
 boundaries. Arbitrary SCI evaluation on page opening is outside this contract.
+
+## Saved benchmark results
+
+The same fence can select one exact native Scorecard in the current Room:
+
+```simmis-view
+{:version 1
+ :id #uuid "fc4ca343-c926-4050-8010-1b823654885a"
+ :source {:kind :scorecard :room :current
+          :scorecard #uuid "67b31691-aa8e-40d5-85d4-26661da87f4c"}
+ :presentation :table
+ :columns [{:kind :candidate} {:kind :attempts} {:kind :pass-rate}
+           {:kind :pass-rate-interval} {:kind :cost} {:kind :notional-cost}]
+ :limit 32}
+```
+
+Replace the Scorecard UUID with a completed result's content identity. This is
+an immutable result selection, not a request to run or fund a benchmark. A UUID
+never grants access, joins another Room or selects another store. The server
+resolves the native store from the authorized Room; the browser matches its
+reply against the Room's store identity in its existing membership roster.
+The Markdown repository and the receipt store are separate sources.
+
+Simmis workflow benchmarks keep records in their author/control Room. A
+standalone Dvergr experiment may have a separate result Room; join that Room
+through ordinary membership before viewing its records there. A result absent
+from the current Room is unavailable, with no cross-Room search or fallback.
+
+The fixed source reads a managed payload through Dvergr's bounded reader and
+retains native certification and summary semantics. It does not load Attempt
+receipts, resolve current workflow files, execute a query, or expose tools.
+Its source does not scan the canonical page projection, so unrelated archived
+Markdown files do not consume the page projection allowance for this report.
+Read permission suffices; benchmark rows have no page property/edit bindings.
+
+Supported column kinds are `:candidate`, `:attempts`, `:passed`, `:pass-rate`,
+`:pass-rate-interval`, `:reward`, `:reward-interval`, `:cost`, `:notional-cost`,
+`:cost-per-pass`, `:notional-cost-per-pass`, `:cost-known`,
+`:notional-cost-known`, and `:usage-reported`. Optional labels are plain text.
+Candidate order is the native leaderboard order. The display limit can show a
+prefix without changing the complete matrix or recomputing any statistic.
+
+Model cost is measured reported usage, not wallet consumption, outstanding
+grants, forfeits, or a settlement certificate. Unknown cost displays a dash,
+including unfunded runs with no priced usage. Known notional cost remains
+visible independently. Native cost-per-pass is displayed without redefining
+it. Recurring fractional currency values are marked approximate and rounded to
+12 decimal USD places; integer microdollars and finite decimals retain their
+exact decimal conversion. Extreme decimal scales are refused before expansion.
+
+Native read ceilings are 4 MiB, 32 candidates, 4,096 matrix cells, 128
+environments and 128 repetitions. The portable report has a separate 128 KiB
+presentation ceiling. A complete certified matrix does not assert that its
+parent job's accounting/adoption settlement has completed. Timing, nested model
+attribution and pairwise tables require separate bounded adapters later.

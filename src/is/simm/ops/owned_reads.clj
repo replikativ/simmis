@@ -253,6 +253,12 @@
   [host principal original-handle binding db]
   (validate-room-in! host principal original-handle binding authorize-room! db))
 
+(defn validate-host-read-room-in!
+  "Read-only original Room observation on one caller-supplied current control
+   snapshot. No source acquisition or hydration follows this decision here."
+  [host principal original-handle binding db]
+  (validate-room-in! host principal original-handle binding authorize-read! db))
+
 (defn resolve-host-read-room!
   "Fixed human read-only Room gate before taking the native operation lease.
    No default repository snapshot, merge requirement or selected fallback."

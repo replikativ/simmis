@@ -1,7 +1,7 @@
-(ns is.simm.uis.web.desktop.memory-page-views
+(ns is.simm.uis.web.desktop.memory-saved-views
   "Pure saved-view correspondence and reply fences in context-owned state.
    Displayed results remain explicit snapshots, never editable capabilities."
-  (:require [is.simm.documents.page-view-contract :as contract]
+  (:require [is.simm.documents.saved-view-contract :as contract]
             [is.simm.uis.web.desktop.memory-charts :as charts]
             [is.simm.uis.web.desktop.memory-editor :as editor]
             [is.simm.uis.web.desktop.memory-declarations :as declarations]
@@ -9,17 +9,34 @@
 
 (defn entries [state path]
   (vec (take contract/max-mounted
-             (:page-views (charts/saved-analysis (get-in state [:drafts path]))))))
+             (:saved-views (charts/saved-analysis (get-in state [:drafts path]))))))
 
 (defn entry [state path view]
   (first (filter #(and (= view (:view %)) (= :ready (:status %))) (entries state path))))
+
+(defn pages? [state path view]
+  (= :pages (get-in (entry state path view) [:descriptor :source :kind])))
+
+(defn- as-uuid [value]
+  (cond (uuid? value) value
+        (string? value) (parse-uuid value)))
+
+(defn receipt-context
+  "Normalize the existing authenticated Room roster, never the Markdown.
+   Missing, ambiguous or revoked membership yields no report source."
+  [room-id roster]
+  (let [id (as-uuid room-id)
+        matches (filter #(= id (as-uuid (:room/id %))) (:rooms roster))
+        store (when (= 1 (count matches)) (as-uuid (:room/content-db-scope (first matches))))]
+    (when (and id store) {:room id :store store})))
 
 (defn marker [state path view]
   (let [entry (entry state path view)]
     [(:connection state) (:target-stamp state) (:target-epoch state)
      (:read-epoch state) (:definition-basis state) (:stream-marker state)
      (get-in state [:drafts path :source :entry]) (get-in state [:drafts path :generation])
-     (select-keys entry [:from :to :descriptor])]))
+     (select-keys entry [:from :to :descriptor])
+     (when (= :scorecard (get-in entry [:descriptor :source :kind])) (:receipt-context state))]))
 
 (defn owned? [state path]
   (let [draft (get-in state [:drafts path])]
@@ -29,7 +46,8 @@
 
 (defn request [state path view]
   (when-let [entry (when (owned? state path) (entry state path view))]
-    (when-not (editor/dirty? (get-in state [:drafts path]))
+    (when (and (not (editor/dirty? (get-in state [:drafts path])))
+               (or (pages? state path view) (:receipt-context state)))
       (merge (select-keys entry [:from :to :view])
              {:path path :expected (get-in state [:drafts path :source :entry])
               :revision (:revision (charts/saved-analysis (get-in state [:drafts path])))
@@ -45,7 +63,12 @@
          (= view (:view reply)) (= path (:path reply))
          (= (:target-stamp state) (:target-stamp reply))
          (= (:descriptor entry) (:descriptor reply))
-         (contains? #{:ready :unavailable} (:status reply)))))
+         (contains? #{:ready :unavailable} (:status reply))
+         (or (pages? state path view)
+             (and (:receipt-context state)
+                  (= (assoc (:receipt-context state) :kind :scorecard
+                            :scorecard (get-in entry [:descriptor :source :scorecard]))
+                     (:source reply)))))))
 
 (defn reply-current? [state path view sent reply]
   (let [request (request state path view)]
@@ -55,11 +78,16 @@
             (select-keys reply [:path :expected :revision :from :to :view]))
          (or (= :unavailable (:status reply))
              (and (uuid? (:basis reply)) (vector? (:rows reply))
-                  (<= (count (:rows reply)) contract/max-rows)
+                  (<= (count (:rows reply)) (if (pages? state path view) contract/max-rows contract/max-scorecard-rows))
+                  (or (pages? state path view)
+                      (every? #(and (= (get-in reply [:source :scorecard]) (:scorecard %))
+                                    (string? (:candidate %))
+                                    (= [(:scorecard %) (:candidate %)] (:id %))
+                                    (not (contains? % :path)) (not (contains? % :edit))) (:rows reply)))
                   (vector? (:columns reply)) (<= (count (:columns reply)) contract/max-columns))))))
 
 (defn visible [state path view]
-  (let [reply (get-in state [:page-views [path view] :reply])]
+  (let [reply (get-in state [:saved-views [path view] :reply])]
     (when (compatible? state path view reply) reply)))
 
 (defn row-identity-current? [state row]
@@ -75,7 +103,8 @@
   [state]
   (let [active (into #{(:selected state)}
                      (keep (fn [[key row]] (when (and (= (:selected state) (first key))
-                                                      (get-in state [:page-view-open key])) (:path row))))
+                                                      (get-in state [:page-view-open key])
+                                                      (pages? state (first key) (second key))) (:path row))))
                      (:page-view-edits state))
         pending? (fn [path] (some (fn [[slot value]] (and value (vector? slot) (= path (second slot)))) (:loading state)))
         paths (remove (fn [path]
@@ -98,7 +127,7 @@
              (update :file-intents dissoc path) (update :page-view-enrolled disj path)
              ;; Returning to an open form must obtain a fresh reply to
              ;; re-establish its retired clean selection. Dirty selections stay.
-             (update :page-view-attempts #(apply dissoc % edit-keys))
+             (update :saved-view-attempts #(apply dissoc % edit-keys))
              (update :page-view-edits #(apply dissoc % edit-keys))
              (update :page-view-row-attempts #(apply dissoc % edit-keys))
              (update :errors #(into {} (remove (fn [[slot _]] (and (vector? slot) (= path (second slot))))) %)))))

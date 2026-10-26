@@ -1,13 +1,13 @@
 (ns is.simm.ops.experiments
   "Experiment rooms and their leaderboards, read through dvergr's own ops.
 
-   dvergr keeps every experiment in a room of its own (one per ExperimentDef,
-   created by `room-run`, `runner/run!` in a home, or `catalog_benchmark`), and
-   that room's store holds the certified Attempts, the Scorecard and the
-   report. A room keeps experiments when its store holds an Attempt of one
+   Standalone Dvergr catalog/CLI experiments can use dedicated experiment
+   Rooms. Simmis workflow and CLI benchmarks keep certified records in the
+   owning Room while using a separate disposable fixture as the world parent.
+   The result Room's store holds its Attempts and Scorecards. A room keeps experiments when its store holds an Attempt of one
    (`:attempt/experiment-content-id`); that is what the room list marks.
 
-   Such a room is made by dvergr, not by simmis: it has no members, so nobody
+   A standalone experiment Room is made by dvergr, not by simmis: it has no members, so nobody
    sees it until someone joins it. An admin sees the unjoined ones and joins
    them (`join!`), which makes the room an ordinary simmis room: its store is
    the room's content scope and the admin is a member, so every read below
@@ -26,6 +26,7 @@
    party that may not read the room is refused by dvergr's ops themselves, not
    only by the `load-leaderboard!` gate in front of them."
   (:require [datahike.api :as d]
+            [is.simm.documents.experiment-provenance :as provenance]
             [dvergr.agent.experiment :as experiment]
             [dvergr.catalog.report :as report]
             [dvergr.room.store :as rstore]
@@ -133,29 +134,6 @@
 
 (defn- uuid [s] (if (uuid? s) s (parse-uuid (str s))))
 
-(defn- workflow-info
-  "Only bounded provenance from the frozen ExperimentDef, never current files
-   or arbitrary experiment metadata. Legacy/non-workflow experiments omit it."
-  [definition]
-  (let [{:keys [name title bundle]} (get-in definition [:experiment/metadata :simmis/workflow])
-        bundle-id (cond (uuid? bundle) bundle
-                        (and (string? bundle) (= 36 (count bundle))) (parse-uuid bundle))]
-    (when (and (string? name) (<= 1 (count name) 64)
-               (re-matches #"[a-z0-9][a-z0-9-]*" name) bundle-id)
-      (cond-> {:name name :bundle (str bundle-id)}
-        (and (string? title) (seq title)) (assoc :title (subs title 0 (min 256 (count title))))))))
-
-(defn- evaluation-info
-  "Bounded frozen dataset provenance; never infer a split for old experiments."
-  [definition]
-  (let [{:keys [id version split cases]} (get-in definition [:experiment/metadata :simmis/evaluation])
-        dataset-id (when (and (string? id) (= 36 (count id))) (parse-uuid id))]
-    (when (and dataset-id (= 1 version) (#{"development" "validation" "held-out"} split)
-               (vector? cases) (<= 1 (count cases) 100)
-               (every? #(and (string? %) (<= 1 (count %) 100)) cases)
-               (= (count cases) (count (set cases))))
-      {:id (str dataset-id) :version version :split split :cases cases})))
-
 (defn- execution-info [definition]
   (let [execution (get-in definition [:experiment/metadata :simmis/execution])]
     (when (and (= :claude-cli (:adapter execution)) (= :text (:mode execution))
@@ -176,8 +154,8 @@
                                   (some-> (rstore/-load-attempt st cid id) :attempt/receipt
                                           (assoc :attempt/id id)))
                                 (:scorecard/entries sc)))]
-        {:workflow (workflow-info (:scorecard/experiment sc))
-         :evaluation (evaluation-info (:scorecard/experiment sc))
+        {:workflow (provenance/workflow (:scorecard/experiment sc))
+         :evaluation (provenance/evaluation (:scorecard/experiment sc))
          :execution (execution-info (:scorecard/experiment sc))
          :resources (into {}
                           (map (fn [r] [(id-str (:candidate r))

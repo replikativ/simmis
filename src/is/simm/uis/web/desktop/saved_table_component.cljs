@@ -1,7 +1,8 @@
 (ns is.simm.uis.web.desktop.saved-table-component
   "Typed saved-report presentation. Data never supplies callbacks or edit
    bindings; trusted host callers optionally supply navigation and controls."
-  (:require [org.replikativ.spindel.dom.elements :as el]))
+  (:require [org.replikativ.spindel.dom.elements :as el]
+            [is.simm.documents.saved-view-values :as values]))
 
 (defn page-link [path text a]
   (if-let [open (:open a)]
@@ -13,7 +14,8 @@
   (case (:kind value)
     :null (el/span {:class "memory-note"} "—")
     :text (el/span {} (:text value) (when (false? (:complete? value)) "…"))
-    (:number :uuid :instant) (el/span {} (:text value))
+    (:number :interval) (el/span {} (values/scalar-text value))
+    (:uuid :instant) (el/span {} (:text value))
     :boolean (el/span {} (if (:value value) "Yes" "No"))
     :page (page-link (:path value) (:text value) a)
     :reference (if (:path value)
@@ -28,7 +30,7 @@
     (el/span {:class "memory-note"} "Source value")))
 
 (defn view [columns rows navigation {:keys [control-label row-control]}]
-  (el/div {:class "memory-page-table"}
+  (el/div {:class "memory-data-table"}
           (el/table {}
                     (el/thead {}
                               (el/tr {}

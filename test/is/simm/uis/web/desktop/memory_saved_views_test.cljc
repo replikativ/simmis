@@ -1,7 +1,7 @@
-(ns is.simm.uis.web.desktop.memory-page-views-test
-  (:require [is.simm.documents.page-view-contract :as contract]
+(ns is.simm.uis.web.desktop.memory-saved-views-test
+  (:require [is.simm.documents.saved-view-contract :as contract]
             [is.simm.uis.web.desktop.memory-editor :as editor]
-            [is.simm.uis.web.desktop.memory-page-views :as views]
+            [is.simm.uis.web.desktop.memory-saved-views :as views]
             #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is]])))
 
@@ -13,7 +13,7 @@
                  :presentation :table :columns [{:kind :title}] :limit 50
                  :order [{:kind :title :direction :asc}]})
 (def file {:kind :markdown :text "saved" :entry {:content content :size 5 :mode 33188}
-           :target-stamp stamp :analysis {:revision content :page-views [{:from 10 :to 100 :view view-id
+           :target-stamp stamp :analysis {:revision content :saved-views [{:from 10 :to 100 :view view-id
                                                                         :status :ready :descriptor descriptor}]}})
 (def state {:connection :connection :target-stamp stamp :target-verified? true :target-epoch 1 :read-epoch 1
             :drafts {path {:source file :text "saved" :generation 0}}})
@@ -22,6 +22,40 @@
   (merge (select-keys (views/request state path view-id) [:path :expected :revision :from :to :view])
          {:profile contract/profile :descriptor descriptor :target-stamp stamp :status :ready
           :basis #uuid "88838c60-6a85-4c1a-b8f7-c62df5f728df" :columns [{:kind :title :label "Page"}] :rows []}))
+
+(deftest receipt-context-comes-from-the-current-unambiguous-room-roster
+  (let [room (random-uuid) store (random-uuid)
+        row {:room/id room :room/content-db-scope store}]
+    (is (= {:room room :store store} (views/receipt-context (str room) {:rooms [row]})))
+    (is (= {:room room :store store}
+           (views/receipt-context room {:rooms [(assoc row :room/content-db-scope (str store))]})))
+    (doseq [roster [nil {:rooms []} {:rooms [row row]}
+                    {:rooms [(assoc row :room/id (random-uuid))]}
+                    {:rooms [(dissoc row :room/content-db-scope)]}]]
+      (is (nil? (views/receipt-context room roster))))))
+
+(deftest scorecards-never-reuse-page-or-foreign-receipt-results
+  (let [id (random-uuid) context {:room (random-uuid) :store (random-uuid)}
+        descriptor {:version 1 :id view-id :source {:kind :scorecard :room :current :scorecard id}
+                    :presentation :table :columns [{:kind :candidate}] :limit 32}
+        s (-> state (assoc :receipt-context context)
+              (assoc-in [:drafts path :source :analysis :saved-views 0 :descriptor] descriptor))
+        sent (views/marker s path view-id)
+        result (assoc (reply s) :descriptor descriptor :source (assoc context :kind :scorecard :scorecard id)
+                      :rows [{:id [id "work/luna"] :candidate "work/luna" :scorecard id :cells []}])]
+    (is (views/reply-current? s path view-id sent result))
+    (is (nil? (views/request (dissoc s :receipt-context) path view-id)))
+    (doseq [bad [(assoc-in result [:source :room] (random-uuid))
+                 (assoc-in result [:source :store] (random-uuid))
+                 (assoc-in result [:source :scorecard] (random-uuid))
+                 (assoc-in result [:rows 0 :path] "companies/a.md")
+                 (assoc-in result [:rows 0 :id] [id "other"])]]
+      (is (not (views/reply-current? s path view-id sent bad))))
+    (is (nil? (views/visible (-> s (assoc :receipt-context nil)
+                                  (assoc-in [:saved-views [path view-id] :reply] result)) path view-id)))
+    (is (not (views/reply-current? (assoc-in s [:receipt-context :store] (random-uuid)) path view-id sent result)))
+    (is (not (views/pages? s path view-id)))
+    (is (not (views/compatible? s path view-id (reply state))))))
 
 (deftest results-bind-the-exact-saved-source-and-request-generation
   (let [sent (views/marker state path view-id) result (reply state)]
@@ -37,7 +71,7 @@
       (is (not (views/reply-current? state path view-id sent bad))))))
 
 (deftest ordinary-refresh-keeps-prior-data-but-changed-meaning-or-authority-hides-it
-  (let [saved (assoc-in state [:page-views [path view-id]] {:reply (reply state)})
+  (let [saved (assoc-in state [:saved-views [path view-id]] {:reply (reply state)})
         prose-draft (assoc-in saved [:drafts path :text] "Unsaved prose")]
     (is (views/visible (assoc saved :read-epoch 2) path view-id))
     (is (views/visible prose-draft path view-id))
@@ -45,9 +79,9 @@
     (is (nil? (views/visible (assoc saved :target-verified? false) path view-id)))
     (is (nil? (views/visible (assoc saved :target-stamp (random-uuid)) path view-id)))
     (is (nil? (views/visible (assoc-in saved [:drafts path :local-source] {:text "editing the definition"}) path view-id)))
-    (is (nil? (views/visible (assoc-in saved [:drafts path :source :analysis :page-views 0 :descriptor :limit] 5)
+    (is (nil? (views/visible (assoc-in saved [:drafts path :source :analysis :saved-views 0 :descriptor :limit] 5)
                              path view-id)))
-    (is (nil? (views/visible (update saved :page-views dissoc [path view-id]) path view-id))
+    (is (nil? (views/visible (update saved :saved-views dissoc [path view-id]) path view-id))
         "a failed read can retire its old data conservatively")))
 
 (deftest row-enrollment-checks-portable-page-identity-in-the-current-memory
@@ -88,20 +122,20 @@
         draft {:source file :text "saved"}
         base (assoc state :selected path :page-view-open {old-key true}
                           :page-view-edits {old-key {:id (random-uuid) :path old-path}}
-                          :page-view-attempts {old-key :already-read}
+                          :saved-view-attempts {old-key :already-read}
                           :page-view-enrolled #{old-path}
                           :drafts (assoc (:drafts state) old-path draft))
         retired (views/retire-unused-rows base)]
     (is (not (contains? (:drafts retired) old-path)))
     (is (nil? (get-in retired [:page-view-edits old-key])))
-    (is (nil? (get-in retired [:page-view-attempts old-key]))
+    (is (nil? (get-in retired [:saved-view-attempts old-key]))
         "Returning to an open report re-reads before auto-selecting its form")
     (is (not (some #{old-path} (:paths (editor/metadata-request retired)))))
     (let [dirty (assoc-in base [:drafts old-path :text] "retained work")
           retained (views/retire-unused-rows dirty)]
       (is (= "retained work" (get-in retained [:drafts old-path :text])))
       (is (= (:page-view-edits dirty) (:page-view-edits retained)))
-      (is (= (:page-view-attempts dirty) (:page-view-attempts retained))
+      (is (= (:saved-view-attempts dirty) (:saved-view-attempts retained))
           "Retained dirty forms keep their selection and request state"))
     (let [key [path view-id]
           states (reductions

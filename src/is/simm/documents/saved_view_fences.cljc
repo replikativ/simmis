@@ -1,9 +1,9 @@
-(ns is.simm.documents.page-view-fences
+(ns is.simm.documents.saved-view-fences
   "Inert saved-fence discovery. This parses declarations only, without reading
    other files, querying a DB, installing schema or evaluating code."
   (:require [is.simm.documents.code-cells :as cells]
-            [is.simm.documents.page-view-contract :as contract]
-            #?(:clj [is.simm.documents.page-view-spec :as spec])))
+            [is.simm.documents.saved-view-contract :as contract]
+            #?(:clj [is.simm.documents.saved-view-spec :as spec])))
 
 (defn fence? [node]
   (and (= :FencedCodeBlock (:kind node))
@@ -20,7 +20,7 @@
                      (try (let [descriptor (spec/decode (:literal node))]
                             (assoc base :status :ready :view (:id descriptor) :descriptor descriptor))
                           (catch clojure.lang.ExceptionInfo error
-                            (if (= :is.simm.documents.page-view-spec/refused (:type (ex-data error)))
+                            (if (= :is.simm.documents.saved-view-spec/refused (:type (ex-data error)))
                               (assoc base :status :invalid :reason :invalid-declaration)
                               (throw error))))))
                  (take contract/max-mounted
