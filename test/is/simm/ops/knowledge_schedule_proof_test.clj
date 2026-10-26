@@ -19,6 +19,7 @@
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.dvergr :as principals]
             [is.simm.ops.work :as work]
+            [is.simm.ops.work-test :as work-fixture]
             [is.simm.ops.workflows :as workflows]))
 
 (defn- with-schedule [f]
@@ -56,12 +57,12 @@
      (artifact/datahike-store conn) (:intent p)
      (fn [ref]
        (d/transact conn
-         [[:db.fn/call
-           (fn [db]
-             (let [row (assoc row :work.request/payload-ref ref)]
-               (vec (concat (scheduled/request-tx db anchor row intent)
-                            (requests/claim-tx db row (:digest p))
-                            (batches/request-tx db (:knowledge/batch intent) row (:digest p))))))]])))
+                   [[:db.fn/call
+                     (fn [db]
+                       (let [row (assoc row :work.request/payload-ref ref)]
+                         (vec (concat (scheduled/request-tx db anchor row intent)
+                                      (requests/claim-tx db row (:digest p))
+                                      (batches/request-tx db (:knowledge/batch intent) row (:digest p))))))]])))
     (:request (requests/claim-result @conn p claim))))
 
 (deftest scheduled-proof-verifies-original-deployment-and-complete-source-free-request
@@ -75,13 +76,13 @@
           (is (= (:batch value) (:origin (proof/request! conn request)))))
         ;; A newer deployment/active slot does not replace the historical one.
         (d/transact conn [{:db/id [:schedule.activation/id (:activation value)]
-                          :schedule.activation/revision (random-uuid) :schedule.activation/target-ref (random-uuid)
-                          :schedule.activation/active-occurrence (random-uuid)}
-                         {:db/id [:knowledge.batch/id (get-in value [:batch :batch])] :knowledge.batch/state :closed}])
+                           :schedule.activation/revision (random-uuid) :schedule.activation/target-ref (random-uuid)
+                           :schedule.activation/active-occurrence (random-uuid)}
+                          {:db/id [:knowledge.batch/id (get-in value [:batch :batch])] :knowledge.batch/state :closed}])
         (with-redefs [workflows/snapshot-in forbidden work/prepare forbidden]
           (is (= (:batch value) (:origin (proof/request! conn request)))))
         (d/transact conn [[:db/retract [:schedule.occurrence/id (:occurrence value)]
-                          :schedule.occurrence/request (:work.request/id request)]])
+                           :schedule.occurrence/request (:work.request/id request)]])
         (is (thrown? Exception (proof/request! conn request)))))))
 
 (deftest retained-schedule-checks-exact-submission-source-channel-and-markers
@@ -103,7 +104,6 @@
       (d/transact conn [{:db/id [:schedule.occurrence/id (:occurrence value)] :schedule.occurrence/batch-ref (random-uuid)}])
       (is (thrown? Exception (proof/schedule-input! conn (:owner w) (:room w) intent))))))
 
-
 (deftest actual-native-claim-kernel-composes-the-scheduled-occurrence-pointer
   (with-schedule
     (fn [{:keys [conn host room w prepared intent anchor value]}]
@@ -124,17 +124,17 @@
         (d/transact conn [{:db/id [:schedule.occurrence/id (:occurrence value)] :schedule.occurrence/claim (random-uuid)}])
         (is (thrown? Exception (apply @#'work/batch-admission-current! (concat (take 5 args) [prepared]))))))))
 
-
 (deftest scheduled-native-job-handoff-rechecks-the-original-claim
   (doseq [damage [:none :claim :occurrence-link :batch-link :request-intent]]
     (with-schedule
       (fn [{:keys [conn host room w prepared intent value]}]
         (let [retire? (not= :none damage)
-              started (atom 0) start-job! jobs/start! grant (work/resources fixture/limits)
+              started (atom 0) original-intent (atom nil)
+              start-job! jobs/start! grant (work/resources fixture/limits)
               prepared (assoc prepared :basis intent :request-kind :workflow
                               :start! (fn [_] (swap! started inc) (sp/spin :done)))
               submit #(work/submit-prepared! conn (:execution-ctx host) (principals/party-principal (:owner w))
-                                            (:room w) room (:submission intent) prepared)]
+                                             (:room w) room (:submission intent) prepared)]
           (binding [ec/*execution-context* (:ctx room)]
             (resource/mint! room {:id (random-uuid) :resources grant}))
           (with-redefs [jobs/start!
@@ -145,11 +145,14 @@
                               :claim (d/transact conn [{:db/id [:schedule.occurrence/id (:occurrence value)]
                                                         :schedule.occurrence/claim (random-uuid)}])
                               :occurrence-link (d/transact conn [[:db/retract [:schedule.occurrence/id (:occurrence value)]
-                                                                 :schedule.occurrence/request rid]])
+                                                                  :schedule.occurrence/request rid]])
                               :batch-link (d/transact conn [{:db/id [:knowledge.batch/id (get-in value [:batch :batch])]
                                                              :knowledge.batch/request-intent (random-uuid)}])
-                              :request-intent (d/transact conn [{:db/id [:work.request/id rid]
-                                                                 :work.request/intent-id (random-uuid)}])))
+                              :request-intent
+                              (do
+                                (reset! original-intent (:work.request/intent-id (requests/get-request conn rid)))
+                                (d/transact conn [{:db/id [:work.request/id rid]
+                                                   :work.request/intent-id (random-uuid)}]))))
                           (apply start-job! args))]
             (if retire?
               (is (thrown? Exception (submit)))
@@ -157,5 +160,23 @@
                 (is (= :completed (:status status)))
                 (is (:settled? status))
                 (is (= (:batch value) (:origin (proof/request! conn (requests/get-request conn (:id result)))))))))
+          (when (= :request-intent damage)
+            (let [rid (requests/request-id (:owner w) (:room w) (:occurrence value))
+                  job (:work.request/job (requests/get-request conn rid))
+                  reconcile! #(d/transact conn [{:db/id [:work.request/id rid]
+                                                 :work.request/intent-id @original-intent}])]
+              (try
+                ;; A tampered canonical intent holds cleanup and its lease.
+                ;; HOST must restore that exact identity before recovery.
+                (let [held (@#'work-fixture/await-job-cleanup job)]
+                  (is (= :before-finish (:stage held)))
+                  (is (:work.request/return-pending? (requests/get-request conn rid)))
+                  (reconcile!)
+                  (is (:settled? (jobs/recover! job held :retry)))
+                  (is (false? (:work.request/return-pending? (requests/get-request conn rid)))))
+                (finally
+                  (when-let [remaining (jobs/recovery-state job)]
+                    (reconcile!)
+                    (jobs/recover! job remaining :retry))))))
           (is (= (if retire? 0 1) @started))
           (is (= grant (binding [ec/*execution-context* (:ctx room)] (resource/balance room)))))))))
