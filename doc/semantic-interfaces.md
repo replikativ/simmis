@@ -134,6 +134,52 @@ the private entity graph or inherit the Room editor's identity. The current
 isolated room-app route needs an explicit integration path before shared live
 editing can be claimed. Do not weaken its isolation as a styling shortcut.
 
+### Dynamic Room-site handlers (planned)
+
+Dynamic sites are a later extension of the same source/action adapter contract.
+The existing Simmis HTTP server can own a fixed dispatch boundary for deployed
+Room endpoints; agent code need not mutate the global Ring router or receive
+http-kit server handles. A versioned Room-owned manifest can declare methods,
+paths, input/output shapes and operation names, with restricted SCI functions
+providing the implementation. This is a design direction, not a deployed API.
+
+Resolve the actual Room and deployment once per request. Bind the request to
+that deployment's code revision, world/source and host-owned execution context.
+Handle cancellation, revocation and Room/App retirement through the existing
+operation lifecycle. Keep request-local evaluation state separate from durable
+Room state; publication must not introduce mutable closure state that entangles
+forks. Code changes may use the existing fork/proposal/merge loop. Whether
+public deployments follow the worktree or an explicit published revision must
+be decided before implementation; never silently mix those semantics.
+
+Datahike hardening contributes to the data boundary but does not establish
+safe public handler execution by itself. Host adapters must restrict data,
+queries and commands to the published projection and operation policy, apply
+ReBAC/delegation rules, and keep raw host connections, server handles, filesystem,
+network and unrelated agent tools unavailable unless deliberately granted.
+Public visitors do not inherit the publishing agent's identity or authority.
+A declared editable field remains only a UI affordance, not permission.
+
+Bound request bodies, returned projections, query/evaluation work and concurrent
+admissions using mechanisms whose enforcement is verified. HTTP admission must
+not let untrusted work exhaust shared request workers. Long simulations, model
+calls and workflows should use the existing asynchronous Run machinery and
+return a job/result reference, with an explicit resource policy. Ordinary reads
+must not implicitly start a model call. Reuse revision-checked semantic writes;
+retryable effectful commands additionally need explicit idempotency semantics.
+
+Preserve private app script isolation. Browser access from a sandboxed iframe,
+authenticated site or public origin needs a deliberate credential/CSRF/CORS
+contract; do not enable ambient Simmis credentials or weaken CSP merely to make
+an embedded component work. Keep public and private data projections explicit.
+
+The initial dynamic slice should expose one bounded read and one typed command
+for an existing business component. The same form then mounts inside Simmis or
+on a Room site with a different adapter, while retaining entity/property IDs,
+validation, conflict handling and display semantics. Test cross-Room access,
+revocation, stale deployments, request retries and fork isolation before
+expanding to arbitrary agent-authored endpoints.
+
 ## Consistency laws
 
 These are practical acceptance conditions, not a request for a new categorical
