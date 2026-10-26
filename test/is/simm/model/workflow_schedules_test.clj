@@ -312,3 +312,62 @@
     (is (= #inst "2026-03-30T07:00:00.000Z" (:next slot)))
     (is (= 1 (:coalesced slot)))
     (is (nil? (schedules/due-slot spec first-fire (java.util.Date. 0))))))
+
+(deftest paused-creation-is-atomic-and-retries-do-not-reset-later-activation-state
+  (with-db
+    (fn [conn]
+      (let [input {:id (random-uuid) :room (random-uuid) :by (random-uuid)
+                   :now (java.util.Date. 0) :next-fire (java.util.Date. 60000) :enabled? false
+                   :target {:kind :workflow :cadence {:interval-ms 60000 :tz "UTC"}
+                            :snapshot {:files {"task.md" "pinned"}}}}
+            row (schedules/create! conn input) id (:id input)]
+        (is (false? (:schedule.activation/enabled? row)))
+        (is (false? (schedules/initial-enabled? row)))
+        (schedules/claim-due! conn row {:interval-ms 60000} (java.util.Date. 600000))
+        (is (empty? (schedules/occurrences conn id)))
+        (is (empty? (requests/requests conn)))
+        (schedules/set-enabled! conn id true)
+        (is (true? (:schedule.activation/enabled? (schedules/create! conn input))))
+        (is (false? (schedules/initial-enabled? (schedules/activation conn id))))
+        (schedules/set-enabled! conn id false)
+        (is (false? (:schedule.activation/enabled? (schedules/create! conn input))))
+        (is (thrown? clojure.lang.ExceptionInfo (schedules/create! conn (assoc input :enabled? true))))
+        (is (= (:target input) (schedules/target conn (schedules/activation conn id))))))))
+
+(deftest default-enabled-creation-and-historical-rows-share-one-creation-meaning
+  (with-db
+    (fn [conn]
+      (let [input {:id (random-uuid) :room (random-uuid) :by (random-uuid)
+                   :now (java.util.Date. 0) :next-fire (java.util.Date. 60000)
+                   :target {:kind :workflow :cadence {:interval-ms 60000 :tz "UTC"}}}
+            row (schedules/create! conn input)]
+        (is (true? (:schedule.activation/enabled? row)))
+        (is (true? (schedules/initial-enabled? row)))
+        (schedules/set-enabled! conn (:id input) false)
+        (is (false? (:schedule.activation/enabled? (schedules/create! conn (assoc input :enabled? true)))))
+        ;; Historical activations were always initially enabled. No migration
+        ;; or alternate execution path is needed to observe their retry.
+        (d/transact conn [[:db/retract (:db/id row) :schedule.activation/initial-enabled? true]])
+        (is (true? (schedules/initial-enabled? (schedules/activation conn (:id input)))))
+        (is (false? (:schedule.activation/enabled? (schedules/create! conn input))))
+        (is (thrown? clojure.lang.ExceptionInfo (schedules/create! conn (assoc input :enabled? false))))
+        (doseq [bad [nil "false" 0]]
+          (is (thrown? clojure.lang.ExceptionInfo (schedules/create! conn (assoc input :enabled? bad)))))))))
+
+(deftest concurrent-opposite-initial-settings-cannot-silently-share-an-activation
+  (with-db
+    (fn [conn]
+      (let [start (promise)
+            input {:id (random-uuid) :room (random-uuid) :by (random-uuid)
+                   :now (java.util.Date. 0) :next-fire (java.util.Date. 60000)
+                   :target {:kind :workflow :cadence {:interval-ms 60000 :tz "UTC"}}}
+            calls (mapv (fn [enabled?]
+                          (future @start
+                                  (try (schedules/initial-enabled? (schedules/create! conn (assoc input :enabled? enabled?)))
+                                       (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))) [true false])]
+        (deliver start true)
+        (let [results (mapv #(deref % 30000 :timeout) calls)]
+          (is (= 1 (count (filter boolean? results))))
+          (is (= 1 (count (filter #{:is.simm.model.workflow-schedules/conflict} results))))
+          (is (= (first (filter boolean? results)) (schedules/initial-enabled? (schedules/activation conn (:id input)))))
+          (is (= 1 (count (schedules/activations conn)))))))))

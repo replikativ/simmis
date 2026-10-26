@@ -238,6 +238,16 @@ retries still refer to their previously retained immutable payloads. Installing
 source, choosing execution settings, provisioning allowance and enabling a
 schedule remain separate explicit operations.
 
+The workflow form also offers **Save paused schedule**. It retains the inspected
+source and explicit execution settings without making any occurrence eligible.
+The existing activation action remains separate. An uncertain creation retry
+uses its original initial setting and payload even after form edits, and its
+receipt reports its acknowledged enabled/paused state; current status is read
+separately in Workflows. Agents can use
+`:enabled? false` on the ordinary schedule-create operation; no second schedule
+or resource model is introduced. Existing pinned activations do not follow
+later edits to the workflow files.
+
 The reserved `:simmis/checker-profile` selector stays in the saved definition and
 grading basis; it is excluded from editable task parameters, matching ordinary
 execution admission. Users can launch and preview schedules for the packaged

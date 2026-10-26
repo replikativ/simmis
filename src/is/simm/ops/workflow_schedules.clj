@@ -53,6 +53,7 @@
 
 (def create-schema
   [:map {:closed true} [:request-id :uuid] [:kind [:enum "workflow" "benchmark"]]
+   [:enabled? {:optional true} :boolean]
    [:cadence cadence-schema]
    ;; The exact execution schema is checked below, separately for each kind.
    [:execution :map]])
@@ -134,8 +135,9 @@
           existing (schedules/activation conn id)]
       (if existing
         (let [prior (schedules/target conn existing)]
-          (when-not (= (select-keys prior [:kind :cadence :execution])
-                       {:kind kind :cadence spec :execution execution})
+          (when-not (and (= (select-keys prior [:kind :cadence :execution])
+                            {:kind kind :cadence spec :execution execution})
+                         (= (get input :enabled? true) (schedules/initial-enabled? existing)))
             (throw (ex-info "Schedule request identity names different work" {:type ::conflict})))
           existing)
         (let [snapshot (workflows/snapshot room (:name execution))
@@ -149,7 +151,7 @@
                       :snapshot snapshot :host-policy (host-policy)}
               target (assoc target :model-policy (model-policy kind execution))
               now (java.util.Date.)]
-          (schedules/create! conn {:id id :room room-id :by party :target target :now now
+          (schedules/create! conn {:id id :room room-id :by party :target target :now now :enabled? (get input :enabled? true)
                                    :next-fire (java.util.Date/from (cron/next-fire-time spec (.toInstant now)))}))))))
 
 ;; These LOCAL schemas do not widen existing transports or execution DTOs.
@@ -202,6 +204,8 @@
          (uuid? (:schedule.activation/revision row))
          (uuid? (:schedule.activation/target-ref row))
          (boolean? (:schedule.activation/enabled? row))
+         (or (not (contains? row :schedule.activation/initial-enabled?))
+             (boolean? (:schedule.activation/initial-enabled? row)))
          (instance? java.util.Date (:schedule.activation/created-at row))
          (instance? java.util.Date (:schedule.activation/next-fire row))
          (every? #(or (not (contains? row %)) (uuid? (get row %)))
@@ -247,7 +251,8 @@
              {:status :captured :binding binding :snapshot snapshot :manifest manifest :revision revision})))))))
 
 (defn- create-owned-in!
-  "Create an enabled fixed-human HOST activation retaining inspected code.
+  "Create a fixed-human HOST activation retaining inspected code. enabled?
+   defaults true; false creates it paused in the same creation transaction.
    Does not synchronously capture inputs, dispatch a Job, fund work or start a
    dispatcher. An already running owned dispatcher may execute it when due."
   [host principal original-handle input]
@@ -271,6 +276,7 @@
                 prior (owned-storage! #(schedules/managed-target control-conn existing))
                 _ (case (:version prior) 1 nil 2 (owned-storage! #(owned-target! existing prior)) (owned-unavailable!))]
             (when-not (and (= 2 (:version prior))
+                           (= (get input :enabled? true) (schedules/initial-enabled? existing))
                            (= {:kind kind :cadence spec :execution (:execution input)}
                               (select-keys prior [:kind :cadence :execution])))
               (throw (ex-info "Schedule request identity names different work" {:type ::conflict})))
@@ -308,7 +314,8 @@
                   next-fire (owned-storage! #(java.util.Date/from (cron/next-fire-time spec (.toInstant now))))]
               (owned-current! host principal original-handle kind original binding room-binding)
               (owned-storage! #(schedules/create! control-conn {:id id :room (:room-id original) :by (:party original)
-                                                                :target target :now now :next-fire next-fire})))))))))
+                                                                :target target :now now :next-fire next-fire
+                                                                :enabled? (get input :enabled? true)})))))))))
 
 (defn create-owned!
   "Retain the original App through fixed activation creation. Source reads

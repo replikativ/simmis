@@ -87,6 +87,14 @@
                   (assoc-in [:form :schedule-tz] "Europe/Berlin"))
         request (editor/scheduled-submission draft "activation")]
     (is (= "activation" (:request-id request)))
+    (is (true? (:enabled? request)))
+    (let [paused (editor/scheduled-submission draft "paused" false)
+          edited (-> draft (assoc :schedule-submission {:payload paused})
+                     (assoc-in [:form :model] "new-model"))]
+      (is (false? (:enabled? paused)))
+      (is (= paused (:payload (editor/deployment-preview edited)))))
+    (doseq [bad [nil "false" 0]]
+      (is (thrown? clojure.lang.ExceptionInfo (editor/scheduled-submission draft "invalid" bad))))
     (is (= "workflow" (:kind request)))
     (is (= {:interval-ms 3600000 :tz "Europe/Berlin"} (:cadence request)))
     (is (= (dissoc (editor/submission draft "ignored") :request-id) (:execution request)))

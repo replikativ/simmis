@@ -67,6 +67,7 @@
   (into [:multi {:dispatch :kind}]
         (map (fn [[kind execution]]
                [kind [:map {:closed true} room-entry [:request-id uuid-string]
+                      [:enabled? {:optional true} :boolean]
                       [:kind [:= kind]] [:cadence workflow-schedules/cadence-schema]
                       [:execution (cond-> (scheduled-execution-schema execution)
                                     owned-wire? with-owned-source-wire)]]]))
@@ -426,7 +427,7 @@
                                 (workflow-schedules/list-room conn (:execution-ctx host) ops/*principal* id)))))}
     :simmis/workflow-schedule-create
     {:kind :write :schema workflow-schedule-route-schema :authz {:action :merge}
-     :doc "Explicitly activate a pinned saved workflow or operator-only benchmark on an interval/calendar cadence with an explicit timezone. Stable request-id retries observe the admitted revision. Each occurrence uses its finite execution limits and existing shared room allowance; never auto-funds. Missed slots coalesce; overlapping work is skipped. Execution has no caller request-id, code, credentials or arbitrary hooks."
+     :doc "Retain a pinned saved workflow or operator-only benchmark on an interval/calendar cadence with an explicit timezone. enabled? defaults true; set false to create paused atomically, with no occurrence eligible until explicitly enabled. Stable request-id retries preserve the original creation setting and return the current pause/resume state. Each enabled occurrence uses its finite execution limits and existing shared room allowance; never auto-funds. Missed slots coalesce; overlapping work is skipped. Execution has no caller request-id, code, credentials or arbitrary hooks."
      :impl (fn [host args]
              (checked! workflow-schedule-route-schema args)
              (if (owned-reads/owned-host? host)

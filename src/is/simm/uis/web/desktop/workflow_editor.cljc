@@ -274,7 +274,10 @@
             (not local?) (assoc :model model)
             (seq selected) (assoc :case selected)))))))
 
-(defn scheduled-submission [draft request-id]
+(defn scheduled-submission
+  ([draft request-id] (scheduled-submission draft request-id true))
+  ([draft request-id enabled?]
+  (when-not (boolean? enabled?) (invalid! "Choose enabled or paused schedule creation"))
   (when-not (= "hosted" (get-in draft [:form :backend] "hosted"))
     (invalid! "Schedules currently require hosted execution"))
   (let [execution (dissoc (submission draft request-id) :request-id)
@@ -282,7 +285,7 @@
         tz (str/trim (get-in draft [:form :schedule-tz] "UTC"))]
     (when (or (str/blank? tz) (> (count tz) 100)) (invalid! "Enter an explicit timezone"))
     {:request-id request-id :kind (if (= "benchmark" (get-in draft [:form :mode])) "benchmark" "workflow")
-     :cadence {:interval-ms (* 60000 minutes) :tz tz} :execution execution}))
+     :enabled? enabled? :cadence {:interval-ms (* 60000 minutes) :tz tz} :execution execution})))
 
 (defn deployment-preview
   "Presentation only. Unresolved requests display their original immutable

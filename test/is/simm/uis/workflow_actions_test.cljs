@@ -726,3 +726,24 @@
                 (is (= pending (:submission draft))))))
           (is (= original (get-in @sig/workflow-editor-state [key :drafts "a"])))
           (finally (context/close-context! child)))))))
+
+(deftest paused-schedule-creation-and-uncertain-retry-retain-the-original-choice
+  (with-state
+    (fn [ui k]
+      (let [requests (atom []) confirmations (atom [])]
+        (with-redefs [remote/create-workflow-schedule! (deferred requests)
+                      actions/confirm! (fn [text] (swap! confirmations conj text) true)]
+          ((:change ui) "a" assoc-in [:form :model] "fixture/model")
+          ((:schedule ui) "a" false false)
+          (is (= 1 (count @requests)))
+          (let [payload (last (:args (first @requests)))]
+            (is (false? (:enabled? payload)))
+            (is (empty? @confirmations) "saving a paused configuration requires no activation dialog")
+            ((:error (first @requests)) :connection-lost)
+            ((:change ui) "a" assoc-in [:form :model] "edited-model")
+            ((:schedule ui) "a" true true)
+            (is (= 2 (count @requests)))
+            (is (= payload (last (:args (second @requests)))))
+            ((:ok (second @requests)) {:id "activation" :enabled? false})
+            (is (false? (get-in @sig/workflow-editor-state [k :drafts "a" :schedule-submission :reply :enabled?])))
+            (is (empty? @confirmations))))))))

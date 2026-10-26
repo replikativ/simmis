@@ -34,7 +34,7 @@
           (is (str/includes? text "rendered-benchmark-model · every 1440 minutes"))
           (is (str/includes? text "shared across benchmark trials"))
           (is (str/includes? text "Per benchmark trial: at most 4 model steps and 120000 ms."))
-          (is (str/includes? text "Created schedule: created-id. Current status"))
+          (is (str/includes? text "Saved schedule: created-id. Acknowledged as enabled. Current status"))
           (is (str/includes? text "This receipt is not its current balance"))
           (is (not (str/includes? text "Schedule: created-id · Active"))))
         (.click (first (filter #(= "Open Workflows" (.-textContent %))
@@ -83,7 +83,9 @@
           (is (some? (named "Confirm and submit")))
           (is (.-disabled (named "Confirm and submit")))
           (is (some? (named "Confirm and activate schedule…")))
-          (is (.-disabled (named "Confirm and activate schedule…")))))
+          (is (.-disabled (named "Confirm and activate schedule…")))
+          (is (some? (named "Save paused schedule")))
+          (is (.-disabled (named "Save paused schedule")))))
       (finally (when @discharge (browser/unmount! @discharge))
                (.remove container) (context/stop-context! ctx)))))
 
@@ -128,7 +130,7 @@
                                                    :permissions {:merge? true}}
                                                  {:room-id "room" :change (fn [& _])})))
         (is (not (str/includes? (.-textContent container) "Parameter · checker-profile")))
-        (is (str/includes? (.-textContent container) "Next activation"))
+        (is (str/includes? (.-textContent container) "Next schedule"))
         (let [button (some #(when (= "Confirm and activate schedule…" (.-textContent %)) %)
                            (array-seq (.querySelectorAll container "button")))]
           (is (some? button))

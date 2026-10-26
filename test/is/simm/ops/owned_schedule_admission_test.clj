@@ -312,3 +312,27 @@
           (is (= (:execution input) (:execution target)))
           (is (= row (schedules/create-owned! host p (str (:room w)) input)))
           (is (= ::schedules/conflict (:type (ex-data (failure #(schedules/create-owned! host p (str (:room w)) a)))))))))))
+
+(deftest paused-owned-creation-retains-source-without-queueing-and-retries-observe-current-state
+  (doseq [[kind order] [[:workflow true] [:benchmark false]]]
+    (with-fixture order
+      (fn [{:keys [conn w host input]}]
+        (let [request (assoc (input kind) :enabled? false) p (principal w)
+              row (schedules/create-owned! host p (str (:room w)) request)
+              id (:schedule.activation/id row) target (model/managed-target conn row)]
+          (is (false? (:schedule.activation/enabled? row)))
+          (is (false? (model/initial-enabled? row)))
+          (is (not (contains? target :enabled?)) "creation state does not change the retained execution target")
+          (model/claim-due! conn row (:cadence target) (java.util.Date. (+ 86400000 (.getTime ^java.util.Date (:schedule.activation/next-fire row)))))
+          (is (empty? (model/occurrences conn id)))
+          (is (empty? (requests/requests conn)))
+          (model/set-enabled! conn id true)
+          (let [forbidden (fn [& _] (throw (AssertionError. "Exact paused-creation retry acquired fresh work")))]
+            (with-redefs [reads/resolve-host-read! forbidden workflows/manifest-in forbidden workflows/snapshot-in forbidden
+                          models/get-model forbidden schedules/model-policy forbidden schedules/host-policy forbidden
+                          benchmarks/prepare forbidden resource/balance forbidden]
+              (is (true? (:schedule.activation/enabled? (schedules/create-owned! host p (str (:room w)) request))))
+              (is (= ::schedules/conflict
+                     (:type (ex-data (failure #(schedules/create-owned! host p (str (:room w)) (assoc request :enabled? true)))))))))
+          (model/set-enabled! conn id false)
+          (is (false? (:schedule.activation/enabled? (schedules/create-owned! host p (str (:room w)) request)))))))))

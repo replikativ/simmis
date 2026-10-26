@@ -255,7 +255,7 @@
                               (fn [s reply] (-> s (assoc-in [:drafts name :submission :reply] (dissoc reply :permissions))
                                                 (update :readiness-revision (fnil inc 0))))))
                   (catch :default error (update! assoc-in [:errors :submit] (rem/error-text error))))))
-            (schedule! [name retry?]
+            (schedule! [name retry? & [enabled?]]
               (try
                 (let [draft (get-in (state) [:drafts name])
                       pending (:schedule-submission draft)]
@@ -263,9 +263,9 @@
                             (and (not retry?) pending (nil? (:reply pending))))
                     (throw (js/Error. "Retry the unresolved schedule request first")))
                   (let [payload (if retry? (:payload pending)
-                                    (editor/scheduled-submission draft (str (random-uuid))))]
+                                    (editor/scheduled-submission draft (str (random-uuid)) (if (nil? enabled?) true enabled?)))]
                     (when-not payload (throw (js/Error. "No schedule request to retry")))
-                    (when (or retry?
+                    (when (or retry? (false? (:enabled? payload))
                               (confirm! (str "Activate recurring " (:kind payload) " · " name "?\n"
                                              "Every " (/ (get-in payload [:cadence :interval-ms]) 60000) " minutes; "
                                              (get-in payload [:cadence :tz]) ".\n"

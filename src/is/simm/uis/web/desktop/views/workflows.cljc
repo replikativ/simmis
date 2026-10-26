@@ -347,7 +347,9 @@
                                                             (let [execution (:execution payload)
                                                                   description (editor/deployment-description payload)]
                                                               (el/div {:class "workflow-note" :role "status"}
-                                                                      (el/strong {} (if pending? "Pending activation · " "Next activation · "))
+                                                                      (el/strong {} (if pending?
+                                                                                     (if (false? (:enabled? payload)) "Pending paused schedule · " "Pending activation · ")
+                                                                                     "Next schedule · "))
                                                                       (el/span {} (str (:model description) " · every "
                                                                                       (quot (get-in payload [:cadence :interval-ms]) 60000)
                                                                                       " minutes · " (get-in payload [:cadence :tz])))
@@ -359,15 +361,22 @@
                                                                                     (not (get-in source [:inspection :ok]))
                                                                                     (and (:schedule-submission draft)
                                                                                          (nil? (get-in draft [:schedule-submission :reply]))))
+                                                                      :on-click (fn [_] ((:schedule actions) selected false false))}
+                                                                     "Save paused schedule")
+                                                          (el/button {:disabled (or (nil? (editor/deployment-preview draft)) (:schedule loading) (editor/dirty? draft) (not (editor/source-current? draft))
+                                                                                    (not (get-in source [:inspection :ok]))
+                                                                                    (and (:schedule-submission draft)
+                                                                                         (nil? (get-in draft [:schedule-submission :reply]))))
                                                                       :on-click (fn [_] ((:schedule actions) selected false))}
                                                                      "Confirm and activate schedule…")
                                                           (when (:schedule-submission draft)
                                                             (el/button {:disabled (:schedule loading)
                                                                         :on-click (fn [_] ((:schedule actions) selected true))}
-                                                                       "Retry identical activation"))
+                                                                       "Retry identical schedule request"))
                                                           (when-let [reply (get-in draft [:schedule-submission :reply])]
                                                             (el/div {}
-                                                                    (el/p {} (str "Created schedule: " (:id reply)
+                                                                    (el/p {} (str "Saved schedule: " (:id reply)
+                                                                                  ". Acknowledged as " (case (:enabled? reply) true "enabled" false "paused" "state not reported")
                                                                                   ". Current status and occurrences are in Workflows."))
                                                                     (el/button {:on-click (fn [_] ((:open-schedules actions)))} "Open Workflows"))))))
                                                 (when uncertain?
