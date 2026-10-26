@@ -116,3 +116,10 @@ against the complete basis and native root record. This requires no branch
 checkout, writer reopening or relaxation of source checks. A regression retires
 the builder branch and verifies its retained checkpoint this way while proving
 the builder's changes never entered the parent.
+
+Checkpoint origin and selected workspace are independent. A private benchmark
+fixture must explicitly select its intended workspace before input prediction;
+the actual setup must use that same selection. Switching workspaces or changing
+prompt-bearing files during setup remains input drift and excludes a complete
+Scorecard. The actual Simmis wrappers preserve this comparison, including AGENTS,
+vetted skills, offered tools, calibration and the Attempt's recorded inputs ID.
