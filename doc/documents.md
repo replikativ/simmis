@@ -436,5 +436,5 @@ import. Tables do not create a separate storage, evaluation or permission model.
 
 Markdown can also declare source-backed page tables and forms in an inert
 `simmis-view` fence. Their associated controls reuse the ordinary page property
-writer. See [Saved page tables and forms](page-views.md) for the descriptor,
+writer. See [Saved page tables and forms](saved-views.md) for the descriptor,
 editing behavior and current limits.

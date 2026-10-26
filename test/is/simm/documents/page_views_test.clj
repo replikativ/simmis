@@ -5,7 +5,7 @@
             [geschichte.repo :as repo]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.page-views :as views]
-            [is.simm.documents.page-view-spec :as spec]
+            [is.simm.documents.saved-view-spec :as spec]
             [is.simm.documents.space :as space]
             [is.simm.documents.view :as projection]
             [is.simm.model.crud :as crud]))

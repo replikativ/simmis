@@ -6,7 +6,7 @@
             [datahike.api :as d]
             [hasch.core :as hasch]
             [is.simm.documents.canonical :as canonical]
-            [is.simm.documents.page-view-spec :as spec]
+            [is.simm.documents.saved-view-spec :as spec]
             [is.simm.documents.properties :as properties]
             [is.simm.documents.space :as space]
             [is.simm.documents.view :as view]))
@@ -205,6 +205,8 @@
    unexpected store/runtime failures propagate to the normal HOST boundary."
   [source raw-descriptor]
   (let [descriptor (spec/validate raw-descriptor)]
+    (when-not (= :pages (get-in descriptor [:source :kind]))
+      (throw (ex-info "Page projection requires a page source" {:type ::unsupported-source})))
     (try (prepared-table source descriptor)
          (catch clojure.lang.ExceptionInfo error
            (if (contains? #{:is.simm.documents.view/refused

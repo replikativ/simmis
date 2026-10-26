@@ -1,6 +1,6 @@
-(ns is.simm.documents.page-view-spec-test
+(ns is.simm.documents.saved-view-spec-test
   (:require [clojure.test :refer [deftest is testing]]
-            [is.simm.documents.page-view-spec :as spec]))
+            [is.simm.documents.saved-view-spec :as spec]))
 
 (def table
   {:version 1 :id #uuid "4207e77a-1a41-4ea4-92a8-5440e9d8d6a7"
@@ -35,7 +35,7 @@
                  (assoc table :version 2)]]
     (is (refused? #(spec/validate value))))
   (doseq [source ["#=(System/exit 1)" "#evil {}" (str (pr-str table) " {}")
-                  (str (pr-str table) " :is.simm.documents.page-view-spec/eof {}")
+                  (str (pr-str table) " :is.simm.documents.saved-view-spec/eof {}")
                   "{:version 1 :version 1}" "(do (println :executed))"]]
     (is (refused? #(spec/decode source)))))
 
@@ -64,3 +64,27 @@
       (is (= (:columns value) (:columns (spec/decode (pr-str value)))))
       (is (= (spec/validate value)
              (spec/decode (str "; [[[ collection-like comment\n" (pr-str value))))))))
+
+(def scorecard-table
+  {:version 1 :id #uuid "36784910-4e2b-4f10-92e9-46882a3dc8fa"
+   :source {:kind :scorecard :room :current :scorecard #uuid "ea3449d4-d173-48ad-af24-9e4c0116ca4e"}
+   :presentation :table
+   :columns [{:kind :candidate} {:kind :pass-rate} {:kind :cost}]})
+
+(deftest scorecard-declarations-select-one-immutable-readonly-room-snapshot
+  (let [decoded (spec/decode (pr-str scorecard-table))]
+    (is (= (assoc scorecard-table :limit 32) decoded))
+    (is (not (contains? decoded :order)))
+    (is (= decoded (spec/decode (pr-str decoded)))))
+  (doseq [value [(assoc scorecard-table :presentation :form)
+                 (assoc scorecard-table :order [{:kind :title :direction :asc}])
+                 (assoc scorecard-table :limit 33)
+                 (assoc-in scorecard-table [:source :room] (random-uuid))
+                 (assoc-in scorecard-table [:source :scorecard] "not-a-uuid")
+                 (assoc-in scorecard-table [:source :roots] [""])
+                 (assoc-in scorecard-table [:source :types] [(random-uuid)])
+                 (assoc-in scorecard-table [:columns 1] {:property (random-uuid)})
+                 (assoc-in scorecard-table [:columns 1] {:kind :eval :code "(read-secret)"})
+                 (assoc scorecard-table :columns [{:kind :candidate} {:kind :candidate}])
+                 (assoc scorecard-table :permissions [:merge])]]
+    (is (refused? #(spec/validate value)))))

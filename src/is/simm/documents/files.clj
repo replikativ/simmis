@@ -17,7 +17,7 @@
             [is.simm.documents.media :as media]
             [is.simm.documents.rich-text :as rich]
             [is.simm.documents.inline-charts :as inline-charts]
-            [is.simm.documents.page-view-fences :as page-view-fences]
+            [is.simm.documents.saved-view-fences :as saved-view-fences]
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.util Base64]))
 
@@ -198,7 +198,7 @@
          :frontmatter (:frontmatter parsed) :body-from (:body-from parsed) :nodes (:nodes parsed)
          :document-id id :identity-status identity-status
          :semantic semantic :inline-charts (inline-charts/analyze (:nodes parsed))
-         :page-views (page-view-fences/analyze (:nodes parsed))
+         :saved-views (saved-view-fences/analyze (:nodes parsed))
          :slots (mapv (fn [node] (assoc (select-keys node [:from :to :kind]) :model (editable-model node)))
                       (:nodes parsed))
          :diagnostics (into (vec (or (:diagnostics semantic) (:diagnostics parsed))) diagnostics)}))

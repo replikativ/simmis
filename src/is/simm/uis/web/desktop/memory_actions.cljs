@@ -17,8 +17,8 @@
             [is.simm.uis.web.desktop.memory-remote :as remote]
             [is.simm.uis.web.desktop.chart-remote :as chart-remote]
             [is.simm.uis.web.desktop.memory-charts :as charts]
-            [is.simm.uis.web.desktop.memory-page-views :as page-views]
-            [is.simm.uis.web.desktop.page-view-remote :as page-view-remote]
+            [is.simm.uis.web.desktop.memory-saved-views :as saved-views]
+            [is.simm.uis.web.desktop.saved-view-remote :as saved-view-remote]
             [is.simm.uis.web.desktop.memory-references :as references]
             [is.simm.uis.web.desktop.memory-backlinks :as backlinks]
             [is.simm.documents.links :as links]
@@ -367,31 +367,33 @@
                              :failure-state (fn [current _]
                                               (-> current (update :errors dissoc slot)
                                                   (assoc-in [:charts scope] {:marker marker :status :unavailable})))}))))
-            (page-view! [path view]
+            (saved-view! [path view]
               ;; Connection initialization may install the stream marker. Read
               ;; the snapshot only afterwards so the first reply can be current.
-              (let [c (connected!) s (state) slot [:page-view path view] marker (page-views/marker s path view)
-                    input (page-views/request s path view)]
+              (let [c (connected!) s (state) slot [:saved-view path view] marker (saved-views/marker s path view)
+                    input (saved-views/request s path view)]
                 (when (and (get-in s [:page-view-open [path view]]) input
                            (verified? s c) (not (get-in s [:loading slot]))
-                           (not= marker (get-in s [:page-view-attempts [path view]])))
-                  (update! assoc-in [:page-view-attempts [path view]] marker)
-                  (request! slot #(page-view-remote/load-memory-page-view! web/server-id room input)
+                           (not= marker (get-in s [:saved-view-attempts [path view]])))
+                  (update! assoc-in [:saved-view-attempts [path view]] marker)
+                  (request! slot #(saved-view-remote/load-memory-saved-view! web/server-id room input)
                             (fn [current reply]
-                              (cond-> (assoc-in current [:page-views [path view]] {:reply reply :marker marker})
-                                (and (= :form (get-in reply [:descriptor :presentation]))
+                              (cond-> (assoc-in current [:saved-views [path view]] {:reply reply :marker marker})
+                                (and (saved-views/pages? current path view)
+                                     (= :form (get-in reply [:descriptor :presentation]))
                                      (= :ready (:status reply)) (= 1 (count (:rows reply)))
                                      (nil? (get-in current [:page-view-edits [path view]])))
                                 (assoc-in [:page-view-edits [path view]] (select-keys (first (:rows reply)) [:id :path]))))
                             nil {:stamp (:target-stamp s) :read? true
                                  :accept? (fn [current reply]
                                             (and (get-in current [:page-view-open [path view]])
-                                                 (page-views/reply-current? current path view marker reply)))
-                                 :failure-state (fn [current _] (update current :page-views dissoc [path view]))}))))
+                                                 (saved-views/reply-current? current path view marker reply)))
+                                 :failure-state (fn [current _] (update current :saved-views dissoc [path view]))}))))
             (enroll-page-view-row! [path view row]
               (let [s (state) row-path (:path row) slot [:file row-path]
                     marker [(:connection s) (:target-stamp s) (:read-epoch s) (:id row) row-path]]
-                (when (and (nil? (get-in s [:drafts row-path]))
+                (when (and (saved-views/pages? s path view) (string? row-path) (uuid? (:id row))
+                           (nil? (get-in s [:drafts row-path]))
                            (not (get-in s [:loading slot]))
                            (not (and (contains? (:observed-entries s) row-path)
                                      (nil? (get-in s [:observed-entries row-path]))))
@@ -665,22 +667,27 @@
               (navigation-refresh!)
               (when-let [c (connection)]
                 (ensure-sync! c (binding [ec/*execution-context* ctx] @sync/state))))]
-      {:owner key :state state :change change! :edit edited! :folder folder! :open #(open! % false) :reload #(open! % true)
-       :toggle-page-view
+      {:owner key :room-id room :state state :change change! :edit edited! :folder folder! :open #(open! % false) :reload #(open! % true)
+       :observe-receipt-context
+       (fn [context]
+         (when (not= context (:receipt-context (state)))
+           (update! assoc :receipt-context context)))
+       :toggle-saved-view
        (fn [path view]
-         (let [slot [:page-view path view] opened? (get-in (state) [:page-view-open [path view]])]
+         (let [slot [:saved-view path view] opened? (get-in (state) [:page-view-open [path view]])]
            (update! #(cond-> (-> % (assoc-in [:page-view-open [path view]] (not opened?))
-                                  (update :page-view-attempts dissoc [path view]))
+                                  (update :saved-view-attempts dissoc [path view]))
                        opened? (metadata-view/retire-reads #{slot})))
-           (when-not opened? (page-view! path view))))
-       :retry-page-view (fn [path view]
-                          (update! update :page-view-attempts dissoc [path view])
-                          (page-view! path view))
+           (when-not opened? (saved-view! path view))))
+       :retry-saved-view (fn [path view]
+                          (update! update :saved-view-attempts dissoc [path view])
+                          (saved-view! path view))
        :edit-page-view-row
        (fn [path view row]
          (let [s (state) current (get-in s [:page-view-edits [path view]])
-               available (some #(when (= (select-keys row [:id :path]) (select-keys % [:id :path])) %)
-                               (:rows (page-views/visible s path view)))
+               available (when (saved-views/pages? s path view)
+                           (some #(when (= (select-keys row [:id :path]) (select-keys % [:id :path])) %)
+                                 (:rows (saved-views/visible s path view))))
                held? (and current (not= (:path current) (:path row))
                           (or (editor/dirty? (get-in s [:drafts (:path current)]))
                               (editor/property-drafts? s (:path current))
@@ -695,27 +702,29 @@
                            (enroll-page-view-row! path view row)))))
        :retry-page-view-row
        (fn [path view]
-         (when-let [row (get-in (state) [:page-view-edits [path view]])]
+         (when-let [row (when (saved-views/pages? (state) path view)
+                         (get-in (state) [:page-view-edits [path view]]))]
            (update! #(-> % (update :page-view-row-attempts dissoc [path view])
                          (update :errors dissoc [:file (:path row)])))
            (if (and (contains? (:observed-entries (state)) (:path row))
                     (nil? (get-in (state) [:observed-entries (:path row)])))
              (discover! true)
              (enroll-page-view-row! path view row))))
-       :ensure-page-views
+       :ensure-saved-views
        (fn []
-         (when (not= (state) (page-views/retire-unused-rows (state)))
-           (update! page-views/retire-unused-rows))
+         (when (not= (state) (saved-views/retire-unused-rows (state)))
+           (update! saved-views/retire-unused-rows))
          (let [s (state) path (:selected s)]
-           (doseq [entry (page-views/entries s path)
+           (doseq [entry (saved-views/entries s path)
                    :let [view (:view entry)]
                    :when (and (= :ready (:status entry)) (get-in s [:page-view-open [path view]]))]
-             (page-view! path view)
-             (when-let [row (get-in (state) [:page-view-edits [path view]])]
+             (saved-view! path view)
+             (when-let [row (when (saved-views/pages? (state) path view)
+                             (get-in (state) [:page-view-edits [path view]]))]
                (when (some #(= (select-keys row [:id :path]) (select-keys % [:id :path]))
-                           (:rows (page-views/visible (state) path view)))
+                           (:rows (saved-views/visible (state) path view)))
                  (enroll-page-view-row! path view row)
-                 (when (page-views/row-identity-current? (state) row)
+                 (when (saved-views/row-identity-current? (state) row)
                    (properties! (:path row) {:kind :page})))))))
        :ensure-charts (fn []
                         (let [s (state) path (:selected s) draft (get-in s [:drafts path])

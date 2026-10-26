@@ -35,6 +35,11 @@
     is.simm.uis.web.desktop.feed-remote
     is.simm.uis.web.desktop.mail-remote
     is.simm.uis.web.desktop.memory-remote
+    is.simm.uis.web.desktop.workspace-remote
+    is.simm.uis.web.desktop.chart-remote
+    is.simm.uis.web.desktop.saved-view-remote
+    is.simm.uis.web.desktop.memory-reference-remote
+    is.simm.uis.web.desktop.conversation-capture-remote
     is.simm.uis.web.desktop.proposals-remote
     is.simm.uis.web.desktop.results-remote
     is.simm.uis.web.desktop.sandbox-remote

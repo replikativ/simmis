@@ -13,6 +13,7 @@
             [dvergr.room.registry :as rreg]
             [dvergr.room.store.memory :as memory]
             [is.simm.ops.experiments :as experiments]
+            [is.simm.documents.experiment-provenance :as provenance]
             [org.replikativ.spindel.engine.core :as ec]))
 
 (deftest cli-label-uses-the-admitted-policy-not-an-independent-runtime-probe
@@ -46,7 +47,7 @@
 
 (deftest evaluation-projection-only-exposes-bounded-frozen-provenance
   (let [info {:id (str (random-uuid)) :version 1 :split "development" :cases ["a" "b"]}
-        project #(@#'experiments/evaluation-info {:experiment/metadata {:simmis/evaluation %}})]
+        project #(provenance/evaluation {:experiment/metadata {:simmis/evaluation %}})]
     (is (= info (project (assoc info :private "not public"))))
     (doseq [bad [nil (assoc info :id "not-a-uuid") (assoc info :split "secret")
                  (assoc info :cases ["a" "a"]) (assoc info :cases [])
@@ -72,7 +73,7 @@
         info {:name "review" :title (apply str (repeat 1000 "x")) :bundle bundle
               :secret "must not be projected"}
         project (fn [workflow]
-                  (#'experiments/workflow-info {:experiment/metadata {:simmis/workflow workflow
+                  (provenance/workflow {:experiment/metadata {:simmis/workflow workflow
                                                                       :private "not projected"}}))]
     (is (= {:name "review" :title (apply str (repeat 256 "x")) :bundle bundle} (project info)))
     (is (= {:name "review" :bundle bundle} (project (assoc info :title {:unexpected "shape"}))))

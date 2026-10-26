@@ -22,6 +22,8 @@
             [is.simm.model.rooms :as rooms]
             [is.simm.model.system-db :as system-db]
             [is.simm.uis.web.desktop.branching-remote]
+            ;; Each isolated CI partition must load the handlers this test invokes.
+            [is.simm.uis.web.desktop.proposals-remote]
             [is.simm.uis.web.desktop.chat-remote]))
 
 (defn- room-party-ids [room-id]
