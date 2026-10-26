@@ -321,7 +321,9 @@
         ;; and includes the upstream fork/future retention fixes.
         ;; 0.1.366 retains the Job execution lease through adapter retirement
         ;; and provides explicit HOST recovery for uncertain cleanup.
-        org.replikativ/dvergr {:mvn/version "0.1.366"
+        ;; 0.1.367 validates exact setup capabilities and forwards per-environment
+        ;; setup maps through the standard experiment runner.
+        org.replikativ/dvergr {:mvn/version "0.1.367"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.

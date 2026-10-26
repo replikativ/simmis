@@ -2,17 +2,22 @@
   "Host observations of frozen benchmark inputs. No live room lookup or parser
    capability is installed in the checker SCI context."
   (:require [clojure.string :as str]
+            [dvergr.rooms.files :as room-files]
             [is.simm.documents.wiki-facts :as facts]
             [is.simm.ops.knowledge-inputs :as inputs]))
 
 (def profile {:id :wiki-structure-v1 :version 1 :facts facts/profile})
 
+(def checkpoint-profile
+  {:id :wiki-checkpoint-structure-v1 :version 1 :facts facts/profile
+   :baseline {:source :selected-case-fixtures :root "/wiki/"}
+   :evidence :verified-knowledge-manifest})
+
 (defn selected-profile [bundle]
   (let [selected (get-in bundle [:definition :params :simmis/checker-profile])]
     (when (contains? (get-in bundle [:definition :params]) :simmis/checker-profile)
-      (when-not (= (:id profile) selected)
-        (throw (ex-info "Unknown checker observation profile" {:type ::invalid-profile})))
-      profile)))
+      (or (get {(:id profile) profile (:id checkpoint-profile) checkpoint-profile} selected)
+          (throw (ex-info "Unknown checker observation profile" {:type ::invalid-profile}))))))
 
 (defn- markdown? [path]
   (boolean (re-find #"(?i)\.(md|markdown)$" path)))
@@ -41,6 +46,24 @@
       (throw (ex-info "Wiki structural rubric requires explicit bounded V2 constraints" {:type ::invalid-gold}))))
   gold)
 
+(defn- checkpoint-baseline [baseline fixtures guard!]
+  ;; Candidate-visible wiki context is useful for preservation checks, but it
+  ;; is not new source evidence. Never add it to quote/citation source texts.
+  (reduce-kv
+   (fn [result path text]
+     (guard!)
+     (if (and (string? path) (str/starts-with? path "/wiki/") (markdown? path))
+       (do
+         (when-not (and (string? text)
+                        (try (= path (room-files/workspace-path path)) (catch Exception _ false)))
+           (throw (ex-info "Checkpoint wiki fixture has an invalid path or body" {:type ::invalid-baseline})))
+         (let [relative (subs path 1)]
+           (when (and (contains? result relative) (not= (get result relative) text))
+             (throw (ex-info "Checkpoint and copied wiki fixtures disagree" {:type ::conflicting-baseline})))
+           (assoc result relative text)))
+       result))
+   baseline fixtures))
+
 (defn prepare-input
   "Called inside the scoring account. Select precisely the candidate's shared
    and case fixtures, verify their frozen manifest, then observe plain facts."
@@ -48,7 +71,8 @@
   (guard!)
   (when-not selection-policy
     (throw (ex-info "Wiki structural scoring requires explicit knowledge inputs" {:type ::missing-policy})))
-  (let [case-id (get-in environment [:environment/metadata :case])
+  (let [observation-profile (or (selected-profile bundle) profile)
+        case-id (get-in environment [:environment/metadata :case])
         cases (:cases bundle)
         _ (when-not (if (seq cases) (contains? cases case-id) (nil? case-id))
             (throw (ex-info "Wiki scoring case is not in the pinned bundle" {:type ::unknown-case})))
@@ -59,9 +83,15 @@
         _ (guard!)
         repository (get-in captured [:manifest :repository])
         entries (get-in captured [:manifest :files])
+        evidence-entries (if (= (:id checkpoint-profile) (:id observation-profile))
+                           (filterv #(= :trigger (:role %)) entries)
+                           entries)
         baseline (into (sorted-map)
                        (for [{:keys [path input]} entries :when (markdown? path)]
                          (do (guard!) [path (get fixtures input)])))
+        baseline (if (= (:id checkpoint-profile) (:id observation-profile))
+                   (checkpoint-baseline baseline fixtures guard!)
+                   baseline)
         proposed (into (sorted-map)
                        (for [[path text] (:files input)
                              :when (and (string? path) (str/starts-with? path "/out/wiki/")
@@ -74,9 +104,9 @@
         _ (when-not (= (count ids) (count (set ids)))
             (throw (ex-info "Frozen wiki fixture has duplicate identities" {:type ::invalid-baseline})))]
     (assoc input :gold gold :structure
-           {:profile profile
-            :source-paths (mapv :input entries)
-            :source-texts (into (sorted-map) (map (fn [{:keys [input]}] (guard!) [input (get fixtures input)])) entries)
+           {:profile observation-profile
+            :source-paths (mapv :input evidence-entries)
+            :source-texts (into (sorted-map) (map (fn [{:keys [input]}] (guard!) [input (get fixtures input)])) evidence-entries)
             :baseline-texts baseline
             :baseline baseline-facts
             :proposed (facts/documents repository proposed guard!)})))
