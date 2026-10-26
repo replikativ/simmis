@@ -43,4 +43,3 @@
                                       :lookup-incomplete "Reference lookup incomplete"
                                       "Unresolved reference"))
     (el/span {:class "memory-note"} "Source value")))
-
