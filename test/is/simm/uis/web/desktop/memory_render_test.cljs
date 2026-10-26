@@ -7,6 +7,7 @@
             [is.simm.documents.rich-text :as rich]
             [is.simm.uis.web.desktop.memory-editor :as editor]
             [is.simm.uis.web.desktop.property-controls :as property-controls]
+            [is.simm.uis.web.desktop.saved-table-component :as saved-table]
             [is.simm.uis.web.desktop.views.memory :as memory]))
 
 (defn- text-node [text] {:kind :Text :text text :children []})
@@ -318,5 +319,29 @@
               (is (not (.includes (.-textContent container) "9007199254740993")))))))
       (finally
         (when @release (browser/unmount! @release))
+        (.remove container)
+        (context/stop-context! ctx)))))
+
+(deftest receipt-table-data-cannot-create-property-controls-or-html
+  (let [ctx (context/create-execution-context)
+        container (.createElement js/document "div") discharge (atom nil)
+        literal "<img src=x onerror=alert(1)>"
+        row {:id (random-uuid) :edit {:path "companies/forged.md"}
+             :cells [{:kind :text :text literal} {:kind :number :text "9007199254740993"}]}]
+    (.appendChild (.-body js/document) container)
+    (try
+      (binding [ec/*execution-context* ctx]
+        (reset! discharge
+                (browser/mount! container
+                                (saved-table/view [{:label "Candidate"} {:label "Spend"}] [row] {} {}))))
+      (is (= ["Candidate" "Spend"]
+             (mapv #(.-textContent %) (array-seq (.querySelectorAll container "th")))))
+      (is (= [literal "9007199254740993"]
+             (mapv #(.-textContent %) (array-seq (.querySelectorAll container "td")))))
+      (is (nil? (.querySelector container "img")) "source text never becomes executable markup")
+      (is (nil? (.querySelector container "button, input, select, [contenteditable]"))
+          "report data cannot grant page-property editing")
+      (finally
+        (when @discharge (browser/unmount! @discharge))
         (.remove container)
         (context/stop-context! ctx)))))

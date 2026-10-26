@@ -7,29 +7,8 @@
             [is.simm.uis.web.desktop.memory-page-views :as views]
             [is.simm.uis.web.desktop.memory-declarations :as declarations]
             [is.simm.uis.web.desktop.memory-edit-owners :as edit-owners]
-            [is.simm.uis.web.desktop.property-controls :as properties]))
-
-(defn- file-link [path text a]
-  (el/button {:type "button" :class "memory-page-link" :title path
-              :on-click (fn [_] ((:open a) path))} text))
-
-(defn- cell [value a]
-  (case (:kind value)
-    :null (el/span {:class "memory-note"} "—")
-    :text (el/span {} (:text value) (when (false? (:complete? value)) "…"))
-    (:number :uuid :instant) (el/span {} (:text value))
-    :boolean (el/span {} (if (:value value) "Yes" "No"))
-    :page (file-link (:path value) (:text value) a)
-    :reference (if (:path value)
-                 (file-link (:path value) (:label value) a)
-                 (el/span {:title (str (:id value))} "Reference"))
-    :list (el/span {}
-                   (for [[index item] (map-indexed vector (:items value))]
-                     (el/span {:key index} (when (pos? index) ", ") (cell item a)))
-                   (when (false? (:complete? value)) "…"))
-    :truncated (el/span {:class "memory-note"} "Preview omitted")
-    :unresolved-reference (el/span {:class "memory-note"} "Unresolved reference")
-    (el/span {:class "memory-note"} "Source value")))
+            [is.simm.uis.web.desktop.property-controls :as properties]
+            [is.simm.uis.web.desktop.saved-table-component :as table]))
 
 (defn- unavailable [reason]
   (case reason
@@ -58,7 +37,7 @@
       (el/section {:class "memory-page-form" :aria-label "Selected page properties"}
                   (el/div {:class "memory-page-view-heading"}
                           (el/strong {} (or (:title row) "Selected page"))
-                          (when identity? (file-link row-path "Open page" a))
+                          (when identity? (table/page-link row-path "Open page" a))
                           (el/span {:role "status" :class "memory-note"} (when busy? "Saving…")))
                   (when-let [message (get-in state [:page-view-edit-errors [path view]])]
                     (el/p {:class "memory-note" :role "status"} message))
@@ -116,21 +95,14 @@
                                   (str (count (:rows reply)) " of " (:total reply) " matching pages"
                                        (when loading? " · Updating…")))
                             (when-not form?
-                              (el/div {:class "memory-page-table"}
-                                      (el/table {}
-                                                (el/thead {} (el/tr {}
-                                                                  (for [[index column] (map-indexed vector (:columns reply))]
-                                                                    (el/th {:key index :scope "col"} (:label column)))
-                                                                  (el/th {:scope "col"} "Properties")))
-                                                (el/tbody {}
-                                                          (for [row (:rows reply)]
-                                                            (el/tr {:key (str (:id row))}
-                                                                   (for [[index value] (map-indexed vector (:cells row))]
-                                                                     (el/td {:key index} (cell value a)))
-                                                                   (el/td {} (el/button {:type "button"
-                                                                                        :aria-label (str "Inspect properties for " (:title row))
-                                                                                        :on-click (fn [_] ((:edit-page-view-row a) path id row))}
-                                                                                       (if write? "Edit" "Inspect")))))))))
+                              (table/view (:columns reply) (:rows reply) a
+                                          {:control-label "Properties"
+                                           :row-control
+                                           (fn [row]
+                                             (el/button {:type "button"
+                                                         :aria-label (str "Inspect properties for " (:title row))
+                                                         :on-click (fn [_] ((:edit-page-view-row a) path id row))}
+                                                        (if write? "Edit" "Inspect")))}))
                             (when (or (false? (get-in reply [:display :complete?]))
                                       (some #(false? (:label-complete? %)) (:columns reply)))
                               (el/p {:class "memory-note"} "Some previews are shortened. Open a page for its full source values."))
