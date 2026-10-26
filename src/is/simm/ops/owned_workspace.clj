@@ -52,6 +52,26 @@
 (defn- target-stamp [room-id mapping target workspace-config]
   (hasch/uuid [:simmis/owned-workspace-target-v2 room-id mapping target workspace-config]))
 
+(defn control-revision
+  "HOST control-DB-only mapping fingerprint. No workspace resolution or source
+   store access. Capture after ordinary owned resolution; never authority."
+  [registry-db room-id registry-system]
+  (mapping-revision registry-db room-id registry-system))
+
+(defn validate-control-in!
+  "Fixed writer-side control observation over its OWN immutable DB. No source
+   connection dereference, hydration or physical IO. The caller separately
+   owns the original native lifetime and validates its actual source outside
+   the writer; this fingerprint does not establish a cross-store lease."
+  [registry-db principal room-id binding expected-revision]
+  (let [party (authorize! registry-db principal :merge room-id)
+        target (:target binding)]
+    (when-not (and (= room-id (:room-id binding)) (= party (:party binding))
+                   (uuid? expected-revision)
+                   (= expected-revision (mapping-revision registry-db room-id (:registry-system target))))
+      (refuse! :target-changed))
+    true))
+
 (defn resolve!
   "Resolve after authentication, using exactly this registry DB for authority,
    Room mapping and default ownership. Returns live HOST handles plus one

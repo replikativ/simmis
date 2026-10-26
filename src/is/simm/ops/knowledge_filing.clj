@@ -13,6 +13,8 @@
             [hasch.core :as hasch]
             [is.simm.model.access :as access]
             [is.simm.model.knowledge-dispositions :as dispositions]
+            [is.simm.model.knowledge-processing :as processing]
+            [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.file-output-plan :as plans]
@@ -181,11 +183,14 @@
         _ (when-not (= (:work.request/intent-id row) (hasch/uuid retained))
             (refuse! :payload-mismatch))
         input (:input retained)
+        batch (when (or (:work.request/knowledge-batch row) (:work.request/knowledge-frozen row)
+                        (contains? input :knowledge/batch) (contains? input :knowledge/batch-control))
+                (processing/expected (batch-proof/request! conn row retained)))
         {:keys [environment workflow-bundle]} (verify-frozen-workflow! input)
         certified (certified-candidate! room row input)
         _ (workspace/validate-proof! (:target basis)
                                      (get-in certified [:attempt/evidence :knowledge-workspace]))]
-    {:party party :row row :binding binding :basis basis :input input
+    {:party party :row row :binding binding :basis basis :input input :batch batch
      :environment environment :workflow-bundle workflow-bundle :certified certified}))
 
 (defn candidate-outcome
@@ -205,7 +210,7 @@
    prepare exact retained filing data. A failed candidate can never file.
    Current authority/default identity MUST be rechecked by the filing writer."
   [conn principal room-id room request-id]
-  (let [{:keys [party row binding basis input environment workflow-bundle certified]}
+  (let [{:keys [party row binding basis input environment workflow-bundle certified batch]}
         (certified-request! conn principal room-id room request-id)
         _ (when-not (= :completed (get-in certified [:attempt/receipt :attempt/status]))
             (refuse! :candidate-not-completed))
@@ -221,6 +226,7 @@
                               :attempt-content (:attempt/content-id certified)
                               :basis (:id basis) :output (:id output)
                               :kind (if proposed? :proposed :no-op)}
+                       batch (assoc :batch (get-in batch [:origin :batch]))
                        proposed? (assoc :manifest (get-in planned [:manifest :id]) :proposal (:proposal planned))))]
-    {:request-binding binding :disposition disposition :plan (when proposed? planned)
+    {:request-binding binding :disposition disposition :plan (when proposed? planned) :batch batch
      :party party :room room-id :target (:target basis)}))

@@ -36,18 +36,22 @@
                                           (is (= (str room-id) handle)))
                   filing/authorize! (fn [& _]
                                       (note! :authority)
-                                      (when (or (:denied? options) (and @room? (:revoked-after-hydration? options)))
+                                      (when (or (:denied? options) (and @room? (:revoked-inside-room? options)))
                                         (throw (ex-info "Denied" {})))
                                       party)
                   d/pull (fn [_ _ lookup] (note! :request) (is (= [:work.request/id request] lookup)) row)
                   reads/resolve-host-room! (fn [& _] (note! :hydrate) (is @app?) {:room room})
                   preparation/with-host-operation!
-                  (fn [r body]
+                  (fn [r options body]
+                    (is (= {} options))
                     (note! :room) (is (identical? room r)) (reset! room? true)
                     (try (body :lease) (finally (reset! room? false) (note! :room-exit))))
                   preparation/with-host-current! (fn [_ body] (is @room?) (body))
-                  reads/validate-host-room! (fn [& _] (note! :current-room) (is @room?))
-                  publish/file-completed-request!
+                  reads/validate-host-room! (fn [& _]
+                                              (note! :current-room) (is @app?)
+                                              (when (:revoked-after-hydration? options)
+                                                (throw (ex-info "Denied before Room preparation" {}))))
+                  publish/file-completed-request-unannounced!
                   (fn [actual principal actual-room r id]
                     (note! :file) (is @app?) (is @room?)
                     (is (identical? conn actual)) (is (identical? room r))
@@ -56,7 +60,13 @@
                     (when (:failure? options) (throw (ex-info "Private native diagnostic" {:body :secret})))
                     (merge {:request request :kind :proposed :proposal proposal
                             :token :secret :body :secret :room room}
-                           (:result options)))]
+                           (:result options)))
+                  publish/announce-filed-original!
+                  (fn [actual principal resolved value]
+                    (note! :announce) (is @app?) (is (not @room?))
+                    (is (identical? conn actual)) (is (identical? room (:room resolved)))
+                    (is (= (str "party/" party) (:principal/id principal)))
+                    value)]
       (f {:party party :room room-id :request request :proposal proposal :calls calls
           :collect! #(service/collect! party room-id request)}))))
 
@@ -64,8 +74,9 @@
   (exercise {}
             (fn [{:keys [collect! request proposal calls]}]
               (is (= {:status :proposed :request (str request) :proposal (str proposal)} (collect!)))
-              (is (= [:application :human :authority :request :hydrate :room
-                      :human :authority :request :current-room :file :room-exit :application-exit]
+              (is (= [:application :human :authority :request :hydrate :current-room :room :current-room
+                      :human :authority :request :file :current-room :room-exit
+                      :human :authority :request :current-room :announce :application-exit]
                      @calls)))))
 
 (deftest no-op-is-explicit-and-never-invents-a-proposal
@@ -96,12 +107,21 @@
     (exercise options
               (fn [{:keys [collect! calls]}]
                 (is (= {:status :unavailable} (collect!)))
-                (is (= [:room-exit :application-exit] (take-last 2 @calls)))))))
+                (is (some #{:room-exit} @calls))
+                (is (= :application-exit (last @calls)))
+                (when (:failure? options) (is (not-any? #{:announce} @calls)))))))
 
 (deftest revocation-after-hydration-refuses-before-attempt-or-output-reads
   (exercise {:revoked-after-hydration? true}
             (fn [{:keys [collect! calls]}]
               (is (= {:status :unavailable} (collect!)))
+              (is (not-any? #{:room :file :announce} @calls))
+              (is (= :application-exit (last @calls))))))
+
+(deftest revocation-inside-preparation-releases-the-room-before-application-exit
+  (exercise {:revoked-inside-room? true}
+            (fn [{:keys [collect! calls]}]
+              (is (= {:status :unavailable} (collect!)))
               (is (some #{:room} @calls))
-              (is (not-any? #{:file} @calls))
+              (is (not-any? #{:file :announce} @calls))
               (is (= [:room-exit :application-exit] (take-last 2 @calls))))))

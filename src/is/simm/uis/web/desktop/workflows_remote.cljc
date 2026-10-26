@@ -13,6 +13,8 @@
             #?(:clj [is.simm.model.system-db :as system-db])
             #?(:clj [is.simm.model.db :as db])
             #?(:clj [is.simm.runtimes.memory-changes :as memory-changes])
+            #?(:clj [is.simm.runtimes.application-ops :as application-ops])
+            #?(:clj [org.replikativ.spindel.engine.core :as ec])
             #?(:clj [is.simm.agents.room-agents :as rooms])
             #?(:clj [is.simm.ops.dvergr :as ops])
             #?(:clj [is.simm.ops.owned-reads :as owned-reads])
@@ -99,17 +101,15 @@
             (:room-id before)))))))
 
 #?(:clj
-   (defn invoke-workflow [party room-id operation args]
+   (defn- invoke-workflow-on-host [host party room-id operation args]
      (when-not (uuid? party) (throw (ex-info "Authentication required" {:error :authentication-required})))
      (when (simple/on-drain-thread?)
        (throw (ex-info "Workflow actions require a host worker" {:type :validation-error})))
      (when-not (and (contains? workflow-operations operation) (map? args)
                     (not (contains? args :room)) (string? room-id) (<= 1 (count room-id) 200))
        (dops/op-error! "Invalid workflow arguments" ::invalid 400))
-     (context/with-server-context
-       (let [ctx context/server-context
-             host (work-api/owned-helper-value! #(workflow-host/host (system-db/get-conn) ctx))
-             principal (ops/party-principal party) wire (assoc args :room room-id)]
+     (binding [ec/*execution-context* (:execution-ctx host)]
+       (let [principal (ops/party-principal party) wire (assoc args :room room-id)]
          (case operation
            (:simmis/workflow-list :simmis/workflow-source)
            (do (dops/authorize! host principal operation wire)
@@ -139,11 +139,27 @@
                    reply)))))))))
 
 #?(:clj
+   (defn invoke-workflow
+     "Direct HOST entry for ordinary humans; retains this App before dispatch."
+     [party room-id operation args]
+     (when-not (uuid? party) (throw (ex-info "Authentication required" {:error :authentication-required})))
+     (let [enter (application-ops/capture-operation)]
+       (enter (fn [application-host]
+                (invoke-workflow-on-host (workflow-host/from-application application-host)
+                                         party room-id operation args))))))
+
+#?(:clj
    (defn- workflow-on-worker [room-id operation args]
      ;; A fresh resource Spin, awaited ONCE by its inbound remote body. Never
      ;; derive the caller later on the worker or share/cache a live invocation.
-     (let [party (access/authenticated-party-id)]
-       (blocking/blocking #(invoke-workflow party room-id operation args)))))
+     (let [party (access/authenticated-party-id)
+           ;; Capturing is safe on the drain. Admission occurs on the actual
+           ;; worker and can never borrow a replacement installation.
+           enter (application-ops/capture-operation)]
+       (blocking/blocking
+        #(enter (fn [application-host]
+                  (invoke-workflow-on-host (workflow-host/from-application application-host)
+                                           party room-id operation args)))))))
 
 #?(:clj
    (defn prepare-metadata-stream-for!

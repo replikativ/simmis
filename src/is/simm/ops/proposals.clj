@@ -12,6 +12,8 @@
             [is.simm.model.access :as access]
             [is.simm.model.forkset :as fs]
             [is.simm.model.file-outputs :as file-manifests]
+            [is.simm.model.knowledge-processing :as processing]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [is.simm.ops.file-output-plan :as file-plans]
             [is.simm.runtimes.branching :as branching]
             [is.simm.runtimes.context :as ctx]
@@ -547,21 +549,37 @@
 (defn- file-decision!
   "Fixed host-only serialized withdrawal/revision decision. Retained files
    have no branch to delete/reopen. Acceptance remains unavailable here."
-  [id by action {:keys [note body]}]
+  [connection id by action {:keys [note body]}]
   (when (simple/on-drain-thread?)
     (throw (ex-info "File decisions require a host worker" {:error :requires-host-worker})))
   (when (and (= :request-changes (:verb action))
              (or (not (string? body)) (str/blank? body)))
     (throw (ex-info "a comment needs something in it" {:error :empty-comment})))
+  (when-not (identical? connection (conn))
+    (throw (ex-info "File decision has no original canonical connection" {:error :decision-unavailable})))
   (let [snapshot! (requiring-resolve 'is.simm.ops.file-output-adoption/decision-snapshot)
+        db @connection
+        room-id (:proposal/room (d/pull db [:proposal/room] [:proposal/id id]))
+        original (snapshot! db by room-id id action)
         cid (when (= :request-changes (:verb action)) (random-uuid))
+        ticket lifetime/*ticket*
+        _ (when ticket (lifetime/check-current!))
+        ;; The exact action and fresh App readiness precede artifact IO. The
+        ;; shared reader also serves already-observed publisher cleanup.
+        batch (when-not cid
+                ((requiring-resolve 'is.simm.ops.knowledge-batch-resolution/retained!) connection (:disposition original)))
+        _ (when ticket (lifetime/check-current!))
         at (java.util.Date.)
         report (d/transact
-                (conn)
+                connection
                 [[:db.fn/call
                   (fn [db]
-                    (let [room-id (:proposal/room (d/pull db [:proposal/room] [:proposal/id id]))
-                          {:keys [proposal fork]} (snapshot! db by room-id id action)]
+                    (when (and ticket
+                               (not (and (lifetime/retained? ticket) (lifetime/ready? (:owner ticket)))))
+                      (throw (ex-info "File decision App retired" {:error :decision-unavailable})))
+                    (let [{:keys [proposal fork] :as current} (snapshot! db by room-id id action)]
+                      (when-not (= original current)
+                        (throw (ex-info "File decision changed during preparation" {:error :decision-unavailable})))
                       (if cid
                         [{:db/id (:db/id proposal)
                           :proposal/comments
@@ -569,10 +587,12 @@
                                     :proposal.comment/at at :proposal.comment/kind :changes-requested
                                     :proposal.comment/author by}
                              (:branch action) (assoc :proposal.comment/fork-branch (name (:branch action))))]}]
-                        [(assoc (fork-resolution-tx fork :dismissed note by) :proposal/resolved-at at)
-                         (merge {:db/id (:db/id proposal) :proposal/status :dismissed
-                                 :proposal/resolved-at at}
-                                (resolution-facts note by))])))]])]
+                        (into [(assoc (fork-resolution-tx fork :dismissed note by) :proposal/resolved-at at)
+                               (merge {:db/id (:db/id proposal) :proposal/status :dismissed
+                                       :proposal/resolved-at at}
+                                      (resolution-facts note by))]
+                              (when batch
+                                (processing/dismissal-tx db (:expected batch) (:value batch) by at))))))]])]
     ;; Only THIS acknowledged immutable result can establish success. Do not
     ;; replace a missing/stale report with a live connection readback.
     (let [db (:db-after report)
@@ -602,7 +622,9 @@
         (do
           (when-not (and (= :dismissed (:proposal/status p) (:proposal.fork/status f))
                          (= by (:proposal/resolved-by p) (:proposal/resolved-by f))
-                         (= at (:proposal/resolved-at p) (:proposal/resolved-at f)))
+                         (= at (:proposal/resolved-at p) (:proposal/resolved-at f))
+                         (or (nil? batch)
+                             (empty? (processing/dismissal-tx db (:expected batch) (:value batch) by at))))
             (throw (ex-info "File withdrawal was not acknowledged" {:error :decision-unacknowledged})))
           (cond-> {:status :dismissed}
             (= :dismiss-fork (:verb action)) (assoc :proposal :dismissed)))))))
@@ -843,7 +865,7 @@
    durable part; reopening is a convenience for a live agent."
   [id {:keys [body by fork-branch]}]
   (if (retained-proposal? @(conn) id)
-    (file-decision! id by (cond-> {:verb :request-changes} fork-branch (assoc :branch fork-branch)) {:body body})
+    (file-decision! (conn) id by (cond-> {:verb :request-changes} fork-branch (assoc :branch fork-branch)) {:body body})
     (let [p (open-proposal! id)
           forks (cond->> (open-forks p)
                   fork-branch (filter #(= (name fork-branch)
@@ -979,7 +1001,7 @@
    landed on trunk."
   [id & {:keys [note by]}]
   (if (retained-proposal? @(conn) id)
-    (file-decision! id by {:verb :dismiss-proposal} {:note note})
+    (file-decision! (conn) id by {:verb :dismiss-proposal} {:note note})
     (let [p (open-proposal! id)]
       (if-let [decide! (review-decision p)]
         (decide! id :reject :note note :by by)
@@ -1024,7 +1046,7 @@
    the proposal became if this was the last open fork."
   [id scope branch & {:keys [note by]}]
   (if (retained-proposal? @(conn) id)
-    (file-decision! id by {:verb :dismiss-fork :scope scope :branch branch} {:note note})
+    (file-decision! (conn) id by {:verb :dismiss-fork :scope scope :branch branch} {:note note})
     (let [p (open-proposal! id)
           f (open-fork! p scope branch)]
       (if-let [decide! (review-decision p)]
@@ -1088,3 +1110,19 @@
                                     :proposal-status status
                                     :noted? (not (str/blank? note))}})
                   {:status :accepted :proposal status})))))))))
+
+(defn decide-in!
+  "Fixed HOST decision on the captured canonical App connection. Browser
+   callers queue this off-engine within the original captured App operation.
+   Retained files use only control storage; ordinary ForkSets keep their existing
+   authority and backend semantics. No arbitrary callback or target is accepted."
+  [connection id by action options]
+  (when-not (and (identical? connection (conn)) (every? uuid? [id by]))
+    (throw (ex-info "Proposal decision has no original App connection" {:error :decision-unavailable})))
+  (if (retained-proposal? @connection id)
+    (file-decision! connection id by action options)
+    (case (:verb action)
+      :dismiss-proposal (dismiss-proposal! id :by by :note (:note options))
+      :dismiss-fork (dismiss-fork! id (:scope action) (:branch action) :by by :note (:note options))
+      :request-changes (request-changes! id {:by by :body (:body options) :fork-branch (:branch action)})
+      (throw (ex-info "Unknown proposal decision" {:error :decision-unavailable})))))

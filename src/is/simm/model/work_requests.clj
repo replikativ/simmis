@@ -4,12 +4,16 @@
   (:require [datahike.api :as d]
             [dvergr.artifact :as artifact]
             [is.simm.model.knowledge-publication :as publication]
-            [hasch.core :as hasch]))
+            [is.simm.model.knowledge-batches :as batches]
+            [is.simm.model.work-request-identity :as identity]
+            [hasch.core :as hasch]
+            [malli.core :as m]))
 
 (def schema
   (mapv (fn [[ident type]]
           (cond-> {:db/ident ident :db/valueType type :db/cardinality :db.cardinality/one}
-            (= ident :work.request/id) (assoc :db/unique :db.unique/value)))
+            (= ident :work.request/id) (assoc :db/unique :db.unique/value)
+            (= ident :work.request/knowledge-batch) (assoc :db/index true)))
         [[:work.request/id :db.type/uuid]
          [:work.request/client-id :db.type/uuid]
          [:work.request/by :db.type/uuid]
@@ -17,6 +21,8 @@
          [:work.request/kind :db.type/keyword]
          [:work.request/intent-id :db.type/uuid]
          [:work.request/publication-basis-id :db.type/uuid]
+         [:work.request/knowledge-batch :db.type/uuid]
+         [:work.request/knowledge-frozen :db.type/uuid]
          [:work.request/payload-ref :db.type/store-ref]
          [:work.request/claim :db.type/uuid]
          [:work.request/created-at :db.type/instant]
@@ -33,7 +39,7 @@
          [:work.request/incident :db.type/uuid]]))
 
 (defn request-id [party room client-id]
-  (hasch/uuid [:simmis/work-request-v1 party room client-id]))
+  (identity/request-id party room client-id))
 
 (defn- publication-id
   "Integrity of host-retained metadata, not a proof of current authorization."
@@ -44,10 +50,13 @@
         (throw (ex-info "Invalid host publication basis" {:type ::invalid-publication-basis})))
       (:id basis))))
 
-(defn get-request [conn id]
-  (let [db @conn]
-    (when-let [eid (d/q '[:find ?e . :in $ ?id :where [?e :work.request/id ?id]] db id)]
-      (d/pull db '[*] eid))))
+(defn request-in
+  "Internal metadata observation on one supplied DB; no authorization."
+  [db id]
+  (when-let [eid (d/q '[:find ?e . :in $ ?id :where [?e :work.request/id ?id]] db id)]
+    (d/pull db '[*] eid)))
+
+(defn get-request [conn id] (request-in @conn id))
 
 (defn- same-intent! [row intent-id]
   (when-not (= intent-id (:work.request/intent-id row))
@@ -55,7 +64,10 @@
                     {:type ::conflict :request (:work.request/id row)})))
   row)
 
-(defn- claim-tx [db row digest]
+(defn claim-tx
+  "Internal pure insert fragment for fixed HOST compositions. No authority,
+   artifacts, dispatch or arbitrary transaction callback is accepted here."
+  [db row digest]
   ;; Conditional insert in the writer's serialized database. A no-op loser
   ;; still receives a COMMITTED report, unlike a uniqueness exception from a
   ;; batched writer which may precede publication of the winner's snapshot.
@@ -64,26 +76,36 @@
     (do (same-intent! (d/pull db '[*] eid) digest) [])
     [row]))
 
-(defn claim!
-  "Persist one exact intent before work. New entity + unique VALUE, never
-   an upserting identity. Ambiguous transaction responses are resolved by the
-   durable random claim token; a retry never blindly schedules another job."
-  [conn {:keys [party room client-id kind intent limits]}]
+(defn prepare-claim
+  "Internal inert identity and retained payload. Does not claim, authorize,
+   publish an artifact or generate ownership of a scheduling attempt."
+  [{:keys [party room client-id kind intent limits]}]
   (when-not (and (every? uuid? [party room client-id]) (keyword? kind) (map? intent))
     (throw (ex-info "Invalid work-request identity" {:type ::invalid})))
+  (when (contains? intent :knowledge/batch)
+    (when-not (and (= :workflow kind) (m/validate batches/origin-schema (:knowledge/batch intent)))
+      (throw (ex-info "Invalid live batch request origin" {:type ::invalid-batch}))))
   (let [basis-id (publication-id intent)
         id (request-id party room client-id)
         intent {:kind kind :limits (or limits {}) :input intent}
         digest (hasch/uuid intent)]
-    (if-let [row (get-request conn id)]
-      {:request (same-intent! row digest) :claimed? false}
-      (let [claim (random-uuid)
-            base (merge (cond-> {:db/id -1
+    {:id id :party party :room room :client-id client-id :kind kind :limits limits
+     :basis-id basis-id :intent intent :digest digest}))
+
+(defn claim-row
+  "Internal row for one original attempt; the random token is not a capability.
+   Only positive serialized claim/readback under the owning HOST can schedule."
+  [{:keys [id party room client-id kind limits basis-id digest intent]}]
+  (let [claim (random-uuid)
+        base (merge (cond-> {:db/id -1
                          :work.request/id id :work.request/client-id client-id
                          :work.request/by party :work.request/room room :work.request/kind kind
                          :work.request/intent-id digest :work.request/claim claim
                          :work.request/created-at (java.util.Date.) :work.request/state :admitting}
-                          basis-id (assoc :work.request/publication-basis-id basis-id))
+                          basis-id (assoc :work.request/publication-basis-id basis-id)
+                          (get-in intent [:input :knowledge/batch])
+                          (assoc :work.request/knowledge-batch (get-in intent [:input :knowledge/batch :batch])
+                                 :work.request/knowledge-frozen (get-in intent [:input :knowledge/batch :frozen])))
                         (into {} (for [k [:budget-microdollars :max-dispatches :max-model-steps :max-worker-admissions :max-cli-runs
                                           :timeout-ms :settlement]
                                        :when (contains? limits k)]
@@ -97,17 +119,42 @@
                                           (when-not (and (integer? n) (<= Long/MIN_VALUE n Long/MAX_VALUE))
                                             (throw (ex-info "Invalid integral work limit" {:type ::invalid :limit k})))
                                           (long n)))])))]
+    {:claim claim :row base}))
+
+(defn inspect-claim
+  "Internal exact-intent observation. Does not verify a live batch linkage."
+  [db {:keys [id digest]}]
+  (some-> (request-in db id) (same-intent! digest)))
+
+(defn claim-result
+  "Readback for the same physically owned attempt; never a retry permission."
+  [db prepared claim]
+  (let [row (or (inspect-claim db prepared)
+                (throw (ex-info "Work claim is not confirmed" {:type ::missing})))]
+    {:request row :claimed? (= claim (:work.request/claim row))}))
+
+(defn claim!
+  "Persist one exact intent before work. New entity + unique VALUE, never
+   an upserting identity. Ambiguous transaction responses are resolved by the
+   durable random claim token; a retry never blindly schedules another job."
+  [conn input]
+  (when (some #(contains? (:intent input) %) [:knowledge/batch :knowledge/batch-control])
+    (throw (ex-info "Live batch requests require the fixed joint HOST admission"
+                    {:type ::batch-needs-joint-admission})))
+  (let [{:keys [intent digest] :as prepared} (prepare-claim input)]
+    (if-let [row (inspect-claim @conn prepared)]
+      {:request row :claimed? false}
+      (let [{:keys [claim row]} (claim-row prepared)]
         (try
           (artifact/publish-value! (artifact/datahike-store conn) intent
                                    (fn [ref]
                                      (d/transact conn [[:db.fn/call claim-tx
-                                                        (assoc base :work.request/payload-ref ref) digest]])))
+                                                        (assoc row :work.request/payload-ref ref) digest]])))
           (catch Exception e
             ;; Only a durable row resolves an uncertain write or a lost insert
             ;; race. Failed reads/errors propagate; nothing is scheduled then.
-            (when-not (get-request conn id) (throw e))))
-        (let [row (same-intent! (get-request conn id) digest)]
-          {:request row :claimed? (= claim (:work.request/claim row))})))))
+            (when-not (inspect-claim @conn prepared) (throw e))))
+        (claim-result @conn prepared claim)))))
 
 (defn payload [conn request]
   (artifact/get-value (artifact/datahike-store conn) (:work.request/payload-ref request)))

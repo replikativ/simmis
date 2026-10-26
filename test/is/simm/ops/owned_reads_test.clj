@@ -30,6 +30,20 @@
   {:op :room/read :action :read :resource [:room room]
    :args {:room room :path "wiki/file.md"}})
 
+(deftest writer-observation-uses-its-own-authority-snapshot-without-source-access
+  (@#'fixture/with-fixture
+   true
+   (fn [{:keys [host conn w room]}]
+     (let [principal (ops/party-principal (:owner w)) handle (str (:room w))
+           original (reads/resolve-host-room! host principal handle)
+           revoked (:db-after (d/with @conn [{:room/id (:room w) :room/owner [:party/id (:member w)]}]))
+           forbidden (fn [& _] (throw (AssertionError. "Writer room observation must not resolve source or hydrate")))]
+       (with-redefs [owned/resolve! forbidden workspace/workspace-for-system! forbidden rooms/live-room forbidden]
+         (is (identical? room (:room (reads/validate-host-room-in! host principal handle original @conn))))
+         (is (thrown? Exception (reads/validate-host-room-in! host principal handle original revoked)))
+         (with-redefs [registry/lookup (constantly (assoc room :incarnation (random-uuid)))]
+           (is (thrown? Exception (reads/validate-host-room-in! host principal handle original @conn)))))))))
+
 (deftest ordinary-human-and-mcp-share-one-owned-service-with-separate-transport-gates
   (doseq [owned-first? [true false]]
     (@#'fixture/with-fixture

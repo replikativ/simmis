@@ -1,0 +1,490 @@
+# Incremental knowledge discovery
+
+Incremental input batching is an explicit opt-in for owned knowledge workflows.
+Its operational schemas live in the private control database. Browser commands
+capture their original App before queueing, then enter its lifetime on the actual
+worker with normal human authorization. The existing App-owned scheduler shares
+the same discovery stream; no second scheduler or discovery service is installed.
+
+The shipped wiki starter remains on its existing frozen whole-selection inputs
+until its source explicitly declares batching. Registration creates no streams,
+allowances or enabled schedules. Discovery itself performs no model dispatch,
+checker evaluation, source processing, or wiki publication. Recovery and retirement
+remain internal fixed HOST operations, without public tools or UI controls.
+
+## Source and stream identity
+
+A stream belongs to one authenticated human, canonical room, explicitly owned
+Memory target, normalized folder policy, semantic workflow program, and revisit
+epoch. The program identity includes the rendered task, effective default
+parameters, bundle, and auxiliary inputs. Model selection and schedule cadence
+do not reset processing. The first HOST entry accepts default workflow parameters
+only; cases and parameter/input overrides require retained invocation support
+before they can be admitted.
+
+Discovery reads published immutable Datahike checkpoints. It verifies the
+checkpoint against the actual data: `d/with` can preserve a commit ID while
+changing its contents. Both snapshots are bounded before structural index diff;
+missing ancestry, reset sources, or unsupported index layouts hold the stream.
+Renames appear as removal plus addition. Ordering is lexical path order at
+discovery, not a claim about event chronology. Trigger metadata is enqueued;
+context changes do not themselves certify processing.
+
+## Retention protocol
+
+1. Persist a bounded intent containing the original source locator and basis.
+2. Only its original creation winner may create the permanent, unique native
+   GC root. Recovery inspects; it never recreates an absent or partial root.
+3. Verify the root registry, owner, and entire immutable commit record.
+4. Atomically publish the discovery journal, pending item changes, and cursor.
+5. Verify that joint receipt and its replacement root before releasing the
+   predecessor. Record cleanup completion after observing its absence.
+
+The intent moves through `creating -> pinned -> committed -> retained`; an older
+retained intent becomes `released`. An active batch or unfinished cleanup blocks
+another discovery. Discovery never marks an item processed.
+
+Lost acknowledgements retain an inspectable intent. After a lost native release
+acknowledgement, the old commit may already be garbage collected; absence from
+the root registry permits cleanup completion without restoring that old commit.
+A missing root before discovery publication remains held. Automatic abandonment
+and stream retirement are not implemented.
+
+## Ownership and authorization
+
+`owned-knowledge-discovery/refresh!` uses the original application operation and
+actual room lease, with a shared exclusive gate for refresh and recovery by that
+human in that room. The operation physically joins native work before returning.
+Writer fragments observe captured lifetime liveness and recheck current human
+authority and default mapping using the writer's own control database. They do
+not hydrate rooms, read source artifacts, resolve workspaces, or run providers.
+
+Committed cleanup belongs to the original captured source. Explicit recovery
+resolves its canonical registered system, independently of a new default Memory.
+A logical Geschichte checkout does not redirect cleanup; the restored pinned
+checkpoint must still match its full original basis. A retired or ambiguous
+original system holds recovery instead of falling back to another workspace.
+
+These are frozen-snapshot operations with current control checks. They do not
+provide atomic transactions across source and control stores, serialize arbitrary
+root writers, or establish distributed GC safety. Native root IDs are exclusively
+owned and never reused. The test registry fixture substitutes runtime provisioning;
+it does not prove deployed filesystem provisioning.
+
+## Batch preparation and admission
+
+The batch input planner selects deterministic pending-order prefixes
+without the canonical view's 200-document body limit. Context is either the whole
+declared context selection or explicit named paths, with independent count/byte
+bounds; exceeding them holds rather than truncating. Ordinary workflow fixtures
+reserve both file slots and UTF-8 bytes. An oversized later source preserves the
+valid prefix; an oversized head holds for an explicit decision.
+
+A version-2 HOST envelope binds stream/cursor/item identity, context, limits and
+remaining count to the existing version-1 exact frozen-evidence format. That
+format already supports explicit subsets; it is not a live progress cursor.
+Envelope hashes and byte verification confer no authority to claim a live stream.
+The source cursor pin must remain retained until the HOST has durably frozen the
+inputs, and while the active batch prevents discovery from advancing it.
+
+The internal HOST preparation requires an explicit `input-batching.edn` sidecar
+containing `{:version 2 :epoch #uuid "..." :policy {...}}`. It validates opt-in
+before discovery effects, claims before copying source bodies, and verifies the
+durably retained artifact before returning resource-independent data. It freezes
+complete wiki publication occupancy from that same pinned snapshot, including
+excluded and non-Markdown targets. Deterministic occupancy bounds are checked
+before claiming. Active retries revalidate bounded workflow/fixture source but
+never recapture evidence/context; unknown claim/freeze acknowledgements hold.
+This preparation does not submit a request or grant dispatch ownership.
+
+Source-backed output proposals require retained admission-time BEFORE bytes for
+existing wiki targets. A bounded context therefore limits edits to existing
+targets included in that context; omitted existing targets cannot be treated as
+absent. The separate publication basis still inventories all wiki occupancy.
+
+The batch journal provides `capturing -> ready -> submitted` fragments.
+Claiming compares the complete current stream, retained cursor-pin receipt, exact
+canonical pending prefix and remaining count, then sets the active hold and item
+claims together. Freeze attaches the HOST-verified artifact. First request linkage
+must compose with canonical request insertion; it refuses a preexisting partial
+request. Historical replay requires the actual matching canonical request and
+cannot manufacture a replacement if that request is missing. These fragments are
+used only for explicitly opted-in workflows and do not mark any source processed.
+
+The owned-workflow adapter recognizes the explicit batching sidecar.
+It rejects case, parameter, and input overrides before discovery effects. It
+retains the original App operation, uses short original-Room extents for source
+reads and target checks, and releases each source lease before provider
+preparation or execution. Preparation consumes the frozen evidence and complete
+publication footprint read back from the verified artifact.
+
+Admission reuses the ordinary native Job lifecycle. One guarded serialized
+transaction inserts both the canonical request and the exact batch linkage.
+Only its acknowledged original claim winner may start a Job; a lost
+acknowledgement requires matching canonical receipts on both sides. The actual
+submission must equal the retained intent, including its request ID and limits.
+Original App/Room liveness, current human authority, and default mapping are
+checked again at the writer and native handoff. App/Room owner handles are
+removed before retaining execution and settlement closures.
+
+Exact workflow retries verify retained intent integrity. Batch retries also
+verify frozen bytes, typed request markers, and both sides of the original
+linkage without opening current source files or preparing providers. A provider
+preparation failure leaves a ready batch held for explicit recovery; it does
+not silently recapture or dispatch a replacement. An interrupted post-claim
+handoff leaves an interrupted request with its exact batch linkage intact.
+Successful Job completion alone does not mark sources processed.
+
+Certified filing now composes the existing hashed disposition and optional
+retained-file Proposal with the exact batch transition. The disposition includes
+the batch identity, and the writer compares the original verified batch's
+immutable row, including artifact references and claim/owner/request fields.
+The complete selected-item membership is checked through a bounded batch index;
+context and later pending items cannot be processed accidentally.
+
+A certified no-op marks precisely those selected items processed, closes the
+batch, and clears only its own active pointer. A proposed update keeps the batch
+in review and its selected items claimed. Historical and lost-acknowledgement
+replays require the whole joint receipt; partial states are refused rather than
+repaired. An exact closed no-op replay leaves a later active batch untouched.
+
+Accepted proposals close their batch only in the existing original-publisher
+finalization or explicitly authorized recovery transaction, after observing the
+original scoped winning native publication receipt. The disposition stays
+`proposed`; the batch records `accepted` and the adoption operation UUID. Exact
+selected items become processed together with adoption, component, and Proposal
+acceptance. Requester, adopting reviewer, and recovery actor remain distinct.
+
+Historical verification requires the complete accepted journal/component/
+Proposal linkage, canonical filing hash, batch closure, and exact item states.
+A bare accepted Proposal, partial batch transition, unrelated adoption link, or
+missing immutable acknowledgement cannot manufacture success. Explicit recovery
+observes the original native receipt; it does not repeat publication. Replays
+preserve a later active batch.
+
+Guarded retained-file withdrawal atomically closes the batch with outcome
+`dismissed`, marks only its selected items `skipped`, and clears its own active
+pointer. Skipped is not incorporated knowledge. The same source version stays
+skipped through later discovery; new content remains eligible. A deliberate
+revisit requires a future explicit requeue or new epoch, rather than an automatic
+retry loop. Requesting changes adds a comment and keeps the batch in review.
+
+Dismissal reuses existing Proposal/component decision facts and retains their
+filing hash as a scalar batch binding. Historical checks verify the complete
+joint decision and any matching absent/aborted publication history. Unresolved
+publication prevents withdrawal. Author withdrawal retains its original
+permissions and does not gain a merge requirement.
+
+Browser decisions capture the original App and authenticated party before
+queuing blocking work. Fresh decisions authorize the exact action and check App
+readiness before bounded control-artifact reads, repeat authority/liveness in the
+writer, and validate the joint immutable acknowledgement. They use one captured
+control connection and need no Room hydration or target/source lease. A lost
+acknowledgement remains uncertain; historical inspection does not manufacture
+success for the original invocation. In contrast, recording an already observed
+native publication may finish under its retained original App operation after
+shutdown has fenced new work.
+
+A deterministic, model-free runtime test exercises actual owned admission,
+world fork/setup, evaluation, durable Attempt certification, and no-op filing
+with discard settlement. Provider preparation and registry-to-memory provisioning
+remain fixture seams; this does not prove a provisioned deployment or scheduled
+backlog drain.
+Separate proposed-output fixtures substitute Attempt certification while testing
+real canonical-memory provisioning, native scoped publication, joint acceptance,
+lost acknowledgements, and positive receipt recovery.
+
+Manual and scheduled invocation now share frozen preparation and native request
+admission. Unlinked capturing/ready batches support explicit abandonment or
+requeue, and clean streams support retirement as described below. Recovery for
+linked failed batches and public recovery controls remain separate work. Pending
+proposals hold the next batch. Benchmarks use explicit frozen cases and must
+never claim or advance a live stream. No default schedule is enabled by this
+foundation.
+
+### Owned scheduler lifetime boundary
+
+The owned scheduler uses the same original App operation for activation,
+recovery, and each dispatcher pass. The runtime releases that operation before
+waiting for the next clock wake. The clock supplies a wake signal; the activation
+and occurrence rows remain the durable semantic state. A timer callback does not
+itself run a workflow or grant execution authority.
+
+Each pass captures an original Room incarnation. Native source, snapshot,
+selection, capture, balance, Job, and Attempt reads use short preparation extents
+which retain that Room through physical I/O completion. Current App, Room, and
+human authority checks surround those extents. Provider preparation and native
+work submission run after releasing the source extents, so a workflow can fork
+without competing with its own admission lease.
+
+Completion has two phases: certify and file under the native read extent, then
+release that extent before posting completion or proposal messages. Manual owned
+output collection follows the same rule. Subscribers may react as soon as a
+message becomes visible, including by forking a child world. Holding a preparation
+lease across the post would make that fork fail its quiescence check and could
+lose the reaction. Native posting supplies its own durable-write and Room-close
+ordering; it needs no preparation lease. Notifications retain the captured Room
+rather than resolving a replacement. The App and Room are checked again before
+each post, since a completion observer can retire the App before proposal
+notification begins. A causal interruption remains an interruption, with the
+pending publication intent available for explicit retry.
+
+These are host effect boundaries around the existing Spindel/Dvergr computation,
+not a second workflow executor. They do not make the host clock forkable or
+provide automatic retry for every unrelated concurrent preparation operation.
+The incremental batch-to-occurrence binding now uses this same lifetime boundary.
+Ordinary owned schedules retain their prior behavior. No new live schedule is
+enabled by these internal changes.
+
+### Scheduled batch binding
+
+The `knowledge-schedule-batches` model retains a separately
+versioned occurrence artifact pointing to the existing selection and frozen
+evidence, with typed occurrence-to-batch columns. Its fixed request fragment is
+composed by native batch admission and owned dispatcher selection. Its schema
+is installed in the private application control store. It must not reuse the legacy scheduled-input
+fingerprint or `last-processed-input`: those record certified filing for the
+older whole-selection path, not an incremental discovery cursor.
+
+The binding must have a unique reverse lookup from batch to occurrence. Before
+request insertion, the fixed writer must compare the activation's owner, Room,
+revision and retained deployment reference; the admitting occurrence's claim and
+active pointer; and the ready batch's exact artifacts and stream hold. A pause
+may withdraw pending work, but does not invalidate an admission which already
+owns its claim. Changed claims, revisions or active pointers do invalidate it.
+The first retention acknowledgement is required to continue dispatch. Finding
+an identical artifact or row after uncertainty does not recreate that ownership.
+
+The request fragment consults the reverse binding from the actual
+request row and requires its batch markers to agree with the intent, including
+when the intent omits its schedule marker. Native batch-claim composition now
+invokes this fragment unconditionally. Dropping that marker must not
+turn a reserved scheduled batch into a manual request. Deployment artifacts are
+bounded and verified before entering the writer; only inert identity facts and
+pure comparisons belong in the serialized transition.
+
+The first request fragment jointly records the occurrence request pointer with
+canonical request insertion and batch linkage, leaving the occurrence admitting
+until ordinary native reconciliation. Its historical metadata check requires
+all three links; neither a partial link nor an identical first-claim replay can
+repair the relationship or grant dispatch ownership.
+
+Historical reconciliation is a different check from fresh admission. It verifies
+the original deployment, occurrence, canonical request, and complete batch
+linkage without opening today's source or requiring a now-closed batch to be
+ready again. A missing half of that relationship remains held. A completed
+occurrence may have a proposed filing whose batch is still in review. Later due
+occurrences skip a busy stream before provider preparation; acceptance processes
+its selected versions, while dismissal skips them. Neither result is inferred
+from Job completion alone.
+
+
+Original deployment verification uses bounded control artifacts and the binding's
+retained target reference and revision. Source bytes, UTF-8, paths, blob IDs,
+manifest order, bundle and source identities share the ordinary owned-schedule
+validator. The additional scheduled proof checks the exact default invocation,
+original limits, source, creation channel and markers. Historical filing and
+recovery use this through the existing batch proof reader; they do not load
+current source, provider configuration, model installations or host policy.
+
+The native handoff keeps the verified binding anchor only during admission.
+Before starting a Job and again inside its synchronous admission callback, it
+checks original App/Room authority, claim/active ownership, and the complete
+original request/batch/occurrence linkage. A deleted link cannot be mistaken for
+the valid pre-claim absence of a request pointer. These checks do no artifact I/O
+inside the writer or native callback. Owner and admission-anchor fields are
+removed before retaining deferred execution and settlement closures.
+
+Model-free tests now exercise actual frozen source, original deployment artifacts,
+the fixed native claim composition, historical proof after a newer deployment,
+and real native Job start/settlement. Altering the claim or deleting/corrupting
+joint linkage at the Job boundary prevents the body from starting. Disposable
+native echo tests now drain two bounded batches and then skip empty; scripted
+provider/SCI tests file a proposal, hold the stream for review, dismiss it, and
+process the next prefix. Recovery for linked batches remains pending. Application
+startup uses the existing single owned scheduler; this installs no default
+schedule or execution allowance.
+
+Certified candidate failure is staged under the native read extent, then reconciled
+from its captured immutable outcome only after completion announcement is durable.
+The guarded failure writer compares typed batch-binding fields as well as legacy
+input facts. A failed candidate therefore disables its activation and clears its
+slot on the first completion pass, without advancing processing or rereading an
+Attempt after notification. Scripted shipped-workflow tests cover actual native
+certification and first-pass failure, alongside successful no-op and proposal paths.
+
+
+The dispatcher checks an exact historical request before discovery or provider
+preparation. A retained binding without the original positive acknowledgement
+and complete canonical request remains held; a later pass cannot recapture or
+reissue it. A fresh admission checks current model/host policy, invocation shape,
+and finite Room allowance before reserving the shared stream. For this alpha,
+stale or unfunded activations hold before learning whether input is busy/empty.
+The same checks repeat before preparation. The current named source must match
+the retained deployment at discovery and after potentially blocking provider
+preparation; execution still consumes the retained source and frozen evidence.
+
+Only explicit, structurally valid busy/empty outcomes skip. Busy observation uses
+one control snapshot for both stream and batch, refusing closed or partial holds.
+The skip transaction verifies the original activation identity, revision, claim
+and active pointer, plus absence of request, batch-binding and legacy input state.
+It clears only that slot and preserves enabled/paused state and processing data.
+A lost skip acknowledgement cannot overwrite the committed skip or disable the
+activation. Concurrent manual/scheduled preparation shares one active stream.
+
+Batch completion is mandatory when the retained deployment declares batching,
+even if mutable markers have disappeared. Filing updates selected items through
+the canonical processing receipt and never calls the legacy input-cursor writer.
+A proposed filing completes the occurrence while holding the stream in review;
+later due occurrences skip busy. Acceptance processes the selected versions;
+dismissal skips them. A later normal occurrence may then take the next prefix.
+
+Manual incremental admission checks an exact canonical request before any fresh
+source, model or allowance reads. Fresh admission preserves native model aliases,
+checks dispatch-accounted model eligibility and both requested allowance dimensions
+before discovery, then repeats readiness before provider preparation. Balance
+reads hold a short original-Room extent that ends before discovery or execution.
+These checks prevent predictable unfunded holds; they do not reserve resources.
+Concurrent consumption and later failures still require the existing native
+allocation checks and explicit recovery. Known allowance/model refusals have
+bounded actionable messages; opaque helper errors remain unavailable.
+
+```mermaid
+flowchart LR
+  Manual[Manual invocation] --> Stream[Shared discovery stream]
+  Clock[Clock wake] --> Occurrence[Durable due occurrence]
+  Occurrence --> Stream
+  Stream --> Frozen[Claim and freeze bounded prefix]
+  Frozen --> Claim[Joint request / batch / occurrence]
+  Claim --> Job[Native Job and forked Run]
+  Job --> Attempt[Certified Attempt]
+  Attempt --> Filing[Canonical filing]
+  Filing -->|no-op| Processed[Selected versions processed]
+  Filing -->|proposed| Review[Review hold]
+  Review -->|accepted| Processed
+  Review -->|dismissed| Skipped[Selected versions skipped]
+```
+
+Explicit recovery supports abandoning an unlinked `capturing` or frozen `ready`
+batch and skipping its selected source versions. This is a deliberate decision
+by a currently authorized Room merger, recorded with a stable operation ID,
+actor, reason and original timestamp. It neither retries the old Run nor changes
+budgets. Submitted, review and uncertain adoption states are refused.
+
+The HOST operation captures the original App and Room, acquires the original
+stream author's physical discovery gate, and verifies retained frozen evidence.
+The serialized control writer rechecks current merge authority, exact immutable
+batch binding, bounded claimed membership, and absence of a canonical request in
+both directions. It closes the batch, skips only its selected items and clears
+only its active stream pointer in one transaction. Discovery cursors and retained
+source roots remain intact.
+
+Capturing recovery is a separate inspected operation. It verifies the retained
+selection and original pin payload without requiring nonexistent frozen bytes or
+opening a historical source root. Both frozen attributes and any scheduled
+binding must be absent, in the writer as well as at inspection. The same physical
+publisher gate spans body reads, artifact publication and freeze acknowledgement;
+a cancelled future does not release it while its underlying operation continues.
+If a freeze committed but its acknowledgement was lost, capturing recovery
+refuses: the caller must inspect and explicitly choose ready recovery. A failed
+publication's unreferenced artifact remains ordinary artifact-GC work.
+
+Evidence validation shares a metadata-only manifest/selection validator and a
+separate frozen-byte validator. The latter still checks exact copied membership,
+content hashes, actual UTF-8 input sizes with ordinary workflow reservations, and
+the original publication target. Equal Clojure values do not imply equal serialized
+byte sizes. Metadata consistency alone never grants source or dispatch authority.
+
+Scheduled batches have reciprocal occurrence/batch links installed atomically.
+Recovery verifies the original occurrence's complete retained origin before
+jointly skipping that occurrence and clearing its matching activation slot.
+It preserves the schedule's enabled or paused state. Late admission failures and
+startup reconciliation use conditional writer checks; they cannot overwrite the
+withdrawal or disable a later occurrence.
+
+Repeating the same recovery intent observes its original result without writing.
+It rejects changed reasons, partial terminal records, request links or conflicting
+adoption records, and leaves later stream and schedule work untouched. A lost
+acknowledgement remains an error until the caller explicitly repeats that intent.
+Recovery does not resume a disabled schedule. Capturing batches have no installed
+scheduled binding, so recovery does not infer or repair their unbound occurrences.
+Explicit requeue is also available for either unlinked phase. Submitted recovery
+remains separate work. These alpha operations are
+not yet exposed or activated in the running UI.
+
+Requeue closes the old batch with an `abandoned-requeue` audit, restores the exact
+selected items to the pending index, removes their old batch associations, clears
+only the old stream hold, and increments `batch-generation` once in that same
+transaction. It preserves item order, discovery revision, source cursor/root,
+workflow identity and budget state. The complete expected stream belongs to the
+selection digest, so unchanged source versions now have a new batch identity.
+
+| Identity or counter | Meaning | Changes on requeue? |
+| --- | --- | --- |
+| Revisit epoch | Deliberate semantic revisit of source history | No |
+| Discovery revision | Published source-journal progress | No |
+| Batch generation | Explicitly restored eligibility after abandonment | Once |
+| Request / Run | A separate admitted execution | No execution is started |
+
+Requeue restores eligibility; it does not promise another execution of the old
+frozen bytes. The next invocation goes through ordinary discovery, fresh selection
+and admission. New source content can supersede or remove those versions before
+they run. The old batch and its frozen artifacts remain historical evidence.
+
+The old batch's atomic typed audit and retained selection form its recovery
+receipt. A repeated identical intent checks generation-before/after arithmetic,
+the current generation's monotonicity, absent old request/resolution links, no
+remaining items owned by the old batch, and any completed scheduled withdrawal.
+It performs no mutations, even when later discovery changes item order/state or
+another batch claims them. Conflicting decisions and exhausted generation bounds
+are held. This relies on canonical writers and atomic transactions; matching
+hashes do not authenticate arbitrarily fabricated database records.
+
+Generation is required in this alpha's stream snapshots. Old private
+development snapshots need a fresh alpha home; this work adds no migration layer.
+
+Clean stream retirement has a separate `active → retiring → retired` lifecycle.
+It requires no active batch, claimed or pending items, stranded pending index,
+or unresolved pin intent. The exact cursor pin and its discovery must agree.
+Begin atomically records the decision and immutable binding hashes on that pin
+and fences the stream. Fresh discovery, pin creation, batch claims and requeue
+cannot cross that fence. Historical artifact readers and exact no-op replays
+remain available.
+
+The HOST cleanup uses current room merge authority and the original author's
+physical discovery gate. It resolves the original registered source from retained
+pin metadata, independently of current defaults. Native cleanup verifies the exact
+root record and owner before release, and repeats original App/Room and current
+actor checks after blocking verification, immediately before the effect. Revocation
+or fencing before release leaves the root present. Interruption during an already
+started release can leave the root absent and a durable retiring intent.
+
+Recovery of that intent verifies the original physical store and canonical audit.
+If its registry entry is absent, it does not reopen the old checkpoint or recreate
+the root: source GC may already have collected it. Only confirmed absence permits
+the final transaction marking the pin released and stream retired. An authorized
+new merger may finish cleanup while preserving the original audit author. Finished
+replay needs no original source lookup. Cursor facts, generation and control-side
+selection/frozen references remain as historical evidence.
+
+Retirement fences this stream identity; it does not retire all future streams on
+the repository or claim distributed GC safety. Pending backlog disposal and
+independently replaced stores require separate policies.
+
+The explicit `is.simm.ops.knowledge-retirement-gc-probe` runs `prepare`, `release`
+and `verify` in three JVMs against a fresh disposable manifest path:
+
+```sh
+clj -M:browser-tests -m is.simm.ops.knowledge-retirement-gc-probe prepare /tmp/simmis-retirement-proof/proof.edn
+clj -M:browser-tests -m is.simm.ops.knowledge-retirement-gc-probe release /tmp/simmis-retirement-proof/proof.edn
+clj -M:browser-tests -m is.simm.ops.knowledge-retirement-gc-probe verify /tmp/simmis-retirement-proof/proof.edn
+```
+
+It uses canonical pin/journal/batch helpers and real file-store GC, injects a lost
+release ACK, and checks historical frozen evidence after source and control GC.
+Fixture-only pruning of an unreferenced logical content entity makes old payload
+collection a positive observable result; this adds no production Geschichte
+pruning policy. This is a model/native GC proof, complemented by separate HOST
+authorization/lifetime tests. It does not prove persistent HOST registry
+reconstruction or public runtime activation. The probe is outside ordinary test
+discovery and invokes no models.

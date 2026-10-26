@@ -1,5 +1,6 @@
 (ns is.simm.ci-runner
-  "Exhaustive namespace partitioning for isolated CircleCI containers."
+  "Exhaustive namespace partitioning for isolated CI JVMs. CI providers map
+   their partition coordinates to the existing CIRCLE_NODE_INDEX/TOTAL inputs."
   (:refer-clojure :exclude [run!])
   (:require [clojure.java.io :as io]
             [kaocha.config :as config]
@@ -14,10 +15,10 @@
     (do
       (when-not (and (string? index) (re-matches #"[0-9]+" index)
                      (string? total) (re-matches #"[0-9]+" total))
-        (throw (ex-info "Both CircleCI partition coordinates must be decimal integers" {})))
+        (throw (ex-info "Both CI partition coordinates must be decimal integers" {})))
       (let [i (parse-long index) n (parse-long total)]
         (when-not (and i n (pos? n) (< i n))
-          (throw (ex-info "Invalid CircleCI partition coordinates" {:index i :total n})))
+          (throw (ex-info "Invalid CI partition coordinates" {:index i :total n})))
         [i n]))))
 
 (defn partition-namespaces [names index total]

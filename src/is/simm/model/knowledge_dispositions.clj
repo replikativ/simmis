@@ -12,6 +12,7 @@
   (mapv (fn [[ident type]]
           {:db/ident ident :db/valueType type :db/cardinality :db.cardinality/one})
         [[:knowledge.disposition/id :db.type/uuid]
+         [:knowledge.disposition/batch :db.type/uuid]
          [:knowledge.disposition/version :db.type/long]
          [:knowledge.disposition/request :db.type/uuid]
          [:knowledge.disposition/intent :db.type/uuid]
@@ -29,7 +30,8 @@
    [:id :uuid] [:version [:= 1]] [:request :uuid] [:intent :uuid]
    [:job :uuid] [:candidate :uuid] [:attempt-content :uuid]
    [:basis :uuid] [:output :uuid] [:kind [:enum :proposed :no-op]]
-   [:manifest {:optional true} :uuid] [:proposal {:optional true} :uuid]])
+   [:manifest {:optional true} :uuid] [:proposal {:optional true} :uuid]
+   [:batch {:optional true} :uuid]])
 
 (defn- refuse! [reason]
   (throw (ex-info "Knowledge filing disposition is invalid"
@@ -76,8 +78,11 @@
    or certify the artifact. Pass the projection to tx-data for writer-side
    comparison; do not reconstruct a fresh binding after preparing a filing."
   [row]
-  (let [binding (select-keys row binding-keys)]
-    (when-not (and (= (set binding-keys) (set (keys binding)))
+  (let [markers [:work.request/knowledge-batch :work.request/knowledge-frozen]
+        binding (select-keys row (into binding-keys markers))]
+    (when-not (and (= (set binding-keys) (set (keys (apply dissoc binding markers))))
+                   (or (not-any? #(contains? binding %) markers)
+                       (every? uuid? (map binding markers)))
                    (every? uuid? (map binding
                                       [:work.request/id :work.request/client-id :work.request/by
                                        :work.request/room :work.request/intent-id
@@ -102,9 +107,10 @@
         (select-keys row disposition-keys)))
 
 (defn- matches-request? [binding value]
-  (= [(:request value) (:intent value) (:job value) (:basis value)]
-     (mapv binding [:work.request/id :work.request/intent-id
-                    :work.request/job :work.request/publication-basis-id])))
+  (and (= [(:request value) (:intent value) (:job value) (:basis value)]
+          (mapv binding [:work.request/id :work.request/intent-id
+                        :work.request/job :work.request/publication-basis-id]))
+       (= (:batch value) (:work.request/knowledge-batch binding))))
 
 (defn disposition
   "Read the typed receipt from a canonical request row. Partial/corrupt rows

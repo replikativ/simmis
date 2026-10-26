@@ -2,7 +2,7 @@
   "Fixed original-host knowledge output collection and root-job descriptors.
    No inference, arbitrary Attempt selection, source recapture or file adoption."
   (:require [datahike.api :as d]
-            [dvergr.runtime.preparation :as preparation]
+            [is.simm.ops.owned-room-operation :as room-operation]
             [is.simm.ops.file-output-adoption :as adoption]
             [is.simm.ops.knowledge-filing :as filing]
             [is.simm.ops.knowledge-publish :as publish]
@@ -63,15 +63,18 @@
            room (:room resolved)]
        (when-not conn (refuse!))
        (binding [ec/*execution-context* (:execution-ctx host)]
-         (preparation/with-host-operation!
-          room
-          (fn [lease]
-            (lifetime/check-current!)
-            (preparation/with-host-current! lease (constantly true))
-            (header! (reads/current-host-control-db! host) principal room-id request-id)
-            (reads/validate-host-room! host principal (str room-id) resolved)
-            (wire-result request-id
-                         (publish/file-completed-request! conn principal room-id room request-id)))))))))
+         (let [value (room-operation/with-current!
+                      host principal (str room-id) resolved
+                      (fn []
+                        (header! (reads/current-host-control-db! host) principal room-id request-id)
+                        (publish/file-completed-request-unannounced! conn principal room-id room request-id)))]
+           ;; A proposal observer can fork immediately after native visibility.
+           ;; Finish all source/Attempt leases before that message is posted.
+           (lifetime/check-current!)
+           (header! (reads/current-host-control-db! host) principal room-id request-id)
+           (reads/validate-host-room! host principal (str room-id) resolved)
+           (publish/announce-filed-original! conn principal resolved value)
+           (wire-result request-id value)))))))
 
 (defn- job-request! [db job-id]
   (let [matches (d/q '[:find [?id ...] :in $ ?job

@@ -14,11 +14,18 @@ concurrency:
 
 jobs:
   backend-tests:
+    name: backend-tests (${{ matrix.partition }})
     runs-on: ubuntu-latest
-    # The full backend gate already takes ~30 minutes including dependency
-    # preparation (PR70: 29m53s). Leave bounded headroom for setup/runtime
-    # variance; do not drop tests or hide individual assertion failures.
+    # The serial suite exceeded 45m while tests were still progressing.
+    # Reuse CircleCI's exhaustive namespace partitioner and preserve all tests.
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: ["0", "1"]
+    env:
+      CIRCLE_NODE_INDEX: ${{ matrix.partition }}
+      CIRCLE_NODE_TOTAL: "2"
 
     steps:
       - uses: actions/checkout@v6
@@ -60,7 +67,7 @@ jobs:
         run: clojure -X:deps prep
 
       - name: Run backend tests
-        run: clojure -X:test :reporter kaocha.report/documentation
+        run: clojure -X:test is.simm.ci-runner/run! :reporter kaocha.report/documentation
 
   helper-tests:
     runs-on: ubuntu-latest

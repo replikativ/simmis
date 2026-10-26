@@ -7,6 +7,7 @@
             [datahike.api :as d]
             [hasch.core :as hasch]
             [is.simm.model.knowledge-publication :as publication]
+            [is.simm.model.file-outputs :as manifests]
             [malli.core :as m]))
 
 (def schema
@@ -226,6 +227,43 @@
     (let [row (checked-history db fork link-installed?)]
       (when-not (= :accepted (:state row)) (refuse! :journal-not-accepted))
       row)))
+
+(defn withdrawn-operation
+  "INTERNAL terminal metadata only: a dismissed file component may retain an
+   absent or aborted publication history, never a claimed/applying/accepted one.
+   No authorization, native negative inference or ownership recovery occurs."
+  [db fork-eid]
+  (let [{:keys [fork link-installed?]} (operation-fork db fork-eid)]
+    (when-not (and (:db/id fork) (= :file-output (:proposal.fork/system-type fork))
+                   (uuid? (:proposal.fork/scope fork)) (= :dismissed (:proposal.fork/status fork)))
+      (refuse! :component-not-dismissed))
+    (let [row (checked-history db fork link-installed?)]
+      (when (and row (not= :aborted (:state row))) (refuse! :publication-not-withdrawn))
+      row)))
+
+(defn terminal-facts!
+  "INTERNAL historical integrity of the complete joint acceptance. This does
+   NOT observe a native publication receipt, authorize a caller or complete a
+   partial transition. Original publishers and recovery observe native receipts
+   separately before composing acceptance; readers may only verify its result."
+  [db expected]
+  (validate! expected)
+  (let [{:keys [proposal component room actor updated-at]} expected
+        owner (manifests/owner db component)
+        fork-eid (:fork-eid owner)
+        p (when owner (d/pull db [:proposal/id :proposal/status :proposal/resolved-by :proposal/resolved-at :proposal/filing-hash]
+                                  (:proposal-eid owner)))
+        f (when owner (d/pull db [:proposal.fork/status :proposal/resolved-by :proposal/resolved-at] fork-eid))]
+    (when-not (and owner (= :accepted (:state expected))
+                   (= [proposal room] [(:proposal owner) (:room owner)])
+                   (= expected (accepted-operation db fork-eid))
+                   (= proposal (:proposal/id p))
+                   (= (:filing expected) (:proposal/filing-hash p))
+                   (= :accepted (:proposal/status p) (:proposal.fork/status f))
+                   (= actor (:proposal/resolved-by p) (:proposal/resolved-by f))
+                   (= updated-at (:proposal/resolved-at p) (:proposal/resolved-at f)))
+      (refuse! :terminal-facts-mismatch))
+    {:operation expected :proposal proposal :status :accepted :fork-eid fork-eid}))
 
 (defn claim-tx-data
   "INTERNAL pure writer composition. Existing claimed/applying/accepted rows,

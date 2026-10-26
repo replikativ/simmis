@@ -296,6 +296,10 @@
          (preserve-interruption! error)
          (let [[status kind message]
                (case (:type (ex-data error))
+                 :is.simm.ops.owned-workflow-admission/model
+                 [400 ::owned-model-unavailable "Select an available model with native dispatch accounting"]
+                 :is.simm.ops.owned-workflow-admission/allowance
+                 [409 ::owned-room-allowance "This room needs more execution allowance before running this workflow"]
                  (:is.simm.ops.owned-workflow-admission/invalid
                   :is.simm.ops.owned-benchmark-admission/invalid
                   :is.simm.ops.owned-worker-admission/invalid

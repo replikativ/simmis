@@ -5,6 +5,7 @@
             [dvergr.ops :as dops]
             [is.simm.agents.room-agents :as rooms]
             [is.simm.authority.world :as world]
+            [is.simm.authority.application-fixture :as application-fixture]
             [is.simm.model.workers :as workers]
             [is.simm.ops.owned-worker-admission-test :as owned-fixture]
             [is.simm.ops.owned-worker-admission :as owned]
@@ -21,6 +22,8 @@
     (@#'owned-fixture/with-worker
      order
      (fn [{:keys [conn w room worker] :as data}]
+      (application-fixture/with-application conn (:ctx room)
+       (fn [_]
        (let [previous (dops/operations)
              principal (ops/party-principal (:owner w))
              internal ((:request data) :local-worker-workflow)
@@ -90,4 +93,4 @@
            (finally
              (doseq [op (keys control/specifications)]
                (if-let [spec (get previous op)] (dops/register-op! op spec) (dops/unregister-op! op)))
-             (server/sync-op-tools!))))))))
+             (server/sync-op-tools!))))))))))

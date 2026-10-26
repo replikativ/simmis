@@ -3,6 +3,7 @@
    task, one inherited room fork, the existing bounded-work runner/evaluator."
   (:require [clojure.string :as str]
             [dvergr.agent.environment :as environment]
+            [dvergr.artifact :as artifact]
             [dvergr.agent.evaluation :as evaluation]
             [dvergr.catalog.room :as catalog]
             [dvergr.catalog.workspace :as workspace]
@@ -12,6 +13,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.work :as work]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
+            [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.ops.knowledge-admission :as knowledge-admission]
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.ops.knowledge-outputs :as knowledge-outputs]
@@ -333,16 +335,51 @@
            :basis (assoc (:basis prepared) :submission input :environment env
                          :source source :inputs inputs :workflow workflow))))
 
+(defn prepare-frozen-batch
+  "Shared fixed manual/scheduled builder after original-owner and ready-proof
+   checks. Prepare ONLY verified frozen evidence and retained source. This
+   performs ordinary provider preparation, not a claim or execution. Native
+   owner data remains outside the persisted basis and is rechecked by work."
+  [snapshot input proof mapping owner]
+  (let [{:keys [frozen source-origin origin]} proof
+        prepared (bind-publication
+                  (prepare snapshot (dissoc input :expected-owned-source) (:captured frozen))
+                  (select-keys frozen [:captured :publication-basis]))
+        prepared (-> prepared
+                     (assoc-in [:basis :submission] input)
+                     (assoc-in [:basis :knowledge/batch] origin)
+                     (assoc-in [:basis :knowledge/batch-control] {:mapping mapping})
+                     (assoc-in [:basis :source-origin]
+                               {:revision (:source-revision source-origin) :target-stamp (:target-stamp source-origin)
+                                :target (:target source-origin) :manifest (:manifest snapshot)})
+                     (assoc :knowledge/owner owner))]
+    (batch-proof/verify-input! proof (:basis prepared))
+    prepared))
+
 (defn retry-request
   "HOST workflow journal comparison only. NORMAL conflict is data, not an
    exception classification. No authorization, source, provider or hydration."
   [conn party room-id input]
   (let [id (requests/request-id party room-id (:request-id input))]
     (if-let [row (requests/get-request conn id)]
-      {:status (if (and (= :workflow (:work.request/kind row))
-                        (= input (get-in (requests/payload conn row) [:input :submission])))
-                 :retry :conflict)
-       :id id}
+      (let [retained (:value (artifact/get-bounded-value (artifact/datahike-store conn)
+                                                        (:work.request/payload-ref row) (* 128 1024 1024)))
+            batch? (or (:work.request/knowledge-batch row) (:work.request/knowledge-frozen row)
+                       (contains? (:input retained) :knowledge/batch)
+                       (contains? (:input retained) :knowledge/batch-control))]
+        ;; Submission equality alone is no proof of retained request integrity.
+        ;; Batch retries additionally need both canonical sides of the receipt,
+        ;; without consulting today's source, default repository or provider.
+        (when-not (and (= (:work.request/intent-id row) (hasch/uuid retained))
+                       (= (:work.request/kind row) (:kind retained))
+                       (= id (requests/request-id (:work.request/by row) (:work.request/room row)
+                                                  (:work.request/client-id row))))
+          (invalid! "Retained workflow request integrity failed"))
+        (when batch? (batch-proof/request! conn row retained))
+        {:status (if (and (= :workflow (:work.request/kind row))
+                          (= input (get-in retained [:input :submission])))
+                   :retry :conflict)
+         :id id})
       {:status :absent})))
 
 (defn submit!

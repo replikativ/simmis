@@ -7,6 +7,7 @@
             [geschichte.repo :as repo]
             [is.simm.agents.room-agents :as rooms]
             [is.simm.authority.world :as world]
+            [is.simm.authority.application-fixture :as application-fixture]
             [is.simm.model.access :as access]
             [is.simm.model.system-db :as system-db]
             [is.simm.ops.dvergr :as ops]
@@ -38,7 +39,10 @@
           (reset! calls []))))))
 
 (defn- with-api [f]
-  (let [previous (dops/operations)]
+  (application-fixture/with-application
+   (system-db/get-conn) context/server-context
+   (fn [_]
+    (let [previous (dops/operations)]
     (try
       (api/install!)
       (f)
@@ -47,7 +51,7 @@
           (if-let [spec (get previous op)]
             (dops/register-op! op spec)
             (dops/unregister-op! op)))
-        (server/sync-op-tools!)))))
+        (server/sync-op-tools!)))))))
 
 (deftest browser-discovery-source-and-saves-use-the-authenticated-room-on-every-call
   (doseq [order [true false]]

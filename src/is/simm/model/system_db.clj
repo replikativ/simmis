@@ -26,6 +26,13 @@
             [dvergr.system.db :as sdb]
             [is.simm.model.work-requests :as work-requests]
             [is.simm.model.knowledge-dispositions :as knowledge-dispositions]
+            [is.simm.model.knowledge-streams :as knowledge-streams]
+            [is.simm.model.knowledge-pins :as knowledge-pins]
+            [is.simm.model.knowledge-batches :as knowledge-batches]
+            [is.simm.model.knowledge-processing :as knowledge-processing]
+            [is.simm.model.knowledge-batch-recovery :as knowledge-batch-recovery]
+            [is.simm.model.knowledge-schedule-batches :as knowledge-schedule-batches]
+            [is.simm.model.knowledge-stream-retirement :as knowledge-stream-retirement]
             [is.simm.model.file-outputs :as file-outputs]
             [is.simm.model.file-adoptions :as file-adoptions]
             [is.simm.model.workflow-schedules :as workflow-schedules]
@@ -720,10 +727,28 @@
     :db/cardinality :db.cardinality/one
     :db/doc "Preferred code syntax view: :clojure or :superficie"}])
 
+(defn- merge-schemas
+  "Keep declaration order, collapse identical attributes, reject drift."
+  [& groups]
+  (:ordered
+   (reduce (fn [{:keys [by-ident] :as result} attribute]
+             (let [ident (:db/ident attribute)]
+               (when-not (keyword? ident)
+                 (throw (ex-info "Invalid control schema attribute" {:type ::invalid-schema})))
+               (if-let [prior (get by-ident ident)]
+                 (if (= prior attribute)
+                   result
+                   (throw (ex-info "Conflicting control schema attribute" {:type ::schema-conflict :attribute ident})))
+                 (-> result (assoc-in [:by-ident ident] attribute) (update :ordered conj attribute)))))
+           {:by-ident {} :ordered []} (mapcat identity groups))))
+
 (def schema
   "Simmis control-plane extension attributes, including host work admission."
-  (into core-schema (concat work-requests/schema workers/schema workflow-schedules/schema
-                            file-outputs/schema file-adoptions/schema knowledge-dispositions/schema)))
+  (merge-schemas core-schema work-requests/schema workers/schema workflow-schedules/schema
+                 file-outputs/schema file-adoptions/schema knowledge-dispositions/schema
+                 knowledge-streams/schema knowledge-pins/schema knowledge-batches/schema
+                 knowledge-processing/schema knowledge-batch-recovery/schema
+                 knowledge-schedule-batches/schema knowledge-stream-retirement/schema))
 
 ;; =============================================================================
 ;; Migration: lift legacy :party/* rows onto the dvergr actor core

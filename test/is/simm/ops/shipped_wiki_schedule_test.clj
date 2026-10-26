@@ -24,7 +24,7 @@
             [is.simm.ops.knowledge-output-service :as output]
             [is.simm.ops.file-output-storage :as retained]
             [is.simm.ops.knowledge-outputs :as outputs]
-            [is.simm.ops.owned-mcp-test :as fixture]
+            [is.simm.ops.owned-schedule-fixture :as fixture]
             [is.simm.ops.owned-schedule-occurrences-test :as occurrence-fixture]
             [is.simm.ops.owned-workflows :as sources]
             [is.simm.ops.work :as work]
