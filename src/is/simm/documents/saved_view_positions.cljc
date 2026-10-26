@@ -44,3 +44,25 @@
                  (if (and node model (= 1 (count (:content model)))
                           (= (rich/normalize model) (some-> node rich/model rich/normalize)))
                    (paired node (first (:content model)) [index 0] entries) {}))) slots))))
+
+
+(defn rich-positions
+  "Full native document paths for exact saved fences in supported regions.
+   Account for every preceding model child, including unmapped source slots.
+   The native host must additionally verify its entire baseline correspondence."
+  [analysis {:keys [model regions]}]
+  (if-not (= :ready (get-in analysis [:semantic :status]))
+    {}
+    (let [paths (cells/region-paths model)]
+      (reduce merge {}
+              (for [[key region] regions
+                    :let [{:keys [path node]} (get paths key)]
+                    :when (and path
+                               (= (rich/normalize (:model region))
+                                  (rich/normalize {:type "doc" :content (:content node)})))]
+                (let [slots (:slots region)
+                      offsets (vec (reductions + 0 (map #(count (get-in % [:model :content])) slots)))]
+                  (into {} (map (fn [[slot-path entry]]
+                                  [(into (conj path (+ (nth offsets (first slot-path)) (second slot-path)))
+                                         (drop 2 slot-path)) entry]))
+                        (positions analysis slots))))))))
