@@ -185,12 +185,15 @@
       ;; Provider reservation wallets are not remaining Run balances.
       (resource/return! room id parent unused))))
 
-(defn- return-job! [conn host-ctx room row]
+(defn- return-job-resources! [room row]
   (binding [ec/*execution-context* (:ctx room)]
-    ;; A cancelled evaluation Spin can finish before its detached scorer and
-    ;; child cleanup. Join this job only, never another operation's cleanup.
+    ;; Logical cancellation is not a physical cleanup acknowledgement.
     (evaluation/await-cleanups-for! room (:work.request/job row) 30000)
-    (return-wallet! room (:work.request/job row) nil))
+    (return-wallet! room (:work.request/job row) nil)))
+
+(defn- return-job! [conn host-ctx room row]
+  ;; Boot recovery has already established that no live Job/adapter remains.
+  (return-job-resources! room row)
   (binding [ec/*execution-context* host-ctx]
     (requests/mark-returned! conn (:work.request/id row))))
 
@@ -203,7 +206,7 @@
      (when-not (identical? ticket lifetime/*ticket*) (invalid! "Batch handoff has no original App owner"))
      (lifetime/check-current!)
      (batch-control-current! conn host-ctx principal room-id room prepared
-                               (:control-db (reads/validate-host-room! host principal handle original)))))
+                             (:control-db (reads/validate-host-room! host principal handle original)))))
   ([conn host-ctx principal room-id room prepared db]
    (let [{:keys [host original ticket handle]} (:knowledge/owner prepared)
          target (get-in prepared [:basis :source-origin :target])
@@ -261,15 +264,15 @@
         (batch-admission-current! conn host-ctx principal room-id room prepared)
         (try
           (artifact/publish-value! (artifact/datahike-store conn) (:intent p)
-            (fn [ref]
-              (batch-admission-current! conn host-ctx principal room-id room prepared)
-              (d/transact conn
-                [[:db.fn/call (fn [db]
-                               (batch-admission-current! conn host-ctx principal room-id room prepared db)
-                               (let [row (assoc row :work.request/payload-ref ref)]
-                                 (vec (concat (scheduled/request-tx db anchor row intent)
-                                              (requests/claim-tx db row (:digest p))
-                                              (batches/request-tx db origin row (:digest p))))))]])))
+                                   (fn [ref]
+                                     (batch-admission-current! conn host-ctx principal room-id room prepared)
+                                     (d/transact conn
+                                                 [[:db.fn/call (fn [db]
+                                                                 (batch-admission-current! conn host-ctx principal room-id room prepared db)
+                                                                 (let [row (assoc row :work.request/payload-ref ref)]
+                                                                   (vec (concat (scheduled/request-tx db anchor row intent)
+                                                                                (requests/claim-tx db row (:digest p))
+                                                                                (batches/request-tx db origin row (:digest p))))))]])))
           (catch InterruptedException error
             (.interrupt (Thread/currentThread))
             (throw error))
@@ -308,12 +311,7 @@
             (batch-admission-current! conn host-ctx principal room-id room admission-prepared))
         journal (fn [f] (binding [ec/*execution-context* host-ctx] (f)))
         party (journal #(authorize! conn principal room-id))
-        settle! (fn [row]
-                  (return-job! conn host-ctx room row)
-                  ;; Host transport/physical-capacity cleanup is deliberately
-                  ;; AFTER the group's real completion and resource return.
-                  (when-let [settled! (:settled! prepared)]
-                    (settled! (:work.request/job row))))
+        construction-job (volatile! nil)
         {:keys [request claimed?]}
         (journal #(if (contains? (:basis prepared) :knowledge/batch)
                     (claim-batch-prepared! conn host-ctx principal room-id room input admission-prepared)
@@ -321,57 +319,81 @@
                      conn {:party party :room room-id :client-id (:request-id input)
                            :kind (or (:request-kind prepared) :task) :intent (:basis prepared)
                            :limits (update (:limits input) :settlement keyword)})))
-        id (:work.request/id request)]
+        id (:work.request/id request)
+        finish-row! (fn [job-id]
+                      (let [row (journal #(requests/get-request conn id))]
+                        (when-not (and (uuid? job-id) (= job-id (:id @construction-job))
+                                       row (= (:work.request/claim request) (:work.request/claim row))
+                                       (= (:work.request/intent-id request) (:work.request/intent-id row)))
+                          (invalid! "Job cleanup no longer has its canonical Request"))
+                        (cond
+                          (= job-id (:work.request/job row)) row
+                          (and (nil? (:work.request/job row))
+                               (not (:linked? @construction-job))
+                               (contains? #{:admitting :interrupted} (:work.request/state row))) nil
+                          :else (invalid! "Job cleanup has a different Request pointer"))))]
     (when claimed?
       (try
         (when (contains? (:basis prepared) :knowledge/batch)
           (batch-handoff-current! conn host-ctx principal room-id room admission-prepared request))
         (let [job-ctx (if-let [context! (:job-context! prepared)]
                         (context! request) (:ctx room))]
-          (jobs/start!
-           room {:kind (if (#{:benchmark :cli-benchmark :local-worker-benchmark} (:request-kind prepared)) :experiment :workflow)
-                 :ctx job-ctx :actor (:principal/actor principal)}
-           (fn [job-id]
-             (let [row (journal #(requests/record-job! conn id (:work.request/claim request) job-id))]
-               (try
-                 (when (contains? (:basis prepared) :knowledge/batch)
-                   (batch-handoff-current! conn host-ctx principal room-id room admission-prepared request))
-                 (binding [ec/*execution-context* (:ctx room)]
-                   (when-let [admit! (:admit! prepared)] (admit! job-id))
-                   (doseq [unit (or (:resource-units prepared)
-                                    [{:symbol resource/model-dispatches :name "Model dispatches" :precision 0}])]
-                     (resource/install-unit! room unit))
-                   (resource/allocate-run! room job-id nil (or (:resources prepared) (resources (:limits input))))
-                   (if-let [start! (:start! prepared)]
-                     (start! job-id)
-                     (evaluation/evaluate room (:team prepared) (:agent prepared)
-                                          (:environment prepared) (:evaluator prepared)
-                                          (merge (select-keys prepared [:protocol :world-setup :experiment-capabilities :delegation-policy])
-                                                 {:parent-run job-id :cleanup-group job-id
-                                                  :from (:principal/actor principal)
-                                                  :metrics {:requester-party party
-                                                            :submission-channel (or (:submission-channel prepared) :mcp)
-                                                            :execution-kind (or (:execution-kind prepared) :workflow-candidate)
-                                                            :request-id id}}))))
-                 (catch Throwable e
+          (lifetime/call-detached
+           (fn [within-operation!]
+             (jobs/start!
+              room {:kind (if (#{:benchmark :cli-benchmark :local-worker-benchmark} (:request-kind prepared)) :experiment :workflow)
+                    :ctx job-ctx :actor (:principal/actor principal)}
+              (fn [job-id]
+                (vreset! construction-job {:id job-id :linked? false})
+                (let [_ (within-operation! #(journal (fn [] (requests/record-job! conn id (:work.request/claim request) job-id))))]
+                  (vswap! construction-job assoc :linked? true)
+                  (try
+                    (when (contains? (:basis prepared) :knowledge/batch)
+                      (within-operation! #(batch-handoff-current! conn host-ctx principal room-id room admission-prepared request)))
+                    (binding [ec/*execution-context* (:ctx room)]
+                      (when-let [admit! (:admit! prepared)] (within-operation! #(admit! job-id)))
+                      (doseq [unit (or (:resource-units prepared)
+                                       [{:symbol resource/model-dispatches :name "Model dispatches" :precision 0}])]
+                        (resource/install-unit! room unit))
+                      (resource/allocate-run! room job-id nil (or (:resources prepared) (resources (:limits input))))
+                      (if-let [start! (:start! prepared)]
+                        (start! job-id)
+                        (evaluation/evaluate room (:team prepared) (:agent prepared)
+                                             (:environment prepared) (:evaluator prepared)
+                                             (merge (select-keys prepared [:protocol :world-setup :experiment-capabilities :delegation-policy])
+                                                    {:parent-run job-id :cleanup-group job-id
+                                                     :from (:principal/actor principal)
+                                                     :metrics {:requester-party party
+                                                               :submission-channel (or (:submission-channel prepared) :mcp)
+                                                               :execution-kind (or (:execution-kind prepared) :workflow-candidate)
+                                                               :request-id id}}))))
+                    (catch Throwable e
                  ;; Construction may already have admitted a child. Fence the
                  ;; parent and cancel its own descendants before joining;
                  ;; never infer quiescence from not having returned a Spin.
-                   (try (binding [ec/*execution-context* (:ctx room)]
-                          (run/cancel-run! job-id)
-                          (doseq [child (run/runs room {:root-run-id job-id :limit 1000})
-                                  :when (not= job-id (:run/id child))]
-                            (run/cancel-run! (:run/id child))))
-                        (settle! row)
-                        (catch Throwable cleanup (.addSuppressed e cleanup)))
-                   (throw e)))))
-           :settled (fn [_ _]
-                      (settle! (journal #(requests/get-request conn id))))))
+                      (try (binding [ec/*execution-context* (:ctx room)]
+                             (run/cancel-run! job-id)
+                             (doseq [child (run/runs room {:root-run-id job-id :limit 1000})
+                                     :when (not= job-id (:run/id child))]
+                               (run/cancel-run! (:run/id child))))
+                           (catch Throwable cleanup (.addSuppressed e cleanup)))
+                      (throw e)))))
+              :before-finish (fn [job-id _ _]
+                               (when-let [row (finish-row! job-id)]
+                                 (return-job-resources! room row)))
+              :settled (fn [_ _]
+                         (let [job-id (:id @construction-job)
+                               row (finish-row! job-id)]
+                           ;; Adapter retirement may close job-ctx. Dvergr
+                           ;; retains the Job lease and uses control ctx here.
+                           (when-let [settled! (:settled! prepared)] (settled! job-id))
+                           (when row
+                             (journal #(requests/mark-returned! conn id)))))))))
         (catch Throwable e
-          ;; A failed host provisioning/run-pointer step has admitted no
-          ;; execution. Its physical resources can be retired without joining
-          ;; an unknown job. A published pointer retains the normal cleanup.
-          (when-not (:work.request/job (journal #(requests/get-request conn id)))
+          ;; Before the Jobs callback begins, this scope owns abandonment.
+          ;; Once entered, Jobs owns retirement even if pointer publication
+          ;; failed; never duplicate an uncertain adapter cleanup here.
+          (when-not @construction-job
             (when-let [abandon! (:abandon! prepared)]
               (try (abandon! request)
                    (catch Throwable cleanup (.addSuppressed e cleanup)))))

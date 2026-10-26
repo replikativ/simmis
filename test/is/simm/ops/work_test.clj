@@ -24,8 +24,10 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.work :as work]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [kontor.governance :as governance]
-            [org.replikativ.spindel.engine.core :as ec]))
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- with-room [f]
   (let [cfg {:store {:backend :memory :id (random-uuid)}
@@ -89,6 +91,144 @@
             (let [changed (assoc-in prepared [:basis :changed] true)]
               (is (thrown? clojure.lang.ExceptionInfo
                            (work/submit-prepared! conn host-ctx principal (:room w) room input changed))))))))))
+
+(deftest job-and-evaluation-construction-do-not-inherit-app-tickets
+  (world/with-world [conn w]
+    (with-room
+      (fn [room]
+        (let [[input prepared] (fixture)
+              owner (doto (lifetime/create) lifetime/open!)
+              outer (doto (lifetime/create) lifetime/open!)
+              observed (atom {})
+              bindings (fn [] [lifetime/*ticket*
+                               (get (get-thread-bindings)
+                                    (ns-resolve 'is.simm.runtimes.operation-lifetime '*tickets*))])
+              prepared (assoc prepared
+                              :admit! (fn [_]
+                                        (lifetime/check-current!)
+                                        (let [[ticket tickets] (bindings)]
+                                          (swap! observed assoc :admit [(some? ticket) (count tickets)])))
+                              :start! (fn [_]
+                                        (swap! observed assoc :construction (bindings))
+                                        (spin (do (swap! observed assoc :execution (bindings)) :done)))
+                              :settled! (fn [_] (swap! observed assoc :monitor (bindings))))]
+          (resource/mint! room {:id (random-uuid) :resources (work/resources (:limits input))})
+          (try
+            (let [request (lifetime/with-operation!
+                            outer
+                            #(lifetime/with-operation!
+                               owner
+                               (fn [] (work/submit-prepared! conn ec/*execution-context*
+                                                             (ops/party-principal (:owner w)) (:room w) room input prepared))))
+                  result (jobs/status (:job request) 25000)]
+              (is (= :completed (:status result)))
+              (is (:settled? result))
+              (is (= [true 2] (:admit @observed)))
+              (doseq [phase [:construction :execution :monitor]]
+                (is (contains? @observed phase))
+                (is (nil? (first (get @observed phase))))
+                (is (empty? (second (get @observed phase))))))
+            (finally
+              (doseq [installation [owner outer]]
+                (lifetime/fence! installation)
+                (lifetime/join! installation 1000)))))))))
+
+(defn- await-job-cleanup [id]
+  (loop [remaining 50]
+    (if-let [expected (jobs/recovery-state id)]
+      expected
+      (if (pos? remaining)
+        (do (jobs/status id 100) (recur (dec remaining)))
+        (throw (ex-info "Job cleanup did not become held" {:job id}))))))
+
+(deftest adapter-retirement-keeps-request-pending-and-run-leased-after-resource-return
+  (world/with-world [conn w]
+    (with-room
+      (fn [room]
+        (let [[input prepared] (fixture)
+              principal (ops/party-principal (:owner w)) host-ctx ec/*execution-context*
+              request-id (requests/request-id (:owner w) (:room w) (:request-id input))
+              grant (work/resources (:limits input))
+              original-return resource/return! returns (atom 0) retired (atom 0)
+              prepared (assoc prepared
+                              :start! (fn [_] (spin :done))
+                              :settled! (fn [job]
+                                          (is (= :completed (:status (jobs/status job))))
+                                          (is (some #(= job (:run/id %)) (run/active-runs (:id room))))
+                                          (is (= grant (resource/balance room)))
+                                          (is (:work.request/return-pending? (requests/get-request conn request-id)))
+                                          (when (= 1 (swap! retired inc)) (throw (ex-info "Retirement needs recovery" {})))))]
+          (resource/mint! room {:id (random-uuid) :resources grant})
+          (with-redefs [resource/return! (fn [& args] (swap! returns inc) (apply original-return args))]
+            (let [result (work/submit-prepared! conn host-ctx principal (:room w) room input prepared)
+                  expected (await-job-cleanup (:job result))]
+              (try
+                (is (= :settled (:stage expected)))
+                (is (= 1 @returns))
+                (is (:settled? (jobs/recover! (:job result) expected :retry)))
+                (is (= [1 2] [@returns @retired]))
+                (is (false? (:work.request/return-pending? (requests/get-request conn request-id))))
+                (finally
+                  (when-let [held (jobs/recovery-state (:job result))]
+                    (jobs/recover! (:job result) held :retry)))))))))))
+
+(deftest pointerless-construction-failure-has-one-adapter-cleanup-owner
+  (doseq [hold-retirement? [false true]]
+    (world/with-world [conn w]
+      (with-room
+        (fn [room]
+          (let [[input prepared] (fixture)
+                principal (ops/party-principal (:owner w)) host-ctx ec/*execution-context*
+                retired (atom 0) abandoned (atom 0)
+                prepared (assoc prepared
+                                :settled! (fn [_]
+                                            (when (and (= 1 (swap! retired inc)) hold-retirement?)
+                                              (throw (ex-info "Retirement uncertain" {}))))
+                                :abandon! (fn [_] (swap! abandoned inc)))]
+            (with-redefs [requests/record-job! (fn [& _] (throw (ex-info "Pointer publication failed" {})))]
+              (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Pointer publication failed"
+                                    (work/submit-prepared! conn host-ctx principal (:room w) room input prepared))))
+            (let [job (first (jobs/jobs room))
+                  request (first (requests/requests conn))]
+              (try
+                (is (= :interrupted (:work.request/state request)))
+                (is (nil? (:work.request/job request)))
+                (is (zero? @abandoned))
+                (when hold-retirement?
+                  (is (:settled? (jobs/recover! (:id job) (await-job-cleanup (:id job)) :retry))))
+                (is (= (if hold-retirement? 2 1) @retired))
+                (is (:settled? (jobs/status (:id job) 5000)))
+                (finally
+                  (when-let [held (jobs/recovery-state (:id job))]
+                    (jobs/recover! (:id job) held :retry)))))))))))
+
+(deftest a-missing-confirmed-pointer-cannot-be-treated-as-unpublished
+  (world/with-world [conn w]
+    (with-room
+      (fn [room]
+        (let [[input prepared] (fixture)
+              principal (ops/party-principal (:owner w)) host-ctx ec/*execution-context*
+              id (requests/request-id (:owner w) (:room w) (:request-id input))
+              job-id (atom nil)
+              prepared (assoc prepared :admit! (fn [job]
+                                                 (reset! job-id job)
+                                                 (let [row (requests/get-request conn id)]
+                                                   (dh/transact conn [[:db/retract (:db/id row) :work.request/job job]
+                                                                      [:db/add (:db/id row) :work.request/state :interrupted]]))
+                                                 (throw (ex-info "Injected pointer corruption" {}))))]
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (work/submit-prepared! conn host-ctx principal (:room w) room input prepared)))
+          (let [expected (await-job-cleanup @job-id)]
+            (try
+              (is (= :before-finish (:stage expected)))
+              (is (some #(= @job-id (:run/id %)) (run/active-runs (:id room))))
+              ;; HOST reconciles the exact original pointer before recovery.
+              (dh/transact conn [{:db/id [:work.request/id id] :work.request/job @job-id :work.request/state :submitted}])
+              (is (:settled? (jobs/recover! @job-id expected :retry)))
+              (finally
+                (when-let [held (jobs/recovery-state @job-id)]
+                  (dh/transact conn [{:db/id [:work.request/id id] :work.request/job @job-id :work.request/state :submitted}])
+                  (jobs/recover! @job-id held :retry))))))))))
 
 (deftest admission-failure-is-durable-and-cannot-be-replayed-as-new-work
   (world/with-world [conn w]

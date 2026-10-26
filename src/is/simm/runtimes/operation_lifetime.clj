@@ -43,6 +43,30 @@
         (refuse! :not-ready))))
   nil)
 
+(defn call-detached
+  "Construct long-lived HOST computation without inheriting App tickets.
+   F receives a short-lived WITH-OPERATION! function for synchronous native
+   handoff on this same thread. It restores and checks every original ticket,
+   then detaches again before F constructs Spins/futures. It cannot outlive
+   this call, transfer ownership, or admit a different thread. Return only
+   resource-independent handoff results; never save its callback in a Job."
+  [f]
+  (let [extent (volatile! {:ticket *ticket* :tickets *tickets* :thread (Thread/currentThread)})
+        with-operation! (fn [handoff]
+                          (let [{:keys [ticket tickets thread] :as saved} @extent]
+                            (when-not (and saved (identical? thread (Thread/currentThread)))
+                              (refuse! :detached-handoff-expired))
+                            (binding [*ticket* ticket *tickets* tickets]
+                              (when ticket (check-current!))
+                              (doseq [original tickets]
+                                (binding [*ticket* original] (check-current!)))
+                              (handoff))))]
+    (try
+      (binding [*ticket* nil *tickets* []] (f with-operation!))
+      ;; An accidentally retained, expired callback keeps only this empty
+      ;; native cell, never the original App/outer-ticket graph.
+      (finally (vreset! extent nil)))))
+
 (defn open!
   "An owner can be opened once, only after installation. Never resurrect it."
   [owner]

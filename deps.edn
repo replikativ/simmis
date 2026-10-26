@@ -319,7 +319,9 @@
         ;; no legacy wallet migration is implied.
         ;; 0.1.361 distinguishes repeated-tool failures from completed no-ops
         ;; and includes the upstream fork/future retention fixes.
-        org.replikativ/dvergr {:mvn/version "0.1.365"
+        ;; 0.1.366 retains the Job execution lease through adapter retirement
+        ;; and provides explicit HOST recovery for uncertain cleanup.
+        org.replikativ/dvergr {:mvn/version "0.1.366"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.
