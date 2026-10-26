@@ -47,9 +47,10 @@
     (when-not (and (string? text) (<= (count text) 4096)) (refuse! :invalid-declaration))
     (let [value (try
                   (with-open [reader (PushbackReader. (StringReader. text))]
-                    (let [options {:eof ::eof :readers {} :default (fn [& _] (refuse! :invalid-declaration))}
+                    (let [eof (Object.)
+                          options {:eof eof :readers {} :default (fn [& _] (refuse! :invalid-declaration))}
                           value (edn/read options reader)]
-                      (when-not (= ::eof (edn/read options reader)) (refuse! :invalid-declaration))
+                      (when-not (identical? eof (edn/read options reader)) (refuse! :invalid-declaration))
                       value))
                   (catch StackOverflowError _ (refuse! :invalid-declaration))
                   (catch Exception _ (refuse! :invalid-declaration)))]

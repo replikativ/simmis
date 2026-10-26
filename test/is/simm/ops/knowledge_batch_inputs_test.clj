@@ -22,7 +22,10 @@
   (let [decl {:version 2 :epoch (random-uuid) :policy batches/default-policy}]
     (is (nil? (batches/declaration {})))
     (is (= decl (batches/declaration {"input-batching.edn" (pr-str decl)})))
+    (is (= decl (batches/declaration {"input-batching.edn" (str (pr-str decl) "\n ; trailing comment\n")})))
     (doseq [text [(str (pr-str decl) " {}") "#=(System/exit 0)"
+                  (str (pr-str decl) " :is.simm.ops.knowledge-batch-inputs/eof")
+                  (str (pr-str decl) " :is.simm.ops.knowledge-batch-inputs/eof {}")
                   "#unknown {}" (pr-str (assoc-in decl [:policy :max-trigger-files] 0))
                   (pr-str (assoc decl :execute "arbitrary")) (pr-str (dissoc decl :epoch))
                   (pr-str (assoc decl :version 1))]]
