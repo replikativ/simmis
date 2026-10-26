@@ -112,7 +112,8 @@
                                                                       (select-keys entry [:from :to :view]) mount-token))
                                          (catch :default _ (saved-views/clear! saved) false))
                          selection (.. view -state -selection)
-                         native (when (number? pos) (.nodeAt (.. view -state -doc) pos))
+                         ^js native-doc (.. view -state -doc)
+                         ^js native (when (number? pos) (.nodeAt native-doc pos))
                          source-selected? (and native (.hasFocus view)
                                                (<= (.-from selection) (+ pos (.-nodeSize native)))
                                                (>= (.-to selection) pos))]
