@@ -194,3 +194,57 @@
           (is (= [:upgrade] @calls))))
       (finally (when @discharge (browser/unmount! @discharge))
                (.remove container) (context/stop-context! ctx)))))
+
+(deftest next-input-check-is-a-compact-observation-without-execution-controls
+  (let [source {:name "wiki" :revision "c1d56a1b-63f9-414c-a6ad-feb35d5e709d"
+                :files {"workflow.edn" "{}"} :definition {:params {}}
+                :inspection {:ok true :bundle "34e2519c-9acb-4a13-9ff1-36ff01ac600d" :cases []}}
+        state {:selected "wiki" :drafts {"wiki" (editor/draft source)}}
+        request (editor/stream-request state)
+        reply {:name "wiki" :source-revision (:revision source) :bundle (get-in source [:inspection :bundle])
+               :status :observed :lifecycle :active :pending {:count 1 :complete? true :limit 20000}
+               :freshness {:status :current} :batch {:status :none}}
+        held {:status :held :code :context-exceeds-budget
+              :context {:files 33 :bytes 100 :file-limit 32 :byte-limit 524288}
+              :head {:bytes 100 :file-limit 524288 :batch-byte-limit 1048576}
+              :reserved {:files 0 :bytes 0} :limits {:files 100 :bytes 2097152}}]
+    (doseq [[check text details?]
+            [[held "Context exceeds its file or byte limit." true]
+             [{:status :not-checked} "Not checked against this observation." false]
+             [{:status :unavailable} "Input check unavailable." false]]]
+      (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+            discharge (atom nil) tree (atom nil) calls (atom [])
+            render #(workflows/view "Lab" % {:room-id "room" :change (fn [& args] (swap! calls conj args))})
+            observed (editor/observe-stream state request (assoc reply :input-check check))]
+        (.appendChild (.-body js/document) container)
+        (try
+          (binding [ec/*execution-context* ctx]
+            (reset! tree (render observed))
+            (reset! discharge (browser/mount! container @tree))
+            (is (str/includes? (.-textContent container) text))
+            (let [detail (some #(when (= "Input counts and limits" (.-textContent %)) (.-parentElement %))
+                               (array-seq (.querySelectorAll container "summary")))]
+              (is (= details? (some? detail)))
+              (when detail
+                (is (false? (.-open detail)))
+                (is (nil? (.querySelector detail "button,input,select")))))
+            (is (empty? @calls))
+            (when details?
+              (let [detail (some #(when (= "Input counts and limits" (.-textContent %)) (.-parentElement %))
+                                 (array-seq (.querySelectorAll container "summary")))]
+                (set! (.-open detail) true)
+                (.dispatchEvent detail (js/Event. "toggle"))
+                (is (= [["wiki" assoc :input-counts-open? true]] @calls))
+                (let [changed (editor/observe-stream observed request
+                                (assoc reply :freshness {:status :changed} :input-check {:status :not-checked}))
+                      next-tree (render changed)]
+                  (browser/refresh! @discharge @tree next-tree)
+                  (reset! tree next-tree)
+                  (is (str/includes? (.-textContent container) "Not checked against this observation."))
+                  (is (not (str/includes? (.-textContent container) "Context exceeds its file or byte limit.")))
+                  (is (false? (.-isConnected detail))))
+                (set! (.-open detail) false)
+                (.dispatchEvent detail (js/Event. "toggle"))
+                (is (= 1 (count @calls)) "Detached native toggles cannot mutate the owning draft"))))
+          (finally (when @discharge (browser/unmount! @discharge))
+                   (.remove container) (context/stop-context! ctx)))))))

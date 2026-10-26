@@ -6,6 +6,7 @@
             [dvergr.runtime.preparation :as preparation]
             [is.simm.documents.view :as source-view]
             [is.simm.model.knowledge-batches :as batches]
+            [is.simm.model.knowledge-input-check :as check-dto]
             [is.simm.model.knowledge-streams :as streams]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.file-output-adoption :as adoption]
@@ -87,20 +88,38 @@
         {:status :unavailable}))
     {:status :none}))
 
+(defn- input-check [source-db descriptor stream pending freshness batch planning]
+  (if-not (and planning (= :active (:knowledge.stream/state stream))
+               (= :current (:status freshness)) (= :none (:status batch)))
+    {:status :not-checked}
+    (try
+      (let [check (:check (batch-inputs/assessment source-db descriptor stream pending
+                                                  (:policy planning) (:batch-policy planning) (:reserved planning)))]
+        (if (check-dto/valid? check) check {:status :unavailable}))
+      (catch Throwable error
+        (when (adoption/causal-interruption? error)
+          (.interrupt (Thread/currentThread))
+          (throw error))
+        ;; Integrity, policy and IO failures are not ordinary input-limit holds.
+        {:status :unavailable}))))
+
 (defn observe-in
   "HOST internal over captured source and one immutable control DB. Descriptor
    belongs to the authenticated viewer. Counts describe the pending journal,
    excluding claimed items; they do not certify that another batch can run."
-  [control source-db descriptor]
+  ([control source-db descriptor] (observe-in control source-db descriptor nil))
+  ([control source-db descriptor planning]
   (if-let [stream (streams/stream control (:id descriptor))]
     (do
       (streams/validate-binding! descriptor stream)
-      (let [pending (streams/pending-items control (:id descriptor))]
+      (let [pending (streams/pending-items control (:id descriptor))
+            freshness (freshness source-db stream)
+            batch (active-batch control descriptor stream)]
         {:status :observed :lifecycle (:knowledge.stream/state stream)
          :pending {:count (count pending) :complete? true :limit streams/max-changes}
-         :freshness (freshness source-db stream)
-         :batch (active-batch control descriptor stream)}))
-    {:status :not-discovered}))
+         :freshness freshness :batch batch
+         :input-check (input-check source-db descriptor stream pending freshness batch planning)}))
+    {:status :not-discovered})))
 
 (defn- source-id [bound name]
   (sources/source-id bound name (workflows/manifest-in (:db bound) name)))
@@ -132,7 +151,11 @@
                           (let [described (program/describe (:party bound) (:room-id bound) (:target bound)
                                                             snapshot name (parse-uuid expected-bundle) (:epoch declaration))
                                 control (reads/current-host-control-db! host)]
-                            (observe-in control (:db bound) (:value described)))
+                            (observe-in control (:db bound) (:value described)
+                                        {:policy (:policy described) :batch-policy (:policy declaration)
+                                         :reserved {:files (count (get-in described [:planned :inputs]))
+                                                    :bytes (reduce + 0 (map #(alength (.getBytes ^String % "UTF-8"))
+                                                                          (vals (get-in described [:planned :inputs]))))}}))
                           {:status :not-enabled})
                  validation-db (reads/current-host-control-db! host)
                  current (owned/validate! validation-db principal :read (:room-id bound) room bound)]

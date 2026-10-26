@@ -341,3 +341,26 @@
     (is (nil? (editor/stream-request (assoc-in state [:drafts "echo" :source-stale?] true))))
     (is (thrown? clojure.lang.ExceptionInfo (editor/observe-stream state request (assoc reply :source-revision "foreign")))))
     (is (nil? (editor/stream-request {:selected "new"}))))
+
+(deftest input-check-observations-are-closed-and-never-sticky-across-freshness
+  (let [bundle "34e2519c-9acb-4a13-9ff1-36ff01ac600d"
+        saved (assoc-in source [:inspection :bundle] bundle)
+        state {:selected "echo" :drafts {"echo" (assoc (editor/draft saved) :submission {:intent :pending})}}
+        request (editor/stream-request state)
+        reply {:name "echo" :source-revision (:revision saved) :bundle bundle :status :observed :lifecycle :active
+               :pending {:count 1 :complete? true :limit 20000} :freshness {:status :current} :batch {:status :none}}
+        held {:status :held :code :context-exceeds-budget
+              :context {:files 33 :bytes 100 :file-limit 32 :byte-limit 524288}
+              :head {:bytes 100 :file-limit 524288 :batch-byte-limit 1048576}
+              :reserved {:files 0 :bytes 0} :limits {:files 100 :bytes 2097152}}
+        observed (editor/observe-stream state request (assoc reply :input-check held))
+        changed (editor/observe-stream observed request (assoc reply :freshness {:status :changed}
+                                                                   :input-check {:status :not-checked}))]
+    (is (= (:drafts state) (:drafts changed)))
+    (is (= {:status :not-checked} (get-in changed [:workflow-stream :reply :input-check])))
+    (doseq [bad [(assoc held :source (random-uuid))
+                 (assoc held :code :untrusted-exception)
+                 (assoc-in held [:context :path] "private.md")
+                 (assoc-in held [:head :bytes] -1)]]
+      (is (thrown? clojure.lang.ExceptionInfo (editor/observe-stream state request (assoc reply :input-check bad)))))
+    (is (= changed (editor/observe-stream changed (assoc request :expected-source "old") (assoc reply :input-check held))))))
