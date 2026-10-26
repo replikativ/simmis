@@ -32,6 +32,7 @@
             [is.simm.ops.work-test]
             [is.simm.ops.workflows :as workflows]
             [is.simm.ops.workflows-test :as fixture]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [jsonista.core :as json]
             [org.replikativ.spindel.engine.core :as ec]))
 
@@ -529,6 +530,55 @@
         ((:abandon! transport) nil)
         (is (= [id] @retired))
         (is (= 1 (.availablePermits @#'benchmarks/checker-slot)))))))
+
+(deftest fixture-construction-does-not-capture-original-operation-tickets
+  (@#'is.simm.ops.work-test/with-room
+   (fn [room]
+     (doseq [throw? [false true]]
+       (let [owner (doto (lifetime/create) lifetime/open!)
+             outer (doto (lifetime/create) lifetime/open!)
+             observed (atom {})
+             bindings (fn [] [lifetime/*ticket*
+                              (get (get-thread-bindings)
+                                   (ns-resolve 'is.simm.runtimes.operation-lifetime '*tickets*))])
+             adapter (benchmarks/adapter
+                      ec/*execution-context* nil
+                      {:world-parent-ready! (fn [_]
+                                              (lifetime/check-current!)
+                                              (swap! observed assoc :ready (bindings)))} nil)]
+         (with-redefs-fn {#'benchmarks/fixture-room!
+                          (fn [& _]
+                            (swap! observed assoc :constructor (bindings)
+                                   :delayed (bound-fn [] (bindings)))
+                            (when throw? (throw (ex-info "Fixture failed" {})))
+                            room)
+                          #'benchmarks/retire-fixture! (fn [& _] nil)}
+           (fn []
+             (try
+               (lifetime/with-operation!
+                outer
+                #(lifetime/with-operation!
+                  owner
+                  (fn []
+                    (let [before (bindings)]
+                      (try ((:job-context! adapter) {:work.request/id (random-uuid)})
+                           (is (not throw?))
+                           (catch clojure.lang.ExceptionInfo error
+                             (is throw?)
+                             (is (= "Fixture failed" (ex-message error)))))
+                      (lifetime/check-current!)
+                      (is (identical? (first before) (first (bindings))))
+                      (is (= 2 (count (second (bindings)))))
+                      (when-not throw?
+                        (is (identical? (first before) (first (:ready @observed)))))))))
+               (is (= [nil []] (:constructor @observed)))
+               (is (= [nil []] ((:delayed @observed))))
+               (when throw? (is (not (contains? @observed :ready))))
+               (finally
+                 ((:abandon! adapter) nil)
+                 (doseq [installation [owner outer]]
+                   (lifetime/fence! installation)
+                   (lifetime/join! installation 1000)))))))))))
 
 (deftest fixture-recovery-covers-pointerless-and-already-refunded-crash-windows
   (let [row (fn [more] (merge {:work.request/id (random-uuid) :work.request/kind :benchmark} more))

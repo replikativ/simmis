@@ -23,6 +23,7 @@
             [is.simm.ops.work :as work]
             [is.simm.ops.work-sandbox :as work-sandbox]
             [is.simm.ops.workflows :as workflows]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.util.concurrent Semaphore]
@@ -284,7 +285,10 @@
     {:job-context! (fn [request]
                      (let [id (:work.request/id request)]
                        (.set locator id)
-                       (.set fixture (fixture-room! host-ctx id))
+                       ;; Native connection/writer constructors may capture
+                       ;; dynamic bindings before the Jobs detached extent.
+                       ;; Keep the outer lease, but do not copy its tickets.
+                       (.set fixture (lifetime/call-detached (fn [_] (fixture-room! host-ctx id))))
                        (:ctx (.get fixture))))
      :world-parent (fn []
                      (let [room (.get fixture)]
