@@ -22,6 +22,7 @@
             [is.simm.uis.web.desktop.memory-references :as references]
             [is.simm.uis.web.desktop.memory-backlinks :as backlinks]
             [is.simm.documents.links :as links]
+            [is.simm.documents.saved-view-snapshot :as snapshot]
             [is.simm.uis.web.desktop.refs :as refs]
             [is.simm.uis.web.desktop.memory-reference-remote :as reference-remote]
             [is.simm.uis.web.desktop.remote :as rem]
@@ -530,6 +531,67 @@
                 (when (not= before (get-in (state) [:drafts path :text]))
                   (update! assoc-in [:autosave path] true)
                   (autosave! path))))
+            (snapshot! [path view]
+              (let [c (connected!) s (state) key [path view] slot [:snapshot path view]
+                    pending (get-in s [:snapshot-intents key])
+                    reply (saved-views/visible s path view)
+                    sent (get-in s [:saved-views key :marker])]
+                (when-not (get-in s [:loading slot])
+                  (if-not (and (verified? s c) (true? (get-in s [:permissions :write?]))
+                               (if pending (= (:target pending) (:target-stamp s))
+                                   (and (= :ready (:status reply))
+                                        (saved-views/reply-current? s path view sent reply))))
+                    (update! assoc-in [:errors slot] "Wait for a current saved view and workspace write access. A pending export must be recovered in its original workspace.")
+                    (try
+                      (let [id (when-not pending (random-uuid))
+                            intent (or pending
+                                       {:path (str "reports/snapshots/" id ".md") :target (:target-stamp s)
+                                        :basis (:basis reply) :view view
+                                        :text (snapshot/markdown reply {:id id :room (if (uuid? room) room (parse-uuid room))
+                                                                        :target (:target-stamp s) :created-at (.toISOString (js/Date.))})})
+                            stamp (:target intent) destination (:path intent)
+                            write-request {:path destination :expected nil :text (:text intent) :expected-target-stamp stamp}]
+                        ;; Freeze before dispatch. A lost ACK must not allocate
+                        ;; a second artifact or silently export a newer view.
+                        (update! assoc-in [:snapshot-intents key] intent)
+                        (request! slot
+                                  (fn []
+                                    (let [token (get-in (state) [:requests slot])
+                                          frame (get-in (state) [:request-contexts slot])
+                                          active? #(let [current (state)]
+                                                     (and (current?) (= c (connection))
+                                                          (frame-current? current frame)
+                                                          (true? (get-in current [:permissions :write?]))
+                                                          (editor/response-current? current slot token)
+                                                          (not= token (get-in current [:finished slot]))
+                                                          (= intent (get-in current [:snapshot-intents key]))))
+                                          write! (fn [ok error]
+                                                   (if (active?)
+                                                     ((remote/save-memory-file! web/server-id room write-request) ok error)
+                                                     (error (js/Error. "The snapshot's initiating request is no longer current."))))]
+                                      (fn [ok error]
+                                        (if pending
+                                          ((remote/load-memory-metadata! web/server-id room {:folders [] :paths [destination]})
+                                           (fn [metadata]
+                                             (if-not (and (active?) (= stamp (:target-stamp metadata))
+                                                          (contains? (:entries metadata) destination))
+                                               (error (js/Error. "The snapshot destination could not be verified in its original workspace."))
+                                               (if (nil? (get-in metadata [:entries destination]))
+                                                 (write! ok error)
+                                                 ((remote/load-memory-file! web/server-id room
+                                                                            {:path destination :expected-target-stamp stamp})
+                                                  (fn [file]
+                                                    (if (= (:text intent) (:text file)) (ok file)
+                                                        (error (js/Error. "The snapshot destination contains different content; it was not overwritten."))))
+                                                  error))))
+                                           error)
+                                          (write! ok error)))))
+                                  (fn [current _]
+                                    (-> current (assoc-in [:snapshot-exports key] (select-keys intent [:path :basis :view]))
+                                        (update :snapshot-intents dissoc key)))
+                                  (fn [_] (folder! (parent destination)) (navigation-refresh!))
+                                  {:stamp stamp}))
+                      (catch :default error (update! assoc-in [:errors slot] (rem/error-text error))))))))
             (create! [path origin]
               (if-not (and (string? path) (not (str/blank? path)) (uuid? origin))
                 (do (update! assoc-in [:errors :create] "Verify the initiating workspace before creating a file.") (discover! false))
@@ -902,6 +964,7 @@
                                                                    (not= (:text draft) (:analysis-text draft)))))
                                                  (analyze! path))))
        :create (fn [path & [origin]] (create! path (or origin (when (verified? (state) (connection)) (:target-stamp (state))))))
+       :save-view-snapshot snapshot!
        :download download! :upload upload! :office-open office-open! :office-save office-save! :office-correct office-correct!
        :select-path select! :set-query #(update! assoc :query %) :search search!
        :toggle-root (fn []

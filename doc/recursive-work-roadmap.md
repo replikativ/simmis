@@ -17,6 +17,93 @@ Simmis/dvergr architecture: typed knowledge, programmable properties, governed
 multi-system writes, versioned files, arbitrary programs and future
 probabilistic execution.
 
+## Current delivery campaign
+
+The phases later in this document describe the architectural direction. The
+current delivery campaign concentrates on usable knowledge work and ordinary,
+benchmarkable workflows. The shared [semantic interface contract](semantic-interfaces.md)
+is a gate for further UI expansion: types/properties and semantic operations
+stay consistent across documents, collections and custom interfaces. Agents
+normally compose the standard components; new presentation does not introduce
+another entity, writer or interaction-state model.
+
+| Stage | Delivery | Completion evidence |
+|---|---|---|
+| 1. Land the memory foundation | Incremental knowledge inputs; typed Markdown page tables/forms; bounded native Scorecard and archived-capture adapters | Original App/Room authority, source correspondence, bounds, source preservation and stale reply tests; real REPL and browser verification |
+| 2. Converge shared components | One Company type through the existing page form, standalone pane and styled presentation; static presentation with commands absent | Same values, reference identities, null/unknown states, acknowledged edits and coordinated draft/conflict behavior; no accidental state sharing across mounts/forks |
+| 3. Simplify navigation and artifact access | Stable global anchors; room navigation referring to semantic targets; standalone or embedded views; source on demand; explicit portable snapshots | Navigation reaches the same entities regardless of file placement; one rendered representation by default; snapshot identity/completeness preserved through the ordinary writer |
+| 4. Operate default knowledge maintenance | Versioned incremental starter; existing manual/benchmark/schedule kernel; clear backlog, held/review and recovery states | Deterministic model-free schedule/batch tests, preserved customized source, explicit deployment/resources, and proposal/adoption correspondence |
+| 5. Reuse the model for business/research interfaces | Typed business components, explicit SCI interfaces, connected room sites with scoped dynamic handlers, and later simulations | Shared semantic commands and source/world binding; lifecycle and resource ownership; public/private projections explicit; simulated results remain distinct from live facts |
+
+The incremental-input and typed page table/form foundation has landed. The
+bounded report/capture adapters are implemented and locally verified, with
+normal integration CI still required before landing. The component contract is
+documented and reviewed; the first shared Company read presentations and
+existing editor composition are under verification. Connected SCI/site hosts
+and a complete standalone editing surface remain later slices. Keep the verified running UI separate from
+new development and use the server/client REPL plus the browser for validation.
+The model-free experiment used for report verification demonstrates execution,
+certified result storage and rendering; it does not benchmark LLM wiki quality.
+
+### Shared components before additional interfaces
+
+The standardization target is small: source/model adapter, field/value controls,
+entity form/card, collection presentation, semantic navigation and content
+mounting. Reuse the existing Spindel signals/coordinators and property writer.
+Do not add another fetch/cache system, generic renderer registry or executable
+query language to hide duplicated source presentation.
+
+Markdown, saved views and explicit SCI modules should be mountable as a pane or
+embedded region through the same content host. A full-page SCI interface is a
+presentation choice. Domain identity stays distinct from source/world binding
+and component-instance identity. Coordinated editing may deliberately share a
+draft; independent forks and mount-local operations must not become entangled.
+
+The current global Tasks/search/room navigation and multi-panel tabs remain
+useful anchors. Room-specific hubs, collections and links can be data-defined.
+Group overlapping execution/history destinations and distinguish capture
+creation actions from navigation. Published Room captures and private unfiled
+recordings retain their separate ownership even when reached from related
+navigation. The complete file tree remains available with meaningful icons,
+labels and filing conventions, rather than becoming the only way to find work.
+
+For document embeds, render the view at its source position and reveal its
+declaration on demand. A standalone saved view need not display prose or its
+serialized descriptor. Resolve the content/mounting contract before creating
+special-purpose versions for every result, document or business object.
+
+### Knowledge maintenance rollout boundaries
+
+Default maintenance remains an ordinary workflow installed in a new canonical
+personal Room. The existing bootstrap already does this for the current alpha
+account lifecycle; do not create another maintenance agent or scheduler.
+Ship incremental batching as a new starter revision and use an explicit
+whole-subtree comparison for upgrades. Preserve customized and older pinned
+source; old whole-selection fingerprints do not become incremental cursors.
+
+Schedule deployment must distinguish a configured paused activation from an
+enabled one. The existing creation path enables execution; creating and then
+pausing has a dispatch race. Default unattended execution still needs explicit
+model/provider selection, finite allowance policy, cadence/timezone and
+per-occurrence ceilings. Use the existing activation, request and occurrence
+machinery for these decisions.
+
+Surface the existing batch/occurrence state and guarded recovery operations in
+Workflows. Source evidence is acknowledged according to its processing/review
+outcome; a completed Run alone does not mean knowledge was adopted.
+
+Two source-sizing issues need deliberate treatment before continuous rollout:
+archived notes may exceed the per-file execution input limit, and a growing
+wiki can exceed the context/projection limits. Design explicit bounded evidence
+windows/references and context retrieval with preserved provenance. Do not
+silently truncate, skip the head, or present incomplete input as complete.
+
+Explicit snapshot export is one ordinary file with source/basis, display
+completeness and original media identities. It uses the existing source writer,
+never writes on refresh, and does not create one Markdown file per Attempt or
+screenshot. Live views, snapshots and execution/adoption receipts retain their
+different meanings.
+
 ## Ownership
 
 | Layer | Owns |

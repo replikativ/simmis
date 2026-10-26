@@ -76,3 +76,11 @@
               (el/p {:class "memory-note" :role "status"} "Saved source or property definitions changed. Your entered value was retained; discard it before editing the current version."))
             (when pd
               (el/button {:on-click (fn [_] ((:property-discard a) path target (:id field)))} "Discard field draft")))))
+
+(defn fields-view
+  "Reuse the existing editing controls without acquiring data or choosing
+   authority, groups, draft owners or write behavior for the caller."
+  [path target fields model state a editable?]
+  (for [field fields]
+    (el/div {:key (str (:id field))}
+            (field-view path target field model state a editable?))))

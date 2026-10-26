@@ -10,6 +10,10 @@ ClojureScript client holds a real Datahike replica of the ones it may see and
 queries it locally; agents run in a sandbox on the server and write to
 branches rather than to trunk.
 
+The proposed [semantic interface contracts](semantic-interfaces.md) describe
+how typed documents, saved views and custom SCI interfaces should share
+property meaning, commands, mounting and context-owned state.
+
 ## Room files and execution state
 
 The **Memory** tree in the resizable left navigation browses each room's

@@ -485,15 +485,11 @@
                                   (el/p {:class "memory-note"} "Property changes are paused while your file draft is saving or has unsaved changes."))
                                 (when other-edits?
                                   (el/p {:class "memory-note" :role "status"} edit-owners/message))
-                                (for [field (:primary groups)]
-                                  (el/div {:key (str (:id field))}
-                                          (property-controls/field-view path target field model state a editable?)))
+                                (property-controls/fields-view path target (:primary groups) model state a editable?)
                                 (when (seq (:available groups))
                                   (el/details {:class "memory-available-properties"}
                                               (el/summary {} "Other metadata")
-                                              (for [field (:available groups)]
-                                                (el/div {:key (str (:id field))}
-                                                        (property-controls/field-view path target field model state a editable?)))))))))))
+                                              (property-controls/fields-view path target (:available groups) model state a editable?)))))))))
 
 (defn- properties-view [path draft state a write?]
   (let [target (get-in state [:property-targets path])
