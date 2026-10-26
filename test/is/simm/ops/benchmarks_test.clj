@@ -489,6 +489,47 @@
     ((:settled! a) nil)
     (is (= 1 (.availablePermits slot)))))
 
+(deftest shared-fixture-transport-retains-capacity-until-retirement-ack
+  (@#'is.simm.ops.work-test/with-room
+   (fn [room]
+     (let [transport (benchmarks/fixture-transport ec/*execution-context*)
+           parent (:world-parent transport) created (atom 0) refuse? (atom true)
+           slot @#'benchmarks/checker-slot]
+       (with-redefs-fn {#'benchmarks/fixture-room! (fn [& _] (swap! created inc) room)
+                        #'benchmarks/retire-fixture! (fn [& _]
+                                                      (when @refuse? (throw (ex-info "Retirement held" {}))))}
+         (fn []
+           (try
+             (is (thrown? clojure.lang.ExceptionInfo (parent)))
+             (is (identical? (:ctx room) ((:job-context! transport) {:work.request/id (random-uuid)})))
+             (is (identical? room (parent)))
+             ((:admit! transport) nil)
+             (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Retirement held"
+                                  ((:settled! transport) nil)))
+             (is (zero? (.availablePermits slot)))
+             (is (identical? room (parent)) "uncertain retirement keeps the original native owner")
+             (reset! refuse? false)
+             ((:abandon! transport) nil)
+             (is (= 1 (.availablePermits slot)))
+             (is (thrown? clojure.lang.ExceptionInfo (parent)))
+             (is (= 1 @created) "inspection and recovery never provision another fixture")
+             (finally
+               (reset! refuse? false)
+               ((:abandon! transport) nil)))))))))
+
+(deftest shared-transport-keeps-the-locator-when-fixture-construction-fails
+  (let [transport (benchmarks/fixture-transport nil)
+        id (random-uuid) retired (atom [])]
+    (with-redefs-fn {#'benchmarks/fixture-room! (fn [& _] (throw (ex-info "Partial fixture" {})))
+                     #'benchmarks/retire-fixture! (fn [_ id] (swap! retired conj id))}
+      (fn []
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Partial fixture"
+                             ((:job-context! transport) {:work.request/id id})))
+        (is (thrown? clojure.lang.ExceptionInfo ((:world-parent transport))))
+        ((:abandon! transport) nil)
+        (is (= [id] @retired))
+        (is (= 1 (.availablePermits @#'benchmarks/checker-slot)))))))
+
 (deftest fixture-recovery-covers-pointerless-and-already-refunded-crash-windows
   (let [row (fn [more] (merge {:work.request/id (random-uuid) :work.request/kind :benchmark} more))
         interrupted (row {:work.request/state :interrupted})

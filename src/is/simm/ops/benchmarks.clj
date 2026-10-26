@@ -260,12 +260,12 @@
                  (when-let [row (system-db/room-by-slug (fixture-slug id))]
                    (nil? (:room/archived-at row)))))))
 
-(defn adapter
-  "One host-owned transport/capacity adapter per submission. A losing retry
-   never acquires its permit. Dvergr remains the only experiment executor."
-  [host-ctx control prepared principal]
-  (when (contains? (:basis prepared) :benchmark/source)
-    (invalid! "Checkpoint benchmark fixtures require resolved admission before dispatch"))
+(defn fixture-transport
+  "Fixed HOST fixture lifecycle and checker capacity for one submission.
+   The world-parent accessor only observes the original live fixture; it
+   never recreates one or conveys source authority. Callers retain their own
+   native lifetime. No execution, accounting or configurable hooks live here."
+  [host-ctx]
   (let [slot checker-slot
         held (AtomicBoolean. false)
         fixture (AtomicReference.)
@@ -275,30 +275,50 @@
                     (let [id (.get locator)]
                       (try
                         (when id (retire-fixture! host-ctx id))
+                        (.set fixture nil)
                         (when (.compareAndSet held true false) (.release ^Semaphore slot))
                         (when id (swap! pending-retirements dissoc id))
                         (catch Throwable error
                           (when id (swap! pending-retirements assoc id retire!))
                           (throw error))))))]
-    (assoc prepared
-           :request-kind (or (:request-kind prepared) :benchmark)
-           :job-context! (fn [request]
-                           (let [id (:work.request/id request)]
-                             (.set locator id)
-                             (.set fixture (fixture-room! host-ctx id))
-                             (when-let [ready! (:world-parent-ready! prepared)] (ready! (.get fixture)))
-                             (:ctx (.get fixture))))
-           :admit! (fn [_]
-                     (when-not (.tryAcquire ^Semaphore slot)
-                       (throw (ex-info "Another trusted checker benchmark still owns physical capacity"
-                                       {:type ::busy})))
-                     (.set held true))
-           :start! (fn [job-id]
-                     (runner/run-in control
-                                    (assoc (:plan prepared) :parent-run job-id :cleanup-group job-id
-                                           :world-parent (.get fixture) :from (:principal/actor principal))))
-           :settled! (fn [_] (retire!))
-           :abandon! (fn [_] (retire!)))))
+    {:job-context! (fn [request]
+                     (let [id (:work.request/id request)]
+                       (.set locator id)
+                       (.set fixture (fixture-room! host-ctx id))
+                       (:ctx (.get fixture))))
+     :world-parent (fn []
+                     (let [room (.get fixture)]
+                       (when-not (and room (binding [ec/*execution-context* (:ctx room)]
+                                            (registry/admitted-incarnation? room)))
+                         (throw (ex-info "Benchmark fixture is no longer available" {:type ::unavailable})))
+                       room))
+     :admit! (fn [_]
+               (when-not (.tryAcquire ^Semaphore slot)
+                 (throw (ex-info "Another trusted checker benchmark still owns physical capacity"
+                                 {:type ::busy})))
+               (.set held true))
+     :settled! (fn [_] (retire!))
+     :abandon! (fn [_] (retire!))}))
+
+(defn adapter
+  "One host-owned transport/capacity adapter per submission. A losing retry
+   never acquires its permit. Dvergr remains the only experiment executor."
+  [host-ctx control prepared principal]
+  (when (contains? (:basis prepared) :benchmark/source)
+    (invalid! "Checkpoint benchmark fixtures require resolved admission before dispatch"))
+  (let [transport (fixture-transport host-ctx)
+        context! (:job-context! transport)
+        parent (:world-parent transport)]
+    (merge prepared (dissoc transport :world-parent)
+           {:request-kind (or (:request-kind prepared) :benchmark)
+            :job-context! (fn [request]
+                            (let [ctx (context! request)]
+                              (when-let [ready! (:world-parent-ready! prepared)] (ready! (parent)))
+                              ctx))
+            :start! (fn [job-id]
+                      (runner/run-in control
+                                     (assoc (:plan prepared) :parent-run job-id :cleanup-group job-id
+                                            :world-parent (parent) :from (:principal/actor principal))))})))
 
 (defn retry-request
   "Metadata-only NORMAL exact-submission decision for the two fixed benchmark
