@@ -520,6 +520,17 @@ string or an exploded runtime object. Atomic insert/CAS transitions decide who
 may schedule; Dvergr's room-store Jobs, Runs, Attempts and accounting remain the
 execution and result records. Fork rollback does not duplicate the host admission
 or its conserved resource authority.
+
+`model/work_request_checkpoints.clj` declares a separate, internal evidence
+retention relation, with one root intent per Request. Typed `:work.checkpoint/*`
+attributes hold its fresh root UUID, creation token, `:creating`/`:retained`
+state, and immutable binding as a `store-ref`. That binding identifies the
+canonical Request intent/claim, Job, publication target and exact physical
+checkpoint. The checkpoint selection belongs to Request identity; random root
+and creation tokens do not. This relation neither advances a discovery cursor
+nor changes execution status. The internal retention API is not yet invoked by
+ordinary workflow submission. See [checkpoint retention](checkpoint-retention.md).
+
 The same journal admits `:task`, `:benchmark` and `:allowance` requests.
 Benchmark intents pin the client submission, canonical ExperimentDef, resolved
 candidate roster, grading policy and aggregate limits. Fixtures use the durable
