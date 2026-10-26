@@ -17,6 +17,7 @@
             [is.simm.ops.checkers :as checkers]
             [is.simm.ops.cli-owner :as cli-owner]
             [is.simm.ops.benchmark-dataset :as dataset]
+            [is.simm.ops.benchmark-source :as benchmark-source]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
             [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.work :as work]
@@ -95,7 +96,10 @@
    allowance; each gets at most its integer share."
   [execution snapshot {:keys [name expected-bundle models repetitions cases limits] :as input}]
   (when-not (m/validate (if (= execution :cli-text) cli-schema schema) input) (invalid! "Invalid benchmark request"))
-  (execution-origin/require-copied-context! (:files snapshot))
+  (if (= :checkpoint-fixture execution)
+    (when-not (execution-origin/validate-execution! (:files snapshot) limits)
+      (invalid! "Checkpoint fixture preparation requires the explicit execution-origin policy"))
+    (execution-origin/require-copied-context! (:files snapshot)))
   (let [inspection (workflows/inspect-snapshot name snapshot)]
     (when-not (:ok inspection) (invalid! "Workflow bundle is not structurally valid"))
     (when-not (= (str expected-bundle) (:bundle inspection))
@@ -211,6 +215,14 @@
 (defn prepare [snapshot input] (prepare* :native snapshot input))
 (defn prepare-cli [snapshot input] (prepare* :cli-text snapshot input))
 
+(defn prepare-checkpoint-fixture
+  "HOST-only pure source reconstruction route. Reuses every ordinary native
+   preparation check, retaining exact source before Request claim. This result
+   is not admitted by the existing adapter; no fixture, pin or Run is created."
+  [snapshot input]
+  (let [retained (benchmark-source/retain (:name input) (:files snapshot))]
+    (assoc-in (prepare* :checkpoint-fixture snapshot input) [:basis :benchmark/source] retained)))
+
 (defn- fixture-slug [request-id] (str "simmis-benchmark-" request-id))
 (defn fixture-room-id [request-id] (keyword (fixture-slug request-id)))
 
@@ -252,6 +264,8 @@
   "One host-owned transport/capacity adapter per submission. A losing retry
    never acquires its permit. Dvergr remains the only experiment executor."
   [host-ctx control prepared principal]
+  (when (contains? (:basis prepared) :benchmark/source)
+    (invalid! "Checkpoint benchmark fixtures require resolved admission before dispatch"))
   (let [slot checker-slot
         held (AtomicBoolean. false)
         fixture (AtomicReference.)

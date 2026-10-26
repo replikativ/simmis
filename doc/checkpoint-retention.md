@@ -164,3 +164,19 @@ case checkpoint IDs do not enter this grouping identity. HOST reconstruction
 must still verify source/team/environment correspondence before journal use;
 valid Experiment hashing alone does not certify that correspondence. Equivalent
 semantic identity confers neither result reuse nor permission to resume work.
+
+`benchmarks/prepare-checkpoint-fixture` is a HOST-only pure reconstruction route.
+It retains exact bounded source and applies the ordinary native preparation
+checks with the explicit checkpoint-origin policy. Existing dispatch adapters
+refuse these prepared values; ordinary native and CLI entry points continue to
+refuse checkpoint-origin source.
+
+`ops.benchmark-resolution/reconstruct` reads a bounded canonical submitted Request
+after caller authorization. It checks the Request identity, claim/Job, payload
+hash, original submission and limits, reconstructs the source bundle, reruns that
+same pure preparation route and compares the complete retained basis. Only then
+does it derive the semantic preparation plan. Rehashing an altered team, task or
+policy does not pass this comparison. Runtime identity drift also holds. A final
+Request reread fences changes during reconstruction. This helper publishes no
+artifacts and creates no fixture, root or execution; its returned HOST capabilities
+do not confer construction or dispatch rights.
