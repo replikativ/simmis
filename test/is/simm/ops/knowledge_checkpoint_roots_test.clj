@@ -2,11 +2,13 @@
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
             [datahike.gc-roots :as roots]
+            [datahike.versioning :as versioning]
             [geschichte.repo :as repo]
             [is.simm.model.knowledge-pins :as pins]
             [is.simm.model.knowledge-streams :as streams]
             [is.simm.model.knowledge-pins-test :as fixtures]
             [is.simm.ops.knowledge-changes :as changes]
+            [is.simm.ops.checkpoint-roots :as physical]
             [is.simm.ops.knowledge-checkpoint-roots :as checkpoints]
             [konserve.core :as k]))
 
@@ -45,9 +47,9 @@
      (let [prepared (prepare control value source) id (get-in prepared [:intent :knowledge.pin/id])
            native roots/pin! calls (atom 0)]
        (with-redefs [roots/pin! (fn [& args] (swap! calls inc) (apply native args)
-                                 (throw (ex-info "Injected native ACK loss" {})))]
+                                  (throw (ex-info "Injected native ACK loss" {})))]
          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Injected native ACK loss"
-                              (checkpoints/create! control @source prepared))))
+                               (checkpoints/create! control @source prepared))))
        (is (= 1 @calls))
        (is (= id (get-in (checkpoints/verify! control @source id) [:intent :knowledge.pin/id])))
        (let [retry (prepare control value source)]
@@ -97,8 +99,33 @@
 (deftest malformed-global-registry-is-held-before-native-creation
   (doseq [malformed [false nil]]
     (fixture
-      (fn [control descriptor source]
-        (let [prepared (prepare control descriptor source)]
-          (k/assoc (:store @source) roots/registry-key malformed {:sync? true})
-          (with-redefs [roots/pin! (fn [& _] (throw (AssertionError. "Do not replace a corrupt registry")))]
-            (is (= :invalid-root-registry (reason #(checkpoints/create! control @source prepared))))))))))
+     (fn [control descriptor source]
+       (let [prepared (prepare control descriptor source)]
+         (k/assoc (:store @source) roots/registry-key malformed {:sync? true})
+         (with-redefs [roots/pin! (fn [& _] (throw (AssertionError. "Do not replace a corrupt registry")))]
+           (is (= :invalid-root-registry (reason #(checkpoints/create! control @source prepared))))))))))
+
+(deftest a-retained-builder-checkpoint-resolves-through-its-original-store-after-branch-retirement
+  (fixture
+   (fn [_ _ source]
+     (let [branch (keyword (str "case-builder-" (random-uuid)))
+           root (random-uuid) owner {:fixture :case-builder}
+           _ (versioning/branch! source (get-in @source [:config :branch]) branch)
+           builder (d/connect (assoc (:config @source) :branch branch))
+           basis (try
+                   (d/transact builder [{:db/id -1 :db/ident :case-builder/only}])
+                   (let [basis (changes/basis @builder)]
+                     (physical/create! @builder basis root owner)
+                     basis)
+                   (finally (d/release builder)))]
+       (versioning/delete-branch! source branch)
+       ;; Do not weaken the full branch/configuration check to accept a live
+       ;; parent. Resolve the actual immutable child DB from the owned store.
+       (is (= :physical-source-changed
+              (reason #(physical/verify! @source basis root owner))))
+       (let [snapshot (d/commit-as-db (:store @source) (:commit basis))
+             verified (physical/verify! snapshot basis root owner)]
+         (is (= basis (changes/basis snapshot)))
+         (is (= basis (:basis verified)))
+         (is (d/q '[:find ?e . :where [?e :db/ident :case-builder/only]] (:db verified)))
+         (is (nil? (d/q '[:find ?e . :where [?e :db/ident :case-builder/only]] @source))))))))

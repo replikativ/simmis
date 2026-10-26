@@ -107,3 +107,12 @@ the old whole-context copy limit without copying it. Fault tests admit no
 resources/candidate after lost pin ACK, revoked authority, retarget or App fence.
 A real Room-close test swallows interruption inside pin IO and verifies teardown
 waits for physical completion and Job cleanup before closing the context.
+
+Physical verification remains bound to the checkpoint's original branch and
+configuration. A current parent DB is not a replacement for a retired builder's
+DB. Given independent HOST ownership of the original store, `d/commit-as-db`
+can resolve the retained immutable commit from that store; verify that exact DB
+against the complete basis and native root record. This requires no branch
+checkout, writer reopening or relaxation of source checks. A regression retires
+the builder branch and verifies its retained checkpoint this way while proving
+the builder's changes never entered the parent.
