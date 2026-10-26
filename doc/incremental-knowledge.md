@@ -71,9 +71,9 @@ root writers, or establish distributed GC safety. Native root IDs are exclusivel
 owned and never reused. The test registry fixture substitutes runtime provisioning;
 it does not prove deployed filesystem provisioning.
 
-## Remaining integration
+## Batch preparation and admission
 
-The inactive batch input planner now selects deterministic pending-order prefixes
+The batch input planner selects deterministic pending-order prefixes
 without the canonical view's 200-document body limit. Context is either the whole
 declared context selection or explicit named paths, with independent count/byte
 bounds; exceeding them holds rather than truncating. Ordinary workflow fixtures
@@ -102,16 +102,16 @@ existing wiki targets. A bounded context therefore limits edits to existing
 targets included in that context; omitted existing targets cannot be treated as
 absent. The separate publication basis still inventories all wiki occupancy.
 
-The inactive batch journal provides `capturing -> ready -> submitted` fragments.
+The batch journal provides `capturing -> ready -> submitted` fragments.
 Claiming compares the complete current stream, retained cursor-pin receipt, exact
 canonical pending prefix and remaining count, then sets the active hold and item
 claims together. Freeze attaches the HOST-verified artifact. First request linkage
 must compose with canonical request insertion; it refuses a preexisting partial
 request. Historical replay requires the actual matching canonical request and
 cannot manufacture a replacement if that request is missing. These fragments are
-not registered for default use and do not mark any source processed.
+used only for explicitly opted-in workflows and do not mark any source processed.
 
-The inactive owned-workflow adapter recognizes the explicit batching sidecar.
+The owned-workflow adapter recognizes the explicit batching sidecar.
 It rejects case, parameter, and input overrides before discovery effects. It
 retains the original App operation, uses short original-Room extents for source
 reads and target checks, and releases each source lease before provider
@@ -195,8 +195,9 @@ real canonical-memory provisioning, native scoped publication, joint acceptance,
 lost acknowledgements, and positive receipt recovery.
 
 Manual and scheduled invocation now share frozen preparation and native request
-admission. Remaining integration includes explicit failed-batch/retirement
-recovery and runtime activation. Pending
+admission. Unlinked capturing/ready batches support explicit abandonment or
+requeue, and clean streams support retirement as described below. Recovery for
+linked failed batches and public recovery controls remain separate work. Pending
 proposals hold the next batch. Benchmarks use explicit frozen cases and must
 never claim or advance a live stream. No default schedule is enabled by this
 foundation.
@@ -237,11 +238,11 @@ enabled by these internal changes.
 
 ### Scheduled batch binding
 
-The inactive `knowledge-schedule-batches` model now retains a separately
+The `knowledge-schedule-batches` model retains a separately
 versioned occurrence artifact pointing to the existing selection and frozen
 evidence, with typed occurrence-to-batch columns. Its fixed request fragment is
-now composed by native batch admission and owned dispatcher selection. Schema
-activation in the application is still pending. It must not reuse the legacy scheduled-input
+composed by native batch admission and owned dispatcher selection. Its schema
+is installed in the private application control store. It must not reuse the legacy scheduled-input
 fingerprint or `last-processed-input`: those record certified filing for the
 older whole-selection path, not an incremental discovery cursor.
 
@@ -254,7 +255,7 @@ owns its claim. Changed claims, revisions or active pointers do invalidate it.
 The first retention acknowledgement is required to continue dispatch. Finding
 an identical artifact or row after uncertainty does not recreate that ownership.
 
-The inactive request fragment consults the reverse binding from the actual
+The request fragment consults the reverse binding from the actual
 request row and requires its batch markers to agree with the intent, including
 when the intent omits its schedule marker. Native batch-claim composition now
 invokes this fragment unconditionally. Dropping that marker must not
@@ -300,8 +301,9 @@ and real native Job start/settlement. Altering the claim or deleting/corrupting
 joint linkage at the Job boundary prevents the body from starting. Disposable
 native echo tests now drain two bounded batches and then skip empty; scripted
 provider/SCI tests file a proposal, hold the stream for review, dismiss it, and
-process the next prefix. Recovery for linked batches and runtime
-activation remain pending.
+process the next prefix. Recovery for linked batches remains pending. Application
+startup uses the existing single owned scheduler; this installs no default
+schedule or execution allowance.
 
 Certified candidate failure is staged under the native read extent, then reconciled
 from its captured immutable outcome only after completion announcement is durable.
@@ -438,7 +440,7 @@ another batch claims them. Conflicting decisions and exhausted generation bounds
 are held. This relies on canonical writers and atomic transactions; matching
 hashes do not authenticate arbitrarily fabricated database records.
 
-Generation is required in this inactive alpha's stream snapshots. Old private
+Generation is required in this alpha's stream snapshots. Old private
 development snapshots need a fresh alpha home; this work adds no migration layer.
 
 Clean stream retirement has a separate `active → retiring → retired` lifecycle.
