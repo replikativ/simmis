@@ -17,6 +17,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.model.workers :as workers]
             [is.simm.ops.work :as work]
+            [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.knowledge-outputs :as knowledge-outputs]
             [is.simm.ops.worker-credentials :as credentials]
             [is.simm.ops.worker-files :as files]
@@ -228,6 +229,7 @@
    current room, resolve a provider, execute source or run authored checkers."
   [snapshot input config & [captured]]
   (checked! workflow-schema input)
+  (execution-origin/require-copied-context! (:files snapshot))
   (let [{:keys [source inputs task] :as prepared}
         (workflow-runs/prepare-source snapshot (select-keys input workflow-runs/source-fields) captured)
         modes (into {} (map (juxt :path :mode)) (:manifest snapshot))

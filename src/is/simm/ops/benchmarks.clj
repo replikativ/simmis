@@ -18,6 +18,7 @@
             [is.simm.ops.cli-owner :as cli-owner]
             [is.simm.ops.benchmark-dataset :as dataset]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
+            [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.work :as work]
             [is.simm.ops.work-sandbox :as work-sandbox]
             [is.simm.ops.workflows :as workflows]
@@ -94,6 +95,7 @@
    allowance; each gets at most its integer share."
   [execution snapshot {:keys [name expected-bundle models repetitions cases limits] :as input}]
   (when-not (m/validate (if (= execution :cli-text) cli-schema schema) input) (invalid! "Invalid benchmark request"))
+  (execution-origin/require-copied-context! (:files snapshot))
   (let [inspection (workflows/inspect-snapshot name snapshot)]
     (when-not (:ok inspection) (invalid! "Workflow bundle is not structurally valid"))
     (when-not (= (str expected-bundle) (:bundle inspection))

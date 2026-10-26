@@ -528,8 +528,8 @@ state, and immutable binding as a `store-ref`. That binding identifies the
 canonical Request intent/claim, Job, publication target and exact physical
 checkpoint. The checkpoint selection belongs to Request identity; random root
 and creation tokens do not. This relation neither advances a discovery cursor
-nor changes execution status. The internal retention API is not yet invoked by
-ordinary workflow submission. See [checkpoint retention](checkpoint-retention.md).
+nor changes execution status. Native retained-batch submission uses it only for
+explicit checkpoint execution policy. See [checkpoint retention](checkpoint-retention.md).
 
 The same journal admits `:task`, `:benchmark` and `:allowance` requests.
 Benchmark intents pin the client submission, canonical ExperimentDef, resolved

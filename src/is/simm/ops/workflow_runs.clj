@@ -13,6 +13,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.work :as work]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
+            [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.ops.knowledge-admission :as knowledge-admission]
             [is.simm.model.knowledge-publication :as publication]
@@ -315,9 +316,15 @@
 (defn prepare
   "Construct from ONE immutable source snapshot. The bundle is task data;
    provider, tool/effect surface, limits and evaluator remain host policy."
-  [snapshot {:keys [model limits] :as input} & [captured]]
+  [snapshot {:keys [model limits] :as input} & [captured checkpoint-selection]]
   (when-not (m/validate schema input) (invalid! "Invalid workflow execution"))
   (let [{:keys [task inputs source world-setup workflow]} (prepare-source snapshot (select-keys input source-fields) captured)
+        checkpoint-policy (execution-origin/validate-execution! source limits)
+        _ (when-not (= (some? checkpoint-policy) (some? checkpoint-selection))
+            (invalid! "Checkpoint workflows require the fixed retained-batch HOST admission"))
+        world-setup (if checkpoint-selection
+                      (knowledge-workspace/with-checkpoint world-setup checkpoint-selection)
+                      world-setup)
         prepared (work/prepare {:request-id (:request-id input) :task task :model model :limits limits})
         base (:environment prepared)
         evaluator (cond-> (:evaluator prepared)
@@ -342,8 +349,9 @@
    owner data remains outside the persisted basis and is rechecked by work."
   [snapshot input proof mapping owner]
   (let [{:keys [frozen source-origin origin]} proof
+        selected (execution-origin/selection (:files snapshot) proof)
         prepared (bind-publication
-                  (prepare snapshot (dissoc input :expected-owned-source) (:captured frozen))
+                  (prepare snapshot (dissoc input :expected-owned-source) (:captured frozen) selected)
                   (select-keys frozen [:captured :publication-basis]))
         prepared (-> prepared
                      (assoc-in [:basis :submission] input)
@@ -352,7 +360,8 @@
                      (assoc-in [:basis :source-origin]
                                {:revision (:source-revision source-origin) :target-stamp (:target-stamp source-origin)
                                 :target (:target source-origin) :manifest (:manifest snapshot)})
-                     (assoc :knowledge/owner owner))]
+                     (assoc :knowledge/owner owner)
+                     (cond-> selected (assoc-in [:basis :knowledge/checkpoint] selected)))]
     (batch-proof/verify-input! proof (:basis prepared))
     prepared))
 
@@ -363,7 +372,7 @@
   (let [id (requests/request-id party room-id (:request-id input))]
     (if-let [row (requests/get-request conn id)]
       (let [retained (:value (artifact/get-bounded-value (artifact/datahike-store conn)
-                                                        (:work.request/payload-ref row) (* 128 1024 1024)))
+                                                         (:work.request/payload-ref row) (* 128 1024 1024)))
             batch? (or (:work.request/knowledge-batch row) (:work.request/knowledge-frozen row)
                        (contains? (:input retained) :knowledge/batch)
                        (contains? (:input retained) :knowledge/batch-control))]

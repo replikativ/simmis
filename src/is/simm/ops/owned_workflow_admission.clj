@@ -5,6 +5,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.owned-room-operation :as room-operation]
             [is.simm.ops.knowledge-batch-inputs :as batch-inputs]
+            [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.ops.owned-knowledge-discovery :as discovery]
             [is.simm.ops.owned-reads :as reads]
@@ -63,7 +64,7 @@
      (when binding
        (storage! #(with-source! host principal handle original-room
                     (fn [] (owned/validate! (:control-db current) principal :merge
-                                           (:room-id original) (:room binding) binding)))))
+                                            (:room-id original) (:room binding) binding)))))
      current)))
 
 (defn- retry! [conn original input]
@@ -94,12 +95,12 @@
   (let [enough?
         (storage!
          #(room-operation/with-current!
-           host principal handle original-room
-           (fn []
-             (binding [ec/*execution-context* (:ctx (:room original-room))]
-               (let [balance (resource/balance (:room original-room))]
-                 (every? (fn [[unit amount]] (>= (get balance unit 0M) amount))
-                         (work/resources (:limits input))))))))]
+            host principal handle original-room
+            (fn []
+              (binding [ec/*execution-context* (:ctx (:room original-room))]
+                (let [balance (resource/balance (:room original-room))]
+                  (every? (fn [[unit amount]] (>= (get balance unit 0M) amount))
+                          (work/resources (:limits input))))))))]
     (current! host principal handle original nil)
     (lifetime/check-current!)
     (when-not enough? (fail! ::allowance "Insufficient room execution allowance for this workflow"))))
@@ -122,7 +123,7 @@
       ready
       (let [_ (when-not (= snapshot (:snapshot ready)) (unavailable!))
             proof (storage! #(batch-proof/ready! control-conn (:party original) (:room-id original)
-                                                (:batch-origin ready)))
+                                                 (:batch-origin ready)))
             frozen (:frozen proof)
             source (:source-origin proof)
             _ (when-not (and (= source (:source-origin ready))
@@ -143,31 +144,32 @@
 (defn- capture-source!
   [host principal handle original input original-room]
   (with-source!
-   host principal handle original-room
-   (fn []
-     (let [binding (storage! #(reads/resolve-host-read! host principal handle))
-           _ (when-not (and (= (select-keys original [:room-id :party])
-                              (select-keys binding [:room-id :party]))
-                            (or (nil? original-room) (identical? (:room original-room) (:room binding))))
-               (unavailable!))
-           _ (storage! #(work/authorize-in! (:control-db binding) principal (:room-id binding)))
-           manifest (storage! #(workflows/manifest-in (:db binding) (:name input)))
-           revision (storage! #(sources/source-id binding (:name input) manifest))]
-       (when-not (uuid? revision) (unavailable!))
-       (when-not (= revision (:expected-owned-source input))
-         (fail! ::conflict "Workflow source changed; reload metadata"))
-       (let [snapshot (storage! #(workflows/snapshot-in (:db binding) (:name input)))
-             _ (when-not (= manifest (:manifest snapshot)) (unavailable!))
-             declaration (storage! #(batch-inputs/declaration (:files snapshot)))
-             resolution (when-not declaration
-                          (storage! #(workflows-run/resolve-admission-in
-                                      (:db binding) (select-keys (:target binding) [:registry-system :runtime-system])
-                                      snapshot (select-keys input workflows-run/source-fields))))]
-         (when (and (:publication-basis resolution)
-                    (not= (:target binding) (get-in resolution [:publication-basis :target])))
-           (unavailable!))
-         {:binding binding :snapshot snapshot :revision revision
-          :declaration declaration :resolution resolution})))))
+    host principal handle original-room
+    (fn []
+      (let [binding (storage! #(reads/resolve-host-read! host principal handle))
+            _ (when-not (and (= (select-keys original [:room-id :party])
+                                (select-keys binding [:room-id :party]))
+                             (or (nil? original-room) (identical? (:room original-room) (:room binding))))
+                (unavailable!))
+            _ (storage! #(work/authorize-in! (:control-db binding) principal (:room-id binding)))
+            manifest (storage! #(workflows/manifest-in (:db binding) (:name input)))
+            revision (storage! #(sources/source-id binding (:name input) manifest))]
+        (when-not (uuid? revision) (unavailable!))
+        (when-not (= revision (:expected-owned-source input))
+          (fail! ::conflict "Workflow source changed; reload metadata"))
+        (let [snapshot (storage! #(workflows/snapshot-in (:db binding) (:name input)))
+              _ (when-not (= manifest (:manifest snapshot)) (unavailable!))
+              _ (storage! #(execution-origin/validate-execution! (:files snapshot) (:limits input)))
+              declaration (storage! #(batch-inputs/declaration (:files snapshot)))
+              resolution (when-not declaration
+                           (storage! #(workflows-run/resolve-admission-in
+                                       (:db binding) (select-keys (:target binding) [:registry-system :runtime-system])
+                                       snapshot (select-keys input workflows-run/source-fields))))]
+          (when (and (:publication-basis resolution)
+                     (not= (:target binding) (get-in resolution [:publication-basis :target])))
+            (unavailable!))
+          {:binding binding :snapshot snapshot :revision revision
+           :declaration declaration :resolution resolution})))))
 
 (defn- submit-owned!
   "Fixed HOST admission. Exact retries are source/provider-free;

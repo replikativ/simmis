@@ -1,9 +1,42 @@
 # Request checkpoint retention
 
 The internal HOST API in `ops/work_request_checkpoints.clj` retains an exact
-physical source checkpoint independently of a knowledge discovery cursor. It
-is not exposed through MCP, SCI or the browser, and ordinary workflow admission
-does not invoke it yet. It creates no scheduler, execution engine or wallet.
+physical source checkpoint independently of a knowledge discovery cursor. The
+fixed native retained-batch workflow admission uses it for the explicit policy
+below. The native root API is not exposed through MCP, SCI or the browser. It
+creates no scheduler, execution engine or wallet.
+
+## Explicit execution policy
+
+Pinned workflow source opts in through `execution-origin.edn`:
+
+```edn
+{:version 1
+ :workspace :retained-batch-checkpoint
+ :retention :request-evidence-v1}
+```
+
+This closed policy cannot name a commit or store. HOST admission derives those
+from the canonical retained batch proof. The existing `input-batching.edn`
+must explicitly select `:context-paths []`, `:max-context-files 0` and
+`:max-context-bytes 0`; trigger file/byte limits remain unchanged. Selected
+trigger evidence is still copied and verified. Additional context is available
+through ordinary virtual file operations at the exact initial repository
+checkpoint, instead of copying every wiki body into the inputs.
+
+This policy requires explicit `discard` settlement for the execution world.
+Generated `/out/wiki` files remain retained and reviewable as ordinary artifact
+Proposals with publication-basis conflict checks. A whole historical Run-world
+merge could also include inherited C1 dirty/staged changes; it is not the
+publication route for this policy. Incompatible requests and schedule
+deployments are refused before discovery or pinning, without rewriting intent.
+
+The policy selects the whole initial chosen repository, not a per-path read
+restriction or an actual-read receipt. It does not freeze attached repositories
+or external inputs. Batch processing still acknowledges only its selected
+trigger prefix. The shipped v4 starter retains copied-context behavior. Workers
+and benchmark entry points explicitly reject the new policy until they support
+the corresponding checkpoint/clean-fixture admission.
 
 ## Identity and ownership
 
@@ -26,6 +59,14 @@ These return values are inert HOST coordination data, not capabilities. The
 owning HOST must retain its original physical source extent and current
 authorization, invoke native creation once, and recheck authority before any
 prediction or Run admission. No native handles are stored in Request data.
+
+The synchronous Job handoff holds the existing physical Room-operation lease
+through source resolution, intent publication, pin IO and readback. It rechecks
+the original App, Room, control mapping, target and physical configuration after
+IO, then releases that source lease before forking. The setup reference carries
+the checkpoint through every wrapper. Preparation requires the actual Run Room's
+native fork descriptor to name the exact checkpoint on the selected overlay;
+matching repository/store identity alone is insufficient.
 
 ## Native acknowledgement
 
@@ -59,3 +100,10 @@ unreachable control blob while the Request pin retains C1 and its content.
 Other tests exercise concurrent contenders, lost acknowledgements, partial
 registry/record publication, target mismatch, missing batch markers and Job
 settlement. They perform no inference or operations on user stores.
+
+Native workflow tests additionally change the parent from C1 to C2 before
+execution, read C1 from a deterministic SCI candidate, and retain context beyond
+the old whole-context copy limit without copying it. Fault tests admit no
+resources/candidate after lost pin ACK, revoked authority, retarget or App fence.
+A real Room-close test swallows interruption inside pin IO and verifies teardown
+waits for physical completion and Job cleanup before closing the context.
