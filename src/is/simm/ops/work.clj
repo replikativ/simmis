@@ -9,6 +9,7 @@
             [dvergr.artifact :as artifact]
             [dvergr.catalog.workspace :as workspace]
             [dvergr.jobs :as jobs]
+            [dvergr.model.registry :as models]
             [dvergr.resource :as resource]
             [is.simm.model.access :as access]
             [is.simm.model.knowledge-batches :as batches]
@@ -49,6 +50,17 @@
    admission gateway. Subscription dollars are zero incremental spend, not
    zero usage; dispatch, model-step and wall limits still apply. No CLI."
   #{:openai :anthropic :fireworks :codex-subscription})
+
+(defn model-eligibility
+  "Metadata-only native candidate eligibility, preserving ordinary aliases.
+   Does not prepare a client, candidate, environment, reservation or dispatch."
+  [model]
+  (models/ensure-models-loaded!)
+  (let [id (models/resolve-alias model) definition (models/get-model id)]
+    (cond
+      (nil? definition) {:status :unknown}
+      (not (contains? dispatch-accounted-providers (:provider definition))) {:status :unsupported}
+      :else {:status :eligible :policy {:provider (:provider definition) :model id}})))
 
 (def completion
   (evaluation/make-evaluator

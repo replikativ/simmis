@@ -3,7 +3,7 @@
    HOST callers must authorize the exact stream/source, verify/pin the new
    published checkpoint, and retain both pins across this write. A discovery
    only enqueues source versions. It never certifies a Run or marks it processed.
-   Not registered in the live runtime or exposed as a tool."
+   Private control schema; effects remain owned by fixed HOST orchestration."
   (:require [datahike.api :as d]
             [dvergr.artifact :as artifact]
             [hasch.core :as hasch]

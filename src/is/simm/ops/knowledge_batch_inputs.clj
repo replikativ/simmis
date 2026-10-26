@@ -1,5 +1,5 @@
 (ns is.simm.ops.knowledge-batch-inputs
-  "Inactive bounded batch planning and frozen bytes. The v2 HOST envelope
+  "Bounded batch planning and frozen bytes. The v2 HOST envelope
    retains the existing v1 exact-evidence codec; neither is batch authority.
    No claim, artifact publication, request admission or provider execution."
   (:require [clojure.edn :as edn]

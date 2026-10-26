@@ -30,8 +30,6 @@
            grant (work/resources (:limits input))
            team (roster/make-agent (roster/make-roster {:id :batch-execution/team})
                                    {:id :candidate :program {:kind :echo}})]
-       (binding [ec/*execution-context* (:ctx room)]
-         (resource/mint! room {:id (random-uuid) :resources grant}))
        (with-redefs [work/prepare (fn [input]
                                    (is (empty? (get @(:meta room) preparation/leases-key)))
                                    (-> (@#'base/model-free-preparation input)

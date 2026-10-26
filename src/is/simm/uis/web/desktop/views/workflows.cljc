@@ -13,6 +13,19 @@
             [clojure.string :as str])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 
+(defn- admission-message [reply]
+  (case (:status reply)
+    :empty "No new knowledge to process."
+    :held (str (case (:batch-state reply)
+                 :capturing "An input capture is unresolved."
+                 :ready "A prepared input batch is held."
+                 :submitted "An input batch has already been admitted; inspect its Run status."
+                 :review "An input batch is waiting for review."
+                 "This workflow has an active input batch.")
+               (when (uuid? (:batch reply)) (str " Batch " (subs (str (:batch reply)) 0 8) ".")))
+    (str "Run: " (let [state (or (:state reply) (:status reply) :submitted)]
+                    (if (keyword? state) (name state) state)))))
+
 (defn- field [label value change]
   (el/label {:key label :class "workflow-field"}
             (el/span {} label)
@@ -368,7 +381,7 @@
                                                   (el/p {} (str "Request: " (get-in submission [:payload :request-id]))))
                                                 (when-let [reply (:reply submission)]
                                                   (el/div {}
-                                                          (el/p {} (str "Admission: " (:state reply)))
+                                                          (el/p {:role "status"} (admission-message reply))
                                                           (when-let [job (:job reply)]
                                                             (el/button {:on-click (fn [_] ((:open-run actions) job))} "Open Run and results"))))
                                                 (when (and merge? (editor/collectable-output-request draft))

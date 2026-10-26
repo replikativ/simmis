@@ -5,6 +5,7 @@
             [is.simm.model.access :as access]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.owned-reads :as reads]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [org.replikativ.spindel.engine.core :as ec]))
 
 (def owned-actions
@@ -65,3 +66,14 @@
                       (.interrupt (Thread/currentThread))
                       {:allow? false})
                     (catch Throwable _ {:allow? false}))))))
+
+(defn from-application
+  "Build the normal-human policy under an entered original App operation.
+   Copy only its exact owner/lifetime, never MCP transport identity or ceilings."
+  [application-host]
+  (lifetime/check-current!)
+  (reads/current-host-control-db! application-host)
+  (let [{:keys [control-conn execution-ctx]} (::reads/owner application-host)
+        enter (get-in application-host [:config :host-lifecycle :with-operation])]
+    (when-not (fn? enter) (refuse!))
+    (assoc-in (host control-conn execution-ctx) [:config :host-lifecycle :with-operation] enter)))

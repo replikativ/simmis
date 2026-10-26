@@ -1,7 +1,8 @@
 (ns is.simm.ops.owned-workflow-admission
-  "Inactive fixed human HOST saved-workflow admission. No transport, alternate
+  "Fixed human HOST saved-workflow admission. No transport, alternate
    runner, selected fallback, journal or configurable authority/source loader."
-  (:require [is.simm.model.work-requests :as requests]
+  (:require [dvergr.resource :as resource]
+            [is.simm.model.work-requests :as requests]
             [is.simm.ops.owned-room-operation :as room-operation]
             [is.simm.ops.knowledge-batch-inputs :as batch-inputs]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
@@ -74,6 +75,35 @@
       (unavailable!))
     result))
 
+(defn- batch-readiness!
+  "Predictable refusal before claiming source versions, not a reservation.
+   Every original-Room extent ends before discovery/provider/native execution."
+  [host principal handle original original-room input]
+  (lifetime/check-current!)
+  (current! host principal handle original nil)
+  (let [eligibility (storage! #(work/model-eligibility (:model input)))]
+    (case (:status eligibility)
+      :eligible
+      (when-not (and (= #{:status :policy} (set (keys eligibility)))
+                     (= #{:provider :model} (set (keys (:policy eligibility))))
+                     (contains? work/dispatch-accounted-providers (get-in eligibility [:policy :provider]))
+                     (string? (get-in eligibility [:policy :model])))
+        (unavailable!))
+      (:unknown :unsupported) (fail! ::model "Select an available model with native dispatch accounting")
+      (unavailable!)))
+  (let [enough?
+        (storage!
+         #(room-operation/with-current!
+           host principal handle original-room
+           (fn []
+             (binding [ec/*execution-context* (:ctx (:room original-room))]
+               (let [balance (resource/balance (:room original-room))]
+                 (every? (fn [[unit amount]] (>= (get balance unit 0M) amount))
+                         (work/resources (:limits input))))))))]
+    (current! host principal handle original nil)
+    (lifetime/check-current!)
+    (when-not enough? (fail! ::allowance "Insufficient room execution allowance for this workflow"))))
+
 (defn- submit-batch!
   [host principal handle original original-room binding input snapshot declaration]
   ;; Overrides need their own retained invocation identity before they can be
@@ -82,6 +112,7 @@
     (fail! ::invalid "Incremental knowledge workflows currently use their default inputs"))
   (lifetime/check-current!)
   (when-not original-room (unavailable!))
+  (batch-readiness! host principal handle original original-room input)
   (let [{:keys [control-conn execution-ctx]} (::reads/owner host)
         ready (storage! #(discovery/prepare-batch!
                           host principal handle
@@ -100,6 +131,7 @@
                 (unavailable!))
             _ (current! host principal handle original binding original-room)
             _ (lifetime/check-current!)
+            _ (batch-readiness! host principal handle original original-room input)
             prepared (storage! #(workflows-run/prepare-frozen-batch
                                  snapshot input proof (:control-revision ready)
                                  {:host host :original original-room :handle handle :ticket lifetime/*ticket*}))
@@ -138,7 +170,7 @@
           :declaration declaration :resolution resolution})))))
 
 (defn- submit-owned!
-  "Fixed inactive HOST admission. Exact retries are source/provider-free;
+  "Fixed HOST admission. Exact retries are source/provider-free;
    fresh source IO uses short original-Room extents when lifetime is installed."
   [host principal handle input]
   (when-not (and (m/validate schema input)
@@ -179,7 +211,7 @@
 
 (defn submit!
   "Owned admission uses the original App extent when installed. Incremental
-   batches require it; ordinary inactive adapters retain their existing contract.
+   batches require it; ordinary adapters retain their existing contract.
    No source lease extends into provider preparation or native world execution."
   [host principal handle input]
   (if-let [with-operation (get-in host [:config :host-lifecycle :with-operation])]

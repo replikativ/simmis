@@ -23,12 +23,14 @@
 
 (defn- fixture [f]
   (@#'fixture/with-fixture
-   (fn [{:keys [conn batch-input w] :as data}]
+   (fn [{:keys [conn batch-input w room] :as data}]
      (d/transact conn requests/schema)
+     (binding [ec/*execution-context* (:ctx room)]
+       (resource/mint! room {:id (random-uuid) :resources (work/resources proof-fixture/limits)}))
      (f (assoc data :input {:request-id (random-uuid) :name "wiki"
                            :expected-bundle (:expected-bundle batch-input)
                            :expected-owned-source (:expected-source batch-input)
-                           :model "no-provider" :limits proof-fixture/limits}
+                           :model "codex-subscription-luna" :limits proof-fixture/limits}
                     :principal (ops/party-principal (:owner w)) :handle (str (:room w)))))))
 
 (defn- claim-only [conn ctx principal room-id room input prepared]
@@ -93,8 +95,6 @@
   (fixture
    (fn [{:keys [conn host room principal handle input]}]
      (let [grant (work/resources (:limits input)) started (atom 0)]
-       (binding [ec/*execution-context* (:ctx room)]
-         (resource/mint! room {:id (random-uuid) :resources grant}))
        (with-redefs [work/prepare (fn [input]
                                    (assoc (@#'proof-fixture/model-free-preparation input)
                                           :start! (fn [_] (swap! started inc) (sp/spin :done))))]

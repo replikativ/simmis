@@ -384,7 +384,7 @@
             (fn [host]
               (binding [ec/*execution-context* (:execution-ctx host)]
                 (owned-reads/current-host-control-db! host)
-                (props/decide-in! (get-in host [::owned-reads/owner :control-conn])
+                (props/decide-in! (get-in host [:is.simm.ops.owned-reads/owner :control-conn])
                                  id party action {:note note :body body})))))))))
 
 (defn-spin-remote request-changes!

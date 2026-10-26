@@ -1,5 +1,5 @@
 (ns is.simm.model.knowledge-batches
-  "Inactive canonical batch claim/freeze/request-link fragments. Not an
+  "Canonical batch claim/freeze/request-link fragments. Not an
    executor, dispatch permission, artifact verifier or processing certificate.
    HOST composes current authorization in the SAME serialized transaction."
   (:require [datahike.api :as d]

@@ -1,9 +1,16 @@
 # Incremental knowledge discovery
 
-This implementation is an internal, inactive foundation. Its schema and HOST
-operations are not registered in the application. Existing wiki maintenance
-continues to use its existing frozen whole-selection inputs. Discovery performs
-no model dispatch, checker evaluation, source processing, or wiki publication.
+Incremental input batching is an explicit opt-in for owned knowledge workflows.
+Its operational schemas live in the private control database. Browser commands
+capture their original App before queueing, then enter its lifetime on the actual
+worker with normal human authorization. The existing App-owned scheduler shares
+the same discovery stream; no second scheduler or discovery service is installed.
+
+The shipped wiki starter remains on its existing frozen whole-selection inputs
+until its source explicitly declares batching. Registration creates no streams,
+allowances or enabled schedules. Discovery itself performs no model dispatch,
+checker evaluation, source processing, or wiki publication. Recovery and retirement
+remain internal fixed HOST operations, without public tools or UI controls.
 
 ## Source and stream identity
 
@@ -329,6 +336,16 @@ the canonical processing receipt and never calls the legacy input-cursor writer.
 A proposed filing completes the occurrence while holding the stream in review;
 later due occurrences skip busy. Acceptance processes the selected versions;
 dismissal skips them. A later normal occurrence may then take the next prefix.
+
+Manual incremental admission checks an exact canonical request before any fresh
+source, model or allowance reads. Fresh admission preserves native model aliases,
+checks dispatch-accounted model eligibility and both requested allowance dimensions
+before discovery, then repeats readiness before provider preparation. Balance
+reads hold a short original-Room extent that ends before discovery or execution.
+These checks prevent predictable unfunded holds; they do not reserve resources.
+Concurrent consumption and later failures still require the existing native
+allocation checks and explicit recovery. Known allowance/model refusals have
+bounded actionable messages; opaque helper errors remain unavailable.
 
 ```mermaid
 flowchart LR
