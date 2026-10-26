@@ -322,3 +322,22 @@
   (is (= "Input batch awaiting review" (editor/batch-label {:status :observed :phase :review})))
   (is (= "Input batch closed" (editor/batch-label {:status :observed :phase :closed})))
   (is (= "Input batch status unavailable" (editor/batch-label {:status :observed :phase :unexpected}))))
+
+
+(deftest personal-stream-observations-belong-to-saved-source-and-preserve-drafts
+  (let [bundle "34e2519c-9acb-4a13-9ff1-36ff01ac600d"
+        saved (assoc-in source [:inspection :bundle] bundle)
+        state {:selected "echo" :drafts {"echo" (-> (editor/draft saved)
+                                                   (assoc-in [:files "workflow.edn"] "Unsaved code")
+                                                   (assoc :submission {:intent :pending}))}}
+        request (editor/stream-request state)
+        reply {:name "echo" :source-revision (:revision saved) :bundle bundle :status :not-discovered}
+        result (editor/observe-stream state request reply)]
+    (is (= {:name "echo" :expected-source (:revision saved) :expected-bundle bundle} request))
+    (is (= (:drafts state) (:drafts result)))
+    (is (= :ready (:workflow-stream-status result)))
+    (is (= reply (get-in result [:workflow-stream :reply])))
+    (is (= state (editor/observe-stream state (assoc request :name "other") reply)))
+    (is (nil? (editor/stream-request (assoc-in state [:drafts "echo" :source-stale?] true))))
+    (is (thrown? clojure.lang.ExceptionInfo (editor/observe-stream state request (assoc reply :source-revision "foreign")))))
+    (is (nil? (editor/stream-request {:selected "new"}))))

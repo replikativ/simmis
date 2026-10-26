@@ -50,9 +50,12 @@
                         (:selected (state))
                         (select-keys (:requests (state)) [[:save (:selected (state))]
                                                           [:source (:selected (state))]])]))
+        verification-generation (fn [] [(authority-generation) (:retry (state)) (:stream-registered (state))])
         readiness-generation (fn []
                                [(authority-generation) (:retry (state)) (:stream-registered (state))
                                 (:readiness-revision (state))])
+        stream-generation (fn [] [(authority-generation) (:retry (state)) (:stream-registered (state))
+                                  (editor/stream-request (state))])
         change! (fn [name f & args] (apply update! update-in [:drafts name] f args))
         request!
         (fn [slot selected invoke consume & [stale-consume]]
@@ -105,15 +108,22 @@
                         ;; Retire transport bookkeeping, NOT original request
                         ;; payloads kept with each draft for identical retries.
                         (update! #(-> % (assoc :observation-owner owner :loading {} :requests {})
-                                      (dissoc :activations :activation-status :readiness :readiness-status))))
-                    gen (generation)]
+                                      (dissoc :activations :activation-status :readiness :readiness-status :workflow-stream :workflow-stream-status :observed-stream-generation))))
+                    gen (generation) verification-gen (verification-generation)]
                 (when (not= (not allowed?) (:access-denied? (state)))
                   (update! assoc :access-denied? (not allowed?)))
                 (when (not= gen (:observed-generation (state)))
                   (update! (fn [s]
-                             (-> (cond-> (assoc s :observed-generation gen)
-                                   (not= gen (get-in s [:observations :activations :completed]))
-                                   (assoc :activation-status :checking))
+                             (cond-> (assoc s :observed-generation gen)
+                               (not= gen (get-in s [:observations :activations :completed]))
+                               (assoc :activation-status :checking)))))
+                (when (not= verification-gen (:observed-verification-generation (state)))
+                  ;; Selecting a tab does not change its saved source. Only
+                  ;; authority/source invalidation hints retire verification;
+                  ;; otherwise returning to a completed source can stay stale
+                  ;; while its identical observation generation suppresses IO.
+                  (update! (fn [s]
+                             (-> s (assoc :observed-verification-generation verification-gen)
                                  (update :drafts (fn [drafts] (into {} (map (fn [[n d]] [n (editor/unverified d)])) drafts)))))))
                 (let [read-gen (readiness-generation)]
                   (when (not= read-gen (:observed-readiness-generation (state)))
@@ -127,7 +137,7 @@
                   ;; must not suppress a fresh authorized observation. Keep
                   ;; all command/uncertain-setup journals in the drafts.
                   (update! #(dissoc % :permissions :list :activations :activation-status :readiness :readiness-status
-                                   :observations :observation-accepted)))
+                                   :observations :observation-accepted :workflow-stream :workflow-stream-status :observed-stream-generation)))
                 (when (and socket allowed?)
                   (observe! :stream #(vector (:retry (state)))
                             #(memory-remote/prepare-memory-stream! web/server-id room)
@@ -146,6 +156,19 @@
                                               (update :errors dissoc :readiness)))
                             (fn [s _] (-> s (dissoc :readiness) (assoc :readiness-status :unavailable)
                                           (assoc-in [:errors :readiness] "Model and allowance observations are unavailable. Retry updates when the connection is ready."))))
+                  (if-let [request (editor/stream-request (state))]
+                    (let [gen (stream-generation)]
+                      (when (not= gen (:observed-stream-generation (state)))
+                        (update! assoc :observed-stream-generation gen :workflow-stream-status :checking))
+                      (observe! :workflow-stream stream-generation
+                                #(remote/load-workflow-stream-status! web/server-id room request)
+                                (fn [s reply] (editor/observe-stream s request reply))
+                                (fn [s _] (-> s (dissoc :workflow-stream)
+                                              (assoc :workflow-stream-status :unavailable)))))
+                    (when (or (:workflow-stream (state)) (:workflow-stream-status (state))
+                              (:observed-stream-generation (state))
+                              (get-in (state) [:observations :workflow-stream]))
+                      (update! editor/forget-stream)))
                   (observe! :wiki-setup generation
                             #(remote/inspect-wiki-maintenance-setup! web/server-id room)
                             editor/observe-wiki-setup

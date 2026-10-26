@@ -741,6 +741,7 @@
      "load-workflow-list!"     {:action R :resource (room :room-id-str)}
      "load-workflow-schedules!" {:action R :resource (room :room-id-str)}
      "load-workflow-readiness!" {:action R :resource (room :room-id-str)}
+     "load-workflow-stream-status!" {:action R :resource (room :room-id-str)}
      "prepare-workflow-metadata-stream!" {:action R :resource (always :authenticated)}
      "load-workflow-source!"   {:action R :resource (room :room-id-str)}
      "save-workflow-source!"   {:action W :resource (room :room-id-str)}

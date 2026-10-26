@@ -25,6 +25,7 @@
             #?(:clj [is.simm.ops.knowledge-output-service :as knowledge-output])
             #?(:clj [is.simm.ops.wiki-setup :as wiki-setup])
             #?(:clj [is.simm.ops.workflow-readiness :as readiness])
+            #?(:clj [is.simm.ops.knowledge-stream-status :as stream-status])
             #?(:clj [is.simm.runtimes.context :as context])))
 
 #?(:clj
@@ -308,6 +309,13 @@
   [server-id room-id-str]
   (spin-remote server-id [room-id-str]
                #?(:clj (let [body (readiness/prepare-readiness (access/authenticated-party-id) room-id-str)]
+                         (await (blocking/blocking body)))
+                  :cljs nil)))
+
+(defn-spin-remote load-workflow-stream-status!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (let [body (stream-status/prepare-status (access/authenticated-party-id) room-id-str request)]
                          (await (blocking/blocking body)))
                   :cljs nil)))
 

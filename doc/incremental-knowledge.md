@@ -507,3 +507,33 @@ adoption. Existing Run and Proposal links retain their own checked associations.
 An unbound occurrence does not establish that its stream is empty; capturing
 work, a different active batch, backlog and source-size diagnostics still need
 the separate bounded operational reader. No new polling or writer is introduced.
+
+
+## Personal saved-workflow stream
+
+The selected workflow can observe its authenticated viewer's discovery stream.
+The fixed read accepts only a workflow name and inspected source revision/bundle;
+server code derives author, original Memory target, policy, program and revisit
+epoch from that saved source. Different authors have different streams. This is
+not a room-wide backlog or a schedule creator selector.
+
+The read uses the original App and physical Room lifetime, ordinary read
+membership and final target/source/control validation. It reads bounded workflow
+source and private journal metadata, not evidence bodies. It does not discover,
+claim, capture, fund, recover or execute anything. Missing batching and a missing
+canonical stream are distinct from an observed zero pending count.
+
+The pending count is exact for the validated indexed journal, bounded at 20,000
+entries, and excludes claimed items. Overflow is unavailable rather than a
+truncated exact count. Journal completeness does not imply discovery freshness
+or that a batch is runnable. Freshness is independent: only a fully verified
+published Memory basis can match the recorded cursor. A changed basis can include
+unrelated files; failed verification remains unknown. Active phase is an
+observation with no processing, adoption or artifact-proof claim.
+
+The browser reuses its existing Spindel observation coordinator and Memory/control
+invalidation hints. Ineligible source retires the old observation frame, accepted
+token and display so returning to the same saved source requests fresh facts.
+Local source/form edits and pending commands remain untouched. There is no new
+polling loop, subscription or replicated state model. Source-size planning holds
+and guarded recovery remain separate work.

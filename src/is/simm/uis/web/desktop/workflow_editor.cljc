@@ -67,6 +67,7 @@
   (case (:status batch)
     :unavailable "Input batch status unavailable"
     :observed (case (:phase batch)
+                :capturing "Preparing input batch"
                 :ready "Input batch prepared"
                 :submitted "Input batch admitted"
                 :review "Input batch awaiting review"
@@ -112,6 +113,41 @@
    from knowingly issuing fresh work against an unverified or changed source."
   [draft]
   (and (not (:source-stale? draft)) (nil? (:incoming-source draft))))
+
+(defn stream-request
+  "Read the saved program, independent of local code/form edits. No caller
+   author, stream, epoch or target selector; the HOST derives those facts."
+  [state]
+  (let [name (:selected state) draft (get-in state [:drafts name]) source (:source draft)
+        revision (:revision source) bundle (get-in source [:inspection :bundle])
+        uuid-text? #(and (string? %) (re-matches #"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" %))]
+    (when (and draft (source-current? draft) (get-in source [:inspection :ok])
+               (uuid-text? revision) (uuid-text? bundle))
+      {:name name :expected-source revision :expected-bundle bundle})))
+
+(defn forget-stream [state]
+  (cond-> (dissoc state :workflow-stream :workflow-stream-status :observed-stream-generation)
+    (contains? state :observations) (update :observations dissoc :workflow-stream)
+    (contains? state :observation-accepted) (update :observation-accepted dissoc :workflow-stream)))
+
+(defn observe-stream [state request reply]
+  (if (not= request (stream-request state))
+    state
+    (do
+      (when-not (and (= (:name request) (:name reply))
+                     (= (:expected-source request) (:source-revision reply))
+                     (= (:expected-bundle request) (:bundle reply))
+                     (#{:not-enabled :not-discovered :observed} (:status reply))
+                     (or (not= :observed (:status reply))
+                         (and (#{:active :retiring :retired} (:lifecycle reply))
+                              (integer? (get-in reply [:pending :count]))
+                              (integer? (get-in reply [:pending :limit]))
+                              (<= 0 (get-in reply [:pending :count]) (get-in reply [:pending :limit]) 20000)
+                              (true? (get-in reply [:pending :complete?]))
+                              (#{:current :changed :unknown} (get-in reply [:freshness :status]))
+                              (#{:none :observed :unavailable} (get-in reply [:batch :status])))))
+        (throw (ex-info "Workflow stream observation is invalid" {})))
+      (assoc state :workflow-stream {:request request :reply reply} :workflow-stream-status :ready))))
 
 (defn collectable-output-request
   "Pinned submission presentation, not current source or form settings.

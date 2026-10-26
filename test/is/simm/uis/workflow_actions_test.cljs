@@ -775,3 +775,73 @@
             (is (= :installed (get-in @sig/workflow-editor-state [k :wiki-setup :status])))
             (is (nil? (get-in @sig/workflow-editor-state [k :permissions])))
             (is (= "Unsaved customization" (get-in @sig/workflow-editor-state [k :drafts "a" :files "workflow.edn"])))))))))
+
+
+(deftest selected-stream-observations-are-coalesced-and-late-replies-cannot-restore-old-source
+  (with-state
+    (fn [ui k]
+      (let [requests (atom []) sources (atom []) other (atom [])
+            bundle "34e2519c-9acb-4a13-9ff1-36ff01ac600d"
+            saved #(assoc-in (source % initial-revision) [:inspection :bundle] bundle)
+            reply #(hash-map :name % :source-revision initial-revision :bundle bundle :status :not-discovered)]
+        (with-redefs [remote/load-workflow-stream-status! (deferred requests)
+                      remote/load-workflow-source! (deferred sources)
+                      remote/load-workflow-list! (deferred other)
+                      memory-remote/prepare-memory-stream! (deferred other)]
+          ((:observe ui))
+          ((:ok (first @sources)) (saved "a"))
+          ((:observe ui))
+          (is (= 1 (count @requests)))
+          (dotimes [_ 3] ((:observe ui)))
+          (is (= 1 (count @requests)))
+          ((:change ui) "a" assoc-in [:files "workflow.edn"] "Unsaved code")
+          ((:observe ui))
+          (is (= 1 (count @requests)))
+          ((:select ui) "b" false)
+          ((:observe ui))
+          ((:ok (first @requests)) (reply "a"))
+          (is (nil? (get-in @sig/workflow-editor-state [k :workflow-stream])))
+          ((:ok (last @sources)) (saved "b"))
+          ((:observe ui))
+          (is (= 2 (count @requests)))
+          ((:ok (second @requests)) (reply "b"))
+          (is (= "b" (get-in @sig/workflow-editor-state [k :workflow-stream :reply :name])))
+          (is (= "Unsaved code" (get-in @sig/workflow-editor-state [k :drafts "a" :files "workflow.edn"])))
+          (reset! sig/user-rooms {:rooms []})
+          ((:observe ui))
+          ((:ok (second @requests)) (reply "b"))
+          (is (nil? (get-in @sig/workflow-editor-state [k :workflow-stream])))
+          (is (= 2 (count @requests))))))))
+
+
+(deftest returning-to-the-same-saved-source-retires-old-stream-observations
+  (with-state
+    (fn [ui k]
+      (let [reads (atom []) sources (atom []) other (atom [])
+            bundle "34e2519c-9acb-4a13-9ff1-36ff01ac600d"
+            saved (assoc-in (source "a" initial-revision) [:inspection :bundle] bundle)
+            reply {:name "a" :source-revision initial-revision :bundle bundle :status :not-discovered}]
+        (with-redefs [remote/load-workflow-stream-status! (deferred reads)
+                      remote/load-workflow-source! (deferred sources)
+                      remote/load-workflow-list! (deferred other)
+                      memory-remote/prepare-memory-stream! (deferred other)]
+          ((:observe ui))
+          ((:ok (last @sources)) saved)
+          ((:observe ui))
+          (is (= 1 (count @reads)))
+          ;; First round-trip retires an in-flight frame. The second retires a
+          ;; completed frame: neither may suppress the same request on return.
+          (doseq [expected [2 3]]
+            ((:select ui) "scratch" false)
+            ((:observe ui))
+            (is (nil? (get-in @sig/workflow-editor-state [k :observations :workflow-stream])))
+            ((:select ui) "a" false)
+            ((:observe ui))
+            (is (editor/source-current? (get-in @sig/workflow-editor-state [k :drafts "a"])))
+            (is (= expected (count @reads)))
+            ((:ok (nth @reads (- expected 2))) reply)
+            (is (nil? (get-in @sig/workflow-editor-state [k :workflow-stream])))
+            ((:ok (last @reads)) reply)
+            (is (= :ready (get-in @sig/workflow-editor-state [k :workflow-stream-status])))
+            (dotimes [_ 3] ((:observe ui)))
+            (is (= expected (count @reads)))))))))

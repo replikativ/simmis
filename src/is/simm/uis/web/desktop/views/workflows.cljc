@@ -87,6 +87,32 @@
                                     (el/button {:on-click (fn [_] ((:open-proposal actions) proposal))} "Review proposal")))))
                       (el/button {:on-click (fn [_] ((:open-schedules actions)))} "Manage in Workflows"))))))
 
+(defn- stream-status [state]
+  (let [request (editor/stream-request state)
+        observed (:workflow-stream state)
+        reply (when (= request (:request observed)) (:reply observed))]
+    (when (and request (not= :not-enabled (:status reply)))
+      (el/div {:class "workflow-note" :role "status"}
+              (el/strong {} "Your saved workflow’s stream · ")
+              (cond
+                (= :checking (:workflow-stream-status state)) (el/span {} "Checking recorded inputs…")
+                (= :unavailable (:workflow-stream-status state)) (el/span {} "Status unavailable. No inputs were collected.")
+                (= :not-discovered (:status reply)) (el/span {} "Not discovered yet. Reading this status does not collect evidence.")
+                (= :observed (:status reply))
+                (el/span {}
+                         (str (get-in reply [:pending :count]) " pending source versions in the recorded journal")
+                         (when (not= :active (:lifecycle reply)) (str " · " (name (:lifecycle reply)))))
+                :else (el/span {} "Awaiting a saved-source observation."))
+              (when (and (= :ready (:workflow-stream-status state)) (= :observed (:status reply)))
+                (el/p {} (case (get-in reply [:freshness :status])
+                           :current "Discovery matches the observed Memory snapshot."
+                           :changed "Memory has changed since discovery; changes may include unrelated files."
+                           "Cannot verify whether discovery is current.")
+                        " Counts cover the pending journal, excluding claimed items; they do not establish that another batch can run. "
+                        (if (= :none (get-in reply [:batch :status]))
+                          "No active batch recorded."
+                          (editor/batch-label (:batch reply)))))))))
+
 (defn view [room-name state actions]
   (let [selected (:selected state) draft (get-in state [:drafts selected])
         source (:source draft) form (:form draft)
@@ -136,7 +162,7 @@
                           (el/button {:on-click (fn [_] ((:inspect-wiki-setup actions)))
                                       :disabled (get-in state [:loading :wiki-setup-inspect])} "Check saved setup"))
                         (activation-status state actions "maintain-wiki")
-                        (el/p {} "The starter uses this room’s inbox and transcripts as evidence and wiki files as context, then proposes changes for review. Chat is not automatically filed. Inspect customized source before use. Setup does not choose a model, add allowance or enable a schedule."))))
+                        (el/p {} "The starter uses this room’s inbox, transcripts and captures as evidence and wiki files as context, then proposes changes for review. Chat is not automatically filed. Inspect customized source before use. Setup does not choose a model, add allowance or enable a schedule."))))
             (for [[slot error] (:errors state)]
               (el/div {:key (pr-str slot) :class "proposal-error" :role "alert"}
                       (str (when (vector? slot) (str (second slot) ": ")) error)))
@@ -175,6 +201,7 @@
                                         (el/button {:on-click (fn [_] ((:open-room actions)))} "Discuss in room"))
                                       (when-not (and (= "maintain-wiki" selected) setup-card-visible?)
                                         (activation-status state actions selected))
+                                      (stream-status state)
                                       (el/details {:class "workflow-disclosure" :open (boolean (:source-open? draft))
                                                    :on-toggle (fn [event]
                                                                 (disclosure/remember-open! event #(change assoc :source-open? %)))}

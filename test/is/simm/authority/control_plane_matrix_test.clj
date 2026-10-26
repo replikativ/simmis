@@ -157,6 +157,7 @@
    "load-workflow-list!"     [(c :room MEMBERS)]
    "load-workflow-schedules!" [(c :room MEMBERS)]
    "load-workflow-readiness!" [(c :room MEMBERS)]
+   "load-workflow-stream-status!" [(c :room MEMBERS)]
    "load-workflow-source!"   [(c :room MEMBERS)]
    "save-workflow-source!"   [(c :room MEMBERS)]
    "load-memory-folder!"     [(c :room MEMBERS)]
