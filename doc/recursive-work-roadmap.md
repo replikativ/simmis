@@ -35,16 +35,18 @@ another entity, writer or interaction-state model.
 | 4. Operate default knowledge maintenance | Versioned incremental starter; existing manual/benchmark/schedule kernel; clear backlog, held/review and recovery states | Deterministic model-free schedule/batch tests, preserved customized source, explicit deployment/resources, and proposal/adoption correspondence |
 | 5. Reuse the model for business/research interfaces | Typed business components, explicit SCI interfaces, connected room sites with scoped dynamic handlers, and later simulations | Shared semantic commands and source/world binding; lifecycle and resource ownership; public/private projections explicit; simulated results remain distinct from live facts |
 
-The incremental-input and typed page table/form foundation has landed. The
-bounded report/capture adapters are implemented and locally verified, with
-normal integration CI still required before landing. The component contract is
-documented and reviewed; the first shared Company read presentations and
-existing editor composition are verified. Explicit bounded Markdown snapshots
-and source-positioned saved views in Read mode are also verified. Connected SCI/site hosts
-and a complete standalone editing surface remain later slices. Keep the verified running UI separate from
-new development and use the server/client REPL plus the browser for validation.
-The model-free experiment used for report verification demonstrates execution,
-certified result storage and rendering; it does not benchmark LLM wiki quality.
+The memory foundation includes incremental knowledge inputs, typed Markdown
+page tables/forms, bounded native Scorecard/capture adapters, shared typed
+presentation and explicit portable Markdown snapshots. The versioned wiki
+starter, paused schedule creation and personal stream observations reuse the
+existing workflow kernel. Source-positioned views in the default editor,
+connected SCI/site hosts and a complete standalone editing surface remain
+separate slices.
+
+Keep the verified running UI separate from new development and use the
+server/client REPL plus the browser for validation. The model-free experiment
+used for report verification demonstrates execution, certified result storage
+and rendering; it does not benchmark LLM wiki quality.
 
 ### Shared components before additional interfaces
 
