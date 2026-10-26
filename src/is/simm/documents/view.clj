@@ -424,7 +424,11 @@
             tx (vec (concat missing (when-not canonical? (map #(vector :db/retractEntity %) old)) projection))]
         (assoc base :status :ready :db (if (seq tx) (d/db-with source-db tx) source-db))))))
 
-(defn- same-source? [before after]
+(defn same-source?
+  "Metadata-only stability test on snapshots of the SAME captured connection.
+   Accepts a refreshed wrapper for one published version, never caller authority
+   or permission to substitute another source/derived database."
+  [before after]
   (or (identical? before after)
       ;; A connection refresh may return a new wrapper for the SAME stored
       ;; commit. This is only a stability test on our captured connection,

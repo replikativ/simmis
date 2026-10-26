@@ -47,8 +47,9 @@ another discovery. Discovery never marks an item processed.
 Lost acknowledgements retain an inspectable intent. After a lost native release
 acknowledgement, the old commit may already be garbage collected; absence from
 the root registry permits cleanup completion without restoring that old commit.
-A missing root before discovery publication remains held. Automatic abandonment
-and stream retirement are not implemented.
+A missing root before discovery publication remains held. Abandonment and clean
+stream retirement require the explicit HOST actions described below; discovery
+and recovery never initiate them automatically.
 
 ## Ownership and authorization
 

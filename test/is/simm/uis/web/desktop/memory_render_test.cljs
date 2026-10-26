@@ -6,6 +6,7 @@
             [org.replikativ.spindel.dom.elements :as el]
             [is.simm.documents.rich-text :as rich]
             [is.simm.uis.web.desktop.memory-editor :as editor]
+            [is.simm.uis.web.desktop.property-controls :as property-controls]
             [is.simm.uis.web.desktop.views.memory :as memory]))
 
 (defn- text-node [text] {:kind :Text :text text :children []})
@@ -128,6 +129,7 @@
                :property-drafts {[path page] {(:id field) (assoc (editor/property-draft page-model {:text "0"}) :alias "revenue")}
                                  [path block] {(:id field) (assoc (editor/property-draft block-model {:text "9007199254740993"}) :alias "revenue")}}}
         a {:property-current? (fn [& _] true)
+           :property-blocked? (constantly false)
            :property-input (fn [& args] (swap! calls conj args))
            :open-properties (fn [& args] (swap! calls conj args))}
         frame (fn [state draft]
@@ -197,7 +199,7 @@
     (.appendChild (.-body js/document) container)
     (try
       (binding [ec/*execution-context* ctx]
-        (reset! release (browser/mount! container (memory/property-field-view "a.md" target field model {} a true)))
+        (reset! release (browser/mount! container (property-controls/field-view "a.md" target field model {} a true)))
         (let [select (.querySelector container "select")
               buttons (array-seq (.querySelectorAll container "button"))]
           (is (= id (.-value select)))
@@ -295,7 +297,7 @@
         state {:target-verified? true :target-stamp stamp :connection :socket :verified-connection :socket
                :property-models {["a.md" target] model}}
         draft {:source {:entry {:content id} :text "saved" :target-stamp stamp} :text "saved"}
-        actions (fn [current?] {:property-current? (fn [& _] current?)})
+        actions (fn [current?] {:property-current? (fn [& _] current?) :property-blocked? (constantly false)})
         frame #(memory/scoped-properties-view "a.md" target draft %1 (actions %2) true)]
     (.appendChild (.-body js/document) container)
     (try
