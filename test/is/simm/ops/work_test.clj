@@ -24,8 +24,10 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.work :as work]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [kontor.governance :as governance]
-            [org.replikativ.spindel.engine.core :as ec]))
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- with-room [f]
   (let [cfg {:store {:backend :memory :id (random-uuid)}
@@ -89,6 +91,47 @@
             (let [changed (assoc-in prepared [:basis :changed] true)]
               (is (thrown? clojure.lang.ExceptionInfo
                            (work/submit-prepared! conn host-ctx principal (:room w) room input changed))))))))))
+
+(deftest job-and-evaluation-construction-do-not-inherit-app-tickets
+  (world/with-world [conn w]
+    (with-room
+      (fn [room]
+        (let [[input prepared] (fixture)
+              owner (doto (lifetime/create) lifetime/open!)
+              outer (doto (lifetime/create) lifetime/open!)
+              observed (atom {})
+              bindings (fn [] [lifetime/*ticket*
+                               (get (get-thread-bindings)
+                                    (ns-resolve 'is.simm.runtimes.operation-lifetime '*tickets*))])
+              prepared (assoc prepared
+                              :admit! (fn [_]
+                                        (lifetime/check-current!)
+                                        (let [[ticket tickets] (bindings)]
+                                          (swap! observed assoc :admit [(some? ticket) (count tickets)])))
+                              :start! (fn [_]
+                                        (swap! observed assoc :construction (bindings))
+                                        (spin (do (swap! observed assoc :execution (bindings)) :done)))
+                              :settled! (fn [_] (swap! observed assoc :monitor (bindings))))]
+          (resource/mint! room {:id (random-uuid) :resources (work/resources (:limits input))})
+          (try
+            (let [request (lifetime/with-operation!
+                            outer
+                            #(lifetime/with-operation!
+                               owner
+                               (fn [] (work/submit-prepared! conn ec/*execution-context*
+                                                             (ops/party-principal (:owner w)) (:room w) room input prepared))))
+                  result (jobs/status (:job request) 25000)]
+              (is (= :completed (:status result)))
+              (is (:settled? result))
+              (is (= [true 2] (:admit @observed)))
+              (doseq [phase [:construction :execution :monitor]]
+                (is (contains? @observed phase))
+                (is (nil? (first (get @observed phase))))
+                (is (empty? (second (get @observed phase))))))
+            (finally
+              (doseq [installation [owner outer]]
+                (lifetime/fence! installation)
+                (lifetime/join! installation 1000)))))))))
 
 (deftest admission-failure-is-durable-and-cannot-be-replayed-as-new-work
   (world/with-world [conn w]

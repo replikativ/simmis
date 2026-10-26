@@ -1,8 +1,69 @@
 (ns is.simm.runtimes.operation-lifetime-test
   (:require [clojure.test :refer [deftest is]]
             [is.simm.runtimes.operation-lifetime :as lifetime]
-            [org.replikativ.spindel.engine.impl.simple :as simple])
+            [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as context]
+            [org.replikativ.spindel.spin.cps :refer [spin]])
   (:import [java.util.concurrent CountDownLatch TimeUnit]))
+
+(defn- ticket-bindings []
+  ;; Inspect actual conveyed binding values, including the private outer stack.
+  [(get (get-thread-bindings) #'lifetime/*ticket*)
+   (get (get-thread-bindings) (ns-resolve 'is.simm.runtimes.operation-lifetime '*tickets*))])
+
+(deftest detached-construction-clears-all-nested-tickets-and-restores-short-handoff
+  (let [outer (doto (lifetime/create) lifetime/open!)
+        inner (doto (lifetime/create) lifetime/open!)]
+    (lifetime/with-operation!
+      outer
+      #(lifetime/with-operation!
+         inner
+         (fn []
+           (let [original (ticket-bindings)]
+             (is (= 2 (count (second original))))
+             (lifetime/call-detached
+              (fn [within!]
+                (is (= [nil []] (ticket-bindings)))
+                (is (= original (within! ticket-bindings)))
+                (is (= [nil []] @(future (ticket-bindings))))
+                (is (= [nil []] ((bound-fn [] (ticket-bindings)))))
+                (is (= [nil []] (ticket-bindings)))))
+             (is (= original (ticket-bindings)))))))
+    (doseq [owner [inner outer]] (lifetime/fence! owner) (lifetime/join! owner 1000))))
+
+(deftest detached-spin-keeps-no-app-tickets-when-observed-outside-detached-extent
+  (let [runtime (context/create-execution-context)
+        owner (doto (lifetime/create) lifetime/open!)]
+    (try
+      (binding [ec/*execution-context* runtime]
+        (lifetime/with-operation!
+          owner
+          (fn []
+            (let [task (lifetime/call-detached (fn [_] (spin (ticket-bindings))))]
+              (is (some? lifetime/*ticket*))
+              (let [[ticket tickets] @task]
+                (is (nil? ticket))
+                (is (empty? tickets)))))))
+      (finally
+        (lifetime/fence! owner) (lifetime/join! owner 1000)
+        (context/close-context! runtime)))))
+
+(deftest detached-handoff-cannot-escape-its-extent-or-enter-another-thread
+  (let [owner (doto (lifetime/create) lifetime/open!) escaped (atom nil)]
+    (lifetime/with-operation!
+      owner
+      (fn []
+        (lifetime/call-detached
+         (fn [within!]
+           (reset! escaped within!)
+           (is (= :detached-handoff-expired
+                  @(future (try (within! (constantly :wrong))
+                                (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))))))
+        (is (= :detached-handoff-expired
+               (try (@escaped (constantly :wrong))
+                    (catch clojure.lang.ExceptionInfo e (:reason (ex-data e))))))))
+    (lifetime/fence! owner) (lifetime/join! owner 1000)))
 
 (deftest retained-observation-does-not-admit-a-foreign-thread
   (let [owner (doto (lifetime/create) lifetime/open!) captured (atom nil)]

@@ -825,6 +825,15 @@ terminal descendant wallets return bottom-up, while unresolved/live work remains
 pending. `simmis_work-status` projects safe admission metadata (not its ownership
 token); execution state remains in Dvergr Jobs/Runs.
 
+Job and evaluation construction detach the temporary App operation's current
+and nested ticket bindings. A short same-thread handoff restores and validates
+the original tickets for Request/Job linkage, batch checks and native adapter
+admission. The work Spin and monitoring future are constructed after that
+handoff returns, so they do not inherit the App's native ownership graph. The
+handoff expires on return and clears its captured references; it cannot transfer
+operation ownership to another thread. Dvergr's existing cleanup group remains
+responsible for joining execution before resources return.
+
 The completion evaluator captures bounded text deliverables under `/out` before
 world discard into the certified Attempt, readable through the existing artifact
 tools. Its check means the Run completed, NOT that the task was correct. The capture

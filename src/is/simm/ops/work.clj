@@ -203,7 +203,7 @@
      (when-not (identical? ticket lifetime/*ticket*) (invalid! "Batch handoff has no original App owner"))
      (lifetime/check-current!)
      (batch-control-current! conn host-ctx principal room-id room prepared
-                               (:control-db (reads/validate-host-room! host principal handle original)))))
+                             (:control-db (reads/validate-host-room! host principal handle original)))))
   ([conn host-ctx principal room-id room prepared db]
    (let [{:keys [host original ticket handle]} (:knowledge/owner prepared)
          target (get-in prepared [:basis :source-origin :target])
@@ -261,15 +261,15 @@
         (batch-admission-current! conn host-ctx principal room-id room prepared)
         (try
           (artifact/publish-value! (artifact/datahike-store conn) (:intent p)
-            (fn [ref]
-              (batch-admission-current! conn host-ctx principal room-id room prepared)
-              (d/transact conn
-                [[:db.fn/call (fn [db]
-                               (batch-admission-current! conn host-ctx principal room-id room prepared db)
-                               (let [row (assoc row :work.request/payload-ref ref)]
-                                 (vec (concat (scheduled/request-tx db anchor row intent)
-                                              (requests/claim-tx db row (:digest p))
-                                              (batches/request-tx db origin row (:digest p))))))]])))
+                                   (fn [ref]
+                                     (batch-admission-current! conn host-ctx principal room-id room prepared)
+                                     (d/transact conn
+                                                 [[:db.fn/call (fn [db]
+                                                                 (batch-admission-current! conn host-ctx principal room-id room prepared db)
+                                                                 (let [row (assoc row :work.request/payload-ref ref)]
+                                                                   (vec (concat (scheduled/request-tx db anchor row intent)
+                                                                                (requests/claim-tx db row (:digest p))
+                                                                                (batches/request-tx db origin row (:digest p))))))]])))
           (catch InterruptedException error
             (.interrupt (Thread/currentThread))
             (throw error))
@@ -328,45 +328,47 @@
           (batch-handoff-current! conn host-ctx principal room-id room admission-prepared request))
         (let [job-ctx (if-let [context! (:job-context! prepared)]
                         (context! request) (:ctx room))]
-          (jobs/start!
-           room {:kind (if (#{:benchmark :cli-benchmark :local-worker-benchmark} (:request-kind prepared)) :experiment :workflow)
-                 :ctx job-ctx :actor (:principal/actor principal)}
-           (fn [job-id]
-             (let [row (journal #(requests/record-job! conn id (:work.request/claim request) job-id))]
-               (try
-                 (when (contains? (:basis prepared) :knowledge/batch)
-                   (batch-handoff-current! conn host-ctx principal room-id room admission-prepared request))
-                 (binding [ec/*execution-context* (:ctx room)]
-                   (when-let [admit! (:admit! prepared)] (admit! job-id))
-                   (doseq [unit (or (:resource-units prepared)
-                                    [{:symbol resource/model-dispatches :name "Model dispatches" :precision 0}])]
-                     (resource/install-unit! room unit))
-                   (resource/allocate-run! room job-id nil (or (:resources prepared) (resources (:limits input))))
-                   (if-let [start! (:start! prepared)]
-                     (start! job-id)
-                     (evaluation/evaluate room (:team prepared) (:agent prepared)
-                                          (:environment prepared) (:evaluator prepared)
-                                          (merge (select-keys prepared [:protocol :world-setup :experiment-capabilities :delegation-policy])
-                                                 {:parent-run job-id :cleanup-group job-id
-                                                  :from (:principal/actor principal)
-                                                  :metrics {:requester-party party
-                                                            :submission-channel (or (:submission-channel prepared) :mcp)
-                                                            :execution-kind (or (:execution-kind prepared) :workflow-candidate)
-                                                            :request-id id}}))))
-                 (catch Throwable e
+          (lifetime/call-detached
+           (fn [within-operation!]
+             (jobs/start!
+              room {:kind (if (#{:benchmark :cli-benchmark :local-worker-benchmark} (:request-kind prepared)) :experiment :workflow)
+                    :ctx job-ctx :actor (:principal/actor principal)}
+              (fn [job-id]
+                (let [row (within-operation! #(journal (fn [] (requests/record-job! conn id (:work.request/claim request) job-id))))]
+                  (try
+                    (when (contains? (:basis prepared) :knowledge/batch)
+                      (within-operation! #(batch-handoff-current! conn host-ctx principal room-id room admission-prepared request)))
+                    (binding [ec/*execution-context* (:ctx room)]
+                      (when-let [admit! (:admit! prepared)] (within-operation! #(admit! job-id)))
+                      (doseq [unit (or (:resource-units prepared)
+                                       [{:symbol resource/model-dispatches :name "Model dispatches" :precision 0}])]
+                        (resource/install-unit! room unit))
+                      (resource/allocate-run! room job-id nil (or (:resources prepared) (resources (:limits input))))
+                      (if-let [start! (:start! prepared)]
+                        (start! job-id)
+                        (evaluation/evaluate room (:team prepared) (:agent prepared)
+                                             (:environment prepared) (:evaluator prepared)
+                                             (merge (select-keys prepared [:protocol :world-setup :experiment-capabilities :delegation-policy])
+                                                    {:parent-run job-id :cleanup-group job-id
+                                                     :from (:principal/actor principal)
+                                                     :metrics {:requester-party party
+                                                               :submission-channel (or (:submission-channel prepared) :mcp)
+                                                               :execution-kind (or (:execution-kind prepared) :workflow-candidate)
+                                                               :request-id id}}))))
+                    (catch Throwable e
                  ;; Construction may already have admitted a child. Fence the
                  ;; parent and cancel its own descendants before joining;
                  ;; never infer quiescence from not having returned a Spin.
-                   (try (binding [ec/*execution-context* (:ctx room)]
-                          (run/cancel-run! job-id)
-                          (doseq [child (run/runs room {:root-run-id job-id :limit 1000})
-                                  :when (not= job-id (:run/id child))]
-                            (run/cancel-run! (:run/id child))))
-                        (settle! row)
-                        (catch Throwable cleanup (.addSuppressed e cleanup)))
-                   (throw e)))))
-           :settled (fn [_ _]
-                      (settle! (journal #(requests/get-request conn id))))))
+                      (try (binding [ec/*execution-context* (:ctx room)]
+                             (run/cancel-run! job-id)
+                             (doseq [child (run/runs room {:root-run-id job-id :limit 1000})
+                                     :when (not= job-id (:run/id child))]
+                               (run/cancel-run! (:run/id child))))
+                           (settle! row)
+                           (catch Throwable cleanup (.addSuppressed e cleanup)))
+                      (throw e)))))
+              :settled (fn [_ _]
+                         (settle! (journal #(requests/get-request conn id))))))))
         (catch Throwable e
           ;; A failed host provisioning/run-pointer step has admitted no
           ;; execution. Its physical resources can be retired without joining
