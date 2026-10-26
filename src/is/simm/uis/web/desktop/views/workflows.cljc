@@ -97,7 +97,7 @@
                           (get-in source [:inspection :cases]))
         local? (editor/local? form)
         model-selected? (or local? (not (str/blank? (:model form))))
-        setup-card-visible? (contains? #{:missing :installed :customized :pending} (get-in state [:wiki-setup :status]))
+        setup-card-visible? (contains? #{:missing :installed :customized :pending :upgrade-available :changed} (get-in state [:wiki-setup :status]))
         cli? (editor/cli? form)
         funded-here? (and (:funded? draft) (= (:fund-backend draft "hosted") (:backend form "hosted")))
         change #(apply (:change actions) selected %&)
@@ -120,10 +120,17 @@
                           :missing (el/button {:on-click (fn [_] ((:install-wiki-setup actions)))} "Set up wiki maintenance")
                           :installed (el/span {} "Starter workflow installed. ")
                           :customized (el/span {} "Customized workflow preserved. ")
+                          :upgrade-available
+                          (el/span {}
+                                   (el/button {:on-click (fn [_] ((:upgrade-wiki-setup actions)))}
+                                              (str "Upgrade starter v" (get-in state [:wiki-setup :installed-version])
+                                                   " → v" (get-in state [:wiki-setup :shipped-version])))
+                                   " Only the unchanged bundled starter is upgraded. Existing schedules are not upgraded; review and redeploy them separately. ")
+                          :changed (el/span {} "Saved starter changed. Inspect it again before upgrading. ")
                           :pending (el/span {} "Setup outcome is uncertain. Checking saved source does not repeat installation. "))
-                        (when (or (#{:installed :customized} status) (#{:installed :customized} observed-status))
+                        (when (or (#{:installed :customized :upgrade-available} status) (#{:installed :customized :upgrade-available} observed-status))
                           (el/button {:on-click (fn [_] ((:select actions) "maintain-wiki"))} "Open workflow"))
-                        (when (= :pending status)
+                        (when (#{:pending :changed} status)
                           (el/button {:on-click (fn [_] ((:inspect-wiki-setup actions)))
                                       :disabled (get-in state [:loading :wiki-setup-inspect])} "Check saved setup"))
                         (activation-status state actions "maintain-wiki")

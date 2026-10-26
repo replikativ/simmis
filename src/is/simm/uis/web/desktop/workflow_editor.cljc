@@ -61,24 +61,35 @@
     (:enabled? row) "Active"
     :else "Paused"))
 
+(defn- setup-facts [reply status]
+  (assoc (select-keys reply [:revision :installed-version :shipped-version]) :status status))
+
+(defn- valid-upgrade-offer? [reply]
+  (and (integer? (:installed-version reply)) (pos? (:installed-version reply))
+       (integer? (:shipped-version reply)) (< (:installed-version reply) (:shipped-version reply))
+       (string? (:revision reply))
+       (re-matches #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" (:revision reply))))
+
 (defn observe-wiki-setup [state reply]
   (let [status (if (and (= "maintain-wiki" (:name reply)) (= :unchanged (:activation reply))
                         (= :current-source (:observation reply))
-                        (#{:missing :installed :customized} (:status reply)))
+                        (#{:missing :installed :customized :upgrade-available} (:status reply))
+                        (or (not= :upgrade-available (:status reply)) (valid-upgrade-offer? reply)))
                  (:status reply) :unavailable)]
     (if (get-in state [:wiki-setup :uncertain?])
       (assoc-in state [:wiki-setup :observed-status] status)
-      (assoc state :wiki-setup {:status status}))))
+      (assoc state :wiki-setup (setup-facts reply status)))))
 
-(defn begin-wiki-setup [state]
-  (assoc state :wiki-setup {:status :pending :uncertain? true}))
+(defn begin-wiki-setup
+  ([state] (assoc state :wiki-setup {:status :pending :uncertain? true}))
+  ([state intent] (assoc state :wiki-setup {:status :pending :uncertain? true :intent intent})))
 
 (defn acknowledge-wiki-setup [state reply]
   ;; Missing source after an uncertain write is NOT permission to replay it.
   (if (and (= "maintain-wiki" (:name reply)) (= :unchanged (:activation reply))
-           (= :acknowledged (:observation reply)) (#{:installed :customized} (:status reply)))
-    (assoc state :wiki-setup {:status (:status reply)})
-    (assoc state :wiki-setup {:status :pending :uncertain? true})))
+           (= :acknowledged (:observation reply)) (#{:installed :customized :changed} (:status reply)))
+    (assoc state :wiki-setup (setup-facts reply (:status reply)))
+    (update state :wiki-setup merge {:status :pending :uncertain? true})))
 
 (defn reloaded [old source]
   (merge (draft source) (select-keys old [:submission :schedule-submission :fund-request :fund-backend :funded? :fund-reply])))

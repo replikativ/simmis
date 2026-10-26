@@ -211,15 +211,25 @@
 (defn-spin-remote inspect-wiki-maintenance-setup!
   [server-id room-id-str]
   (spin-remote server-id [room-id-str]
-               #?(:clj (let [party (access/authenticated-party-id) room-id (wire-uuid room-id-str)]
-                         (await (blocking/blocking #(wiki-setup/inspect! party room-id))))
+               #?(:clj (let [party (access/authenticated-party-id) room-id (wire-uuid room-id-str)
+                             body (wiki-setup/prepare-inspect party room-id)]
+                         (await (blocking/blocking body)))
                   :cljs nil)))
 
 (defn-spin-remote install-wiki-maintenance!
   [server-id room-id-str]
   (spin-remote server-id [room-id-str]
-               #?(:clj (let [party (access/authenticated-party-id) room-id (wire-uuid room-id-str)]
-                         (await (blocking/blocking #(wiki-setup/install! party room-id))))
+               #?(:clj (let [party (access/authenticated-party-id) room-id (wire-uuid room-id-str)
+                             body (wiki-setup/prepare-install party room-id)]
+                         (await (blocking/blocking body)))
+                  :cljs nil)))
+
+(defn-spin-remote upgrade-wiki-maintenance!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (let [party (access/authenticated-party-id) room-id (wire-uuid room-id-str)
+                             body (wiki-setup/prepare-upgrade party room-id request)]
+                         (await (blocking/blocking body)))
                   :cljs nil)))
 
 (defn-spin-remote collect-workflow-wiki-output!

@@ -193,6 +193,7 @@
    "inspect-run-wiki-output!" [(c :room MEMBERS)]
    "inspect-wiki-maintenance-setup!" [(c :room OWNER)]
    "install-wiki-maintenance!" [(c :room OWNER)]
+   "upgrade-wiki-maintenance!" [(c :room OWNER)]
    "create-workflow-schedule!" [(c :room OWNER)]
    "set-workflow-schedule-enabled!" [(c :room OWNER)]
    "submit-workflow-benchmark!" [(c :room OWNER)]

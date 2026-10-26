@@ -1,6 +1,6 @@
 # Wiki maintenance as an ordinary workflow
 
-The version-3 starter is source data returned by
+The version-4 starter is source data returned by
 `is.simm.starter.wiki-maintenance/source`. It contains the files for
 `/workflows/maintain-wiki/`, not a second agent, scheduler or resource ledger.
 Loading it does not install anything, choose a model, allocate money or enable
@@ -52,15 +52,35 @@ captured. Server receipt timestamps and estimated recording positions retain
 their qualifications. An agent must verify an asset's recorded identity before
 treating a retrieved current file as the original.
 
-This is a finite whole-selection workflow. The current input envelope admits
-at most 99 Markdown documents plus its manifest, 512 KiB per input file and
-2 MiB in total including the manifest. Workflow instruction fixtures also
-consume the final input budget. Exceeding a limit refuses admission;
-files are not silently truncated or skipped. The source policy can explicitly
-select narrower roots or exclusions. A growing archive needs a separate
-versioned batch policy and durable per-source processing receipts before it
-can drain continuously. The whole-selection fingerprint is not a source cursor.
+The version-4 source opts into the existing incremental batch machinery through
+`input-batching.edn`. Each invocation receives one frozen pending prefix and
+separately captured wiki context. Its policy allows at most 32 trigger files
+and 1 MiB of trigger bytes, plus 32 context files and 512 KiB of context. The
+existing execution envelope still caps each file at 512 KiB and the total at
+2 MiB, including the manifest and instruction fixtures. Oversized head items or
+context hold admission; files are never silently truncated or skipped. This
+starter does not yet provide relevance-based context selection or chunk large
+notes. A completed Run produces a proposal, not adopted knowledge or permission
+to advance processing independently of the host's batch protocol.
+
+Historical versions 1–3 retain their original bytes and whole-selection behavior.
+Inspection distinguishes missing, current, pristine older, and customized source.
+An explicit **Upgrade starter** action accepts only the exact inspected revision
+of a byte/mode-identical older shipped bundle. It uses the existing authorized
+whole-subtree source writer and preserves customized bundles. A changed revision
+requires inspection again. After a lost acknowledgement, inspection observes
+current source but does not certify the original write or clear its uncertainty;
+the client never automatically replays it. The original App and Room lifetime own queued
+inspection and upgrade work through final validation. Upgrading source changes
+neither funding nor schedules. Already-admitted and historical work retains its
+original deployment; new admissions hold on a named-source mismatch until the
+deployment is explicitly reviewed and replaced. A changed program,
+policy or revisit epoch identifies a different stream rather than migrating an
+old cursor.
+
 Installation leaves schedules inactive and supplies no execution resources.
+Operational backlog and hold diagnostics remain a separate milestone before
+recommending unattended default deployment.
 
 For agent retrieval of canonical files, use `memory/search` and `memory/read`.
 They return paths, source/content identifiers, semantic structure and preserved

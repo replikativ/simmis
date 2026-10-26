@@ -292,3 +292,25 @@
     (is (= "workflow" (get-in scheduled [:payload :kind])))
     (is (= "benchmark" (get-in (editor/deployment-preview benchmark) [:payload :kind])))
     (is (= ["codex-subscription-luna-6"] (:models (editor/submission benchmark (random-uuid)))))))
+
+(deftest upgrade-observations-retain-exact-intent-and-do-not-replace-editor-drafts
+  (let [revision (str (random-uuid))
+        state {:selected "maintain-wiki" :drafts {"maintain-wiki" {:files {"workflow.edn" "Unsaved customization"}}}}
+        reply {:name "maintain-wiki" :activation :unchanged :observation :current-source
+               :status :upgrade-available :revision revision :installed-version 3 :shipped-version 4}
+        observed (editor/observe-wiki-setup state reply)
+        intent {:expected-revision revision :from-version 3}
+        pending (editor/begin-wiki-setup observed intent)
+        checked (editor/observe-wiki-setup pending (assoc reply :status :installed :installed-version 4))
+        acknowledged (editor/acknowledge-wiki-setup checked (assoc reply :status :installed :installed-version 4 :observation :acknowledged))]
+    (is (= :upgrade-available (get-in observed [:wiki-setup :status])))
+    (is (= revision (get-in observed [:wiki-setup :revision])))
+    (is (= :pending (get-in checked [:wiki-setup :status])))
+    (is (= :installed (get-in checked [:wiki-setup :observed-status])))
+    (is (= intent (get-in checked [:wiki-setup :intent])))
+    (is (= (:drafts state) (:drafts checked) (:drafts acknowledged)))
+    (is (= :installed (get-in acknowledged [:wiki-setup :status])))
+    (is (= 4 (get-in acknowledged [:wiki-setup :installed-version])))
+    (is (= :changed (get-in (editor/acknowledge-wiki-setup pending (assoc reply :status :changed :observation :acknowledged)) [:wiki-setup :status])))
+    (doseq [bad [(dissoc reply :revision) (assoc reply :installed-version 4) (assoc reply :revision "not-a-revision")]]
+      (is (= :unavailable (get-in (editor/observe-wiki-setup state bad) [:wiki-setup :status]))))))

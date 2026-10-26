@@ -39,7 +39,8 @@ The incremental-input and typed page table/form foundation has landed. The
 bounded report/capture adapters are implemented and locally verified, with
 normal integration CI still required before landing. The component contract is
 documented and reviewed; the first shared Company read presentations and
-existing editor composition are under verification. Connected SCI/site hosts
+existing editor composition are verified. Explicit bounded Markdown snapshots
+and source-positioned saved views in Read mode are also verified. Connected SCI/site hosts
 and a complete standalone editing surface remain later slices. Keep the verified running UI separate from
 new development and use the server/client REPL plus the browser for validation.
 The model-free experiment used for report verification demonstrates execution,
@@ -77,13 +78,13 @@ special-purpose versions for every result, document or business object.
 Default maintenance remains an ordinary workflow installed in a new canonical
 personal Room. The existing bootstrap already does this for the current alpha
 account lifecycle; do not create another maintenance agent or scheduler.
-Ship incremental batching as a new starter revision and use an explicit
-whole-subtree comparison for upgrades. Preserve customized and older pinned
+Version 4 declares incremental batching in ordinary source. Explicit upgrades
+use an inspected revision and whole-subtree comparison. Preserve customized and older pinned
 source; old whole-selection fingerprints do not become incremental cursors.
 
 Schedule deployment must distinguish a configured paused activation from an
-enabled one. The existing creation path enables execution; creating and then
-pausing has a dispatch race. Default unattended execution still needs explicit
+enabled one. Creation now supports an initially paused activation in the same write;
+creating enabled and then pausing would have a dispatch race. Default unattended execution still needs explicit
 model/provider selection, finite allowance policy, cadence/timezone and
 per-occurrence ceilings. Use the existing activation, request and occurrence
 machinery for these decisions.

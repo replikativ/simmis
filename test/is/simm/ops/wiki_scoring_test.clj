@@ -149,11 +149,11 @@
                             :loses [:forbidden-content?]}
                     :missing {:case "supported" :files {} :loses [:expected-change? :required-content? :citations?]}}}))
 
-(deftest shipped-default-is-v3-with-explicit-profile-and-unchanged-v1-source
+(deftest shipped-default-is-v4-with-explicit-profile-and-unchanged-v1-source
   (let [current (starter/source)
         old (starter/source 1)]
-    (is (= 3 starter/version))
-    (is (= (set (keys old)) (set (keys current))))
+    (is (= 4 starter/version))
+    (is (= (conj (set (keys old)) "input-batching.edn") (set (keys current))))
     (is (= :wiki-structure-v1 (get-in (catalog/bundle starter/name current) [:definition :params :simmis/checker-profile])))
     (is (nil? (get-in (catalog/bundle starter/name old) [:definition :params :simmis/checker-profile])))
     (is (not= (:id (catalog/bundle starter/name current)) (:id (catalog/bundle starter/name old))))))

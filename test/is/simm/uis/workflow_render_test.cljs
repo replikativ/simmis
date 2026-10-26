@@ -170,3 +170,23 @@
           (is (empty? @changes) "Queued native toggles after detach cannot recreate or mutate the draft")))
       (finally (when @discharge (browser/unmount! @discharge))
                (.remove container) (context/stop-context! ctx)))))
+
+(deftest pristine-starter-upgrade-is-explicit-and-does-not-run-work-during-render
+  (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+        discharge (atom nil) calls (atom [])
+        state {:wiki-setup {:status :upgrade-available :revision "069c7012-c566-4e46-8aab-e7f9a25abc3a"
+                           :installed-version 3 :shipped-version 4}}
+        actions {:room-id "room" :upgrade-wiki-setup #(swap! calls conj :upgrade)}]
+    (.appendChild (.-body js/document) container)
+    (try
+      (binding [ec/*execution-context* ctx]
+        (reset! discharge (browser/mount! container (workflows/view "Lab" state actions)))
+        (is (empty? @calls))
+        (is (str/includes? (.-textContent container) "Existing schedules are not upgraded"))
+        (let [button (some #(when (= "Upgrade starter v3 → v4" (.-textContent %)) %)
+                           (array-seq (.querySelectorAll container "button")))]
+          (is (some? button))
+          (.click button)
+          (is (= [:upgrade] @calls))))
+      (finally (when @discharge (browser/unmount! @discharge))
+               (.remove container) (context/stop-context! ctx)))))

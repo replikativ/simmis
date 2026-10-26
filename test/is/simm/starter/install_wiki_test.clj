@@ -3,6 +3,7 @@
             [datahike.api :as d]
             [dvergr.catalog.workspace :as catalog]
             [dvergr.rooms.files :as native]
+            [dvergr.runtime.preparation :as preparation]
             [dvergr.substrate.geschichte :as workspace]
             [geschichte.query :as query]
             [geschichte.repo :as repo]
@@ -21,7 +22,8 @@
             [kontor.governance :as governance]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.yggdrasil :as ygg]
-            [yggdrasil.adapters.geschichte :as gy]))
+            [yggdrasil.adapters.geschichte :as gy])
+  (:import [java.util.concurrent CountDownLatch TimeUnit]))
 
 (defn- open-canonical! [room opened]
   ;; Provision a NEW pristine fixture store, rather than mark or migrate an
@@ -189,3 +191,129 @@
                     (failure #(install/install! host (principal w) (str (:room w)))))]
         (is (= ::authoring/pending (:type (ex-data error))))
         (is (= 1 @calls))))))
+
+(defn- shipped-snapshot [version]
+  (let [files (starter/source version)]
+    {:files files :manifest (mapv (fn [path] {:path path :mode 33188}) (keys files))}))
+
+(defn- seed-shipped! [conn version]
+  (doseq [[path text] (starter/source version)]
+    (repo/write! conn (str "workflows/maintain-wiki/" path) (.getBytes ^String text "UTF-8"))))
+
+(deftest upgrade-offers-match-complete-pristine-shipped-subtrees-only
+  (is (= :missing (:status (install/classify {:files {} :manifest []}))))
+  (is (= :installed (:status (install/classify (shipped-snapshot starter/version)))))
+  (doseq [version [1 2 3]]
+    (let [snapshot (shipped-snapshot version) files (:files snapshot)
+          path (first (keys files))]
+      (is (= :upgrade-available (:status (install/classify snapshot))))
+      (is (= version (:installed-version (install/classify snapshot))))
+      (doseq [custom [(assoc-in snapshot [:files path] (str (get files path) "\n; custom"))
+                      (assoc-in snapshot [:manifest 0 :mode] 33261)
+                      (update snapshot :files dissoc path)
+                      (-> snapshot (assoc-in [:files "custom.txt"] "keep")
+                          (update :manifest conj {:path "custom.txt" :mode 33188}))]]
+        (is (= :customized (:status (install/classify custom))))))))
+
+(deftest explicit-pristine-upgrade-preserves-control-state-and-does-not-replay-after-ack-loss
+  (with-canonical
+    (fn [{:keys [conn w host owned attached]}]
+      (seed-shipped! owned 3)
+      (let [handle (str (:room w)) p (principal w) inspected (install/inspect! host p handle)
+            input {:expected-revision (:revision inspected) :from-version (:installed-version inspected)}
+            control-before (vec (d/datoms @conn :eavt)) other-before (query/worktree @attached)]
+        (is (= :upgrade-available (:status inspected)))
+        (with-redefs [authoring/install! (fn [& _] (throw (AssertionError. "Empty-folder installation must preserve an older bundle")))]
+          (is (= :customized (:status (install/install! host p handle)))))
+        (let [owner (doto (lifetime/create) lifetime/open!)]
+          (try
+            (with-redefs-fn {#'application/installation (atom {:host host :owner owner})}
+              #(let [result (setup/upgrade! (:owner w) (:room w) input)]
+                 (is (= :installed (:status result)))
+                 (is (= starter/version (:installed-version result)))))
+            (finally (lifetime/fence! owner) (lifetime/join! owner 30000))))
+        (is (= (starter/source) (:files (workflows/snapshot-in @owned starter/name))))
+        (let [after (query/worktree @owned)]
+          (with-redefs [authoring/install! (fn [& _] (throw (AssertionError. "Lost-ACK retry must not write again")))]
+            (is (= :changed (:status (install/upgrade! host p handle input)))))
+          (is (= after (query/worktree @owned))))
+        (is (= :installed (:status (install/inspect! host p handle))))
+        (is (= starter/version (:installed-version (install/inspect! host p handle))))
+        (is (= control-before (vec (d/datoms @conn :eavt))))
+        (is (= other-before (query/worktree @attached)))))))
+
+(deftest upgrade-requires-the-inspected-revision-and-refuses-concurrent-customization
+  (with-canonical
+    (fn [{:keys [w host owned]}]
+      (seed-shipped! owned 3)
+      (let [handle (str (:room w)) p (principal w) inspected (install/inspect! host p handle)
+            input {:expected-revision (:revision inspected) :from-version (:installed-version inspected)}
+            original (query/worktree @owned) write authoring/install!]
+        (with-redefs [authoring/install! (fn [& _] (throw (AssertionError. "Changed observation must not dispatch a writer")))]
+          (is (= :changed (:status (install/upgrade! host p handle (assoc input :expected-revision (str (random-uuid)))))))
+          (is (= :changed (:status (install/upgrade! host p handle (assoc input :from-version 1))))))
+        (is (= original (query/worktree @owned)))
+        (let [error (with-redefs [authoring/install!
+                                 (fn [& args]
+                                   (repo/write! owned "workflows/maintain-wiki/custom.txt" (.getBytes "Concurrent customization" "UTF-8"))
+                                   (apply write args))]
+                      (failure #(install/upgrade! host p handle input)))]
+          (is (= ::authoring/conflict (:type (ex-data error))))
+          (is (not (contains? (query/worktree @owned) "workflows/maintain-wiki/input-batching.edn")))
+          (is (= :customized (:status (install/inspect! host p handle)))))))))
+
+(deftest source-inspection-rechecks-governance-after-reading
+  (with-canonical
+    (fn [{:keys [conn w host owned]}]
+      (seed-shipped! owned 3)
+      (let [classify install/classify]
+        (with-redefs [install/classify (fn [snapshot]
+                                        (d/transact conn [{:room/id (:room w) :room/owner [:party/id (:member w)]}])
+                                        (classify snapshot))]
+          (is (failure #(install/inspect! host (principal w) (str (:room w))))))))))
+
+(deftest cancellation-during-final-governance-validation-cannot-return-success
+  (with-canonical
+    (fn [{:keys [w host owned room]}]
+      (seed-shipped! owned 3)
+      (let [owner (doto (lifetime/create) lifetime/open!)
+            entered (promise) interrupted (promise) gate (CountDownLatch. 1)
+            validations (atom 0) ticket (atom nil) reader (atom nil)
+            validate reads/validate-host-install-room!]
+        (try
+          (with-redefs-fn
+            {#'application/installation (atom {:host host :owner owner})
+             #'reads/validate-host-install-room!
+             (fn [& args]
+               (let [result (apply validate args)]
+                 (when (= 2 (swap! validations inc))
+                   (reset! ticket lifetime/*ticket*)
+                   (deliver entered true)
+                   ;; Simulate native metadata IO which absorbs interruption
+                   ;; after it checked governance. Only the final lease check
+                   ;; can prevent a success from escaping this cancelled body.
+                   (loop []
+                     (when-not (try (.await gate 100 TimeUnit/MILLISECONDS)
+                                    (catch InterruptedException _ (deliver interrupted true) false))
+                       (recur))))
+                 result))}
+            (fn []
+              (let [body (setup/prepare-inspect (:owner w) (:room w))]
+                (reset! reader (future (body)))
+                (is (= true (deref entered 15000 ::expired)))
+                (let [leases (vec (vals (get @(:meta room) preparation/leases-key)))]
+                  (is (= 1 (count leases)))
+                  (is (lifetime/retained? @ticket))
+                  (doseq [lease leases]
+                    (preparation/cancel! lease)
+                    (is (= :dvergr.runtime.preparation/unconfirmed-drain
+                           (try ((:join! lease) 0) nil
+                                (catch clojure.lang.ExceptionInfo error (:type (ex-data error)))))))
+                  (is (= true (deref interrupted 5000 ::expired)))
+                  (is (not (realized? @reader)))
+                  (.countDown gate)
+                  (is (= {:status :unavailable} (deref @reader 15000 ::expired)))
+                  (is (not (lifetime/retained? @ticket)))
+                  (doseq [lease leases] (is (nil? ((:join! lease) 1000))))))))
+          (finally (.countDown gate) (when @reader (deref @reader 15000 nil))
+                   (lifetime/fence! owner) (lifetime/join! owner 15000)))))))

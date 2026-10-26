@@ -290,6 +290,14 @@
                 (request! :wiki-setup-install nil
                           #(remote/install-wiki-maintenance! web/server-id room)
                           editor/acknowledge-wiki-setup editor/acknowledge-wiki-setup)))
+            (upgrade-setup! []
+              (let [setup (:wiki-setup (state))
+                    payload {:expected-revision (:revision setup) :from-version (:installed-version setup)}]
+                (when (and (= :upgrade-available (:status setup)) (not (:access-denied? (state))))
+                  (update! editor/begin-wiki-setup payload)
+                  (request! :wiki-setup-upgrade nil
+                            #(remote/upgrade-wiki-maintenance! web/server-id room payload)
+                            editor/acknowledge-wiki-setup editor/acknowledge-wiki-setup))))
             (collect-output! [name]
               (when-let [request-id (editor/collectable-output-request (get-in (state) [:drafts name]))]
                 (when-not (get-in (state) [:loading [:output name]])
@@ -345,7 +353,7 @@
                      (update! assoc-in [:errors :source] "Use a lowercase workflow name with letters, digits and dashes (max64)."))))
        :owner k :room-id room :change change! :save save! :submit submit! :fund fund! :schedule schedule!
        :collect-output collect-output!
-       :inspect-wiki-setup inspect-setup! :install-wiki-setup install-setup!
+       :inspect-wiki-setup inspect-setup! :install-wiki-setup install-setup! :upgrade-wiki-setup upgrade-setup!
        :open-schedules (fn []
                          (binding [ec/*execution-context* ctx]
                            (when (web/current-session? session)

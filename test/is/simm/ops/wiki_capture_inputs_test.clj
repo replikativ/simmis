@@ -30,8 +30,8 @@
 (deftest packaged-capture-workflow-is-versioned-without-changing-earlier-source
   (let [source (starter/source) old (starter/source 2)
         instructions (get source "fixtures/workflow-context/wiki-maintenance.txt")]
-    (is (= 3 starter/version))
-    (is (= (starter/source 3) source))
+    (is (= 4 starter/version))
+    (is (= (policy) (inputs/declaration source)))
     (is (= ["captures" "inbox" "transcripts"] (:trigger-roots (policy))))
     (is (= inputs/default-policy (inputs/declaration old)))
     (is (= ["wiki"] (:context-roots (policy))))

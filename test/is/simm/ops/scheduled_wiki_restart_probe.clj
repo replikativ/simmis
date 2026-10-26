@@ -33,6 +33,7 @@
             [is.simm.ops.knowledge-inputs :as inputs]
             [is.simm.ops.knowledge-output-service :as output]
             [is.simm.ops.owned-reads :as reads]
+            [is.simm.ops.owned-workflow-authoring :as authoring]
             [is.simm.ops.owned-workflows :as sources]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as runs]
@@ -186,9 +187,18 @@
     (let [room-id (:room/id (knowledge-rooms/create! party "Disposable restart diagnostic" []))
           rich (binding-for! party room-id)
           room (:room rich)
-          files (starter/source)
+          ;; This opt-in diagnostic retains the historical whole-selection
+          ;; cursor contract. Explicitly author that version into this NEW
+          ;; disposable room using the ordinary revision-guarded writer.
+          files (starter/source 3)
+          initial (sources/details! (application/host!) (principals/party-principal party)
+                                    (str room-id) {:name starter/name})
+          _ (authoring/install! (application/host!) (principals/party-principal party)
+                                (str room-id) {:name starter/name :files (assoc files "input-batching.edn" nil)
+                                               :expected-revision (get-in initial [:data :revision])})
           source (sources/details! (application/host!) (principals/party-principal party)
                                    (str room-id) {:name starter/name})
+          _ (check! (= files (get-in source [:data :files])) :historical-source-installed)
           execution {:name starter/name :params {} :model "codex-subscription-sol"
                      :expected-bundle (:id (catalog/bundle starter/name files))
                      :expected-owned-source (parse-uuid (get-in source [:data :revision]))

@@ -747,3 +747,31 @@
             ((:ok (second @requests)) {:id "activation" :enabled? false})
             (is (false? (get-in @sig/workflow-editor-state [k :drafts "a" :schedule-submission :reply :enabled?])))
             (is (empty? @confirmations))))))))
+
+(deftest pristine-upgrade-keeps-inspected-intent-and-unsaved-workflow-buffers
+  (with-state
+    (fn [ui k]
+      (let [inspections (atom []) upgrades (atom []) revision (str (random-uuid))
+            offer {:status :upgrade-available :name "maintain-wiki" :activation :unchanged :observation :current-source
+                   :revision revision :installed-version 3 :shipped-version 4}]
+        (with-redefs [remote/inspect-wiki-maintenance-setup! (deferred inspections)
+                      remote/upgrade-wiki-maintenance! (deferred upgrades)]
+          ((:change ui) "a" assoc-in [:files "workflow.edn"] "Unsaved customization")
+          ((:inspect-wiki-setup ui))
+          ((:ok (first @inspections)) offer)
+          ((:upgrade-wiki-setup ui))
+          (is (= 1 (count @upgrades)))
+          (let [payload (last (:args (first @upgrades)))]
+            (is (= {:expected-revision revision :from-version 3} payload))
+            ((:inspect-wiki-setup ui))
+            ((:ok (second @inspections)) (assoc offer :status :installed :installed-version 4))
+            (is (= :pending (get-in @sig/workflow-editor-state [k :wiki-setup :status])))
+            (is (= payload (get-in @sig/workflow-editor-state [k :wiki-setup :intent])))
+            ((:upgrade-wiki-setup ui))
+            (is (= 1 (count @upgrades)) "observed installed source never authorizes an uncertain replay")
+            (is (= "Unsaved customization" (get-in @sig/workflow-editor-state [k :drafts "a" :files "workflow.edn"])))
+            (reset! sync/state {:control-dirty 1})
+            ((:ok (first @upgrades)) (assoc offer :status :installed :installed-version 4 :observation :acknowledged))
+            (is (= :installed (get-in @sig/workflow-editor-state [k :wiki-setup :status])))
+            (is (nil? (get-in @sig/workflow-editor-state [k :permissions])))
+            (is (= "Unsaved customization" (get-in @sig/workflow-editor-state [k :drafts "a" :files "workflow.edn"])))))))))
