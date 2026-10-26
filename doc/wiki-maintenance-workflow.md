@@ -273,3 +273,18 @@ grading basis; it is excluded from editable task parameters, matching ordinary
 execution admission. Users can launch and preview schedules for the packaged
 workflow without editing that internal setting. An ordinary unqualified
 `:checker-profile` string parameter remains a user parameter.
+
+The opt-in `:wiki-checkpoint-structure-v1` scoring profile also observes ordinary
+`/wiki/` Markdown from the selected case's shared and case-specific fixtures.
+This supplies a preservation baseline without copying those pages into the
+knowledge manifest. Its verifier identity differs from `:wiki-structure-v1`,
+whose copied-context semantics remain unchanged. Conflicting copied and ordinary
+wiki bodies, malformed paths and duplicate document/block identities refuse
+scoring; the existing structural parser's file and byte bounds still apply.
+Both calibration and final verification use this same observation path.
+
+Ordinary wiki context does not become new evidence: quote and citation source
+texts for this profile come only from trigger entries in the verified knowledge
+manifest; copied context is also excluded. This profile observes
+retained fixture data, not a live Room. It does not itself provide checkpoint
+admission or enable checkpoint-policy benchmark, CLI or worker entry points.
