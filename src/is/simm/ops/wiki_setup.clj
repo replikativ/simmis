@@ -5,7 +5,6 @@
             [is.simm.ops.file-output-adoption :as adoption]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-workflow-authoring :as authoring]
-            [is.simm.ops.workflows :as workflows]
             [is.simm.runtimes.application-ops :as application]
             [is.simm.starter.install-wiki :as installer]
             [is.simm.starter.wiki-maintenance :as starter]
@@ -14,18 +13,14 @@
 (defn- unavailable! []
   (throw (ex-info "Wiki maintenance setup is unavailable" {:type ::unavailable})))
 
-(defn- inspect-source! [host principal handle]
-  (let [binding (reads/resolve-host-install! host principal handle)
-        snapshot (workflows/snapshot-in (:db binding) starter/name)]
-    (case (installer/decision snapshot (starter/source))
-      :install :missing
-      :already-installed :installed
-      :customized :customized)))
+(defn- failure [error]
+  (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)))
+  {:status (if (= ::authoring/pending (:type (ex-data error))) :pending :unavailable)})
 
-(defn- perform! [party room-id install?]
+(defn- perform! [enter party room-id operation request]
   (try
     (when-not (every? uuid? [party room-id]) (unavailable!))
-    (application/with-operation!
+    (enter
       (fn [host]
         (let [principal {:principal/kind :human :principal/id (str "party/" party)}
               handle (str room-id)
@@ -39,21 +34,39 @@
                 (preparation/with-host-current! lease (constantly true))
                 (reads/validate-host-install-room! host principal handle resolved)
                 (let [host (assoc host ::reads/install-room-binding resolved)
-                      status (if install?
-                               (case (:status (installer/install! host principal handle))
-                                 :installed :installed
-                                 :already-installed :installed
-                                 :customized :customized
-                                 (unavailable!))
-                               (inspect-source! host principal handle))]
-                  {:status status :name starter/name :activation :unchanged
-                   :observation (if install? :acknowledged :current-source)})))))))
-    (catch Throwable error
-      (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)))
-      {:status (if (= ::authoring/pending (:type (ex-data error))) :pending :unavailable)})))
+                      result (case operation
+                               :inspect (installer/inspect! host principal handle)
+                               :install (installer/install! host principal handle)
+                               :upgrade (installer/upgrade! host principal handle request)
+                               (unavailable!))
+                      _ (reads/validate-host-install-room! host principal handle resolved)
+                      status (case (:status result)
+                               (:installed :already-installed :upgraded) :installed
+                               (:missing :customized :upgrade-available :changed) (:status result)
+                               (unavailable!))]
+                  (preparation/with-host-current!
+                   lease
+                   #(assoc (select-keys result [:revision :installed-version :shipped-version])
+                           :status status :name starter/name :activation :unchanged
+                           :observation (if (= :inspect operation) :current-source :acknowledged))))))))))
+    (catch Throwable error (failure error))))
+
+(defn- prepare [party room-id operation request]
+  (try
+    (when-not (every? uuid? [party room-id]) (unavailable!))
+    (let [enter (application/capture-operation)]
+      (fn [] (perform! enter party room-id operation request)))
+    (catch Throwable error (constantly (failure error)))))
+
+(defn prepare-inspect [party room-id] (prepare party room-id :inspect nil))
+(defn prepare-install [party room-id] (prepare party room-id :install nil))
+(defn prepare-upgrade [party room-id request] (prepare party room-id :upgrade request))
 
 (defn inspect! [authenticated-party room-id]
-  (perform! authenticated-party room-id false))
+  (perform! application/with-operation! authenticated-party room-id :inspect nil))
 
 (defn install! [authenticated-party room-id]
-  (perform! authenticated-party room-id true))
+  (perform! application/with-operation! authenticated-party room-id :install nil))
+
+(defn upgrade! [authenticated-party room-id request]
+  (perform! application/with-operation! authenticated-party room-id :upgrade request))

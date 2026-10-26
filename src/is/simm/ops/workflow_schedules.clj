@@ -18,6 +18,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.model.knowledge-dispositions :as dispositions]
             [is.simm.model.knowledge-schedule-batches :as scheduled]
+            [is.simm.model.knowledge-pins :as pins]
             [is.simm.model.workflow-schedules :as schedules]
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.ops.benchmarks :as benchmarks]
@@ -53,6 +54,7 @@
 
 (def create-schema
   [:map {:closed true} [:request-id :uuid] [:kind [:enum "workflow" "benchmark"]]
+   [:enabled? {:optional true} :boolean]
    [:cadence cadence-schema]
    ;; The exact execution schema is checked below, separately for each kind.
    [:execution :map]])
@@ -134,8 +136,9 @@
           existing (schedules/activation conn id)]
       (if existing
         (let [prior (schedules/target conn existing)]
-          (when-not (= (select-keys prior [:kind :cadence :execution])
-                       {:kind kind :cadence spec :execution execution})
+          (when-not (and (= (select-keys prior [:kind :cadence :execution])
+                            {:kind kind :cadence spec :execution execution})
+                         (= (get input :enabled? true) (schedules/initial-enabled? existing)))
             (throw (ex-info "Schedule request identity names different work" {:type ::conflict})))
           existing)
         (let [snapshot (workflows/snapshot room (:name execution))
@@ -149,7 +152,7 @@
                       :snapshot snapshot :host-policy (host-policy)}
               target (assoc target :model-policy (model-policy kind execution))
               now (java.util.Date.)]
-          (schedules/create! conn {:id id :room room-id :by party :target target :now now
+          (schedules/create! conn {:id id :room room-id :by party :target target :now now :enabled? (get input :enabled? true)
                                    :next-fire (java.util.Date/from (cron/next-fire-time spec (.toInstant now)))}))))))
 
 ;; These LOCAL schemas do not widen existing transports or execution DTOs.
@@ -202,6 +205,8 @@
          (uuid? (:schedule.activation/revision row))
          (uuid? (:schedule.activation/target-ref row))
          (boolean? (:schedule.activation/enabled? row))
+         (or (not (contains? row :schedule.activation/initial-enabled?))
+             (boolean? (:schedule.activation/initial-enabled? row)))
          (instance? java.util.Date (:schedule.activation/created-at row))
          (instance? java.util.Date (:schedule.activation/next-fire row))
          (every? #(or (not (contains? row %)) (uuid? (get row %)))
@@ -247,7 +252,8 @@
              {:status :captured :binding binding :snapshot snapshot :manifest manifest :revision revision})))))))
 
 (defn- create-owned-in!
-  "Create an enabled fixed-human HOST activation retaining inspected code.
+  "Create a fixed-human HOST activation retaining inspected code. enabled?
+   defaults true; false creates it paused in the same creation transaction.
    Does not synchronously capture inputs, dispatch a Job, fund work or start a
    dispatcher. An already running owned dispatcher may execute it when due."
   [host principal original-handle input]
@@ -271,6 +277,7 @@
                 prior (owned-storage! #(schedules/managed-target control-conn existing))
                 _ (case (:version prior) 1 nil 2 (owned-storage! #(owned-target! existing prior)) (owned-unavailable!))]
             (when-not (and (= 2 (:version prior))
+                           (= (get input :enabled? true) (schedules/initial-enabled? existing))
                            (= {:kind kind :cadence spec :execution (:execution input)}
                               (select-keys prior [:kind :cadence :execution])))
               (throw (ex-info "Schedule request identity names different work" {:type ::conflict})))
@@ -308,7 +315,8 @@
                   next-fire (owned-storage! #(java.util.Date/from (cron/next-fire-time spec (.toInstant now))))]
               (owned-current! host principal original-handle kind original binding room-binding)
               (owned-storage! #(schedules/create! control-conn {:id id :room (:room-id original) :by (:party original)
-                                                                :target target :now now :next-fire next-fire})))))))))
+                                                                :target target :now now :next-fire next-fire
+                                                                :enabled? (get input :enabled? true)})))))))))
 
 (defn create-owned!
   "Retain the original App through fixed activation creation. Source reads
@@ -1156,7 +1164,8 @@
        (= (if (= :benchmark (:kind target)) :experiment :workflow) (:kind job))))
 
 (defn- schedule-summary [conn room-id row target]
-  (let [slug (:room/slug (d/pull @conn [:room/slug] [:room/id room-id]))
+  (let [db @conn
+        slug (:room/slug (d/pull db [:room/slug] [:room/id room-id]))
         native-room (when slug (room-store/slug->room-id slug))]
    {:id (str (:schedule.activation/id row)) :room-id (str room-id)
    :name (get-in target [:execution :name]) :kind (:kind target)
@@ -1168,11 +1177,14 @@
    :next-fire (.getTime ^java.util.Date (:schedule.activation/next-fire row))
    :occurrences
    (mapv (fn [o]
-           (let [candidate (when-let [rid (:schedule.occurrence/request o)] (requests/get-request conn rid))
+           (let [candidate (when-let [rid (:schedule.occurrence/request o)] (requests/request-in db rid))
                  r (when (occurrence-request? row o target candidate) candidate)
                  job (when-let [id (:work.request/job r)] (jobs/status id))
                  j (when (occurrence-job? native-room row target r job) job)
-                 filing (when r (filing-summary r))]
+                 filing (when r (filing-summary r))
+                 batch (scheduled/occurrence-summary
+                        db row o (when (and (= 2 (:version target)) (= :workflow (:kind target)))
+                                   (pins/target-id (get-in target [:source-origin :target]))))]
              (cond-> {:id (str (:schedule.occurrence/id o)) :state (:schedule.occurrence/state o)
               :input-id (some-> (:schedule.occurrence/input-id o) str)
               :input-revision (some-> (:schedule.occurrence/input-revision o) str)
@@ -1181,8 +1193,9 @@
               :request (some-> (:work.request/id r) str)
               :job (some-> (:id j) str) :status (:status j)
               :settled? (:settled? j)}
-               filing (assoc :filing filing))))
-         (schedules/recent-occurrences conn (:schedule.activation/id row) 12))}))
+               filing (assoc :filing filing)
+               batch (assoc :batch batch))))
+         (schedules/recent-occurrences-in db (:schedule.activation/id row) 12))}))
 
 (defn- owned-control-target! [conn original row]
   ;; Creation retries are creator-specific; room controls deliberately are not.

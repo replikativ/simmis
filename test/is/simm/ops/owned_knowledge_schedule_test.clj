@@ -5,6 +5,7 @@
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
             [dvergr.resource :as resource]
+            [dvergr.catalog.room :as catalog]
             [dvergr.model.registry :as models]
             [dvergr.agent.roster :as roster]
             [dvergr.jobs :as jobs]
@@ -34,15 +35,37 @@
             [is.simm.ops.owned-knowledge-discovery :as discovery]
             [is.simm.ops.workflow-schedules :as schedules]
             [is.simm.ops.work :as work]
+            [is.simm.ops.knowledge-batch-inputs :as batch-inputs]
+            [is.simm.ops.owned-reads :as reads]
+            [is.simm.ops.owned-workflows :as sources]
+            [is.simm.ops.workflows :as workflows]
+            [is.simm.starter.wiki-maintenance :as starter]
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.util.concurrent CountDownLatch TimeUnit]))
 
-(defn- with-schedule [f]
+(defn- with-schedule
+  ([f] (with-schedule nil f))
+  ([source f]
   (@#'fixture/with-fixture
-   (fn [{:keys [conn w host room batch-input] :as data}]
+   (fn [{:keys [conn w host room owned batch-input] :as data}]
+     (when source
+       ;; Fixture provisioning only: replace the entire synthetic subtree so
+       ;; the deployment receives exactly the packaged source, including policy.
+       (doseq [path (keys (:files (workflows/snapshot-in @owned "wiki")))]
+         (repo/remove! owned (str "workflows/wiki/" path)))
+       (doseq [[path text] source]
+         (repo/write! owned (str "workflows/wiki/" path) (.getBytes ^String text "UTF-8")))
+       (repo/stage-all! owned)
+       (repo/commit! owned {:message "Packaged starter schedule fixture"}))
      (d/transact conn (concat requests/schema dispositions/schema processing/schema))
      (d/transact conn [{:party/id (:owner w) :party/role :admin}])
      (let [principal (principals/party-principal (:owner w)) handle (str (:room w))
+           source-binding (when source (reads/resolve-host-read! host principal handle))
+           batch-input (if source
+                         {:expected-bundle (:id (catalog/bundle "wiki" source))
+                          :expected-source (sources/source-id source-binding "wiki" (workflows/manifest-in (:db source-binding) "wiki"))
+                          :epoch (:epoch (batch-inputs/declaration source))}
+                         batch-input)
            execution {:name "wiki" :expected-bundle (:expected-bundle batch-input)
                       :expected-owned-source (:expected-source batch-input)
                       :model "codex-subscription-sol" :limits (assoc prep-fixture/limits :settlement "discard")}
@@ -53,7 +76,7 @@
        (binding [ec/*execution-context* (:ctx room)]
          (resource/mint! room {:id (random-uuid) :resources (work/resources prep-fixture/limits)}))
        (f (assoc data :row row :due (:schedule.activation/next-fire row) :create! create!
-                      :principal principal :handle handle :execution execution))))))
+                      :principal principal :handle handle :execution execution)))))))
 
 (defn- occurrence [conn row]
   (let [a (model/activation conn (:schedule.activation/id row))]
@@ -193,6 +216,11 @@
                 (is (nil? (:schedule.activation/last-processed-input after)))
                 (is (= :no-op (:kind (dispositions/disposition filed))))
                 (is (= :closed (:knowledge.batch/state (batches/batch @conn batch))))
+                (let [summary (first (schedules/list-owned! host
+                                      (principals/party-principal (:schedule.activation/by row))
+                                      (str (:schedule.activation/room row))))
+                      observed (first (filter #(= (str (:work.request/id request)) (:request %)) (:occurrences summary)))]
+                  (is (= {:status :observed :id (str batch) :phase :closed} (:batch observed))))
                 (is (= 1 (count (get-in (proof/request! conn filed) [:selection :items])))))))
           (schedules/tick-owned! host (later 2))
           (let [o (occurrence conn row) a (model/activation conn (:schedule.activation/id row))
@@ -379,3 +407,39 @@
             (finally
               (.countDown release)
               (when @worker (deref @worker 15000 nil)))))))))
+
+
+(deftest packaged-v4-source-is-retained-and-drains-through-native-batch-scheduling
+  (let [source (starter/source)]
+    (with-schedule source
+      (fn [{:keys [conn host room row due]}]
+        (let [team (roster/make-agent (roster/make-roster {:id :packaged-starter/team})
+                                      {:id :candidate :program {:kind :echo}})
+              calls (atom 0)]
+          (is (= source (get-in (model/managed-target conn row) [:snapshot :files])))
+          (with-redefs [work/prepare
+                        (fn [input]
+                          (swap! calls inc)
+                          (-> (@#'prep-fixture/model-free-preparation input)
+                              (assoc :team team :agent :candidate)
+                              (assoc-in [:basis :candidate] (roster/agent team :candidate))))
+                        sdb/get-conn (constantly conn)]
+            (schedules/tick-owned! host due)
+            (let [o (occurrence conn row)
+                  request (requests/get-request conn (:schedule.occurrence/request o))
+                  status (jobs/status (:work.request/job request) 25000)
+                  proof (proof/request! conn request)]
+              (is (= :linked (:schedule.occurrence/state o)))
+              (is (= :completed (:status status)))
+              (is (:settled? status))
+              (is (= 2 (count (get-in proof [:selection :items]))))
+              (is (= (:policy (batch-inputs/declaration source)) (get-in proof [:selection :batch-policy])))
+              (schedules/tick-owned! host due)
+              (is (= :closed (:knowledge.batch/state (batches/batch @conn (:schedule.occurrence/knowledge-batch o)))))
+              (is (= :no-op (:kind (dispositions/disposition (requests/get-request conn (:work.request/id request)))))))
+            (schedules/tick-owned! host (java.util.Date. (+ (.getTime ^java.util.Date due) 60000)))
+            (let [o (occurrence conn row)]
+              (is (= :skipped (:schedule.occurrence/state o)))
+              (is (= :no-inputs (:schedule.occurrence/reason o))))
+            (is (= 1 @calls))
+            (is (= 1 (count (requests/requests conn))))))))))

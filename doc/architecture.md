@@ -704,6 +704,18 @@ allowance come from the same finite shared room wallet as manual execution;
 scheduling never creates funds. Overlaps are skipped and missed ticks coalesce
 to the latest intended slot. The Schedules view keeps these deployments distinct
 from legacy agent-authored prompt/code tasks.
+
+Creation accepts an optional `:enabled?` boolean, defaulting to true. False
+creates a paused activation atomically; no create-then-pause interval can admit
+an occurrence. A separate immutable `:schedule.activation/initial-enabled?`
+records creation intent, while `:schedule.activation/enabled?` remains the
+current pause/resume state. Exact request retries preserve later control
+changes; opposite creation settings under one request ID conflict in the
+writer. The initial setting does not alter retained code/execution target
+hashes. Historical rows without it have the previous initially-enabled meaning.
+Paused creation still validates a concrete model, finite execution limits and
+source configuration; it does not choose a default model, grant resources or
+prepare a provider. Later enabling uses the existing cadence/coalescing rules.
 Owned control services provide bounded schedule metadata,
 pause/resume and metadata-only request status without hydrating a room or
 resolving its current file default. Inspection and pause do not prepare a

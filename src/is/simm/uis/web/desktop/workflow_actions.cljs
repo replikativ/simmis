@@ -50,9 +50,12 @@
                         (:selected (state))
                         (select-keys (:requests (state)) [[:save (:selected (state))]
                                                           [:source (:selected (state))]])]))
+        verification-generation (fn [] [(authority-generation) (:retry (state)) (:stream-registered (state))])
         readiness-generation (fn []
                                [(authority-generation) (:retry (state)) (:stream-registered (state))
                                 (:readiness-revision (state))])
+        stream-generation (fn [] [(authority-generation) (:retry (state)) (:stream-registered (state))
+                                  (editor/stream-request (state))])
         change! (fn [name f & args] (apply update! update-in [:drafts name] f args))
         request!
         (fn [slot selected invoke consume & [stale-consume]]
@@ -105,15 +108,22 @@
                         ;; Retire transport bookkeeping, NOT original request
                         ;; payloads kept with each draft for identical retries.
                         (update! #(-> % (assoc :observation-owner owner :loading {} :requests {})
-                                      (dissoc :activations :activation-status :readiness :readiness-status))))
-                    gen (generation)]
+                                      (dissoc :activations :activation-status :readiness :readiness-status :workflow-stream :workflow-stream-status :observed-stream-generation))))
+                    gen (generation) verification-gen (verification-generation)]
                 (when (not= (not allowed?) (:access-denied? (state)))
                   (update! assoc :access-denied? (not allowed?)))
                 (when (not= gen (:observed-generation (state)))
                   (update! (fn [s]
-                             (-> (cond-> (assoc s :observed-generation gen)
-                                   (not= gen (get-in s [:observations :activations :completed]))
-                                   (assoc :activation-status :checking))
+                             (cond-> (assoc s :observed-generation gen)
+                               (not= gen (get-in s [:observations :activations :completed]))
+                               (assoc :activation-status :checking)))))
+                (when (not= verification-gen (:observed-verification-generation (state)))
+                  ;; Selecting a tab does not change its saved source. Only
+                  ;; authority/source invalidation hints retire verification;
+                  ;; otherwise returning to a completed source can stay stale
+                  ;; while its identical observation generation suppresses IO.
+                  (update! (fn [s]
+                             (-> s (assoc :observed-verification-generation verification-gen)
                                  (update :drafts (fn [drafts] (into {} (map (fn [[n d]] [n (editor/unverified d)])) drafts)))))))
                 (let [read-gen (readiness-generation)]
                   (when (not= read-gen (:observed-readiness-generation (state)))
@@ -127,7 +137,7 @@
                   ;; must not suppress a fresh authorized observation. Keep
                   ;; all command/uncertain-setup journals in the drafts.
                   (update! #(dissoc % :permissions :list :activations :activation-status :readiness :readiness-status
-                                   :observations :observation-accepted)))
+                                   :observations :observation-accepted :workflow-stream :workflow-stream-status :observed-stream-generation)))
                 (when (and socket allowed?)
                   (observe! :stream #(vector (:retry (state)))
                             #(memory-remote/prepare-memory-stream! web/server-id room)
@@ -146,6 +156,19 @@
                                               (update :errors dissoc :readiness)))
                             (fn [s _] (-> s (dissoc :readiness) (assoc :readiness-status :unavailable)
                                           (assoc-in [:errors :readiness] "Model and allowance observations are unavailable. Retry updates when the connection is ready."))))
+                  (if-let [request (editor/stream-request (state))]
+                    (let [gen (stream-generation)]
+                      (when (not= gen (:observed-stream-generation (state)))
+                        (update! assoc :observed-stream-generation gen :workflow-stream-status :checking))
+                      (observe! :workflow-stream stream-generation
+                                #(remote/load-workflow-stream-status! web/server-id room request)
+                                (fn [s reply] (editor/observe-stream s request reply))
+                                (fn [s _] (-> s (dissoc :workflow-stream)
+                                              (assoc :workflow-stream-status :unavailable)))))
+                    (when (or (:workflow-stream (state)) (:workflow-stream-status (state))
+                              (:observed-stream-generation (state))
+                              (get-in (state) [:observations :workflow-stream]))
+                      (update! editor/forget-stream)))
                   (observe! :wiki-setup generation
                             #(remote/inspect-wiki-maintenance-setup! web/server-id room)
                             editor/observe-wiki-setup
@@ -255,7 +278,7 @@
                               (fn [s reply] (-> s (assoc-in [:drafts name :submission :reply] (dissoc reply :permissions))
                                                 (update :readiness-revision (fnil inc 0))))))
                   (catch :default error (update! assoc-in [:errors :submit] (rem/error-text error))))))
-            (schedule! [name retry?]
+            (schedule! [name retry? & [enabled?]]
               (try
                 (let [draft (get-in (state) [:drafts name])
                       pending (:schedule-submission draft)]
@@ -263,9 +286,9 @@
                             (and (not retry?) pending (nil? (:reply pending))))
                     (throw (js/Error. "Retry the unresolved schedule request first")))
                   (let [payload (if retry? (:payload pending)
-                                    (editor/scheduled-submission draft (str (random-uuid))))]
+                                    (editor/scheduled-submission draft (str (random-uuid)) (if (nil? enabled?) true enabled?)))]
                     (when-not payload (throw (js/Error. "No schedule request to retry")))
-                    (when (or retry?
+                    (when (or retry? (false? (:enabled? payload))
                               (confirm! (str "Activate recurring " (:kind payload) " · " name "?\n"
                                              "Every " (/ (get-in payload [:cadence :interval-ms]) 60000) " minutes; "
                                              (get-in payload [:cadence :tz]) ".\n"
@@ -290,6 +313,14 @@
                 (request! :wiki-setup-install nil
                           #(remote/install-wiki-maintenance! web/server-id room)
                           editor/acknowledge-wiki-setup editor/acknowledge-wiki-setup)))
+            (upgrade-setup! []
+              (let [setup (:wiki-setup (state))
+                    payload {:expected-revision (:revision setup) :from-version (:installed-version setup)}]
+                (when (and (= :upgrade-available (:status setup)) (not (:access-denied? (state))))
+                  (update! editor/begin-wiki-setup payload)
+                  (request! :wiki-setup-upgrade nil
+                            #(remote/upgrade-wiki-maintenance! web/server-id room payload)
+                            editor/acknowledge-wiki-setup editor/acknowledge-wiki-setup))))
             (collect-output! [name]
               (when-let [request-id (editor/collectable-output-request (get-in (state) [:drafts name]))]
                 (when-not (get-in (state) [:loading [:output name]])
@@ -345,7 +376,7 @@
                      (update! assoc-in [:errors :source] "Use a lowercase workflow name with letters, digits and dashes (max64)."))))
        :owner k :room-id room :change change! :save save! :submit submit! :fund fund! :schedule schedule!
        :collect-output collect-output!
-       :inspect-wiki-setup inspect-setup! :install-wiki-setup install-setup!
+       :inspect-wiki-setup inspect-setup! :install-wiki-setup install-setup! :upgrade-wiki-setup upgrade-setup!
        :open-schedules (fn []
                          (binding [ec/*execution-context* ctx]
                            (when (web/current-session? session)

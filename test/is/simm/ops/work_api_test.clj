@@ -33,6 +33,10 @@
               :cadence {:tz "UTC" :interval-ms 60000} :execution execution}
         normalized (api/workflow-schedule-transport args)]
     (is (= (parse-uuid request) (:request-id normalized)))
+    (doseq [enabled? [true false]]
+      (is (= enabled? (:enabled? (api/workflow-schedule-transport (assoc args :enabled? enabled?))))))
+    (doseq [invalid [nil "false" 0]]
+      (is (false? (m/validate api/workflow-schedule-create-schema (assoc args :enabled? invalid)))))
     (is (= (parse-uuid bundle) (get-in normalized [:execution :expected-bundle])))
     (is (= {"subject" "literal"} (get-in normalized [:execution :params])))
     (is (= {"/docs/λ.md" "input"} (get-in normalized [:execution :inputs])))
@@ -52,7 +56,8 @@
                                            :models [(:model input)] :repetitions 1
                                            :limits (:limits input)}))]
       (is (= (parse-uuid bundle)
-             (get-in (api/workflow-schedule-transport benchmark) [:execution :expected-bundle]))))))
+             (get-in (api/workflow-schedule-transport benchmark) [:execution :expected-bundle])))
+      (is (false? (:enabled? (api/workflow-schedule-transport (assoc benchmark :enabled? false))))))))
 
 (deftest coordinator-op-preserves-room-authorization-and-canonical-request-identity
   (world/with-world [conn w]

@@ -15,6 +15,7 @@
             [is.simm.model.knowledge-streams :as streams]
             [is.simm.model.knowledge-stream-retirement :as retirement]
             [is.simm.ops.knowledge-changes :as changes]
+            [is.simm.ops.knowledge-program :as program]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.ops.owned-room-operation :as room-operation]
             [is.simm.ops.knowledge-batch-inputs :as batch-inputs]
@@ -94,21 +95,11 @@
     (when-not (= expected-source (owned-workflows/source-id binding name manifest))
       (refuse! :program-changed))
     (let [snapshot (workflows/snapshot-in db name)
-          planned (runs/plan-source snapshot
-                                    {:name name :expected-bundle expected-bundle})
-          policy (some-> (:selection-policy planned) inputs/normalize-policy)]
-      (when-not policy (refuse! :missing-knowledge-policy))
-      (when (contains? (:inputs planned) "/in/knowledge/manifest.edn")
-        (refuse! :benchmark-inputs-are-not-a-live-stream))
-      {:policy policy :planned planned :snapshot snapshot
-       :origin {:target (:target binding) :target-stamp (:target-stamp binding)
-                :workflow name :source-revision expected-source}
-       :value (streams/descriptor
-                {:by (:party binding) :room (:room-id binding)
-                 :target (pins/target-id (:target binding)) :policy (hasch/uuid policy)
-                 :program (hasch/uuid [:simmis/knowledge-program-v1
-                                      (select-keys (:workflow planned) [:name :bundle :case :params])
-                                      (:task planned) (:inputs planned)]) :epoch epoch})})))
+          described (program/describe (:party binding) (:room-id binding) (:target binding)
+                                      snapshot name expected-bundle epoch)]
+      (assoc described :snapshot snapshot
+                       :origin {:target (:target binding) :target-stamp (:target-stamp binding)
+                                :workflow name :source-revision expected-source}))))
 
 (defn- plan! [control source-db value expected policy new]
   (if-let [root (:knowledge.stream/cursor-root expected)]

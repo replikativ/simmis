@@ -5,6 +5,7 @@
             #?(:cljs [org.replikativ.spindel.effects.track :refer [track]])
             #?(:cljs [is.simm.uis.web.desktop.signals :as sig])
             [is.simm.uis.web.desktop.disclosure :as disclosure]
+            [is.simm.uis.web.desktop.workflow-editor :as workflow-editor]
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
@@ -147,6 +148,8 @@
      (el/div {:class "workflow-occurrence" :key (:id occurrence)}
              (el/span {} (str (.toLocaleString (js/Date. (:intended-at occurrence))) " · "
                               (name (or (:status occurrence) (:state occurrence) :unknown))))
+             (when-let [label (workflow-editor/batch-label (:batch occurrence))]
+               (el/span {:class "schedule-outcome"} label))
              (when-let [job (:job occurrence)]
                (el/button {:on-click (fn [event] ((:on-open-run row) row job event))} "Results"))
              (case (get-in occurrence [:filing :status])

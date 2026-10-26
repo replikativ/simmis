@@ -34,7 +34,7 @@
           (is (str/includes? text "rendered-benchmark-model · every 1440 minutes"))
           (is (str/includes? text "shared across benchmark trials"))
           (is (str/includes? text "Per benchmark trial: at most 4 model steps and 120000 ms."))
-          (is (str/includes? text "Created schedule: created-id. Current status"))
+          (is (str/includes? text "Saved schedule: created-id. Acknowledged as enabled. Current status"))
           (is (str/includes? text "This receipt is not its current balance"))
           (is (not (str/includes? text "Schedule: created-id · Active"))))
         (.click (first (filter #(= "Open Workflows" (.-textContent %))
@@ -53,13 +53,17 @@
         draft (assoc (editor/draft source) :path nil)
         state {:selected "maintain-wiki" :drafts {"maintain-wiki" draft}
                :wiki-setup {:status :unavailable} :permissions {:merge? false}
-               :activation-status :ready :activations []}
+               :activation-status :ready
+               :activations [{:id "activation" :room-id "room" :name "maintain-wiki" :enabled? true
+                              :occurrences [{:id "occurrence" :intended-at 1 :status :completed
+                                             :batch {:status :observed :id "batch" :phase :review}}]}]}
         discharge (atom nil)]
     (.appendChild (.-body js/document) container)
     (try
       (binding [ec/*execution-context* ctx]
         (reset! discharge (browser/mount! container (workflows/view "Lab" state {:room-id "room"})))
-        (is (str/includes? (.-textContent container) "Not scheduled in this room."))
+        (is (str/includes? (.-textContent container) "Input batch awaiting review"))
+        (is (not (str/includes? (.-textContent container) "No wiki changes")))
         (is (not (str/includes? (.-textContent container) "Launch saved revision"))))
       (finally (when @discharge (browser/unmount! @discharge))
                (.remove container) (context/stop-context! ctx)))))
@@ -83,7 +87,9 @@
           (is (some? (named "Confirm and submit")))
           (is (.-disabled (named "Confirm and submit")))
           (is (some? (named "Confirm and activate schedule…")))
-          (is (.-disabled (named "Confirm and activate schedule…")))))
+          (is (.-disabled (named "Confirm and activate schedule…")))
+          (is (some? (named "Save paused schedule")))
+          (is (.-disabled (named "Save paused schedule")))))
       (finally (when @discharge (browser/unmount! @discharge))
                (.remove container) (context/stop-context! ctx)))))
 
@@ -128,7 +134,7 @@
                                                    :permissions {:merge? true}}
                                                  {:room-id "room" :change (fn [& _])})))
         (is (not (str/includes? (.-textContent container) "Parameter · checker-profile")))
-        (is (str/includes? (.-textContent container) "Next activation"))
+        (is (str/includes? (.-textContent container) "Next schedule"))
         (let [button (some #(when (= "Confirm and activate schedule…" (.-textContent %)) %)
                            (array-seq (.querySelectorAll container "button")))]
           (is (some? button))
@@ -166,5 +172,25 @@
           (set! (.-open details) true)
           (.dispatchEvent details (js/Event. "toggle"))
           (is (empty? @changes) "Queued native toggles after detach cannot recreate or mutate the draft")))
+      (finally (when @discharge (browser/unmount! @discharge))
+               (.remove container) (context/stop-context! ctx)))))
+
+(deftest pristine-starter-upgrade-is-explicit-and-does-not-run-work-during-render
+  (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+        discharge (atom nil) calls (atom [])
+        state {:wiki-setup {:status :upgrade-available :revision "069c7012-c566-4e46-8aab-e7f9a25abc3a"
+                           :installed-version 3 :shipped-version 4}}
+        actions {:room-id "room" :upgrade-wiki-setup #(swap! calls conj :upgrade)}]
+    (.appendChild (.-body js/document) container)
+    (try
+      (binding [ec/*execution-context* ctx]
+        (reset! discharge (browser/mount! container (workflows/view "Lab" state actions)))
+        (is (empty? @calls))
+        (is (str/includes? (.-textContent container) "Existing schedules are not upgraded"))
+        (let [button (some #(when (= "Upgrade starter v3 → v4" (.-textContent %)) %)
+                           (array-seq (.querySelectorAll container "button")))]
+          (is (some? button))
+          (.click button)
+          (is (= [:upgrade] @calls))))
       (finally (when @discharge (browser/unmount! @discharge))
                (.remove container) (context/stop-context! ctx)))))

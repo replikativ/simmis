@@ -56,13 +56,15 @@
   (model/occurrence conn (:schedule.activation/last-occurrence
                           (model/activation conn (:schedule.activation/id row)))))
 
-(deftest actual-shipped-maintainer-is-an-ordinary-scheduled-noop
+(deftest historical-whole-selection-maintainer-is-an-ordinary-scheduled-noop
   (@#'fixture/with-fixture
    true
    (fn [{:keys [conn w host owned attached room]}]
      (d/transact conn model/schema)
      (d/transact conn [{:party/id (:owner w) :party/role :admin}])
-     (let [source (starter/source) principal (ops/party-principal (:owner w))
+     ;; Retain the historical whole-selection cursor regression independently
+     ;; of the current starter's incremental stream protocol.
+     (let [source (starter/source 3) principal (ops/party-principal (:owner w))
            name starter/name calls (atom 0) observed (atom {}) start jobs/start!
            provider (codex/create {:credentials (gateway/static-credentials :fixture {} #{"https://chatgpt.com"})})]
        (doseq [[path text] source] (text! owned (str "workflows/" name "/" path) text))

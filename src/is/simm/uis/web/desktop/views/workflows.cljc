@@ -79,11 +79,39 @@
                                                 (when (= :benchmark (:kind row)) " · benchmark")
                                                 (when (and revision (:source-revision row)
                                                            (not= revision (:source-revision row))) " · earlier source revision")))
+                                  (when-let [label (editor/batch-label (:batch latest))]
+                                    (el/p {:class "workflow-note"} label))
                                   (when-let [job (:job latest)]
                                     (el/button {:on-click (fn [_] ((:open-run actions) job))} "Latest Run"))
                                   (when-let [proposal (get-in latest [:filing :proposal])]
                                     (el/button {:on-click (fn [_] ((:open-proposal actions) proposal))} "Review proposal")))))
                       (el/button {:on-click (fn [_] ((:open-schedules actions)))} "Manage in Workflows"))))))
+
+(defn- stream-status [state]
+  (let [request (editor/stream-request state)
+        observed (:workflow-stream state)
+        reply (when (= request (:request observed)) (:reply observed))]
+    (when (and request (not= :not-enabled (:status reply)))
+      (el/div {:class "workflow-note" :role "status"}
+              (el/strong {} "Your saved workflow’s stream · ")
+              (cond
+                (= :checking (:workflow-stream-status state)) (el/span {} "Checking recorded inputs…")
+                (= :unavailable (:workflow-stream-status state)) (el/span {} "Status unavailable. No inputs were collected.")
+                (= :not-discovered (:status reply)) (el/span {} "Not discovered yet. Reading this status does not collect evidence.")
+                (= :observed (:status reply))
+                (el/span {}
+                         (str (get-in reply [:pending :count]) " pending source versions in the recorded journal")
+                         (when (not= :active (:lifecycle reply)) (str " · " (name (:lifecycle reply)))))
+                :else (el/span {} "Awaiting a saved-source observation."))
+              (when (and (= :ready (:workflow-stream-status state)) (= :observed (:status reply)))
+                (el/p {} (case (get-in reply [:freshness :status])
+                           :current "Discovery matches the observed Memory snapshot."
+                           :changed "Memory has changed since discovery; changes may include unrelated files."
+                           "Cannot verify whether discovery is current.")
+                        " Counts cover the pending journal, excluding claimed items; they do not establish that another batch can run. "
+                        (if (= :none (get-in reply [:batch :status]))
+                          "No active batch recorded."
+                          (editor/batch-label (:batch reply)))))))))
 
 (defn view [room-name state actions]
   (let [selected (:selected state) draft (get-in state [:drafts selected])
@@ -97,7 +125,7 @@
                           (get-in source [:inspection :cases]))
         local? (editor/local? form)
         model-selected? (or local? (not (str/blank? (:model form))))
-        setup-card-visible? (contains? #{:missing :installed :customized :pending} (get-in state [:wiki-setup :status]))
+        setup-card-visible? (contains? #{:missing :installed :customized :pending :upgrade-available :changed} (get-in state [:wiki-setup :status]))
         cli? (editor/cli? form)
         funded-here? (and (:funded? draft) (= (:fund-backend draft "hosted") (:backend form "hosted")))
         change #(apply (:change actions) selected %&)
@@ -120,14 +148,21 @@
                           :missing (el/button {:on-click (fn [_] ((:install-wiki-setup actions)))} "Set up wiki maintenance")
                           :installed (el/span {} "Starter workflow installed. ")
                           :customized (el/span {} "Customized workflow preserved. ")
+                          :upgrade-available
+                          (el/span {}
+                                   (el/button {:on-click (fn [_] ((:upgrade-wiki-setup actions)))}
+                                              (str "Upgrade starter v" (get-in state [:wiki-setup :installed-version])
+                                                   " → v" (get-in state [:wiki-setup :shipped-version])))
+                                   " Only the unchanged bundled starter is upgraded. Existing schedules are not upgraded; review and redeploy them separately. ")
+                          :changed (el/span {} "Saved starter changed. Inspect it again before upgrading. ")
                           :pending (el/span {} "Setup outcome is uncertain. Checking saved source does not repeat installation. "))
-                        (when (or (#{:installed :customized} status) (#{:installed :customized} observed-status))
+                        (when (or (#{:installed :customized :upgrade-available} status) (#{:installed :customized :upgrade-available} observed-status))
                           (el/button {:on-click (fn [_] ((:select actions) "maintain-wiki"))} "Open workflow"))
-                        (when (= :pending status)
+                        (when (#{:pending :changed} status)
                           (el/button {:on-click (fn [_] ((:inspect-wiki-setup actions)))
                                       :disabled (get-in state [:loading :wiki-setup-inspect])} "Check saved setup"))
                         (activation-status state actions "maintain-wiki")
-                        (el/p {} "The starter uses this room’s inbox and transcripts as evidence and wiki files as context, then proposes changes for review. Chat is not automatically filed. Inspect customized source before use. Setup does not choose a model, add allowance or enable a schedule."))))
+                        (el/p {} "The starter uses this room’s inbox, transcripts and captures as evidence and wiki files as context, then proposes changes for review. Chat is not automatically filed. Inspect customized source before use. Setup does not choose a model, add allowance or enable a schedule."))))
             (for [[slot error] (:errors state)]
               (el/div {:key (pr-str slot) :class "proposal-error" :role "alert"}
                       (str (when (vector? slot) (str (second slot) ": ")) error)))
@@ -166,6 +201,7 @@
                                         (el/button {:on-click (fn [_] ((:open-room actions)))} "Discuss in room"))
                                       (when-not (and (= "maintain-wiki" selected) setup-card-visible?)
                                         (activation-status state actions selected))
+                                      (stream-status state)
                                       (el/details {:class "workflow-disclosure" :open (boolean (:source-open? draft))
                                                    :on-toggle (fn [event]
                                                                 (disclosure/remember-open! event #(change assoc :source-open? %)))}
@@ -347,7 +383,9 @@
                                                             (let [execution (:execution payload)
                                                                   description (editor/deployment-description payload)]
                                                               (el/div {:class "workflow-note" :role "status"}
-                                                                      (el/strong {} (if pending? "Pending activation · " "Next activation · "))
+                                                                      (el/strong {} (if pending?
+                                                                                     (if (false? (:enabled? payload)) "Pending paused schedule · " "Pending activation · ")
+                                                                                     "Next schedule · "))
                                                                       (el/span {} (str (:model description) " · every "
                                                                                       (quot (get-in payload [:cadence :interval-ms]) 60000)
                                                                                       " minutes · " (get-in payload [:cadence :tz])))
@@ -359,15 +397,22 @@
                                                                                     (not (get-in source [:inspection :ok]))
                                                                                     (and (:schedule-submission draft)
                                                                                          (nil? (get-in draft [:schedule-submission :reply]))))
+                                                                      :on-click (fn [_] ((:schedule actions) selected false false))}
+                                                                     "Save paused schedule")
+                                                          (el/button {:disabled (or (nil? (editor/deployment-preview draft)) (:schedule loading) (editor/dirty? draft) (not (editor/source-current? draft))
+                                                                                    (not (get-in source [:inspection :ok]))
+                                                                                    (and (:schedule-submission draft)
+                                                                                         (nil? (get-in draft [:schedule-submission :reply]))))
                                                                       :on-click (fn [_] ((:schedule actions) selected false))}
                                                                      "Confirm and activate schedule…")
                                                           (when (:schedule-submission draft)
                                                             (el/button {:disabled (:schedule loading)
                                                                         :on-click (fn [_] ((:schedule actions) selected true))}
-                                                                       "Retry identical activation"))
+                                                                       "Retry identical schedule request"))
                                                           (when-let [reply (get-in draft [:schedule-submission :reply])]
                                                             (el/div {}
-                                                                    (el/p {} (str "Created schedule: " (:id reply)
+                                                                    (el/p {} (str "Saved schedule: " (:id reply)
+                                                                                  ". Acknowledged as " (case (:enabled? reply) true "enabled" false "paused" "state not reported")
                                                                                   ". Current status and occurrences are in Workflows."))
                                                                     (el/button {:on-click (fn [_] ((:open-schedules actions)))} "Open Workflows"))))))
                                                 (when uncertain?

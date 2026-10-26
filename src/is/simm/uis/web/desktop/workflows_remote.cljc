@@ -25,6 +25,7 @@
             #?(:clj [is.simm.ops.knowledge-output-service :as knowledge-output])
             #?(:clj [is.simm.ops.wiki-setup :as wiki-setup])
             #?(:clj [is.simm.ops.workflow-readiness :as readiness])
+            #?(:clj [is.simm.ops.knowledge-stream-status :as stream-status])
             #?(:clj [is.simm.runtimes.context :as context])))
 
 #?(:clj
@@ -211,15 +212,25 @@
 (defn-spin-remote inspect-wiki-maintenance-setup!
   [server-id room-id-str]
   (spin-remote server-id [room-id-str]
-               #?(:clj (let [party (access/authenticated-party-id) room-id (wire-uuid room-id-str)]
-                         (await (blocking/blocking #(wiki-setup/inspect! party room-id))))
+               #?(:clj (let [party (access/authenticated-party-id) room-id (wire-uuid room-id-str)
+                             body (wiki-setup/prepare-inspect party room-id)]
+                         (await (blocking/blocking body)))
                   :cljs nil)))
 
 (defn-spin-remote install-wiki-maintenance!
   [server-id room-id-str]
   (spin-remote server-id [room-id-str]
-               #?(:clj (let [party (access/authenticated-party-id) room-id (wire-uuid room-id-str)]
-                         (await (blocking/blocking #(wiki-setup/install! party room-id))))
+               #?(:clj (let [party (access/authenticated-party-id) room-id (wire-uuid room-id-str)
+                             body (wiki-setup/prepare-install party room-id)]
+                         (await (blocking/blocking body)))
+                  :cljs nil)))
+
+(defn-spin-remote upgrade-wiki-maintenance!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (let [party (access/authenticated-party-id) room-id (wire-uuid room-id-str)
+                             body (wiki-setup/prepare-upgrade party room-id request)]
+                         (await (blocking/blocking body)))
                   :cljs nil)))
 
 (defn-spin-remote collect-workflow-wiki-output!
@@ -298,6 +309,13 @@
   [server-id room-id-str]
   (spin-remote server-id [room-id-str]
                #?(:clj (let [body (readiness/prepare-readiness (access/authenticated-party-id) room-id-str)]
+                         (await (blocking/blocking body)))
+                  :cljs nil)))
+
+(defn-spin-remote load-workflow-stream-status!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (let [body (stream-status/prepare-status (access/authenticated-party-id) room-id-str request)]
                          (await (blocking/blocking body)))
                   :cljs nil)))
 

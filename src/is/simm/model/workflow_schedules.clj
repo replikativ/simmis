@@ -24,6 +24,7 @@
          [:schedule.activation/revision :db.type/uuid]
          [:schedule.activation/target-ref :db.type/store-ref]
          [:schedule.activation/enabled? :db.type/boolean]
+         [:schedule.activation/initial-enabled? :db.type/boolean]
          [:schedule.activation/created-at :db.type/instant]
          [:schedule.activation/next-fire :db.type/instant]
          [:schedule.activation/last-occurrence :db.type/uuid]
@@ -72,15 +73,18 @@
        (sort-by (juxt :schedule.occurrence/intended-at :schedule.occurrence/id) #(compare %2 %1))
        vec))
 
-(defn recent-occurrences
+(defn recent-occurrences-in
   "Keep at most limit rows in memory while scanning this activation's index.
    Runtime passes use its active pointer, never historical occurrence scans."
-  [conn activation-id limit]
+  [db activation-id limit]
   (reduce (fn [recent datom]
-            (->> (conj recent (d/pull @conn '[*] (:e datom)))
+            (->> (conj recent (d/pull db '[*] (:e datom)))
                  (sort-by (juxt :schedule.occurrence/intended-at :schedule.occurrence/id) #(compare %2 %1))
                  (take limit) vec))
-          [] (d/datoms @conn :avet :schedule.occurrence/activation activation-id)))
+          [] (d/datoms db :avet :schedule.occurrence/activation activation-id)))
+
+(defn recent-occurrences [conn activation-id limit]
+  (recent-occurrences-in @conn activation-id limit))
 
 (defn admitting-occurrences [conn]
   (map #(d/pull @conn '[*] (:e %))
@@ -110,16 +114,29 @@
       (throw (ex-info "Schedule managed target failed its content identity" {:type ::corrupt})))
     value))
 
+(defn initial-enabled?
+  "Creation intent, independent of later pause/resume. Older activations were
+   always created enabled, so absence has that single historical meaning."
+  [row]
+  (when-not (map? row) (throw (ex-info "Missing schedule creation state" {:type ::corrupt})))
+  (let [value (get row :schedule.activation/initial-enabled? true)]
+    (when-not (boolean? value)
+      (throw (ex-info "Invalid schedule creation state" {:type ::corrupt})))
+    value))
+
 (defn- create-tx [db row]
   (if-let [prior (pull-row db :schedule.activation/id (:schedule.activation/id row))]
-    (do (when-not (= (:schedule.activation/revision prior) (:schedule.activation/revision row))
+    (do (when-not (and (= (:schedule.activation/revision prior) (:schedule.activation/revision row))
+                       (= (initial-enabled? prior) (initial-enabled? row)))
           (throw (ex-info "Schedule identity already names another target" {:type ::conflict}))) [])
     (do
       (when (>= (count (d/datoms db :aevt :schedule.activation/id)) 100)
         (throw (ex-info "This host already has its bounded100 workflow schedules" {:type ::capacity})))
       [row])))
 
-(defn create! [conn {:keys [id room by target now next-fire]}]
+(defn create! [conn {:keys [id room by target now next-fire enabled?] :or {enabled? true}}]
+  (when-not (boolean? enabled?)
+    (throw (ex-info "Schedule enabled setting must be boolean" {:type ::invalid})))
   (let [revision (hasch/uuid target)]
     (artifact/publish-value!
      (artifact/datahike-store conn) target
@@ -127,7 +144,8 @@
        (d/transact conn [[:db.fn/call create-tx
                           {:schedule.activation/id id :schedule.activation/room room
                            :schedule.activation/by by :schedule.activation/revision revision
-                           :schedule.activation/target-ref ref :schedule.activation/enabled? true
+                           :schedule.activation/target-ref ref :schedule.activation/enabled? enabled?
+                           :schedule.activation/initial-enabled? enabled?
                            :schedule.activation/created-at now :schedule.activation/next-fire next-fire}]])))
     (activation conn id)))
 

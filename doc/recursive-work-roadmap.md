@@ -35,15 +35,18 @@ another entity, writer or interaction-state model.
 | 4. Operate default knowledge maintenance | Versioned incremental starter; existing manual/benchmark/schedule kernel; clear backlog, held/review and recovery states | Deterministic model-free schedule/batch tests, preserved customized source, explicit deployment/resources, and proposal/adoption correspondence |
 | 5. Reuse the model for business/research interfaces | Typed business components, explicit SCI interfaces, connected room sites with scoped dynamic handlers, and later simulations | Shared semantic commands and source/world binding; lifecycle and resource ownership; public/private projections explicit; simulated results remain distinct from live facts |
 
-The incremental-input and typed page table/form foundation has landed. The
-bounded report/capture adapters are implemented and locally verified, with
-normal integration CI still required before landing. The component contract is
-documented and reviewed; the first shared Company read presentations and
-existing editor composition are under verification. Connected SCI/site hosts
-and a complete standalone editing surface remain later slices. Keep the verified running UI separate from
-new development and use the server/client REPL plus the browser for validation.
-The model-free experiment used for report verification demonstrates execution,
-certified result storage and rendering; it does not benchmark LLM wiki quality.
+The memory foundation includes incremental knowledge inputs, typed Markdown
+page tables/forms, bounded native Scorecard/capture adapters, shared typed
+presentation and explicit portable Markdown snapshots. The versioned wiki
+starter, paused schedule creation and personal stream observations reuse the
+existing workflow kernel. Source-positioned views in the default editor,
+connected SCI/site hosts and a complete standalone editing surface remain
+separate slices.
+
+Keep the verified running UI separate from new development and use the
+server/client REPL plus the browser for validation. The model-free experiment
+used for report verification demonstrates execution, certified result storage
+and rendering; it does not benchmark LLM wiki quality.
 
 ### Shared components before additional interfaces
 
@@ -77,13 +80,13 @@ special-purpose versions for every result, document or business object.
 Default maintenance remains an ordinary workflow installed in a new canonical
 personal Room. The existing bootstrap already does this for the current alpha
 account lifecycle; do not create another maintenance agent or scheduler.
-Ship incremental batching as a new starter revision and use an explicit
-whole-subtree comparison for upgrades. Preserve customized and older pinned
+Version 4 declares incremental batching in ordinary source. Explicit upgrades
+use an inspected revision and whole-subtree comparison. Preserve customized and older pinned
 source; old whole-selection fingerprints do not become incremental cursors.
 
 Schedule deployment must distinguish a configured paused activation from an
-enabled one. The existing creation path enables execution; creating and then
-pausing has a dispatch race. Default unattended execution still needs explicit
+enabled one. Creation now supports an initially paused activation in the same write;
+creating enabled and then pausing would have a dispatch race. Default unattended execution still needs explicit
 model/provider selection, finite allowance policy, cadence/timezone and
 per-occurrence ceilings. Use the existing activation, request and occurrence
 machinery for these decisions.

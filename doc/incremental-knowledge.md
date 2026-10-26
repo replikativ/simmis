@@ -6,8 +6,9 @@ capture their original App before queueing, then enter its lifetime on the actua
 worker with normal human authorization. The existing App-owned scheduler shares
 the same discovery stream; no second scheduler or discovery service is installed.
 
-The shipped wiki starter remains on its existing frozen whole-selection inputs
-until its source explicitly declares batching. Registration creates no streams,
+The version-4 wiki starter explicitly declares batching in its ordinary source;
+versions 1–3 retain their frozen whole-selection inputs. Installing or upgrading
+that source creates no streams,
 allowances or enabled schedules. Discovery itself performs no model dispatch,
 checker evaluation, source processing, or wiki publication. Recovery and retirement
 remain internal fixed HOST operations, without public tools or UI controls.
@@ -489,3 +490,50 @@ pruning policy. This is a model/native GC proof, complemented by separate HOST
 authorization/lifetime tests. It does not prove persistent HOST registry
 reconstruction or public runtime activation. The probe is outside ordinary test
 discovery and invokes no models.
+
+
+## Occurrence batch observations
+
+The existing schedule summaries expose an occurrence-specific batch observation:
+prepared, admitted, awaiting review, or closed. The metadata join uses one
+immutable control DB for occurrence, activation, batch, stream and request facts.
+Both association directions, author/room/target, canonical request identity and
+frozen markers must agree. Partial, ambiguous or mixed legacy links produce a
+fixed unavailable status without foreign identifiers. The join reads no source,
+frozen evidence, or artifact bodies and does not repair any link.
+
+These labels do not certify frozen artifacts, processing, factual correctness or
+adoption. Existing Run and Proposal links retain their own checked associations.
+An unbound occurrence does not establish that its stream is empty; capturing
+work, a different active batch, backlog and source-size diagnostics still need
+the separate bounded operational reader. No new polling or writer is introduced.
+
+
+## Personal saved-workflow stream
+
+The selected workflow can observe its authenticated viewer's discovery stream.
+The fixed read accepts only a workflow name and inspected source revision/bundle;
+server code derives author, original Memory target, policy, program and revisit
+epoch from that saved source. Different authors have different streams. This is
+not a room-wide backlog or a schedule creator selector.
+
+The read uses the original App and physical Room lifetime, ordinary read
+membership and final target/source/control validation. It reads bounded workflow
+source and private journal metadata, not evidence bodies. It does not discover,
+claim, capture, fund, recover or execute anything. Missing batching and a missing
+canonical stream are distinct from an observed zero pending count.
+
+The pending count is exact for the validated indexed journal, bounded at 20,000
+entries, and excludes claimed items. Overflow is unavailable rather than a
+truncated exact count. Journal completeness does not imply discovery freshness
+or that a batch is runnable. Freshness is independent: only a fully verified
+published Memory basis can match the recorded cursor. A changed basis can include
+unrelated files; failed verification remains unknown. Active phase is an
+observation with no processing, adoption or artifact-proof claim.
+
+The browser reuses its existing Spindel observation coordinator and Memory/control
+invalidation hints. Ineligible source retires the old observation frame, accepted
+token and display so returning to the same saved source requests fresh facts.
+Local source/form edits and pending commands remain untouched. There is no new
+polling loop, subscription or replicated state model. Source-size planning holds
+and guarded recovery remain separate work.

@@ -27,8 +27,11 @@
   (world/with-world [conn w]
     (let [calls (atom [])
           capture (fn [party room]
-                    (swap! calls conj [party room]) {:status :unavailable})]
-      (with-redefs [wiki-setup/inspect! capture wiki-setup/install! capture]
+                    ;; Capture authenticated ownership before the blocking job
+                    ;; is queued; its returned body runs on that worker.
+                    (swap! calls conj [party room])
+                    (fn [] {:status :unavailable}))]
+      (with-redefs [wiki-setup/prepare-inspect capture wiki-setup/prepare-install capture]
         (doseq [op ["inspect-wiki-maintenance-setup!" "install-wiki-maintenance!"]]
           (doseq [kind [:member :non-member :admin :anon]]
             (is (world/refused? (world/inbound! (world/principal w kind) op {:room-id-str (str (:room w))}))))
@@ -37,6 +40,22 @@
                  (:result (world/inbound! (world/principal w :owner) op {:room-id-str (str (:room w))}))))
           (is (= [[(:owner w) (:room w)]] @calls))
           (reset! calls []))))))
+
+(deftest wiki-upgrade-rpc-captures-owner-room-and-inspected-request-before-queueing
+  (world/with-world [conn w]
+    (let [calls (atom [])
+          request {:expected-revision (str (random-uuid)) :from-version 3}
+          args {:room-id-str (str (:room w)) :request request}]
+      (with-redefs [wiki-setup/prepare-upgrade
+                    (fn [party room inspected]
+                      (swap! calls conj [party room inspected])
+                      (fn [] {:status :unavailable}))]
+        (doseq [kind [:member :non-member :admin :anon]]
+          (is (world/refused? (world/inbound! (world/principal w kind) "upgrade-wiki-maintenance!" args))))
+        (is (empty? @calls))
+        (is (= {:status :unavailable}
+               (:result (world/inbound! (world/principal w :owner) "upgrade-wiki-maintenance!" args))))
+        (is (= [[(:owner w) (:room w) request]] @calls))))))
 
 (defn- with-api [f]
   (application-fixture/with-application

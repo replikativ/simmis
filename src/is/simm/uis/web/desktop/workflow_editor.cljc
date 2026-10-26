@@ -61,24 +61,49 @@
     (:enabled? row) "Active"
     :else "Paused"))
 
+(defn batch-label
+  "A metadata observation, independent of model/Job completion or adoption."
+  [batch]
+  (case (:status batch)
+    :unavailable "Input batch status unavailable"
+    :observed (case (:phase batch)
+                :capturing "Preparing input batch"
+                :ready "Input batch prepared"
+                :submitted "Input batch admitted"
+                :review "Input batch awaiting review"
+                :closed "Input batch closed"
+                "Input batch status unavailable")
+    nil))
+
+(defn- setup-facts [reply status]
+  (assoc (select-keys reply [:revision :installed-version :shipped-version]) :status status))
+
+(defn- valid-upgrade-offer? [reply]
+  (and (integer? (:installed-version reply)) (pos? (:installed-version reply))
+       (integer? (:shipped-version reply)) (< (:installed-version reply) (:shipped-version reply))
+       (string? (:revision reply))
+       (re-matches #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" (:revision reply))))
+
 (defn observe-wiki-setup [state reply]
   (let [status (if (and (= "maintain-wiki" (:name reply)) (= :unchanged (:activation reply))
                         (= :current-source (:observation reply))
-                        (#{:missing :installed :customized} (:status reply)))
+                        (#{:missing :installed :customized :upgrade-available} (:status reply))
+                        (or (not= :upgrade-available (:status reply)) (valid-upgrade-offer? reply)))
                  (:status reply) :unavailable)]
     (if (get-in state [:wiki-setup :uncertain?])
       (assoc-in state [:wiki-setup :observed-status] status)
-      (assoc state :wiki-setup {:status status}))))
+      (assoc state :wiki-setup (setup-facts reply status)))))
 
-(defn begin-wiki-setup [state]
-  (assoc state :wiki-setup {:status :pending :uncertain? true}))
+(defn begin-wiki-setup
+  ([state] (assoc state :wiki-setup {:status :pending :uncertain? true}))
+  ([state intent] (assoc state :wiki-setup {:status :pending :uncertain? true :intent intent})))
 
 (defn acknowledge-wiki-setup [state reply]
   ;; Missing source after an uncertain write is NOT permission to replay it.
   (if (and (= "maintain-wiki" (:name reply)) (= :unchanged (:activation reply))
-           (= :acknowledged (:observation reply)) (#{:installed :customized} (:status reply)))
-    (assoc state :wiki-setup {:status (:status reply)})
-    (assoc state :wiki-setup {:status :pending :uncertain? true})))
+           (= :acknowledged (:observation reply)) (#{:installed :customized :changed} (:status reply)))
+    (assoc state :wiki-setup (setup-facts reply (:status reply)))
+    (update state :wiki-setup merge {:status :pending :uncertain? true})))
 
 (defn reloaded [old source]
   (merge (draft source) (select-keys old [:submission :schedule-submission :fund-request :fund-backend :funded? :fund-reply])))
@@ -88,6 +113,41 @@
    from knowingly issuing fresh work against an unverified or changed source."
   [draft]
   (and (not (:source-stale? draft)) (nil? (:incoming-source draft))))
+
+(defn stream-request
+  "Read the saved program, independent of local code/form edits. No caller
+   author, stream, epoch or target selector; the HOST derives those facts."
+  [state]
+  (let [name (:selected state) draft (get-in state [:drafts name]) source (:source draft)
+        revision (:revision source) bundle (get-in source [:inspection :bundle])
+        uuid-text? #(and (string? %) (re-matches #"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" %))]
+    (when (and draft (source-current? draft) (get-in source [:inspection :ok])
+               (uuid-text? revision) (uuid-text? bundle))
+      {:name name :expected-source revision :expected-bundle bundle})))
+
+(defn forget-stream [state]
+  (cond-> (dissoc state :workflow-stream :workflow-stream-status :observed-stream-generation)
+    (contains? state :observations) (update :observations dissoc :workflow-stream)
+    (contains? state :observation-accepted) (update :observation-accepted dissoc :workflow-stream)))
+
+(defn observe-stream [state request reply]
+  (if (not= request (stream-request state))
+    state
+    (do
+      (when-not (and (= (:name request) (:name reply))
+                     (= (:expected-source request) (:source-revision reply))
+                     (= (:expected-bundle request) (:bundle reply))
+                     (#{:not-enabled :not-discovered :observed} (:status reply))
+                     (or (not= :observed (:status reply))
+                         (and (#{:active :retiring :retired} (:lifecycle reply))
+                              (integer? (get-in reply [:pending :count]))
+                              (integer? (get-in reply [:pending :limit]))
+                              (<= 0 (get-in reply [:pending :count]) (get-in reply [:pending :limit]) 20000)
+                              (true? (get-in reply [:pending :complete?]))
+                              (#{:current :changed :unknown} (get-in reply [:freshness :status]))
+                              (#{:none :observed :unavailable} (get-in reply [:batch :status])))))
+        (throw (ex-info "Workflow stream observation is invalid" {})))
+      (assoc state :workflow-stream {:request request :reply reply} :workflow-stream-status :ready))))
 
 (defn collectable-output-request
   "Pinned submission presentation, not current source or form settings.
@@ -274,7 +334,10 @@
             (not local?) (assoc :model model)
             (seq selected) (assoc :case selected)))))))
 
-(defn scheduled-submission [draft request-id]
+(defn scheduled-submission
+  ([draft request-id] (scheduled-submission draft request-id true))
+  ([draft request-id enabled?]
+  (when-not (boolean? enabled?) (invalid! "Choose enabled or paused schedule creation"))
   (when-not (= "hosted" (get-in draft [:form :backend] "hosted"))
     (invalid! "Schedules currently require hosted execution"))
   (let [execution (dissoc (submission draft request-id) :request-id)
@@ -282,7 +345,7 @@
         tz (str/trim (get-in draft [:form :schedule-tz] "UTC"))]
     (when (or (str/blank? tz) (> (count tz) 100)) (invalid! "Enter an explicit timezone"))
     {:request-id request-id :kind (if (= "benchmark" (get-in draft [:form :mode])) "benchmark" "workflow")
-     :cadence {:interval-ms (* 60000 minutes) :tz tz} :execution execution}))
+     :enabled? enabled? :cadence {:interval-ms (* 60000 minutes) :tz tz} :execution execution})))
 
 (defn deployment-preview
   "Presentation only. Unresolved requests display their original immutable
