@@ -118,6 +118,16 @@ executors continue to reject checkpoint benchmark source. Physical fixture
 construction, pin verification, cleanup acknowledgement and resolved-runner
 admission must be connected before that rejection can be removed.
 
+`ops.benchmark-case-snapshots/load-case-snapshot!` restores a retained case
+through the original authorized private fixture's raw store, after its temporary
+builder branch has been deleted. It validates the complete C0 fixture basis,
+the shared store/backend/repository identity, and the complete restored case
+basis. It never reconnects a deleted branch or instantiates a serialized store
+configuration. Existing physical pin verification then checks that restored DB
+without relaxing its branch/configuration checks. A case that made no changes
+can retain C0 itself; its identity comes from the stored commit, rather than a
+synthetic builder configuration.
+
 ## GC limits
 
 A Datahike pin retains the checkpoint's datoms and referenced blobs. It does
