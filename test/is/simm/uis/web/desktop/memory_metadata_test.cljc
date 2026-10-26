@@ -8,6 +8,18 @@
 
 (defn- request [paths] {:folders ["" "wiki"] :paths (vec paths)})
 
+(deftest metadata-observations-retire-stale-page-view-requests-without-dropping-prior-display
+  (let [stamp (random-uuid) id (random-uuid) slot [:page-view "views/report.md" id] token (random-uuid)
+        state {:target-stamp stamp :loading {slot true} :requests {slot token}
+               :request-contexts {slot {:scope :target}} :page-views {["views/report.md" id] {:reply :prior}}}
+        reply {:protocol-version 2 :target-stamp stamp :folders {} :entries {}}
+        result (view/consume state reply {:connection :socket})]
+    (is (not (get-in result [:loading slot])))
+    (is (nil? (get-in result [:requests slot])))
+    (is (false? (editor/response-current? result slot token)))
+    (is (= :prior (get-in result [:page-views ["views/report.md" id] :reply])))
+    (is (= 1 (:read-epoch result)))))
+
 (deftest identical-and-subset-owners-share-a-whole-request
   (let [same (request ["wiki/a.md"])
         groups (metadata/batches {:sidebar same :first-tab same

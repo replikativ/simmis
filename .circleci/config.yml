@@ -18,9 +18,9 @@ jobs:
     docker:
       - image: cimg/clojure:1.12.1-openjdk-21.0-node
     resource_class: large
-    # Separate containers keep process-global fixtures isolated. The full suite
-    # approached Circle's 60m job limit; partition namespaces without dropping any.
-    parallelism: 2
+    # Separate containers keep process-global fixtures isolated. Two shards
+    # exceeded Circle's 60m limit; retain every namespace across four shards.
+    parallelism: 4
     steps:
       - checkout
       - run:

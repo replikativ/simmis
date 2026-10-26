@@ -9,6 +9,7 @@
 (deftest partition-coordinates-are-explicit-and-bounded
   (is (= [0 1] (ci/coordinates nil nil)))
   (is (= [1 2] (ci/coordinates "1" "2")))
+  (is (= [3 4] (ci/coordinates "3" "4")))
   (doseq [[i n] [[nil "2"] ["0" nil] ["" "2"] ["-1" "2"]
                  ["0" "0"] ["2" "2"] ["x" "2"]
                  ["999999999999999999999999" "2"]]]
@@ -16,7 +17,7 @@
 
 (deftest partitions-cover-every-namespace-exactly-once
   (let [names '[z-test a-test d-test b-test c-test e-test f-test]]
-    (doseq [total [1 2 3]]
+    (doseq [total [1 2 3 4]]
       (let [parts (mapv #(ci/partition-namespaces names % total) (range total))]
         (is (every? seq parts))
         (is (= (frequencies names) (frequencies (mapcat identity parts))))
@@ -54,7 +55,7 @@
   (let [effective (config/load-config)
         all (get-in (ci/partition-config effective 0 1) [:manifest :all])]
     (is (some #{'is.simm.ci-runner-test} all))
-    (doseq [total [1 2 3]]
+    (doseq [total [1 2 3 4]]
       (let [parts (mapv #(get-in (ci/partition-config effective % total) [:manifest :selected]) (range total))]
         (is (every? seq parts))
         (is (= (frequencies all) (frequencies (mapcat identity parts))))))))

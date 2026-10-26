@@ -7,6 +7,7 @@
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.memory-editor :as editor]
             [is.simm.uis.web.desktop.memory-owner :as owner]
+            [is.simm.uis.web.desktop.memory-edit-owners :as edit-owners]
             [is.simm.uis.web.desktop.memory-metadata-view :as metadata-view]
             [is.simm.uis.web.desktop.memory-metadata-io :as metadata-io]
             [is.simm.uis.web.desktop.memory-cells :as cells]
@@ -16,6 +17,8 @@
             [is.simm.uis.web.desktop.memory-remote :as remote]
             [is.simm.uis.web.desktop.chart-remote :as chart-remote]
             [is.simm.uis.web.desktop.memory-charts :as charts]
+            [is.simm.uis.web.desktop.memory-page-views :as page-views]
+            [is.simm.uis.web.desktop.page-view-remote :as page-view-remote]
             [is.simm.uis.web.desktop.memory-references :as references]
             [is.simm.uis.web.desktop.memory-backlinks :as backlinks]
             [is.simm.documents.links :as links]
@@ -77,7 +80,9 @@
                   (binding [ec/*execution-context* ctx]
                     (when (current?) (apply swap! state-signal update key f args))))
         change! (fn [path f & args] (apply update! update-in [:drafts path] f args))
-        shared (metadata-io/controller ctx session room key state-signal)]
+        shared (metadata-io/controller ctx session room key state-signal)
+        property-blocked? #(binding [ec/*execution-context* ctx]
+                             (edit-owners/blocked? @state-signal key %))]
     (letfn [(select! [path & [retain-reference?]]
               (let [preserve? (or retain-reference? (= path (:selected (state))))]
                 (update! #(cond-> (assoc % :selected path)
@@ -362,6 +367,38 @@
                              :failure-state (fn [current _]
                                               (-> current (update :errors dissoc slot)
                                                   (assoc-in [:charts scope] {:marker marker :status :unavailable})))}))))
+            (page-view! [path view]
+              ;; Connection initialization may install the stream marker. Read
+              ;; the snapshot only afterwards so the first reply can be current.
+              (let [c (connected!) s (state) slot [:page-view path view] marker (page-views/marker s path view)
+                    input (page-views/request s path view)]
+                (when (and (get-in s [:page-view-open [path view]]) input
+                           (verified? s c) (not (get-in s [:loading slot]))
+                           (not= marker (get-in s [:page-view-attempts [path view]])))
+                  (update! assoc-in [:page-view-attempts [path view]] marker)
+                  (request! slot #(page-view-remote/load-memory-page-view! web/server-id room input)
+                            (fn [current reply]
+                              (cond-> (assoc-in current [:page-views [path view]] {:reply reply :marker marker})
+                                (and (= :form (get-in reply [:descriptor :presentation]))
+                                     (= :ready (:status reply)) (= 1 (count (:rows reply)))
+                                     (nil? (get-in current [:page-view-edits [path view]])))
+                                (assoc-in [:page-view-edits [path view]] (select-keys (first (:rows reply)) [:id :path]))))
+                            nil {:stamp (:target-stamp s) :read? true
+                                 :accept? (fn [current reply]
+                                            (and (get-in current [:page-view-open [path view]])
+                                                 (page-views/reply-current? current path view marker reply)))
+                                 :failure-state (fn [current _] (update current :page-views dissoc [path view]))}))))
+            (enroll-page-view-row! [path view row]
+              (let [s (state) row-path (:path row) slot [:file row-path]
+                    marker [(:connection s) (:target-stamp s) (:read-epoch s) (:id row) row-path]]
+                (when (and (nil? (get-in s [:drafts row-path]))
+                           (not (get-in s [:loading slot]))
+                           (not (and (contains? (:observed-entries s) row-path)
+                                     (nil? (get-in s [:observed-entries row-path]))))
+                           (not= marker (get-in s [:page-view-row-attempts [path view]])))
+                  (update! #(-> % (assoc-in [:page-view-row-attempts [path view]] marker)
+                                (update :page-view-enrolled (fnil conj #{}) row-path)))
+                  (open! row-path false nil true))))
             (properties! [path target]
               (let [s (state) marker (property-marker s path target) scope [path target]
                     slot [:properties path target]]
@@ -377,7 +414,8 @@
               (let [s (state) scope [path target] model (get-in s [:property-models scope])
                     pd (get-in s [:property-drafts scope (:id field)]) draft (get-in s [:drafts path])
                     slot [:property-save path] input (editor/property-input model field pd)]
-                (when (and pd (not (get-in s [:loading slot])) (not (get-in s [:loading [:save path]]))
+                (when (and pd (not (property-blocked? path))
+                           (not (get-in s [:loading slot])) (not (get-in s [:loading [:save path]]))
                            (not (get-in s [:loading [:move path]]))
                            (:editable? field) (not (editor/dirty? draft)) (not (declarations/drafts? s path))
                            (= (:request-marker model) (property-marker s path target))
@@ -410,7 +448,7 @@
               (let [s (state) scope [path target] dd (get-in s [:declaration-drafts scope])
                     model (get-in s [:property-models scope]) draft (get-in s [:drafts path])
                     slot [:property-save path] command (declarations/command dd)]
-                (when (and command (declarations/current? dd model)
+                (when (and command (not (property-blocked? path)) (declarations/current? dd model)
                            (= (:request-marker model) (property-marker s path target))
                            (= (:expected model) (get-in draft [:source :entry]))
                            (not (editor/dirty? draft)) (not (editor/property-drafts? s path))
@@ -628,6 +666,57 @@
               (when-let [c (connection)]
                 (ensure-sync! c (binding [ec/*execution-context* ctx] @sync/state))))]
       {:owner key :state state :change change! :edit edited! :folder folder! :open #(open! % false) :reload #(open! % true)
+       :toggle-page-view
+       (fn [path view]
+         (let [slot [:page-view path view] opened? (get-in (state) [:page-view-open [path view]])]
+           (update! #(cond-> (-> % (assoc-in [:page-view-open [path view]] (not opened?))
+                                  (update :page-view-attempts dissoc [path view]))
+                       opened? (metadata-view/retire-reads #{slot})))
+           (when-not opened? (page-view! path view))))
+       :retry-page-view (fn [path view]
+                          (update! update :page-view-attempts dissoc [path view])
+                          (page-view! path view))
+       :edit-page-view-row
+       (fn [path view row]
+         (let [s (state) current (get-in s [:page-view-edits [path view]])
+               available (some #(when (= (select-keys row [:id :path]) (select-keys % [:id :path])) %)
+                               (:rows (page-views/visible s path view)))
+               held? (and current (not= (:path current) (:path row))
+                          (or (editor/dirty? (get-in s [:drafts (:path current)]))
+                              (editor/property-drafts? s (:path current))
+                              (declarations/drafts? s (:path current))
+                              (declarations/busy? s (:path current))))]
+           (cond
+             held? (update! assoc-in [:page-view-edit-errors [path view]]
+                            "Finish or discard the current row's edits before selecting another row.")
+             available (do (update! #(-> % (assoc-in [:page-view-edits [path view]] (select-keys row [:id :path]))
+                                          (update :page-view-edit-errors dissoc [path view])
+                                          (update :page-view-row-attempts dissoc [path view])))
+                           (enroll-page-view-row! path view row)))))
+       :retry-page-view-row
+       (fn [path view]
+         (when-let [row (get-in (state) [:page-view-edits [path view]])]
+           (update! #(-> % (update :page-view-row-attempts dissoc [path view])
+                         (update :errors dissoc [:file (:path row)])))
+           (if (and (contains? (:observed-entries (state)) (:path row))
+                    (nil? (get-in (state) [:observed-entries (:path row)])))
+             (discover! true)
+             (enroll-page-view-row! path view row))))
+       :ensure-page-views
+       (fn []
+         (when (not= (state) (page-views/retire-unused-rows (state)))
+           (update! page-views/retire-unused-rows))
+         (let [s (state) path (:selected s)]
+           (doseq [entry (page-views/entries s path)
+                   :let [view (:view entry)]
+                   :when (and (= :ready (:status entry)) (get-in s [:page-view-open [path view]]))]
+             (page-view! path view)
+             (when-let [row (get-in (state) [:page-view-edits [path view]])]
+               (when (some #(= (select-keys row [:id :path]) (select-keys % [:id :path]))
+                           (:rows (page-views/visible (state) path view)))
+                 (enroll-page-view-row! path view row)
+                 (when (page-views/row-identity-current? (state) row)
+                   (properties! (:path row) {:kind :page})))))))
        :ensure-charts (fn []
                         (let [s (state) path (:selected s) draft (get-in s [:drafts path])
                               marker (charts/analysis-marker s path)]
@@ -667,10 +756,12 @@
        :property-discard (fn [path target id] (update! update-in [:property-drafts [path target]] dissoc id))
        :property-current? (fn [path target model] (= (:request-marker model) (property-marker (state) path target)))
        :property-save property-save!
+       :property-blocked? property-blocked?
        :declaration-open
        (fn [path target]
          (let [s (state) scope [path target] model (get-in s [:property-models scope])]
-           (when (and (declarations/openable? s path model) (verified? s (connected!))
+           (when (and (not (property-blocked? path))
+                      (declarations/openable? s path model) (verified? s (connected!))
                       (= (:request-marker model) (property-marker s path target)))
              (update! assoc-in [:declaration-drafts scope] (declarations/draft model))
              (declaration-preview! path target))))

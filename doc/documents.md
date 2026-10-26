@@ -431,3 +431,10 @@ refused with feedback. Multiline/TSV cell paste, multiple nested table payloads,
 unsupported HTML and slice metadata carrying semantic wrapper context are also
 refused; use Markdown source for those changes. This is not general Office-table
 import. Tables do not create a separate storage, evaluation or permission model.
+
+## Saved property views
+
+Markdown can also declare source-backed page tables and forms in an inert
+`simmis-view` fence. Their associated controls reuse the ordinary page property
+writer. See [Saved page tables and forms](page-views.md) for the descriptor,
+editing behavior and current limits.

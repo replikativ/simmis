@@ -283,6 +283,10 @@
                       :when (and loading? (vector? slot))] slot)]
     {:folders (vec (sort (tree/active-folders state)))
      :paths (vec (sort (distinct (concat (keys (:drafts state))
+                                         (keep (fn [[key row]]
+                                                 (when (and (= (:selected state) (first key))
+                                                            (get-in state [:page-view-open key])) (:path row)))
+                                               (:page-view-edits state))
                                          (map second (filter #(= :file (first %)) pending))))))}))
 
 (defn property-entries [properties] (sort-by (comp pr-str key) properties))
