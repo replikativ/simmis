@@ -1,7 +1,8 @@
 # Semantic interfaces
 
 Design direction for the next integration slice. This describes contracts to
-converge on, not a new implemented component API or metadata schema.
+converge on. The first implementation boundary is described below; this does
+not introduce a generic component registry or a new metadata schema.
 
 Simmis exposes one programming model through documents, forms, collections,
 rooms and custom interfaces. Markdown and SCI are authoring representations.
@@ -174,3 +175,28 @@ unrelated Room-app isolation and writer behavior intact.
 Use these concrete mounts to settle the smallest implementation API. Broader
 navigation configuration, custom simulations and external publication should
 reuse the resulting contracts rather than define parallel entity/edit models.
+
+## First implementation boundary
+
+`documents/property-presentation` adapts the existing inspected property model
+into typed display cells without parsing edits or acquiring another source.
+`uis/value-view` shares value display with saved tables. `uis/entity-view` is a
+display-only composition of those cells, usable by Spindel DOM and static HTML
+rendering. Presentation options select density, layout and a host-owned CSS
+class; they do not supply actions. Pending and unavailable models render
+explicitly, rather than looking like an empty successful query.
+
+The property model now carries explicit page/block entity identity alongside
+its existing target, saved entry and source/schema revisions. This identity is
+for correspondence; it does not select a world or confer authority. Field
+controls remain the existing revision-checked controls. Their shared
+`fields-view` function only composes the keyed field loop used by page and
+saved-view forms; it creates no new draft owner or writer.
+
+The verification boundary includes exact scalar text (including integers above
+JavaScript's precise range), missing/null/false/zero/empty distinctions,
+structured values with misleading scalar hints, incomplete reference lookups,
+HTML escaping, real canonical page/block models, and two independent DOM
+mounts of the same entity. Static output has no commands or editable controls.
+This is component infrastructure: it does not yet publish a website editor,
+replace the legacy type editor, or expose a general SCI component API.

@@ -35,10 +35,12 @@ another entity, writer or interaction-state model.
 | 4. Operate default knowledge maintenance | Versioned incremental starter; existing manual/benchmark/schedule kernel; clear backlog, held/review and recovery states | Deterministic model-free schedule/batch tests, preserved customized source, explicit deployment/resources, and proposal/adoption correspondence |
 | 5. Reuse the model for business/research interfaces | Typed business components, explicit SCI interfaces, connected room sites and later simulations | Shared semantic commands and source/world binding; lifecycle and resource ownership; public/private projections explicit; simulated results remain distinct from live facts |
 
-Stage 1 has implemented and locally verified adapters. Integration/release and
-normal CI gates must complete before those features are treated as landed.
-The component contract is documented and reviewed; the shared Company mounts
-are the next implementation slice. Keep the verified running UI separate from
+The incremental-input and typed page table/form foundation has landed. The
+bounded report/capture adapters are implemented and locally verified, with
+normal integration CI still required before landing. The component contract is
+documented and reviewed; the first shared Company read presentations and
+existing editor composition are under verification. Connected SCI/site hosts
+and a complete standalone editing surface remain later slices. Keep the verified running UI separate from
 new development and use the server/client REPL plus the browser for validation.
 The model-free experiment used for report verification demonstrates execution,
 certified result storage and rendering; it does not benchmark LLM wiki quality.

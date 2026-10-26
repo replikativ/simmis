@@ -139,6 +139,8 @@
   (let [{:keys [file compiled candidate scope] :as captured} (capture db path target)
         fields (fields captured)]
     {:profile profile :path path :target target :expected (:entry file)
+     :entity {:kind (:kind target)
+              :id (if (= :page (:kind target)) (get-in file [:analysis :document-id]) (:id target))}
      :revision (get-in file [:analysis :revision]) :scope-revision (:revision compiled)
      :assigned-types (:types scope [])
      :types (mapv (fn [[id row]] {:id id :name (:entity/name row)}) (:types compiled))

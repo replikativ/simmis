@@ -9329,3 +9329,15 @@ body.tab-dragging .column-drop-zone {
 .workflow-occurrence { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; font-size: var(--text-sm); }
 .workflow-overview-diagram { margin: 14px 0; }
 .workflow-disclosure pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Shared semantic presentation; themes and scoped host classes can vary it. */
+.semantic-entity { color: var(--mono-text-primary); }
+.semantic-entity > h3 { margin: 0 0 8px; font-size: inherit; }
+.semantic-entity > dl { display: grid; gap: 8px; margin: 0; }
+.semantic-entity-field { min-width: 0; }
+.semantic-entity-field > dt { color: var(--mono-text-secondary); font-size: 12px; }
+.semantic-entity-field > dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.semantic-entity--compact > dl { gap: 4px; }
+.semantic-entity--compact .semantic-entity-field { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr); gap: 8px; }
+.semantic-entity--compact .semantic-entity-field > dd { margin: 0; }
+.semantic-entity--columns > dl { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }

@@ -7,6 +7,9 @@
             [geschichte.repo :as repo]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.property-model :as property-model]
+            [is.simm.uis.entity-view :as entity-view]
+            [org.replikativ.spindel.dom.ssr :as ssr]
+            [clojure.string :as str]
             [is.simm.ops.owned-files :as owned-files]
             [is.simm.documents.space :as space]
             [is.simm.documents.view :as view]
@@ -116,6 +119,12 @@
                     request (edit-request page "turnover" 42)
                     prepared-edit (property-model/prepare-edit-in base options request)
                     block-edit (property-model/prepare-edit-in base options (edit-request block "active" true))]
+                (is (= {:kind :page :id page-a} (:entity page)))
+                (is (= {:kind :block :id block-id} (:entity block)))
+                (let [html (ssr/render-to-string (entity-view/view (assoc page :fields [field]) {:title "Company"}))]
+                  (is (str/includes? html (str "data-entity-id=\"" page-a "\"")))
+                  (is (str/includes? html ">0</span>"))
+                  (is (not (re-find #"<(?:input|button|select)(?:\s|>)" html))))
                 (is (= 0 (:value field)))
                 (is (:required? field))
                 (is (:editable? field))

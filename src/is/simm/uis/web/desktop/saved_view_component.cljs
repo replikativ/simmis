@@ -63,9 +63,7 @@
                               (el/p {:class "memory-note"} "Property changes pause while the file draft is saving."))
                             (when (empty? fields)
                               (el/p {:class "memory-note"} "This view has no property fields on this page. Open the page to manage its properties."))
-                            (for [field fields]
-                              (el/div {:key (str (:id field))}
-                                      (properties/field-view row-path target field model state a editable?)))))))))
+                            (properties/fields-view row-path target fields model state a editable?)))))))
 
 (defn view [path state a write?]
   (for [entry (views/entries state path)
