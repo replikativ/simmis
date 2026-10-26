@@ -965,6 +965,7 @@
                                                  (analyze! path))))
        :create (fn [path & [origin]] (create! path (or origin (when (verified? (state) (connection)) (:target-stamp (state))))))
        :save-view-snapshot snapshot!
+       :toggle-saved-view-source (fn [path view] (update! update-in [:saved-view-source [path view]] not))
        :download download! :upload upload! :office-open office-open! :office-save office-save! :office-correct office-correct!
        :select-path select! :set-query #(update! assoc :query %) :search search!
        :toggle-root (fn []

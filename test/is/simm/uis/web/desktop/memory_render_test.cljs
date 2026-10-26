@@ -367,3 +367,59 @@
       (finally
         (when @discharge (browser/unmount! @discharge))
         (.remove container) (context/stop-context! ctx)))))
+
+(deftest read-mode-places-one-view-between-prose-and-keeps-source-on-demand
+  (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+        discharge (atom nil) calls (atom []) path "reports/results.md"
+        revision (random-uuid) stamp (random-uuid) view-id (random-uuid)
+        before "Before\n\n" fence-text "```simmis-view\r\nvisible source only on demand\r\n```\r\n" after "\nAfter\n"
+        source (str before fence-text after) from (count before) to (+ from (count fence-text))
+        p (fn [from to value] {:kind :Paragraph :from from :to to :children [(text-node value)]})
+        nodes [(p 0 from "Before") {:kind :FencedCodeBlock :from from :to to :language "simmis-view"
+                                    :literal "visible source only on demand"}
+               (p to (count source) "After")]
+        descriptor {:version 1 :id view-id :source {:kind :pages :roots [""] :types []}
+                    :presentation :table :columns [{:kind :title}]}
+        entry {:from from :to to :view view-id :status :ready :descriptor descriptor}
+        analysis {:revision revision :nodes nodes :slots (mapv #(assoc (select-keys % [:from :to :kind]) :model (rich/model %)) nodes)
+                  :saved-views [entry]}
+        draft {:mode :read :text source :analysis analysis
+               :source {:kind :markdown :text source :analysis analysis :target-stamp stamp
+                        :entry {:content revision :size (count source) :mode 33188}}}
+        state {:target-stamp stamp :target-verified? true :drafts {path draft}}
+        a {:toggle-saved-view-source (fn [p id] (swap! calls conj [p id]))}
+        frame #(memory/document-view path draft a false nil nil %)]
+    (.appendChild (.-body js/document) container)
+    (try
+      (binding [ec/*execution-context* ctx]
+        (let [initial (frame state)]
+          (reset! discharge (browser/mount! container initial))
+          (is (= 1 (.-length (.querySelectorAll container ".memory-saved-view"))))
+          (let [regions (array-seq (.querySelectorAll container ".memory-document > .memory-region"))
+                before-node (.querySelector (first regions) "p")]
+            (is (= 3 (count regions)))
+            (is (= "Before" (.-textContent (first regions))))
+            (is (.includes (.-textContent (second regions)) "Page table"))
+            (is (= "After" (.-textContent (last regions))))
+            (is (not (.includes (.-textContent container) "visible source only on demand")))
+            (let [button (first (filter #(= "Show source" (.-textContent %)) (array-seq (.querySelectorAll container "button"))))]
+              (is (some? button))
+              (.click button)
+              (is (= [[path view-id]] @calls)))
+            (let [shown (frame (assoc-in state [:saved-view-source [path view-id]] true))]
+              (browser/refresh! @discharge initial shown)
+              (is (= fence-text (.-textContent (.querySelector container ".memory-inline-saved-view pre code"))))
+              (is (identical? before-node (.querySelector container ".memory-region p")))
+              (is (= source (:text draft)))
+              (let [dirty (assoc draft :text (str source "Unsaved edit"))
+                    dirty-state (assoc-in state [:drafts path] dirty)
+                    next-frame (memory/document-view path dirty a false nil nil dirty-state)]
+                (browser/refresh! @discharge shown next-frame)
+                (is (nil? (.querySelector container ".memory-inline-saved-view")))
+                (is (some? (.querySelector container "section[aria-label='Views from saved version']")))
+                (is (.includes (.-textContent container) "visible source only on demand"))
+                (is (= (str source "Unsaved edit") (:text dirty))))))))
+      (finally
+        (when @discharge (browser/unmount! @discharge))
+        (.remove container)
+        (context/stop-context! ctx)))))

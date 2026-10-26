@@ -224,3 +224,27 @@ live report changes. Nested reads/writes retain the initiating request token,
 workspace epoch and operation ownership; a replacement context cannot continue
 the old operation. Completion provides an ordinary file link and does not
 navigate away from the user's current work.
+
+## Document placement
+
+Read mode places supported saved views at their exact fenced source positions,
+including fences inside supported Markdown lists. The original declaration is
+available through **Show source**, with its fence delimiters, language and
+original line endings preserved. Display toggles live in the existing owning
+Memory state and never edit the file or create a query/worker by themselves.
+Opening the view continues to use its existing bounded source reader.
+
+Correspondence pairs the actual parsed node kind/source span with its slot
+model and nested content path. It does not search for matching code text.
+Duplicate identities, invalid declarations, fences beyond the four mounted
+entries, and unsupported structures do not borrow another fence's result.
+Dirty or noncurrent source cannot receive an inline result from an older saved
+version. Unplaced entries remain available in an explicitly labelled saved-
+version section, with their ordinary source still visible in the document.
+
+This is the Read-mode integration step. Rich and Outline currently keep their
+existing separate panels. Rich-mode inline mounting must extend the existing
+code-block node view, preserve its content DOM and selection/source mapping,
+and explicitly release the Spindel subtree's refs and caches. It must retain
+property drafts while correspondence is temporarily unavailable, and restore
+rendered views only when the native/saved projection is verified again.

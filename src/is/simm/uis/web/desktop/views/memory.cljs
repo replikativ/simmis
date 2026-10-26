@@ -11,10 +11,12 @@
             [is.simm.documents.attachments :as attachments]
             [is.simm.documents.markdown-scene :as markdown-scene]
             [is.simm.documents.inline-charts :as inline-charts]
+            [is.simm.documents.saved-view-positions :as saved-positions]
             [is.simm.documents.chart-contract :as chart-contract]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.memory-actions :as actions]
             [is.simm.uis.web.desktop.memory-editor :as editor]
+            [is.simm.uis.web.desktop.memory-charts :as chart-state]
             [is.simm.uis.web.desktop.memory-cells :as cells]
             [is.simm.uis.web.desktop.memory-declarations :as declarations]
             [is.simm.uis.web.desktop.property-controls :as property-controls]
@@ -94,14 +96,16 @@
     "bulletList" (el/ul {} (children node options))
     "orderedList" (el/ol {:start (get-in node [:attrs :start] 1)} (children node options))
     "listItem" (el/li {} (children node options))
-    "codeBlock" (if-let [preview (get (:previews options) (:path options))]
+    "codeBlock" (if-let [entry (get (:saved-view-positions options) (:path options))]
+                  ((:render-saved-view options) entry)
+                  (if-let [preview (get (:previews options) (:path options))]
                   (el/div {:class "memory-inline-chart"}
                           (el/pre {} (code-content node options))
                           (el/div {:class "memory-note"} "Chart preview")
                           (if (= :ready (:status preview))
                             (charts/view (:path options) (:data preview))
                             (el/p {:class "memory-note"} "Chart JSON is invalid or exceeds the supported bounds.")))
-                  (el/pre {} (code-content node options)))
+                  (el/pre {} (code-content node options))))
     "hardBreak" (el/br {})
     "horizontalRule" (el/hr {})
     "table" (el/table {:class "memory-data-table"} (el/tbody {} (children node options)))
@@ -226,7 +230,10 @@
                                 :on-click (fn [_] (source! (:region selection)))}
                                (vc/icon :file-code {:aria-hidden "true"}))))))
 
-(defn- document-view [path draft a write? image-urls file-base]
+(defn- document-view
+  ([path draft a write?] (document-view path draft a write? nil nil {}))
+  ([path draft a write? image-urls file-base] (document-view path draft a write? image-urls file-base {}))
+  ([path draft a write? image-urls file-base state]
   (let [base (:rich-base draft) rich? (and (= :rich (:mode draft)) base)
         analysis (if rich? (:analysis base) (:analysis draft))
         source (if rich? (:text base) (:text draft))
@@ -253,8 +260,26 @@
         highlights (when-not rich? (code-highlight/document-segments read-models))
         source-previews (markdown-scene/index source analysis image-urls file-base)
         inline-positions (inline-charts/positions read-models inline-previews inline-limit)
-        slots (mapv #(assoc % :inline-positions inline-positions) slots)]
+        slots (mapv #(assoc % :inline-positions inline-positions) slots)
+        saved-positions (when (and (= :read (:mode draft)) (not (editor/dirty? draft))
+                                   (:revision analysis) (= (:revision analysis) (:revision (chart-state/saved-analysis draft))))
+                          (saved-positions/positions analysis slots))
+        placed (set (map (juxt :from :to) (vals saved-positions)))
+        render-saved (fn [entry]
+                       (el/div {:class "memory-inline-saved-view"}
+                               (saved-views/entry-view path entry state a write?)
+                               (el/button {:type "button" :class "memory-note"
+                                           :aria-expanded (boolean (get-in state [:saved-view-source [path (:view entry)]]))
+                                           :on-click (fn [_] ((:toggle-saved-view-source a) path (:view entry)))}
+                                          (if (get-in state [:saved-view-source [path (:view entry)]]) "Hide source" "Show source"))
+                               (when (get-in state [:saved-view-source [path (:view entry)]])
+                                 (el/pre {} (el/code {} (subs source (:from entry) (:to entry)))))))]
     (el/div {:class "memory-document"}
+            (when (= :read (:mode draft))
+              (when-let [unplaced (seq (remove #(contains? placed [(:from %) (:to %)]) (saved-view-state/entries state path)))]
+                (el/section {:aria-label "Views from saved version"}
+                            (el/p {:class "memory-note"} "Views from saved version")
+                            (saved-views/view path state a write? unplaced))))
             (when rich? (rich-toolbar write? (:document-selection base) #((:local-source-open a) path %)))
             (when (and (= :rich (:mode draft)) (not base) analysis)
               (el/p {:class "memory-note"} "This document needs Source editing for its size or structure. Its original source is retained."))
@@ -329,7 +354,8 @@
                                                    :read-only? (not write?)
                                                    :on-change (fn [model selection]
                                                                 ((:rich-change a) path (:id base) (:from slot) model selection))})
-                                model (model-node model {:path [slot-index] :highlights highlights :previews (:inline-positions slot) :file-base file-base})
+                                model (model-node model {:path [slot-index] :highlights highlights :previews (:inline-positions slot) :file-base file-base
+                                                        :saved-view-positions saved-positions :render-saved-view render-saved})
                                 (get source-previews (str "opaque:" (:from slot)))
                                 (source-preview/view (:from slot) (get source-previews (str "opaque:" (:from slot))))
                                 :else (el/div {:class "memory-source-region"}
@@ -339,7 +365,7 @@
                                 (el/button {:on-click (fn [_]
                                                         ((:change a) path assoc :mode :source
                                                                      :selection (editor/source-selection draft (:from slot) (:to slot))))}
-                                           "Open in Source"))))))))))))
+                                           "Open in Source")))))))))))))
 
 (defn- retained-properties-view [path state a]
   (let [orphaned (for [[[p target :as scope] drafts] (:property-drafts state)
@@ -712,7 +738,7 @@
                                       (when (:earlier-save-receipt draft)
                                         (el/p {:class "memory-note"} "An earlier draft's save completed after this version was selected. This draft was kept unchanged; check the saved version before another save."))
                                       (when markdown? (properties-view path draft state a write?))
-                                      (when markdown? (saved-views/view path state a write?))
+                                      (when (and markdown? (not= :read (:mode draft))) (saved-views/view path state a write?))
                                       (retained-properties-view path state a)
                                       (retained-declarations-view path state a)
                                       (local-source-view path draft state a write?)
@@ -763,7 +789,7 @@
                                                              (when coherent?
                                                                (attachments/urls (:room-id data) path (:analysis draft)
                                                                                  (:observed-entries state) (:target-stamp state)))
-                                                             {:room (:room-id data) :path path :enabled? coherent?})))))))))
+                                                             {:room (:room-id data) :path path :enabled? coherent?} state)))))))))
 
 (defn render [data]
   (spin
