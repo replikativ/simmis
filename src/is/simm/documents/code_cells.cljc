@@ -40,7 +40,11 @@
   (and (= :FencedCodeBlock (:kind node))
        (contains? #{"clj" "clojure"} (language (:language node)))))
 
-(defn- region-paths [model]
+(defn region-paths
+  "Inert correspondence from semantic region keys to frozen model paths.
+   Shared by native code cells and saved views; neither paths nor keys confer
+   read/write authority."
+  [model]
   (letfn [(walk [node path]
             (cond
               (= "memoryRegion" (:type node))

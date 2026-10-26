@@ -224,3 +224,49 @@ live report changes. Nested reads/writes retain the initiating request token,
 workspace epoch and operation ownership; a replacement context cannot continue
 the old operation. Completion provides an ordinary file link and does not
 navigate away from the user's current work.
+
+## Document placement
+
+Read mode places supported saved views at their exact fenced source positions,
+including fences inside supported Markdown lists. The original declaration is
+available through **Show source**, with its fence delimiters, language and
+original line endings preserved. Display toggles live in the existing owning
+Memory state and never edit the file or create a query/worker by themselves.
+Opening the view continues to use its existing bounded source reader.
+
+Correspondence pairs the actual parsed node kind/source span with its slot
+model and nested content path. It does not search for matching code text.
+Duplicate identities, invalid declarations, fences beyond the four mounted
+entries, and unsupported structures do not borrow another fence's result.
+Dirty or noncurrent source cannot receive an inline result from an older saved
+version. Unplaced entries remain available in an explicitly labelled saved-
+version section, with their ordinary source still visible in the document.
+
+This is the Read-mode integration step. Rich and Outline currently keep their
+existing separate panels. Rich-mode inline mounting must extend the existing
+code-block node view, preserve its content DOM and selection/source mapping,
+and explicitly release the Spindel subtree's refs and caches. It must retain
+property drafts while correspondence is temporarily unavailable, and restore
+rendered views only when the native/saved projection is verified again.
+
+
+### Rich editor embedding
+
+The default editor presents eligible saved views at their exact source fence,
+using the same table/form component and Memory coordinator as Read mode. Native
+code-block views retain their original contentDOM. The rendered island does not
+enter Markdown, editor JSON or undo history; an editing selection/composition
+reveals source, and **Edit Markdown** opens the complete fence in the ordinary
+source view.
+
+Placement requires clean, current saved-source and complete native-baseline
+correspondence. Dirty or structurally changed documents expose literal source
+and retain an explicitly labelled saved-version fallback. This first bridge does
+not follow arbitrary unsaved structural edits by matching code text. Original
+UUIDs, read/write checks, property drafts and request ownership stay with Memory.
+
+Parent Spindel updates provide the latest presentation callback; the native
+bridge adds no data cache, query or subscription. Every native mount has an
+isolated context/fork/owner/occurrence address. Callback refreshes are coalesced
+and fenced to the original editor generation. Removal cycles ref callbacks,
+retires committed addresses, clears the discharge registry and removes DOM.

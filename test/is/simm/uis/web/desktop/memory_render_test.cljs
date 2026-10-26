@@ -1,10 +1,12 @@
 (ns is.simm.uis.web.desktop.memory-render-test
-  (:require [cljs.test :refer-macros [deftest is testing]]
+  (:require [cljs.test :refer-macros [deftest is testing async]]
+            ["@tiptap/pm/history" :refer [undoDepth]]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.dom.browser :as browser]
             [org.replikativ.spindel.dom.elements :as el]
             [is.simm.documents.rich-text :as rich]
+            [is.simm.documents.saved-view-contract :as view-contract]
             [is.simm.uis.web.desktop.memory-editor :as editor]
             [is.simm.uis.web.desktop.property-controls :as property-controls]
             [is.simm.uis.web.desktop.saved-table-component :as saved-table]
@@ -367,3 +369,135 @@
       (finally
         (when @discharge (browser/unmount! @discharge))
         (.remove container) (context/stop-context! ctx)))))
+
+(deftest read-mode-places-one-view-between-prose-and-keeps-source-on-demand
+  (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+        discharge (atom nil) calls (atom []) path "reports/results.md"
+        revision (random-uuid) stamp (random-uuid) view-id (random-uuid)
+        before "Before\n\n" fence-text "```simmis-view\r\nvisible source only on demand\r\n```\r\n" after "\nAfter\n"
+        source (str before fence-text after) from (count before) to (+ from (count fence-text))
+        p (fn [from to value] {:kind :Paragraph :from from :to to :children [(text-node value)]})
+        nodes [(p 0 from "Before") {:kind :FencedCodeBlock :from from :to to :language "simmis-view"
+                                    :literal "visible source only on demand"}
+               (p to (count source) "After")]
+        descriptor {:version 1 :id view-id :source {:kind :pages :roots [""] :types []}
+                    :presentation :table :columns [{:kind :title}]}
+        entry {:from from :to to :view view-id :status :ready :descriptor descriptor}
+        analysis {:revision revision :nodes nodes :slots (mapv #(assoc (select-keys % [:from :to :kind]) :model (rich/model %)) nodes)
+                  :saved-views [entry]}
+        draft {:mode :read :text source :analysis analysis
+               :source {:kind :markdown :text source :analysis analysis :target-stamp stamp
+                        :entry {:content revision :size (count source) :mode 33188}}}
+        state {:target-stamp stamp :target-verified? true :drafts {path draft}}
+        a {:toggle-saved-view-source (fn [p id] (swap! calls conj [p id]))}
+        frame #(memory/document-view path draft a false nil nil %)]
+    (.appendChild (.-body js/document) container)
+    (try
+      (binding [ec/*execution-context* ctx]
+        (let [initial (frame state)]
+          (reset! discharge (browser/mount! container initial))
+          (is (= 1 (.-length (.querySelectorAll container ".memory-saved-view"))))
+          (let [regions (array-seq (.querySelectorAll container ".memory-document > .memory-region"))
+                before-node (.querySelector (first regions) "p")]
+            (is (= 3 (count regions)))
+            (is (= "Before" (.-textContent (first regions))))
+            (is (.includes (.-textContent (second regions)) "Page table"))
+            (is (= "After" (.-textContent (last regions))))
+            (is (not (.includes (.-textContent container) "visible source only on demand")))
+            (let [button (first (filter #(= "Show source" (.-textContent %)) (array-seq (.querySelectorAll container "button"))))]
+              (is (some? button))
+              (.click button)
+              (is (= [[path view-id]] @calls)))
+            (let [shown (frame (assoc-in state [:saved-view-source [path view-id]] true))]
+              (browser/refresh! @discharge initial shown)
+              (is (= fence-text (.-textContent (.querySelector container ".memory-inline-saved-view pre code"))))
+              (is (identical? before-node (.querySelector container ".memory-region p")))
+              (is (= source (:text draft)))
+              (let [dirty (assoc draft :text (str source "Unsaved edit"))
+                    dirty-state (assoc-in state [:drafts path] dirty)
+                    next-frame (memory/document-view path dirty a false nil nil dirty-state)]
+                (browser/refresh! @discharge shown next-frame)
+                (is (nil? (.querySelector container ".memory-inline-saved-view")))
+                (is (some? (.querySelector container "section[aria-label='Views from saved version']")))
+                (is (.includes (.-textContent container) "visible source only on demand"))
+                (is (= (str source "Unsaved edit") (:text dirty))))))))
+      (finally
+        (when @discharge (browser/unmount! @discharge))
+        (.remove container)
+        (context/stop-context! ctx)))))
+
+
+(deftest rich-memory-uses-the-shared-view-and-latest-state-without-another-panel
+  (async done
+    (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+          discharge (atom nil) committed (atom nil) calls (atom []) path "reports/inline.md"
+          revision (random-uuid) stamp (random-uuid) view-id (random-uuid)
+          source "Before\n\n```simmis-view\nquery\n```\n\nAfter\n"
+          before {:kind :Paragraph :from 0 :to 8 :children [(text-node "Before")]}
+          fence {:kind :FencedCodeBlock :from 8 :to 33 :language "simmis-view" :literal "query"}
+          after {:kind :Paragraph :from 33 :to (count source) :children [(text-node "After")]}
+          nodes [before fence after]
+          descriptor {:version 1 :id view-id :source {:kind :pages :roots [""] :types []}
+                      :presentation :table :columns [{:kind :title}]}
+          entry {:from 8 :to 33 :view view-id :status :ready :descriptor descriptor}
+          analysis {:revision revision :nodes nodes
+                    :slots (mapv #(assoc (select-keys % [:from :to :kind]) :model (rich/model %)) nodes)
+                    :saved-views [entry]
+                    :semantic {:status :ready :blocks [{:id "provisional" :identity-status :provisional
+                                                        :syntax nodes :from 0 :to (count source) :children []}]}}
+          draft (editor/begin-rich {:mode :rich :text source :analysis analysis
+                                    :source {:kind :markdown :text source :analysis analysis :target-stamp stamp
+                                             :entry {:content revision :size (count source) :mode 33188}}})
+          state {:target-stamp stamp :target-verified? true :drafts {path draft}}
+          a {:cell-config (constantly nil) :block-links (constantly {}) :linked-block (constantly nil)
+             :jump (constantly nil) :owner :same-memory-owner
+             :toggle-saved-view (fn [p id] (swap! calls conj [p id]))}
+          frame #(memory/document-view path draft a false nil nil %)
+          finish (fn []
+                   (when @discharge
+                     (binding [ec/*execution-context* ctx]
+                       (org.replikativ.spindel.dom.discharge/call-refs-on-unmount! @committed)
+                       (org.replikativ.spindel.dom.commit/retire-dead! @discharge @committed nil)
+                       (browser/unmount! @discharge)))
+                   (.remove container) (context/stop-context! ctx) (done))]
+      (.appendChild (.-body js/document) container)
+      (binding [ec/*execution-context* ctx]
+        (reset! committed (frame state))
+        (reset! discharge (browser/mount! container @committed)))
+      (let [native (.querySelector container "simmis-rich-editor") editor (.-simmisRichEditor native)
+            before-json (js/JSON.stringify (.getJSON editor))
+            refresh (fn [next-state]
+                      (binding [ec/*execution-context* ctx]
+                        (let [next (frame next-state)]
+                          (browser/refresh! @discharge @committed next)
+                          (reset! committed next))))]
+        (is (= 1 (.-length (.querySelectorAll container ".memory-saved-view"))))
+        (is (nil? (.querySelector container "section[aria-label='Views from saved version']")))
+        (.click (first (filter #(= "Open view" (.-textContent %))
+                              (array-seq (.querySelectorAll container "button")))))
+        (is (= [[path view-id]] @calls))
+        (let [opened (assoc-in state [:page-view-open [path view-id]] true)
+              reply {:profile view-contract/profile :view view-id :path path :target-stamp stamp
+                     :descriptor descriptor :status :ready :total 1
+                     :columns [{:label "Title"}] :rows [{:id "row" :title "Company" :cells [{:kind :text :text "First result"}]}]}
+              replied (assoc-in opened [:saved-views [path view-id] :reply] reply)]
+          (refresh replied)
+          (js/queueMicrotask
+           (fn []
+             (try
+               (is (identical? editor (.-simmisRichEditor native)))
+               (is (= before-json (js/JSON.stringify (.getJSON editor))))
+               (is (= 0 (undoDepth (.-state editor))))
+               (is (.includes (.-textContent container) "First result"))
+               (is (= 1 (.-length (.querySelectorAll container ".memory-saved-view"))))
+               (refresh (assoc-in replied [:saved-views [path view-id] :reply :rows 0 :cells 0 :text] "Latest result"))
+               (js/queueMicrotask
+                (fn []
+                  (try
+                    (is (.includes (.-textContent container) "Latest result"))
+                    (is (identical? editor (.-simmisRichEditor native)))
+                    (is (= before-json (js/JSON.stringify (.getJSON editor))))
+                    (is (= 0 (undoDepth (.-state editor))))
+                    (is (= 1 (count @calls)) "The bridge initiates no additional acquisition")
+                    (finally (finish)))))
+               (catch :default error (is false (str error)) (finish))))))))))

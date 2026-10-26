@@ -65,14 +65,13 @@
                               (el/p {:class "memory-note"} "This view has no property fields on this page. Open the page to manage its properties."))
                             (properties/fields-view row-path target fields model state a editable?)))))))
 
-(defn view [path state a write?]
-  (for [entry (views/entries state path)
-        :let [id (:view entry) key [path id] opened? (get-in state [:page-view-open key])
+(defn entry-view [path entry state a write?]
+  (let [id (:view entry) key [path id] opened? (get-in state [:page-view-open key])
               reply (views/visible state path id) loading? (get-in state [:loading [:saved-view path id]])
               error (get-in state [:errors [:saved-view path id]])
               pages? (views/pages? state path id)
               receipt? (views/receipt? state path id)
-              form? (and pages? (= :form (get-in entry [:descriptor :presentation])))]]
+              form? (and pages? (= :form (get-in entry [:descriptor :presentation])))]
     (el/section {:key (str (:from entry) ":" id) :class "memory-saved-view" :aria-label "Saved view"}
                 (el/div {:class "memory-saved-view-heading"}
                         (el/strong {} (cond pages? (if form? "Page form" "Page table")
@@ -136,3 +135,9 @@
                                         (table/page-link (:path export) "Open saved snapshot" a))
                                       (when-let [message (get-in state [:errors [:snapshot path id]])]
                                         (el/p {:class "memory-note" :role "status"} message))))))))))
+
+
+(defn view
+  ([path state a write?] (view path state a write? (views/entries state path)))
+  ([path state a write? entries]
+   (for [entry entries] (entry-view path entry state a write?))))

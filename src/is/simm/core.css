@@ -9284,7 +9284,7 @@ body.tab-dragging .column-drop-zone {
 .memory-saved-view { margin: 8px 0; padding: 8px; border: 1px solid var(--mono-border); border-radius: 6px; }
 .memory-saved-view-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .memory-saved-view p { margin: 5px 0; }
-.memory-saved-view button { font: inherit; padding: 3px 6px; border: 1px solid var(--mono-border); border-radius: 4px; color: inherit; background: var(--mono-bg-base); cursor: pointer; }
+.memory-saved-view button, .memory-inline-saved-view > button { font: inherit; padding: 3px 6px; border: 1px solid var(--mono-border); border-radius: 4px; color: inherit; background: var(--mono-bg-base); cursor: pointer; }
 .memory-saved-view button:disabled { opacity: .5; cursor: default; }
 .memory-data-table { overflow-x: auto; }
 .memory-data-table table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -9341,3 +9341,5 @@ body.tab-dragging .column-drop-zone {
 .semantic-entity--compact .semantic-entity-field { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr); gap: 8px; }
 .semantic-entity--compact .semantic-entity-field > dd { margin: 0; }
 .semantic-entity--columns > dl { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+
+.memory-code-cell > pre[hidden] { display: none; }
