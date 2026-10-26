@@ -128,6 +128,13 @@
 (defn template-id [manifest]
   (hasch/uuid [:simmis/benchmark-template-v1 policy (checked! manifest)]))
 
+(defn visible-id
+  "Identity of the complete candidate-visible filesystem, including trusted
+   template files and directories. Distinct from the selected source-fixture
+   manifest ID, which covers only the case's supplied input text."
+  [manifest]
+  (hasch/uuid [:simmis/benchmark-visible-manifest-v1 policy (checked! manifest)]))
+
 (defn comparison-id [program-id template-id]
   (when-not (and (uuid? program-id) (uuid? template-id)) (refuse! :comparison-identity))
   (hasch/uuid [:simmis/benchmark-comparison-v1 program-id template-id]))

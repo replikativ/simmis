@@ -9,7 +9,11 @@
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.benchmark-source :as source]
+            [is.simm.ops.benchmark-case-evidence :as evidence]
+            [is.simm.ops.benchmark-case-manifest :as manifests]
+            [is.simm.ops.benchmark-case-snapshots :as snapshots]
             [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.checkpoint-roots :as physical]
             [is.simm.ops.owned-workflows :as owned-source]
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m]))
@@ -65,8 +69,8 @@
   [conn request]
   (current! conn request)
   (let [retained (:value (artifact/get-bounded-value
-                         (artifact/datahike-store conn) (:work.request/payload-ref request)
-                         (* 128 1024 1024)))
+                          (artifact/datahike-store conn) (:work.request/payload-ref request)
+                          (* 128 1024 1024)))
         basis (:input retained)
         original (:benchmark/source basis)
         submission (:submission basis)]
@@ -79,7 +83,7 @@
     (source/reconstruct original)
     (let [origin (provenance! request basis original)
           pure (benchmarks/prepare-checkpoint-fixture {:files (:files original)}
-                                                    (dissoc submission :expected-owned-source))
+                                                      (dissoc submission :expected-owned-source))
           prepared (-> pure
                        (assoc :submission-channel (:admission-channel basis))
                        (assoc-in [:basis :submission] submission)
@@ -141,20 +145,20 @@
       (refuse! :resolution-changed))
     (inventory! row cases plan)
     (when-not (= plan (:value (artifact/get-bounded-value
-                              (artifact/datahike-store conn) (:benchmark.resolution/plan row)
-                              (* 64 1024))))
+                               (artifact/datahike-store conn) (:benchmark.resolution/plan row)
+                               (* 64 1024))))
       (refuse! :plan-integrity))
     (let [new? (= (:id tokens) (:benchmark.resolution/id row))]
       ;; An ACK (including lost-ACK readback) grants creation rights only to
       ;; this exact fresh family. Observing somebody else's family never does.
       (when (and new?
                  (not (and (= (:claim tokens) (:benchmark.resolution/claim row))
-                            (= published-ref (:benchmark.resolution/plan row))
-                            (= :preparing (:benchmark.resolution/state row))
-                            (= (:cases tokens)
-                               (mapv #(hash-map :root (:benchmark.case/root %)
-                                                :claim (:benchmark.case/claim %)) cases))
-                            (every? #(= :planned (:benchmark.case/state %)) cases))))
+                           (= published-ref (:benchmark.resolution/plan row))
+                           (= :preparing (:benchmark.resolution/state row))
+                           (= (:cases tokens)
+                              (mapv #(hash-map :root (:benchmark.case/root %)
+                                               :claim (:benchmark.case/claim %)) cases))
+                           (every? #(= :planned (:benchmark.case/state %)) cases))))
         (refuse! :creation-rights-changed))
       (let [current @conn]
         (authorized! current principal room-id request)
@@ -203,3 +207,181 @@
                        (do (.interrupt (Thread/currentThread)) (throw error))
                        (throw (or publication-error error)))))]
     (assoc observed :prepared (:prepared compiled))))
+
+(def ^:private case-family-keys
+  [:db/id :benchmark.case/id :benchmark.case/resolution :benchmark.case/ordinal
+   :benchmark.case/claim :benchmark.case/root])
+
+(defn- case-context! [conn principal room-id request preparation ordinal]
+  (authorized! @conn principal room-id request)
+  (let [{:keys [source plan] :as compiled} (reconstruct conn request)
+        expected (:resolution preparation)
+        db @conn row (journal/resolution db (:work.request/id request))
+        cases (when row (journal/cases db (:benchmark.resolution/id row)))]
+    (when-not (and (= plan (:plan preparation)) (= expected row)
+                   (= :preparing (:benchmark.resolution/state row))
+                   (= (mapv #(select-keys % case-family-keys) (:cases preparation))
+                      (mapv #(select-keys % case-family-keys) cases))
+                   (integer? ordinal) (<= 0 ordinal) (< ordinal (count cases)))
+      (refuse! :case-family-changed))
+    (inventory! row cases plan)
+    (authorized! db principal room-id request)
+    {:source source :plan plan :compiled compiled :resolution row :cases cases :case (nth cases ordinal)}))
+
+(defn- case-pinning-tx [db principal room-id request resolution plan row id ref]
+  (authorized! db principal room-id request)
+  (journal/case-pinning-tx db request resolution plan row id ref))
+
+(defn- case-retained-tx [db principal room-id request resolution plan row]
+  (authorized! db principal room-id request)
+  (journal/case-retained-tx db request resolution plan row))
+
+(defn- case-fence! [db principal room-id request resolution cases]
+  (authorized! db principal room-id request)
+  (when-not (and (= resolution (journal/resolution db (:work.request/id request)))
+                 (= cases (journal/cases db (:benchmark.resolution/id resolution))))
+    (refuse! :inventory-changed)))
+
+(defn- read-case-context!
+  [conn principal room-id request preparation ordinal c0]
+  (let [principal (select-keys principal [:principal/id])
+        {:keys [source plan resolution cases] row :case}
+        (case-context! conn principal room-id request preparation ordinal)
+        id (:benchmark.case/selection-id row) ref (:benchmark.case/selection row)]
+    (when-not (and (#{:pinning :retained} (:benchmark.case/state row)) (uuid? id) ref)
+      (refuse! :case-not-published))
+    (let [body (:value (artifact/get-bounded-value (artifact/datahike-store conn) ref (* 32 1024 1024)))
+          _ (when-not (= id (evidence/content-id body)) (refuse! :case-integrity))
+          _ (evidence/validate-case! body request resolution plan row source c0)
+          db @conn]
+      (case-fence! db principal room-id request resolution cases)
+      {:record {:case row :body body :id id :ref ref} :resolution resolution :cases cases})))
+
+(defn read-case!
+  "Authorized complete case readback. This observes progress and grants no
+   native allocation or pin attempt. Original App/Room lifetime stays with the
+   caller; a serialized preparation map is not an ownership capability."
+  [conn principal room-id request preparation ordinal c0]
+  (:record (read-case-context! conn principal room-id request preparation ordinal c0)))
+
+(defn publish-case!
+  "Fixed coordinator publication before its ONE native pin attempt. The caller
+   must still hold its original fresh-family admission and native source extent.
+   A retry may use read-case!, never repeat construction or pinning. No native
+   IO occurs here; the writer repeats current authorization and exact rows."
+  [conn principal room-id request preparation ordinal c0 selection]
+  (let [principal (select-keys principal [:principal/id])
+        {:keys [source plan resolution] row :case}
+        (case-context! conn principal room-id request preparation ordinal)
+        _ (when-not (and (true? (:new? preparation)) (= :planned (:benchmark.case/state row)))
+            (refuse! :not-creation-winner))
+        body (evidence/case-body request resolution plan row source c0 selection)
+        id (evidence/content-id body) published-ref (volatile! nil)
+        publication-error
+        (try
+          (artifact/publish-value!
+           (artifact/datahike-store conn) body
+           (fn [ref]
+             (vreset! published-ref ref)
+             (authorized! @conn principal room-id request)
+             (d/transact conn [[:db.fn/call case-pinning-tx principal room-id request resolution plan row id ref]])))
+          nil
+          (catch Exception error
+            (if (interruption? error) (do (.interrupt (Thread/currentThread)) (throw error)) error)))]
+    (try
+      (let [observed (read-case! conn principal room-id request preparation ordinal c0)]
+        (when-not (and (= body (:body observed)) (= id (:id observed)) (= @published-ref (:ref observed))
+                       (= :pinning (get-in observed [:case :benchmark.case/state])))
+          (refuse! :case-publication-changed))
+        observed)
+      (catch Exception error
+        (if (interruption? error) (do (.interrupt (Thread/currentThread)) (throw error))
+            (throw (or publication-error error)))))))
+
+(defn- physical-case! [fixture-db c0 {:keys [body case]}]
+  (when-not (= (:manifest c0) (manifests/inventory fixture-db)) (refuse! :template-manifest-changed))
+  (let [basis (get-in body [:selection :basis])
+        db (snapshots/load-case-snapshot! fixture-db (get-in c0 [:selection :basis]) basis)
+        verified (physical/verify! db basis (:benchmark.case/root case) (evidence/root-owner body))]
+    (when-not (= (:manifest body) (manifests/inventory (:db verified)))
+      (refuse! :case-manifest-changed))
+    verified))
+
+(defn acknowledge-case!
+  "Read back the original store's exact C0/case snapshots, entire manifests and
+   immutable physical pin before marking retained. Lost write ACK is inspected
+   once. This never creates a pin or proves that the builder has been disposed;
+   only the owning coordinator's successful physical return can enable READY."
+  [conn principal room-id request preparation ordinal c0 fixture-db]
+  (let [principal (select-keys principal [:principal/id])
+        observed (read-case! conn principal room-id request preparation ordinal c0)
+        _ (physical-case! fixture-db c0 observed)
+        row (:case observed)
+        acknowledgement-error
+        (try
+          (d/transact conn [[:db.fn/call case-retained-tx principal room-id request
+                             (:resolution preparation) (:plan preparation) row]])
+          nil
+          (catch Exception error
+            (if (interruption? error) (do (.interrupt (Thread/currentThread)) (throw error)) error)))]
+    (try
+      (let [{confirmed :record :keys [resolution cases]}
+            (read-case-context! conn principal room-id request preparation ordinal c0)]
+        (when-not (and (= (dissoc observed :case) (dissoc confirmed :case))
+                       (= :retained (get-in confirmed [:case :benchmark.case/state])))
+          (refuse! :case-retention-changed))
+        (physical-case! fixture-db c0 confirmed)
+        (case-fence! @conn principal room-id request resolution cases)
+        confirmed)
+      (catch Exception error
+        (if (interruption? error) (do (.interrupt (Thread/currentThread)) (throw error))
+            (throw (or acknowledgement-error error)))))))
+
+(defn- ready-tx [db principal room-id request resolution plan cases id ref]
+  (authorized! db principal room-id request)
+  (journal/ready-tx db request resolution plan cases id ref))
+
+(defn publish-ready!
+  "Original admitting coordinator ONLY, after every temporary builder returned
+   with physical cleanup ACK. This function cannot establish that barrier from
+   journal rows; it is deliberately unwired until the coordinator supplies it.
+   Recheck every retained pin/manifest before publishing portable execution
+   evidence. READY observed at entry never grants an executable plan or resume."
+  [conn principal room-id request preparation c0 fixture-db]
+  (let [principal (select-keys principal [:principal/id])
+        {:keys [compiled plan resolution cases]}
+        (case-context! conn principal room-id request preparation 0)
+        _ (when-not (and (true? (:new? preparation))
+                         (every? #(= :retained (:benchmark.case/state %)) cases))
+            (refuse! :cases-not-retained))
+        records (mapv (fn [ordinal]
+                        (let [record (read-case! conn principal room-id request preparation ordinal c0)]
+                          (physical-case! fixture-db c0 record)
+                          record)) (range (count cases)))
+        resolved (evidence/resolve-execution request preparation compiled c0 records)
+        body (:body resolved) id (evidence/execution-id body) published-ref (volatile! nil)
+        publication-error
+        (try
+          (artifact/publish-value!
+           (artifact/datahike-store conn) body
+           (fn [ref]
+             (vreset! published-ref ref)
+             (d/transact conn [[:db.fn/call ready-tx principal room-id request resolution plan cases id ref]])))
+          nil
+          (catch Exception error
+            (if (interruption? error) (do (.interrupt (Thread/currentThread)) (throw error)) error)))]
+    (try
+      (let [db @conn
+            _ (authorized! db principal room-id request)
+            row (journal/resolution db (:work.request/id request))
+            expected (assoc resolution :benchmark.resolution/state :ready
+                            :benchmark.resolution/resolved-id id :benchmark.resolution/resolved @published-ref)
+            _ (when-not (and (uuid? @published-ref) (= expected row)) (refuse! :ready-publication-changed))
+            decoded (:value (artifact/get-bounded-value (artifact/datahike-store conn) @published-ref (* 32 1024 1024)))]
+        (when-not (and (= id (evidence/execution-id decoded)) (= body decoded))
+          (refuse! :ready-integrity))
+        (case-fence! @conn principal room-id request expected cases)
+        {:body body :id id :ref @published-ref :plan (:plan resolved)})
+      (catch Exception error
+        (if (interruption? error) (do (.interrupt (Thread/currentThread)) (throw error))
+            (throw (or publication-error error)))))))
