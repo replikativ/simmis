@@ -11,6 +11,9 @@
             [geschichte.repo :as repo]
             [hasch.core :as hasch]
             [is.simm.documents.files :as files]
+            [is.simm.documents.capture :as capture]
+            [is.simm.documents.capture-test :as capture-data]
+            [is.simm.documents.capture-views :as capture-views]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.saved-view-reader :as reader]
             [is.simm.ops.dvergr :as ops]
@@ -121,6 +124,30 @@
       (let [sent (scorecard-request! context (random-uuid))]
         (with-redefs [experiment/scorecard (fn [& _] (throw (AssertionError. "Unbounded fallback")))]
           (is (= :scorecard-not-found (:reason (read! context sent)))))))))
+
+(deftest changed-selected-capture-notes-cannot-return-an-earlier-archive-table
+  (with-fixture
+    (fn [{:keys [owned] :as context}]
+      (let [note (capture/observation-note capture-data/session capture-data/segment [])
+            descriptor {:version 1 :id (random-uuid)
+                        :source {:kind :archived-captures
+                                 :roots [(str (capture/folder capture-data/session) "/observations")]}
+                        :presentation :table :columns [{:kind :started-at} {:kind :note}]}
+            prepare capture-views/prepare calls (atom 0)]
+        (repo/write! owned (:path note) (markdown/source-bytes (:text note)))
+        (repo/write! owned "views/report.md"
+                     (markdown/source-bytes (str "```simmis-view\n" (pr-str descriptor) "\n```\n")))
+        (let [sent (request context) result (read! context sent)]
+          (is (= :ready (:status result)))
+          (is (= :archived-captures (get-in result [:source :kind])))
+          (with-redefs [capture-views/prepare
+                        (fn [db declaration]
+                          (let [result (prepare db declaration)]
+                            (when (= 1 (swap! calls inc))
+                              (repo/write! owned (:path note) (markdown/source-bytes (str (:text note) "\nChanged evidence\n"))))
+                            result))]
+            (is (thrown? clojure.lang.ExceptionInfo (read! context sent)))
+            (is (= 2 @calls))))))))
 
 (deftest receipt-read-finishes-after-native-io-with-current-authority-and-full-control-basis
   (with-fixture

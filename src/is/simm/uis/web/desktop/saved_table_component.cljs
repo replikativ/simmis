@@ -2,7 +2,11 @@
   "Typed saved-report presentation. Data never supplies callbacks or edit
    bindings; trusted host callers optionally supply navigation and controls."
   (:require [org.replikativ.spindel.dom.elements :as el]
+            [is.simm.documents.links :as links]
             [is.simm.documents.saved-view-values :as values]))
+
+(defn media-url [value context]
+  (links/media-route (merge (select-keys context [:room :target]) (select-keys value [:path :content]))))
 
 (defn page-link [path text a]
   (if-let [open (:open a)]
@@ -18,6 +22,9 @@
     (:uuid :instant) (el/span {} (:text value))
     :boolean (el/span {} (if (:value value) "Yes" "No"))
     :page (page-link (:path value) (:text value) a)
+    :media (if-let [url (media-url value (:media-context a))]
+             (el/a {:href url :target "_blank" :rel "noopener noreferrer"} (:text value))
+             (el/span {} (:text value)))
     :reference (if (:path value)
                  (page-link (:path value) (:label value) a)
                  (el/span {:title (str (:id value))} "Reference"))

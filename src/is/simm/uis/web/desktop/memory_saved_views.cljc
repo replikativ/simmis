@@ -17,6 +17,9 @@
 (defn pages? [state path view]
   (= :pages (get-in (entry state path view) [:descriptor :source :kind])))
 
+(defn receipt? [state path view]
+  (= :scorecard (get-in (entry state path view) [:descriptor :source :kind])))
+
 (defn- as-uuid [value]
   (cond (uuid? value) value
         (string? value) (parse-uuid value)))
@@ -47,7 +50,7 @@
 (defn request [state path view]
   (when-let [entry (when (owned? state path) (entry state path view))]
     (when (and (not (editor/dirty? (get-in state [:drafts path])))
-               (or (pages? state path view) (:receipt-context state)))
+               (or (not (receipt? state path view)) (:receipt-context state)))
       (merge (select-keys entry [:from :to :view])
              {:path path :expected (get-in state [:drafts path :source :entry])
               :revision (:revision (charts/saved-analysis (get-in state [:drafts path])))
@@ -64,11 +67,16 @@
          (= (:target-stamp state) (:target-stamp reply))
          (= (:descriptor entry) (:descriptor reply))
          (contains? #{:ready :unavailable} (:status reply))
-         (or (pages? state path view)
-             (and (:receipt-context state)
+         (case (get-in entry [:descriptor :source :kind])
+           :pages true
+           :archived-captures (and (= (get-in entry [:descriptor :source])
+                                     (select-keys (:source reply) [:kind :roots]))
+                                  (uuid? (get-in reply [:source :repository])))
+           :scorecard (and (:receipt-context state)
                   (= (assoc (:receipt-context state) :kind :scorecard
                             :scorecard (get-in entry [:descriptor :source :scorecard]))
-                     (:source reply)))))))
+                     (:source reply)))
+           false))))
 
 (defn reply-current? [state path view sent reply]
   (let [request (request state path view)]
@@ -79,7 +87,7 @@
          (or (= :unavailable (:status reply))
              (and (uuid? (:basis reply)) (vector? (:rows reply))
                   (<= (count (:rows reply)) (if (pages? state path view) contract/max-rows contract/max-scorecard-rows))
-                  (or (pages? state path view)
+                  (or (not (receipt? state path view))
                       (every? #(and (= (get-in reply [:source :scorecard]) (:scorecard %))
                                     (string? (:candidate %))
                                     (= [(:scorecard %) (:candidate %)] (:id %))

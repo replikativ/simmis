@@ -7,6 +7,7 @@
             [dvergr.room.store.datahike]
             [dvergr.runtime.preparation :as preparation]
             [is.simm.documents.files :as files]
+            [is.simm.documents.capture-views :as capture-views]
             [is.simm.documents.saved-view-contract :as contract]
             [is.simm.documents.saved-view-reader :as reader]
             [is.simm.documents.scorecard-views :as scorecard-views]
@@ -37,6 +38,7 @@
   (let [resolved (reader/resolve-in (:db bound) query)]
     (case (get-in resolved [:descriptor :source :kind])
       :pages (reader/prepare-pages-in (:db bound) resolved)
+      :archived-captures (merge resolved (capture-views/prepare (:db bound) (:descriptor resolved)))
       :scorecard
       (let [room (:room bound) context (receipt-context room (:room-id bound))
             control-db (reads/current-host-control-db! host)

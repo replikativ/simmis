@@ -5,6 +5,12 @@
             [dvergr.runtime.preparation :as preparation]
             [geschichte.content :as content]
             [geschichte.repo :as repo]
+            [is.simm.documents.capture :as capture]
+            [is.simm.documents.capture-test :as capture-data]
+            [is.simm.documents.capture-views :as capture-views]
+            [is.simm.documents.capture-views-test :as archive-data]
+            [is.simm.documents.files :as files]
+            [is.simm.documents.markdown :as markdown]
             [is.simm.ops.owned-mcp-test :as fixture]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.runtimes.application-ops :as application]
@@ -54,6 +60,26 @@
          (is (= "bytes */10" (get-in invalid [:headers "Content-Range"])))
          (is (nil? (:body invalid)))
          (is (nil? (:directory @(:state resource)))))))))
+
+(deftest archive-recording-link-cannot-follow-replacement-bytes-after-projection
+  (with-fixture
+   (fn [{:keys [owned request]}]
+     (let [seed (capture/observation-note capture-data/session capture-data/segment [])
+           path (:path (first (:assets seed)))
+           _ (repo/write! owned path (.getBytes "original video fixture" "UTF-8"))
+           entry (files/entry @owned path)
+           note (capture/observation-note capture-data/session
+                                          (merge capture-data/segment (select-keys entry [:content :size])) [])
+           _ (repo/write! owned (:path note) (markdown/source-bytes (:text note)))
+           result (capture-views/prepare @owned (archive-data/descriptor capture-data/session))
+           link (get-in result [:rows 0 :cells 3])
+           request (-> request (assoc :request-method :head)
+                       (assoc-in [:query-params "path"] (:path link))
+                       (assoc-in [:query-params "content"] (str (:content link))))]
+       (is (= :media (:kind link)))
+       (is (= 200 (:status (media/handle request))))
+       (repo/write! owned path (.getBytes "replacement video fixture" "UTF-8"))
+       (is (= 409 (:status (media/handle request))))))))
 
 (deftest exact-bytes-ranges-and-cache-hits-still-require-current-authority
   (with-fixture

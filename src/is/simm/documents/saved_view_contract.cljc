@@ -9,6 +9,12 @@
 
 (def max-scorecard-rows 32)
 (def max-candidate-characters 256)
+(def max-capture-rows 32)
+
+(def capture-columns
+  {:started-at "Started (UTC)" :until "Until (UTC)" :duration "Duration (seconds)"
+   :screenshots "Screenshots available" :note "Observation note" :recording "Recording"
+   :session "Session" :alignment "Recording alignment"})
 
 (def scorecard-columns
   {:candidate "Candidate" :attempts "Attempts" :passed "Passed"

@@ -57,6 +57,19 @@
     (is (not (views/pages? s path view-id)))
     (is (not (views/compatible? s path view-id (reply state))))))
 
+(deftest archive-views-use-memory-source-identity-without-a-personal-capture-or-receipt-context
+  (let [source {:kind :archived-captures :roots ["captures/2026-10-25/00-00-00--cf455d8f-2cf9-4948-8043-628a59f85415/observations"]}
+        descriptor {:version 1 :id view-id :source source :presentation :table :columns [{:kind :note}] :limit 32}
+        s (assoc-in state [:drafts path :source :analysis :saved-views 0 :descriptor] descriptor)
+        result (assoc (reply s) :descriptor descriptor :source (assoc source :repository (random-uuid)))
+        marker (views/marker s path view-id)]
+    (is (views/request s path view-id))
+    (is (views/reply-current? s path view-id marker result))
+    (is (not (views/pages? s path view-id)))
+    (is (not (views/receipt? s path view-id)))
+    (is (not (views/compatible? s path view-id (assoc-in result [:source :roots] ["other"]))))
+    (is (not (views/compatible? s path view-id (update result :source dissoc :repository))))))
+
 (deftest results-bind-the-exact-saved-source-and-request-generation
   (let [sent (views/marker state path view-id) result (reply state)]
     (is (views/reply-current? state path view-id sent result))

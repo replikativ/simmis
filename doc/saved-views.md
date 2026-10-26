@@ -127,3 +127,69 @@ environments and 128 repetitions. The portable report has a separate 128 KiB
 presentation ceiling. A complete certified matrix does not assert that its
 parent job's accounting/adoption settlement has completed. Timing, nested model
 attribution and pairwise tables require separate bounded adapters later.
+
+## Archived screen observations
+
+A read-only archive table can use one to four explicit session observation
+folders. It reads the grouped Markdown notes already published into Memory:
+
+```simmis-view
+{:version 1
+ :id #uuid "95640bdd-e16e-486f-a3f2-c45b0bac899c"
+ :source {:kind :archived-captures
+          :roots ["captures/2026-10-25/01-23-43--91359c37-d5a7-4771-a66c-7c3114a1b9a2/observations"]}
+ :presentation :table
+ :columns [{:kind :started-at} {:kind :until} {:kind :screenshots}
+           {:kind :note} {:kind :recording} {:kind :alignment}]
+ :limit 32}
+```
+
+Roots are exact archived session folders; `captures` alone is not a query.
+Available columns are `:started-at`, `:until`, `:duration`, `:screenshots`,
+`:note`, `:recording`, `:session`, and `:alignment`. Times are UTC and duration
+is seconds. Rows sort by parsed time, then identity and path, including when a
+session crosses midnight. The display may show a declared prefix of a fully
+bounded selection; its total and incomplete-display message remain explicit.
+
+The reader bounds raw prefix acquisition at 256 entries per root, the entire
+selection at 128 notes, and all selected note bodies at 8 MiB before reading
+them. Each note keeps the existing open-file limit and at most 32 screenshot
+references. Overflow refuses the selection; it does not call the global
+canonical page projection or silently sample an oversized archive. Source
+changes during reading follow the same original-App/Room final checks.
+
+Frontmatter identifies source evidence; it grants no access to the personal
+capture store. These tables neither transcribe, publish nor fetch media bodies.
+Screenshot counts show currently matching workspace files / referenced files.
+A recording link appears only when its current path, content identity and size
+match the note. Missing or replaced media shows as unavailable; opening any
+link still uses the ordinary authorized media reader. Recording alignment
+remains estimated. These source fields are conventions, not new editable type
+or property bindings; observation text stays in its linked Markdown note.
+
+## Source ownership
+
+```mermaid
+flowchart TD
+  Fence[Exact saved Markdown fence] --> Read[Original App and Room read operation]
+  Read --> Pages[Memory: canonical typed pages]
+  Read --> Cards[Room receipt store: bounded certified Scorecard]
+  Read --> Archive[Memory: bounded archived observation notes]
+  Pages --> Facts[Portable bounded view facts]
+  Cards --> Facts
+  Archive --> Facts
+  Facts --> State[Spindel context-owned client state]
+  State --> Table[Shared table and cell renderer]
+  Pages --> Form[Existing typed property controls]
+  Form --> CAS[Ordinary revision-checked file writer]
+  CAS --> Memory[Authoritative Markdown files]
+  Memory --> Signal[Existing metadata change signals]
+  Signal --> State
+```
+
+The diagram's shared renderer does not imply shared write authority. Page
+properties use their existing writer. Scorecard and archive rows are read-only;
+their data cannot install handlers or enroll page property controls. Recording
+links retain their observed content UUID through the existing authenticated
+media route, so a stale table refuses replacement bytes rather than silently
+following its current path.

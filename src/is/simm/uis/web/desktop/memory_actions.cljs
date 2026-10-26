@@ -667,7 +667,7 @@
               (navigation-refresh!)
               (when-let [c (connection)]
                 (ensure-sync! c (binding [ec/*execution-context* ctx] @sync/state))))]
-      {:owner key :state state :change change! :edit edited! :folder folder! :open #(open! % false) :reload #(open! % true)
+      {:owner key :room-id room :state state :change change! :edit edited! :folder folder! :open #(open! % false) :reload #(open! % true)
        :observe-receipt-context
        (fn [context]
          (when (not= context (:receipt-context (state)))

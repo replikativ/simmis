@@ -110,6 +110,35 @@
       (refuse! :duplicate-columns))
     (assoc value :limit limit)))
 
+(defn capture-root?
+  "Only explicit archived session observation folders, never a global scan."
+  [root]
+  (and (string? root)
+       (boolean (re-matches #"captures/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}--[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/observations" root))))
+
+(defn- validate-captures [value]
+  (closed! value #{:version :id :source :presentation :columns} #{:limit})
+  (when-not (= 1 (:version value)) (refuse! :unsupported-version))
+  (when-not (uuid? (:id value)) (refuse! :invalid-identity))
+  (when-not (= :table (:presentation value)) (refuse! :unsupported-presentation))
+  (closed! (:source value) #{:kind :roots} #{})
+  (when-not (distinct-vector? (get-in value [:source :roots]) 1 4 capture-root?)
+    (refuse! :unsupported-capture-roots))
+  (when-not (and (vector? (:columns value)) (<= 1 (count (:columns value)) max-columns))
+    (refuse! :invalid-columns))
+  (doseq [column (:columns value)]
+    (closed! column #{:kind} #{:label})
+    (when-not (contains? contract/capture-columns (:kind column)) (refuse! :unsupported-column))
+    (when (contains? column :label)
+      (when-not (and (string? (:label column)) (<= 1 (count (:label column)) 128)
+                     (not (str/blank? (:label column))) (not (re-find #"[\p{Cntrl}]" (:label column))))
+        (refuse! :invalid-label))))
+  (when-not (= (count (:columns value)) (count (set (map :kind (:columns value)))))
+    (refuse! :duplicate-columns))
+  (let [limit (get value :limit contract/max-capture-rows)]
+    (when-not (and (integer? limit) (<= 1 limit contract/max-capture-rows)) (refuse! :invalid-limit))
+    (assoc value :limit limit)))
+
 (defn validate
   "Validate inert declarations for a fixed source. Neither source IDs nor
    columns carry permission, executable queries or writable field bindings."
@@ -117,6 +146,7 @@
   (case (get-in value [:source :kind])
     :pages (validate-pages value)
     :scorecard (validate-scorecard value)
+    :archived-captures (validate-captures value)
     (refuse! :unsupported-source)))
 
 (defn- bounded-source! [source]

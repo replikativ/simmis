@@ -14,6 +14,8 @@
   (case reason
     :scorecard-not-found "This Scorecard is absent from the current Room. No other Room was searched."
     :display-limit "This Scorecard exceeds the bounded report presentation size."
+    (:archive-index-limit :archive-note-limit :archive-byte-limit)
+    "These archive folders exceed the bounded view limits. Select fewer session folders."
     :invalid-source "Some selected documents need valid identities or properties before this view can be shown."
     :page-not-in-selection "This page is absent or outside the view’s folders or types."
     (:too-many-files :too-many-source-bytes :too-many-worktree-entries :too-many-syntax-nodes)
@@ -71,10 +73,12 @@
               reply (views/visible state path id) loading? (get-in state [:loading [:saved-view path id]])
               error (get-in state [:errors [:saved-view path id]])
               pages? (views/pages? state path id)
+              receipt? (views/receipt? state path id)
               form? (and pages? (= :form (get-in entry [:descriptor :presentation])))]]
     (el/section {:key (str (:from entry) ":" id) :class "memory-saved-view" :aria-label "Saved view"}
                 (el/div {:class "memory-saved-view-heading"}
-                        (el/strong {} (if pages? (if form? "Page form" "Page table") "Benchmark results"))
+                        (el/strong {} (cond pages? (if form? "Page form" "Page table")
+                                            receipt? "Benchmark results" :else "Screen observations"))
                         (when (= :ready (:status entry))
                           (el/span {:class "memory-note"}
                                    (str/join ", " (map #(if (= "" %) "Memory" %) (get-in entry [:descriptor :source :roots])))))
@@ -85,7 +89,7 @@
                           (el/span {:class "memory-note"} "Invalid declaration · edit its Markdown")))
                 (when opened?
                   (cond
-                    (and (not pages?) (nil? (:receipt-context state)))
+                    (and receipt? (nil? (:receipt-context state)))
                     (el/p {:class "memory-note" :role "status"} "Waiting for current Room access and receipt store identity…")
                     (and (nil? reply) error)
                     (el/p {:class "memory-note" :role "status"}
@@ -97,10 +101,13 @@
                     :else
                     (el/div {}
                             (el/p {:class "memory-note" :role "status"}
-                          (str (count (:rows reply)) " of " (:total reply) (if pages? " matching pages" " candidates · saved Scorecard")
+                          (str (count (:rows reply)) " of " (:total reply)
+                               (cond pages? " matching pages" receipt? " candidates · saved Scorecard"
+                                     :else " archived observation intervals")
                                        (when loading? " · Updating…")))
                             (when-not form?
-                              (table/view (:columns reply) (:rows reply) a
+                              (table/view (:columns reply) (:rows reply)
+                                          (assoc a :media-context {:room (:room-id a) :target (:target-stamp state)})
                                           (when pages? {:control-label "Properties"
                                            :row-control
                                            (fn [row]
@@ -108,10 +115,14 @@
                                                          :aria-label (str "Inspect properties for " (:title row))
                                                          :on-click (fn [_] ((:edit-page-view-row a) path id row))}
                                                         (if write? "Edit" "Inspect")))})))
-                            (when-not pages?
+                            (when receipt?
                               (el/p {:class "memory-note"}
                                     "Model cost uses reported usage; it is not the wallet or grant total. A dash means unknown."
                                     (when (false? (:complete? reply)) " Only the declared candidate prefix is shown; matrix statistics are unchanged.")))
+                            (when (and (not pages?) (not receipt?))
+                              (el/p {:class "memory-note"}
+                                    "Screenshots show matching files / referenced files. Recording alignment is estimated."
+                                    (when (false? (:complete? reply)) " Only the declared interval prefix is shown.")))
                             (when (and pages? (or (false? (get-in reply [:display :complete?]))
                                                  (some #(false? (:label-complete? %)) (:columns reply))))
                               (el/p {:class "memory-note"} "Some previews are shortened. Open a page for its full source values."))
