@@ -2,6 +2,7 @@
   "Bounded immutable HOST source for benchmark preparation. Retaining a
    bundle is not permission to execute its checker or expose its gold to Runs."
   (:require [clojure.string :as str]
+            [datahike.blob :as blob]
             [dvergr.agent.experiment :as experiment]
             [dvergr.catalog.room :as catalog]
             [dvergr.rooms.files :as paths]
@@ -66,6 +67,25 @@
 (defn source-id [source]
   (reconstruct source)
   (hasch/uuid [:simmis/benchmark-source-v1 source]))
+
+(defn validate-manifest!
+  "Verify retained source bytes against the original owned file manifest.
+   Geschichte logical content IDs use the public blob-id of complete bytes,
+   independently of chunk/delta storage. Modes remain validated metadata."
+  [source manifest]
+  (reconstruct source)
+  (when-not (and (vector? manifest)
+                 (= (count (:files source)) (count manifest))
+                 (= (vec (sort (keys (:files source)))) (mapv :path manifest)))
+    (refuse! :source-manifest))
+  (doseq [{:keys [path content size mode] :as entry} manifest]
+    (let [bytes (.getBytes ^String (get-in source [:files path]) StandardCharsets/UTF_8)]
+      (when-not (and (= #{:path :content :size :mode} (set (keys entry)))
+                     (= (blob/blob-id bytes) content) (integer? size) (= (alength bytes) size)
+                     (integer? mode) (<= 0 mode Integer/MAX_VALUE)
+                     (= 0x8000 (bit-and mode 0xF000)))
+        (refuse! :source-manifest))))
+  manifest)
 
 (defn case-files
   "Candidate-visible fixture bytes only: shared plus the selected case.

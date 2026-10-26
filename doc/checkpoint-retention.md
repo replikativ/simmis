@@ -103,6 +103,17 @@ retained workflow source, without rereading current authoring files. Only then
 does it publish the inert plan artifact and atomically reserve the case rows.
 The writer repeats authorization against its supplied control snapshot.
 
+The owned submission retains its inspected source revision, admission channel
+and source-origin metadata in the canonical Request. Reconstruction removes
+only `:expected-owned-source` from the compiler's input, validates the closed
+provenance and target-bound revision, then reapplies those exact observations
+before comparing the complete Request basis. The retained manifest must match
+the frozen source's paths, UTF-8 byte sizes and public logical blob IDs; regular
+file modes remain retained metadata. The normalized compiler program supplies
+the semantic benchmark identity. Neither a recorded channel nor internally
+consistent hashes certify historical authorization: the original facade still
+owns verification of its actual source and App/Room handoff.
+
 Readback checks the decoded plan and complete bounded case inventory, then
 rechecks authorization, Request and exact journal rows after artifact IO.
 Only the original complete fresh token family receives `:new? true`. A

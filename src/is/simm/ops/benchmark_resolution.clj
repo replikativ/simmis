@@ -6,9 +6,13 @@
             [dvergr.artifact :as artifact]
             [hasch.core :as hasch]
             [is.simm.model.benchmark-resolutions :as journal]
+            [is.simm.model.knowledge-publication :as publication]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.benchmark-source :as source]
-            [is.simm.ops.benchmarks :as benchmarks]))
+            [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.owned-workflows :as owned-source]
+            [is.simm.ops.workflows :as workflows]
+            [malli.core :as m]))
 
 (defn- refuse! [reason]
   (throw (ex-info "Benchmark reconstruction is held" {:type ::held :reason reason})))
@@ -25,6 +29,31 @@
                     (requests/request-id (:work.request/by expected) (:work.request/room expected)
                                          (:work.request/client-id expected))))
     (refuse! :request-changed)))
+
+(def ^:private owned-input-schema (conj benchmarks/schema [:expected-owned-source :uuid]))
+(def ^:private origin-schema
+  [:map {:closed true} [:revision :uuid] [:target-stamp :uuid]
+   [:manifest [:vector {:min 1 :max workflows/max-files} :map]]
+   [:target [:and publication/target-schema [:fn publication/host-target?]]]])
+
+(defn- provenance! [request basis retained-source]
+  (let [submission (:submission basis) origin (:source-origin basis)]
+    (when-not (and (= #{:submission :experiment :team :limits :policy :benchmark/source
+                        :admission-channel :source-origin} (set (keys basis)))
+                   (m/validate owned-input-schema submission)
+                   (#{:host :mcp} (:admission-channel basis))
+                   (m/validate origin-schema origin)
+                   (= (:revision origin) (:expected-owned-source submission)))
+      (refuse! :source-provenance))
+    (source/validate-manifest! retained-source (:manifest origin))
+    (when-not (= (:revision origin)
+                 (owned-source/source-id {:room-id (:work.request/room request)
+                                          :target-stamp (:target-stamp origin)}
+                                         (:name submission) (:manifest origin)))
+      (refuse! :source-provenance))
+    ;; Channel/target are retained observations, not historical authorization
+    ;; certificates. The original facade must prove its source/lifetime handoff.
+    origin))
 
 (defn reconstruct
   "Bounded retained-source read and full regeneration through the existing
@@ -48,9 +77,16 @@
                    (= (:limits retained) (update (:limits submission) :settlement keyword)))
       (refuse! :request-integrity))
     (source/reconstruct original)
-    (let [prepared (benchmarks/prepare-checkpoint-fixture {:files (:files original)} submission)]
+    (let [origin (provenance! request basis original)
+          pure (benchmarks/prepare-checkpoint-fixture {:files (:files original)}
+                                                    (dissoc submission :expected-owned-source))
+          prepared (-> pure
+                       (assoc :submission-channel (:admission-channel basis))
+                       (assoc-in [:basis :submission] submission)
+                       (assoc-in [:basis :admission-channel] (:admission-channel basis))
+                       (assoc-in [:basis :source-origin] origin))]
       (when-not (= basis (:basis prepared)) (refuse! :basis-mismatch))
-      (let [compiled (source/compile-plan original (dissoc basis :benchmark/source))]
+      (let [compiled (source/compile-plan original (dissoc (:basis pure) :benchmark/source))]
         (current! conn request)
         (assoc compiled :prepared prepared)))))
 

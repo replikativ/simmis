@@ -1,6 +1,7 @@
 (ns is.simm.ops.benchmark-resolution-test
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
+            [datahike.blob :as blob]
             [dvergr.agent.environment :as environment]
             [dvergr.agent.experiment :as experiment]
             [dvergr.agent.experiment.runner :as runner]
@@ -15,9 +16,11 @@
             [is.simm.ops.benchmarks-test :as fixtures]
             [is.simm.ops.knowledge-batch-inputs :as batches]
             [is.simm.ops.knowledge-execution-origin :as origin]
+            [is.simm.ops.owned-workflows :as owned-source]
             [is.simm.ops.workflows :as workflows]
             [is.simm.ops.workflows-test :as source-fixtures])
-  (:import [java.util.concurrent CountDownLatch TimeUnit]))
+  (:import [java.nio.charset StandardCharsets]
+           [java.util.concurrent CountDownLatch TimeUnit]))
 
 (defn- source []
   (assoc source-fixtures/fixture
@@ -25,6 +28,22 @@
          "input-batching.edn" (pr-str {:version 2 :epoch (random-uuid)
                                        :policy (assoc batches/default-policy :context-paths []
                                                       :max-context-files 0 :max-context-bytes 0)})))
+
+(defn- owned-prepared [room files input prepared]
+  (let [manifest (mapv (fn [[path text]]
+                         (let [bytes (.getBytes ^String text StandardCharsets/UTF_8)]
+                           {:path path :content (blob/blob-id bytes) :size (alength bytes) :mode 33188}))
+                       (sort-by key files))
+        stamp (random-uuid)
+        revision (owned-source/source-id {:room-id room :target-stamp stamp} (:name input) manifest)
+        target {:repository (random-uuid) :store (random-uuid) :backend :file :branch :db :ref "main"
+                :registry-system (random-uuid) :runtime-system "owned-source-test"}]
+    (-> prepared
+        (assoc :submission-channel :host)
+        (assoc-in [:basis :submission] (assoc input :expected-owned-source revision))
+        (assoc-in [:basis :admission-channel] :host)
+        (assoc-in [:basis :source-origin] {:revision revision :target-stamp stamp :target target
+                                          :manifest manifest}))))
 
 (defn- fixture [f]
   (let [cfg {:store {:backend :memory :id (random-uuid)}
@@ -35,9 +54,10 @@
         (d/transact conn requests/schema)
         (with-redefs [workflow/candidates fixtures/candidates
                       runner/runtime-identity (constantly {:libraries {}})]
-          (let [files (source) input (fixtures/input files)
-                prepared (benchmarks/prepare-checkpoint-fixture (fixtures/snapshot files) input)
-                claimed (:request (requests/claim! conn {:party (random-uuid) :room (random-uuid)
+          (let [files (source) input (fixtures/input files) room (random-uuid)
+                prepared (owned-prepared room files input
+                                        (benchmarks/prepare-checkpoint-fixture (fixtures/snapshot files) input))
+                claimed (:request (requests/claim! conn {:party (random-uuid) :room room
                                                          :client-id (:request-id input) :kind :benchmark
                                                          :intent (:basis prepared)
                                                          :limits (update (:limits input) :settlement keyword)}))
@@ -117,6 +137,34 @@
                                             (assoc input :limits {:max-cli-runs 1 :max-model-steps 2
                                                                   :timeout-ms 2000 :settlement "discard"}))))))))
 
+(deftest owned-provenance-must-correspond-before-compiler-reconstruction
+  (fixture
+   (fn [conn request prepared _ _]
+     (let [basis (:basis prepared)]
+       (doseq [change [#(dissoc % :source-origin)
+                       #(assoc % :admission-channel :agent-asserted)
+                       #(assoc % :unknown-field true)
+                       #(assoc-in % [:source-origin :revision] (random-uuid))
+                       #(assoc-in % [:source-origin :target-stamp] (random-uuid))
+                       #(assoc-in % [:source-origin :target :authority] true)
+                       #(assoc-in % [:submission :expected-owned-source] (random-uuid))]]
+         (let [current (replace-basis! conn (requests/get-request conn (:work.request/id request))
+                                       (constantly (change basis)))]
+           (is (= :source-provenance (reason #(resolution/reconstruct conn current))))))
+       (let [bad-manifest (replace-basis! conn (requests/get-request conn (:work.request/id request))
+                                          (constantly (update-in basis [:source-origin :manifest 0 :size] inc)))]
+         (is (= :source-manifest (reason #(resolution/reconstruct conn bad-manifest)))))))))
+
+(deftest recorded-channel-is-preserved-without-granting-native-or-dispatch-authority
+  (fixture
+   (fn [conn request prepared _ _]
+     (let [basis (:basis prepared)
+           current (replace-basis! conn request #(assoc % :admission-channel :mcp))
+           rebuilt (resolution/reconstruct conn current)]
+       (is (= :mcp (get-in rebuilt [:prepared :submission-channel])))
+       (is (= (assoc basis :admission-channel :mcp) (get-in rebuilt [:prepared :basis])))
+       (is (not (contains? rebuilt :new?)))))))
+
 (defn- authorized-fixture [f]
   (world/with-world [conn w]
     (d/transact conn (vec (concat requests/schema journal/schema)))
@@ -124,7 +172,8 @@
     (with-redefs [workflow/candidates fixtures/candidates
                   runner/runtime-identity (constantly {:libraries {}})]
       (let [files (source) input (fixtures/input files)
-            prepared (benchmarks/prepare-checkpoint-fixture (fixtures/snapshot files) input)
+            prepared (owned-prepared (:room w) files input
+                                    (benchmarks/prepare-checkpoint-fixture (fixtures/snapshot files) input))
             claimed (:request (requests/claim! conn {:party (:owner w) :room (:room w)
                                                      :client-id (:request-id input) :kind :benchmark
                                                      :intent (:basis prepared)

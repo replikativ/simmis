@@ -1,8 +1,10 @@
 (ns is.simm.ops.benchmark-source-test
   (:require [clojure.test :refer [deftest is]]
+            [datahike.blob :as blob]
             [dvergr.catalog.room :as catalog]
             [is.simm.ops.benchmark-source :as source]
-            [is.simm.ops.workflows :as workflows]))
+            [is.simm.ops.workflows :as workflows])
+  (:import [java.nio.charset StandardCharsets]))
 
 (def files
   {"workflow.edn" "{:title \"Retained source\" :task \"Read the evidence\" :capture [\"/out\"]}"
@@ -13,6 +15,26 @@
 
 (defn- reason [f]
   (try (f) nil (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))
+
+(deftest owned-manifest-corresponds-to-full-utf8-bytes-and-bounded-metadata
+  (let [files (into (assoc files "fixtures/docs/shared.md" "未来 🦋")
+                    (map #(vector (str "fixtures/docs/extra-" % ".md") "extra") (range 9)))
+        retained (source/retain "echo" files)
+        ;; Managed EDN reads do not preserve sorted-map implementation type.
+        retained (update retained :files #(into {} %))
+        manifest (mapv (fn [[path text]]
+                         (let [bytes (.getBytes ^String text StandardCharsets/UTF_8)]
+                           {:path path :content (blob/blob-id bytes) :size (alength bytes) :mode 33188}))
+                       (sort-by key files))]
+    (is (= manifest (source/validate-manifest! retained manifest)))
+    (doseq [changed [(vec (reverse manifest)) (pop manifest)
+                     (conj manifest (first manifest))
+                     (assoc-in manifest [0 :content] (random-uuid))
+                     (update-in manifest [0 :size] inc)
+                     (assoc-in manifest [0 :mode] 16384)
+                     (assoc-in manifest [0 :path] "wrong/path.md")
+                     (assoc-in manifest [0 :extra] true)]]
+      (is (= :source-manifest (reason #(source/validate-manifest! retained changed)))))))
 
 (deftest source-is-exact-portable-and-reconstructible-without-authoring-io
   (let [retained (source/retain "echo" files)
