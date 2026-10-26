@@ -123,3 +123,44 @@ the actual setup must use that same selection. Switching workspaces or changing
 prompt-bearing files during setup remains input drift and excludes a complete
 Scorecard. The actual Simmis wrappers preserve this comparison, including AGENTS,
 vetted skills, offered tools, calibration and the Attempt's recorded inputs ID.
+
+## Benchmark preparation journal
+
+`model.benchmark-resolutions` supplies pure transaction fragments for an exact
+benchmark preparation. Its schema is not installed by application startup and
+its functions are not exposed to SCI, MCP or the benchmark dispatcher.
+
+A closed plan names a semantic benchmark, retained source identity and at most
+eight contiguous, explicitly tagged cases. Default cases and named cases cannot
+collide. The preparation reserves a distinct root and claim for every case;
+replaying preparation keeps the original family and grants no construction right.
+Case state advances from `:planned` to `:pinning` only with a selection reference
+and digest, and then to `:retained`. Aggregate `:ready` requires exactly the plan's
+case inventory, all retained, and preserves one resolved artifact pointer.
+
+Every transition compares the exact canonical submitted benchmark Request and
+its original requester, Room, client, claim, intent and Job. Returned Requests,
+changed ownership, reused resolution/case/root IDs and replaced selections refuse.
+The writer performs no artifact reads, native IO, authorization or execution.
+HOST orchestration remains responsible for validating nested artifact contents,
+physical pin readback and acknowledged builder cleanup before these fragments are
+used. Typed states alone are not proof of those physical effects and confer no
+dispatch or recovery permission. Evidence has no automatic expiry at settlement.
+
+`ops.benchmark-source` constructs a bounded inert source value for that HOST
+boundary: exact workflow name, catalog bundle identity and sorted source files.
+Reconstruction checks canonical paths, strict UTF-8 byte limits and the catalog
+identity from those retained bytes. It does not consult current authoring files
+or evaluate checker code. Candidate fixture projection uses the catalog's shared
+fixtures plus one explicitly tagged case; it never copies the whole source
+bundle, evaluator gold, calibration or other cases into the candidate workspace.
+These helpers do not change the existing benchmark dispatch path.
+
+Its pure `compile-plan` consumes the existing benchmark preparation basis and
+derives case order from the canonical dataset. The semantic body preserves the
+team, dataset, runtime, split, limits and policies, excluding only the Request
+nonce and the Experiment name/content hash derived from that nonce. Physical
+case checkpoint IDs do not enter this grouping identity. HOST reconstruction
+must still verify source/team/environment correspondence before journal use;
+valid Experiment hashing alone does not certify that correspondence. Equivalent
+semantic identity confers neither result reuse nor permission to resume work.

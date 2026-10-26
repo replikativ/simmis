@@ -87,7 +87,9 @@
         ;; 0.8.1904, yggdrasil 0.3.48 and geschichte 0.1.19 declare the new
         ;; coordinate, so the exclusions are gone (`clj -Stree` has no
         ;; is.simm/partial-cps).
-        org.replikativ/partial-cps {:mvn/version "0.1.68"}
+        ;; 0.1.69 keeps lexical exception handlers across generated loop bounces,
+        ;; including failed native construction and its cleanup handoff.
+        org.replikativ/partial-cps {:mvn/version "0.1.69"}
 
         ;; replikativ substrate
         ;; datahike RELEASE (was a :git/sha following main). Ships
@@ -319,7 +321,9 @@
         ;; no legacy wallet migration is implied.
         ;; 0.1.361 distinguishes repeated-tool failures from completed no-ops
         ;; and includes the upstream fork/future retention fixes.
-        org.replikativ/dvergr {:mvn/version "0.1.365"
+        ;; 0.1.367 includes staged Job cleanup ownership and exact plural
+        ;; WorldSetup references through the existing experiment runner.
+        org.replikativ/dvergr {:mvn/version "0.1.367"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.
