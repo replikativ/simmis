@@ -832,7 +832,12 @@ admission. The work Spin and monitoring future are constructed after that
 handoff returns, so they do not inherit the App's native ownership graph. The
 handoff expires on return and clears its captured references; it cannot transfer
 operation ownership to another thread. Dvergr's existing cleanup group remains
-responsible for joining execution before resources return.
+responsible for joining execution before resources return. Resource return runs
+in the Job's `:before-finish` boundary. Adapter retirement and the Request's
+return acknowledgement follow terminal persistence while Dvergr still retains
+the active Run lease; a failed stage requires explicit HOST recovery. The same
+Job owner handles synchronous construction failure. A genuinely unpublished
+pointer admits no resources and does not acquire a second abandonment owner.
 
 The completion evaluator captures bounded text deliverables under `/out` before
 world discard into the certified Attempt, readable through the existing artifact
