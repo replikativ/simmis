@@ -82,7 +82,9 @@
                                               :work.request/claim :work.request/intent-id])))
     (refuse! :request-changed)))
 
-(defn- request-binding [request]
+(defn request-binding
+  "Immutable canonical Request fields copied into the HOST journal."
+  [request]
   {:benchmark.resolution/request (:work.request/id request)
    :benchmark.resolution/by (:work.request/by request)
    :benchmark.resolution/room (:work.request/room request)

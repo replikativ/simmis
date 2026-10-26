@@ -7,6 +7,8 @@
             [dvergr.agent.workflow :as workflow]
             [dvergr.artifact :as artifact]
             [hasch.core :as hasch]
+            [is.simm.authority.world :as world]
+            [is.simm.model.benchmark-resolutions :as journal]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.benchmark-resolution :as resolution]
             [is.simm.ops.benchmarks :as benchmarks]
@@ -14,7 +16,8 @@
             [is.simm.ops.knowledge-batch-inputs :as batches]
             [is.simm.ops.knowledge-execution-origin :as origin]
             [is.simm.ops.workflows :as workflows]
-            [is.simm.ops.workflows-test :as source-fixtures]))
+            [is.simm.ops.workflows-test :as source-fixtures])
+  (:import [java.util.concurrent CountDownLatch TimeUnit]))
 
 (defn- source []
   (assoc source-fixtures/fixture
@@ -113,3 +116,207 @@
             (reason #(benchmarks/prepare-cli (fixtures/snapshot files)
                                             (assoc input :limits {:max-cli-runs 1 :max-model-steps 2
                                                                   :timeout-ms 2000 :settlement "discard"}))))))))
+
+(defn- authorized-fixture [f]
+  (world/with-world [conn w]
+    (d/transact conn (vec (concat requests/schema journal/schema)))
+    (d/transact conn [[:db/add [:party/id (:owner w)] :party/role :admin]])
+    (with-redefs [workflow/candidates fixtures/candidates
+                  runner/runtime-identity (constantly {:libraries {}})]
+      (let [files (source) input (fixtures/input files)
+            prepared (benchmarks/prepare-checkpoint-fixture (fixtures/snapshot files) input)
+            claimed (:request (requests/claim! conn {:party (:owner w) :room (:room w)
+                                                     :client-id (:request-id input) :kind :benchmark
+                                                     :intent (:basis prepared)
+                                                     :limits (update (:limits input) :settlement keyword)}))
+            request (requests/record-job! conn (:work.request/id claimed)
+                                          (:work.request/claim claimed) (random-uuid))]
+        (f conn w request {:principal/id (keyword "party" (str (:owner w)))})))))
+
+(defn- revoke! [conn w]
+  (d/transact conn [[:db/retract [:party/id (:owner w)] :party/role :admin]]))
+
+(deftest publication-authorizes-before-any-retained-read
+  (authorized-fixture
+   (fn [conn w request _]
+     (with-redefs [artifact/get-bounded-value (fn [& _] (throw (AssertionError. "Denied caller read source")))]
+       (doseq [who [:member :non-member :admin :anon]]
+         (is (thrown? clojure.lang.ExceptionInfo
+                      (resolution/publish-preparation! conn {:principal/id (when-let [id (get w who)] (keyword "party" (str id)))} (:room w) request)))))
+     (is (nil? (journal/resolution @conn (:work.request/id request)))))))
+
+(deftest publication-requires-full-source-and-current-job-before-publishing
+  (authorized-fixture
+   (fn [conn w request principal]
+     (with-redefs [artifact/publish-value! (fn [& _] (throw (AssertionError. "Premature publication")))]
+       (doseq [attr [:work.request/job :work.request/claim]]
+         (d/transact conn [[:db/add (:db/id request) attr (random-uuid)]])
+         (is (= :request-changed
+                (reason #(resolution/publish-preparation! conn principal (:room w) request))))
+         (d/transact conn [[:db/add (:db/id request) attr (get request attr)]])))
+     (let [changed (replace-basis! conn request #(assoc % :team {}))]
+       (with-redefs [artifact/publish-value! (fn [& _] (throw (AssertionError. "Forged basis published")))]
+         (is (= :basis-mismatch
+                (reason #(resolution/publish-preparation! conn principal (:room w) changed)))))))))
+
+(deftest fresh-family-and-progressed-replay-have-different-rights
+  (authorized-fixture
+   (fn [conn w request principal]
+     (let [first (resolution/publish-preparation! conn principal (:room w) request)
+           c (clojure.core/first (:cases first))]
+       (is (true? (:new? first)))
+       (is (= :planned (:benchmark.case/state c)))
+       (is (= (get-in first [:plan :cases 0 :ordinal]) (:benchmark.case/ordinal c)))
+       (artifact/publish-value!
+        (artifact/datahike-store conn) {:selection :test-only}
+        #(d/transact conn [{:db/id (:db/id c) :benchmark.case/state :pinning
+                           :benchmark.case/selection % :benchmark.case/selection-id (random-uuid)}]))
+       (let [second (resolution/publish-preparation! conn principal (:room w) request)]
+         (is (false? (:new? second)))
+         (is (= (get-in first [:resolution :benchmark.resolution/id])
+                (get-in second [:resolution :benchmark.resolution/id])))
+         (is (= :pinning (get-in second [:cases 0 :benchmark.case/state]))))))))
+
+(deftest committed-lost-ack-is-read-once-without-republication
+  (authorized-fixture
+   (fn [conn w request principal]
+     (let [publish artifact/publish-value! calls (atom 0)]
+       (with-redefs [artifact/publish-value! (fn [& args]
+                                             (swap! calls inc)
+                                             (apply publish args)
+                                             (throw (ex-info "Lost publication ACK" {})))]
+         (is (true? (:new? (resolution/publish-preparation! conn principal (:room w) request)))))
+       (is (= 1 @calls))
+       (is (= 1 (count (journal/cases @conn (:benchmark.resolution/id
+                                            (journal/resolution @conn (:work.request/id request)))))))))))
+
+(deftest authority-is-rechecked-at-writer-and-after-ack
+  (doseq [when-revoke [:before-writer :after-commit]]
+    (authorized-fixture
+     (fn [conn w request principal]
+       (let [publish artifact/publish-value!]
+         (with-redefs [artifact/publish-value!
+                       (fn [store value callback]
+                         (if (= :before-writer when-revoke)
+                           (publish store value (fn [ref] (revoke! conn w) (callback ref)))
+                           (let [result (publish store value callback)]
+                             (revoke! conn w)
+                             result)))]
+           (is (thrown? clojure.lang.ExceptionInfo
+                        (resolution/publish-preparation! conn principal (:room w) request))))
+         (is (= (= :after-commit when-revoke)
+                (some? (journal/resolution @conn (:work.request/id request))))))))))
+
+(deftest corrupt-inventory-and-plan-are-never-successful-readback
+  (doseq [corrupt [:missing :extra :wrong-id :wrong-plan :wrong-own-claim :wrong-root :wrong-case-claim]]
+    (authorized-fixture
+     (fn [conn w request principal]
+       (let [publish artifact/publish-value!]
+         (with-redefs [artifact/publish-value!
+                       (fn [store value callback]
+                         (let [result (publish store value callback)
+                               row (journal/resolution @conn (:work.request/id request))
+                               c (first (journal/cases @conn (:benchmark.resolution/id row)))]
+                           (case corrupt
+                             :missing (d/transact conn [[:db/retractEntity (:db/id c)]])
+                             :extra (d/transact conn [(-> c (dissoc :db/id)
+                                                        (assoc :benchmark.case/id (random-uuid)
+                                                               :benchmark.case/root (random-uuid)
+                                                               :benchmark.case/ordinal 7))])
+                             :wrong-id (d/transact conn [[:db/add (:db/id c) :benchmark.case/id (random-uuid)]])
+                             :wrong-plan (publish store {:version :forged}
+                                                  #(d/transact conn [[:db/add (:db/id row) :benchmark.resolution/plan %]]))
+                             :wrong-root (d/transact conn [[:db/add (:db/id c) :benchmark.case/root (random-uuid)]])
+                             :wrong-case-claim (d/transact conn [[:db/add (:db/id c) :benchmark.case/claim (random-uuid)]])
+                             :wrong-own-claim (d/transact conn [[:db/add (:db/id row) :benchmark.resolution/claim (random-uuid)]]))
+                           result))]
+           (is (some? (reason #(resolution/publish-preparation! conn principal (:room w) request)))
+               (str corrupt))))))))
+
+(deftest inventory-transition-during-artifact-read-holds
+  (doseq [replay? [false true]]
+    (authorized-fixture
+     (fn [conn w request principal]
+       (when replay? (resolution/publish-preparation! conn principal (:room w) request))
+       (let [read artifact/get-bounded-value]
+         (with-redefs [artifact/get-bounded-value
+                       (fn [store ref limit]
+                         (let [result (read store ref limit)]
+                           (when (= (* 64 1024) limit)
+                             (let [row (journal/resolution @conn (:work.request/id request))
+                                   c (first (journal/cases @conn (:benchmark.resolution/id row)))]
+                               (d/transact conn [[:db/add (:db/id c) :benchmark.case/claim (random-uuid)]])))
+                           result))]
+           (is (= :inventory-changed
+                  (reason #(resolution/publish-preparation! conn principal (:room w) request))))))))))
+
+(deftest failure-before-publication-is-not-retried
+  (authorized-fixture
+   (fn [conn w request principal]
+     (let [failure (ex-info "No publication ACK" {}) calls (atom 0)]
+       (with-redefs [artifact/publish-value! (fn [& _] (swap! calls inc) (throw failure))]
+         (is (identical? failure
+                         (try (resolution/publish-preparation! conn principal (:room w) request)
+                              nil (catch Exception error error)))))
+       (is (= 1 @calls))
+       (is (nil? (journal/resolution @conn (:work.request/id request))))))))
+
+(deftest interrupted-readback-preserves-interruption-over-lost-write-ack
+  (authorized-fixture
+   (fn [conn w request principal]
+     (let [publish artifact/publish-value! read artifact/get-bounded-value
+           failure (ex-info "Interrupted readback" {} (InterruptedException.))]
+       (try
+         (let [observed
+               (with-redefs [artifact/publish-value! (fn [& args]
+                                                      (apply publish args)
+                                                      (throw (ex-info "Lost write ACK" {})))
+                             artifact/get-bounded-value (fn [store ref limit]
+                                                          (if (= (* 64 1024) limit)
+                                                            (throw failure)
+                                                            (read store ref limit)))]
+                 (try (resolution/publish-preparation! conn principal (:room w) request)
+                      nil (catch Exception error [error (.isInterrupted (Thread/currentThread))])))]
+           (Thread/interrupted)
+           (is (identical? failure (first observed)))
+           (is (true? (second observed))))
+         (finally (Thread/interrupted)))))))
+
+(deftest interruption-is-not-converted-to-successful-recovery
+  (doseq [wrapped? [false true]]
+    (authorized-fixture
+     (fn [conn w request principal]
+       (let [publish artifact/publish-value!
+             interrupted (InterruptedException. "Stop after commit")
+             failure (if wrapped? (ex-info "Wrapped interruption" {} interrupted) interrupted)]
+         (try
+           (let [observed
+                 (with-redefs [artifact/publish-value! (fn [& args] (apply publish args) (throw failure))]
+                   (try (resolution/publish-preparation! conn principal (:room w) request)
+                        nil (catch Exception error
+                              ;; Capture before test reporting or nREPL output
+                              ;; can perform interruptible IO on this thread.
+                              [error (.isInterrupted (Thread/currentThread))])))]
+             (Thread/interrupted)
+             (is (identical? failure (first observed)))
+             (is (true? (second observed))))
+           (finally (Thread/interrupted))))))))
+
+(deftest concurrent-publications-reserve-one-family
+  (authorized-fixture
+   (fn [conn w request principal]
+     (let [publish artifact/publish-value! barrier (CountDownLatch. 2) calls (atom 0)]
+       (with-redefs [artifact/publish-value!
+                     (fn [& args]
+                       (swap! calls inc)
+                       (.countDown barrier)
+                       (when-not (.await barrier 15 TimeUnit/SECONDS)
+                         (throw (ex-info "Publication barrier timed out" {})))
+                       (apply publish args))]
+         (let [a (future (resolution/publish-preparation! conn principal (:room w) request))
+               b (future (resolution/publish-preparation! conn principal (:room w) request))
+               results [(deref a 30000 ::timeout) (deref b 30000 ::timeout)]]
+           (is (= [false true] (sort (map :new? results))))
+           (is (apply = (map #(get-in % [:resolution :benchmark.resolution/id]) results)))
+           (is (= 2 @calls))
+           (is (= 1 (count (journal/cases @conn (get-in (first results) [:resolution :benchmark.resolution/id])))))))))))

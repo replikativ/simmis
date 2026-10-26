@@ -86,6 +86,38 @@ The root remains after Job settlement and after the discovery stream advances.
 There is no automatic expiry or release API for these Request roots. Execution
 cleanup acknowledgement alone does not end retained-evidence obligations.
 
+## Benchmark preparation journal
+
+The checkpoint benchmark groundwork uses a separate typed relation in
+`model.benchmark-resolutions`. Each canonical Request has one resolution and
+one bounded case inventory. Fresh case root IDs and claims are reserved before
+native effects; cases advance from `:planned` to `:pinning` to `:retained`.
+The resolution can become `:ready` only after every case is retained. These
+state transitions are acknowledgements from trusted HOST code, not physical
+proofs on their own.
+
+`ops.benchmark-resolution/publish-preparation!` first requires an installation
+operator with room read/merge authority, bound to the original Request's
+submitter. It regenerates the entire original compiler basis from bounded
+retained workflow source, without rereading current authoring files. Only then
+does it publish the inert plan artifact and atomically reserve the case rows.
+The writer repeats authorization against its supplied control snapshot.
+
+Readback checks the decoded plan and complete bounded case inventory, then
+rechecks authorization, Request and exact journal rows after artifact IO.
+Only the original complete fresh token family receives `:new? true`. A
+concurrent caller or later retry receives `:new? false`, even if it observes
+valid progress. Lost write acknowledgements cause one inspection, never a
+second write attempt. Interruptions remain interruptions.
+
+These are journal reservation rights only. The caller still needs its original
+App/Room lifetime and authorization for native work. No native checkpoint,
+physical pin, Run, wallet, model call or schedule is created by this function.
+This groundwork is not wired into startup or benchmark dispatch yet; the old
+executors continue to reject checkpoint benchmark source. Physical fixture
+construction, pin verification, cleanup acknowledgement and resolved-runner
+admission must be connected before that rejection can be removed.
+
 ## GC limits
 
 A Datahike pin retains the checkpoint's datoms and referenced blobs. It does
