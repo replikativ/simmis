@@ -397,6 +397,7 @@
                              (controls/consume-focus-request! el editor))
         "data-selection" (sync-selection! el editor)
         "data-cells" (cells/refresh! el)
+        "data-saved-views" (cells/refresh! el)
         "data-charts" (do
                         (set! (.-simmisChartData el) (js/JSON.parse (or new "{}")))
                         (doseq [projection (array-seq (.querySelectorAll el ".memory-chart-slot"))]
@@ -418,13 +419,15 @@
 (when-not (.get js/customElements "simmis-rich-editor")
   (.define js/customElements "simmis-rich-editor"
            (js* "(class extends HTMLElement {
+             set ['onsimmis-present-view'](value) { (~{})(this, value); }
+             get ['onsimmis-present-view']() { return this['simmisSavedViewPresenter']; }
              connectedCallback() { (~{})(this); }
              disconnectedCallback() { (~{})(this); }
              attributeChangedCallback(name, oldValue, newValue) { (~{})(this, name, oldValue, newValue); }
-             static get observedAttributes() { return ['data-owner', 'data-model', 'data-read-only', 'data-selection', 'data-charts', 'data-inline-charts', 'data-block-links', 'data-linked-block-id', 'data-jump', 'data-cells', 'data-source-previews', 'data-file-base']; }
-           })" mount! disconnect! sync!)))
+             static get observedAttributes() { return ['data-owner', 'data-model', 'data-read-only', 'data-selection', 'data-charts', 'data-inline-charts', 'data-block-links', 'data-linked-block-id', 'data-jump', 'data-cells', 'data-saved-views', 'data-source-previews', 'data-file-base']; }
+           })" cells/set-presenter! mount! disconnect! sync!)))
 
-(defn view [{:keys [id model selection read-only? on-change document? on-blocked charts inline-charts block-links linked-block jump before-jump on-jumped cell-config on-run-cell source-previews file-base]}]
+(defn view [{:keys [id model selection read-only? on-change document? on-blocked charts inline-charts block-links linked-block jump before-jump on-jumped cell-config on-run-cell source-previews file-base saved-view-config present-saved-view]}]
   (foreign-node
    {:tag :simmis-rich-editor :key id :class "memory-rich-editor"
     :data-owner (pr-str [id (:fork-id ec/*execution-context*)])
@@ -433,6 +436,8 @@
     :data-file-base (when file-base (js/JSON.stringify (clj->js file-base)))
     :data-source-previews (when source-previews (js/JSON.stringify (clj->js source-previews)))
     :data-cells (when cell-config (js/JSON.stringify (clj->js cell-config)))
+    :data-saved-views (when saved-view-config (js/JSON.stringify (clj->js saved-view-config)))
+    :on-simmis-present-view present-saved-view
     :data-inline-charts (when inline-charts (js/JSON.stringify (clj->js inline-charts)))
     :on-simmis-run-cell (fn [event]
                           (when (and on-run-cell (= (.-target event) (.-currentTarget event)))

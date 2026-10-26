@@ -248,3 +248,25 @@ code-block node view, preserve its content DOM and selection/source mapping,
 and explicitly release the Spindel subtree's refs and caches. It must retain
 property drafts while correspondence is temporarily unavailable, and restore
 rendered views only when the native/saved projection is verified again.
+
+
+### Rich editor embedding
+
+The default editor presents eligible saved views at their exact source fence,
+using the same table/form component and Memory coordinator as Read mode. Native
+code-block views retain their original contentDOM. The rendered island does not
+enter Markdown, editor JSON or undo history; an editing selection/composition
+reveals source, and **Edit Markdown** opens the complete fence in the ordinary
+source view.
+
+Placement requires clean, current saved-source and complete native-baseline
+correspondence. Dirty or structurally changed documents expose literal source
+and retain an explicitly labelled saved-version fallback. This first bridge does
+not follow arbitrary unsaved structural edits by matching code text. Original
+UUIDs, read/write checks, property drafts and request ownership stay with Memory.
+
+Parent Spindel updates provide the latest presentation callback; the native
+bridge adds no data cache, query or subscription. Every native mount has an
+isolated context/fork/owner/occurrence address. Callback refreshes are coalesced
+and fenced to the original editor generation. Removal cycles ref callbacks,
+retires committed addresses, clears the discharge registry and removes DOM.

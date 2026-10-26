@@ -3,6 +3,7 @@
    code never evaluates it or changes a participant's SCI interpreter."
   (:require [clojure.string :as str]
             [org.replikativ.spindel.dom.elements :as el]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.dom.addressing :as addressing]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.effects.track :refer [track]]
@@ -27,6 +28,7 @@
             [is.simm.uis.web.desktop.source-editor :as source]
             [is.simm.uis.web.desktop.office-view :as office-view]
             [is.simm.uis.web.desktop.rich-editor :as rich-editor]
+            [is.simm.uis.web.desktop.rich-saved-views :as rich-saved-views]
             [is.simm.uis.web.desktop.source-preview :as source-preview]
             [is.simm.uis.web.desktop.code-highlight :as code-highlight]
             [is.simm.uis.web.desktop.chart-view :as charts]
@@ -230,6 +232,12 @@
                                 :on-click (fn [_] (source! (:region selection)))}
                                (vc/icon :file-code {:aria-hidden "true"}))))))
 
+(defn- rich-saved-positions [draft]
+  (let [base (:rich-base draft) analysis (:analysis base)]
+    (when (and (= :rich (:mode draft)) (:document base) (not (editor/dirty? draft))
+               (:revision analysis) (= (:revision analysis) (:revision (chart-state/saved-analysis draft))))
+      (saved-positions/rich-positions analysis (:document base)))))
+
 (defn- document-view
   ([path draft a write?] (document-view path draft a write? nil nil {}))
   ([path draft a write? image-urls file-base] (document-view path draft a write? image-urls file-base {}))
@@ -261,9 +269,11 @@
         source-previews (markdown-scene/index source analysis image-urls file-base)
         inline-positions (inline-charts/positions read-models inline-previews inline-limit)
         slots (mapv #(assoc % :inline-positions inline-positions) slots)
-        saved-positions (when (and (= :read (:mode draft)) (not (editor/dirty? draft))
-                                   (:revision analysis) (= (:revision analysis) (:revision (chart-state/saved-analysis draft))))
-                          (saved-positions/positions analysis slots))
+        rich-positions (rich-saved-positions draft)
+        saved-positions (if rich? rich-positions
+                          (when (and (= :read (:mode draft)) (not (editor/dirty? draft))
+                                     (:revision analysis) (= (:revision analysis) (:revision (chart-state/saved-analysis draft))))
+                            (saved-positions/positions analysis slots)))
         placed (set (map (juxt :from :to) (vals saved-positions)))
         render-saved (fn [entry]
                        (el/div {:class "memory-inline-saved-view"}
@@ -275,7 +285,7 @@
                                (when (get-in state [:saved-view-source [path (:view entry)]])
                                  (el/pre {} (el/code {} (subs source (:from entry) (:to entry)))))))]
     (el/div {:class "memory-document"}
-            (when (= :read (:mode draft))
+            (when (#{:read :rich} (:mode draft))
               (when-let [unplaced (seq (remove #(contains? placed [(:from %) (:to %)]) (saved-view-state/entries state path)))]
                 (el/section {:aria-label "Views from saved version"}
                             (el/p {:class "memory-note"} "Views from saved version")
@@ -302,6 +312,23 @@
                                    :file-base file-base
                                    :inline-charts (when (seq inline-previews) {:entries inline-previews :limit inline-limit})
                                    :cell-config ((:cell-config a) path)
+                                   :saved-view-config (when (seq rich-positions)
+                                                        {:model (get-in base [:document :model])
+                                                         :entries (mapv (fn [[node-path entry]]
+                                                                          {:path node-path :from (:from entry) :to (:to entry)
+                                                                           :view (str (:view entry))}) rich-positions)})
+                                   :present-saved-view
+                                   (when (seq rich-positions)
+                                     (rich-saved-views/presenter
+                                      ec/*execution-context* [(:owner a) path (:id base) :document] (vals rich-positions)
+                                      (fn [entry]
+                                        (el/div {:class "memory-inline-saved-view"}
+                                                (saved-views/entry-view path entry state a write?)
+                                                (el/button {:type "button"
+                                                            :on-click (fn [_]
+                                                                        ((:change a) path assoc :mode :source
+                                                                                     :selection {:anchor (:from entry) :head (:to entry)}))}
+                                                           "Edit Markdown")))))
                                    :on-run-cell #((:run-cell a) path %)
                                    :block-links ((:block-links a) path)
                                    :linked-block ((:linked-block a) path)
@@ -738,7 +765,7 @@
                                       (when (:earlier-save-receipt draft)
                                         (el/p {:class "memory-note"} "An earlier draft's save completed after this version was selected. This draft was kept unchanged; check the saved version before another save."))
                                       (when markdown? (properties-view path draft state a write?))
-                                      (when (and markdown? (not= :read (:mode draft))) (saved-views/view path state a write?))
+                                      (when (and markdown? (not (#{:read :rich} (:mode draft)))) (saved-views/view path state a write?))
                                       (retained-properties-view path state a)
                                       (retained-declarations-view path state a)
                                       (local-source-view path draft state a write?)
