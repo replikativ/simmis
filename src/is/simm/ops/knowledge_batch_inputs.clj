@@ -84,12 +84,12 @@
         (refuse! :invalid-pending-item)))
     items))
 
-(defn selection
-  "Metadata only, independent of the canonical 200-document projection.
-   RESERVED accounts for ordinary workflow fixture inputs. Context defaults to
-   ALL selected context metadata, or explicit context-paths; never silently
-   truncate context. Select a prefix of actual pending order, without skipping
-   an oversized head item. The caller must verify and retain the cursor pin."
+(defn assessment
+  "Metadata-only input planning shared by admission and personal observation.
+   :selection retains the exact admission value and identity. :check contains
+   only closed outcomes and numeric facts, never source identities or paths.
+   Normal size/capacity holds are values; malformed policy, cursor, journal or
+   source metadata still throw. No claim, body read, discovery or reservation."
   [db value expected pending folder-policy batch-policy reserved]
   (streams/validate-binding! value expected)
   (when-not (and expected (not (:knowledge.stream/active-batch expected))
@@ -104,7 +104,8 @@
             (refuse! :cursor-mismatch))
         items (pending! value expected pending)]
     (if (empty? items)
-      {:status :empty :stream (:id value) :basis basis}
+      {:selection {:status :empty :stream (:id value) :basis basis}
+       :check {:status :empty}}
       (let [inventory (:files (changes/inventory db folder-policy))
             available (into (sorted-map) (filter #(= :context (:role (val %)))) inventory)
             requested (:context-paths batch-policy)
@@ -116,38 +117,69 @@
                           (if requested (select-keys available (sort requested)) available))
             context (vec (sort-by :path context))
             context-bytes (reduce + 0 (map :size context))
-            _ (when (or (> (count context) (:max-context-files batch-policy))
-                        (> context-bytes (:max-context-bytes batch-policy)))
-                (refuse! :context-exceeds-budget))
             max-count (min (:max-trigger-files batch-policy)
                            (- (:max-input-files workflow-policy/policy) (:files reserved) (count context) 1))
-            _ (when (<= max-count 0) (refuse! :no-trigger-capacity))
-            chosen (loop [remaining items result [] bytes 0]
-                     (if-let [item (first remaining)]
-                       (if (or (= (count result) max-count)
-                               (> (:size item) workflows/max-file-bytes)
-                               (> (+ bytes (:size item)) (:max-trigger-bytes batch-policy)))
-                         (if (empty? result) (refuse! :head-item-exceeds-budget) result)
-                         (recur (next remaining) (conj result item) (+ bytes (:size item))))
-                       result))
-            ;; Validate every selected path/version against the retained source.
-            _ (doseq [item chosen]
-                (when-not (= (entry item :trigger) (some-> (get inventory (:path item)) (assoc :path (:path item))))
-                  (refuse! :pending-source-mismatch)))
-            [chosen evidence]
-            (loop [chosen chosen]
-              (let [evidence (inputs/selection-of-files db folder-policy
-                               (into (mapv #(entry % :trigger) chosen) context))
-                    bytes (+ (:bytes reserved) (utf8-size (:manifest-text evidence)) context-bytes
-                             (reduce + 0 (map :size chosen)))]
-                (if (<= bytes (:max-input-bytes workflow-policy/policy))
-                  [chosen evidence]
-                  (if (= 1 (count chosen)) (refuse! :execution-envelope-exceeds-budget)
-                      (recur (pop chosen))))))
-            body {:version 2 :stream value :expected expected :basis basis
-                  :batch-policy batch-policy :reserved reserved :items chosen
-                  :remaining (- (count items) (count chosen)) :evidence (:manifest evidence)}]
-        {:status :selected :batch (assoc body :id (digest body))}))))
+            facts {:context {:files (count context) :bytes context-bytes
+                             :file-limit (:max-context-files batch-policy)
+                             :byte-limit (:max-context-bytes batch-policy)}
+                   :head {:bytes (:size (first items)) :file-limit workflows/max-file-bytes
+                          :batch-byte-limit (:max-trigger-bytes batch-policy)}
+                   :reserved reserved
+                   :limits {:files (:max-input-files workflow-policy/policy)
+                            :bytes (:max-input-bytes workflow-policy/policy)}}
+            held (fn [code] {:check (assoc facts :status :held :code code)})]
+        (cond
+          (or (> (count context) (:max-context-files batch-policy))
+              (> context-bytes (:max-context-bytes batch-policy)))
+          (held :context-exceeds-budget)
+
+          (<= max-count 0) (held :no-trigger-capacity)
+
+          (or (> (:size (first items)) workflows/max-file-bytes)
+              (> (:size (first items)) (:max-trigger-bytes batch-policy)))
+          (held :head-item-exceeds-budget)
+
+          :else
+          (let [chosen (loop [remaining items result [] bytes 0]
+                         (if-let [item (first remaining)]
+                           (if (or (= (count result) max-count)
+                                   (> (:size item) workflows/max-file-bytes)
+                                   (> (+ bytes (:size item)) (:max-trigger-bytes batch-policy)))
+                             result
+                             (recur (next remaining) (conj result item) (+ bytes (:size item))))
+                           result))
+                ;; Validate every selected path/version against the retained source.
+                _ (doseq [item chosen]
+                    (when-not (= (entry item :trigger) (some-> (get inventory (:path item)) (assoc :path (:path item))))
+                      (refuse! :pending-source-mismatch)))
+                fit (loop [chosen chosen]
+                      (let [evidence (inputs/selection-of-files db folder-policy
+                                       (into (mapv #(entry % :trigger) chosen) context))
+                            manifest-bytes (utf8-size (:manifest-text evidence))
+                            bytes (+ (:bytes reserved) manifest-bytes context-bytes
+                                     (reduce + 0 (map :size chosen)))]
+                        (if (<= bytes (:max-input-bytes workflow-policy/policy))
+                          {:chosen chosen :evidence evidence :bytes bytes :manifest-bytes manifest-bytes}
+                          (when (< 1 (count chosen)) (recur (pop chosen))))))]
+            (if-not fit
+              (held :execution-envelope-exceeds-budget)
+              (let [{:keys [chosen evidence bytes manifest-bytes]} fit
+                    body {:version 2 :stream value :expected expected :basis basis
+                          :batch-policy batch-policy :reserved reserved :items chosen
+                          :remaining (- (count items) (count chosen)) :evidence (:manifest evidence)}]
+                {:selection {:status :selected :batch (assoc body :id (digest body))}
+                 :check (assoc facts :status :fits
+                                    :selected {:files (count chosen) :bytes (reduce + 0 (map :size chosen))}
+                                    :execution {:files (+ (:files reserved) (count context) (count chosen) 1)
+                                                :bytes bytes :manifest-bytes manifest-bytes})}))))))))
+
+(defn selection
+  "Exact admission selection and identity, or the existing held exception.
+   The caller must verify and retain the cursor pin. Never skips an oversized
+   head or silently truncates context; RESERVED covers workflow fixture inputs."
+  [db value expected pending folder-policy batch-policy reserved]
+  (let [result (assessment db value expected pending folder-policy batch-policy reserved)]
+    (or (:selection result) (refuse! (get-in result [:check :code])))))
 
 (defn verify-selection
   "Validate retained selection metadata without copied bytes or a source DB.

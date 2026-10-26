@@ -87,7 +87,36 @@
                                     (el/button {:on-click (fn [_] ((:open-proposal actions) proposal))} "Review proposal")))))
                       (el/button {:on-click (fn [_] ((:open-schedules actions)))} "Manage in Workflows"))))))
 
-(defn- stream-status [state]
+(defn- input-check-view [check state actions]
+  (when check
+    (el/div {}
+          (el/strong {} "Your next batch input check · ")
+          (case (:status check)
+            :fits "Input fits current limits. Admission checks still apply."
+            :empty "No pending inputs to check."
+            :not-checked "Not checked against this observation."
+            :unavailable "Input check unavailable."
+            :held (case (:code check)
+                    :context-exceeds-budget "Context exceeds its file or byte limit."
+                    :no-trigger-capacity "Workflow and context inputs leave no room for a source file."
+                    :head-item-exceeds-budget "The first pending file exceeds its file or batch byte limit."
+                    :execution-envelope-exceeds-budget "The first file, context, manifest and workflow inputs exceed the total byte limit.")
+            "Input check unavailable.")
+          (when (#{:fits :held} (:status check))
+            (el/details {:open (boolean (get-in state [:drafts (:selected state) :input-counts-open?]))
+                         :on-toggle (fn [event]
+                                      (disclosure/remember-open! event
+                                        #((:change actions) (:selected state) assoc :input-counts-open? %)))}
+                        (el/summary {} "Input counts and limits")
+                        (el/p {} (str "Context: " (get-in check [:context :files]) "/" (get-in check [:context :file-limit])
+                                     " files, " (get-in check [:context :bytes]) "/" (get-in check [:context :byte-limit]) " bytes. "
+                                     "First pending file: " (get-in check [:head :bytes]) " bytes; per-file limit "
+                                     (get-in check [:head :file-limit]) ", batch limit " (get-in check [:head :batch-byte-limit]) ". "
+                                     "Workflow inputs reserve " (get-in check [:reserved :files]) " files and "
+                                     (get-in check [:reserved :bytes]) " bytes. Total limits: "
+                                     (get-in check [:limits :files]) " files, " (get-in check [:limits :bytes]) " bytes.")))))))
+
+(defn- stream-status [state actions]
   (let [request (editor/stream-request state)
         observed (:workflow-stream state)
         reply (when (= request (:request observed)) (:reply observed))]
@@ -111,7 +140,9 @@
                         " Counts cover the pending journal, excluding claimed items; they do not establish that another batch can run. "
                         (if (= :none (get-in reply [:batch :status]))
                           "No active batch recorded."
-                          (editor/batch-label (:batch reply)))))))))
+                          (editor/batch-label (:batch reply)))))
+              (when (and (= :ready (:workflow-stream-status state)) (= :observed (:status reply)))
+                (input-check-view (:input-check reply) state actions))))))
 
 (defn view [room-name state actions]
   (let [selected (:selected state) draft (get-in state [:drafts selected])
@@ -201,7 +232,7 @@
                                         (el/button {:on-click (fn [_] ((:open-room actions)))} "Discuss in room"))
                                       (when-not (and (= "maintain-wiki" selected) setup-card-visible?)
                                         (activation-status state actions selected))
-                                      (stream-status state)
+                                      (stream-status state actions)
                                       (el/details {:class "workflow-disclosure" :open (boolean (:source-open? draft))
                                                    :on-toggle (fn [event]
                                                                 (disclosure/remember-open! event #(change assoc :source-open? %)))}

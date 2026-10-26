@@ -535,5 +535,31 @@ The browser reuses its existing Spindel observation coordinator and Memory/contr
 invalidation hints. Ineligible source retires the old observation frame, accepted
 token and display so returning to the same saved source requests fresh facts.
 Local source/form edits and pending commands remain untouched. There is no new
-polling loop, subscription or replicated state model. Source-size planning holds
-and guarded recovery remain separate work.
+polling loop, subscription or replicated state model. Guarded recovery remains
+separate work. The personal input-limit observation is described below.
+
+### Personal next-batch input check
+
+When the personal stream is active, its published cursor is current and it has
+no active batch, the same metadata planner used by admission reports whether the
+next prefix fits its input limits. Empty pending inputs return before scanning
+context. The existing source policy determines context; it is never silently
+truncated. Workflow fixture bytes, the exact manifest, per-file limits and the
+whole execution envelope are included. Counts and byte limits are available in a
+closed disclosure whose preference belongs to the selected workflow's UI world.
+
+Normal size/capacity holds have four closed explanations: context limits, no
+remaining file capacity, an oversized first pending file, or total envelope
+limits. Malformed source metadata, cursor/policy mismatch and IO failures remain
+unavailable, not inferred size holds. The browser receives only numeric facts
+and the closed explanation, with no paths, content IDs or claim tokens. A changed
+or unknown basis, inactive stream or active batch produces `not-checked`, removing
+old held facts. Source/form drafts and pending command receipts are preserved.
+
+This is the viewer's personal input check, not a schedule creator's hold receipt
+or a promise of admission. It reads no evidence bodies and performs no discovery,
+claim, capture, funding, reservation, provider call or retry. Current admission
+still independently checks retained source, resources and authority. The planner's
+existing exact selection value, content identity and held errors remain intact.
+On-demand frozen context retrieval and dispatcher-produced schedule hold receipts
+are separate follow-up work; this check neither raises limits nor drops context.

@@ -7,6 +7,8 @@
             [geschichte.repo :as repo]
             [is.simm.model.knowledge-streams :as streams]
             [is.simm.model.knowledge-batches :as batches]
+            [is.simm.model.knowledge-input-check :as input-check]
+            [is.simm.ops.knowledge-batch-inputs :as batch-inputs]
             [is.simm.ops.dvergr :as principals]
             [is.simm.ops.knowledge-program :as program]
             [is.simm.ops.knowledge-stream-status :as status]
@@ -67,6 +69,8 @@
         (is (= {:count 2 :complete? true :limit streams/max-changes} (:pending initial)))
         (is (= {:status :current} (:freshness initial)))
         (is (= {:status :none} (:batch initial)))
+        (is (= :fits (get-in initial [:input-check :status])))
+        (is (input-check/valid? (:input-check initial)))
         (is (= :not-discovered (:status (observe data (:member w)))))
         (let [bound (reads/resolve-host-read! host p handle)
               descriptor (:value (program/describe (:owner w) (:room w) (:target bound)
@@ -79,15 +83,42 @@
                 result (status/observe-in @conn derived descriptor)]
             (is (= (d/commit-id published) (d/commit-id derived)))
             (is (= {:status :unknown} (:freshness result)))
+            (is (= {:status :not-checked} (:input-check result)))
             (is (= 2 (get-in result [:pending :count])))))
         (let [batch (discovery/prepare-batch! host p handle batch-input)
               observed (observe data (:owner w))]
           (is (= :ready (:status batch)))
           (is (= 1 (get-in observed [:pending :count])))
+          (is (= {:status :not-checked} (:input-check observed)))
           (is (= {:status :observed :phase :ready} (:batch observed))))
         (repo/write! owned "wiki/new-context.md" (.getBytes "Changed context" "UTF-8"))
         (repo/stage-all! owned) (repo/commit! owned {:message "New Memory basis"})
-        (is (= {:status :changed} (:freshness (observe data (:owner w)))))))))
+        (let [observed (observe data (:owner w))]
+          (is (= {:status :changed} (:freshness observed)))
+          (is (= {:status :not-checked} (:input-check observed))))))))
+
+(deftest personal-input-check-is-metadata-only-and-does-not-sanitize-errors-into-holds
+  (@#'fixture/with-fixture
+    (fn [{:keys [host w batch-input owned] :as data}]
+      (discovery/refresh! host (principals/party-principal (:owner w)) (str (:room w)) batch-input)
+      (let [evidence (set (map :content (vals (select-keys (query/worktree @owned)
+                                                        ["inbox/meeting.md" "inbox/second.md" "wiki/file.md"]))))
+            read content/read-by-id]
+        (with-redefs [content/read-by-id (fn [c id & args]
+                                         (is (not (contains? evidence id)))
+                                         (apply read c id args))
+                      discovery/prepare-batch! (fn [& _] (throw (AssertionError. "No claim or capture")))
+                      discovery/refresh! (fn [& _] (throw (AssertionError. "No refresh")))
+                      artifact/publish-value! (fn [& _] (throw (AssertionError. "No artifacts")))]
+          (is (= :fits (get-in (observe data (:owner w)) [:input-check :status]))))
+        (doseq [bad [{:status :empty :path "private.md"} {:status :unexpected}]]
+          (with-redefs [batch-inputs/assessment (fn [& _] {:check bad})]
+            (is (= {:status :unavailable} (:input-check (observe data (:owner w)))))))
+        (with-redefs [batch-inputs/assessment (fn [& _] (throw (ex-info "sensitive path" {:reason :context-exceeds-budget
+                                                                                      :secret (random-uuid)})))]
+          (let [result (observe data (:owner w))]
+            (is (= 2 (get-in result [:pending :count])))
+            (is (= {:status :unavailable} (:input-check result)))))))))
 
 (deftest stale-source-is-refused-before-workflow-body-reads
   (@#'fixture/with-fixture

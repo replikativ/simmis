@@ -8,6 +8,7 @@
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.view :as view]
             [is.simm.model.knowledge-streams :as streams]
+            [is.simm.model.knowledge-input-check]
             [is.simm.model.knowledge-streams-test :as journal]
             [is.simm.ops.knowledge-batch-inputs :as batches]
             [is.simm.ops.knowledge-changes :as changes]
@@ -182,3 +183,84 @@
         (is (= exact (batches/verify exact)))
         (is (= (:evidence batch) manifest))
         (is (= :frozen-batch-exceeds-budget (reason #(batches/verify changed))))))))
+
+(defn- assess [db value expected pending & [policy reservation]]
+  (batches/assessment db value expected pending inputs/default-policy
+                      (or policy batches/default-policy) (or reservation reserved)))
+
+(deftest input-assessment-has-exact-envelope-facts-without-reading-bodies
+  (fixture 40
+    (fn [conn value expected pending]
+      (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "No source bodies")))]
+        (let [result (assess @conn value expected pending batches/default-policy {:files 2 :bytes 123})
+              check (:check result) batch (get-in result [:selection :batch])
+              evidence (:evidence batch)
+              manifest-bytes (alength (.getBytes (pr-str evidence) "UTF-8"))]
+          (is (= :fits (:status check)))
+          (is (= 32 (get-in check [:selected :files])))
+          (is (= 36 (get-in check [:execution :files])))
+          (is (= manifest-bytes (get-in check [:execution :manifest-bytes])))
+          (is (= (+ 123 manifest-bytes (reduce + 0 (map :size (:files evidence))))
+                 (get-in check [:execution :bytes])))
+          (is (= #{:status :context :head :reserved :limits :selected :execution} (set (keys check))))
+          (is (is.simm.model.knowledge-input-check/valid? check)))
+        (doseq [[policy reservation code]
+                [[(assoc batches/default-policy :max-context-files 0) reserved :context-exceeds-budget]
+                 [batches/default-policy {:files 100 :bytes 0} :no-trigger-capacity]
+                 [(assoc batches/default-policy :max-trigger-bytes 1) reserved :head-item-exceeds-budget]
+                 [batches/default-policy {:files 0 :bytes 2097151} :execution-envelope-exceeds-budget]]]
+          (let [result (assess @conn value expected pending policy reservation)]
+            (is (= {:status :held :code code} (select-keys (:check result) [:status :code])))
+            (is (nil? (:selection result)))
+            (is (is.simm.model.knowledge-input-check/valid? (:check result)))
+            (is (= code (reason #(select @conn value expected pending policy reservation))))))))))
+
+(deftest empty-input-assessment-does-not-scan-context
+  (fixture 0
+    (fn [conn value expected pending]
+      (with-redefs [changes/inventory (fn [& _] (throw (AssertionError. "Empty journal must not scan context")))]
+        (is (= {:status :empty} (:check (assess @conn value expected pending))))))))
+
+(deftest context-and-head-byte-boundaries-are-not-silently-truncated
+  (doseq [size [524288 524289 1572864]]
+    (fixture 1
+      #(repo/write! % "inbox/000.md" (byte-array size))
+      (fn [conn value expected pending]
+        (let [check (:check (assess @conn value expected pending))]
+          (is (= size (get-in check [:head :bytes])))
+          (is (= (if (= size 524288) :fits :held) (:status check)))
+          (when (> size 524288) (is (= :head-item-exceeds-budget (:code check))))))))
+  (doseq [size [524288 524289]]
+    (fixture 1
+      #(repo/write! % "wiki/company.md" (byte-array size))
+      (fn [conn value expected pending]
+        (let [check (:check (assess @conn value expected pending))]
+          (is (= size (get-in check [:context :bytes])))
+          (is (= (if (= size 524288) :fits :held) (:status check)))
+          (when (> size 524288) (is (= :context-exceeds-budget (:code check)))))))))
+
+(deftest context-file-boundaries-and-explicit-context-selection
+  (doseq [n [32 33]]
+    (fixture 1
+      (fn [conn]
+        (doseq [i (range (dec n))]
+          (repo/write! conn (str "wiki/extra-" i ".md") (.getBytes "Context" "UTF-8"))))
+      (fn [conn value expected pending]
+        (let [all (:check (assess @conn value expected pending))
+              explicit (:check (assess @conn value expected pending
+                                        (assoc batches/default-policy :context-paths ["wiki/company.md"])))]
+          (is (= n (get-in all [:context :files])))
+          (is (= (if (= n 32) :fits :held) (:status all)))
+          (is (= :fits (:status explicit)))
+          (is (= 1 (get-in explicit [:context :files]))))))))
+
+(deftest integrity-errors-are-not-normal-limit-holds
+  (fixture 1
+    (fn [conn value expected pending]
+      (is (= :cursor-mismatch
+             (reason #(assess @conn value (assoc expected :knowledge.stream/cursor-commit (random-uuid)) pending))))
+      (is (= :invalid-pending-item
+             (reason #(assess @conn value expected (update-in pending [0 :knowledge.item/size] inc)))))
+      (is (= :context-unavailable
+             (reason #(assess @conn value expected pending
+                               (assoc batches/default-policy :context-paths ["wiki/missing.md"]))))))))

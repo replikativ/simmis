@@ -1,6 +1,7 @@
 (ns is.simm.uis.web.desktop.workflow-editor
   "Pure draft and bounded launch presentation; execution remains server-owned."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [is.simm.model.knowledge-input-check :as input-check]))
 
 (def scaffold
   {"workflow.edn" "{:title \"New workflow\"\n :task \"{goal} Read /docs/input.md and write /out/result.md.\"\n :params {:goal \"Summarize the input.\"}\n :capture [\"/out\"]}\n"
@@ -145,7 +146,9 @@
                               (<= 0 (get-in reply [:pending :count]) (get-in reply [:pending :limit]) 20000)
                               (true? (get-in reply [:pending :complete?]))
                               (#{:current :changed :unknown} (get-in reply [:freshness :status]))
-                              (#{:none :observed :unavailable} (get-in reply [:batch :status])))))
+                              (#{:none :observed :unavailable} (get-in reply [:batch :status]))
+                              (or (not (contains? reply :input-check))
+                                  (input-check/valid? (:input-check reply))))))
         (throw (ex-info "Workflow stream observation is invalid" {})))
       (assoc state :workflow-stream {:request request :reply reply} :workflow-stream-status :ready))))
 
