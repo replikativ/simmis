@@ -5,6 +5,7 @@
             [dvergr.rooms.files :as native]
             [geschichte.repo :as repo]
             [is.simm.ops.owned-mcp-test :as fixture]
+            [is.simm.authority.application-fixture :as application-fixture]
             [is.simm.ops.owned-control-transport-test :as controls]
             [is.simm.ops.owned-schedule-admission-test :as schedule-fixture]
             [is.simm.ops.dvergr :as principals]
@@ -28,14 +29,19 @@
   (doseq [[path text] source/fixture]
     (repo/write! conn (str "workflows/echo/" path) (.getBytes ^String text "UTF-8"))))
 
+(defn- with-browser-api [conn room f]
+  (application-fixture/with-application
+   conn (:ctx room)
+   (fn [_] (@#'transport/with-api f))))
+
 (deftest normal-human-browser-reads-are-canonical-without-mcp-or-cold-registry-dependence
   (doseq [order [true false]]
     (@#'fixture/with-fixture
      order
-     (fn [{:keys [w owned attached]}]
+     (fn [{:keys [conn room w owned attached]}]
        (seed! owned)
        (repo/write! attached "workflows/echo/workflow.edn" (.getBytes "OTHER" "UTF-8"))
-       (@#'transport/with-api
+       (with-browser-api conn room
         (fn []
           (let [forbidden (fn [& _] (throw (AssertionError. "Selected or prehydration lookup")))]
             (with-redefs [dops/resolve-room (constantly nil)
@@ -53,11 +59,11 @@
 (deftest browser-save-keeps-the-original-sealed-definition-after-an-independent-edit
   (@#'fixture/with-fixture
    false
-   (fn [{:keys [w owned]}]
+   (fn [{:keys [conn room w owned]}]
      (seed! owned)
      (repo/stage-all! owned)
      (repo/commit! owned {:message "Seed browser save"})
-     (@#'transport/with-api
+     (with-browser-api conn room
       (fn []
         (let [handle (str (:room w))
               before (remote/invoke-workflow (:member w) handle :simmis/workflow-source {:name "echo"})
@@ -109,8 +115,8 @@
   ;; real metadata authorizer, operation declarations and service routes run.
   (@#'fixture/with-fixture
    true
-   (fn [{:keys [w room]}]
-     (@#'transport/with-api
+   (fn [{:keys [conn w room]}]
+     (with-browser-api conn room
       (fn []
         (@#'controls/with-worker-api
          (fn []
@@ -142,7 +148,7 @@
   (@#'fixture/with-fixture
    false
    (fn [{:keys [conn w room]}]
-     (@#'transport/with-api
+     (with-browser-api conn room
       (fn []
         (let [handle (:room/slug (d/entity @conn [:room/id (:room w)]))
               hydrated (atom []) funded (atom 0)]

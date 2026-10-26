@@ -3,6 +3,9 @@
    regressions in workflows-remote-test and local-workflows-remote-test."
   (:require [clojure.test :refer [deftest is]]
             [is.simm.agents.room-agents :as rooms]
+            [is.simm.authority.application-fixture :as application-fixture]
+            [is.simm.ops.owned-mcp-test :as fixture]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [is.simm.model.access :as access]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.workflows :as workflows]
@@ -24,65 +27,89 @@
       (when-not (.awaitTermination pool 10 TimeUnit/SECONDS)
         (recur)))))
 
+(defn- with-ready-app [f]
+  (@#'fixture/with-fixture
+   true
+   (fn [{:keys [conn room] :as context}]
+     (application-fixture/with-application
+      conn (:ctx room) (fn [app] (f (merge context app)))))))
+
+(defn- assert-worker-ticket! [owner]
+  (lifetime/check-current!)
+  (is (identical? owner (:owner lifetime/*ticket*)))
+  (is (identical? (Thread/currentThread) (:thread lifetime/*ticket*))))
+
 (deftest caller-is-captured-before-the-worker-runs
-  (let [original (random-uuid) replacement (random-uuid)
-        ambient (atom original) queued (atom nil) observed (atom [])
-        room (str (random-uuid)) args {:name "example"}]
-    (with-redefs [access/authenticated-party-id #(deref ambient)
-                  blocking/blocking (fn [f] (reset! queued f) ::queued)
-                  remote/invoke-workflow (fn [& invocation]
-                                           (swap! observed conj invocation)
-                                           ::completed)]
-      (is (= ::queued (@#'remote/workflow-on-worker room :simmis/workflow-source args)))
-      (is (empty? @observed))
-      (reset! ambient replacement)
-      (is (= ::completed (@queued)))
-      (is (= [[original room :simmis/workflow-source args]] @observed)))))
+  (with-ready-app
+   (fn [{:keys [w app-owner]}]
+     (let [original (:owner w) replacement (random-uuid)
+           ambient (atom original) queued (atom nil) observed (atom [])
+           room (str (:room w)) args {:name "example"}]
+       (with-redefs-fn
+         {#'access/authenticated-party-id #(deref ambient)
+          #'blocking/blocking (fn [f] (reset! queued f) ::queued)
+          #'remote/invoke-workflow-on-host
+          (fn [_ & invocation]
+            (assert-worker-ticket! app-owner)
+            (swap! observed conj invocation)
+            ::completed)}
+         (fn []
+           (is (= ::queued (@#'remote/workflow-on-worker room :simmis/workflow-source args)))
+           (is (empty? @observed))
+           (reset! ambient replacement)
+           (is (= ::completed (@queued)))
+           (is (= [[original room :simmis/workflow-source args]] @observed))))))))
 
 (deftest real-drain-entry-refuses-before-hydration-or-host-io
-  (let [ctx (execution/create-execution-context)
-        start (sync/create-deferred ctx) outcome (promise)
-        forbidden (fn [& _] (throw (AssertionError. "Drain reached host work")))]
-    (try
-      (with-redefs [rooms/live-room forbidden ops/invoke forbidden workflows/details forbidden]
-        (binding [ec/*execution-context* ctx]
-          (sp/spawn!
-           (sp/spin
-            (sp/await start)
-            (deliver outcome
-                     {:drain? (simple/on-drain-thread?)
-                      :failure (try
-                                 (remote/invoke-workflow (random-uuid) (str (random-uuid))
-                                                         :simmis/workflow-list {})
-                                 ::unexpected
-                                 (catch clojure.lang.ExceptionInfo error (ex-data error)))})))
-          (sync/deliver! start true))
-        (let [result (deref outcome 10000 ::timeout)]
-          (is (true? (:drain? result)))
-          (is (= {:type :validation-error} (:failure result)))))
-      (finally (execution/close-context! ctx)))))
+  (with-ready-app
+   (fn [_]
+     (let [ctx (execution/create-execution-context)
+           start (sync/create-deferred ctx) outcome (promise)
+           forbidden (fn [& _] (throw (AssertionError. "Drain reached host work")))]
+       (try
+         (with-redefs [rooms/live-room forbidden ops/invoke forbidden workflows/details forbidden]
+           (binding [ec/*execution-context* ctx]
+             (sp/spawn!
+              (sp/spin
+               (sp/await start)
+               (deliver outcome
+                        {:drain? (simple/on-drain-thread?)
+                         :failure (try
+                                    (remote/invoke-workflow (random-uuid) (str (random-uuid))
+                                                            :simmis/workflow-list {})
+                                    ::unexpected
+                                    (catch clojure.lang.ExceptionInfo error (ex-data error)))})))
+             (sync/deliver! start true))
+           (let [result (deref outcome 10000 ::timeout)]
+             (is (true? (:drain? result)))
+             (is (= {:type :is.simm.runtimes.application-ops/engine-thread} (:failure result)))))
+         (finally (execution/close-context! ctx)))))))
 
 (deftest a-held-workflow-worker-does-not-block-its-engine
-  (let [ctx (execution/create-execution-context)
+  (with-ready-app
+   (fn [{:keys [w app-owner]}]
+    (let [ctx (execution/create-execution-context)
         start (sync/create-deferred ctx) sentinel-start (sync/create-deferred ctx)
         entered (promise) exited (promise) outcome (promise) sentinel (promise)
         release (CountDownLatch. 1)
         pool (Executors/newSingleThreadExecutor)
         actual-blocking blocking/blocking
-        party (random-uuid) room (str (random-uuid)) args {:name "example"}]
+        party (:owner w) room (str (:room w)) args {:name "example"}]
     (try
-      (with-redefs [access/authenticated-party-id (constantly party)
+      (with-redefs-fn {#'access/authenticated-party-id (constantly party)
                     ;; The real bridge, with test-owned workers so even a
                     ;; pre-entry failure has a physical queued/running join.
-                    blocking/blocking (fn [f] (actual-blocking f {:pool pool}))
-                    remote/invoke-workflow
-                    (fn [& invocation]
+                    #'blocking/blocking (fn [f] (actual-blocking f {:pool pool}))
+                    #'remote/invoke-workflow-on-host
+                    (fn [_ & invocation]
                       (try
+                        (assert-worker-ticket! app-owner)
                         (deliver entered {:drain? (simple/on-drain-thread?) :invocation invocation})
                         (.await release)
                         ::completed
-                        (finally (deliver exited true))))]
-        (try
+                        (finally (deliver exited true))))}
+        (fn []
+         (try
           ;; Capture the owned pool in the resource BEFORE admitting a parent.
           ;; Even a late parent after shutdown cannot escape to the default pool.
           (let [work (binding [ec/*execution-context* ctx]
@@ -115,6 +142,6 @@
             (join-pool! pool)
             (when (realized? entered)
               (is (true? (deref exited 0 ::timeout))))
-            (execution/close-context! ctx))))
+            (execution/close-context! ctx)))))
       (finally
-        (.countDown release)))))
+        (.countDown release)))))))
