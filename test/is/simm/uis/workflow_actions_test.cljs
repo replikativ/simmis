@@ -13,7 +13,8 @@
             [is.simm.uis.web.desktop.memory-remote :as memory-remote]
             [is.simm.uis.web.desktop.workflow-editor :as editor]
             [is.simm.uis.web.desktop.workflows-remote :as remote]
-            [is.simm.uis.web.desktop.views.workflows :as view])
+            [is.simm.uis.web.desktop.views.workflows :as view]
+            [is.simm.uis.web.desktop.views.chat :as chat])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn source [name revision]
@@ -1034,3 +1035,31 @@
           (doseq [offer [nil {} {:action :run}]] ((:accept-setup ui) "a" offer))
           (is (empty? @calls))
           (is (empty? @modals)))))))
+
+(deftest inline-workflow-card-renders-dom-through-the-real-chat-message-boundary
+  (let [ctx (context/create-execution-context)
+        container (.createElement js/document "div") invoked (atom []) discharge (atom nil)
+        state {:drafts {"echo" (editor/draft (source "echo" initial-revision))}
+               :readiness-status :ready :readiness setup-ready :permissions {:merge? true}}
+        ui {:room-id "room" :prepare-setup #(swap! invoked conj [%1 %2]) :open-advanced (fn [& _])}]
+    (.appendChild (.-body js/document) container)
+    (try
+      (binding [ec/*execution-context* ctx]
+        (with-redefs [actions/controller (constantly ui)]
+          (reset! discharge
+                  (browser/mount! container
+                    (chat/message-view {:id "message" :room-id "room" :is-ai? true
+                      :content "[Workflow](workflows/echo/workflow.edn)"
+                      :workflow-context {:tab-id "tab" :col-id "column"}
+                      :workflow-states {"echo" state}})))
+          (is (some? (.querySelector container ".workflow-chat-card")))
+          (is (not (.includes (.-textContent container) "#<Spin")))
+          (let [review (first (filter #(= "Review setup" (.-textContent %))
+                                     (array-seq (.querySelectorAll container "button"))))]
+            (is (some? review))
+            (is (not (.-disabled review)))
+            (.click review)
+            (is (= [["echo" nil]] @invoked)))))
+      (finally
+        (when @discharge (browser/unmount! @discharge))
+        (.remove container) (context/stop-context! ctx)))))

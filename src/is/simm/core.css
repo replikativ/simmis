@@ -29,6 +29,7 @@
  * ============================================================================= */
 
 :root {
+  color-scheme: light;
   /* Monochrome base palette */
   --mono-bg-base: #ffffff;
   --mono-bg-surface: #f9f9f8;
@@ -160,6 +161,7 @@ a:hover {
    Uses the same blue accent as light mode — no neon. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --mono-bg-base: #0a0a0a;
     --mono-bg-surface: #111111;
     --mono-bg-elevated: #1a1a1a;
@@ -176,6 +178,7 @@ a:hover {
 
 /* Explicit dark theme override */
 [data-theme="dark"] {
+  color-scheme: dark;
   --mono-bg-base: #0a0a0a;
   --mono-bg-surface: #111111;
   --mono-bg-elevated: #1a1a1a;
@@ -604,6 +607,27 @@ body {
 /* =============================================================================
  * Buttons
  * ============================================================================= */
+
+/* Native controls still need a themed baseline after the universal reset.
+   Zero specificity lets existing component/icon styles keep their geometry. */
+:where(button) {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+}
+:where(button:not([class]), button[class=""]) {
+  padding: 6px 10px;
+  border: 1px solid var(--mono-border);
+  border-radius: var(--radius-sm);
+  background: var(--mono-bg-elevated);
+  line-height: 1.4;
+  cursor: pointer;
+}
+:where(button:not([class]):hover:not(:disabled), button[class=""]:hover:not(:disabled)) {
+  background: var(--mono-bg-overlay);
+}
+:where(button:disabled) { opacity: .45; cursor: default; }
+:where(button:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .btn {
   display: inline-flex;
@@ -9346,13 +9370,13 @@ body.tab-dragging .column-drop-zone {
 
 /* Chat points at the same saved-workflow controls as Memory and Workflows. */
 .workflow-chat-card {
-  border: 1px solid var(--border-color, #333);
+  border: 1px solid var(--mono-border);
   border-radius: 6px;
   padding: .65rem .8rem;
   margin: .5rem 0;
 }
 .workflow-chat-card p { margin: .3rem 0; opacity: .75; }
-.workflow-chat-card .workflow-toolbar { gap: 1rem; }
+.workflow-chat-card .workflow-toolbar { gap: 8px; margin: 8px 0 0; }
 .workflow-model-candidates { border: 0; padding: 0; }
 .workflow-model-candidates .workflow-field { flex-direction: row; align-items: baseline; gap: .5rem; }
 .workflow-model-candidates input[type="checkbox"] { width: auto; }

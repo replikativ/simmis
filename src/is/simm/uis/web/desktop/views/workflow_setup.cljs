@@ -1,14 +1,9 @@
 (ns is.simm.uis.web.desktop.views.workflow-setup
   "Inline human confirmation of saved setup, using the ordinary workflow journal."
   (:require [org.replikativ.spindel.dom.elements :as el]
-            [org.replikativ.spindel.effects.track :refer [track]]
-            [org.replikativ.spindel.incremental.interval :as iv]
-            [is.simm.uis.web.desktop.signals :as sig]
-            [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.workflow-actions :as actions]
             [is.simm.uis.web.desktop.workflow-editor :as editor]
-            [is.simm.documents.workflow-links :as links])
-  (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [is.simm.documents.workflow-links :as links]))
 
 (defn view [workflow state ui]
   (let [draft (get-in state [:drafts workflow]) offered (:setup-offer draft)
@@ -89,17 +84,16 @@
         (el/button {:type "button" :disabled (nil? draft) :on-click (fn [_] ((:open-advanced ui) workflow))} "Advanced")
         (el/a {:href (links/route {:room (:room-id ui) :workflow workflow :action :benchmark})} "Benchmark")))))
 
-(defn panel [{:keys [room-id workflow tab-id col-id]}]
-  (spin
-    (let [states-i (track sig/workflow-editor-state)
-          socket-i (track sig/memory-connection)
-          stream-i (track sync/state)
-          roster-i (track sig/user-rooms)
-          states (iv/get-new states-i)
-          _socket (iv/get-new socket-i) _stream (iv/get-new stream-i) _roster (iv/get-new roster-i)
-          owner [:chat-workflow workflow]
-          ui (actions/controller {:room-id room-id :tab-id tab-id :workflow-state-owner owner :col-id col-id
-                                  :workflow-name workflow :workflow-action :run})
-          state (get states (actions/state-key room-id owner))]
-      ((:observe ui))
-      (view workflow state ui))))
+(defn owner [workflow] [:chat-workflow workflow])
+
+(defn- controller [{:keys [room-id workflow tab-id col-id]}]
+  (actions/controller {:room-id room-id :tab-id tab-id :workflow-state-owner (owner workflow) :col-id col-id
+                       :workflow-name workflow :workflow-action :run}))
+
+(defn observe! [data]
+  ;; Called by the owning column Spin, outside the keyed message renderer.
+  ((:observe (controller data))))
+
+(defn panel [{:keys [workflow state] :as data}]
+  ;; Ordinary DOM only: message-view is not a CPS call boundary.
+  (view workflow state (controller data)))

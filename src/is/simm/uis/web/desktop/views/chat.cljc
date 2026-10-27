@@ -457,7 +457,7 @@
 
    Note: Always renders all elements to avoid spindel delta rendering issues.
   CSS handles visibility based on .chat-message--own class."
-  [{:keys [id room-id workflow-context author-id author-name content reasoning timestamp is-own? is-ai?
+  [{:keys [id room-id workflow-context workflow-states author-id author-name content reasoning timestamp is-own? is-ai?
            syntax-pref attachment-blob attachment-mime thread-parent
            in-reply-to reply-count on-jump-parent on-reply audience run-id
            activities mention-handles on-open-thread on-open-run on-open-proposal
@@ -586,7 +586,7 @@
           (for [workflow (workflow-links/mentioned-workflows content)]
             #?(:cljs
                (if (and workflow-context (not (:read-only? workflow-context)))
-                 (workflow-setup/panel (merge workflow-context {:room-id room-id :workflow workflow :message-id id}))
+                 (workflow-setup/panel (merge workflow-context {:room-id room-id :workflow workflow :state (get workflow-states workflow)}))
                  (el/a {:key (str "workflow-" workflow)
                         :href (workflow-links/route {:room room-id :workflow workflow :action :run})} workflow))
                :clj
