@@ -48,7 +48,6 @@
                                           :name "Model dispatches" :precision 0})
             (f room))
           (finally
-            (binding [ec/*execution-context* (:ctx room)] (registry/unregister! id))
             (governance/ungovern! conn)
             (discourse/close-room! room)))))))
 

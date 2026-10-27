@@ -11,6 +11,7 @@
             [is.simm.authority.world :as world]
             [is.simm.model.workers :as workers]
             [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.benchmark-fixture :as native-fixture]
             [is.simm.ops.worker-benchmarks :as local-benchmarks]
             [is.simm.ops.worker-files :as files]
             [is.simm.ops.worker-files-test :as file-fixture]
@@ -37,7 +38,7 @@
 
 (deftest local-worker-benchmarks-cannot-bypass-evaluation-splits
   (let [source (assoc source "benchmark.edn"
-                     "{:version 1 :splits {:development [\"a\"] :held-out [\"b\"]}}")
+                      "{:version 1 :splits {:development [\"a\"] :held-out [\"b\"]}}")
         request (assoc (input (random-uuid)) :expected-bundle (:id (catalog/bundle "echo" source)))
         prepare #(local-benchmarks/prepare {:files source} % file-fixture/config
                                            {:simmis.worker/generation 1 :simmis.worker/config-id (random-uuid)})]
@@ -70,24 +71,27 @@
 (deftest omitted-cases-never-expands-past-the-four-case-bound
   (let [source (reduce (fn [files name]
                          (assoc files (str "cases/" name "/gold.edn") "{:expected \"x\"}"
-                                      (str "cases/" name "/fixtures/docs/input.md") "x"))
+                                (str "cases/" name "/fixtures/docs/input.md") "x"))
                        source ["c" "d" "e"])
         request (assoc (input (random-uuid)) :expected-bundle (:id (catalog/bundle "echo" source)))]
     (is (thrown? clojure.lang.ExceptionInfo
                  (local-benchmarks/prepare {:files source} request file-fixture/config {})))
     (is (= 4 (count (get-in (local-benchmarks/prepare {:files source}
-                                                   (assoc request :cases ["a" "b" "c" "d"])
-                                                   file-fixture/config {}) [:basis :frozen]))))))
+                                                      (assoc request :cases ["a" "b" "c" "d"])
+                                                      file-fixture/config {}) [:basis :frozen]))))))
 
 (deftest failed-fixture-retirement-retains-and-releases-its-exact-physical-permit
   (let [slot (java.util.concurrent.Semaphore. 1) calls (atom 0) id (random-uuid) job (random-uuid)]
     (with-redefs-fn {#'benchmarks/checker-slot slot
                      #'benchmarks/pending-retirements (atom {})
-                     #'benchmarks/fixture-room! (fn [& _] {:ctx ec/*execution-context*})
-                     #'benchmarks/retire-fixture! (fn [& _] (when (= 1 (swap! calls inc)) (throw (ex-info "Retirement failed" {}))))
+                     #'native-fixture/validate-receipt! (fn [_ _ receipt] receipt)
+                     #'native-fixture/create! (fn [& _] {:room {:ctx ec/*execution-context*} :persistent-id (random-uuid)})
+                     #'benchmarks/record-fixture! (fn [& _] nil)
+                     #'benchmarks/recorded-fixture! (fn [& _] :retired)
+                     #'native-fixture/retire! (fn [& _] (when (= 1 (swap! calls inc)) (throw (ex-info "Retirement failed" {}))))
                      #'jobs/status (fn [_] {:settled? true :status :completed})}
       (fn []
-        (let [adapter (benchmarks/adapter ec/*execution-context* ::room {:request-kind :local-worker-benchmark} {})
+        (let [adapter (benchmarks/adapter nil ec/*execution-context* ::room {:request-kind :local-worker-benchmark} {} nil)
               row {:work.request/id id :work.request/job job :work.request/kind :local-worker-benchmark
                    :work.request/return-pending? false}]
           ((:job-context! adapter) row)
@@ -95,10 +99,10 @@
           (is (zero? (.availablePermits slot)))
           (is (thrown? clojure.lang.ExceptionInfo ((:settled! adapter) job)))
           (is (zero? (.availablePermits slot)))
-          (benchmarks/recover-request! ec/*execution-context* row)
+          (benchmarks/recover-request! nil ec/*execution-context* row)
           (is (= 1 (.availablePermits slot)))
           (is (= 2 @calls))
-          (benchmarks/recover-request! ec/*execution-context* row)
+          (benchmarks/recover-request! nil ec/*execution-context* row)
           (is (= 1 (.availablePermits slot))))))))
 
 (deftest failed-server-calibration-fences-prepared-cells-without-worker-admission
@@ -116,8 +120,9 @@
            (d/transact conn [{:party/id (:owner w) :party/role :admin}])
            (local/provision! conn host-ctx principal (:room w) room allowance)
            (with-redefs-fn {#'benchmarks/checker-slot (java.util.concurrent.Semaphore. 1)
-                            #'benchmarks/fixture-room! (fn [& _] clean)
-                            #'benchmarks/retire-fixture! (fn [& _])}
+                            #'native-fixture/validate-receipt! (fn [_ _ receipt] receipt)
+                            #'native-fixture/create! (fn [& _] {:room clean :persistent-id (random-uuid)})
+                            #'native-fixture/retire! (fn [& _])}
              (fn []
                (let [submitted (local-benchmarks/submit! conn host-ctx principal (:room w) room request)]
                  (is (:settled? (jobs/status (:job submitted) 30000)))
@@ -151,8 +156,9 @@
                                           (= :queued (:v datom)))]
                          (.offer queued (:simmis.worker.assignment/id (d/pull (:db-after report) '[*] (:e datom)))))))
            (with-redefs-fn {#'benchmarks/checker-slot (java.util.concurrent.Semaphore. 1)
-                            #'benchmarks/fixture-room! (fn [& _] clean)
-                            #'benchmarks/retire-fixture! (fn [& _] (swap! retired inc))}
+                            #'native-fixture/validate-receipt! (fn [_ _ receipt] receipt)
+                            #'native-fixture/create! (fn [& _] {:room clean :persistent-id (random-uuid)})
+                            #'native-fixture/retire! (fn [& _] (swap! retired inc))}
              (fn []
                (let [submitted (local-benchmarks/submit! conn host-ctx principal (:room w) room request)
                      ids (mapv (fn [_]

@@ -42,4 +42,4 @@
              (is (:error (read! :member "load-attempt-files!" (assoc args :room-id-str (str (:other-room w))))))
              (d/transact conn [[:db/retract [:room/id (:room w)] :room/parties [:party/id (:member w)]]])
              (is (world/refused? (read! :member "load-attempt-file!" (assoc args :path "/out/result.md" :offset 1)))))
-           (finally (registry/unregister! (:id other)) (discourse/close-room! other))))))))
+           (finally (discourse/close-room! other))))))))

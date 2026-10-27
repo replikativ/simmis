@@ -824,8 +824,9 @@
                         (:snapshot target) original-input (:batch-proof resolution) (:control-revision resolution)
                         {:host host :original room-binding :handle (:handle context) :ticket lifetime/*ticket*})
                        (= :benchmark (:kind target))
-                       (benchmarks/adapter execution-ctx room
-                                           (benchmarks/prepare (:snapshot target) legacy-input) principal)
+                       (benchmarks/adapter conn execution-ctx room
+                                           (benchmarks/prepare (:snapshot target) legacy-input)
+                                           principal (:room-id original))
                        :else
                        (workflows-run/bind-publication
                         (if-let [captured (:captured resolution)]

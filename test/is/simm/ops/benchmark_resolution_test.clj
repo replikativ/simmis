@@ -87,7 +87,7 @@
          (is (= (:basis prepared) (get-in result [:prepared :basis])))
          (is (= :clean-selected-fixture-checkpoint-v1 (get-in result [:plan :substitution])))))
      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"resolved admission"
-                          (benchmarks/adapter nil nil prepared nil))))))
+                          (benchmarks/adapter nil nil nil prepared nil nil))))))
 
 (deftest self-consistent-request-hash-cannot-substitute-team-policy-or-task
   (fixture

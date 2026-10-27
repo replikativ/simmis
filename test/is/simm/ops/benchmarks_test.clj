@@ -25,6 +25,7 @@
             [is.simm.authority.world :as world]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.benchmark-fixture :as native-fixture]
             [is.simm.ops.checkers :as checkers]
             [is.simm.ops.cli-owner :as cli-owner]
             [is.simm.ops.dvergr :as ops]
@@ -40,6 +41,7 @@
   (fn [f]
     ;; Tests may run inside a live dev server; own the physical capacity cell.
     (with-redefs-fn {#'benchmarks/checker-slot (java.util.concurrent.Semaphore. 1)
+                     #'benchmarks/pending-retirements (atom {})
                      #'cli-owner/ownership! (constantly {:version 1 :unit "fixture.service" :boot "fixture" :invocation "fixture"})} f)))
 
 (defn snapshot [files]
@@ -131,8 +133,9 @@
            (with-redefs-fn {#'providers/providers (atom {:claude-code provider})
                             #'claude-code/execution-policy (constantly {:version 1 :mode :text :cli-version "fixture"})
                             #'runner/runtime-identity (constantly {:claude-cli "fixture"})
-                            #'benchmarks/fixture-room! (fn [& _] clean)
-                            #'benchmarks/retire-fixture! (fn [& _] (swap! retired inc))
+                            #'native-fixture/validate-receipt! (fn [_ _ receipt] receipt)
+                            #'native-fixture/create! (fn [& _] {:room clean :persistent-id (random-uuid)})
+                            #'native-fixture/retire! (fn [& _] (swap! retired inc))
                             #'model-chat/chat
                             (fn [messages opts]
                               (swap! calls conj {:messages messages :opts opts})
@@ -290,8 +293,9 @@
              ;; actual HTTP implementation can be reached in this fixture.
              (with-redefs-fn {#'providers/providers (atom {:codex-subscription provider})
                               #'gateway/*request-fn* infer
-                              #'benchmarks/fixture-room! (fn [& _] clean)
-                              #'benchmarks/retire-fixture! (fn [& _] (swap! retired inc))}
+                              #'native-fixture/validate-receipt! (fn [_ _ receipt] receipt)
+                              #'native-fixture/create! (fn [& _] {:room clean :persistent-id (random-uuid)})
+                              #'native-fixture/retire! (fn [& _] (swap! retired inc))}
                (fn []
                  (let [submission (benchmarks/submit! conn host-ctx (ops/party-principal (:owner w)) (:room w) control request)
                        status (jobs/status (:job submission) 60000)
@@ -441,8 +445,9 @@
            (d/transact conn [{:party/id (:owner w) :party/role :admin}])
            (resource/mint! control {:id (random-uuid) :resources (work/resources (:limits request))})
            (with-redefs-fn {#'benchmarks/prepare (fn [& _] prepared)
-                            #'benchmarks/fixture-room! (fn [& _] clean)
-                            #'benchmarks/retire-fixture! (fn [& _] (swap! retired inc))}
+                            #'native-fixture/validate-receipt! (fn [_ _ receipt] receipt)
+                            #'native-fixture/create! (fn [& _] {:room clean :persistent-id (random-uuid)})
+                            #'native-fixture/retire! (fn [& _] (swap! retired inc))}
              (fn []
                (let [submitted (benchmarks/submit! conn host-ctx (ops/party-principal (:owner w))
                                                    (:room w) control request)
@@ -478,8 +483,8 @@
            (finally (discourse/close-room! clean))))))))
 
 (deftest physical-capacity-permit-is-exclusive-owned-and-returned-once
-  (let [a (benchmarks/adapter nil nil {} nil)
-        b (benchmarks/adapter nil nil {} nil)
+  (let [a (benchmarks/adapter nil nil nil {} nil nil)
+        b (benchmarks/adapter nil nil nil {} nil nil)
         slot @#'benchmarks/checker-slot]
     ((:admit! a) nil)
     (is (zero? (.availablePermits slot)))
@@ -493,12 +498,14 @@
 (deftest shared-fixture-transport-retains-capacity-until-retirement-ack
   (@#'is.simm.ops.work-test/with-room
    (fn [room]
-     (let [transport (benchmarks/fixture-transport ec/*execution-context*)
+     (let [transport (benchmarks/fixture-transport nil ec/*execution-context* nil nil)
            parent (:world-parent transport) created (atom 0) refuse? (atom true)
            slot @#'benchmarks/checker-slot]
-       (with-redefs-fn {#'benchmarks/fixture-room! (fn [& _] (swap! created inc) room)
-                        #'benchmarks/retire-fixture! (fn [& _]
-                                                      (when @refuse? (throw (ex-info "Retirement held" {}))))}
+       (with-redefs-fn {#'native-fixture/validate-receipt! (fn [_ _ receipt] receipt)
+                        #'benchmarks/record-fixture! (fn [& _] nil)
+                        #'native-fixture/create! (fn [& _] (swap! created inc) {:room room :persistent-id (random-uuid)})
+                        #'native-fixture/retire! (fn [& _]
+                                                   (when @refuse? (throw (ex-info "Retirement held" {}))))}
          (fn []
            (try
              (is (thrown? clojure.lang.ExceptionInfo (parent)))
@@ -506,7 +513,7 @@
              (is (identical? room (parent)))
              ((:admit! transport) nil)
              (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Retirement held"
-                                  ((:settled! transport) nil)))
+                                   ((:settled! transport) nil)))
              (is (zero? (.availablePermits slot)))
              (is (identical? room (parent)) "uncertain retirement keeps the original native owner")
              (reset! refuse? false)
@@ -519,17 +526,61 @@
                ((:abandon! transport) nil)))))))))
 
 (deftest shared-transport-keeps-the-locator-when-fixture-construction-fails
-  (let [transport (benchmarks/fixture-transport nil)
+  (let [transport (benchmarks/fixture-transport nil nil nil nil)
         id (random-uuid) retired (atom [])]
-    (with-redefs-fn {#'benchmarks/fixture-room! (fn [& _] (throw (ex-info "Partial fixture" {})))
-                     #'benchmarks/retire-fixture! (fn [_ id] (swap! retired conj id))}
+    (with-redefs-fn {#'native-fixture/validate-receipt! (fn [_ _ receipt] receipt)
+                     #'native-fixture/create! (fn [& _] (throw (ex-info "Partial fixture" {})))
+                     #'native-fixture/retire! (fn [_ id _] (swap! retired conj id))}
       (fn []
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Partial fixture"
-                             ((:job-context! transport) {:work.request/id id})))
+                              ((:job-context! transport) {:work.request/id id})))
         (is (thrown? clojure.lang.ExceptionInfo ((:world-parent transport))))
-        ((:abandon! transport) nil)
-        (is (= [id] @retired))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"no acknowledged native owner"
+                              ((:abandon! transport) nil)))
+        (is (empty? @retired) "missing receipt never authorizes guessed cleanup")
+        (is (empty? @@#'benchmarks/pending-retirements)
+            "upstream partial creation does not leak an impossible local cleanup callback")
         (is (= 1 (.availablePermits @#'benchmarks/checker-slot)))))))
+
+(deftest retained-retirement-belongs-to-the-exact-connection-and-host
+  (let [conn-a (atom nil) conn-b (atom nil)
+        root-a (into {} [[:test :root]]) root-b (into {} [[:test :root]])
+        id (random-uuid) failing (atom #{:a :b}) closed (atom [])
+        owner (fn [root] (if (identical? root-a root) :a :b))
+        a (benchmarks/fixture-transport conn-a root-a nil nil)
+        b (benchmarks/fixture-transport conn-b root-b nil nil)]
+    (is (= root-a root-b))
+    (is (not (identical? root-a root-b)))
+    (with-redefs [native-fixture/create! (fn [root _] {:room {:ctx root} :persistent-id (random-uuid)})
+                  benchmarks/record-fixture! (fn [& _] nil)
+                  benchmarks/recorded-fixture! (fn [& _] (throw (ex-info "No receipt for this installation" {})))
+                  native-fixture/retire!
+                  (fn [root _ _]
+                    (let [identity (owner root)]
+                      (when (@failing identity) (throw (ex-info "Held native cleanup" {})))
+                      (swap! closed conj identity)))]
+      (try
+        ((:job-context! a) {:work.request/id id})
+        ((:job-context! b) {:work.request/id id})
+        ((:admit! a) nil)
+        (is (thrown? clojure.lang.ExceptionInfo ((:settled! a) nil)))
+        (is (thrown? clojure.lang.ExceptionInfo ((:abandon! b) nil)))
+        (is (thrown? clojure.lang.ExceptionInfo (benchmarks/retire-request! conn-a root-b id))
+            "a different connection/root pair cannot consume either callback")
+        (swap! failing disj :b)
+        (benchmarks/retire-request! conn-b root-b id)
+        (is (= [:b] @closed))
+        (is (zero? (.availablePermits @#'benchmarks/checker-slot))
+            "retiring another installation does not release A's permit")
+        (swap! failing disj :a)
+        (benchmarks/retire-request! conn-a root-a id)
+        (is (= [:b :a] @closed))
+        (is (= 1 (.availablePermits @#'benchmarks/checker-slot)))
+        (is (empty? @@#'benchmarks/pending-retirements))
+        (finally
+          (reset! failing #{})
+          ((:abandon! a) nil)
+          ((:abandon! b) nil))))))
 
 (deftest fixture-construction-does-not-capture-original-operation-tickets
   (@#'is.simm.ops.work-test/with-room
@@ -542,45 +593,49 @@
                               (get (get-thread-bindings)
                                    (ns-resolve 'is.simm.runtimes.operation-lifetime '*tickets*))])
              adapter (benchmarks/adapter
-                      ec/*execution-context* nil
+                      nil ec/*execution-context* nil
                       {:world-parent-ready! (fn [_]
                                               (lifetime/check-current!)
-                                              (swap! observed assoc :ready (bindings)))} nil)]
-         (with-redefs-fn {#'benchmarks/fixture-room!
+                                              (swap! observed assoc :ready (bindings)))} nil nil)]
+         (with-redefs-fn {#'native-fixture/validate-receipt! (fn [_ _ receipt] receipt)
+                          #'native-fixture/create!
                           (fn [& _]
                             (swap! observed assoc :constructor (bindings)
                                    :delayed (bound-fn [] (bindings)))
                             (when throw? (throw (ex-info "Fixture failed" {})))
-                            room)
-                          #'benchmarks/retire-fixture! (fn [& _] nil)}
+                            {:room room :persistent-id (random-uuid)})
+                          #'benchmarks/record-fixture! (fn [& _] nil)
+                          #'native-fixture/retire! (fn [& _] nil)}
            (fn []
              (try
                (lifetime/with-operation!
-                outer
-                #(lifetime/with-operation!
-                  owner
-                  (fn []
-                    (let [before (bindings)]
-                      (try ((:job-context! adapter) {:work.request/id (random-uuid)})
-                           (is (not throw?))
-                           (catch clojure.lang.ExceptionInfo error
-                             (is throw?)
-                             (is (= "Fixture failed" (ex-message error)))))
-                      (lifetime/check-current!)
-                      (is (identical? (first before) (first (bindings))))
-                      (is (= 2 (count (second (bindings)))))
-                      (when-not throw?
-                        (is (identical? (first before) (first (:ready @observed)))))))))
+                 outer
+                 #(lifetime/with-operation!
+                    owner
+                    (fn []
+                      (let [before (bindings)]
+                        (try ((:job-context! adapter) {:work.request/id (random-uuid)})
+                             (is (not throw?))
+                             (catch clojure.lang.ExceptionInfo error
+                               (is throw?)
+                               (is (= "Fixture failed" (ex-message error)))))
+                        (lifetime/check-current!)
+                        (is (identical? (first before) (first (bindings))))
+                        (is (= 2 (count (second (bindings)))))
+                        (when-not throw?
+                          (is (identical? (first before) (first (:ready @observed)))))))))
                (is (= [nil []] (:constructor @observed)))
                (is (= [nil []] ((:delayed @observed))))
                (when throw? (is (not (contains? @observed :ready))))
                (finally
-                 ((:abandon! adapter) nil)
+                 (if throw?
+                   (is (thrown? clojure.lang.ExceptionInfo ((:abandon! adapter) nil)))
+                   ((:abandon! adapter) nil))
                  (doseq [installation [owner outer]]
                    (lifetime/fence! installation)
                    (lifetime/join! installation 1000)))))))))))
 
-(deftest fixture-recovery-covers-pointerless-and-already-refunded-crash-windows
+(deftest fixture-recovery-selects-only-interrupted-or-physically-settled-requests
   (let [row (fn [more] (merge {:work.request/id (random-uuid) :work.request/kind :benchmark} more))
         interrupted (row {:work.request/state :interrupted})
         admitting (row {:work.request/state :admitting})
@@ -593,12 +648,13 @@
         retired (atom [])]
     (with-redefs-fn {#'requests/requests (constantly [interrupted admitting completed live pending])
                      #'jobs/status statuses
-                     #'benchmarks/retire-fixture! (fn [_ id] (swap! retired conj id))}
+                     #'benchmarks/retire-request! (fn [_ _ id] (swap! retired conj id))}
       #(benchmarks/recover! nil nil))
     (is (= [(:work.request/id interrupted) (:work.request/id completed)] @retired))))
 
 (deftest failed-calibration-prevents-candidate-execution
   (world/with-world [conn w]
+    (d/transact conn [{:party/id (:owner w) :party/role :admin}])
     (@#'is.simm.ops.work-test/with-room
      (fn [control]
        (let [clean (discourse/make-room {:id (keyword (str "fixture-" (random-uuid))) :store (memory/make)})
@@ -612,15 +668,16 @@
              retired (atom 0)]
          (try
            (resource/mint! control {:id (random-uuid) :resources (work/resources (:limits request))})
-           (with-redefs-fn {#'benchmarks/fixture-room! (fn [& _] clean)
-                            #'benchmarks/retire-fixture! (fn [& _] (swap! retired inc))
+           (with-redefs-fn {#'native-fixture/validate-receipt! (fn [_ _ receipt] receipt)
+                            #'native-fixture/create! (fn [& _] {:room clean :persistent-id (random-uuid)})
+                            #'native-fixture/retire! (fn [& _] (swap! retired inc))
                             #'program/execute-agent-program (fn [& _] (swap! invoked inc)
                                                               (throw (AssertionError. "candidate must never start")))}
              (fn []
                (let [submitted (work/submit-prepared! conn ec/*execution-context* (ops/party-principal (:owner w))
                                                       (:room w) control request
-                                                      (benchmarks/adapter ec/*execution-context* control prepared
-                                                                          (ops/party-principal (:owner w))))
+                                                      (benchmarks/adapter conn ec/*execution-context* control prepared
+                                                                          (ops/party-principal (:owner w)) (:room w)))
                      status (jobs/status (:job submitted) 25000)
                      attempts (store/-list-attempts (:store control) (store/conversation-id control) {})]
                  (is (:settled? status))
@@ -641,6 +698,7 @@
 
 (deftest cancelled-calibration-retains-capacity-until-physical-exit
   (world/with-world [conn w]
+    (d/transact conn [{:party/id (:owner w) :party/role :admin}])
     (@#'is.simm.ops.work-test/with-room
      (fn [control]
        (let [clean (discourse/make-room {:id (keyword (str "fixture-" (random-uuid))) :store (memory/make)})
@@ -656,8 +714,9 @@
              retired (atom 0)]
          (try
            (resource/mint! control {:id (random-uuid) :resources grant})
-           (with-redefs-fn {#'benchmarks/fixture-room! (fn [& _] clean)
-                            #'benchmarks/retire-fixture! (fn [& _] (swap! retired inc))
+           (with-redefs-fn {#'native-fixture/validate-receipt! (fn [_ _ receipt] receipt)
+                            #'native-fixture/create! (fn [& _] {:room clean :persistent-id (random-uuid)})
+                            #'native-fixture/retire! (fn [& _] (swap! retired inc))
                             #'checkers/calibrate (fn [_]
                                                    (deliver entered true)
                                                    (loop []
@@ -667,7 +726,7 @@
                                                    {:ok? true})}
              (fn []
                (let [submitted (work/submit-prepared! conn host-ctx owner (:room w) control request
-                                                      (benchmarks/adapter host-ctx control prepared owner))
+                                                      (benchmarks/adapter conn host-ctx control prepared owner (:room w)))
                      job (:job submitted)]
                  (is (= true (deref entered 10000 ::timeout)))
                  (run/cancel-run! job)

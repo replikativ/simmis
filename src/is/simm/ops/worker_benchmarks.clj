@@ -169,7 +169,7 @@
                      (assoc :world-parent-ready! #(.set parent %))
                      (assoc-in [:plan :capabilities :world-setup] setup)
                      (assoc-in [:plan :capabilities :protocol] protocol))]
-    (benchmarks/adapter host-ctx room prepared principal)))
+    (benchmarks/adapter conn host-ctx room prepared principal room-id)))
 
 (defn submit! [conn host-ctx principal room-id room input]
   (when-not (m/validate schema input) (refuse! "Invalid local benchmark request"))

@@ -785,8 +785,9 @@
       (ctx/with-server-context
         ((requiring-resolve 'dvergr.system.rooms/hydrate-rooms!)
          {:repository-profiles
-          ((requiring-resolve 'is.simm.documents.profile/policies)
-           ((requiring-resolve 'is.simm.documents.starter-bundle/read-packaged!)))})
+          (merge ((requiring-resolve 'is.simm.documents.profile/policies)
+                  ((requiring-resolve 'is.simm.documents.starter-bundle/read-packaged!)))
+                 ((requiring-resolve 'is.simm.ops.benchmark-fixture/policies)))})
         ((requiring-resolve 'dvergr.rooms/hydrate-registry!) ctx/server-context))
       (log/log! {:level :info :id ::rooms-hydrated
                  :msg "dvergr rooms hydrated (ctxs + live registry)"})

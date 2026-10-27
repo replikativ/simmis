@@ -17,6 +17,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.model.workers :as workers]
             [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.benchmark-fixture :as native-fixture]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.knowledge-inputs :as knowledge]
             [is.simm.ops.owned-mcp-test :as fixture]
@@ -336,8 +337,9 @@
           (resource/mint! room {:id (random-uuid) :resources {local/admission-unit 2M}})
           (with-redefs-fn
             {#'benchmarks/checker-slot slot #'benchmarks/pending-retirements (atom {})
-             #'benchmarks/fixture-room! (fn [& _] clean)
-             #'benchmarks/retire-fixture! (fn [& _] (retire!))
+             #'native-fixture/validate-receipt! (fn [_ _ receipt] receipt)
+             #'native-fixture/create! (fn [& _] {:room clean :persistent-id (random-uuid)})
+             #'native-fixture/retire! (fn [& _] (retire!))
              #'jobs/start! (fn [actual-room opts work & callbacks]
                              (apply start actual-room opts
                                     (fn [id]

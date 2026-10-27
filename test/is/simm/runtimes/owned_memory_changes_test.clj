@@ -420,7 +420,10 @@
                   (is (= control-before @conn))))
               (finally
                 ((:close! owner))
-                (when @replacement (discourse/close-room! @replacement {:close-context? false}))))))))))
+                (when @replacement (discourse/close-room! @replacement {:close-context? false}))
+                ;; Return the fixture's original handle only after the exact
+                ;; replacement has physically closed; its finalizer owns close.
+                (registry/register! room)))))))))
 
 (deftest concurrent-view-registration-only-records-intent-while-one-worker-reconciles
   (with-fixture
