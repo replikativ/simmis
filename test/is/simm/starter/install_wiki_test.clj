@@ -203,7 +203,7 @@
 (deftest upgrade-offers-match-complete-pristine-shipped-subtrees-only
   (is (= :missing (:status (install/classify {:files {} :manifest []}))))
   (is (= :installed (:status (install/classify (shipped-snapshot starter/version)))))
-  (doseq [version [1 2 3]]
+  (doseq [version [1 2 3 4]]
     (let [snapshot (shipped-snapshot version) files (:files snapshot)
           path (first (keys files))]
       (is (= :upgrade-available (:status (install/classify snapshot))))

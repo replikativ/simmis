@@ -40,7 +40,8 @@
 (defn draft [source]
   {:source source :files (:files source) :path (or (when (contains? (:files source) "workflow.edn") "workflow.edn")
                                                    (first (sort (keys (:files source)))))
-   :form (assoc defaults :params (parameters source))})
+   :form (cond-> (assoc defaults :params (parameters source))
+           (contains? (:files source) "execution-origin.edn") (assoc :settlement "discard"))})
 
 (defn dirty? [draft] (not= (:files draft) (get-in draft [:source :files])))
 

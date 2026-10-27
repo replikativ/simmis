@@ -8,6 +8,17 @@
              :definition {:params {:goal "old default"}}
              :inspection {:ok true :bundle "bundle" :cases []}})
 
+(deftest new-checkpoint-form-selects-compatible-settlement-without-changing-existing-intent
+  (let [checkpoint-source (assoc source :files (starter/source))
+        ordinary (editor/draft source)
+        checkpoint (editor/draft checkpoint-source)]
+    (is (= "review" (get-in ordinary [:form :settlement])))
+    (is (= "discard" (get-in checkpoint [:form :settlement])))
+    (is (= "hosted" (get-in checkpoint [:form :backend])))
+    (is (= (:files checkpoint-source) (:files checkpoint)))
+    (is (false? (editor/dirty? checkpoint)))
+    (is (= ordinary (editor/draft source)))))
+
 (deftest schedule-observations-distinguish-unknown-empty-paused-and-held
   (let [paused {:id "one" :room-id "room" :name "maintain-wiki" :enabled? false}
         held (assoc paused :id "two" :reason :budget-exhausted)

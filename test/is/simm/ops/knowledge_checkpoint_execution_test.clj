@@ -27,13 +27,17 @@
             [is.simm.ops.owned-knowledge-discovery-test :as discovery-fixture]
             [is.simm.ops.owned-workflow-admission :as admission]
             [is.simm.ops.work :as work]
+            [is.simm.ops.workflows :as workflows]
+            [is.simm.starter.wiki-maintenance :as starter]
             [is.simm.ops.workflow-schedules :as schedules]
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]])
   (:import [java.util.concurrent CountDownLatch TimeUnit]))
 
-(defn- checkpoint-fixture [f]
+(defn- checkpoint-fixture
+  ([f] (checkpoint-fixture nil f))
+  ([source f]
   (@#'fixture/fixture
    (fn [{:keys [conn owned input batch-input] :as data}]
      (d/transact conn retained/schema)
@@ -46,11 +50,19 @@
      ;; Larger than the previous whole-context copy budget. It is available
      ;; in C1, but this candidate only needs the small page above.
      (repo/write! owned "wiki/large.md" (bytes/utf8 (apply str (repeat 524289 "x"))))
+     (when source
+       (doseq [path (keys (:files (workflows/snapshot-in @owned "wiki")))]
+         (repo/remove! owned (str "workflows/wiki/" path)))
+       (doseq [[path text] source]
+         (repo/write! owned (str "workflows/wiki/" path) (bytes/utf8 text)))
+       ;; More pages than the historical copied-context limit.
+       (doseq [n (range 33)]
+         (repo/write! owned (str "wiki/context-" n ".md") (bytes/utf8 "Retained context"))))
      (let [source (@#'discovery-fixture/request data)
            input (-> input (assoc-in [:limits :settlement] "discard")
                      (assoc :expected-owned-source (:expected-source source)
                             :expected-bundle (:expected-bundle source)))]
-       (f (assoc data :input input))))))
+       (f (assoc data :input input)))))))
 
 (deftest review-world-settlement-is-refused-before-discovery-or-any-pin
   (checkpoint-fixture
@@ -87,8 +99,8 @@
     (is (= 1 (get-in (#'schedules/batching (assoc-in target [:execution :limits :settlement] "discard"))
                      [:policy :max-trigger-files])))))
 
-(deftest native-wiki-reads-c1-on-demand-while-parent-remains-c2
-  (checkpoint-fixture
+(defn- assert-native-wiki-checkpoint [source]
+  (checkpoint-fixture source
    (fn [{:keys [conn host room owned principal handle input w]}]
      (let [input (assoc-in input [:limits :settlement] "discard")
            grant (work/resources (:limits input))
@@ -142,6 +154,12 @@
                         (try (filing/prepare conn principal (:room w) room (:id result)) nil
                              (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))))))
            (is (= grant (binding [ec/*execution-context* (:ctx room)] (resource/balance room))))))))))
+
+(deftest native-wiki-reads-c1-on-demand-while-parent-remains-c2
+  (assert-native-wiki-checkpoint nil))
+
+(deftest packaged-v5-reads-retained-context-beyond-the-copy-limit
+  (assert-native-wiki-checkpoint (starter/source)))
 
 (defn- pin-failure-gate [fault]
   (checkpoint-fixture

@@ -1,6 +1,6 @@
 # Wiki maintenance as an ordinary workflow
 
-The version-4 starter is source data returned by
+The version-5 starter is source data returned by
 `is.simm.starter.wiki-maintenance/source`. It contains the files for
 `/workflows/maintain-wiki/`, not a second agent, scheduler or resource ledger.
 Loading it does not install anything, choose a model, allocate money or enable
@@ -23,22 +23,23 @@ automatic replay. This operation never discovers/creates rooms, converts legacy
 stores, runs a model, allocates resources or changes any schedule activation.
 
 ```text
-inbox/ + transcripts/ + captures/ ── evidence ─┐
-wiki/ ──────────────── context ────┴─> frozen manifest + byte copies
-                                        │
-                 ┌──────────────────────┼──────────────────────┐
-                 │                      │                      │
-             manual Run          scheduled occurrence    benchmark attempt
-                 │                      │                      │
-                 └────────── ordinary isolated Run ────────────┘
-                                        │
-                              /out/wiki/*.md
-                                        │
-                   retained output / proposed change ≠ adopted wiki
+inbox/ + transcripts/ + captures/ ──> frozen trigger manifest + copies
+wiki/ ────────────────────────────> retained repository checkpoint
+                                             │
+                    ┌────────────────────────┼────────────────────┐
+                    │                        │                    │
+               manual native Run      scheduled native Run   native benchmark
+                    │                        │               (selected-case
+                    └──────── isolated Run ──┘                checkpoint)
+                                  │
+                            /out/wiki/*.md
+                                  │
+                      retained proposal → review → adoption
 ```
 
 The existing knowledge collector selects Markdown in the declared folders.
-Wiki context affects execution identity, but not the trigger identity: adopting
+The retained checkpoint identifies execution context, separately from the
+trigger identity: adopting
 a wiki update must not by itself retrigger maintenance. Empty/unchanged scheduled
 inputs can be skipped by existing admission before submitting a funded Run.
 Chat messages are not collected directly; they need an explicit evidence-file
@@ -52,18 +53,27 @@ captured. Server receipt timestamps and estimated recording positions retain
 their qualifications. An agent must verify an asset's recorded identity before
 treating a retrieved current file as the original.
 
-The version-4 source opts into the existing incremental batch machinery through
-`input-batching.edn`. Each invocation receives one frozen pending prefix and
-separately captured wiki context. Its policy allows at most 32 trigger files
-and 1 MiB of trigger bytes, plus 32 context files and 512 KiB of context. The
-existing execution envelope still caps each file at 512 KiB and the total at
-2 MiB, including the manifest and instruction fixtures. Oversized head items or
-context hold admission; files are never silently truncated or skipped. This
-starter does not yet provide relevance-based context selection or chunk large
-notes. A completed Run produces a proposal, not adopted knowledge or permission
-to advance processing independently of the host's batch protocol.
+Version 5 opts into incremental batching and native retained-checkpoint execution
+through `input-batching.edn` and `execution-origin.edn`. Each invocation receives
+one frozen pending prefix, with at most 32 trigger files and 1 MiB of trigger
+bytes. Wiki context remains under `/wiki/` in the exact retained repository;
+it is read on demand instead of copying up to 32 pages into the evidence inputs.
+This removes the copied-context selection cap, not model input, scoring or
+resource limits. The execution envelope still bounds each copied file at
+512 KiB and the total at 2 MiB, including manifest and instruction fixtures.
+Oversized head evidence holds admission without truncation or silent skipping.
 
-Historical versions 1–3 retain their original bytes and whole-selection behavior.
+Native server execution requires discard settlement: `/out/wiki` files become
+reviewable proposals rather than merging an entire historical Run world. Manual
+and scheduled workflow invocations share the same retained-batch path. Native
+benchmarks construct clean independent case checkpoints with the same structural
+scoring profile; scheduled checkpoint benchmarks remain unsupported. CLI and
+local-worker execution refuse version 5 before creating work. Use an explicitly
+chosen historical/custom copied-context program for those executors; no backend
+or program is silently substituted.
+
+Historical versions 1–4 retain their original bytes and behavior. Version 4 uses
+bounded copied wiki context, while versions 1–3 use whole-selection behavior.
 Inspection distinguishes missing, current, pristine older, and customized source.
 An explicit **Upgrade starter** action accepts only the exact inspected revision
 of a byte/mode-identical older shipped bundle. It uses the existing authorized
@@ -287,4 +297,5 @@ Ordinary wiki context does not become new evidence: quote and citation source
 texts for this profile come only from trigger entries in the verified knowledge
 manifest; copied context is also excluded. This profile observes
 retained fixture data, not a live Room. It does not itself provide checkpoint
-admission or enable checkpoint-policy benchmark, CLI or worker entry points.
+admission. The owned native benchmark facade supplies checkpoint admission;
+CLI and local-worker entry points continue refusing this policy.
