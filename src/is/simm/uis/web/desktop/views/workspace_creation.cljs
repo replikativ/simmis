@@ -24,6 +24,7 @@
    (let [states (iv/get-new (track sig/workspace-creation-state))
          _socket (iv/get-new (track sig/memory-connection))
          _layout (iv/get-new (track sig/layout-columns))
+         _focus (iv/get-new (track sig/active-column-id))
          rooms (iv/get-new (track sig/user-rooms))
          user (iv/get-new (track sig/current-user))
          a (actions/controller data) state (get states (:owner a))
@@ -75,7 +76,9 @@
                             (if visible? "Open workspace" "Adding workspace to navigation…"))
                  (el/div {}
                          (when (= :submitting (:phase state)) (el/p {:role "status"} "Creating workspace…"))
-                         (el/button {:class "settings-btn" :disabled (boolean (get-in state [:loading :observe]))
-                                     :on-click (fn [_] ((:check a)))} "Check creation")
-                         (el/p {:class "memory-note"}
-                               "This checks the same request. Reconnecting or checking does not create a second workspace."))))))))
+                         (when (= :unconfirmed (:phase state))
+                           (el/div {}
+                                   (el/button {:class "settings-btn" :disabled (boolean (get-in state [:loading :observe]))
+                                               :on-click (fn [_] ((:check a)))} "Check creation")
+                                   (el/p {:class "memory-note"}
+                                         "This checks the same request. Reconnecting or checking does not create a second workspace."))))))))))

@@ -1008,7 +1008,7 @@
                                                (cond-> (assoc (:data active-tab-data)
                                                               :conversation-captures conversation-captures
                                                               :capture-connection capture-connection)
-                                                 (#{:memory :proposal-source :new-room :new-kb} (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
+                                                 (#{:memory :proposal-source :new-room :new-kb :add-memory :add-team} (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
                                                local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
@@ -2372,12 +2372,12 @@
               (el/h2 {} "Book")))
 
     :add-memory
-    #?(:cljs (add-source-view/add-source-view :memory)
+    #?(:cljs (add-source-view/add-source-view :memory (assoc data :col-id col-id))
        :clj (el/div {:class "content-add-memory"}
               (el/h2 {} "Add memory")))
 
     :add-team
-    #?(:cljs (add-source-view/add-source-view :team)
+    #?(:cljs (add-source-view/add-source-view :team (assoc data :col-id col-id))
        :clj (el/div {:class "content-add-team"}
               (el/h2 {} "Add team")))
 

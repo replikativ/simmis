@@ -13,6 +13,7 @@
             [is.simm.uis.web.desktop.chat-remote :as chat]
             [is.simm.uis.web.desktop.user-rooms-sync :as roster]
             [is.simm.uis.web.desktop.views.workspace-creation :as view]
+            [is.simm.uis.web.desktop.views.add-source :as add-source]
             [is.simm.runtimes.web :as web])
   (:require-macros [org.replikativ.spindel.signal :refer [signal]]))
 
@@ -32,6 +33,7 @@
                     sig/workspace-creation-state (signal runtime {})
                     sig/memory-connection (signal runtime {:epoch (random-uuid)})
                     sig/user-rooms (signal runtime {:rooms []})
+                    sig/active-column-id (signal runtime :column)
                     sig/layout-columns (signal runtime [{:id :column :active-tab :form
                                                          :tabs [{:id :form :type type :data {}}]}])
                     connection/snapshot #(binding [ec/*execution-context* runtime] @sig/memory-connection)
@@ -127,7 +129,7 @@
           (simple/drain-events! runtime nil)
           (is (= 1 (count (:create @calls))))
           (is (.-disabled (.querySelector container "input[aria-label='Workspace name']")))
-          (is (.includes (.-textContent container) "Check creation"))
+          (is (not (.includes (.-textContent container) "Check creation")))
           ((:ok (last-call :create)) result)
           (simple/drain-events! runtime nil)
           (is (.includes (.-textContent container) "Your workspace is ready."))
@@ -135,7 +137,10 @@
           (reset! sig/user-rooms {:rooms [(:room result)]})
           (simple/drain-events! runtime nil)
           (is (= "Open workspace" (.-textContent (.querySelector container "button.settings-btn--primary"))))
-          (is (not (.-disabled (.querySelector container "button.settings-btn--primary"))))
+          (is (= 1 (count (:tabs (first @sig/layout-columns)))))
+          (is (= :memory (:type (first (:tabs (first @sig/layout-columns))))))
+          (is (= (get-in result [:room :room/id])
+                 (get-in (first (:tabs (first @sig/layout-columns))) [:data :room-id])))
           (finally ((:stop! handle))))))))
 
 (deftest reconnect-retires-a-lost-observation-without-resending-creation
@@ -159,3 +164,107 @@
           (old result)
           (is (= current (state))))
         (is (= :unconfirmed (:phase (state))))))))
+
+(deftest automatic-navigation-waits-for-receipt-and-roster-and-happens-once
+  (doseq [landing [:chat :memory] order [:receipt-first :roster-first]]
+    (with-client landing
+      (fn [{:keys [a data last-call result calls]}]
+        ((:set-name a) "Research") ((:create a))
+        (let [publish #(reset! sig/user-rooms {:rooms [(assoc (:room result) :room/content-db-scope (random-uuid))]})
+              confirm #((:ok (last-call :create)) result)]
+          ((if (= order :receipt-first) confirm publish))
+          ((:ensure a))
+          (is (= :form (:id (first (:tabs (first @sig/layout-columns))))))
+          ((if (= order :receipt-first) publish confirm))
+          ((:ensure a)) ((:ensure a))
+          (let [tabs (:tabs (first @sig/layout-columns))]
+            (is (= 1 (count tabs)))
+            (is (= (if (= landing :memory) :memory :chat) (:type (first tabs))))
+            (is (= (get-in result [:room :room/id]) (get-in (first tabs) [:data :room-id]))))
+          (is (= 1 (count (:create @calls))))
+          (is (empty? (:observe @calls))))))))
+
+(deftest completion-does-not-steal-another-column-or-tab
+  (doseq [elsewhere [:column :tab]]
+    (with-client :memory
+      (fn [{:keys [a data last-call result]}]
+        ((:set-name a) "Research") ((:create a))
+        (let [other {:id :other :type :settings :data {}}]
+          (if (= elsewhere :column)
+            (do (swap! sig/layout-columns conj {:id :other-column :active-tab :other :tabs [other]})
+                (reset! sig/active-column-id :other-column))
+            (swap! sig/layout-columns update 0 #(-> % (update :tabs conj other) (assoc :active-tab :other))))
+          ((:ok (last-call :create)) result)
+          (reset! sig/user-rooms {:rooms [(:room result)]})
+          (let [before @sig/layout-columns]
+            ((:ensure a))
+            (is (= before @sig/layout-columns)))
+          (reset! sig/active-column-id :column)
+          (swap! sig/layout-columns assoc-in [0 :active-tab] :form)
+          ((:ensure a))
+          (let [column (first @sig/layout-columns)
+                active (some #(when (= (:active-tab column) (:id %)) %) (:tabs column))]
+            (is (= :memory (:type active)))))))))
+
+(deftest reconnect-keeps-historical-success-without-automatic-navigation
+  (with-client :memory
+    (fn [{:keys [a state last-call result calls]}]
+      ((:set-name a) "Research") ((:create a))
+      (let [old-reply (:ok (last-call :create))]
+        (reset! sig/memory-connection {:epoch (random-uuid)})
+        ((:ensure a))
+        (old-reply result)
+        (reset! sig/user-rooms {:rooms [(:room result)]})
+        ((:ensure a)) ((:ensure a))
+        (is (= :created (:phase (state))))
+        (is (= :form (:id (first (:tabs (first @sig/layout-columns))))))
+        ((:open a))
+        (is (= :memory (:type (first (:tabs (first @sig/layout-columns))))))
+        (is (= 1 (count (:create @calls))))))))
+
+(deftest detached-or-replaced-form-cannot-redirect-on-completion
+  (doseq [replacement [{:id :form :type :settings :data {}} {:id :new-form :type :new-kb :data {}}]]
+    (with-client :memory
+      (fn [{:keys [a last-call result]}]
+        ((:set-name a) "Research") ((:create a))
+        (reset! sig/layout-columns [{:id :column :active-tab (:id replacement) :tabs [replacement]}])
+        ((:ok (last-call :create)) result)
+        (reset! sig/user-rooms {:rooms [(:room result)]})
+        ((:ensure a)) ((:open a))
+        (is (= [replacement] (:tabs (first @sig/layout-columns))))))))
+
+(deftest chooser-reuses-its-original-tab-and-does-not-replace-another-column
+  (doseq [[kind type target] [[:memory :add-memory :new-kb] [:team :add-team :new-room]]]
+    (with-client :memory
+      (fn [{:keys [data]}]
+        (let [other {:id :other-column :active-tab :other :tabs [{:id :other :type :settings :data {}}]}
+              chooser {:id :form :type type :data {}}
+              owner {:col-id :column :tab-id :form :tab-type type
+                     :ctx runtime :session (web/current-session)}]
+          (reset! sig/layout-columns [{:id :column :active-tab :form :tabs [chooser]} other])
+          (reset! sig/active-column-id :other-column)
+          (@#'add-source/act! {:id (if (= kind :memory) :workspace :team)} owner)
+          (is (= 1 (count (:tabs (first @sig/layout-columns)))))
+          (is (= :form (:id (first (:tabs (first @sig/layout-columns))))))
+          (is (= target (:type (first (:tabs (first @sig/layout-columns))))))
+          (is (= other (second @sig/layout-columns)))
+          (let [before @sig/layout-columns]
+            (@#'add-source/act! {:id :workspace} owner)
+            (is (= before @sig/layout-columns) "The detached chooser no longer owns its tab")))))))
+
+(deftest copied-chooser-keeps-its-rendering-context-without-ambient-binding
+  (with-client :memory
+    (fn [_]
+      (let [columns [{:id :column :active-tab :form
+                      :tabs [{:id :form :type :add-memory :data {}}]}]]
+        (reset! sig/layout-columns columns)
+        (let [child (context/fork-context runtime)
+              owner {:col-id :column :tab-id :form :tab-type :add-memory
+                     :ctx child :session (web/current-session)}]
+          (try
+            (binding [ec/*execution-context* nil]
+              (@#'add-source/act! {:id :workspace} owner))
+            (is (= columns @sig/layout-columns))
+            (binding [ec/*execution-context* child]
+              (is (= :new-kb (get-in @sig/layout-columns [0 :tabs 0 :type]))))
+            (finally (context/close-context! child))))))))
