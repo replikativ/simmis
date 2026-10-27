@@ -176,12 +176,12 @@
    policy is returned as data here; execution must resolve it before setup."
   [snapshot {:keys [name expected-bundle case params inputs] :as input}]
   (when-not (m/validate source-schema input) (invalid! "Invalid workflow source selection"))
-  (let [inspection (workflows/inspect-snapshot name snapshot)]
+  (let [inspection (workflows/inspect-snapshot name snapshot :program)]
     (when-not (:ok inspection) (invalid! "Workflow bundle is not structurally valid"))
     (when-not (= (str expected-bundle) (:bundle inspection))
       (throw (ex-info "Workflow revision changed; inspect the new revision before running it"
                       {:type ::conflict}))))
-  (let [bundle (catalog/bundle name (:files snapshot))
+  (let [bundle (catalog/bundle name (:files snapshot) :program)
         definition (:definition bundle)]
     (when-not (supported-definition? definition)
       (invalid! "Ordinary workflows require developer /out capture and no web, judge or adoption policy"))

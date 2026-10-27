@@ -114,6 +114,15 @@
           _ (when (or (> (count (:manifest after)) workflows/max-files)
                       (> (reduce + 0 (map :size (:manifest after))) workflows/max-bundle-bytes))
               (invalid!))
+          ;; The ACK certifies the complete workflow subtree. Agent file tools
+          ;; can leave unchanged siblings untracked, so publishing only the edit
+          ;; delta cannot establish the native index/commit proof. Submit every
+          ;; inspected AFTER file plus canonical deletions; never stage outside
+          ;; this exact CAS-guarded subtree or weaken the native proof.
+          publication-entries
+          (merge (:entries (storage! #(workflows/normalized-edits name (:files after))))
+                 (into {} (filter (comp nil? val)) entries))
+          _ (when (> (count publication-entries) native/max-batch-files) (invalid!))
           condition {:prefix prefix :entries (into (sorted-map) (map (fn [entry] [(:path entry) (dissoc entry :path)])) manifest)}
           required {:prefix prefix :entries (into (sorted-map) (map (fn [entry] [(:path entry) (dissoc entry :path)])) (:manifest after))}
           details (storage! #(owned/details-of binding name after))
@@ -126,7 +135,7 @@
           _ (when-not (contains? native/write-capabilities :expected-subtree)
               (fail! ::unavailable "Owned workflow save unavailable"))
           completion (storage! #(native/write-to-completion!
-                                 (:room binding) (:system binding) entries
+                                 (:room binding) (:system binding) publication-entries
                                  {:expected-subtree condition :boundary boundary
                                   :message (str "Update workflow " name " by " (:principal/id principal))}))
           result (:result completion)]

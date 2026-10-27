@@ -4,6 +4,7 @@
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.workflow-editor :as editor]
+            [is.simm.documents.workflow-links :as workflow-links]
             [is.simm.uis.web.desktop.observation-io :as observation-io]
             [is.simm.uis.web.desktop.connection-epoch :as connection]
             [is.simm.uis.web.desktop.memory-sync :as sync]
@@ -13,7 +14,9 @@
             [is.simm.uis.web.desktop.refs :as refs]
             [is.simm.runtimes.web :as web]))
 
-(defn state-key [room] [(:id (web/current-session)) (str room)])
+(defn state-key
+  ([room] (state-key room nil))
+  ([room tab] (cond-> [(:id (web/current-session)) (str room)] tab (conj tab))))
 
 (defn confirm! [message] (js/confirm message))
 
@@ -31,7 +34,7 @@
   [room-data]
   (let [ctx (or ec/*execution-context* runtime)
         session (web/current-session)
-        room (str (:room-id room-data)) k (state-key room)
+        room (str (:room-id room-data)) k (state-key room (:tab-id room-data))
         update! (fn [f & args]
                   (binding [ec/*execution-context* ctx]
                     (when (web/current-session? session)
@@ -103,6 +106,13 @@
                     roster (binding [ec/*execution-context* ctx] @sig/user-rooms)
                     allowed? (or (nil? roster)
                                  (some #(= room (str (:room/id %))) (:rooms roster)))
+                    navigation [(:workflow-name room-data) (:workflow-action room-data)]
+                    navigation? (and (:tab-id room-data) (workflow-links/name? (:workflow-name room-data))
+                                     (contains? workflow-links/actions (:workflow-action room-data))
+                                     (not= (:applied-navigation (state)) navigation))
+                    _ (when navigation?
+                        (update! assoc :selected (:workflow-name room-data)
+                                       :applied-navigation navigation :pending-navigation navigation))
                     selected (:selected (state))
                     _ (when (not= owner (:observation-owner (state)))
                         ;; Retire transport bookkeeping, NOT original request
@@ -177,7 +187,12 @@
                             #(remote/load-workflow-schedules! web/server-id room)
                             (fn [s rows] (assoc s :activations rows :activation-status :ready))
                             (fn [s _] (-> s (dissoc :activations) (assoc :activation-status :unavailable))))
-                  (when (and selected
+                  (when (and (= selected (first (:pending-navigation (state))))
+                           (get-in (state) [:drafts selected :source]))
+                  (update! #(-> %
+                                (update-in [:drafts selected] editor/choose-action (second (:pending-navigation %)))
+                                (dissoc :pending-navigation))))
+                (when (and selected
                              (not (get-in (state) [:loading [:save selected]]))
                              (not (get-in (state) [:loading [:source selected]])))
                     (observe! [:source selected] generation
@@ -203,7 +218,7 @@
                           (fn [s reply]
                             (assoc s :workers (cond-> reply after (update :workers #(into (:workers prior) %))))))))
             (select! [name reload? & [create?]]
-              (update! assoc :selected name)
+              (update! #(-> % (assoc :selected name) (dissoc :pending-navigation)))
               (when (and (not (get-in (state) [:loading [:save name]]))
                          (not (get-in (state) [:loading [:source name]]))
                          (or reload? (nil? (get-in (state) [:drafts name :source]))))
@@ -290,8 +305,7 @@
                     (when-not payload (throw (js/Error. "No schedule request to retry")))
                     (when (or retry? (false? (:enabled? payload))
                               (confirm! (str "Activate recurring " (:kind payload) " · " name "?\n"
-                                             "Every " (/ (get-in payload [:cadence :interval-ms]) 60000) " minutes; "
-                                             (get-in payload [:cadence :tz]) ".\n"
+                                             (editor/cadence-label (:cadence payload)) ".\n"
                                              "Pins this saved source and current execution settings. Each occurrence uses the shared room allowance; no automatic funding or merging. Overlapping occurrences are skipped.")))
                       (change! name assoc :schedule-submission (if retry? pending {:payload payload}))
                       (request! :schedule name #(remote/create-workflow-schedule! web/server-id room payload)
@@ -387,12 +401,18 @@
                     (binding [ec/*execution-context* ctx]
                       (when (web/current-session? session)
                         (sig/open-tab! :chat room-data
-                                       {:title (or (:room-name room-data) "Room") :new-tab? true
+                                       {:title (editor/room-label room-data @sig/user-rooms) :new-tab? true
                                         :col-id (:col-id room-data)}))))
        :open-proposal (fn [proposal]
                         (binding [ec/*execution-context* ctx]
                           (when (web/current-session? session)
                             (refs/open! {:kind :proposal :id proposal}))))
+       :open-leaderboard (fn []
+                           (binding [ec/*execution-context* ctx]
+                             (when (web/current-session? session)
+                               (sig/open-tab! :leaderboard room-data
+                                              {:title "Benchmark results" :new-tab? true
+                                               :col-id (:col-id room-data)}))))
        :open-run (fn [job]
                    (binding [ec/*execution-context* ctx]
                      (when (web/current-session? session)

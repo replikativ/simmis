@@ -1008,7 +1008,7 @@
                                                (cond-> (assoc (:data active-tab-data)
                                                               :conversation-captures conversation-captures
                                                               :capture-connection capture-connection)
-                                                 (#{:memory :proposal-source :new-room :new-kb :add-memory :add-team} (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
+                                                 (#{:memory :proposal-source :new-room :new-kb :add-memory :add-team :workflows} (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
                                                local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
@@ -2024,7 +2024,8 @@
                       :on-open-run open-run!})
                     ;; default: :message
                     (chat/message-view
-                      {:id (str (:entity/uuid item))
+                      {:room-id (str room-id)
+                       :id (str (:entity/uuid item))
                        :author-id (str (:S.Message/author-uuid item))
                        :author-name (:S.Message/author-name item)
                        :content (:block/content item)

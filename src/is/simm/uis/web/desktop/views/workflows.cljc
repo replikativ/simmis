@@ -47,6 +47,38 @@
               (when (get-in state [:readiness :models-truncated?])
                 (el/small {} "Only the first 256 registered model options are shown.")))))
 
+(defn- benchmark-model-fields [state form set-form]
+  (let [models (let [selected (editor/benchmark-models form)] (if (seq selected) selected [""]))
+        rows (when (= :ready (:readiness-status state)) (get-in state [:readiness :models]))]
+    (el/fieldset {:class "workflow-model-candidates"}
+      (el/legend {} "Model candidates · choose up to three")
+      (for [[index selected] (map-indexed vector models)]
+        (el/div {:key index :class "workflow-toolbar"}
+          (el/label {:class "workflow-field"}
+            (el/span {} (str "Candidate " (inc index)))
+            (el/select {:value selected :aria-label (str "Candidate " (inc index) " model")
+                        :on-change (fn [event]
+                                     (set-form :models (assoc (vec models) index #?(:cljs (.. event -target -value) :clj selected))))}
+              (el/option {:value ""} "Choose a model…")
+              (when (and (seq selected) (not (some #(= selected (:id %)) rows)))
+                (el/option {:value selected :disabled true} (str selected " · saved choice; not currently verified")))
+              (for [{:keys [id label provider-label credential-label]} rows]
+                (el/option {:key id :value id
+                            :disabled (some #(and (not= index (first %)) (= id (second %))) (map-indexed vector models))}
+                  (str label " · " provider-label " · " credential-label)))))
+          (when (> (count models) 1)
+            (el/button {:type "button" :aria-label (str "Remove candidate " (inc index))
+                        :on-click (fn [_] (set-form :models (vec (concat (subvec (vec models) 0 index)
+                                                                      (subvec (vec models) (inc index))))))}
+              "Remove"))))
+      (when (< (count models) 3)
+        (el/button {:type "button" :disabled (some str/blank? models)
+                    :on-click (fn [_] (set-form :models (conj (vec models) "")))} "Add model candidate"))
+      (when (not= :ready (:readiness-status state))
+        (el/p {:role "status"} "Verifying model options. Previous credential observations are not current."))
+      (el/p {:class "workflow-note"}
+        "This benchmark compares models on the same saved workflow and cases. Comparing different workflow revisions is not available here yet."))))
+
 (defn- shared-allowance [state]
   (let [allowance (get-in state [:readiness :allowance])]
     (el/div {:class "workflow-note" :role "status"}
@@ -155,7 +187,9 @@
         display-cases (if benchmark? (editor/benchmark-cases (:inspection source) form)
                           (get-in source [:inspection :cases]))
         local? (editor/local? form)
-        model-selected? (or local? (not (str/blank? (:model form))))
+        model-selected? (or local? (if benchmark? (and (seq (editor/benchmark-models form))
+                                                                            (every? #(not (str/blank? %)) (editor/benchmark-models form)))
+                                                     (not (str/blank? (:model form)))))
         setup-card-visible? (contains? #{:missing :installed :customized :pending :upgrade-available :changed} (get-in state [:wiki-setup :status]))
         cli? (editor/cli? form)
         funded-here? (and (:funded? draft) (= (:fund-backend draft "hosted") (:backend form "hosted")))
@@ -218,7 +252,22 @@
                               :else
                               (el/div {}
                                       (el/h3 {} (or (get-in source [:definition :title]) selected))
-                                      (el/p {:class "workflow-note"} "Saved code agents can invoke. Review activity and outputs here, or discuss changes in the room.")
+                                      (el/p {:class "workflow-note"} "Reusable work prepared in chat. Run it, schedule it, or inspect its results here.")
+                                      (let [problems (if-not (get-in source [:inspection :ok])
+                                                       (get-in source [:inspection :problems])
+                                                       (when (and benchmark? (false? (get-in source [:inspection :benchmark-ready?])))
+                                                         (get-in source [:inspection :benchmark-problems])))]
+                                        (when (seq problems)
+                                          (el/div {:class "workflow-readiness-summary" :role "status"}
+                                            (el/strong {} (if (get-in source [:inspection :ok]) "Benchmark setup needed" "Workflow setup needed"))
+                                            (for [problem problems] (el/p {:key problem} problem))
+                                            (el/p {} "Ask the room’s agent to repair this setup, then return here."))))
+                                      (when merge?
+                                        (el/div {:class "workflow-toolbar" :aria-label "Workflow actions"}
+                                          (el/button {:on-click (fn [_] (change editor/choose-action :run))} "Run once")
+                                          (el/button {:on-click (fn [_] (change editor/choose-action :schedule))} "Schedule")
+                                          (when (:operator? permissions)
+                                            (el/button {:on-click (fn [_] (change editor/choose-action :benchmark))} "Benchmark"))))
                                       (when (editor/dirty? draft) (el/p {:role "status"} "Unsaved code draft · executions use the saved version."))
                                       (when-not (editor/source-current? draft)
                                         (el/p {:role "status"} "Saved source is unverified or changed. Your draft is preserved; reconcile it before starting work."))
@@ -287,10 +336,15 @@
                                                                                                (assoc-in [:editor-selections path] selection))))})
                                                                    :clj (el/pre {} (get-in draft [:files path] "")))))))
                                       (el/div {:class "workflow-inspection"}
-                                              (el/strong {} (if (get-in source [:inspection :ok]) "Structure valid — not checker-tested" "Draft needs repair"))
+                                              (el/strong {} (if (get-in source [:inspection :ok]) "Program structure valid · not benchmark-tested" "Draft needs repair"))
                                               (when (editor/dirty? draft) (el/p {} "Inspection below is of the saved source. Save before launching."))
                                               (for [problem (get-in source [:inspection :problems])]
                                                 (el/p {:key problem} (str problem)))
+                                              (when (and benchmark? (false? (get-in source [:inspection :benchmark-ready?])))
+                                                (el/div {:role "status"}
+                                                  (el/strong {} "Benchmark setup needed")
+                                                  (for [problem (get-in source [:inspection :benchmark-problems])]
+                                                    (el/p {:key problem} problem))))
                                               (el/p {} (str "Source revision: " (:revision source)))
                                               (when-let [bundle (get-in source [:inspection :bundle])]
                                                 (el/p {} (str "Execution bundle: " bundle))))
@@ -300,8 +354,10 @@
                                                 (el/details {:class "workflow-disclosure" :open (boolean (:execution-open? draft))
                                                              :on-toggle (fn [event]
                                                                           (disclosure/remember-open! event #(change assoc :execution-open? %)))}
-                                                            (el/summary {} "Run, schedule, or benchmark")
+                                                            (el/summary {} (if benchmark? "Benchmark setup" "Run and schedule setup"))
                                                 (el/p {:class "workflow-note"} "Configure an explicit execution of the saved code. Opening this section never starts work.")
+                                                (when (and benchmark? (not (:operator? permissions)))
+                                                  (el/p {:role "status"} "Benchmark execution currently requires installation operator access and room merge permission."))
                                                 (when (contains? (:files source) "execution-origin.edn")
                                                   (el/p {:class "workflow-note"}
                                                         "This workflow reads a retained repository checkpoint on This Simmis server. Capture output and discard work retains wiki proposals for review. CLI and local-worker execution are unsupported."))
@@ -334,13 +390,14 @@
                                                           (el/p {:class "workflow-note"} "Enrollment is not liveness. Start the private local driver separately; no login is uploaded. Allowance uses admissions, not measured dollars or tokens. Wall time includes cold JVM/interpreter startup; new local forms default to 300000 ms."))
                                                   (if cli?
                                                     (field "Model id (Claude Code text)" (:model form) #(set-form :model %))
-                                                    (el/div {} (native-model-field state form set-form)
+                                                    (el/div {} (if benchmark? (benchmark-model-fields state form set-form)
+                                                                               (native-model-field state form set-form))
                                                                (shared-allowance state))))
                                                 (el/label {:class "workflow-field"}
                                                           (el/span {} "Mode")
                                                           (el/select {:value (:mode form) :on-change (fn [e] (set-form :mode #?(:cljs (.. e -target -value) :clj "run")))}
                                                                      (when-not cli? (el/option {:value "run"} "Ordinary Run"))
-                                                                     (when (:operator? permissions) (el/option {:value "benchmark"} "Operator benchmark"))))
+                                                                     (when (:operator? permissions) (el/option {:value "benchmark"} "Benchmark"))))
                                                 (when (and benchmark? (get-in source [:inspection :evaluation]))
                                                   (el/label {:class "workflow-field"}
                                                             (el/span {} "Evaluation split")
@@ -399,8 +456,10 @@
                                                             "Local Runs receive pinned workflow inputs only; benchmarks receive clean fixtures without checker/gold. One admission per cell. Run the local driver per queued cell and check Job completion; an empty queue is not completion. Nothing auto-merges or auto-funds."
                                                             :else "Ordinary Runs inherit room files. Frozen source and input changes appear in the proposed diff. Completion does not prove correctness. Allowance is never provisioned automatically."))
                                                 (el/div {:class "workflow-toolbar"}
-                                                        (el/button {:disabled (or (not model-selected?) (:submit loading) uncertain? (editor/dirty? draft) (not (editor/source-current? draft)) (not (get-in source [:inspection :ok])))
-                                                                    :on-click (fn [_] ((:submit actions) selected false))} "Confirm and submit")
+                                                        (el/button {:disabled (or (not model-selected?) (:submit loading) uncertain? (editor/dirty? draft) (not (editor/source-current? draft)) (not (get-in source [:inspection :ok]))
+                                                                                 (and benchmark? (or (not (:operator? permissions))
+                                                                                                    (false? (get-in source [:inspection :benchmark-ready?])))))
+                                                                    :on-click (fn [_] ((:submit actions) selected false))} (if benchmark? "Run benchmark…" "Run once…"))
                                                         )
                                                 (when submission
                                                           (el/button {:disabled (:submit loading) :on-click (fn [_] ((:submit actions) selected true))}
@@ -408,10 +467,30 @@
                                                         (when (:fund? permissions)
                                                           (el/button {:disabled (:fund loading) :on-click (fn [_] ((:fund actions) selected))}
                                                                      (if funded-here? "Provision more allowance…" "Provision allowance…")))
-                                                (when (and (not local?) (not cli?))
+                                                (when (and (not local?) (not cli?) (:schedule-open? draft))
                                                   (el/div {:class "workflow-scheduling"}
                                                           (el/h4 {} "Schedule")
-                                                          (field "Interval · minutes (1–525600)" (:schedule-minutes form) #(set-form :schedule-minutes %))
+                                                          (el/label {:class "workflow-field"}
+                                                            (el/span {} "Repeat")
+                                                            (el/select {:value (:schedule-cadence form "interval")
+                                                                        :on-change (fn [event] (set-form :schedule-cadence #?(:cljs (.. event -target -value) :clj "interval")))}
+                                                              (el/option {:value "day"} "Daily")
+                                                              (el/option {:value "week"} "Weekly")
+                                                              (el/option {:value "month"} "Monthly")
+                                                              (el/option {:value "interval"} "Fixed interval")))
+                                                          (if (= "interval" (:schedule-cadence form "interval"))
+                                                            (field "Interval · minutes (1–525600)" (:schedule-minutes form) #(set-form :schedule-minutes %))
+                                                            (el/div {}
+                                                              (field "Time · 24-hour HH:MM" (:schedule-at form) #(set-form :schedule-at %))
+                                                              (when (= "week" (:schedule-cadence form))
+                                                                (el/label {:class "workflow-field"}
+                                                                  (el/span {} "Day")
+                                                                  (el/select {:value (:schedule-on form)
+                                                                              :on-change (fn [event] (set-form :schedule-on #?(:cljs (.. event -target -value) :clj "monday")))}
+                                                                    (for [day ["monday" "tuesday" "wednesday" "thursday" "friday" "saturday" "sunday"]]
+                                                                      (el/option {:key day :value day} (str/capitalize day))))))
+                                                              (when (= "month" (:schedule-cadence form))
+                                                                (field "Day of month · 1–28" (:schedule-day form) #(set-form :schedule-day %)))))
                                                           (field "Timezone (e.g. Europe/Berlin)" (:schedule-tz form) #(set-form :schedule-tz %))
                                                           (when-let [{:keys [pending? payload]} (editor/deployment-preview draft)]
                                                             (let [execution (:execution payload)
@@ -420,9 +499,7 @@
                                                                       (el/strong {} (if pending?
                                                                                      (if (false? (:enabled? payload)) "Pending paused schedule · " "Pending activation · ")
                                                                                      "Next schedule · "))
-                                                                      (el/span {} (str (:model description) " · every "
-                                                                                      (quot (get-in payload [:cadence :interval-ms]) 60000)
-                                                                                      " minutes · " (get-in payload [:cadence :tz])))
+                                                                      (el/span {} (str (:model description) " · " (editor/cadence-label (:cadence payload))))
                                                                       (el/p {} (str "Saved revision " (:expected-owned-source execution)))
                                                                       (el/p {} (:resources description))
                                                                       (el/p {} (str (:execution-ceilings description) " " (:results description))))))
@@ -462,7 +539,9 @@
                                                   (el/div {}
                                                           (el/p {:role "status"} (admission-message reply))
                                                           (when-let [job (:job reply)]
-                                                            (el/button {:on-click (fn [_] ((:open-run actions) job))} "Open Run and results"))))
+                                                            (el/button {:on-click (fn [_] ((:open-run actions) job))} "Open Run and results"))
+                                                          (when (and (= "benchmark" (:mode submission)) (:open-leaderboard actions))
+                                                            (el/button {:on-click (fn [_] ((:open-leaderboard actions)))} "Open benchmark leaderboard"))))
                                                 (when (and merge? (editor/collectable-output-request draft))
                                                   (el/div {:class "workflow-output-review"}
                                                           (el/p {:class "workflow-note"}
@@ -492,10 +571,10 @@
             _stream (iv/get-new stream-i)
             _roster (iv/get-new roster-i)
             controller (actions/controller room-data)
-            state (get states (actions/state-key (:room-id room-data)))]
+            state (get states (actions/state-key (:room-id room-data) (:tab-id room-data)))]
         ((:observe controller))
         (if (:access-denied? state)
           (el/p {:role "status"} "This room is no longer available to this account.")
-          (view (or (:room-name room-data) "Room")
+          (view (editor/room-label room-data _roster)
                 (cond-> state (sync/problem _stream) (assoc-in [:errors :stream] (sync/problem _stream)))
                 controller))))))

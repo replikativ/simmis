@@ -845,3 +845,63 @@
             (is (= :ready (get-in @sig/workflow-editor-state [k :workflow-stream-status])))
             (dotimes [_ 3] ((:observe ui)))
             (is (= expected (count @reads)))))))))
+
+(deftest same-room-navigation-is-owned-by-each-tab-and-consumed-once
+  (with-state
+    (fn [_ _]
+      (let [sources (atom []) lists (atom []) watches (atom [])
+            left (actions/controller {:room-id "room" :tab-id "left" :workflow-name "alpha" :workflow-action :benchmark})
+            right (actions/controller {:room-id "room" :tab-id "right" :workflow-name "beta" :workflow-action :schedule})
+            lk (actions/state-key "room" "left") rk (actions/state-key "room" "right")]
+        (with-redefs [remote/load-workflow-source! (deferred sources)
+                      remote/load-workflow-list! (deferred lists)
+                      memory-remote/prepare-memory-stream! (deferred watches)]
+          (dotimes [_ 4] ((:observe left)) ((:observe right)))
+          (is (= "alpha" (get-in @sig/workflow-editor-state [lk :selected])))
+          (is (= "beta" (get-in @sig/workflow-editor-state [rk :selected])))
+          (is (= 2 (count @sources)))
+          ((:ok (first @sources)) (source "alpha" initial-revision))
+          ((:ok (second @sources)) (source "beta" initial-revision))
+          ((:observe left)) ((:observe right))
+          (is (= "benchmark" (get-in @sig/workflow-editor-state [lk :drafts "alpha" :form :mode])))
+          (is (true? (get-in @sig/workflow-editor-state [rk :drafts "beta" :schedule-open?])))
+          ((:select left) "gamma")
+          ((:observe left))
+          (is (= "gamma" (get-in @sig/workflow-editor-state [lk :selected])))
+          (is (= "beta" (get-in @sig/workflow-editor-state [rk :selected]))))))))
+
+(deftest a-late-route-source-never-reselects-after-user-navigation
+  (with-state
+    (fn [_ _]
+      (let [sources (atom []) lists (atom []) watches (atom [])
+            ui (actions/controller {:room-id "room" :tab-id "route" :workflow-name "alpha" :workflow-action :benchmark})
+            k (actions/state-key "room" "route")]
+        (with-redefs [remote/load-workflow-source! (deferred sources)
+                      remote/load-workflow-list! (deferred lists)
+                      memory-remote/prepare-memory-stream! (deferred watches)]
+          ((:observe ui))
+          ((:select ui) "beta")
+          ((:ok (first @sources)) (source "alpha" initial-revision))
+          ((:observe ui))
+          (is (= "beta" (get-in @sig/workflow-editor-state [k :selected])))
+          (is (nil? (get-in @sig/workflow-editor-state [k :pending-navigation]))))))))
+
+(deftest calendar-confirmation-and-uncertain-retry-use-the-original-intent
+  (with-state
+    (fn [ui k]
+      (let [requests (atom []) confirmations (atom [])]
+        (with-redefs [actions/confirm! (fn [message] (swap! confirmations conj message) true)
+                      remote/create-workflow-schedule! (deferred requests)]
+          ((:change ui) "a" update :form merge {:model "model" :schedule-cadence "week"
+                                                :schedule-on "monday" :schedule-at "09:00"
+                                                :schedule-tz "America/Vancouver"})
+          ((:schedule ui) "a" false true)
+          (is (= 1 (count @confirmations)))
+          (is (.includes (first @confirmations) "Weekly on monday at 09:00 · America/Vancouver"))
+          (let [original (get-in @sig/workflow-editor-state [k :drafts "a" :schedule-submission :payload])]
+            (is (= {:every "week" :on "monday" :at "09:00" :tz "America/Vancouver"} (:cadence original)))
+            ((:error (first @requests)) (js/Error. "lost acknowledgement"))
+            ((:change ui) "a" assoc-in [:form :schedule-at] "15:00")
+            ((:schedule ui) "a" true)
+            (is (= original (last (:args (last @requests)))))
+            (is (= 1 (count @confirmations)))))))))

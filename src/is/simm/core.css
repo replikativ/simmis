@@ -9343,3 +9343,16 @@ body.tab-dragging .column-drop-zone {
 .semantic-entity--columns > dl { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 
 .memory-code-cell > pre[hidden] { display: none; }
+
+/* Chat points at the same saved-workflow controls as Memory and Workflows. */
+.workflow-chat-card {
+  border: 1px solid var(--border-color, #333);
+  border-radius: 6px;
+  padding: .65rem .8rem;
+  margin: .5rem 0;
+}
+.workflow-chat-card p { margin: .3rem 0; opacity: .75; }
+.workflow-chat-card .workflow-toolbar { gap: 1rem; }
+.workflow-model-candidates { border: 0; padding: 0; }
+.workflow-model-candidates .workflow-field { flex-direction: row; align-items: baseline; gap: .5rem; }
+.workflow-model-candidates input[type="checkbox"] { width: auto; }

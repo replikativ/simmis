@@ -127,7 +127,8 @@
            (is (uuid? (parse-uuid (:revision full))))
            (is (= (:revision full) (:revision page)))
            (is (false? (get-in full [:inspection :ok])))
-           (is (= ["Workflow source is incomplete or invalid; inspect its files"]
+           (is (= (if (= name "empty") ["workflow.edn is missing."]
+                       ["workflow.edn is not valid EDN."])
                   (get-in full [:inspection :problems]) (get-in page [:inspection :problems])))))))))
 
 (deftest helper-errors-and-caught-inspection-problems-cannot-leak-or-forge-conflict

@@ -2,6 +2,7 @@
   "Workflow bundles are ordinary versioned Geschichte files, not a new
    definition store. Shape inspection never executes their checker source."
   (:require [clojure.string :as str]
+            [clojure.edn :as edn]
             [datahike.api :as d]
             [dvergr.catalog.room :as catalog]
             [dvergr.rooms.files :as files]
@@ -189,12 +190,14 @@
           (contains? seen cause) false
           :else (recur (.getCause ^Throwable cause) (conj seen cause)))))
 
-(defn inspect-snapshot [name snapshot]
-  (let [problems (catalog/check-files (:files snapshot))]
+(defn inspect-snapshot
+  ([name snapshot] (inspect-snapshot name snapshot :benchmark))
+  ([name snapshot purpose]
+  (let [problems (catalog/check-files (:files snapshot) purpose)]
     (if (seq problems)
       {:ok false :name name :checker-executed? false :problems problems}
       (try
-        (let [bundle (catalog/bundle name (:files snapshot))
+        (let [bundle (catalog/bundle name (:files snapshot) purpose)
               evaluation (dataset/manifest (:files snapshot) (keys (:cases bundle)))]
           (when-not (m/validate catalog/Definition (:definition bundle))
             (invalid! "workflow.edn must be a valid workflow definition map"))
@@ -211,7 +214,34 @@
           (when (interrupted-failure? e)
             (.interrupt (Thread/currentThread))
             (throw e))
-          {:ok false :name name :checker-executed? false :problems [(ex-message e)]})))))
+          {:ok false :name name :checker-executed? false :problems [(ex-message e)]}))))))
+
+(defn program-diagnostics
+  "Fixed diagnostics derived from authored bytes, never arbitrary exception text."
+  [files]
+  (let [definition (try (edn/read-string (get files "workflow.edn" ""))
+                        (catch Exception _ ::unreadable))
+        params (when (and (map? definition) (map? (:params definition)))
+                 (dissoc (:params definition) :simmis/checker-profile))]
+    (cond-> []
+      (not (contains? files "workflow.edn")) (conj "workflow.edn is missing.")
+      (and (contains? files "workflow.edn") (= ::unreadable definition))
+      (conj "workflow.edn is not valid EDN.")
+      (and (contains? files "workflow.edn") (not= ::unreadable definition)
+           (not (m/validate catalog/Definition definition)))
+      (conj "workflow.edn needs a title, task and supported definition fields.")
+      (and (map? params)
+           (not (every? (fn [[key value]] (and (keyword? key) (nil? (namespace key))
+                                              (re-matches #"[A-Za-z][A-Za-z0-9_-]{0,63}" (name key))
+                                              (string? value) (<= (count value) 4000))) params)))
+      (conj "Ordinary workflow parameters must use unqualified names and literal string values."))))
+
+(defn benchmark-diagnostics [files]
+  (cond-> []
+    (not (contains? files "checker.clj")) (conj "Add checker.clj to score benchmark outputs.")
+    (not (some #(or (= % "fixture-pack.edn") (str/starts-with? % "fixtures/")
+                    (str/starts-with? % "cases/")) (keys files)))
+    (conj "Add executable fixtures or cases; Markdown evaluation examples alone are not a benchmark.")))
 
 (defn details-of
   "HOST INTERNAL pure formatting of an already captured snapshot. No live
@@ -220,11 +250,21 @@
   [name source]
   (prefix! name)
   (let [revision (str (source-revision name source))
-        inspection (assoc (inspect-snapshot name source) :revision revision)]
+        program (inspect-snapshot name source :program)
+        problems (program-diagnostics (:files source))
+        benchmark (inspect-snapshot name source)
+        inspection (cond-> (assoc program :revision revision
+                                         :benchmark-ready? (boolean (:ok benchmark))
+                                         :benchmark-problems (if (:ok benchmark) []
+                                                               (let [known (benchmark-diagnostics (:files source))]
+                                                                 (if (seq known) known ["Benchmark source has invalid definition, fixture or evaluation metadata."]))))
+                     (seq problems) (assoc :ok false :problems problems)
+                     (and (not (:ok program)) (empty? problems))
+                     (assoc :problems ["Workflow source has invalid definition, fixture or evaluation metadata."]))]
     (cond-> {:name name :revision revision
              :files (:files source) :inspection inspection}
       (:ok inspection)
-      (assoc :definition (select-keys (:definition (catalog/bundle name (:files source)))
+      (assoc :definition (select-keys (:definition (catalog/bundle name (:files source) :program))
                                       [:title :task :params :capture])))))
 
 (defn details-in
@@ -285,7 +325,7 @@
   "Bound diagnostics and metadata for MCP's finite JSON result envelope.
    Full source and case filenames remain available through source pages."
   [inspection]
-  (cond-> (select-keys inspection [:ok :name :bundle :revision :files :bytes :checker-executed? :evaluation])
+  (cond-> (select-keys inspection [:ok :name :bundle :revision :files :bytes :checker-executed? :evaluation :benchmark-ready? :benchmark-problems])
     (:title inspection) (assoc :title (subs (:title inspection) 0 (min 256 (count (:title inspection)))))
     (contains? inspection :problems)
     (assoc :problems (mapv #(subs % 0 (min 256 (count %))) (take 10 (:problems inspection)))
@@ -326,7 +366,7 @@
       (cond-> {:name name :revision (:revision source) :file-offset file-offset :file-count (count entries)
                :files (mapv (fn [[path text]] {:path path :bytes (alength (.getBytes ^String text StandardCharsets/UTF_8))})
                             (subvec entries file-offset end))
-               :inspection (-> (select-keys inspection [:ok :name :bundle :checker-executed?])
+               :inspection (-> (select-keys inspection [:ok :name :bundle :checker-executed? :benchmark-ready? :benchmark-problems])
                                (assoc :problems (mapv #(subs % 0 (min 256 (count %))) (take 10 (:problems inspection)))
                                       :problem-count (count (:problems inspection))))}
         (< end (count entries)) (assoc :next-file-offset end)))))

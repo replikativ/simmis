@@ -35,7 +35,8 @@
 ;; authoritative parse is `routes/route->ref`. More specific patterns first,
 ;; though `match-route` is arity-sensitive so it hardly matters.
 (def ^:private route-defs
-  [["/page/:scope/:page"      :page]
+  [["/room/:room/workflows/:workflow/:action" :workflow]
+   ["/page/:scope/:page"      :page]
    ["/room/:room/m/:message"  :message]
    ["/room/:room/files"       :files]
    ["/room/:room"             :room]

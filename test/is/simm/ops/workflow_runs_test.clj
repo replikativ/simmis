@@ -342,3 +342,14 @@
                           [:db/add [:room/id (:room w)] :room/owner [:party/id (:non-member w)]]])
         (is (thrown? clojure.lang.ExceptionInfo
                      (workflow-runs/submit! conn ec/*execution-context* principal (:room w) nil input)))))))
+
+(deftest ordinary-programs-need-no-fake-benchmark-or-fixtures
+  (let [files {"workflow.edn" "{:title \"Plain\" :task \"Write /out/result.md\" :capture [\"/out\"]}"}
+        source (snapshot files)
+        bundle (catalog/bundle "plain" files :program)
+        planned (workflow-runs/plan-source source {:name "plain" :expected-bundle (:id bundle)})]
+    (is (= {} (:inputs planned)))
+    (is (= files (:source planned)))
+    (is (= "Write /out/result.md" (:task planned)))
+    (is (nil? (get-in planned [:bundle :checker])))
+    (is (thrown? Exception (catalog/bundle "plain" files)))))

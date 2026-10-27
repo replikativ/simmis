@@ -250,3 +250,66 @@
                                  (is (= ::authoring/invalid
                                         (:type (ex-data (failure #(authoring/write! host (principal w) (str (:room w))
                                                                                     (request before {"gold.edn" "Edit"}))))))))))))
+
+(deftest saving-an-agent-authored-untracked-bundle-commits-only-its-complete-subtree
+  (@#'fixture/with-fixture
+   true
+   (fn [{:keys [w host owned]}]
+     (let [files {"workflow.edn" "{:title \"Draft\" :task \"Read /workflows/echo/instructions.md\"}"
+                  "instructions.md" "Retain this instruction."
+                  "flow.mmd" "flowchart LR\n A-->B\n"
+                  "evaluation-cases.md" "Human examples, not executable cases."}
+           native-write native/write-to-completion!
+           completion (atom nil)]
+       (doseq [[path text] files]
+         (repo/write! owned (str "workflows/echo/" path) (.getBytes ^String text "UTF-8")
+                      {:mode (if (= path "instructions.md") 33261 33188)}))
+       (repo/write! owned "outside.md" (.getBytes "Unrelated untracked draft" "UTF-8"))
+       (let [before (opened host w)
+             result (try
+                      (with-redefs [native/write-to-completion!
+                                    (fn [& args] (let [reply (apply native-write args)] (reset! completion reply) reply))]
+                        (authoring/write! host (principal w) (str (:room w))
+                                          (request before {"workflow.edn" "{:title \"Repaired\" :task \"Write /out/report.md\"}"
+                                                           "flow.mmd" nil "diagram.mmd" (get files "flow.mmd")})))
+                      (catch clojure.lang.ExceptionInfo error error))]
+         (is (map? result)
+             (pr-str {:completion (:completion @completion)
+                      :native-error (some-> (:error @completion) ex-message)
+                      :native-data (some-> (:error @completion) ex-data)
+                      :native-stack (some->> (:error @completion) .getStackTrace (take 8) (mapv str))}))
+         (when (map? result)
+           (is (true? (get-in result [:write :applied?])))
+           (is (= (get files "instructions.md") (get-in result [:source :files "instructions.md"])))
+           (is (= (get files "evaluation-cases.md") (get-in result [:source :files "evaluation-cases.md"])))
+           (is (= 33261 (get-in result [:write :subtree :entries "instructions.md" :mode])))
+           (is (contains? (get-in result [:source :files]) "diagram.mmd"))
+           (is (not (contains? (get-in result [:source :files]) "flow.mmd")))
+           (is (= ["outside.md"] (:untracked (repo/status owned))))
+           (is (empty? (:staged (repo/status owned))))))))))
+
+(deftest whole-bundle-publication-holds-preexisting-index-work-without-explicit-deletion
+  (doseq [scenario [:deleted-unsubmitted :outside-staged :deleted-explicit]]
+    (@#'fixture/with-fixture
+     true
+     (fn [{:keys [w host owned]}]
+       (seed! owned source/fixture)
+       (repo/write! owned "outside.md" (.getBytes "Unrelated draft" "UTF-8"))
+       (if (= scenario :outside-staged)
+         (repo/stage! owned ["outside.md"])
+         (repo/remove! owned "workflows/echo/gold.edn"))
+       (let [before (opened host w) tree (query/worktree @owned)
+             refs (query/refs @owned) status (repo/status owned)
+             edits (cond-> {"workflow.edn" (get source/fixture "workflow.edn")}
+                     (= scenario :deleted-explicit) (assoc "gold.edn" nil))
+             result (try (authoring/write! host (principal w) (str (:room w)) (request before edits))
+                         (catch clojure.lang.ExceptionInfo error error))]
+         (if (= scenario :deleted-explicit)
+           (do (is (map? result))
+               (is (true? (get-in result [:write :applied?])))
+               (is (= ["outside.md"] (:untracked (repo/status owned)))))
+           (do (is (instance? clojure.lang.ExceptionInfo result))
+               (is (contains? #{::authoring/pending ::authoring/unavailable} (:type (ex-data result))))
+               (is (= tree (query/worktree @owned)))
+               (is (= refs (query/refs @owned)))
+               (is (= status (repo/status owned))))))))))

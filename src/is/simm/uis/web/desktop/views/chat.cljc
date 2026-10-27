@@ -30,6 +30,7 @@
             [is.simm.uis.web.desktop.proposal-card :as proposal-card]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.model.references :as refs]
+            [is.simm.documents.workflow-links :as workflow-links]
             [clojure.string :as str]
             #?(:cljs [is.simm.uis.web.desktop.markdown :as md])
             #?(:cljs [is.simm.uis.web.desktop.views.conversation-capture :as capture-view])
@@ -455,7 +456,7 @@
 
    Note: Always renders all elements to avoid spindel delta rendering issues.
   CSS handles visibility based on .chat-message--own class."
-  [{:keys [id author-id author-name content reasoning timestamp is-own? is-ai?
+  [{:keys [id room-id author-id author-name content reasoning timestamp is-own? is-ai?
            syntax-pref attachment-blob attachment-mime thread-parent
            in-reply-to reply-count on-jump-parent on-reply audience run-id
            activities mention-handles on-open-thread on-open-run on-open-proposal
@@ -580,6 +581,16 @@
          :clj nil)
       (activity-chips activities)
       #?(:cljs (when capture (capture-view/panel capture)) :clj nil)
+        (when (and is-ai? room-id)
+          (for [workflow (workflow-links/mentioned-workflows content)]
+            (el/div {:key (str "workflow-" workflow) :class "workflow-chat-card"}
+              (el/strong {} workflow)
+              (el/p {} "Workflow draft · open to check setup and choose limits.")
+              (el/div {:class "workflow-toolbar"}
+                (for [[action label] [[:run "Run once"] [:schedule "Schedule"] [:benchmark "Benchmark"]]]
+                  (el/a {:key (name action)
+                         :href (workflow-links/route {:room room-id :workflow workflow :action action})} label))))))
+
       ;; One typed application object may replace the generic prose body with
       ;; a domain-aware projection. The Proposal remains owned by Simmis; this
       ;; message is only its durable conversational home and thread root.
@@ -651,6 +662,9 @@
                             ;; .page-ref spans (human messages get this via
                             ;; render-rich-content already)
                             (linkify-page-refs! md-el)
+                            (doseq [anchor (array-seq (.querySelectorAll md-el "a[href]"))]
+                              (when-let [href (workflow-links/file-route room-id (.getAttribute anchor "href"))]
+                                (.setAttribute anchor "href" href)))
                             ;; Post-process: convert Clojure code blocks to Superficie if pref is set
                             (when (= syntax-pref :superficie)
                               (doseq [code-el (array-seq
