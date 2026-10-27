@@ -48,17 +48,32 @@
                 (el/small {} "Only the first 256 registered model options are shown.")))))
 
 (defn- benchmark-model-fields [state form set-form]
-  (let [selected (set (remove str/blank? (editor/benchmark-models form)))]
+  (let [models (let [selected (editor/benchmark-models form)] (if (seq selected) selected [""]))
+        rows (when (= :ready (:readiness-status state)) (get-in state [:readiness :models]))]
     (el/fieldset {:class "workflow-model-candidates"}
       (el/legend {} "Model candidates · choose up to three")
-      (for [{:keys [id label provider-label credential-label]} (when (= :ready (:readiness-status state)) (get-in state [:readiness :models]))]
-        (el/label {:key id :class "workflow-field"}
-          (el/input {:type "checkbox" :checked (contains? selected id)
-                     :disabled (and (not (contains? selected id)) (>= (count selected) 3))
-                     :on-change (fn [event]
-                                  (let [checked? #?(:cljs (.. event -target -checked) :clj false)]
-                                    (set-form :models (vec (sort ((if checked? conj disj) selected id))))))})
-          (el/span {} (str label " · " provider-label " · " credential-label))))
+      (for [[index selected] (map-indexed vector models)]
+        (el/div {:key index :class "workflow-toolbar"}
+          (el/label {:class "workflow-field"}
+            (el/span {} (str "Candidate " (inc index)))
+            (el/select {:value selected :aria-label (str "Candidate " (inc index) " model")
+                        :on-change (fn [event]
+                                     (set-form :models (assoc (vec models) index #?(:cljs (.. event -target -value) :clj selected))))}
+              (el/option {:value ""} "Choose a model…")
+              (when (and (seq selected) (not (some #(= selected (:id %)) rows)))
+                (el/option {:value selected :disabled true} (str selected " · saved choice; not currently verified")))
+              (for [{:keys [id label provider-label credential-label]} rows]
+                (el/option {:key id :value id
+                            :disabled (some #(and (not= index (first %)) (= id (second %))) (map-indexed vector models))}
+                  (str label " · " provider-label " · " credential-label)))))
+          (when (> (count models) 1)
+            (el/button {:type "button" :aria-label (str "Remove candidate " (inc index))
+                        :on-click (fn [_] (set-form :models (vec (concat (subvec (vec models) 0 index)
+                                                                      (subvec (vec models) (inc index))))))}
+              "Remove"))))
+      (when (< (count models) 3)
+        (el/button {:type "button" :disabled (some str/blank? models)
+                    :on-click (fn [_] (set-form :models (conj (vec models) "")))} "Add model candidate"))
       (when (not= :ready (:readiness-status state))
         (el/p {:role "status"} "Verifying model options. Previous credential observations are not current."))
       (el/p {:class "workflow-note"}
@@ -172,7 +187,8 @@
         display-cases (if benchmark? (editor/benchmark-cases (:inspection source) form)
                           (get-in source [:inspection :cases]))
         local? (editor/local? form)
-        model-selected? (or local? (if benchmark? (some #(not (str/blank? %)) (editor/benchmark-models form))
+        model-selected? (or local? (if benchmark? (and (seq (editor/benchmark-models form))
+                                                                            (every? #(not (str/blank? %)) (editor/benchmark-models form)))
                                                      (not (str/blank? (:model form)))))
         setup-card-visible? (contains? #{:missing :installed :customized :pending :upgrade-available :changed} (get-in state [:wiki-setup :status]))
         cli? (editor/cli? form)
@@ -237,6 +253,15 @@
                               (el/div {}
                                       (el/h3 {} (or (get-in source [:definition :title]) selected))
                                       (el/p {:class "workflow-note"} "Reusable work prepared in chat. Run it, schedule it, or inspect its results here.")
+                                      (let [problems (if-not (get-in source [:inspection :ok])
+                                                       (get-in source [:inspection :problems])
+                                                       (when (and benchmark? (false? (get-in source [:inspection :benchmark-ready?])))
+                                                         (get-in source [:inspection :benchmark-problems])))]
+                                        (when (seq problems)
+                                          (el/div {:class "workflow-readiness-summary" :role "status"}
+                                            (el/strong {} (if (get-in source [:inspection :ok]) "Benchmark setup needed" "Workflow setup needed"))
+                                            (for [problem problems] (el/p {:key problem} problem))
+                                            (el/p {} "Ask the room’s agent to repair this setup, then return here."))))
                                       (when merge?
                                         (el/div {:class "workflow-toolbar" :aria-label "Workflow actions"}
                                           (el/button {:on-click (fn [_] (change editor/choose-action :run))} "Run once")

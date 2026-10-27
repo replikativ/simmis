@@ -272,3 +272,27 @@
           (is (str/includes? (.-textContent container) "Verifying model options")))
         (finally (when @discharge (browser/unmount! @discharge))
                  (.remove container) (context/stop-context! ctx))))))
+
+(deftest benchmark-prerequisites-are-visible-without-opening-source-code
+  (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+        source {:name "draft" :revision "c1d56a1b-63f9-414c-a6ad-feb35d5e709d"
+                :files {"workflow.edn" "{}"} :definition {:params {}}
+                :inspection {:ok true :bundle "bundle" :cases [] :benchmark-ready? false
+                             :benchmark-problems ["Add checker.clj to score benchmark outputs."]}}
+        draft (-> (editor/draft source) (assoc-in [:form :mode] "benchmark"))
+        discharge (atom nil)]
+    (.appendChild (.-body js/document) container)
+    (try
+      (binding [ec/*execution-context* ctx]
+        (reset! discharge (browser/mount! container
+          (workflows/view "Lab" {:selected "draft" :drafts {"draft" draft}
+                                 :permissions {:merge? true :operator? true}}
+                                {:room-id "room" :change (fn [& _])})))
+        (let [summary (.querySelector container ".workflow-readiness-summary")]
+          (is (some? summary))
+          (is (nil? (.closest summary "details")))
+          (is (str/includes? (.-textContent summary) "Add checker.clj")))
+        (is (= 1 (.-length (.querySelectorAll container ".workflow-model-candidates select"))))
+        (is (= 0 (.-length (.querySelectorAll container ".workflow-model-candidates input[type=checkbox]")))))
+      (finally (when @discharge (browser/unmount! @discharge))
+               (.remove container) (context/stop-context! ctx)))))
