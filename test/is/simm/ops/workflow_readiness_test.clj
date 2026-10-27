@@ -43,7 +43,8 @@
                   readiness/exact-model-options (constantly {:models [] :models-truncated? false})
                   rooms/live-room (fn [& _] (throw (Exception. "Must not hydrate")))
                   resource/balance (fn [& _] (throw (Exception. "Must not read absent Room")))]
-      (is (= {:models [] :models-truncated? false :allowance {:status :unavailable :reason :room-not-active}}
+      (is (= {:models [] :models-truncated? false :allowance {:status :unavailable :reason :room-not-active}
+              :default-model {:status :unavailable :reason :configured-model-unavailable}}
              (readiness/read-on-host! {} {} "room")))
       (is (= [:authorize :authorize] @calls)))))
 
@@ -204,7 +205,8 @@
              (doseq [kind [:owner :member]]
                (let [reply (:result (world/inbound! (world/principal w kind) "load-workflow-readiness!"
                                       {:room-id-str (str (:room w))}))]
-                 (is (= {:models [] :allowance {:status :observed :microdollars "0" :model-dispatches "0"}} reply))))
+                 (is (= {:models [] :allowance {:status :observed :microdollars "0" :model-dispatches "0"}
+                         :default-model {:status :unavailable :reason :configured-model-unavailable}} reply))))
              (is (= 2 @calls))
              (is (empty? @hydrations))))
          (finally (lifetime/fence! owner) (lifetime/join! owner 30000)))))))
@@ -257,3 +259,24 @@
                    (java.math.BigDecimal. (.shiftLeft java.math.BigInteger/ONE 100000))
                    -1 -1M 1.5M 1.0 "1"]]
       (is (thrown? Exception (quantity value))))))
+
+(deftest model-recommendation-follows-human-preference-without-account-requests
+  (let [rows [{:id "codex-subscription-luna-6" :label "Luna" :credential-status :present}
+              {:id "codex-subscription-sol-6.1" :label "Sol" :credential-status :present}]]
+    (with-redefs [d/entity (fn [& _] {:party/preferred-model "codex-subscription-luna-6"})
+                  selection/model-availability (fn [& _] (throw (Exception. "No account lookup")))]
+      (is (= {:status :selected :id "codex-subscription-luna-6" :label "Luna" :source :user-preference}
+             (readiness/default-model :db :human rows)))
+      (is (= :unavailable (:status (readiness/default-model :db :human (subvec rows 1)))))
+      (is (= :unavailable (:status (readiness/default-model :db :human [(assoc (first rows) :credential-status :undetected)])))))))
+
+(deftest default-past-the-first-page-is-retained-without-provider-lookup
+  (let [id "z-preferred" rows (conj (mapv #(hash-map :id (format "a-%03d" %) :provider :codex-subscription :api-type :openai-responses) (range 300))
+                                  {:id id :provider :codex-subscription :api-type :openai-responses})]
+    (with-redefs [registry/list-models (constantly rows) catalog/model-label identity
+                  selection/credential-present? (constantly true)
+                  selection/model-availability (fn [& _] (throw (Exception. "No account lookup")))]
+      (let [result (readiness/exact-model-options id)]
+        (is (= 256 (count (:models result))))
+        (is (:models-truncated? result))
+        (is (some #(= id (:id %)) (:models result)))))))

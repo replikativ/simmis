@@ -1157,13 +1157,33 @@ src/is/simm/
 
 Chat repository-relative links resolve against the message's own Room, rather
 than the browser's current URL. Links to workflow files expose a small action
-card. Its Run once, Schedule and Benchmark links open the current canonical
-saved workflow and the corresponding setup. Each tab owns its draft/navigation
-state. Calendar setup exposes the existing daily/weekly/monthly scheduler with
-an explicit time and time zone, alongside interval schedules. Final confirmation
-uses the original frozen cadence. Following a link never admits work,
-allocates resources or enables a schedule. Proposal edits must first be adopted.
-These are the same controls as the Room Workflows view, not a second executor.
+card for the current canonical saved workflow, rather than freezing the historical
+message's file contents. A small, inert `proposal.edn` beside `workflow.edn`
+can propose one Run or a schedule: `{:version 1 :action :run}`, or
+`{:version 1 :action :schedule :cadence {:every "week" :on "monday"
+:at "09:00" :tz "America/Vancouver"}}`. Its closed host-side reader accepts
+one EDN form of at most 4096 UTF-8 bytes, with optional exact model, case and
+existing finite execution limits. It grants no authority. Content Proposal
+edits must be adopted before the canonical setup becomes actionable.
+
+Review setup shows the exact model, cadence, ceilings, output paths and retained
+or discarded execution mode inline. An omitted model follows the confirming
+human's recorded preference, then the configured server default, using registered
+metadata within that selection only. This does not refresh catalogs or promise
+account access. An explicit model is never replaced by another model. Available
+options retain the configured choice even outside the first 256 sorted entries.
+Advanced remains an optional inspector/editor. Every live chat card for one
+session/Room/workflow and its Advanced tab shares one context-owned draft and
+immutable request journal. Human edits invalidate the previous summary.
+
+Inline confirmation rechecks the live UI context, session, socket/authority
+observation, source revision, model observation and exact offered form. It uses
+the existing human admission service and request identity, including identical
+retry and uncertain-outcome handling. Rendering or reviewing never dispatches,
+adds allowance or enables a schedule. Each confirmed recurring occurrence draws
+from the existing finite shared Room allowance; no refill or output merge is
+automatic. Historical chat only links to the current source. Benchmark remains
+a secondary setup link.
 
 Ordinary source inspection and execution use the catalog's explicit `:program`
 validation purpose. They do not require a benchmark checker or fixtures. Strict

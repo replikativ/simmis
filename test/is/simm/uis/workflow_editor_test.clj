@@ -427,3 +427,60 @@
                                                                  {:room/id "target" :room/name "Research workspace"}]})))
     (is (= "Renamed workspace" (editor/room-label data [{:room/id "target" :room/name "Renamed workspace"}]))))
   (is (= "Explicit label" (editor/room-label {:room-id "target" :room-name "Explicit label"} {:rooms []}))))
+
+(def setup-readiness
+  {:default-model {:status :selected :id "luna" :label "Luna"}
+   :models [{:id "luna" :label "Luna" :credential-status :present}
+            {:id "sol" :label "Sol" :credential-status :present}
+            {:id "missing" :credential-status :undetected}]})
+
+(deftest automatic-choice-is-inert-and-preserves-explicit-overrides
+  (let [draft (editor/draft source)]
+    (is (= "luna" (get-in (editor/automatic-model draft setup-readiness) [:form :model])))
+    (is (= "sol" (get-in (editor/automatic-model (assoc-in draft [:form :model] "sol") setup-readiness) [:form :model])))
+    (is (nil? (:submission (editor/automatic-model draft setup-readiness))))))
+
+(deftest setup-offers-pin-source-model-and-explicit-cadence-without-dispatch
+  (let [draft (editor/draft source)
+        run (editor/setup-offer draft setup-readiness nil)
+        schedule (editor/setup-offer
+                   (assoc-in draft [:source :setup] {:status :ready :intent {:version 1 :action :schedule
+                     :cadence {:every "week" :on "monday" :at "09:00" :tz "America/Vancouver"}}}) setup-readiness nil)]
+    (is (= :run (:action run)))
+    (is (= "luna" (get-in run [:payload :model])))
+    (is (= (:revision source) (get-in run [:payload :expected-owned-source])))
+    (is (nil? (get-in run [:payload :request-id])))
+    (is (= :schedule (:action schedule)))
+    (is (= "America/Vancouver" (get-in schedule [:payload :cadence :tz])))
+    (is (true? (get-in schedule [:payload :enabled?])))
+    (is (nil? (:submission draft)))
+    (is (thrown? Exception (editor/setup-offer draft setup-readiness :schedule)))
+    (is (thrown? Exception (editor/setup-offer (assoc draft :source-stale? true) setup-readiness :run)))
+    (is (thrown? Exception (editor/setup-offer (assoc-in draft [:source :setup] {:status :invalid}) setup-readiness nil)))
+    (is (thrown? Exception (editor/setup-offer draft (assoc setup-readiness :default-model {:status :unavailable}) nil)))
+    (is (thrown? Exception (editor/setup-offer (assoc-in draft [:source :setup :intent] {:model "missing"}) setup-readiness nil)))
+    (is (= "sol" (get-in (editor/setup-offer (assoc-in draft [:source :setup :intent] {:model "sol"}) setup-readiness nil) [:payload :model])))
+    (is (thrown? Exception (editor/setup-offer (assoc-in draft [:source :setup :intent] {:limits {:max-dispatches 1000}}) setup-readiness nil)))
+    (is (thrown? Exception (editor/setup-offer (assoc-in draft [:source :setup :intent] {:action :schedule :cadence {:every "week" :on "monday" :at "09:00" :tz "UTC" :interval-ms 60000}}) setup-readiness nil)))))
+
+(deftest checkpoint-offer-preserves-discard-and-advanced-edits-can-be-reviewed
+  (let [draft (editor/draft (assoc source :files (starter/source)))
+        offer (editor/setup-offer draft setup-readiness nil)
+        configured (assoc draft :form (:form offer) :setup-form-revision (:revision source))
+        edited (assoc-in configured [:form :max-dispatches] "2")]
+    (is (= "discard" (get-in offer [:payload :limits :settlement])))
+    (is (= 2 (get-in (editor/setup-offer edited setup-readiness nil) [:payload :limits :max-dispatches])))))
+
+(deftest advanced-initializes-proposed-settings-before-model-is-configured
+  (let [draft (assoc-in (editor/draft source) [:source :setup]
+                       {:status :ready :intent {:version 1 :action :schedule
+                        :cadence {:every "week" :on "monday" :at "09:00" :tz "UTC"}
+                        :limits {:max-dispatches 8}}})
+        configuration (editor/setup-configuration draft {} nil)
+        edited (-> draft (assoc :form (:form configuration) :setup-form-revision (:revision source))
+                   (assoc-in [:form :model] "sol") (assoc-in [:form :max-dispatches] "2"))
+        offer (editor/setup-offer edited setup-readiness nil)]
+    (is (= "week" (get-in configuration [:form :schedule-cadence])))
+    (is (= "8" (get-in configuration [:form :max-dispatches])))
+    (is (= "sol" (get-in offer [:payload :execution :model])))
+    (is (= 2 (get-in offer [:payload :execution :limits :max-dispatches])))))

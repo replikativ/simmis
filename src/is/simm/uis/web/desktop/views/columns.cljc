@@ -16,6 +16,10 @@
             [org.replikativ.spindel.effects.track :refer [track]]
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.routes :as routes]
+            [is.simm.documents.workflow-links :as workflow-links]
+            #?(:cljs [is.simm.uis.web.desktop.views.workflow-setup :as workflow-setup])
+            #?(:cljs [is.simm.uis.web.desktop.workflow-actions :as workflow-actions])
+            #?(:cljs [is.simm.uis.web.desktop.memory-sync :as memory-sync])
             [is.simm.uis.web.desktop.backlink-target :as bt]
             [is.simm.uis.web.desktop.tab-heal :as tab-heal]
             [is.simm.uis.web.desktop.room-actions :as room-actions]
@@ -944,6 +948,7 @@
              run-facts (iv/get-new (track sig/run-server-facts))
              captured-results (iv/get-new (track sig/captured-results))
              workflow-state (iv/get-new (track sig/workflow-editor-state))
+             _workflow-stream (iv/get-new (track memory-sync/state))
              conversation-captures (iv/get-new (track sig/conversation-captures))
              capture-connection (iv/get-new (track sig/memory-connection))
              ;; Canonical Proposal review projection. Inline chat cards consume
@@ -1588,7 +1593,14 @@
              visible-items
              (mapv
               (fn [item]
-                (let [item (assoc item ::capture-state
+                (let [workflows (when (and (not time-travel?) (:S.Message/is-ai item))
+                                  (workflow-links/mentioned-workflows (:block/content item)))
+                      _ (doseq [workflow workflows]
+                          (workflow-setup/observe! {:room-id (str room-id) :workflow workflow :tab-id tab-id :col-id col-id}))
+                      item (assoc item ::workflow-states
+                                  (into {} (map (fn [workflow]
+                                                  [workflow (get workflow-state (workflow-actions/state-key room-id (workflow-setup/owner workflow)))])) workflows)
+                                 ::capture-state
                                  (capture-model/reconcile
                                   (get (:conversation-captures data)
                                        (capture-actions/state-key (:id @sig/current-user) room-id (:entity/uuid item)))
@@ -2025,6 +2037,8 @@
                     ;; default: :message
                     (chat/message-view
                       {:room-id (str room-id)
+                       :workflow-context {:tab-id tab-id :col-id col-id :read-only? time-travel?}
+                       :workflow-states (::workflow-states item)
                        :id (str (:entity/uuid item))
                        :author-id (str (:S.Message/author-uuid item))
                        :author-name (:S.Message/author-name item)

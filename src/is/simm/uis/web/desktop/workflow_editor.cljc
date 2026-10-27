@@ -427,3 +427,69 @@
      :results (cond benchmark? "Checker-backed benchmark results; nothing merges automatically."
                     (= "review" (:settlement limits)) "Retained output requires explicit review; nothing merges automatically."
                     :else "Work is discarded after output capture; nothing merges automatically.")}))
+
+(defn automatic-model
+  "Fill only an unchosen model. Explicit human choices are never replaced."
+  [draft readiness]
+  (if (and (str/blank? (get-in draft [:form :model] ""))
+           (= :selected (get-in readiness [:default-model :status])))
+    (assoc-in draft [:form :model] (get-in readiness [:default-model :id]))
+    draft))
+
+(defn setup-configuration
+  "Inert initial form from saved intent. Once configured, preserve human edits.
+   This does not establish readiness or confer execution authority."
+  [draft readiness action]
+  (when (= :invalid (get-in draft [:source :setup :status]))
+    (invalid! "Ask the agent to repair proposal.edn before confirming setup"))
+  (let [intent (get-in draft [:source :setup :intent])
+        action (or action (:action intent) :run)
+        configured? (= (:setup-form-revision draft) (get-in draft [:source :revision]))
+        explicit (:model intent)
+        model (if configured?
+                (if (and (nil? explicit) (= (get-in draft [:form :model]) (:setup-default-model draft)))
+                  (get-in readiness [:default-model :id]) (get-in draft [:form :model]))
+                (or explicit (get-in readiness [:default-model :id]) ""))
+        cadence (:cadence intent)
+        form (if configured? (assoc (:form draft) :model model)
+               (merge (dissoc (:form draft) :models)
+                      {:backend "hosted" :mode "run" :model model}
+                      (when (:case intent) {:case (:case intent)})
+                      (into {} (map (fn [[key value]] [key (str value)])) (:limits intent))
+                      (when (and (= :schedule action) cadence)
+                        {:schedule-cadence (or (:every cadence) "interval")
+                         :schedule-tz (:tz cadence) :schedule-at (:at cadence)
+                         :schedule-on (:on cadence) :schedule-day (str (:on-day cadence))
+                         :schedule-minutes (str (when-let [ms (:interval-ms cadence)] (quot ms 60000)))})))]
+    {:action action :form form :cadence cadence :initial? (not configured?)
+     :model-source (cond (= model explicit) :workflow-proposal
+                         (= model (get-in readiness [:default-model :id])) (get-in readiness [:default-model :source])
+                         :else :human-choice)}))
+
+(defn setup-offer
+  "Freeze inert setup into an existing admission payload. The UI must fence
+   current observations and obtain explicit confirmation before dispatch."
+  [draft readiness action]
+  (let [{:keys [action form cadence initial? model-source]} (setup-configuration draft readiness action)
+        model (:model form)
+        row (some #(when (= model (:id %)) %) (:models readiness))
+        _ (when-not (and row (= :present (:credential-status row)))
+            (invalid! "Configure your preferred model or choose a model under Advanced"))
+        _ (when-not (and (contains? #{:run :schedule} action) (= "run" (:mode form)) (= "hosted" (:backend form)))
+            (invalid! "Use Advanced for benchmarks and alternative execution backends"))
+        _ (when (and initial? (= :schedule action) (nil? cadence))
+            (invalid! "Ask the agent to propose a time and timezone, or set them under Advanced"))
+        _ (when (and initial? cadence (:interval-ms cadence)
+                     (or (contains? cadence :every) (not (integer? (:interval-ms cadence)))
+                         (not (zero? (mod (:interval-ms cadence) 60000)))))
+            (invalid! "Use whole-minute intervals or an explicit calendar schedule"))
+        prepared (assoc draft :form form)
+        payload (if (= :schedule action) (scheduled-submission prepared nil)
+                    (submission prepared nil))
+        _ (when (and initial? (= :schedule action) (not= cadence (:cadence payload)))
+            (invalid! "Use only the supported fields for the proposed schedule cadence"))]
+    {:action action :model-label (:label row) :model-source model-source
+     :payload payload :form form
+     :title (or (get-in draft [:source :definition :title]) (get-in draft [:source :name]))
+     :task (get-in draft [:source :definition :task])
+     :outputs (get-in draft [:source :definition :capture])}))

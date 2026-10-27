@@ -14,9 +14,10 @@
                                 (<= (alength (.getBytes ^String text "UTF-8")) workflows/max-file-bytes))) files)
                  (<= (reduce + 0 (map #(alength (.getBytes ^String % "UTF-8")) (vals files))) workflows/max-bundle-bytes))
     (throw (ex-info "Supply at most 100 relative UTF-8 workflow files, 512 KiB per file and 2 MiB total" {})))
-  (assoc (workflows/public-inspection
-          (:inspection (workflows/details-of "draft" {:files files :manifest []})))
-         :observation :supplied-files :saved-source-verified? false))
+  (let [details (workflows/details-of "draft" {:files files :manifest []})]
+    (assoc (workflows/public-inspection (:inspection details))
+           :setup-status (get-in details [:setup :status])
+           :observation :supplied-files :saved-source-verified? false)))
 
 (defn action-links [room name]
   (when-not (and (links/uuid-text? (str room)) (workflow-links/name? name))

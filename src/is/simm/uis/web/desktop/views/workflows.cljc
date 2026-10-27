@@ -206,7 +206,7 @@
             (el/p {:class "workflow-note"} "A workflow is a reusable task saved in this room. Each Run executes it separately and produces results or a proposal to review. Ordinary chat does not require a workflow.")
             (el/p {:class "workflow-note"} "Ask an agent to create or improve a workflow. Its instructions and code remain ordinary versioned room files; you can inspect or edit them below.")
             (let [{:keys [status observed-status]} (:wiki-setup state)]
-              (when setup-card-visible?
+              (when (and setup-card-visible? (or (nil? (:canonical-workflow actions)) (= "maintain-wiki" (:canonical-workflow actions))))
                 (el/div {:class "workflow-note"}
                         (el/strong {} "Maintain knowledge · ")
                         (case status
@@ -234,12 +234,13 @@
             (el/div {:class "workflow-layout"}
                     (el/div {:class "workflow-list"}
                             (when-not (:list state) (el/p {} "Loading workflows…"))
-                            (for [name (sort (set (concat (get-in state [:list :names]) (keys (:drafts state)))))]
+                            (for [name (sort (set (concat (get-in state [:list :names]) (keys (:drafts state)))))
+                                  :when (or (nil? (:canonical-workflow actions)) (= name (:canonical-workflow actions)))]
                               (el/button {:key name :class (when (= name selected) "workflow-selected")
                                           :on-click (fn [_] ((:select actions) name))} name))
                             (when (get-in state [:list :next-offset])
                               (el/button {:on-click (fn [_] ((:more actions))) :disabled (:list loading)} "More workflows"))
-                            (when write?
+                            (when (and write? (nil? (:canonical-workflow actions)))
                               (el/details {:class "workflow-new workflow-disclosure" :open (boolean (:new-authoring-open? state))
                                                    :on-toggle #(disclosure/remember-open! % (:new-authoring-open actions))}
                                       (el/summary {} "Create from code")
@@ -571,7 +572,7 @@
             _stream (iv/get-new stream-i)
             _roster (iv/get-new roster-i)
             controller (actions/controller room-data)
-            state (get states (actions/state-key (:room-id room-data) (:tab-id room-data)))]
+            state (get states (actions/state-key (:room-id room-data) (or (:workflow-state-owner room-data) (:tab-id room-data))))]
         ((:observe controller))
         (if (:access-denied? state)
           (el/p {:role "status"} "This room is no longer available to this account.")

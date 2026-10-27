@@ -3,6 +3,7 @@
    definition store. Shape inspection never executes their checker source."
   (:require [clojure.string :as str]
             [clojure.edn :as edn]
+            [is.simm.documents.workflow-proposal :as proposal]
             [datahike.api :as d]
             [dvergr.catalog.room :as catalog]
             [dvergr.rooms.files :as files]
@@ -262,7 +263,9 @@
                      (and (not (:ok program)) (empty? problems))
                      (assoc :problems ["Workflow source has invalid definition, fixture or evaluation metadata."]))]
     (cond-> {:name name :revision revision
-             :files (:files source) :inspection inspection}
+             :files (:files source) :inspection inspection
+             :setup (try {:status :ready :intent (proposal/read-intent (get-in source [:files "proposal.edn"]))}
+                         (catch Exception _ {:status :invalid}))}
       (:ok inspection)
       (assoc :definition (select-keys (:definition (catalog/bundle name (:files source) :program))
                                       [:title :task :params :capture])))))
