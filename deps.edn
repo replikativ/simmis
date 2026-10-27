@@ -322,10 +322,9 @@
         ;; 0.1.370 includes checkpoint admission, bounded HOST fixture scopes
         ;; and exact-incarnation Room teardown. Keep the ordinary runner and
         ;; cleanup owner instead of duplicating execution/accounting here.
-        ;; Track reviewed public runtime-retirement/shutdown work until its
-        ;; Maven release is available; no local checkout is required.
-        org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr.git"
-                              :git/sha "42c4408d6c5714e6da5a72556da8c7547a185605"
+        ;; 0.1.372 retires recorded native Room acquisitions on settlement and
+        ;; shutdown; failed cleanup stays owned for explicit retry.
+        org.replikativ/dvergr {:mvn/version "0.1.372"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.

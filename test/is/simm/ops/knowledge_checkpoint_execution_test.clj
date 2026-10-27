@@ -20,6 +20,7 @@
             [is.simm.ops.knowledge-batch-proof-test :as model-free]
             [is.simm.ops.knowledge-execution-origin :as origin]
             [is.simm.ops.knowledge-workspace :as workspace]
+            [is.simm.ops.knowledge-filing :as filing]
             [is.simm.model.knowledge-pins-test :as pin-fixture]
             [is.simm.model.knowledge-streams-test :as stream-fixture]
             [is.simm.ops.owned-knowledge-admission-test :as fixture]
@@ -123,6 +124,23 @@
            (is (contains? (roots/roots (:store @owned) {:sync? true}) (:work.checkpoint/id journal)))
            (is (empty? (filter #(= :context (:role %)) (:files manifest))))
            (is (= "C2 current context" (bytes/decode-utf8 (repo/read owned "wiki/file.md"))))
+           (is (= :no-op (get-in (filing/prepare conn principal (:room w) room (:id result)) [:disposition :kind])))
+           (let [frozen-input (:input retained-request)]
+             (is (some? (filing/verify-frozen-workflow! frozen-input)))
+             (doseq [altered [(dissoc frozen-input :knowledge/checkpoint)
+                              (let [cid (random-uuid)]
+                                (-> frozen-input
+                                    (assoc-in [:knowledge/checkpoint :basis :commit] cid)
+                                    (assoc-in [:knowledge/checkpoint :origin :commit] cid)))
+                              (assoc-in frozen-input [:knowledge/checkpoint :target :runtime-system] "other-memory")]]
+               (is (thrown? clojure.lang.ExceptionInfo (filing/verify-frozen-workflow! altered))))
+             (let [verified-proof proof/request!]
+               (with-redefs [proof/request! (fn [& args]
+                                             (assoc-in (apply verified-proof args)
+                                                       [:selection :basis :commit] (random-uuid)))]
+                 (is (= :checkpoint-batch-mismatch
+                        (try (filing/prepare conn principal (:room w) room (:id result)) nil
+                             (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))))))
            (is (= grant (binding [ec/*execution-context* (:ctx room)] (resource/balance room))))))))))
 
 (defn- pin-failure-gate [fault]

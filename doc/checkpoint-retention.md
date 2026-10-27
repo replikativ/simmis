@@ -70,6 +70,11 @@ the checkpoint through every wrapper. Preparation requires the actual Run Room's
 native fork descriptor to name the exact checkpoint on the selected overlay;
 matching repository/store identity alone is insufficient.
 
+Output certification derives the same selection from the verified retained batch
+and compares it with the Request. It reconstructs checkpoint selection before
+publication-target binding, preserving the exact executed setup reference.
+Missing, unexpected or substituted selections cannot acquire filing authority.
+
 ## Native acknowledgement
 
 `ops.checkpoint-roots` shares physical pin checks with the existing discovery
@@ -223,8 +228,9 @@ semantic identity confers neither result reuse nor permission to resume work.
 `benchmarks/prepare-checkpoint-fixture` is a HOST-only pure reconstruction route.
 It retains exact bounded source and applies the ordinary native preparation
 checks with the explicit checkpoint-origin policy. Existing dispatch adapters
-refuse these prepared values; ordinary native and CLI entry points continue to
-refuse checkpoint-origin source.
+refuse these prepared values. The copied-context native adapter and CLI/local-
+worker entry points refuse checkpoint-origin source; the owned native facade
+selects the fixed checkpoint adapter.
 
 `ops.benchmark-resolution/reconstruct` reads a bounded canonical submitted Request
 after caller authorization. It checks the Request identity, claim/Job, payload

@@ -17,8 +17,10 @@
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.model.work-requests :as requests]
+            [is.simm.model.work-request-checkpoints :as checkpoints]
             [is.simm.ops.file-output-plan :as plans]
             [is.simm.ops.knowledge-admission :as admission]
+            [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.knowledge-inputs :as inputs]
             [is.simm.ops.knowledge-outputs :as outputs]
             [is.simm.ops.knowledge-workspace :as workspace]
@@ -82,10 +84,20 @@
                                            (select-keys (:submission input) workflows/source-fields)
                                            captured)
         target (get-in input [:knowledge/publication-basis :target])
+        checkpoint-policy (execution-origin/validate-execution! (:source input) (get-in input [:submission :limits]))
+        checkpoint (:knowledge/checkpoint input)
+        _ (when-not (= (some? checkpoint-policy) (some? checkpoint))
+            (refuse! :checkpoint-policy-mismatch))
+        _ (when checkpoint
+            (checkpoints/validate-selection! checkpoint)
+            (when-not (= target (:target checkpoint)) (refuse! :checkpoint-target-mismatch)))
+        initial-setup (if checkpoint
+                        (workspace/with-checkpoint (:world-setup prepared) checkpoint)
+                        (:world-setup prepared))
         verifier (evaluation/evaluator-ref
                   (outputs/with-publication-target (outputs/with-capture work/completion) target))
         setup (evaluation/world-setup-ref
-               (workspace/with-publication-target (:world-setup prepared) target))]
+               (workspace/with-publication-target initial-setup target))]
     (when-not (and (= workflow (:workflow prepared)
                       (get-in definition [:environment/metadata :workflow]))
                    (= (:inputs input) (:inputs prepared))
@@ -183,9 +195,15 @@
         _ (when-not (= (:work.request/intent-id row) (hasch/uuid retained))
             (refuse! :payload-mismatch))
         input (:input retained)
-        batch (when (or (:work.request/knowledge-batch row) (:work.request/knowledge-frozen row)
+        proof (when (or (:work.request/knowledge-batch row) (:work.request/knowledge-frozen row)
                         (contains? input :knowledge/batch) (contains? input :knowledge/batch-control))
-                (processing/expected (batch-proof/request! conn row retained)))
+                (batch-proof/request! conn row retained))
+        batch (when proof (processing/expected proof))
+        _ (when (or (contains? input :knowledge/checkpoint)
+                    (contains? (:source input) "execution-origin.edn"))
+            (when-not (and proof (= (:knowledge/checkpoint input)
+                                   (execution-origin/selection (:source input) proof)))
+              (refuse! :checkpoint-batch-mismatch)))
         {:keys [environment workflow-bundle]} (verify-frozen-workflow! input)
         certified (certified-candidate! room row input)
         _ (workspace/validate-proof! (:target basis)
