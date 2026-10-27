@@ -22,8 +22,8 @@
     (loop [rows (filter #(and (local/request-kinds (:work.request/kind %))
                               (or (:work.request/return-pending? %)
                                   (and (= :local-worker-benchmark (:work.request/kind %))
-                                       (benchmarks/retirement-pending? host-ctx (:work.request/id %)))))
-                       (requests/requests conn))
+                                       (benchmarks/retirement-pending? conn host-ctx (:work.request/id %)))))
+                        (requests/requests conn))
            counts {}]
       (if (or (empty? rows) (.isInterrupted (Thread/currentThread)))
         counts

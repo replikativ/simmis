@@ -13,6 +13,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.model.workers :as workers]
             [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.benchmark-fixture :as native-fixture]
             [is.simm.ops.worker-benchmarks :as local-benchmarks]
             [is.simm.ops.worker-benchmarks-test :as benchmark-fixture]
             [is.simm.ops.worker-files-test :as file-fixture]
@@ -62,8 +63,17 @@
                       (when (or (zero? index) bind-second?) (workers/prepare! conn assignment))
                       {:id child :assignment assignment})) (map-indexed vector (get-in prepared [:basis :frozen])))
             finish! #(do (doseq [{:keys [id]} children] (run/finish! id :failed {})) (run/finish! job :failed {}))]
-        (f (assoc options :clean clean :request id :job job :children children :finish! finish!
-                  :recover! #(recovery/recover-request! conn host-ctx (fn [r] (when (= r (:room w)) room)) id))))
+        ;; This graph fixture constructs its memory-backed native parent
+        ;; directly. Receipt/provisioner validation has separate integration
+        ;; tests; keep all actual world, assignment and wallet cleanup real.
+        (with-redefs [benchmarks/recorded-fixture!
+                      (fn [actual-conn actual-host request-id]
+                        (is (identical? conn actual-conn))
+                        (is (identical? host-ctx actual-host))
+                        (is (= id request-id))
+                        {:room clean :persistent-id (random-uuid)})]
+          (f (assoc options :clean clean :request id :job job :children children :finish! finish!
+                    :recover! #(recovery/recover-request! conn host-ctx (fn [r] (when (= r (:room w)) room)) id)))))
       (finally
         (binding [ec/*execution-context* (:ctx room)]
           (doseq [entry (run/runs room {:root-run-id job :limit 10})
@@ -82,9 +92,7 @@
               (when-not (true? (:ok? result))
                 (throw (ex-info "Fixture Run world did not physically discard"
                                 {:world (:id work) :result result})))))
-          (registry/unregister! (:id clean)))
-        (binding [ec/*execution-context* host-ctx] (registry/unregister! (:id clean)))
-        (discourse/close-room! clean)))))
+          (discourse/close-room! clean))))))
 
 (deftest all-prepared-cells-are-fenced-and-wallets-return-only-after-world-cleanup
   (world/with-world [conn w]
@@ -103,7 +111,7 @@
             ;; The real discard may also validate its own registered incarnation
             ;; from the child's ctx (retained interpreter cleanup). That nested
             ;; substrate validation must not be turned into a fake missing Room.
-            (with-redefs [benchmarks/retire-fixture! (fn [& _] (swap! retired inc))
+            (with-redefs [native-fixture/retire! (fn [& _] (swap! retired inc))
                           forks/discard-deferred!
                           (fn [& args]
                             (vreset! in-discard? true)

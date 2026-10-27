@@ -12,7 +12,7 @@
 (def schema
   (mapv (fn [[ident type]]
           (cond-> {:db/ident ident :db/valueType type :db/cardinality :db.cardinality/one}
-            (= ident :work.request/id) (assoc :db/unique :db.unique/value)
+            (#{:work.request/id :work.request/fixture-room} ident) (assoc :db/unique :db.unique/value)
             (= ident :work.request/knowledge-batch) (assoc :db/index true)))
         [[:work.request/id :db.type/uuid]
          [:work.request/client-id :db.type/uuid]
@@ -28,6 +28,7 @@
          [:work.request/created-at :db.type/instant]
          [:work.request/state :db.type/keyword]
          [:work.request/job :db.type/uuid]
+         [:work.request/fixture-room :db.type/uuid]
          [:work.request/return-pending? :db.type/boolean]
          [:work.request/budget-microdollars :db.type/long]
          [:work.request/max-dispatches :db.type/long]
@@ -98,27 +99,27 @@
   [{:keys [id party room client-id kind limits basis-id digest intent]}]
   (let [claim (random-uuid)
         base (merge (cond-> {:db/id -1
-                         :work.request/id id :work.request/client-id client-id
-                         :work.request/by party :work.request/room room :work.request/kind kind
-                         :work.request/intent-id digest :work.request/claim claim
-                         :work.request/created-at (java.util.Date.) :work.request/state :admitting}
-                          basis-id (assoc :work.request/publication-basis-id basis-id)
-                          (get-in intent [:input :knowledge/batch])
-                          (assoc :work.request/knowledge-batch (get-in intent [:input :knowledge/batch :batch])
-                                 :work.request/knowledge-frozen (get-in intent [:input :knowledge/batch :frozen])))
-                        (into {} (for [k [:budget-microdollars :max-dispatches :max-model-steps :max-worker-admissions :max-cli-runs
-                                          :timeout-ms :settlement]
-                                       :when (contains? limits k)]
+                             :work.request/id id :work.request/client-id client-id
+                             :work.request/by party :work.request/room room :work.request/kind kind
+                             :work.request/intent-id digest :work.request/claim claim
+                             :work.request/created-at (java.util.Date.) :work.request/state :admitting}
+                      basis-id (assoc :work.request/publication-basis-id basis-id)
+                      (get-in intent [:input :knowledge/batch])
+                      (assoc :work.request/knowledge-batch (get-in intent [:input :knowledge/batch :batch])
+                             :work.request/knowledge-frozen (get-in intent [:input :knowledge/batch :frozen])))
+                    (into {} (for [k [:budget-microdollars :max-dispatches :max-model-steps :max-worker-admissions :max-cli-runs
+                                      :timeout-ms :settlement]
+                                   :when (contains? limits k)]
                                    ;; JSON decoders may produce Integer while
                                    ;; Datahike's :db.type/long requires Long.
                                    ;; Preserve the exact intent payload; only
                                    ;; normalize these typed indexed columns.
-                                   [(keyword "work.request" (name k))
-                                    (if (= :settlement k) (get limits k)
-                                        (let [n (get limits k)]
-                                          (when-not (and (integer? n) (<= Long/MIN_VALUE n Long/MAX_VALUE))
-                                            (throw (ex-info "Invalid integral work limit" {:type ::invalid :limit k})))
-                                          (long n)))])))]
+                               [(keyword "work.request" (name k))
+                                (if (= :settlement k) (get limits k)
+                                    (let [n (get limits k)]
+                                      (when-not (and (integer? n) (<= Long/MIN_VALUE n Long/MAX_VALUE))
+                                        (throw (ex-info "Invalid integral work limit" {:type ::invalid :limit k})))
+                                      (long n)))])))]
     {:claim claim :row base}))
 
 (defn inspect-claim
@@ -173,6 +174,25 @@
                      (= (:work.request/publication-basis-id row) basis-id))
         (throw (ex-info "Publication request binding is corrupt" {:type ::invalid-publication-basis})))
       (get-in retained [:input :knowledge/publication-basis]))))
+
+(defn record-fixture-tx
+  "Pure immutable link to a positively owned native fixture, before Job
+   creation. A pointer is integrity data, not native ownership or permission.
+   The fixed HOST verifies the creation receipt and current authority first."
+  [db expected fixture-id]
+  (let [current (request-in db (:work.request/id expected))
+        pointer :work.request/fixture-room]
+    (when-not (and current (uuid? fixture-id)
+                   (= (dissoc current pointer) (dissoc expected pointer))
+                   (= :admitting (:work.request/state current)) (nil? (:work.request/job current))
+                   (#{:benchmark :cli-benchmark :local-worker-benchmark} (:work.request/kind current))
+                   (= (:work.request/id current)
+                      (request-id (:work.request/by current) (:work.request/room current)
+                                  (:work.request/client-id current)))
+                   (or (nil? (get expected pointer)) (= fixture-id (get expected pointer)))
+                   (or (nil? (get current pointer)) (= fixture-id (get current pointer))))
+      (throw (ex-info "Fixture receipt no longer matches its admitting Request" {:type ::fixture-changed})))
+    (if (get current pointer) [] [[:db/add (:db/id current) pointer fixture-id]])))
 
 (defn record-job!
   "Publish the winning request's job pointer BEFORE its evaluation starts.

@@ -19,11 +19,38 @@
    :limits {:budget-microdollars 10000 :max-dispatches 2 :timeout-ms 1000}
    :intent {:task "deterministic fixture" :candidate {:kind :echo}}})
 
+(deftest native-fixture-receipt-is-immutable-idempotent-and-unique
+  (with-store
+    (fn [conn]
+      (let [request (:request (requests/claim! conn (assoc (intent) :kind :benchmark)))
+            fixture (random-uuid)
+            record! #(d/transact conn [[:db.fn/call requests/record-fixture-tx % fixture]])]
+        (record! request)
+        (is (= fixture (:work.request/fixture-room (requests/get-request conn (:work.request/id request)))))
+        (is (empty? (requests/record-fixture-tx @conn request fixture)))
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (requests/record-fixture-tx @conn request (random-uuid))))
+        (let [other (:request (requests/claim! conn (assoc (intent) :kind :benchmark)))]
+          (is (thrown? Exception (record! other))))
+        (requests/record-job! conn (:work.request/id request) (:work.request/claim request) (random-uuid))
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (requests/record-fixture-tx @conn (requests/get-request conn (:work.request/id request)) fixture)))))))
+
+(deftest fixture-link-refuses-a-different-claim-or-nonbenchmark-request
+  (with-store
+    (fn [conn]
+      (let [request (:request (requests/claim! conn (assoc (intent) :kind :benchmark)))]
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (requests/record-fixture-tx @conn (assoc request :work.request/claim (random-uuid)) (random-uuid))))
+        (is (nil? (:work.request/fixture-room (requests/get-request conn (:work.request/id request))))))
+      (let [request (:request (requests/claim! conn (intent)))]
+        (is (thrown? clojure.lang.ExceptionInfo (requests/record-fixture-tx @conn request (random-uuid))))))))
+
 (deftest publication-basis-is-retained-with-the-exact-request-intent
   (with-store
     (fn [conn]
       (let [body {:version 1 :root "wiki" :target {:repository (random-uuid) :store (random-uuid)
-                                                 :backend :memory :branch :db :ref "refs/heads/main"}
+                                                   :backend :memory :branch :db :ref "refs/heads/main"}
                   :files {} :directories []}
             basis (assoc body :id (hasch/uuid [:simmis/knowledge-publication-basis-v1 body]))
             input (-> (intent)

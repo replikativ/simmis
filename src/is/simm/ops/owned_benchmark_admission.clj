@@ -3,7 +3,10 @@
    experiment adapter and offline checker own all execution/resource lifetimes."
   (:require [is.simm.model.work-requests :as requests]
             [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.benchmark-checkpoint-adapter :as checkpoint]
+            [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.owned-reads :as reads]
+            [is.simm.ops.owned-room-operation :as room-operation]
             [is.simm.ops.owned-workflows :as sources]
             [is.simm.ops.owned-workspace :as owned]
             [is.simm.ops.work :as work]
@@ -47,6 +50,11 @@
                                   (:room-id original) (:room binding) binding)))
     current))
 
+(defn- with-source! [host principal handle original-room f]
+  (if original-room
+    (room-operation/with-current! host principal handle original-room f)
+    (f)))
+
 (defn- retry! [kind conn original input]
   (let [result (storage! #(benchmarks/retry-request kind conn (:party original) (:room-id original) input))
         id (storage! #(requests/request-id (:party original) (:room-id original) (:request-id input)))]
@@ -69,22 +77,42 @@
         (if (= :retry status)
           (do (current! host principal original-handle original nil)
               (storage! #(work/status control-conn execution-ctx principal (:room-id original) id)))
-          (let [binding (storage! #(reads/resolve-host-read! host principal original-handle))
-                _ (when-not (= (select-keys original [:room-id :party])
-                               (select-keys binding [:room-id :party])) (unavailable!))
-                _ (storage! #(benchmarks/authorize-in! (:control-db binding) principal (:room-id binding)))
-                manifest (storage! #(workflows/manifest-in (:db binding) (:name input)))
-                revision (storage! #(sources/source-id binding (:name input) manifest))]
-            (when-not (uuid? revision) (unavailable!))
+          (let [original-room (when (and (= :benchmark kind)
+                                         (get-in host [:config :host-lifecycle :with-operation]))
+                                (storage! #(reads/resolve-host-room! host principal original-handle)))
+                captured (storage!
+                          #(with-source! host principal original-handle original-room
+                             (fn []
+                               (let [binding (reads/resolve-host-read! host principal original-handle)]
+                                 (when (and original-room
+                                            (not (identical? (:room original-room) (:room binding))))
+                                   (unavailable!))
+                                 (when-not (= (select-keys original [:room-id :party])
+                                              (select-keys binding [:room-id :party])) (unavailable!))
+                                 (benchmarks/authorize-in! (:control-db binding) principal (:room-id binding))
+                                 (let [manifest (workflows/manifest-in (:db binding) (:name input))
+                                       revision (sources/source-id binding (:name input) manifest)]
+                                   (when-not (uuid? revision) (unavailable!))
+                                   {:binding binding :manifest manifest :revision revision
+                                    :snapshot (when (= revision (:expected-owned-source input))
+                                                (workflows/snapshot-in (:db binding) (:name input)))})))))
+                binding (:binding captured)
+                manifest (:manifest captured)
+                revision (:revision captured)]
             (when-not (= revision (:expected-owned-source input))
               (fail! ::conflict "Workflow source changed; reload metadata"))
-            (let [snapshot (storage! #(workflows/snapshot-in (:db binding) (:name input)))
+            (let [snapshot (:snapshot captured)
                   _ (when-not (= manifest (:manifest snapshot)) (unavailable!))
-                  _ (current! host principal original-handle original binding)
+                  _ (with-source! host principal original-handle original-room
+                      #(current! host principal original-handle original binding))
+                  checkpoint? (and (= :benchmark kind)
+                                   (execution-origin/declaration (:files snapshot)))
+                  _ (when (and checkpoint? (nil? original-room)) (unavailable!))
                   ;; Both fixed preparations are OFFLINE. They verify frozen
                   ;; per-case inputs, never resolve live knowledge/publication.
                   prepared (storage! #(case kind
-                                        :benchmark (benchmarks/prepare snapshot (dissoc input :expected-owned-source))
+                                        :benchmark ((if checkpoint? benchmarks/prepare-checkpoint-fixture benchmarks/prepare)
+                                                    snapshot (dissoc input :expected-owned-source))
                                         :cli-benchmark (benchmarks/prepare-cli snapshot (dissoc input :expected-owned-source))))
                   channel (if (:principal/mcp? principal) :mcp :host)
                   prepared (-> prepared
@@ -97,15 +125,24 @@
                                (assoc-in [:basis :source-origin]
                                          {:revision revision :target-stamp (:target-stamp binding)
                                           :target (:target binding) :manifest manifest}))]
-              (current! host principal original-handle original binding)
+              (with-source! host principal original-handle original-room
+                #(current! host principal original-handle original binding))
               (storage! #(work/submit-prepared! control-conn execution-ctx principal
                                                 (:room-id original) (:room binding) input
-                                                (benchmarks/adapter execution-ctx (:room binding) prepared principal))))))))))
+                                                (if checkpoint?
+                                                  (checkpoint/adapter control-conn execution-ctx (:room binding)
+                                                                      prepared principal (:room-id original)
+                                                                      {:host host :handle original-handle
+                                                                       :original original-room :binding binding})
+                                                  (benchmarks/adapter control-conn execution-ctx (:room binding)
+                                                                      prepared principal (:room-id original))))))))))))
 
 (defn submit-native!
   "Fixed inactive ordinary native benchmark HOST entry. No legacy route flip."
   [host principal original-handle input]
-  (submit-kind! :benchmark host principal original-handle input))
+  (if-let [with-operation (get-in host [:config :host-lifecycle :with-operation])]
+    (with-operation #(submit-kind! :benchmark host principal original-handle input))
+    (submit-kind! :benchmark host principal original-handle input)))
 
 (defn submit-cli!
   "Fixed inactive CLI-text benchmark HOST entry; no CLI policy/probe on retry."

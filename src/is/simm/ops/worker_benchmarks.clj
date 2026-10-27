@@ -12,6 +12,7 @@
             [is.simm.ops.benchmark-dataset :as dataset]
             [is.simm.ops.checkers :as checkers]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
+            [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.work :as work]
             [is.simm.ops.worker-files :as files]
             [is.simm.ops.worker-work :as local]
@@ -63,6 +64,7 @@
   [snapshot {:keys [name expected-bundle repetitions cases limits] :as input} config pinned]
   (when-not (and (m/validate schema input) (= "discard" (:settlement limits)))
     (refuse! "Local benchmarks require finite discard-only limits"))
+  (execution-origin/require-copied-context! (:files snapshot))
   (let [inspection (workflows/inspect-snapshot name snapshot)
         available (set (:cases inspection))
         selection (dataset/select-cases (:files snapshot) available input)
@@ -167,7 +169,7 @@
                      (assoc :world-parent-ready! #(.set parent %))
                      (assoc-in [:plan :capabilities :world-setup] setup)
                      (assoc-in [:plan :capabilities :protocol] protocol))]
-    (benchmarks/adapter host-ctx room prepared principal)))
+    (benchmarks/adapter conn host-ctx room prepared principal room-id)))
 
 (defn submit! [conn host-ctx principal room-id room input]
   (when-not (m/validate schema input) (refuse! "Invalid local benchmark request"))

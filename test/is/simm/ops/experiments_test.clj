@@ -65,8 +65,8 @@
     (with-redefs-fn {#'experiments/op (fn [& _] {})}
       (fn []
         (is (= flags (select-keys (first (:candidates (@#'experiments/in-progress nil nil
-                                                                  {:candidates [(assoc flags :candidate/id :local :done 1)]})))
-                                 (keys flags))))))))
+                                                                                  {:candidates [(assoc flags :candidate/id :local :done 1)]})))
+                                  (keys flags))))))))
 
 (deftest workflow-provenance-is-bounded-and-never-arbitrary-metadata
   (let [bundle "12345678-1234-1234-1234-123456789abc"
@@ -74,7 +74,7 @@
               :secret "must not be projected"}
         project (fn [workflow]
                   (provenance/workflow {:experiment/metadata {:simmis/workflow workflow
-                                                                      :private "not projected"}}))]
+                                                              :private "not projected"}}))]
     (is (= {:name "review" :title (apply str (repeat 256 "x")) :bundle bundle} (project info)))
     (is (= {:name "review" :bundle bundle} (project (assoc info :title {:unexpected "shape"}))))
     (doseq [bad [(assoc info :name "../another-workflow")
@@ -112,14 +112,13 @@
           (is (some? scorecard))
           (f room)))
       (finally
-        (try (rreg/unregister! (:id room)) (catch Throwable _ nil))
         (d/close-room! room)))))
 
 (deftest a-completed-experiment-is-its-scorecard-and-its-paired-comparison
   (with-experiment-room
     (fn [room]
       (let [{:keys [experiments running]} (experiments/leaderboard
-                                                  room principal/local-principal)
+                                           room principal/local-principal)
             [e :as es] experiments]
         (is (= 1 (count es)))
         (is (= 0 running))

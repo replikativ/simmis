@@ -5,11 +5,13 @@
             [datahike.api :as d]
             [dvergr.agent.evaluation :as evaluation]
             [dvergr.catalog.workspace :as room-workspace]
+            [dvergr.discourse :as discourse]
             [dvergr.rooms.files :as files]
             [dvergr.substrate.geschichte :as workspace]
             [geschichte.query :as query]
             [is.simm.documents.execution-view :as execution-view]
             [is.simm.model.knowledge-publication :as publication]
+            [is.simm.model.work-request-checkpoints :as checkpoints]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]
             [yggdrasil.protocols :as protocols]))
@@ -57,6 +59,7 @@
   (expected-proof target)
   (evaluation/make-world-setup
    {:id :simmis/knowledge-workspace :version 1
+    :checkpoints (:checkpoints base)
     :basis {:base (evaluation/world-setup-ref base) :target target}
     :prepare (fn [{world :room :as context}]
                (binding [ec/*execution-context* (:ctx world)]
@@ -65,6 +68,32 @@
                  (let [result ((:prepare base) context)]
                    (target-proof! world target)
                    result)))}))
+
+(defn with-checkpoint
+  "Select one HOST-retained initial source before preparation, and verify the
+   Run's actual native fork provenance. Preparation may legitimately advance
+   the child's CID; its immutable creation descriptor remains the proof."
+  [base selection]
+  (checkpoints/validate-selection! selection)
+  (when (seq (:checkpoints base))
+    (throw (ex-info "Knowledge setup already selects checkpoint origins" {})))
+  (let [system (get-in selection [:target :runtime-system])
+        origin (:origin selection)
+        selected {system origin}
+        setup (evaluation/make-world-setup
+               {:id :simmis/knowledge-checkpoint :version 1
+                :basis {:base (evaluation/world-setup-ref base) :selection selection}
+                :checkpoints selected
+                :prepare (fn [{world :room :as context}]
+                           (let [entry (get-in (discourse/fork-descriptor world) [:fork/systems system])]
+                             (when-not (and (= :overlay (:kind entry)) (= origin (:checkpoint entry)))
+                               (throw (ex-info "Knowledge execution has no matching checkpoint fork" {}))))
+                           ((:prepare base) context))})]
+    ;; Old preparers ignore unknown fields. Refuse explicitly instead of
+    ;; permitting a policy-bearing workflow to execute at the current head.
+    (when-not (= selected (:setup/checkpoints (evaluation/world-setup-ref setup)))
+      (throw (ex-info "Installed harness does not support checkpoint setup identity" {})))
+    setup))
 
 (def cleanup-policy
   {:version 2 :roots ["in/knowledge" "out/wiki"] :max-paths files/max-batch-files})
@@ -130,6 +159,7 @@
   [base]
   (evaluation/make-world-setup
    {:id :simmis/knowledge-fixtures :version 3
+    :checkpoints (:checkpoints base)
     :basis {:base (evaluation/world-setup-ref base) :cleanup cleanup-policy
             :source-role execution-view/profile}
     :prepare (fn [{world :room :as context}]

@@ -775,3 +775,11 @@
       (is (= :unsupported-workflow
              (try (prepare fixture) nil
                   (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))))))
+
+(deftest copied-context-requests-cannot-acquire-checkpoint-filing-by-annotation
+  (doseq [selection [nil {} {:version 1 :policy :request-evidence-v1}]]
+    (with-fixture {:input-transform #(assoc % :knowledge/checkpoint selection)}
+      (fn [fixture]
+        (is (= :checkpoint-batch-mismatch
+               (try (prepare fixture) nil
+                    (catch clojure.lang.ExceptionInfo e (:reason (ex-data e))))))))))

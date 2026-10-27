@@ -215,5 +215,4 @@
                   (is (refused? (call member "job_status" {:job (str (:id private-job))}))))))
             (finally
               (server/set-host! nil)
-              (binding [ec/*execution-context* (:ctx room)] (registry/unregister! (:id private)))
               (discourse/close-room! private))))))))

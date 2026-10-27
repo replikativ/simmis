@@ -1,0 +1,272 @@
+# Request checkpoint retention
+
+The internal HOST API in `ops/work_request_checkpoints.clj` retains an exact
+physical source checkpoint independently of a knowledge discovery cursor. The
+fixed native retained-batch workflow admission uses it for the explicit policy
+below. The native root API is not exposed through MCP, SCI or the browser. It
+creates no scheduler, execution engine or wallet.
+
+## Explicit execution policy
+
+Pinned workflow source opts in through `execution-origin.edn`:
+
+```edn
+{:version 1
+ :workspace :retained-batch-checkpoint
+ :retention :request-evidence-v1}
+```
+
+This closed policy cannot name a commit or store. HOST admission derives those
+from the canonical retained batch proof. The existing `input-batching.edn`
+must explicitly select `:context-paths []`, `:max-context-files 0` and
+`:max-context-bytes 0`; trigger file/byte limits remain unchanged. Selected
+trigger evidence is still copied and verified. Additional context is available
+through ordinary virtual file operations at the exact initial repository
+checkpoint, instead of copying every wiki body into the inputs.
+
+This policy requires explicit `discard` settlement for the execution world.
+Generated `/out/wiki` files remain retained and reviewable as ordinary artifact
+Proposals with publication-basis conflict checks. A whole historical Run-world
+merge could also include inherited C1 dirty/staged changes; it is not the
+publication route for this policy. Incompatible requests and schedule
+deployments are refused before discovery or pinning, without rewriting intent.
+
+The policy selects the whole initial chosen repository, not a per-path read
+restriction or an actual-read receipt. It does not freeze attached repositories
+or external inputs. Batch processing still acknowledges only its selected
+trigger prefix. The shipped v4 starter retains copied-context behavior. CLI and local-worker
+entry points reject the policy. The owned native benchmark facade supports it
+through the isolated case admission described below.
+
+## Identity and ownership
+
+A canonical Request intent can contain `:knowledge/checkpoint`, a closed
+version-one selection with a physical Datahike origin, complete published
+source basis, original HOST target, and `:request-evidence-v1` retention policy.
+The origin's commit/store/repository must equal the basis; its target must also
+equal the canonical publication target. A batch-backed Request additionally
+requires both typed batch markers and the canonical retained batch proof, with
+the same source basis and original target. Missing linkage holds before pin IO.
+
+After the Request has its Job pointer, `model.work-request-checkpoints/prepare!`
+publishes a bounded immutable binding and inserts the retention relation in the
+control writer's serialized transaction. Only the contender whose fresh root
+UUID and creation token were stored receives `:new? true`. A Request claim by
+itself does not make a later caller a creation winner. Ambiguous control writes
+are read back using that attempt's fresh token. Direct or wrapped interruption
+takes precedence over successful readback and restores the thread interrupt flag;
+it never returns fresh native creation authority.
+
+These return values are inert HOST coordination data, not capabilities. The
+owning HOST must retain its original physical source extent and current
+authorization, invoke native creation once, and recheck authority before any
+prediction or Run admission. No native handles are stored in Request data.
+
+The synchronous Job handoff holds the existing physical Room-operation lease
+through source resolution, intent publication, pin IO and readback. It rechecks
+the original App, Room, control mapping, target and physical configuration after
+IO, then releases that source lease before forking. The setup reference carries
+the checkpoint through every wrapper. Preparation requires the actual Run Room's
+native fork descriptor to name the exact checkpoint on the selected overlay;
+matching repository/store identity alone is insufficient.
+
+Output certification derives the same selection from the verified retained batch
+and compares it with the Request. It reconstructs checkpoint selection before
+publication-target binding, preserving the exact executed setup reference.
+Missing, unexpected or substituted selections cannot acquire filing authority.
+
+## Native acknowledgement
+
+`ops.checkpoint-roots` shares physical pin checks with the existing discovery
+cursor implementation. It uses the released Datahike GC-root API. A new pin
+requires both its registry entry and raw record key to be absent: explicit
+Datahike root IDs overwrite, so creation must never be replayed blindly.
+
+Verification checks the original physical configuration, exact published basis,
+registry owner/commit/permanent TTL and complete immutable commit record, with
+Datahike parent links removed as required by pin semantics. Missing, partial or
+mismatched publication holds. Recovery inspects; it never substitutes the current
+Memory, recreates a missing root, schedules another Job or resumes execution.
+`acknowledge!` verifies the physical result before marking the relation retained.
+
+The root remains after Job settlement and after the discovery stream advances.
+There is no automatic expiry or release API for these Request roots. Execution
+cleanup acknowledgement alone does not end retained-evidence obligations.
+
+## Benchmark preparation journal
+
+The checkpoint benchmark groundwork uses a separate typed relation in
+`model.benchmark-resolutions`. Each canonical Request has one resolution and
+one bounded case inventory. Fresh case root IDs and claims are reserved before
+native effects; cases advance from `:planned` to `:pinning` to `:retained`.
+The resolution can become `:ready` only after every case is retained. These
+state transitions are acknowledgements from trusted HOST code, not physical
+proofs on their own.
+
+`ops.benchmark-resolution/publish-preparation!` first requires an installation
+operator with room read/merge authority, bound to the original Request's
+submitter. It regenerates the entire original compiler basis from bounded
+retained workflow source, without rereading current authoring files. Only then
+does it publish the inert plan artifact and atomically reserve the case rows.
+The writer repeats authorization against its supplied control snapshot.
+
+The owned submission retains its inspected source revision, admission channel
+and source-origin metadata in the canonical Request. Reconstruction removes
+only `:expected-owned-source` from the compiler's input, validates the closed
+provenance and target-bound revision, then reapplies those exact observations
+before comparing the complete Request basis. The retained manifest must match
+the frozen source's paths, UTF-8 byte sizes and public logical blob IDs; regular
+file modes remain retained metadata. The normalized compiler program supplies
+the semantic benchmark identity. Neither a recorded channel nor internally
+consistent hashes certify historical authorization: the original facade still
+owns verification of its actual source and App/Room handoff.
+
+Readback checks the decoded plan and complete bounded case inventory, then
+rechecks authorization, Request and exact journal rows after artifact IO.
+Only the original complete fresh token family receives `:new? true`. A
+concurrent caller or later retry receives `:new? false`, even if it observes
+valid progress. Lost write acknowledgements cause one inspection, never a
+second write attempt. Interruptions remain interruptions.
+
+These are journal reservation rights only. The caller still needs its original
+App/Room lifetime and authorization for native work. No native checkpoint,
+physical pin, Run, wallet, model call or schedule is created by this function.
+The owned native benchmark facade connects this journal to physical fixture
+construction, pin verification, builder cleanup acknowledgement and the existing
+experiment runner. CLI and local-worker adapters continue to refuse this policy.
+
+`ops.benchmark-case-snapshots/load-case-snapshot!` restores a retained case
+through the original authorized private fixture's raw store, after its temporary
+builder branch has been deleted. It validates the complete C0 fixture basis,
+the shared store/backend/repository identity, and the complete restored case
+basis. It never reconnects a deleted branch or instantiates a serialized store
+configuration. Existing physical pin verification then checks that restored DB
+without relaxing its branch/configuration checks. A case that made no changes
+can retain C0 itself; its identity comes from the stored commit, rather than a
+synthetic builder configuration.
+
+## GC limits
+
+A Datahike pin retains the checkpoint's datoms and referenced blobs. It does
+not independently retain every older snapshot that Geschichte can reach through
+logical history UUIDs. The existing Geschichte adapter's epoch-only GC contract
+still applies; this API does not strengthen distributed GC or make arbitrary
+history pruning safe. GC remains disabled by default in Simmis.
+
+The native regression uses a disposable file repository without logical commits,
+removes the old content from live state, and verifies that real GC collects an
+unreachable control blob while the Request pin retains C1 and its content.
+Other tests exercise concurrent contenders, lost acknowledgements, partial
+registry/record publication, target mismatch, missing batch markers and Job
+settlement. They perform no inference or operations on user stores.
+
+Native workflow tests additionally change the parent from C1 to C2 before
+execution, read C1 from a deterministic SCI candidate, and retain context beyond
+the old whole-context copy limit without copying it. Fault tests admit no
+resources/candidate after lost pin ACK, revoked authority, retarget or App fence.
+A real Room-close test swallows interruption inside pin IO and verifies teardown
+waits for physical completion and Job cleanup before closing the context.
+
+Physical verification remains bound to the checkpoint's original branch and
+configuration. A current parent DB is not a replacement for a retired builder's
+DB. Given independent HOST ownership of the original store, `d/commit-as-db`
+can resolve the retained immutable commit from that store; verify that exact DB
+against the complete basis and native root record. This requires no branch
+checkout, writer reopening or relaxation of source checks. A regression retires
+the builder branch and verifies its retained checkpoint this way while proving
+the builder's changes never entered the parent.
+
+Checkpoint origin and selected workspace are independent. A private benchmark
+fixture must explicitly select its intended workspace before input prediction;
+the actual setup must use that same selection. Switching workspaces or changing
+prompt-bearing files during setup remains input drift and excludes a complete
+Scorecard. The actual Simmis wrappers preserve this comparison, including AGENTS,
+vetted skills, offered tools, calibration and the Attempt's recorded inputs ID.
+
+## Benchmark preparation journal
+
+`model.benchmark-resolutions` supplies pure transaction fragments for an exact
+benchmark preparation. Application startup installs its schema in the control database. Its transaction
+functions are not exposed to SCI or MCP; the fixed native admission adapter
+uses them internally.
+
+A closed plan names a semantic benchmark, retained source identity and at most
+eight contiguous, explicitly tagged cases. Default cases and named cases cannot
+collide. The preparation reserves a distinct root and claim for every case;
+replaying preparation keeps the original family and grants no construction right.
+Case state advances from `:planned` to `:pinning` only with a selection reference
+and digest, and then to `:retained`. Aggregate `:ready` requires exactly the plan's
+case inventory, all retained, and preserves one resolved artifact pointer.
+
+Every transition compares the exact canonical submitted benchmark Request and
+its original requester, Room, client, claim, intent and Job. Returned Requests,
+changed ownership, reused resolution/case/root IDs and replaced selections refuse.
+The writer performs no artifact reads, native IO, authorization or execution.
+HOST orchestration remains responsible for validating nested artifact contents,
+physical pin readback and acknowledged builder cleanup before these fragments are
+used. Typed states alone are not proof of those physical effects and confer no
+dispatch or recovery permission. Evidence has no automatic expiry at settlement.
+
+`ops.benchmark-source` constructs a bounded inert source value for that HOST
+boundary: exact workflow name, catalog bundle identity and sorted source files.
+Reconstruction checks canonical paths, strict UTF-8 byte limits and the catalog
+identity from those retained bytes. It does not consult current authoring files
+or evaluate checker code. Candidate fixture projection uses the catalog's shared
+fixtures plus one explicitly tagged case; it never copies the whole source
+bundle, evaluator gold, calibration or other cases into the candidate workspace.
+These helpers do not change the existing benchmark dispatch path.
+
+Its pure `compile-plan` consumes the existing benchmark preparation basis and
+derives case order from the canonical dataset. The semantic body preserves the
+team, dataset, runtime, split, limits and policies, excluding only the Request
+nonce and the Experiment name/content hash derived from that nonce. Physical
+case checkpoint IDs do not enter this grouping identity. HOST reconstruction
+must still verify source/team/environment correspondence before journal use;
+valid Experiment hashing alone does not certify that correspondence. Equivalent
+semantic identity confers neither result reuse nor permission to resume work.
+
+`benchmarks/prepare-checkpoint-fixture` is a HOST-only pure reconstruction route.
+It retains exact bounded source and applies the ordinary native preparation
+checks with the explicit checkpoint-origin policy. Existing dispatch adapters
+refuse these prepared values. The copied-context native adapter and CLI/local-
+worker entry points refuse checkpoint-origin source; the owned native facade
+selects the fixed checkpoint adapter.
+
+`ops.benchmark-resolution/reconstruct` reads a bounded canonical submitted Request
+after caller authorization. It checks the Request identity, claim/Job, payload
+hash, original submission and limits, reconstructs the source bundle, reruns that
+same pure preparation route and compares the complete retained basis. Only then
+does it derive the semantic preparation plan. Rehashing an altered team, task or
+policy does not pass this comparison. Runtime identity drift also holds. A final
+Request reread fences changes during reconstruction. This helper publishes no
+artifacts and creates no fixture, root or execution; its returned HOST capabilities
+do not confer construction or dispatch rights.
+
+## Owned native benchmark admission
+
+The existing native submission facade selects the adapter from immutable saved
+workflow policy, not a caller-supplied callback. It retains the original App
+identity through synchronous admission and takes short source Room leases for
+authorization and journal handoffs. A later retry observes the original Request
+and never borrows a replacement App to construct new cases.
+
+A fresh typed private fixture Room starts from its clean repository checkpoint.
+Each selected case is built in an independent temporary world, seeded only with
+its selected fixture files. A bounded complete file/directory manifest includes
+binary and code files. The HOST verifies the result, records the pin intent,
+creates and verifies the native pin, and joins physical builder cleanup before
+marking the preparation ready. Checker and gold source never enter candidate
+workspaces. The original authoring repository and clean fixture baseline remain
+unchanged.
+
+The resolved artifact binds these exact cases to the original ExperimentDef,
+setup references and comparison identities. Dvergr's existing runner still owns
+Runs, Attempts, scoring and accounting. Admission-only App/Room handles are
+cleared before long-lived execution; they are not runner capabilities.
+
+Settlement retires the exact registered private Room, archives its typed control
+row, and asks Dvergr to release its recorded native acquisitions and remove the
+matching context cache entry. A terminal Run or archived row alone is not a
+cleanup acknowledgement. Unknown ownership or partial release stays held for
+recovery; it never causes force-release, reconstruction by slug, or new execution.
+Retained repository data, case pins and result evidence survive runtime retirement.

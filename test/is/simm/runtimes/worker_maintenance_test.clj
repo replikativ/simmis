@@ -19,8 +19,8 @@
 (deftest periodic-maintenance-retries-returned-local-benchmark-retirement
   (let [id (random-uuid) called (atom [])]
     (with-redefs [requests/requests (fn [_] [{:work.request/id id :work.request/kind :local-worker-benchmark
-                                            :work.request/return-pending? false}])
-                  benchmarks/retirement-pending? (fn [ctx request]
+                                              :work.request/return-pending? false}])
+                  benchmarks/retirement-pending? (fn [_ ctx request]
                                                    (is (= context/server-context ctx))
                                                    (is (= id request)) true)
                   recovery/recover-request! (fn [_ _ _ request] (swap! called conj request) {:state :retired})]

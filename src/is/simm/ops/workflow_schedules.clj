@@ -27,6 +27,7 @@
             [is.simm.ops.knowledge-filing :as knowledge-filing]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
             [is.simm.ops.knowledge-batch-inputs :as batch-inputs]
+            [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.ops.owned-knowledge-discovery :as discovery]
             [is.simm.ops.owned-reads :as reads]
@@ -142,6 +143,8 @@
             (throw (ex-info "Schedule request identity names different work" {:type ::conflict})))
           existing)
         (let [snapshot (workflows/snapshot room (:name execution))
+              _ (when (= kind :workflow)
+                  (execution-origin/validate-execution! (:files snapshot) (:limits execution)))
               request (assoc execution :request-id id)
               _ (if (= kind :benchmark) (benchmarks/prepare snapshot request)
                     (let [input (select-keys execution workflows-run/source-fields)
@@ -190,9 +193,9 @@
       (owned-unavailable!))
     (when binding
       (owned-storage! #(room-operation/with-current!
-                        host principal handle room-binding
-                        (fn [] (owned-workspace/validate! (:control-db current) principal :merge
-                                                         (:room-id original) (:room binding) binding)))))
+                         host principal handle room-binding
+                         (fn [] (owned-workspace/validate! (:control-db current) principal :merge
+                                                           (:room-id original) (:room binding) binding)))))
     current))
 
 (defn- owned-existing? [row id original]
@@ -233,23 +236,23 @@
 (defn- capture-owned-source! [host principal handle kind original execution room-binding]
   (owned-storage!
    #(room-operation/with-current!
-     host principal handle room-binding
-     (fn []
-       (let [binding (reads/resolve-host-read! host principal handle)
-             _ (when-not (and (= (select-keys original [:room-id :party]) (select-keys binding [:room-id :party]))
-                              (identical? (:room room-binding) (:room binding)))
-                 (owned-unavailable!))
-             _ (owned-action! (:control-db binding) principal (:room-id binding) kind)
-             manifest (workflows/manifest-in (:db binding) (:name execution))
-             revision (owned-sources/source-id binding (:name execution) manifest)]
-         (when-not (uuid? revision) (owned-unavailable!))
+      host principal handle room-binding
+      (fn []
+        (let [binding (reads/resolve-host-read! host principal handle)
+              _ (when-not (and (= (select-keys original [:room-id :party]) (select-keys binding [:room-id :party]))
+                               (identical? (:room room-binding) (:room binding)))
+                  (owned-unavailable!))
+              _ (owned-action! (:control-db binding) principal (:room-id binding) kind)
+              manifest (workflows/manifest-in (:db binding) (:name execution))
+              revision (owned-sources/source-id binding (:name execution) manifest)]
+          (when-not (uuid? revision) (owned-unavailable!))
          ;; Only this normal comparison can report a revision conflict. Native
          ;; exception tags never become transport outcomes, including exit gates.
-         (if (not= revision (:expected-owned-source execution))
-           {:status :source-changed}
-           (let [snapshot (workflows/snapshot-in (:db binding) (:name execution))]
-             (when-not (= manifest (:manifest snapshot)) (owned-unavailable!))
-             {:status :captured :binding binding :snapshot snapshot :manifest manifest :revision revision})))))))
+          (if (not= revision (:expected-owned-source execution))
+            {:status :source-changed}
+            (let [snapshot (workflows/snapshot-in (:db binding) (:name execution))]
+              (when-not (= manifest (:manifest snapshot)) (owned-unavailable!))
+              {:status :captured :binding binding :snapshot snapshot :manifest manifest :revision revision})))))))
 
 (defn- create-owned-in!
   "Create a fixed-human HOST activation retaining inspected code. enabled?
@@ -293,6 +296,8 @@
             (let [_ (owned-current! host principal original-handle kind original binding room-binding)
                   legacy (dissoc execution :expected-owned-source)
                   _ (owned-storage! #(execution! kind legacy))
+                  _ (when (= kind :workflow)
+                      (owned-storage! #(execution-origin/validate-execution! (:files snapshot) (:limits execution))))
                   _ (owned-storage!
                      #(if (= kind :benchmark)
                         (benchmarks/prepare snapshot (assoc legacy :request-id id))
@@ -448,7 +453,9 @@
   [:schedule.occurrence/knowledge-batch :schedule.occurrence/batch-ref :schedule.occurrence/batch-revision])
 
 (defn- batching [target]
-  (when (= :workflow (:kind target)) (batch-inputs/declaration (get-in target [:snapshot :files]))))
+  (when (= :workflow (:kind target))
+    (execution-origin/validate-execution! (get-in target [:snapshot :files]) (get-in target [:execution :limits]))
+    (batch-inputs/declaration (get-in target [:snapshot :files]))))
 
 (defn- owned-batch-proof! [conn target occurrence request]
   ;; Declaration makes batching mandatory even if every mutable marker vanished.
@@ -467,7 +474,7 @@
                    (= (:id value) (:schedule.occurrence/batch-revision actual))
                    (= (get-in value [:batch :batch]) (:schedule.occurrence/knowledge-batch actual))
                    (not-any? #(contains? actual %) [:schedule.occurrence/input-id :schedule.occurrence/input-ref
-                                                   :schedule.occurrence/input-revision]))
+                                                    :schedule.occurrence/input-revision]))
       (owned-unavailable!))
     proof))
 
@@ -478,22 +485,22 @@
   [conn target occurrence request]
   (if (batching target)
     (do (owned-batch-proof! conn target occurrence request) true)
-  (let [retained (when (:schedule.occurrence/input-ref occurrence)
-                   ((if (= 2 (:version target)) schedules/retained-owned-input schedules/retained-input) conn occurrence))
-        planned (when (= :workflow (:kind target))
-                  (workflows-run/plan-source
-                   (:snapshot target) (select-keys (:execution target) workflows-run/source-fields)))
-        live? (and (:selection-policy planned)
-                   (not (contains? (:inputs planned) "/in/knowledge/manifest.edn")))
-        marked? (or (contains? request :work.request/publication-basis-id)
-                    (some? (:publication-basis retained)))]
-    (when (= 2 (:version target)) (owned-resolution! target retained))
-    (when (or live? marked?)
-      (let [basis (requests/publication-basis conn (:work.request/id request))]
-        (when-not (and live? retained basis (= basis (:publication-basis retained)))
-          (throw (ex-info "Scheduled knowledge publication binding is unavailable"
-                          {:type ::publication-binding-unavailable}))))
-      true))))
+    (let [retained (when (:schedule.occurrence/input-ref occurrence)
+                     ((if (= 2 (:version target)) schedules/retained-owned-input schedules/retained-input) conn occurrence))
+          planned (when (= :workflow (:kind target))
+                    (workflows-run/plan-source
+                     (:snapshot target) (select-keys (:execution target) workflows-run/source-fields)))
+          live? (and (:selection-policy planned)
+                     (not (contains? (:inputs planned) "/in/knowledge/manifest.edn")))
+          marked? (or (contains? request :work.request/publication-basis-id)
+                      (some? (:publication-basis retained)))]
+      (when (= 2 (:version target)) (owned-resolution! target retained))
+      (when (or live? marked?)
+        (let [basis (requests/publication-basis conn (:work.request/id request))]
+          (when-not (and live? retained basis (= basis (:publication-basis retained)))
+            (throw (ex-info "Scheduled knowledge publication binding is unavailable"
+                            {:type ::publication-binding-unavailable}))))
+        true))))
 
 (defn- durable-completion
   "Restart fallback after the canonical physical-return flag is false. A
@@ -775,9 +782,9 @@
     (when rich
       (when-not (identical? (:room checked) (:room rich)) (owned-unavailable!))
       (owned-storage! #(room-operation/with-current!
-                        host principal handle room-binding
-                        (fn [] (owned-workspace/validate! (:control-db checked) principal :merge
-                                                         (:room-id checked) (:room checked) rich)))))
+                         host principal handle room-binding
+                         (fn [] (owned-workspace/validate! (:control-db checked) principal :merge
+                                                           (:room-id checked) (:room checked) rich)))))
     checked))
 
 (defn- owned-policy-current! [target]
@@ -793,13 +800,13 @@
   (owned-storage! #(execution! (:kind target) (dissoc (:execution target) :expected-owned-source)))
   (owned-storage!
    #(room-operation/with-current!
-     host (:principal context) (:handle context) room-binding
-     (fn []
-       (binding [ec/*execution-context* (:ctx (:room room-binding))]
-         (let [balance (resource/balance (:room room-binding))]
-           (when-not (every? (fn [[unit amount]] (>= (get balance unit 0M) amount))
-                             (work/resources (get-in target [:execution :limits])))
-             (owned-unavailable!))))))))
+      host (:principal context) (:handle context) room-binding
+      (fn []
+        (binding [ec/*execution-context* (:ctx (:room room-binding))]
+          (let [balance (resource/balance (:room room-binding))]
+            (when-not (every? (fn [[unit amount]] (>= (get balance unit 0M) amount))
+                              (work/resources (get-in target [:execution :limits])))
+              (owned-unavailable!))))))))
 
 (defn- owned-submit! [host conn row o claim target context room-binding rich resolution]
   (let [{:keys [principal original]} context
@@ -817,8 +824,9 @@
                         (:snapshot target) original-input (:batch-proof resolution) (:control-revision resolution)
                         {:host host :original room-binding :handle (:handle context) :ticket lifetime/*ticket*})
                        (= :benchmark (:kind target))
-                       (benchmarks/adapter execution-ctx room
-                                           (benchmarks/prepare (:snapshot target) legacy-input) principal)
+                       (benchmarks/adapter conn execution-ctx room
+                                           (benchmarks/prepare (:snapshot target) legacy-input)
+                                           principal (:room-id original))
                        :else
                        (workflows-run/bind-publication
                         (if-let [captured (:captured resolution)]
@@ -863,13 +871,13 @@
     (if (and policy (not frozen?))
       (owned-storage!
        #(room-operation/with-current!
-         host principal handle room-binding
-         (fn []
-           (let [rich (reads/resolve-host-read! host principal handle)]
-             (when-not (identical? (:room room-binding) (:room rich)) (owned-unavailable!))
-             (owned-workspace/validate! (reads/current-host-control-db! host) principal :merge
-                                        (:room-id room-binding) (:room rich) rich)
-             {:rich rich :selection (dissoc (knowledge-inputs/selection (:db rich) policy) :manifest-text)}))))
+          host principal handle room-binding
+          (fn []
+            (let [rich (reads/resolve-host-read! host principal handle)]
+              (when-not (identical? (:room room-binding) (:room rich)) (owned-unavailable!))
+              (owned-workspace/validate! (reads/current-host-control-db! host) principal :merge
+                                         (:room-id room-binding) (:room rich) rich)
+              {:rich rich :selection (dissoc (knowledge-inputs/selection (:db rich) policy) :manifest-text)}))))
       {:rich nil :selection (when policy (dissoc (knowledge-inputs/from-inputs policy (:inputs planned)) :inputs))})))
 
 (defn- capture-owned-input! [host context room-binding rich planned]
@@ -878,13 +886,13 @@
     (when-not frozen?
       (owned-storage!
        #(room-operation/with-current!
-         host (:principal context) (:handle context) room-binding
-         (fn []
-           (owned-workspace/validate! (reads/current-host-control-db! host) (:principal context) :merge
-                                      (:room-id room-binding) (:room room-binding) rich)
-           {:captured (knowledge-inputs/capture (:db rich) policy)
-            :publication-basis (knowledge-inputs/publication-basis
-                                (:db rich) (select-keys (:target rich) [:registry-system :runtime-system]))}))))))
+          host (:principal context) (:handle context) room-binding
+          (fn []
+            (owned-workspace/validate! (reads/current-host-control-db! host) (:principal context) :merge
+                                       (:room-id room-binding) (:room room-binding) rich)
+            {:captured (knowledge-inputs/capture (:db rich) policy)
+             :publication-basis (knowledge-inputs/publication-basis
+                                 (:db rich) (select-keys (:target rich) [:registry-system :runtime-system]))}))))))
 
 (defn- dispatch-owned-batch! [host conn row o claim target context room-binding declaration]
   (let [{:keys [principal handle original]} context
@@ -954,38 +962,38 @@
                 (if declaration
                   (dispatch-owned-batch! host conn row o claim target context room-binding declaration)
                   (let [planned (when (= :workflow (:kind target))
-                              (owned-storage!
-                               #(workflows-run/plan-source (:snapshot target)
-                                                           (select-keys (:execution target) workflows-run/source-fields))))
-                    policy (:selection-policy planned)
-                    {:keys [rich selection]} (owned-input-selection! host context room-binding planned)
-                    _ (owned-room-current! host context target room-binding rich)
-                    input-id (when selection
-                               (owned-storage! #(hasch/uuid [:simmis/scheduled-input-v1
-                                                             (:schedule.activation/revision row) (:trigger-id selection)])))
-                    decision (when selection
-                               (owned-storage! #(schedules/select-input! conn (:schedule.occurrence/id o) claim
-                                                                         input-id (:empty? selection))))]
-                (when (and selection (not (#{:capture :no-inputs :unchanged} decision)))
-                  (owned-unavailable!))
-                (when (or (nil? selection) (= :capture decision))
-                  (let [resolution
-                        (when selection
-                          (let [{:keys [captured publication-basis]}
-                                (capture-owned-input! host context room-binding rich planned)
-                                basis publication-basis
-                                value {:version 2 :occurrence-id (:schedule.occurrence/id o) :input-id input-id
-                                       :target-revision (:schedule.activation/revision row) :selection selection
-                                       :captured captured :publication-basis basis
-                                       :knowledge-origin (when rich {:target (:target rich) :target-stamp (:target-stamp rich)
-                                                                     :selection-id (:execution-id selection)})}
-                                _ (owned-storage! #(owned-resolution! target value))
-                                _ (owned-room-current! host context target room-binding rich)
-                                ack (owned-storage! #(schedules/retain-owned-input! conn (:schedule.occurrence/id o) claim value))
-                                retained (owned-storage! #(schedules/retained-owned-input conn ack))]
-                            (when-not (= value retained) (owned-unavailable!))
-                            (owned-storage! #(owned-resolution! target retained))))]
-                    (owned-submit! host conn row o claim target context room-binding rich resolution))))))
+                                  (owned-storage!
+                                   #(workflows-run/plan-source (:snapshot target)
+                                                               (select-keys (:execution target) workflows-run/source-fields))))
+                        policy (:selection-policy planned)
+                        {:keys [rich selection]} (owned-input-selection! host context room-binding planned)
+                        _ (owned-room-current! host context target room-binding rich)
+                        input-id (when selection
+                                   (owned-storage! #(hasch/uuid [:simmis/scheduled-input-v1
+                                                                 (:schedule.activation/revision row) (:trigger-id selection)])))
+                        decision (when selection
+                                   (owned-storage! #(schedules/select-input! conn (:schedule.occurrence/id o) claim
+                                                                             input-id (:empty? selection))))]
+                    (when (and selection (not (#{:capture :no-inputs :unchanged} decision)))
+                      (owned-unavailable!))
+                    (when (or (nil? selection) (= :capture decision))
+                      (let [resolution
+                            (when selection
+                              (let [{:keys [captured publication-basis]}
+                                    (capture-owned-input! host context room-binding rich planned)
+                                    basis publication-basis
+                                    value {:version 2 :occurrence-id (:schedule.occurrence/id o) :input-id input-id
+                                           :target-revision (:schedule.activation/revision row) :selection selection
+                                           :captured captured :publication-basis basis
+                                           :knowledge-origin (when rich {:target (:target rich) :target-stamp (:target-stamp rich)
+                                                                         :selection-id (:execution-id selection)})}
+                                    _ (owned-storage! #(owned-resolution! target value))
+                                    _ (owned-room-current! host context target room-binding rich)
+                                    ack (owned-storage! #(schedules/retain-owned-input! conn (:schedule.occurrence/id o) claim value))
+                                    retained (owned-storage! #(schedules/retained-owned-input conn ack))]
+                                (when-not (= value retained) (owned-unavailable!))
+                                (owned-storage! #(owned-resolution! target retained))))]
+                        (owned-submit! host conn row o claim target context room-binding rich resolution))))))
               (catch Throwable error
               ;; Once admitted, missing ACKs or unknown outcomes hold the active
               ;; pointer. Existing canonical work may reconcile, never replay.
@@ -1038,22 +1046,22 @@
             (do
               (when-not (publication-required? conn target o request) (owned-unavailable!))
               (let [value (room-operation/with-current!
-                           host (:principal context) (:handle context) room-binding
-                           #(if batch? (file-batch! conn row o request room target)
-                                (file-input! conn row o request room :deferred)))]
+                            host (:principal context) (:handle context) room-binding
+                            #(if batch? (file-batch! conn row o request room target)
+                                 (file-input! conn row o request room :deferred)))]
                 (announce-owned-result! host conn context row o request nil room-binding target value))
               (schedules/clear-active! conn row oid))
             (let [job (room-operation/with-current!
-                       host (:principal context) (:handle context) room-binding
-                       #(or (binding [ec/*execution-context* (:ctx room)] (jobs/status (:work.request/job request)))
-                            (durable-completion room request target)))]
+                        host (:principal context) (:handle context) room-binding
+                        #(or (binding [ec/*execution-context* (:ctx room)] (jobs/status (:work.request/job request)))
+                             (durable-completion room request target)))]
               (when (and filed (nil? job)) (owned-unavailable!))
               (when (and (:settled? job) (#{:completed :failed :cancelled} (:status job)))
                 (let [result (try
                                {:value (when (or batch? (:schedule.occurrence/input-ref o))
                                          (room-operation/with-current!
-                                          host (:principal context) (:handle context) room-binding
-                                          #(process-input! conn row o request job room target :deferred)))}
+                                           host (:principal context) (:handle context) room-binding
+                                           #(process-input! conn row o request job room target :deferred)))}
                                (catch Throwable error {:error error}))]
                   (when (or (.isInterrupted (Thread/currentThread))
                             (some-> (:error result) causal-interruption?))
@@ -1097,7 +1105,7 @@
                 (.interrupt (Thread/currentThread)) (throw error))
               (owned-owner! host)
               (when row (schedules/interrupt-owned! control-conn row (:schedule.occurrence/id o)
-                                                  (:schedule.occurrence/claim o) :owned-dispatch-unavailable)))))))))
+                                                    (:schedule.occurrence/claim o) :owned-dispatch-unavailable)))))))))
 
 (defn- tick-owned-in!
   "Fixed HOST pass. No callback resolver, startup or selected-source
@@ -1167,35 +1175,35 @@
   (let [db @conn
         slug (:room/slug (d/pull db [:room/slug] [:room/id room-id]))
         native-room (when slug (room-store/slug->room-id slug))]
-   {:id (str (:schedule.activation/id row)) :room-id (str room-id)
-   :name (get-in target [:execution :name]) :kind (:kind target)
-   :revision (str (:schedule.activation/revision row))
-   :bundle (str (get-in target [:execution :expected-bundle]))
-   :by (str (:schedule.activation/by row)) :enabled? (:schedule.activation/enabled? row)
-   :reason (:schedule.activation/reason row) :cadence (:cadence target)
-   :processed-input (some-> (:schedule.activation/last-processed-input row) str)
-   :next-fire (.getTime ^java.util.Date (:schedule.activation/next-fire row))
-   :occurrences
-   (mapv (fn [o]
-           (let [candidate (when-let [rid (:schedule.occurrence/request o)] (requests/request-in db rid))
-                 r (when (occurrence-request? row o target candidate) candidate)
-                 job (when-let [id (:work.request/job r)] (jobs/status id))
-                 j (when (occurrence-job? native-room row target r job) job)
-                 filing (when r (filing-summary r))
-                 batch (scheduled/occurrence-summary
-                        db row o (when (and (= 2 (:version target)) (= :workflow (:kind target)))
-                                   (pins/target-id (get-in target [:source-origin :target]))))]
-             (cond-> {:id (str (:schedule.occurrence/id o)) :state (:schedule.occurrence/state o)
-              :input-id (some-> (:schedule.occurrence/input-id o) str)
-              :input-revision (some-> (:schedule.occurrence/input-revision o) str)
-              :intended-at (.getTime ^java.util.Date (:schedule.occurrence/intended-at o))
-              :coalesced (:schedule.occurrence/coalesced o) :reason (:schedule.occurrence/reason o)
-              :request (some-> (:work.request/id r) str)
-              :job (some-> (:id j) str) :status (:status j)
-              :settled? (:settled? j)}
-               filing (assoc :filing filing)
-               batch (assoc :batch batch))))
-         (schedules/recent-occurrences-in db (:schedule.activation/id row) 12))}))
+    {:id (str (:schedule.activation/id row)) :room-id (str room-id)
+     :name (get-in target [:execution :name]) :kind (:kind target)
+     :revision (str (:schedule.activation/revision row))
+     :bundle (str (get-in target [:execution :expected-bundle]))
+     :by (str (:schedule.activation/by row)) :enabled? (:schedule.activation/enabled? row)
+     :reason (:schedule.activation/reason row) :cadence (:cadence target)
+     :processed-input (some-> (:schedule.activation/last-processed-input row) str)
+     :next-fire (.getTime ^java.util.Date (:schedule.activation/next-fire row))
+     :occurrences
+     (mapv (fn [o]
+             (let [candidate (when-let [rid (:schedule.occurrence/request o)] (requests/request-in db rid))
+                   r (when (occurrence-request? row o target candidate) candidate)
+                   job (when-let [id (:work.request/job r)] (jobs/status id))
+                   j (when (occurrence-job? native-room row target r job) job)
+                   filing (when r (filing-summary r))
+                   batch (scheduled/occurrence-summary
+                          db row o (when (and (= 2 (:version target)) (= :workflow (:kind target)))
+                                     (pins/target-id (get-in target [:source-origin :target]))))]
+               (cond-> {:id (str (:schedule.occurrence/id o)) :state (:schedule.occurrence/state o)
+                        :input-id (some-> (:schedule.occurrence/input-id o) str)
+                        :input-revision (some-> (:schedule.occurrence/input-revision o) str)
+                        :intended-at (.getTime ^java.util.Date (:schedule.occurrence/intended-at o))
+                        :coalesced (:schedule.occurrence/coalesced o) :reason (:schedule.occurrence/reason o)
+                        :request (some-> (:work.request/id r) str)
+                        :job (some-> (:id j) str) :status (:status j)
+                        :settled? (:settled? j)}
+                 filing (assoc :filing filing)
+                 batch (assoc :batch batch))))
+           (schedules/recent-occurrences-in db (:schedule.activation/id row) 12))}))
 
 (defn- owned-control-target! [conn original row]
   ;; Creation retries are creator-specific; room controls deliberately are not.

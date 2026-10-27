@@ -169,7 +169,7 @@
                    (get-in prepared [:plan :environments]))
         counts (frequencies (map #(get (workers/assignment conn (:run/id %)) :simmis.worker.assignment/cell) children))
         parent-id (benchmarks/fixture-room-id (:work.request/id row))
-        parent (binding [ec/*execution-context* host-ctx] (registry/lookup parent-id))]
+        parent (:room (benchmarks/recorded-fixture! conn host-ctx (:work.request/id row)))]
     (when-not (and (every? #(contains? frozen %) (keys counts))
                    (every? #(<= % (:repetitions submission)) (vals counts)))
       ;; A missing prepared binding is NOT permission to guess a case from
@@ -255,7 +255,7 @@
                           (return-wallet! room job nil)
                           true))))]
               (if clean?
-                (do (benchmarks/retire-request! host-ctx id)
+                (do (benchmarks/retire-request! conn host-ctx id)
                     (requests/mark-returned! conn id) {:state :returned})
                 {:state :awaiting-world-cleanup}))))))))
 
@@ -270,7 +270,7 @@
     (when-let [row (requests/get-request conn id)]
       (when (local/request-kinds (:work.request/kind row))
         (when (= :local-worker-benchmark (:work.request/kind row))
-          (benchmarks/recover-request! host-ctx row))
+          (benchmarks/recover-request! conn host-ctx row))
         (if-let [job (:work.request/job row)]
           (when (:work.request/return-pending? row)
             (when-let [room (resolve-room (:work.request/room row))]

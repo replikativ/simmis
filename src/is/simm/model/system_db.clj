@@ -25,6 +25,8 @@
             [dvergr.substrate.paths :as paths]
             [dvergr.system.db :as sdb]
             [is.simm.model.work-requests :as work-requests]
+            [is.simm.model.work-request-checkpoints :as work-request-checkpoints]
+            [is.simm.model.benchmark-resolutions :as benchmark-resolutions]
             [is.simm.model.knowledge-dispositions :as knowledge-dispositions]
             [is.simm.model.knowledge-streams :as knowledge-streams]
             [is.simm.model.knowledge-pins :as knowledge-pins]
@@ -744,7 +746,7 @@
 
 (def schema
   "Simmis control-plane extension attributes, including host work admission."
-  (merge-schemas core-schema work-requests/schema workers/schema workflow-schedules/schema
+  (merge-schemas core-schema work-requests/schema work-request-checkpoints/schema benchmark-resolutions/schema workers/schema workflow-schedules/schema
                  file-outputs/schema file-adoptions/schema knowledge-dispositions/schema
                  knowledge-streams/schema knowledge-pins/schema knowledge-batches/schema
                  knowledge-processing/schema knowledge-batch-recovery/schema

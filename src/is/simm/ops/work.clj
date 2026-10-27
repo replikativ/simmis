@@ -15,9 +15,13 @@
             [is.simm.model.knowledge-batches :as batches]
             [is.simm.model.knowledge-schedule-batches :as scheduled]
             [is.simm.model.work-requests :as requests]
+            [is.simm.model.work-request-checkpoints :as request-checkpoints]
             [is.simm.model.work-limits :as work-limits]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
+            [is.simm.ops.knowledge-changes :as knowledge-changes]
+            [is.simm.ops.work-request-checkpoints :as checkpoint-roots]
             [is.simm.ops.owned-reads :as reads]
+            [is.simm.ops.owned-room-operation :as room-operation]
             [is.simm.ops.owned-workspace :as owned]
             [is.simm.ops.work-sandbox :as work-sandbox]
             [is.simm.runtimes.operation-lifetime :as lifetime]
@@ -292,6 +296,46 @@
       (scheduled/linked! @conn anchor request (:basis prepared)))
     party))
 
+(defn- checkpoint-source-binding!
+  [conn host-ctx principal room-id room prepared request]
+  (batch-handoff-current! conn host-ctx principal room-id room prepared request)
+  (let [selected (get-in prepared [:basis :knowledge/checkpoint])
+        source-binding (binding [ec/*execution-context* host-ctx]
+                         (owned/resolve! @conn principal :merge room-id room))
+        physical [:repository :store :backend :branch :ref :configuration]]
+    (when-not (and (= (:target selected) (:target source-binding))
+                   (= (select-keys (:basis selected) physical)
+                      (select-keys (knowledge-changes/source-identity (:db source-binding)) physical)))
+      (invalid! "Checkpoint admission no longer has its original physical source"))
+    source-binding))
+
+(defn- retain-checkpoint!
+  "Short synchronous native handoff only. Never retain its App/Room/source
+   handles in a world setup, Job monitor or settlement closure."
+  [conn host-ctx principal room-id room prepared request]
+  (when (get-in prepared [:basis :knowledge/checkpoint])
+    (when-not (and (= :workflow (:request-kind prepared))
+                   (contains? (:basis prepared) :knowledge/batch))
+      (invalid! "Checkpoint work requires native retained-batch admission"))
+    (let [{:keys [host handle original]} (:knowledge/owner prepared)]
+      (room-operation/with-current!
+        host principal handle original
+        (fn []
+          (let [source-binding (checkpoint-source-binding! conn host-ctx principal room-id room prepared request)
+                planned (binding [ec/*execution-context* host-ctx]
+                          (request-checkpoints/prepare! conn request))]
+            (when-not (true? (:new? planned))
+              (invalid! "Checkpoint admission is not the original retention winner"))
+            (checkpoint-source-binding! conn host-ctx principal room-id room prepared request)
+      ;; A lost native ACK fails admission. Explicit HOST recovery may inspect
+      ;; this root later, but never retries this side effect or resumes the Job.
+            (checkpoint-roots/create! conn (:db source-binding) planned)
+            (checkpoint-source-binding! conn host-ctx principal room-id room prepared request)
+            (binding [ec/*execution-context* host-ctx]
+              (checkpoint-roots/acknowledge! conn (:db source-binding) (:work.request/id request)))
+            (checkpoint-source-binding! conn host-ctx principal room-id room prepared request)
+            nil))))))
+
 (defn submit-prepared!
   "Trusted adapter seam for an already validated/pinned candidate. Only the
    durable insert winner schedules; retries observe, including interruption.
@@ -345,11 +389,13 @@
                     :ctx job-ctx :actor (:principal/actor principal)}
               (fn [job-id]
                 (vreset! construction-job {:id job-id :linked? false})
-                (let [_ (within-operation! #(journal (fn [] (requests/record-job! conn id (:work.request/claim request) job-id))))]
+                (let [row (within-operation! #(journal (fn [] (requests/record-job! conn id (:work.request/claim request) job-id))))]
                   (vswap! construction-job assoc :linked? true)
                   (try
                     (when (contains? (:basis prepared) :knowledge/batch)
                       (within-operation! #(batch-handoff-current! conn host-ctx principal room-id room admission-prepared request)))
+                    (when (get-in prepared [:basis :knowledge/checkpoint])
+                      (within-operation! #(retain-checkpoint! conn host-ctx principal room-id room admission-prepared row)))
                     (binding [ec/*execution-context* (:ctx room)]
                       (when-let [admit! (:admit! prepared)] (within-operation! #(admit! job-id)))
                       (doseq [unit (or (:resource-units prepared)

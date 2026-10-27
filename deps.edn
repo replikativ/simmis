@@ -72,10 +72,9 @@
         ;; independent-session and funding-recovery foundation (spindel#146),
         ;; plus the reviewed stable-reference SCI replacement API (#147).
         ;; Historical forks own their workspace and join native disposal (#148).
-        ;; Use the public squash commit, not a local-only development commit:
-        ;; the worker package resolves this same basis on clean machines.
-        org.replikativ/spindel {:git/url "https://github.com/replikativ/spindel.git"
-                                :git/sha "2e394753b9871b0c705d21e6aef1784b2b74d6b0"}
+        ;; 0.1.148 adds exact native checkpoint admission, construction recovery
+        ;; and reactive lifetime corrections. Keep UI and harness aligned.
+        org.replikativ/spindel {:mvn/version "0.1.148"}
         ;; spindel 0.1.53 brings anglican 1.1.0 (its inference methods), which
         ;; brings timbre 4.10.0, whose ClojureScript no longer compiles
         ;; ("Can't redefine a constant"). A current timbre serves anglican's
@@ -87,7 +86,9 @@
         ;; 0.8.1904, yggdrasil 0.3.48 and geschichte 0.1.19 declare the new
         ;; coordinate, so the exclusions are gone (`clj -Stree` has no
         ;; is.simm/partial-cps).
-        org.replikativ/partial-cps {:mvn/version "0.1.68"}
+        ;; 0.1.69 keeps lexical exception handlers across generated loop bounces,
+        ;; including failed native construction and its cleanup handoff.
+        org.replikativ/partial-cps {:mvn/version "0.1.69"}
 
         ;; replikativ substrate
         ;; datahike RELEASE (was a :git/sha following main). Ships
@@ -234,8 +235,8 @@
         ;; effects go before or after the swap, never inside it.
         ;; Match Dvergr's historical overlays and independent cleanup leases
         ;; (#29/#30). Copied siblings may outlive their temporary parent branch.
-        org.replikativ/yggdrasil {:git/url "https://github.com/replikativ/yggdrasil"
-                                  :git/sha "b271739dbfa8ddbd5dfac7db314e821212cdfa00"}
+        org.replikativ/yggdrasil {:mvn/version "0.3.53"
+                                  :exclusions [org.babashka/sci]}
         ;; Keep the direct Geschichte dependency aligned with dvergr: nearest
         ;; wins, and Simmis also relies on Yggdrasil's Geschichte adapter and
         ;; its content-level merge API.
@@ -244,7 +245,7 @@
         ;; 0.1.22 provides prepare-commit, required by Dvergr's atomic scoped
         ;; publication. A direct older pin shadows Dvergr's compatible version
         ;; and fails only when a fresh process loads the publication namespace.
-        org.replikativ/geschichte {:mvn/version "0.1.24"}
+        org.replikativ/geschichte {:mvn/version "0.1.25"}
         ;; Datahike's bundled secondary-index adapter uses
         ;; scriptum.core/warm!, introduced before this release.
         org.replikativ/scriptum {:mvn/version "0.1.32"}
@@ -314,16 +315,16 @@
         ;; 0.1.354 includes actual-worker SCI ownership and cleanup (#395),
         ;; seeded randomness (#394) and inert workflow fixture packs (#396).
         ;; Change dependencies only in a fresh runtime.
-        ;; Keep the explicit Spindel/Yggdrasil Git pins above: Maven's POM cannot
-        ;; express those coordinates. Alpha stores require classified wallets;
+        ;; Alpha stores require classified wallets;
         ;; no legacy wallet migration is implied.
         ;; 0.1.361 distinguishes repeated-tool failures from completed no-ops
         ;; and includes the upstream fork/future retention fixes.
-        ;; 0.1.366 retains the Job execution lease through adapter retirement
-        ;; and provides explicit HOST recovery for uncertain cleanup.
-        ;; 0.1.367 validates exact setup capabilities and forwards per-environment
-        ;; setup maps through the standard experiment runner.
-        org.replikativ/dvergr {:mvn/version "0.1.367"
+        ;; 0.1.370 includes checkpoint admission, bounded HOST fixture scopes
+        ;; and exact-incarnation Room teardown. Keep the ordinary runner and
+        ;; cleanup owner instead of duplicating execution/accounting here.
+        ;; 0.1.372 retires recorded native Room acquisitions on settlement and
+        ;; shutdown; failed cleanup stays owned for explicit retry.
+        org.replikativ/dvergr {:mvn/version "0.1.372"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.

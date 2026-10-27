@@ -41,9 +41,9 @@
 (defn- fixture [f]
   (when @held-fixture (throw (ex-info "Previous native knowledge fixture needs reconciliation" {})))
   (let [cfg (config) configs (atom {}) connection (atom nil) root (context/create-execution-context)
-        contexts (atom {}) errors (atom {}) released? (atom false) native-leases (atom [])
+        contexts (atom {}) errors (atom {}) released? (atom false)
         owner {:cfg cfg :configs configs :connection connection :root root :contexts contexts :errors errors
-               :native-leases native-leases}
+               :released? released?}
         config-for (fn [scope] (get (swap! configs #(if (contains? % scope) % (assoc % scope (config)))) scope))]
     (try
       (d/create-database cfg)
@@ -67,20 +67,18 @@
                (finally
                  (when (seq @errors)
                    (throw (ex-info "Uncertain preparation needs explicit fixture reconciliation" {})))
-                 (reset! native-leases
-                         (vec (mapcat (fn [ctx]
-                                        (binding [ec/*execution-context* ctx]
-                                          (keep :conn (vals (ygg/registered-systems))))) (vals @contexts))))
                  (doseq [room (registry/list-rooms)] (discourse/close-room! room {:close-context? false}))
+                 ;; Retire the exact published acquisitions through the native
+                 ;; shutdown owner while the host root is still available.
+                 ;; Fixture cleanup must obey the production lifetime contract.
+                 (doseq [store-cfg (vals @configs) :when (d/database-exists? store-cfg)]
+                   (let [opened (d/connect store-cfg)]
+                     (governance/ungovern! opened)
+                     (d/release opened)))
+                 (native/release-room-stores!)
+                 (when (or (seq @contexts) (seq @errors))
+                   (throw (ex-info "Native fixture retirement is incomplete" {})))
                  (context/close-context! root)
-                 ;; These stores are exclusively fixture-owned. Unlike the
-                 ;; production best-effort bulk helper, each forced release
-                 ;; must positively return before any deletion is permitted.
-                 (doseq [conn @native-leases]
-                   (governance/ungovern! conn)
-                   (d/release conn true))
-                 (reset! contexts {})
-                 (reset! errors {})
                  (reset! released? true))))))
       (finally
         (if-not @released?
@@ -128,9 +126,8 @@
            (discourse/close-room! registered {:close-context? false})
            (binding [ec/*execution-context* ctx]
              (doseq [conn (keep :conn (vals (ygg/registered-systems)))]
-               (governance/ungovern! conn)
-               (d/release conn true)))
-           (native/clear-room-ctxs!)
+               (governance/ungovern! conn)))
+           (native/release-room-stores!)
            (native/hydrate-rooms! {:repository-profiles (profile/policies (starter/read-packaged!))})
            (is (some? (native/room-ctx-for id)))
            (is (not (identical? ctx (native/room-ctx-for id))))

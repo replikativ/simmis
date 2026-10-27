@@ -10,28 +10,18 @@
             [is.simm.model.knowledge-streams :as streams]
             [is.simm.model.knowledge-stream-retirement :as retirement]
             [is.simm.ops.knowledge-changes :as changes]
-            [konserve.core :as k]))
+            [is.simm.ops.checkpoint-roots :as physical]))
 
 (defn- refuse! [reason]
   (throw (ex-info "Knowledge checkpoint retention is unavailable" {:type ::held :reason reason})))
 
 (defn- source-keys [] [:store :backend :branch :configuration])
 
-(defn- registry! [db]
-  (let [store (:store db) present? (k/exists? store roots/registry-key {:sync? true})
-        value (k/get store roots/registry-key nil {:sync? true})]
-    (when (and present? (not (map? value))) (refuse! :invalid-root-registry))
-    (or value {})))
+(defn- registry! [db] (physical/registry! db))
 
 (defn- load! [conn source-db intent]
-  (let [body (pins/payload conn intent)
-        basis (:basis body) physical (changes/source-identity source-db)]
-    (when-not (= (select-keys basis (source-keys)) (select-keys physical (source-keys)))
-      (refuse! :physical-source-changed))
-    (let [snapshot (d/commit-as-db source-db (:commit basis))]
-      (when-not snapshot (refuse! :checkpoint-unavailable))
-      (when-not (= basis (changes/basis snapshot)) (refuse! :checkpoint-mismatch))
-      {:body body :basis basis :snapshot snapshot})))
+  (let [body (pins/payload conn intent) basis (:basis body)]
+    {:body body :basis basis :snapshot (physical/load-snapshot! source-db basis)}))
 
 (defn owner
   "Exact immutable diagnostic binding, checked alongside canonical intents and
@@ -51,25 +41,9 @@
   (let [intent (or (pins/intent @control-conn id) (refuse! :missing-intent))
         _ (when-not (#{:creating :pinned :committed :retained} (:knowledge.pin/state intent))
             (refuse! :retired-or-invalid-intent))
-        {:keys [body basis snapshot]} (load! control-conn source-db intent)
-        registry (get (registry! source-db) id)
-        record (k/get (:store source-db) (roots/record-key id) nil {:sync? true})
-        expected (roots/commit-record snapshot {:sync? true})]
-    (when-not (and registry record expected) (refuse! :pin-unavailable))
-    (when-not (and (= id (:id registry)) (= :pin (:kind registry))
-                   (= (roots/record-key id) (:record-key registry))
-                   (= (:commit basis) (:commit-id registry))
-                   (nil? (:ttl-ms registry)) (not (contains? registry :expires-at))
-                   (= (owner intent body) (:owner registry))
-                   (= (:commit basis) (get-in record [:meta :datahike/commit-id]))
-                   ;; Published commits must already have timestamps. Do not
-                   ;; infer a synthetic/legacy normalization or ignore unknown
-                   ;; root/schema/secondary/store-ref fields when comparing.
-                   (inst? (get-in expected [:meta :datahike/created-at]))
-                   (inst? (get-in expected [:meta :datahike/updated-at]))
-                   (= (update expected :meta dissoc :datahike/parents) record))
-      (refuse! :pin-mismatch))
-    {:intent intent :body body :basis basis :db snapshot}))
+        {:keys [body basis]} (load! control-conn source-db intent)
+        verified (physical/verify! source-db basis id (owner intent body))]
+    (assoc verified :intent intent :body body)))
 
 (defn create!
   "Original persisted-intent winner only. A map is not a capability: the fixed
@@ -83,20 +57,8 @@
                  (= intent (pins/active @control-conn (:knowledge.pin/stream intent))))
     (refuse! :intent-changed))
   (let [id (:knowledge.pin/id intent)
-        {:keys [body snapshot]} (load! control-conn source-db intent)]
-    ;; Creating a new retention root is stricter than disposing of an old one
-    ;; after a logical ref switch. The original published checkpoint is checked
-    ;; in full by load!, including its repository and logical ref.
-    (when-not (= (select-keys (:basis body) [:repository :ref])
-                 (select-keys (changes/source-identity source-db) [:repository :ref]))
-      (refuse! :physical-source-changed))
-    ;; root! overwrites explicit IDs, so never call it after a partial outcome
-    ;; or recovery, even if only the record (not registry) became visible.
-    (when (or (contains? (registry! source-db) id)
-              (k/exists? (:store source-db) (roots/record-key id) {:sync? true}))
-      (refuse! :root-already-present))
-    (when-not (= id (roots/pin! snapshot {:id id :ttl-ms nil :owner (owner intent body)} {:sync? true}))
-      (refuse! :pin-ack-mismatch))
+        {:keys [body basis]} (load! control-conn source-db intent)]
+    (physical/create! source-db basis id (owner intent body))
     (verify! control-conn source-db id)))
 
 (defn release-previous!

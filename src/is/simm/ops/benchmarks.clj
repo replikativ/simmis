@@ -10,18 +10,23 @@
             [dvergr.model.api.claude-code :as claude-code]
             [dvergr.resource :as resource]
             [dvergr.room.registry :as registry]
-            [dvergr.rooms :as rooms]
             [dvergr.system.db :as system-db]
+            [dvergr.system.rooms :as native-rooms]
             [is.simm.model.access :as access]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.checkers :as checkers]
             [is.simm.ops.cli-owner :as cli-owner]
             [is.simm.ops.benchmark-dataset :as dataset]
+            [is.simm.ops.benchmark-fixture :as fixture]
+            [is.simm.ops.benchmark-source :as benchmark-source]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
+            [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.work :as work]
             [is.simm.ops.work-sandbox :as work-sandbox]
             [is.simm.ops.workflows :as workflows]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [malli.core :as m]
+            [taoensso.telemere :as log]
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.util.concurrent Semaphore]
            [java.util.concurrent.atomic AtomicBoolean AtomicReference]))
@@ -34,6 +39,27 @@
   ;; Host I/O capabilities retaining a physical permit after a failed close.
   ;; Durable requests remain authoritative; these callbacks never run work.
   (atom {}))
+
+(defn- same-retirement-owner? [entry conn host-ctx]
+  (and (identical? conn (:conn entry)) (identical? host-ctx (:host-ctx entry))))
+
+(defn- retirement-callback [conn host-ctx id]
+  (some #(when (same-retirement-owner? % conn host-ctx) (:close! %))
+        (get @pending-retirements id)))
+
+(defn- retain-retirement! [conn host-ctx id close!]
+  ;; Keep native objects in values, never structurally hashed graph keys.
+  ;; Identical durable IDs in another installation do not convey this owner.
+  (swap! pending-retirements update id
+         (fn [entries]
+           (conj (filterv #(not (same-retirement-owner? % conn host-ctx)) entries)
+                 {:conn conn :host-ctx host-ctx :close! close!}))))
+
+(defn- forget-retirement! [conn host-ctx id]
+  (swap! pending-retirements
+         (fn [entries]
+           (let [remaining (filterv #(not (same-retirement-owner? % conn host-ctx)) (get entries id))]
+             (if (seq remaining) (assoc entries id remaining) (dissoc entries id))))))
 
 (def schema
   [:map {:closed true}
@@ -88,12 +114,60 @@
   [conn principal room-id]
   (authorize-in! @conn principal room-id))
 
+(defn- record-fixture-tx [db principal room-id expected persistent-id]
+  (let [party (authorize-in! db principal room-id)]
+    (when-not (and (= party (:work.request/by expected))
+                   (= room-id (:work.request/room expected)))
+      (throw (ex-info "Fixture publication does not own its Request" {:type ::denied})))
+    (requests/record-fixture-tx db expected persistent-id)))
+
+(defn- interruption? [error]
+  (boolean (some #(instance? InterruptedException %)
+                 (take-while some? (iterate ex-cause error)))))
+
+(defn record-fixture!
+  "Publish the exact native creation receipt before Job creation. Repeats
+   authorization in the pure writer and after native readback; an ambiguous
+   write is accepted only after exact positive observation. The captured native
+   owner remains responsible for cleanup if publication fails."
+  [conn host-ctx principal room-id request receipt]
+  (try
+    (record-fixture-tx @conn principal room-id request (:persistent-id receipt))
+    (fixture/validate-receipt! host-ctx (:work.request/id request) receipt)
+    (catch Throwable error
+      (when (interruption? error) (.interrupt (Thread/currentThread)))
+      (throw error)))
+  (let [persistent-id (:persistent-id receipt)
+        failure (try
+                  (d/transact conn [[:db.fn/call record-fixture-tx principal room-id request persistent-id]])
+                  nil
+                  (catch Throwable error
+                    (if (interruption? error)
+                      (do (.interrupt (Thread/currentThread)) (throw error))
+                      error)))]
+    (try
+      (fixture/validate-receipt! host-ctx (:work.request/id request) receipt)
+      (let [db @conn
+            observed (requests/request-in db (:work.request/id request))]
+        (record-fixture-tx db principal room-id request persistent-id)
+        (when-not (= persistent-id (:work.request/fixture-room observed))
+          (throw (ex-info "Fixture publication has no positive acknowledgement" {:type ::unavailable})))
+        observed)
+      (catch Throwable error
+        (when (interruption? error) (.interrupt (Thread/currentThread)))
+        (when (and failure (not (identical? failure error))) (.addSuppressed error failure))
+        (throw error)))))
+
 (defn- prepare*
   "Pure construction after one pinned file read. No checker/provider execution
    or room creation. All candidate/case/repetition cells share a finite parent
    allowance; each gets at most its integer share."
   [execution snapshot {:keys [name expected-bundle models repetitions cases limits] :as input}]
   (when-not (m/validate (if (= execution :cli-text) cli-schema schema) input) (invalid! "Invalid benchmark request"))
+  (if (= :checkpoint-fixture execution)
+    (when-not (execution-origin/validate-execution! (:files snapshot) limits)
+      (invalid! "Checkpoint fixture preparation requires the explicit execution-origin policy"))
+    (execution-origin/require-copied-context! (:files snapshot)))
   (let [inspection (workflows/inspect-snapshot name snapshot)]
     (when-not (:ok inspection) (invalid! "Workflow bundle is not structurally valid"))
     (when-not (= (str expected-bundle) (:bundle inspection))
@@ -209,80 +283,149 @@
 (defn prepare [snapshot input] (prepare* :native snapshot input))
 (defn prepare-cli [snapshot input] (prepare* :cli-text snapshot input))
 
-(defn- fixture-slug [request-id] (str "simmis-benchmark-" request-id))
+(defn prepare-checkpoint-fixture
+  "HOST-only pure source reconstruction route. Reuses every ordinary native
+   preparation check, retaining exact source before Request claim. This result
+   is not admitted by the existing adapter; no fixture, pin or Run is created."
+  [snapshot input]
+  (let [retained (benchmark-source/retain (:name input) (:files snapshot))]
+    (assoc-in (prepare* :checkpoint-fixture snapshot input) [:basis :benchmark/source] retained)))
+
+(defn- fixture-slug [request-id] (fixture/slug request-id))
 (defn fixture-room-id [request-id] (keyword (fixture-slug request-id)))
 
-(defn- fixture-room! [host-ctx request-id]
-  (binding [ec/*execution-context* host-ctx]
-    ;; Provision from the host, NEVER fork the author's control room (which
-    ;; contains gold/checker/calibration). No user-chosen repo/URL is accepted.
-    (let [id (rooms/create-room! {:slug (fixture-slug request-id)
-                                  :title "Benchmark fixture" :parent-id false :ctx host-ctx})]
-      (or (registry/lookup id)
-          (throw (ex-info "Benchmark fixture was not provisioned" {:type ::unavailable}))))))
+(defn- native-runtime-pending? [id]
+  (when (uuid? id)
+    (try (some? (native-rooms/room-ctx-for id))
+         (catch clojure.lang.ExceptionInfo error
+           (if (#{::native-rooms/room-runtime-held ::native-rooms/room-hydration-failed} (:type (ex-data error)))
+             true
+             (throw error))))))
 
-(defn retire-fixture! [host-ctx request-id]
+(defn recorded-fixture!
+  "HOST recovery observation of the canonical fixture UUID and exact live
+   incarnation, or :retired after positive archival. No hydration, creation,
+   resource settlement or permission is supplied by this observation."
+  [conn host-ctx request-id]
   (binding [ec/*execution-context* host-ctx]
-    (let [slug (fixture-slug request-id)]
-      (if-let [room (registry/lookup (keyword slug))]
-        (when-not (:ok? (rooms/archive-room! room))
-          (throw (ex-info "Benchmark fixture retirement needs recovery" {:type ::unavailable})))
-        ;; Provisioning may have persisted a row before a crash, with no live
-        ;; Room to hydrate/close. The durable locator still allows retirement.
-        (when-let [row (system-db/room-by-slug slug)]
-          (system-db/archive-room! (:room/id row)))))))
+    (let [request (requests/get-request conn request-id)
+          persistent-id (:work.request/fixture-room request)
+          row (when (uuid? persistent-id) (d/entity @(system-db/get-conn) [:room/id persistent-id]))]
+      (when-not (and request (uuid? persistent-id)
+                     (#{:benchmark :cli-benchmark :local-worker-benchmark} (:work.request/kind request))
+                     (= request-id (requests/request-id (:work.request/by request) (:work.request/room request)
+                                                        (:work.request/client-id request)))
+                     (= (fixture-slug request-id) (:room/slug row))
+                     (= fixture/profile (:system/repository-profile (:room/default-repository row))))
+        (throw (ex-info "Benchmark fixture has no canonical creation receipt" {:type ::unavailable})))
+      (if-let [room (registry/lookup (fixture-room-id request-id))]
+        (fixture/validate-receipt! host-ctx request-id {:room room :persistent-id persistent-id})
+        (if (and (inst? (:room/archived-at row)) (not (native-runtime-pending? persistent-id)))
+          :retired
+          ;; Missing native ownership is unknown, not permission to hydrate or
+          ;; archive a room found by its name. Original upstream recovery owns
+          ;; partial creation; this adapter never adopts it implicitly.
+          (throw (ex-info "Benchmark fixture native retirement requires reconciliation" {:type ::unavailable})))))))
 
-(defn retire-request! [host-ctx id]
-  (if-let [close! (get @pending-retirements id)]
+(defn retire-request! [conn host-ctx id]
+  (if-let [close! (retirement-callback conn host-ctx id)]
     (close!)
-    (retire-fixture! host-ctx id)))
+    (let [receipt (recorded-fixture! conn host-ctx id)]
+      (when-not (= :retired receipt) (fixture/retire! host-ctx id receipt)))))
 
 (defn retirement-pending?
-  "Bounded host-resource/locator check, not an execution or refund decision."
-  [host-ctx id]
+  "Bounded observation of the recorded UUID, not execution or refund authority.
+   Missing or inconsistent receipt data remains pending for reconciliation."
+  [conn host-ctx id]
   (binding [ec/*execution-context* host-ctx]
-    (boolean (or (contains? @pending-retirements id)
-                 (registry/lookup (fixture-room-id id))
-                 (when-let [row (system-db/room-by-slug (fixture-slug id))]
-                   (nil? (:room/archived-at row)))))))
+    (let [request (requests/get-request conn id)
+          persistent-id (:work.request/fixture-room request)
+          row (when (uuid? persistent-id) (d/entity @(system-db/get-conn) [:room/id persistent-id]))]
+      (boolean (or (retirement-callback conn host-ctx id)
+                   (registry/lookup (fixture-room-id id))
+                   (native-runtime-pending? persistent-id)
+                   (not (and (= (fixture-slug id) (:room/slug row))
+                             (= fixture/profile (:system/repository-profile (:room/default-repository row)))
+                             (inst? (:room/archived-at row)))))))))
 
-(defn adapter
-  "One host-owned transport/capacity adapter per submission. A losing retry
-   never acquires its permit. Dvergr remains the only experiment executor."
-  [host-ctx control prepared principal]
+(defn fixture-transport
+  "Fixed HOST fixture lifecycle and checker capacity for one submission.
+   The world-parent accessor only observes the original live fixture; it
+   never recreates one or conveys source authority. Callers retain their own
+   native lifetime. No execution, accounting or configurable hooks live here."
+  [conn host-ctx principal room-id]
   (let [slot checker-slot
         held (AtomicBoolean. false)
-        fixture (AtomicReference.)
+        receipt (AtomicReference.)
         locator (AtomicReference.)
         retire! (fn retire! []
                   (locking held
                     (let [id (.get locator)]
                       (try
-                        (when id (retire-fixture! host-ctx id))
+                        (when id
+                          (if-let [owned (.get receipt)]
+                            (fixture/retire! host-ctx id owned)
+                            (throw (ex-info "Fixture construction has no acknowledged native owner"
+                                            {:type ::unavailable}))))
+                        (.set receipt nil)
+                        (.set locator nil)
                         (when (.compareAndSet held true false) (.release ^Semaphore slot))
-                        (when id (swap! pending-retirements dissoc id))
+                        (when id (forget-retirement! conn host-ctx id))
                         (catch Throwable error
-                          (when id (swap! pending-retirements assoc id retire!))
+                          ;; Partial creation belongs to upstream recovery. Do
+                          ;; not retain an impossible callback with no native
+                          ;; receipt or permit; the missing durable pointer
+                          ;; already keeps that Request unresolved.
+                          (when (and id (or (.get receipt) (.get held)))
+                            (retain-retirement! conn host-ctx id retire!))
                           (throw error))))))]
-    (assoc prepared
-           :request-kind (or (:request-kind prepared) :benchmark)
-           :job-context! (fn [request]
-                           (let [id (:work.request/id request)]
-                             (.set locator id)
-                             (.set fixture (fixture-room! host-ctx id))
-                             (when-let [ready! (:world-parent-ready! prepared)] (ready! (.get fixture)))
-                             (:ctx (.get fixture))))
-           :admit! (fn [_]
-                     (when-not (.tryAcquire ^Semaphore slot)
-                       (throw (ex-info "Another trusted checker benchmark still owns physical capacity"
-                                       {:type ::busy})))
-                     (.set held true))
-           :start! (fn [job-id]
-                     (runner/run-in control
-                                    (assoc (:plan prepared) :parent-run job-id :cleanup-group job-id
-                                           :world-parent (.get fixture) :from (:principal/actor principal))))
-           :settled! (fn [_] (retire!))
-           :abandon! (fn [_] (retire!)))))
+    {:job-context! (fn [request]
+                     (let [id (:work.request/id request)]
+                       (.set locator id)
+                       ;; Native connection/writer constructors may capture
+                       ;; dynamic bindings before the Jobs detached extent.
+                       ;; Keep the outer lease, but do not copy its tickets.
+                       (lifetime/call-detached
+                        (fn [with-operation!]
+                          (let [owned (fixture/create! host-ctx id)]
+                            ;; Capture native ownership BEFORE publication, so
+                            ;; failed/lost pointer writes still have exact cleanup.
+                            (.set receipt owned)
+                            (with-operation! #(record-fixture! conn host-ctx principal room-id request owned))
+                            (:ctx (:room owned)))))))
+     :world-parent (fn []
+                     (let [room (:room (.get receipt))]
+                       (when-not (and room (binding [ec/*execution-context* (:ctx room)]
+                                             (registry/admitted-incarnation? room)))
+                         (throw (ex-info "Benchmark fixture is no longer available" {:type ::unavailable})))
+                       room))
+     :admit! (fn [_]
+               (when-not (.tryAcquire ^Semaphore slot)
+                 (throw (ex-info "Another trusted checker benchmark still owns physical capacity"
+                                 {:type ::busy})))
+               (.set held true))
+     :settled! (fn [_] (retire!))
+     :abandon! (fn [_] (retire!))}))
+
+(defn adapter
+  "One host-owned transport/capacity adapter per submission. A losing retry
+   never acquires its permit. Dvergr remains the only experiment executor."
+  [conn host-ctx control prepared principal room-id]
+  (when (contains? (:basis prepared) :benchmark/source)
+    (invalid! "Checkpoint benchmark fixtures require resolved admission before dispatch"))
+  (let [transport (fixture-transport conn host-ctx principal room-id)
+        context! (:job-context! transport)
+        parent (:world-parent transport)]
+    (merge prepared (dissoc transport :world-parent)
+           {:request-kind (or (:request-kind prepared) :benchmark)
+            :job-context! (fn [request]
+                            (let [ctx (context! request)]
+                              (when-let [ready! (:world-parent-ready! prepared)] (ready! (parent)))
+                              ctx))
+            :start! (fn [job-id]
+                      (runner/run-in control
+                                     (assoc (:plan prepared) :parent-run job-id :cleanup-group job-id
+                                            :world-parent (parent) :from (:principal/actor principal))))})))
 
 (defn retry-request
   "Metadata-only NORMAL exact-submission decision for the two fixed benchmark
@@ -310,7 +453,7 @@
         (work/status conn host-ctx principal room-id id)
         (let [prepared (prepare-fn (or snapshot (workflows/snapshot room (:name input))) input)]
           (work/submit-prepared! conn host-ctx principal room-id room input
-                                 (adapter host-ctx room prepared principal)))))))
+                                 (adapter conn host-ctx room prepared principal room-id)))))))
 
 (defn submit! [& args] (apply submit-kind! :benchmark prepare schema args))
 (defn submit-snapshot!
@@ -323,7 +466,7 @@
 (defn recover-request!
   "Retry only retirement of an already physically/resource-settled request.
    An in-process failed close retains its exact permit-owning callback."
-  [host-ctx row]
+  [conn host-ctx row]
   (let [job (:work.request/job row)
         status (when job (jobs/status job))]
     (when (and (#{:benchmark :cli-benchmark :local-worker-benchmark} (:work.request/kind row))
@@ -331,7 +474,7 @@
                  (and (false? (:work.request/return-pending? row)) (:settled? status)
                       (contains? #{:completed :failed :cancelled} (:status status)))
                  (= :interrupted (:work.request/state row))))
-      (retire-request! host-ctx (:work.request/id row)))))
+      (retire-request! conn host-ctx (:work.request/id row)))))
 
 (defn recover!
   "After work/recover!, retire request-addressed fixtures even if a crash fell
@@ -339,4 +482,15 @@
    job's fixture or one whose physical/resource cleanup is unresolved."
   [conn host-ctx]
   (binding [ec/*execution-context* host-ctx]
-    (doseq [row (requests/requests conn)] (recover-request! host-ctx row))))
+    (doseq [row (requests/requests conn)]
+      (try (recover-request! conn host-ctx row)
+           (catch Exception error
+             (if (interruption? error)
+               (do (.interrupt (Thread/currentThread)) (throw error))
+               ;; One unknown receipt must hold that Request, not prevent the
+               ;; installation from starting or other cleanup from progressing.
+               ;; Keep native diagnostics out of user-visible startup logs.
+               (log/log! {:level :error :id ::fixture-recovery-held
+                          :msg "Benchmark fixture recovery requires reconciliation"
+                          :data {:request (:work.request/id row)
+                                 :exception-class (.getName (class error))}})))))))

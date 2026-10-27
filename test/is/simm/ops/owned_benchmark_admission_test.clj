@@ -23,6 +23,7 @@
             [is.simm.model.system-db :as system-db]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.benchmark-fixture :as native-fixture]
             [is.simm.ops.benchmarks-test :as benchmark-fixture]
             [is.simm.ops.cli-owner :as cli-owner]
             [is.simm.ops.dvergr :as ops]
@@ -331,8 +332,9 @@
                                  (with-redefs-fn
                                    {#'benchmarks/checker-slot slot
                                     #'benchmarks/pending-retirements (atom {})
-                                    #'benchmarks/fixture-room! (fn [& _] clean)
-                                    #'benchmarks/retire-fixture! (fn [& _] (retire!))
+                                    #'native-fixture/validate-receipt! (fn [_ _ receipt] receipt)
+                                    #'native-fixture/create! (fn [& _] {:room clean :persistent-id (random-uuid)})
+                                    #'native-fixture/retire! (fn [& _] (retire!))
                                     #'cli-owner/ownership! (constantly cli-owner)
                                     #'claude-code/execution-policy (constantly policy)
                                     #'runner/runtime-identity (constantly {:libraries {}})
