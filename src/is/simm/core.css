@@ -629,6 +629,15 @@ body {
 :where(button:disabled) { opacity: .45; cursor: default; }
 :where(button:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+/* Native popup menus cannot use the header's transparent background: Chromium
+   may otherwise paint an opaque light menu even when the control is themed. */
+:where(select) { font-family: inherit; }
+:where(option, optgroup) {
+  color: var(--mono-text-primary);
+  background-color: var(--mono-bg-elevated);
+}
+:where(option:disabled, optgroup:disabled) { color: var(--mono-text-tertiary); }
+
 .btn {
   display: inline-flex;
   align-items: center;
