@@ -6,7 +6,8 @@
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
-            #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]]))
+            #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]])
+            #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el])))
 
 (def catalogs
@@ -53,20 +54,25 @@
       :blurb "Federated chat as a team." :ready? false}]}})
 
 #?(:cljs
-   (defn- act! [{:keys [id]}]
-     (binding [rtc/*execution-context* (or rtc/*execution-context* runtime)]
-       (case id
-         :workspace (sig/open-or-activate-tab! :new-kb nil {:title "New workspace"})
-         :mail (sig/open-or-activate-tab! :mail nil {:title "Mail"})
-         :team (sig/open-or-activate-tab! :new-room nil {:title "New team"})
-         nil))))
+   (defn- act! [{:keys [id]} {:keys [col-id tab-id tab-type ctx session]}]
+     (binding [rtc/*execution-context* ctx]
+       (when (and ctx (:id session) (web/current-session? session)
+                  (some (fn [column]
+                     (and (= col-id (:id column)) (= tab-id (:active-tab column))
+                          (some #(and (= tab-id (:id %)) (= tab-type (:type %))) (:tabs column))))
+                   @sig/layout-columns))
+         (case id
+           :workspace (sig/open-tab! :new-kb nil {:col-id col-id :title "New workspace"})
+           :mail (sig/open-or-activate-tab! :mail nil {:col-id col-id :title "Mail"})
+           :team (sig/open-tab! :new-room nil {:col-id col-id :title "New team"})
+           nil)))))
 
-(defn- source-row [{:keys [id verb icon label blurb ready? note] :as src}]
+(defn- source-row [{:keys [id verb icon label blurb ready? note] :as src} owner]
   #?(:cljs
      (let [actionable? (and ready? (not note))]
        (el/div {:key (name id)
                 :class (str "addmem-row" (when-not actionable? " addmem-row--soon"))
-                :on-click (fn [_] (when actionable? (act! src)))}
+                :on-click (fn [_] (when actionable? (act! src owner)))}
          (vc/icon icon)
          (el/div {:class "addmem-main"}
            (el/div {:class "addmem-label"}
@@ -81,13 +87,15 @@
 
 (defn add-source-view
   "`kind` is :memory or :team — see `catalogs`."
-  [kind]
+  [kind owner]
   #?(:cljs
-     (let [{:keys [title blurb rows]} (get catalogs kind)]
+     (let [{:keys [title blurb rows]} (get catalogs kind)
+           owner (assoc owner :tab-type (if (= :memory kind) :add-memory :add-team)
+                        :ctx (or rtc/*execution-context* runtime) :session (web/current-session))]
        (el/div {:class "addmem-view"}
          (el/div {:class "addmem-header"}
            (el/h2 {} title)
            (el/p {:class "addmem-sub"} blurb))
          (el/div {:class "addmem-list"}
-           (for [r rows] (source-row r)))))
+           (for [r rows] (source-row r owner)))))
      :clj nil))

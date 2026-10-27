@@ -18,7 +18,7 @@
 (defn- location [columns data]
   (let [matches (for [column columns tab (:tabs column)
                      :when (= (:tab-id data) (:id tab))]
-                  {:column (:id column) :tab tab})
+                  {:column (:id column) :tab tab :active? (= (:active-tab column) (:id tab))})
         match (when (= 1 (count matches)) (first matches))]
     (when (= (:tab-type data) (get-in match [:tab :type])) match)))
 
@@ -97,22 +97,29 @@
                               (when-not (and (vector? people) (<= (count people) 4096))
                                 (throw (ex-info "The people list is unavailable; invite people from room settings later." {})))
                               (-> s (assoc :people people) (dissoc :people-error)))
-                            #(assoc %1 :people-error %2)))))
-            (open! []
+                            #(assoc %1 :people-error %2)))
+                (open! true)))
+            (open! [& [automatic?]]
               (binding [ec/*execution-context* ctx]
                 (when (and (live?) (editor/created? (:outcome (state))))
-                  (when-let [{:keys [column]} (location @sig/layout-columns data)]
-                    (let [created (get-in (state) [:outcome :room])
-                          room (some #(when (= (:room/id created) (str (:room/id %))) %) (:rooms @sig/user-rooms))]
-                      (when room
-                        (let [memory? (= :memory (:landing data))]
-                          (sig/open-tab! (if memory? :memory :chat)
-                                         (cond-> {:room-id (str (:room/id room)) :room-name (:room/name room)}
-                                           memory? (assoc :path "wiki/Welcome.md")
-                                           (not memory?) (assoc :db-scope (str (:room/content-db-scope room))))
-                                         {:col-id column :new-tab? true
-                                          :title (if memory? "Welcome.md" (:room/name room))})
-                          (sig/close-tab! column (:tab-id data)))))))))]
+                  (when-let [{:keys [column active?]} (location @sig/layout-columns data)]
+                    ;; Automatic navigation belongs to the original foreground
+                    ;; form and connection. A historical ACK survives reconnect
+                    ;; for explicit recovery, but cannot move the user's focus.
+                    (when (or (not automatic?)
+                              (and active? (= column (sig/get-active-column-id @sig/layout-columns))
+                                   (= (:submitted-on (state)) (connection/snapshot))))
+                      (let [created (get-in (state) [:outcome :room])
+                            room (some #(when (= (:room/id created) (str (:room/id %))) %) (:rooms @sig/user-rooms))]
+                        (when room
+                          (let [memory? (= :memory (:landing data))]
+                            (sig/open-tab! (if memory? :memory :chat)
+                                           (cond-> {:room-id (str (:room/id room)) :room-name (:room/name room)}
+                                             memory? (assoc :path "wiki/Welcome.md")
+                                             (not memory?) (assoc :db-scope (str (:room/content-db-scope room))))
+                                           {:col-id column :new-tab? true
+                                            :title (if memory? "Welcome.md" (:room/name room))})
+                            (sig/close-tab! column (:tab-id data))))))))))]
       {:owner key :state state :ensure ensure! :create create! :open open!
        :check #(invoke! :observe)
        :set-name #(when-not (:submission (state)) (update! assoc :name %))

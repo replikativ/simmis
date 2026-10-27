@@ -144,7 +144,13 @@ Markdown or prove immediate legacy-tool mounting after a live attachment.
 
 Add Team and Add Memory both create canonical `:project` workspaces through
 the same human provisioning service. Team opens chat; Memory opens the starter
-wiki file. The form stores one frozen request in its execution-context Signal.
+wiki file. The chooser is replaced by its creation form. Confirmed creation
+opens the destination automatically once it appears in the room roster, provided
+the original form is still focused in the active column and the connection has
+not changed. Late results never replace another focused view. After reconnect,
+the retained outcome can be opened explicitly. "Check creation" appears only for
+an uncertain outcome, rather than during ordinary creation.
+The form stores one frozen request in its execution-context Signal.
 Its owner and client UUID derive the native slug; native atomic exclusion refuses
 a repeated creation rather than retrying it. Final membership and the typed
 creation receipt publish in one control transaction after native preparation.
