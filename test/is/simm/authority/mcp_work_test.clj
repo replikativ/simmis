@@ -211,7 +211,12 @@
                      (is (= 0 (get-in written [:write :removed-count])))
                      (is (= #{:commit :written-count :removed-count} (set (keys (:write written)))))
                      (is (not (contains? written :definition)))
-                     (is (true? (:ok checked)))
+                     ;; The amplification fixture deliberately exceeds the
+                     ;; ordinary 4000-character literal parameter ceiling.
+                     ;; Its metadata must stay bounded even when not runnable.
+                     (is (false? (:ok checked)))
+                     (is (= ["Ordinary workflow parameters must use unqualified names and literal string values."]
+                            (:problems checked)))
                      (is (= 256 (count (:title checked))))
                      (is (= 97 (:case-count checked)))
                      (is (= 8 (count (:cases checked))))
