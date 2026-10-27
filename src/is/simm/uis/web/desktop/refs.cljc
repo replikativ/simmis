@@ -79,10 +79,10 @@
        :workflow (when (workflow-links/route _ref)
                    (let [roster @sig/user-rooms
                          rows (if (vector? roster) roster (:rooms roster))
-                         label (or room-name (:room/name (some #(when (= (str room) (str (:room/id %))) %) rows)) "Room")]
-                     [:workflows {:room-id (str room) :workflow-name (:workflow _ref)
-                                  :workflow-action (:action _ref) :room-name label}
-                      (str label " · " (:workflow _ref))]))
+                         label (or room-name (:room/name (some #(when (= (str room) (str (:room/id %))) %) rows)))]
+                     [:workflows (cond-> {:room-id (str room) :workflow-name (:workflow _ref)
+                                          :workflow-action (:action _ref)} label (assoc :room-name label))
+                      (str (when label (str label " · ")) (:workflow _ref) " · Workflows")]))
        :files (when room [:files {:room-id (str room)} (or title "Files")])
        :memory-file (when (memory-links/route _ref)
                       [:memory {:room-id (str room) :path path}

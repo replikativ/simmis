@@ -575,6 +575,6 @@
         ((:observe controller))
         (if (:access-denied? state)
           (el/p {:role "status"} "This room is no longer available to this account.")
-          (view (or (:room-name room-data) "Room")
+          (view (editor/room-label room-data _roster)
                 (cond-> state (sync/problem _stream) (assoc-in [:errors :stream] (sync/problem _stream)))
                 controller))))))

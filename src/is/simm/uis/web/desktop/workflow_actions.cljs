@@ -401,7 +401,7 @@
                     (binding [ec/*execution-context* ctx]
                       (when (web/current-session? session)
                         (sig/open-tab! :chat room-data
-                                       {:title (or (:room-name room-data) "Room") :new-tab? true
+                                       {:title (editor/room-label room-data @sig/user-rooms) :new-tab? true
                                         :col-id (:col-id room-data)}))))
        :open-proposal (fn [proposal]
                         (binding [ec/*execution-context* ctx]

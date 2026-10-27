@@ -3,6 +3,12 @@
   (:require [clojure.string :as str]
             [is.simm.model.knowledge-input-check :as input-check]))
 
+(defn room-label [room-data roster]
+  (or (some (fn [room]
+              (when (= (str (:room-id room-data)) (str (:room/id room))) (:room/name room)))
+            (if (vector? roster) roster (:rooms roster)))
+      (:room-name room-data) "Room"))
+
 (def scaffold
   {"workflow.edn" "{:title \"New workflow\"\n :task \"{goal} Read /docs/input.md and write /out/result.md.\"\n :params {:goal \"Summarize the input.\"}\n :capture [\"/out\"]}\n"
    "fixtures/docs/input.md" "Replace this with your input.\n"

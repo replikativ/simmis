@@ -419,3 +419,11 @@
     (let [pending (assoc draft :schedule-submission {:payload payload})
           edited (assoc-in pending [:form :schedule-at] "15:00")]
       (is (= payload (:payload (editor/deployment-preview edited)))))))
+
+(deftest workflow-room-label-follows-late-roster-and-room-renames
+  (let [data {:room-id "target" :room-name "Room"}]
+    (is (= "Room" (editor/room-label data nil)))
+    (is (= "Research workspace" (editor/room-label data {:rooms [{:room/id "other" :room/name "Other"}
+                                                                 {:room/id "target" :room/name "Research workspace"}]})))
+    (is (= "Renamed workspace" (editor/room-label data [{:room/id "target" :room/name "Renamed workspace"}]))))
+  (is (= "Explicit label" (editor/room-label {:room-id "target" :room-name "Explicit label"} {:rooms []}))))
