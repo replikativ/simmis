@@ -1,0 +1,8 @@
+{:version 2
+ :epoch #uuid "f9625c1d-fc08-4789-8f4c-3e83b0a8a905"
+ :policy {:version 1
+          :max-trigger-files 32
+          :max-trigger-bytes 1048576
+          :context-paths []
+          :max-context-files 0
+          :max-context-bytes 0}}

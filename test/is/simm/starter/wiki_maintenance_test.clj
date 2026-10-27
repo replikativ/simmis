@@ -19,6 +19,7 @@
             [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.knowledge-inputs :as inputs]
             [is.simm.ops.knowledge-batch-inputs :as batch-inputs]
+            [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.workflow-runs :as runs]
             [is.simm.ops.workflows :as workflows]
             [is.simm.starter.wiki-maintenance :as starter]
@@ -217,7 +218,7 @@
   ;; Integration/preparation evidence, not inference or a model-quality score.
   ;; This derived evaluation bundle is explicit: never add gold to the live
   ;; user workflow or silently compare its bundle id with the live revision.
-  (doseq [version [1 starter/version]]
+  (doseq [version [1 4]]
     (let [source (starter/source version)
           policy (inputs/declaration source)
           cases {"supported" {:inputs (frozen policy {"inbox/interview.md" evidence})
@@ -279,9 +280,8 @@
 
 
 (deftest v4-opts-into-existing-batching-without-rewriting-historical-bundles
-  (let [current (starter/source) old (starter/source 3)
+  (let [current (starter/source 4) old (starter/source 3)
         declaration (batch-inputs/declaration current)]
-    (is (= 4 starter/version))
     (is (= current (starter/source 4)))
     (is (= (conj (set (keys old)) "input-batching.edn") (set (keys current))))
     (is (= 2 (:version declaration)))
@@ -298,3 +298,25 @@
     (is (:ok (workflows/inspect-snapshot starter/name {:files current})))
     (is (str/includes? (get current "fixtures/workflow-context/wiki-maintenance.txt") "not the complete backlog"))
     (is (str/includes? (get current "fixtures/workflow-context/wiki-maintenance.txt") "separate supported host operations"))))
+
+(deftest v5-uses-retained-wiki-context-without-activating-work
+  (let [source (starter/source)
+        policy (:policy (batch-inputs/declaration source))]
+    (is (= 5 starter/version))
+    (is (= source (starter/source 5)))
+    (is (= execution-origin/policy (execution-origin/declaration source)))
+    (is (= {:context-paths [] :max-context-files 0 :max-context-bytes 0}
+           (select-keys policy [:context-paths :max-context-files :max-context-bytes])))
+    (is (= (select-keys batch-inputs/default-policy [:max-trigger-files :max-trigger-bytes])
+           (select-keys policy [:max-trigger-files :max-trigger-bytes])))
+    (is (not= (:epoch (batch-inputs/declaration (starter/source 4)))
+              (:epoch (batch-inputs/declaration source))))
+    (is (:ok (workflows/inspect-snapshot starter/name {:files source})))
+    (is (= :wiki-checkpoint-structure-v1
+           (get-in (catalog/bundle starter/name source) [:definition :params :simmis/checker-profile])))
+    (is (= execution-origin/policy (execution-origin/validate-execution! source {:settlement "discard"})))
+    (is (thrown? clojure.lang.ExceptionInfo (execution-origin/require-copied-context! source)))
+    (is (thrown? clojure.lang.ExceptionInfo (execution-origin/validate-execution! source {:settlement "review"})))
+    (is (str/includes? (get source "fixtures/workflow-context/wiki-maintenance.txt") "/wiki/"))
+    (is (not (contains? source "gold.edn")))
+    (is (nil? (:calibration (catalog/bundle starter/name source))))))

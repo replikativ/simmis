@@ -409,17 +409,26 @@
               (when @worker (deref @worker 15000 nil)))))))))
 
 
-(deftest packaged-v4-source-is-retained-and-drains-through-native-batch-scheduling
-  (let [source (starter/source)]
+(deftest packaged-v4-and-v5-sources-drain-through-native-batch-scheduling
+  (doseq [version [4 5]]
+   (let [source (starter/source version)]
     (with-schedule source
-      (fn [{:keys [conn host room row due]}]
+      (fn [{:keys [conn host room owned row due]}]
         (let [team (roster/make-agent (roster/make-roster {:id :packaged-starter/team})
-                                      {:id :candidate :program {:kind :echo}})
+                                      {:id :candidate :tools #{} :sandbox #{}
+                                       :program (if (= 5 version)
+                                                  {:kind :sci :source "(ns scheduled.wiki) (defn main [_] (assert (= \"C1 scheduled wiki\" (slurp \"/wiki/checkpoint.md\"))) {:observed :c1})"
+                                                   :entrypoint 'scheduled.wiki/main :args [] :timeout-ms 10000}
+                                                  {:kind :echo})})
               calls (atom 0)]
           (is (= source (get-in (model/managed-target conn row) [:snapshot :files])))
+          (when (= 5 version)
+            (repo/write! owned "wiki/checkpoint.md" (.getBytes "C1 scheduled wiki" "UTF-8")))
           (with-redefs [work/prepare
                         (fn [input]
                           (swap! calls inc)
+                          (when (= 5 version)
+                            (repo/write! owned "wiki/checkpoint.md" (.getBytes "C2 current wiki" "UTF-8")))
                           (-> (@#'prep-fixture/model-free-preparation input)
                               (assoc :team team :agent :candidate)
                               (assoc-in [:basis :candidate] (roster/agent team :candidate))))
@@ -442,4 +451,4 @@
               (is (= :skipped (:schedule.occurrence/state o)))
               (is (= :no-inputs (:schedule.occurrence/reason o))))
             (is (= 1 @calls))
-            (is (= 1 (count (requests/requests conn))))))))))
+            (is (= 1 (count (requests/requests conn)))))))))))

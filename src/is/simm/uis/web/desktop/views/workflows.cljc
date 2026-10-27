@@ -302,6 +302,9 @@
                                                                           (disclosure/remember-open! event #(change assoc :execution-open? %)))}
                                                             (el/summary {} "Run, schedule, or benchmark")
                                                 (el/p {:class "workflow-note"} "Configure an explicit execution of the saved code. Opening this section never starts work.")
+                                                (when (contains? (:files source) "execution-origin.edn")
+                                                  (el/p {:class "workflow-note"}
+                                                        "This workflow reads a retained repository checkpoint on This Simmis server. Capture output and discard work retains wiki proposals for review. CLI and local-worker execution are unsupported."))
                                                 (el/label {:class "workflow-field"}
                                                           (el/span {} "Execution backend")
                                                           (el/select {:value (get form :backend "hosted")
