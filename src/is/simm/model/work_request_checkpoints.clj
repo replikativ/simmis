@@ -95,6 +95,19 @@
         (refuse! :publication-target-mismatch))
       selection)))
 
+(defn- propagate-interruption! [error]
+  (when (some #(instance? InterruptedException %)
+              (take-while some? (iterate ex-cause error)))
+    (.interrupt (Thread/currentThread))
+    (throw error)))
+
+(defn- read-intent! [conn request]
+  (try
+    (intent @conn (:work.request/id request))
+    (catch Exception error
+      (propagate-interruption! error)
+      (throw error))))
+
 (defn prepare!
   "Persist exact Request/Job/source before pin IO. Native effects remain the
    fixed HOST caller's responsibility. After an ambiguous control write, read
@@ -112,9 +125,10 @@
        (artifact/datahike-store conn) body
        (fn [ref] (d/transact conn [[:db.fn/call prepare-tx request digest ref root claim]])))
       (catch Exception e
-        (when-not (= digest (:work.checkpoint/payload-id (intent @conn (:work.request/id request))))
+        (propagate-interruption! e)
+        (when-not (= digest (:work.checkpoint/payload-id (read-intent! conn request)))
           (throw e))))
-    (let [row (intent @conn (:work.request/id request))]
+    (let [row (read-intent! conn request)]
       (when-not (= digest (:work.checkpoint/payload-id row)) (refuse! :intent-changed))
       {:intent row :new? (and (= root (:work.checkpoint/id row))
                               (= claim (:work.checkpoint/claim row)))})))

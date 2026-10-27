@@ -34,9 +34,9 @@ deployments are refused before discovery or pinning, without rewriting intent.
 The policy selects the whole initial chosen repository, not a per-path read
 restriction or an actual-read receipt. It does not freeze attached repositories
 or external inputs. Batch processing still acknowledges only its selected
-trigger prefix. The shipped v4 starter retains copied-context behavior. Workers
-and benchmark entry points explicitly reject the new policy until they support
-the corresponding checkpoint/clean-fixture admission.
+trigger prefix. The shipped v4 starter retains copied-context behavior. CLI and local-worker
+entry points reject the policy. The owned native benchmark facade supports it
+through the isolated case admission described below.
 
 ## Identity and ownership
 
@@ -53,7 +53,9 @@ publishes a bounded immutable binding and inserts the retention relation in the
 control writer's serialized transaction. Only the contender whose fresh root
 UUID and creation token were stored receives `:new? true`. A Request claim by
 itself does not make a later caller a creation winner. Ambiguous control writes
-are read back using that attempt's fresh token.
+are read back using that attempt's fresh token. Direct or wrapped interruption
+takes precedence over successful readback and restores the thread interrupt flag;
+it never returns fresh native creation authority.
 
 These return values are inert HOST coordination data, not capabilities. The
 owning HOST must retain its original physical source extent and current
@@ -124,10 +126,9 @@ second write attempt. Interruptions remain interruptions.
 These are journal reservation rights only. The caller still needs its original
 App/Room lifetime and authorization for native work. No native checkpoint,
 physical pin, Run, wallet, model call or schedule is created by this function.
-This groundwork is not wired into startup or benchmark dispatch yet; the old
-executors continue to reject checkpoint benchmark source. Physical fixture
-construction, pin verification, cleanup acknowledgement and resolved-runner
-admission must be connected before that rejection can be removed.
+The owned native benchmark facade connects this journal to physical fixture
+construction, pin verification, builder cleanup acknowledgement and the existing
+experiment runner. CLI and local-worker adapters continue to refuse this policy.
 
 `ops.benchmark-case-snapshots/load-case-snapshot!` restores a retained case
 through the original authorized private fixture's raw store, after its temporary
@@ -180,8 +181,9 @@ vetted skills, offered tools, calibration and the Attempt's recorded inputs ID.
 ## Benchmark preparation journal
 
 `model.benchmark-resolutions` supplies pure transaction fragments for an exact
-benchmark preparation. Its schema is not installed by application startup and
-its functions are not exposed to SCI, MCP or the benchmark dispatcher.
+benchmark preparation. Application startup installs its schema in the control database. Its transaction
+functions are not exposed to SCI or MCP; the fixed native admission adapter
+uses them internally.
 
 A closed plan names a semantic benchmark, retained source identity and at most
 eight contiguous, explicitly tagged cases. Default cases and named cases cannot
@@ -233,3 +235,32 @@ policy does not pass this comparison. Runtime identity drift also holds. A final
 Request reread fences changes during reconstruction. This helper publishes no
 artifacts and creates no fixture, root or execution; its returned HOST capabilities
 do not confer construction or dispatch rights.
+
+## Owned native benchmark admission
+
+The existing native submission facade selects the adapter from immutable saved
+workflow policy, not a caller-supplied callback. It retains the original App
+identity through synchronous admission and takes short source Room leases for
+authorization and journal handoffs. A later retry observes the original Request
+and never borrows a replacement App to construct new cases.
+
+A fresh typed private fixture Room starts from its clean repository checkpoint.
+Each selected case is built in an independent temporary world, seeded only with
+its selected fixture files. A bounded complete file/directory manifest includes
+binary and code files. The HOST verifies the result, records the pin intent,
+creates and verifies the native pin, and joins physical builder cleanup before
+marking the preparation ready. Checker and gold source never enter candidate
+workspaces. The original authoring repository and clean fixture baseline remain
+unchanged.
+
+The resolved artifact binds these exact cases to the original ExperimentDef,
+setup references and comparison identities. Dvergr's existing runner still owns
+Runs, Attempts, scoring and accounting. Admission-only App/Room handles are
+cleared before long-lived execution; they are not runner capabilities.
+
+Settlement retires the exact registered private Room, archives its typed control
+row, and asks Dvergr to release its recorded native acquisitions and remove the
+matching context cache entry. A terminal Run or archived row alone is not a
+cleanup acknowledgement. Unknown ownership or partial release stays held for
+recovery; it never causes force-release, reconstruction by slug, or new execution.
+Retained repository data, case pins and result evidence survive runtime retirement.

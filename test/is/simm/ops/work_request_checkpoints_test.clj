@@ -111,6 +111,51 @@
          (is (false? (:new? retry)))
          (is (= (:intent result) (:intent retry))))))))
 
+(deftest interrupted-control-ack-never-grants-native-creation
+  (doseq [wrapped? [false true]]
+    (fixture
+     (fn [control _ request _]
+       (let [publish artifact/publish-value!
+             interruption (InterruptedException. "Interrupted after publication")
+             error (if wrapped? (ex-info "Wrapped interruption" {} interruption) interruption)
+             caught (try
+                      (with-redefs [artifact/publish-value!
+                                    (fn [& args] (apply publish args) (throw error))]
+                        (model/prepare! control request))
+                      (catch Exception e e))
+             interrupted? (Thread/interrupted)]
+         (is (identical? error caught))
+         (is interrupted?)
+         ;; Clear the interrupt before storage cleanup. The durable intent
+         ;; remains visible, but a retry cannot claim fresh pin authority.
+         (is (some? (model/intent @control (:work.request/id request))))
+         (is (false? (:new? (model/prepare! control request)))))))))
+
+(deftest interrupted-control-readback-never-grants-native-creation
+  (doseq [wrapped? [false true]]
+    (fixture
+     (fn [control _ request _]
+       (let [publish artifact/publish-value!
+             intent model/intent
+             committed? (atom false)
+             interruption (InterruptedException. "Interrupted control readback")
+             error (if wrapped? (ex-info "Wrapped readback interruption" {} interruption) interruption)
+             caught (try
+                      (with-redefs [artifact/publish-value!
+                                    (fn [& args]
+                                      (apply publish args)
+                                      (reset! committed? true)
+                                      (throw (ex-info "Lost publication ACK" {})))
+                                    model/intent
+                                    (fn [& args]
+                                      (if @committed? (throw error) (apply intent args)))]
+                        (model/prepare! control request))
+                      (catch Exception e e))
+             interrupted? (Thread/interrupted)]
+         (is (identical? error caught))
+         (is interrupted?)
+         (is (false? (:new? (model/prepare! control request)))))))))
+
 (deftest lost-pin-ack-and-partial-publication-never-replay-the-native-write
   (fixture
    (fn [control source request _]

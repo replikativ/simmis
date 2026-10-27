@@ -126,7 +126,6 @@
 (defn- with-benchmark [f]
   (with-native-host
     (fn [{:keys [conn w root] :as env}]
-      (d/transact conn (vec (concat requests/schema journal/schema)))
       (d/transact conn [{:party/id (:owner w) :party/role :admin}])
       (@#'fixture-test/with-template
        (fn []

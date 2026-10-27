@@ -808,6 +808,13 @@ so candidate workspaces do not inherit checker/gold files. The Job runs in
 the fixture's execution context while durable results stay in the control
 room. Synchronous SCI grading stays inside Dvergr's physically tracked scoring
 worker; it is cooperative trusted-operator execution, not hard process isolation.
+Saved checkpoint-origin source uses an owned native case adapter: each case
+is constructed and pinned in an isolated private world before the existing
+runner starts. Production startup installs the typed preparation journal.
+Physical cleanup retires the exact private Room and its recorded native store
+acquisitions; an archived control row alone is insufficient. CLI and local-worker
+adapters continue refusing this source policy. See
+[checkpoint-retention.md](checkpoint-retention.md).
 Optional reference/damaged-answer calibration runs on the owned world-setup
 worker before each candidate; answers remain outside its workspace and do not
 promote checker trust.
