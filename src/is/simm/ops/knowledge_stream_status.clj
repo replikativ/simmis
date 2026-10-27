@@ -142,7 +142,7 @@
            (when-not (and (identical? room (:room bound))
                           (= (parse-uuid expected-source) (source-id bound name))) (unavailable!))
            (let [snapshot (workflows/snapshot-in (:db bound) name)
-                 _ (when-not (= (parse-uuid expected-bundle) (:id (catalog/bundle name (:files snapshot))))
+                 _ (when-not (= (parse-uuid expected-bundle) (:id (catalog/bundle name (:files snapshot) :program)))
                      (unavailable!))
                  declaration (batch-inputs/declaration (:files snapshot))
                  ;; No selector comes from the browser beyond the named saved

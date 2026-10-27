@@ -16,7 +16,7 @@
                 :files {"workflow.edn" "{}"} :definition {:params {}}
                 :inspection {:ok true :bundle "bundle" :cases ["a" "b"]}}
         draft (-> (editor/draft source)
-                  (assoc :path nil :funded? true)
+                  (assoc :path nil :funded? true :schedule-open? true)
                   (assoc-in [:form :mode] "benchmark")
                   (assoc-in [:form :model] "rendered-benchmark-model")
                   (assoc-in [:form :repetitions] "2")
@@ -31,7 +31,7 @@
                                                  :drafts {"echo" draft} :permissions {:merge? true :fund? true}}
                                                 {:change (fn [& _]) :open-schedules #(swap! opened inc)})))
         (let [text (.-textContent container)]
-          (is (str/includes? text "rendered-benchmark-model · every 1440 minutes"))
+          (is (str/includes? text "rendered-benchmark-model · Every 1440 minutes"))
           (is (str/includes? text "shared across benchmark trials"))
           (is (str/includes? text "Per benchmark trial: at most 4 model steps and 120000 ms."))
           (is (str/includes? text "Saved schedule: created-id. Acknowledged as enabled. Current status"))
@@ -73,7 +73,7 @@
         source {:name "echo" :revision "c1d56a1b-63f9-414c-a6ad-feb35d5e709d"
                 :files {"workflow.edn" "{}"} :definition {:params {}}
                 :inspection {:ok true :bundle "bundle" :cases []}}
-        draft (-> (editor/draft source) (assoc :path nil) (assoc-in [:form :model] ""))
+        draft (-> (editor/draft source) (assoc :path nil :schedule-open? true) (assoc-in [:form :model] ""))
         discharge (atom nil)]
     (.appendChild (.-body js/document) container)
     (try
@@ -84,8 +84,8 @@
                                                  {:room-id "room" :change (fn [& _])})))
         (let [buttons (array-seq (.querySelectorAll container "button"))
               named (fn [label] (some #(when (= label (.-textContent %)) %) buttons))]
-          (is (some? (named "Confirm and submit")))
-          (is (.-disabled (named "Confirm and submit")))
+          (is (some? (named "Run once…")))
+          (is (.-disabled (named "Run once…")))
           (is (some? (named "Confirm and activate schedule…")))
           (is (.-disabled (named "Confirm and activate schedule…")))
           (is (some? (named "Save paused schedule")))
@@ -124,7 +124,7 @@
         source {:name "maintain-wiki" :revision "c1d56a1b-63f9-414c-a6ad-feb35d5e709d"
                 :files {"workflow.edn" "{}"} :definition {:params {:simmis/checker-profile :wiki-structure-v1}}
                 :inspection {:ok true :bundle "bundle" :cases []}}
-        draft (-> (editor/draft source) (assoc :path nil) (assoc-in [:form :model] "registered-model"))
+        draft (-> (editor/draft source) (assoc :path nil :schedule-open? true) (assoc-in [:form :model] "registered-model"))
         discharge (atom nil)]
     (.appendChild (.-body js/document) container)
     (try
@@ -160,8 +160,8 @@
         (let [[source execution] (array-seq (.querySelectorAll container ".workflow-detail details.workflow-disclosure"))]
           (is (false? (.-open source)))
           (is (false? (.-open execution)))
-          (is (identical? execution (.closest (.querySelector container ".workflow-scheduling") "details"))
-              "Schedule configuration belongs to the execution disclosure")
+          (is (nil? (.querySelector container ".workflow-scheduling"))
+              "Schedule configuration appears only after choosing Schedule")
           (is (every? #(false? (.checkVisibility %))
                       (array-seq (.querySelectorAll execution "input,select,button")))
               "Closed execution controls do not occupy the overview")
@@ -248,3 +248,27 @@
                 (is (= 1 (count @calls)) "Detached native toggles cannot mutate the owning draft"))))
           (finally (when @discharge (browser/unmount! @discharge))
                    (.remove container) (context/stop-context! ctx)))))))
+
+(deftest benchmark-model-facts-are-hidden-until-readiness-is-current
+  (doseq [status [:checking :unavailable]]
+    (let [ctx (context/create-execution-context)
+          container (.createElement js/document "div")
+          source {:name "echo" :revision "c1d56a1b-63f9-414c-a6ad-feb35d5e709d"
+                  :files {"workflow.edn" "{}"} :definition {:params {}}
+                  :inspection {:ok true :bundle "bundle" :cases []}}
+          draft (-> (editor/draft source) (assoc-in [:form :mode] "benchmark"))
+          discharge (atom nil)]
+      (.appendChild (.-body js/document) container)
+      (try
+        (binding [ec/*execution-context* ctx]
+          (reset! discharge (browser/mount! container
+            (workflows/view "Lab" {:selected "echo" :drafts {"echo" draft}
+                                   :readiness-status status
+                                   :readiness {:models [{:id "old" :label "STALE-MODEL" :credential-label "STALE-CREDENTIAL"}]}
+                                   :permissions {:merge? true :operator? true}}
+                                  {:room-id "room" :change (fn [& _])})))
+          (is (not (str/includes? (.-textContent container) "STALE-MODEL")))
+          (is (not (str/includes? (.-textContent container) "STALE-CREDENTIAL")))
+          (is (str/includes? (.-textContent container) "Verifying model options")))
+        (finally (when @discharge (browser/unmount! @discharge))
+                 (.remove container) (context/stop-context! ctx))))))

@@ -146,7 +146,7 @@
           program (hasch/uuid [:simmis/knowledge-program-v1
                               (select-keys workflow [:name :bundle :case :params])
                               (:environment/task env) auxiliary])
-          bundle (catalog/bundle name source)
+          bundle (catalog/bundle name source :program)
           declaration (inputs/declaration source)
           captured (:captured frozen)]
       (when-not (and (= knowledge (:inputs captured)) (= reserved (:reserved selection))

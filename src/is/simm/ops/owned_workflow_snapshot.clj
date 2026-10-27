@@ -75,6 +75,6 @@
     (when-not (and (<= (reduce + 0 sizes) workflows/max-bundle-bytes)
                    (uuid? source-id)
                    (= source-id (:revision source-origin) (:expected-owned-source execution))
-                   (= (:expected-bundle execution) (:id (catalog/bundle (:name execution) files))))
+                   (= (:expected-bundle execution) (:id (catalog/bundle (:name execution) files :program))))
       (refuse!)))
   snapshot)

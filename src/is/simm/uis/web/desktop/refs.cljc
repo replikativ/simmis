@@ -20,6 +20,7 @@
    same act, not two parallel systems."
   (:require [clojure.string :as str]
             [is.simm.documents.links :as memory-links]
+            [is.simm.documents.workflow-links :as workflow-links]
             [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [datahike.reference :as dh-ref])
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
@@ -75,6 +76,13 @@
                  [:chat (cond-> {:room-id (str room) :room-name title}
                           sc (assoc :db-scope sc))
                   (or title "Chat")]))
+       :workflow (when (workflow-links/route _ref)
+                   (let [roster @sig/user-rooms
+                         rows (if (vector? roster) roster (:rooms roster))
+                         label (or room-name (:room/name (some #(when (= (str room) (str (:room/id %))) %) rows)) "Room")]
+                     [:workflows {:room-id (str room) :workflow-name (:workflow _ref)
+                                  :workflow-action (:action _ref) :room-name label}
+                      (str label " · " (:workflow _ref))]))
        :files (when room [:files {:room-id (str room)} (or title "Files")])
        :memory-file (when (memory-links/route _ref)
                       [:memory {:room-id (str room) :path path}

@@ -375,3 +375,47 @@
                  (assoc-in held [:head :bytes] -1)]]
       (is (thrown? clojure.lang.ExceptionInfo (editor/observe-stream state request (assoc reply :input-check bad)))))
     (is (= changed (editor/observe-stream changed (assoc request :expected-source "old") (assoc reply :input-check held))))))
+
+(deftest benchmark-candidates-share-the-same-cases-and-eight-cell-ceiling
+  (let [draft (-> (editor/draft source)
+                  (assoc-in [:form :mode] "benchmark")
+                  (assoc-in [:form :models] ["model-a" "model-b"]))
+        payload (editor/submission draft "request")]
+    (is (= ["model-a" "model-b"] (:models payload)))
+    (is (= "bundle" (:expected-bundle payload)))
+    (is (= "discard" (get-in payload [:limits :settlement])))
+    (doseq [models [[] ["a" "a"] ["a" "b" "c" "d"]]]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (editor/submission (assoc-in draft [:form :models] models) "bad"))))
+    (let [cases (-> draft (assoc-in [:source :inspection :cases] ["one" "two" "three"])
+                    (assoc-in [:form :models] ["a" "b" "c"]))]
+      (is (thrown? clojure.lang.ExceptionInfo (editor/submission cases "nine-cells"))))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (editor/submission (assoc-in draft [:source :inspection :benchmark-ready?] false) "not-ready")))))
+
+(deftest action-navigation-opens-setup-and-preserves-frozen-requests
+  (let [pending {:payload {:request-id "original" :models ["a"]}}
+        draft (assoc (editor/draft source) :submission pending :schedule-submission pending)]
+    (doseq [action [:run :schedule :benchmark]]
+      (let [opened (editor/choose-action draft action)]
+        (is (:execution-open? opened))
+        (is (= (= action :schedule) (:schedule-open? opened)))
+        (is (= pending (:submission opened)))
+        (is (= pending (:schedule-submission opened)))
+        (is (= (:files draft) (:files opened)))))))
+
+(deftest calendar-schedules-use-the-existing-explicit-backend-contract
+  (let [draft (-> (editor/draft source) (assoc-in [:form :model] "explicit-model")
+                  (assoc-in [:form :schedule-cadence] "week")
+                  (assoc-in [:form :schedule-on] "monday")
+                  (assoc-in [:form :schedule-at] "09:00")
+                  (assoc-in [:form :schedule-tz] "America/Vancouver"))
+        payload (editor/scheduled-submission draft "weekly")]
+    (is (= {:every "week" :on "monday" :at "09:00" :tz "America/Vancouver"} (:cadence payload)))
+    (is (= "Weekly on monday at 09:00 · America/Vancouver" (editor/cadence-label (:cadence payload))))
+    (doseq [at ["25:00" "09:60" "9:00"]]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (editor/scheduled-submission (assoc-in draft [:form :schedule-at] at) "invalid"))))
+    (let [pending (assoc draft :schedule-submission {:payload payload})
+          edited (assoc-in pending [:form :schedule-at] "15:00")]
+      (is (= payload (:payload (editor/deployment-preview edited)))))))

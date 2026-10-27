@@ -181,7 +181,8 @@
         (let [removed (workflows/write! room principal
                                         {:name "echo" :files {"fixtures/docs/input.md" nil}})]
           (is (= ["/workflows/echo/fixtures/docs/input.md"] (get-in removed [:write :removed])))
-          (is (false? (get-in removed [:workflow :ok])) "incomplete committed edits are acknowledged"))))))
+          (is (true? (get-in removed [:workflow :ok])) "ordinary programs do not require synthetic fixtures")
+          (is (false? (get-in removed [:workflow :benchmark-ready?]))))))))
 
 (deftest workflow-capability-cannot-write-other-room-or-sensitive-paths
   (with-workspace
@@ -579,3 +580,18 @@
             (is interrupted?))
           (is (= {:bundle 1 :dataset (if (= stage :bundle) 0 1)} @calls)))
         (finally (Thread/interrupted))))))
+
+(deftest ordinary-programs-and-benchmark-packs-have-distinct-readiness
+  (let [files {"workflow.edn" "{:title \"Plain task\" :task \"Write /out/result.md\" :capture [\"/out\"]}"
+               "instructions.md" "Instructions remain ordinary pinned files."}
+        source (workflows/details-of "plain" {:files files :manifest []})]
+    (is (true? (get-in source [:inspection :ok])))
+    (is (false? (get-in source [:inspection :benchmark-ready?])))
+    (is (= 2 (count (get-in source [:inspection :benchmark-problems]))))
+    (is (= "Plain task" (get-in source [:definition :title])))
+    (is (false? (:ok (workflows/inspect-snapshot "plain" {:files files :manifest []})))))
+  (doseq [definition ["{:title \"Task\" :task \"do it\" :params {:review true}}"
+                      "{:title \"Task\" :task \"do it\" :params :invalid}" "nil" "["]]
+    (let [source (workflows/details-of "broken" {:files {"workflow.edn" definition} :manifest []})]
+      (is (false? (get-in source [:inspection :ok])))
+      (is (seq (get-in source [:inspection :problems]))))))

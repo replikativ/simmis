@@ -324,7 +324,10 @@
         ;; cleanup owner instead of duplicating execution/accounting here.
         ;; 0.1.372 retires recorded native Room acquisitions on settlement and
         ;; shutdown; failed cleanup stays owned for explicit retry.
-        org.replikativ/dvergr {:mvn/version "0.1.372"
+        ;; Reviewed additive program/benchmark parser split (Dvergr #415).
+        ;; Replace this immutable source pin with its release after landing.
+        org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr.git"
+                               :git/sha "2dc70d32e757162076875c4d326ecd845ac7a155"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.

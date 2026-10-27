@@ -553,7 +553,7 @@
                                                                 (update :expected-bundle uuid!)))))))))}
     :simmis/workflow-write
     {:kind :write :schema workflow-write-schema :authz {:action :write}
-     :doc "Atomically edit text files ONLY under workflows/<name>/ as one repository commit. Paths are relative to that bundle; null deletes. At most100 files,512KiB/file,2MiB/batch. Optional expected-revision from workflow-check prevents stale saves under the workspace write lock; omitted means unconditional write. Cannot edit the room-root AGENTS.md or paths outside this bundle. Returns commit and shape inspection of the current bundle; never executes checker.clj."
+     :doc "Atomically edit text files ONLY under workflows/<name>/ as one repository commit. Paths are relative to that bundle; null deletes. At most100 files,512KiB/file,2MiB/batch. The Simmis owned host REQUIRES expected-revision from workflow-check even for a new workflow. Save publishes the complete inspected named bundle, including its previously untracked files, under the original whole-subtree compare-and-write. Other hosts may support an optional guard. Cannot edit the room-root AGENTS.md or paths outside this bundle. Returns commit and shape inspection of the current bundle; never executes checker.clj."
      :impl (fn [host args]
              (checked! workflow-write-schema args)
              (if (owned-reads/owned-host? host)
@@ -565,7 +565,7 @@
                                  (workflows/write! room ops/*principal* (workflows/transport-write (dissoc args :room))))))))}
     :simmis/workflow-check
     {:kind :read :schema workflow-check-schema :authz {:action :read}
-     :doc "Inspect one pinned current workflow bundle (max100 files/2MiB). Returns source revision even for invalid drafts, plus validated bundle id or structural problems. Source revision guards workflow-write; bundle id pins workflow-run or benchmark. This NEVER executes checker.clj or calibration; no answer/eval argument is accepted. On the Simmis owned host, fresh execution also REQUIRES expected-owned-source: copy the source revision UUID from the same workflow-check inspection as expected-bundle. Retain both original guards on retry."
+     :doc "Inspect one pinned current workflow bundle (max100 files/2MiB). Returns source revision even for invalid drafts, plus ordinary program validity and bundle id. benchmark-ready? and benchmark-problems separately report strict evaluation-pack structure; a runnable task need not have a checker or fixtures. Source revision guards workflow-write; bundle id pins execution, with strict benchmark validation repeated at admission. This NEVER executes checker.clj or calibration; no answer/eval argument is accepted. On the Simmis owned host, fresh execution also REQUIRES expected-owned-source: copy the source revision UUID from the same workflow-check inspection as expected-bundle. Retain both original guards on retry."
      :impl (fn [host args]
              (checked! workflow-check-schema args)
              (if (owned-reads/owned-host? host)

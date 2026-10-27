@@ -42,7 +42,8 @@
    changing these addresses — as would `?tx=`/`?branch=` for
    time-travel links, which dh:// already models."
   (:require [clojure.string :as str]
-            [is.simm.documents.links :as memory-links]))
+            [is.simm.documents.links :as memory-links]
+            [is.simm.documents.workflow-links :as workflow-links]))
 
 (defn ref->route
   "Path for a ref, or nil when the ref is not addressable."
@@ -53,6 +54,7 @@
     :message (when (and room message) (str "/room/" room "/m/" message))
     :thread (when (and room thread) (str "/room/" room "/t/" thread))
     :files (when room (str "/room/" room "/files"))
+    :workflow (workflow-links/route ref)
     (:memory-file :memory-block) (memory-links/route ref)
     :proposal (when id (str "/proposal/" id))
     :proposal-source (memory-links/source-route ref)
@@ -83,6 +85,7 @@
       "room" (case (count segs)
                2 {:kind :room :room (segs 1)}
                3 (when (= "files" (segs 2)) {:kind :files :room (segs 1)})
+               5 (workflow-links/parse-route segs)
                4 (case (segs 2)
                    "m" {:kind :message :room (segs 1) :message (segs 3)}
                    "t" {:kind :thread :room (segs 1) :thread (segs 3)}
@@ -121,6 +124,8 @@
                      {:kind :thread
                       :room (str room-id)
                       :thread (str thread-root-id)})
+      :workflows (when (and room-id (:workflow-name data) (:workflow-action data))
+                   {:kind :workflow :room (str room-id) :workflow (:workflow-name data) :action (:workflow-action data)})
       :files (when room-id {:kind :files :room (str room-id)})
       :memory (when room-id
                 (if reference

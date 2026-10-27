@@ -45,6 +45,7 @@
             [is.simm.agents.tool-authorization :as tool-auth]
             [is.simm.model.access :as access]
             [is.simm.agents.vocab :as vocab]
+            [is.simm.agents.workflows :as workflow-authoring]
             [is.simm.agents.wiki-read :as wiki-read]
             [is.simm.agents.source-memory :as source-memory]
             [is.simm.agents.office :as agent-office]
@@ -1948,6 +1949,21 @@
          "few-node mermaid of its real steps (sources → dedup → write → which KB). Re-call it when "
          "you change the workflow. For a saved file-based workflow, keep its optional `diagram.mmd` "
          "beside `workflow.edn`; the room Workflows view shows that saved diagram. The code remains authoritative.\n\n"
+         "## Saved workflows\n\n"
+         "Save reusable tasks under /workflows/<name>/workflow.edn with :title, :task, "
+         ":params (unqualified keys and literal string values only), and :capture [\"/out\"]. "
+         "Refer to helper files by full paths such as /workflows/<name>/instructions.md, "
+         "and specify an output path under /out/. Keep diagram.mmd beside workflow.edn. "
+         "Ordinary tasks do not require benchmark files. A benchmark additionally needs "
+         "checker.clj and actual fixtures/ or cases/, with evaluator-held reference data; "
+         "prose examples are documentation, not executable cases. Never create a fake passing checker.\n"
+         "Call (workflow/check-files {\"workflow.edn\" \"...\" ...}) on all files you authored "
+         "and repair its diagnostics before claiming readiness. This checks only supplied bytes, "
+         "not whether they were saved or adopted. (workflow/action-links \"<name>\") returns "
+         "room-scoped Run once, Schedule and Benchmark setup links. They open canonical saved "
+         "source for the human to check and launch with finite limits; they do not execute or "
+         "create schedules. If your edits are in a proposal, explain that adoption comes first. "
+         "Report separately what is saved, runnable, benchmark-ready and actually scheduled.\n\n"
          "## Links\n\n"
          "Inside a wiki, `[[Title]]` links to a page in the SAME KB — keep using it there.\n"
          "To link ACROSS databases — e.g. mention a wiki page in a CHAT message, or link "
@@ -2334,7 +2350,9 @@
         room-ids (fn [] (into #{} (comp (filter #(= room-slug (:room %))) (map (comp str :id)))
                               (list-scheds)))]
     (sci/add-namespace! sci-ctx 'workflow
-      {'schedules
+      {'check-files workflow-authoring/inspect-files
+       'action-links (fn [name] (workflow-authoring/action-links room-uuid name))
+       'schedules
        (fn []
          ;; This room's workflows (id + description) — find the id to shape.
          (->> (list-scheds)

@@ -1152,3 +1152,46 @@ src/is/simm/
 | Ledger | [kontor](https://github.com/replikativ/kontor) |
 | Filesystem | [muschel](https://github.com/replikativ/muschel) |
 | Versioned repos | [geschichte](https://github.com/replikativ/geschichte) |
+
+### Chat entry points for saved workflow operations
+
+Chat repository-relative links resolve against the message's own Room, rather
+than the browser's current URL. Links to workflow files expose a small action
+card. Its Run once, Schedule and Benchmark links open the current canonical
+saved workflow and the corresponding setup. Each tab owns its draft/navigation
+state. Calendar setup exposes the existing daily/weekly/monthly scheduler with
+an explicit time and time zone, alongside interval schedules. Final confirmation
+uses the original frozen cadence. Following a link never admits work,
+allocates resources or enables a schedule. Proposal edits must first be adopted.
+These are the same controls as the Room Workflows view, not a second executor.
+
+Ordinary source inspection and execution use the catalog's explicit `:program`
+validation purpose. They do not require a benchmark checker or fixtures. Strict
+benchmark validation remains independent: evaluation requires executable cases
+or fixtures and a checker. Inspection reports ordinary and benchmark readiness
+separately with bounded fixed diagnostics; it never evaluates the checker.
+
+Benchmark setup admits one pinned workflow revision with one to three explicit
+model candidates. All candidates share the same selected cases and repetitions,
+with at most eight total cells and the existing finite parent resource ceiling.
+Different workflow/prompt revisions are not yet candidates in one experiment.
+The existing experiment, Attempt, Scorecard and leaderboard remain authoritative.
+
+Room agents have bounded pure `workflow/check-files` and Room-scoped
+`workflow/action-links` authoring helpers. Supplied-byte checks do not establish
+saved-source identity or launch authority. Human browser/MCP admission retains
+the current policy. Agent-supervised child execution and durable agent schedule
+delegation are separate capabilities and are not implied by these links.
+
+Saving a workflow publishes the complete inspected named bundle, including
+unchanged files that an agent left untracked. The caller submits all bounded
+AFTER files plus explicit deletions to the existing native writer, retaining the
+original full BEFORE subtree CAS and authority boundary. The native index and
+commit proof remain unchanged. Unrelated working-tree and index changes are not
+staged or included. A pending completion never triggers an automatic replay.
+
+Pre-existing staged repository changes remain a hold. A tracked workflow file
+already removed before inspection also remains a hold unless that deletion is
+explicitly included in the save request: its absent body does not authorize
+silently changing the index. Native subtree equality is never relaxed to make a
+save succeed, and unrelated staged work is never committed on the user's behalf.

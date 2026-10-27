@@ -12,7 +12,8 @@
 (def defaults
   {:backend "hosted" :worker "" :worker-admissions "1"
    :model "" :case "" :mode "run" :split "development" :repetitions "1" :cli-runs "2"
-   :schedule-minutes "1440" :schedule-tz "UTC"
+   :schedule-minutes "1440" :schedule-tz "UTC" :schedule-cadence "interval"
+   :schedule-at "09:00" :schedule-on "monday" :schedule-day "1"
    :budget-microdollars "100000" :max-dispatches "4"
    :max-model-steps "4" :timeout-ms "120000" :timeout-default? true :settlement "review"})
 
@@ -291,6 +292,17 @@
     {:request-id request-id :max-worker-admissions (bounded-integer form :worker-admissions 1 32)}
     :else (assoc (select-keys (limits form) [:budget-microdollars :max-dispatches]) :request-id request-id)))
 
+(defn benchmark-models [form]
+  (if (and (= "hosted" (:backend form "hosted")) (contains? form :models))
+    (vec (:models form))
+    [(str/trim (:model form ""))]))
+
+(defn choose-action [draft action]
+  ;; Navigation reveals configuration; it never replaces a frozen submission.
+  (-> draft
+      (assoc :execution-open? true :schedule-open? (= :schedule action))
+      (update :form set-form-field :mode (if (= :benchmark action) "benchmark" "run"))))
+
 (defn submission [draft request-id]
   (when-not (source-current? draft) (invalid! "Source changed or is being verified; reconcile it before starting new work"))
   (when (dirty? draft) (invalid! "Save and inspect these changes before running"))
@@ -301,13 +313,20 @@
         benchmark? (= "benchmark" (:mode form))
         params (:params form)
         local? (local? form)
-        model (str/trim (:model form))]
+        model (str/trim (:model form))
+        models (if benchmark? (benchmark-models form) [model])]
     (when-not (:ok inspection) (invalid! "Repair this workflow before running"))
+    (when (and benchmark? (false? (:benchmark-ready? inspection)))
+      (invalid! "Prepare executable benchmark cases and a checker before benchmarking"))
     (when-not (and (string? (:revision source))
                    (re-matches #"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}" (:revision source)))
       (invalid! "Reload this workflow's owned source before running"))
     (when (and (cli? form) (not benchmark?)) (invalid! "CLI text execution currently supports benchmarks only"))
-    (when (and (not local?) (or (str/blank? model) (> (count model) 200))) (invalid! "Enter an explicit model id"))
+    (when (and (not local?)
+               (or (not (<= 1 (count models) 3))
+                   (not= (count models) (count (distinct models)))
+                   (some #(or (not (string? %)) (str/blank? %) (> (count %) 200)) models)))
+      (invalid! "Choose one to three distinct model candidates"))
     (when (and local? (not (re-matches #"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}" (str (:worker form)))))
       (invalid! "Select an explicitly enrolled local worker"))
     (when (and (seq selected) (not (some #{selected} cases))) (invalid! "Select a case from this revision"))
@@ -325,11 +344,11 @@
                      (or (empty? allowed) (not-every? (set allowed) cell-cases)))
             (invalid! "Choose cases from the selected evaluation split"))
           (when (not= params (parameters source)) (invalid! "Benchmarking uses saved defaults; save parameter changes in workflow.edn first"))
-          (when (or (> (count cell-cases) 4) (> (* (max 1 (count cell-cases)) repetitions) 8))
+          (when (or (> (count cell-cases) 4) (> (* (max 1 (count cell-cases)) repetitions (if local? 1 (count models))) 8))
             (invalid! "Choose fewer benchmark cases (maximum eight cells)"))
           (cond-> (assoc base :repetitions repetitions)
             (:evaluation inspection) (assoc :split split)
-            (not local?) (assoc :models [model])
+            (not local?) (assoc :models models)
             (seq cell-cases) (assoc :cases (vec cell-cases))))
         (do
           (when-not (and (<= (count params) 32) (every? string? (vals params)))
@@ -338,6 +357,33 @@
             (not local?) (assoc :model model)
             (seq selected) (assoc :case selected)))))))
 
+(defn cadence [form]
+  (let [kind (:schedule-cadence form "interval")
+        tz (str/trim (:schedule-tz form "UTC"))
+        at (:schedule-at form "09:00")]
+    (when (or (str/blank? tz) (> (count tz) 100)) (invalid! "Enter an explicit timezone"))
+    (if (= "interval" kind)
+      {:interval-ms (* 60000 (bounded-integer form :schedule-minutes 1 525600)) :tz tz}
+      (do
+        (when-not (and (contains? #{"day" "week" "month"} kind)
+                       (string? at) (re-matches #"(?:[01][0-9]|2[0-3]):[0-5][0-9]" at))
+          (invalid! "Choose a calendar cadence and a valid 24-hour time"))
+        (when (and (= "week" kind)
+                   (not (contains? #{"monday" "tuesday" "wednesday" "thursday" "friday" "saturday" "sunday"}
+                                   (:schedule-on form))))
+          (invalid! "Choose a weekday"))
+        (cond-> {:every kind :at at :tz tz}
+          (= "week" kind) (assoc :on (:schedule-on form))
+          (= "month" kind) (assoc :on-day (bounded-integer form :schedule-day 1 28)))))))
+
+(defn cadence-label [cadence]
+  (str (if-let [interval (:interval-ms cadence)]
+         (str "Every " (quot interval 60000) " minutes")
+         (str (case (:every cadence) "day" "Daily" "week" (str "Weekly on " (:on cadence))
+                                      "month" (str "Monthly on day " (:on-day cadence)) "Calendar schedule")
+              " at " (:at cadence)))
+       " · " (:tz cadence)))
+
 (defn scheduled-submission
   ([draft request-id] (scheduled-submission draft request-id true))
   ([draft request-id enabled?]
@@ -345,11 +391,9 @@
   (when-not (= "hosted" (get-in draft [:form :backend] "hosted"))
     (invalid! "Schedules currently require hosted execution"))
   (let [execution (dissoc (submission draft request-id) :request-id)
-        minutes (bounded-integer (:form draft) :schedule-minutes 1 525600)
-        tz (str/trim (get-in draft [:form :schedule-tz] "UTC"))]
-    (when (or (str/blank? tz) (> (count tz) 100)) (invalid! "Enter an explicit timezone"))
+        cadence (cadence (:form draft))]
     {:request-id request-id :kind (if (= "benchmark" (get-in draft [:form :mode])) "benchmark" "workflow")
-     :enabled? enabled? :cadence {:interval-ms (* 60000 minutes) :tz tz} :execution execution})))
+     :enabled? enabled? :cadence cadence :execution execution})))
 
 (defn deployment-preview
   "Presentation only. Unresolved requests display their original immutable
