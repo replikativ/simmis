@@ -905,3 +905,132 @@
             ((:schedule ui) "a" true)
             (is (= original (last (:args (last @requests)))))
             (is (= 1 (count @confirmations)))))))))
+
+(def setup-ready
+  {:default-model {:status :selected :id "luna" :label "Luna" :source :user-preference}
+   :models [{:id "luna" :label "Luna" :credential-status :present}]
+   :allowance {:status :observed :microdollars "100000" :model-dispatches "4"}})
+
+(defn ready-setup! [k]
+  (swap! sig/workflow-editor-state update k assoc
+         :readiness-status :ready :readiness setup-ready :permissions {:write? true :merge? true}))
+
+(deftest inline-confirmation-is-once-only-even-with-synchronous-receipt
+  (with-state
+    (fn [ui k]
+      (ready-setup! k)
+      (let [calls (atom []) grants (atom []) confirms (atom 0)]
+        (with-redefs [remote/submit-workflow-run! (fn [& args] (swap! calls conj args) (fn [ok _] (ok {:id "receipt" :job "job"})))
+                      remote/provision-workflow-allowance! (deferred grants)
+                      actions/confirm! (fn [& _] (swap! confirms inc) false)]
+          ((:prepare-setup ui) "a" nil)
+          (let [offered (get-in @sig/workflow-editor-state [k :drafts "a" :setup-offer])]
+            (is (empty? @calls))
+            (is ((:offer-current? ui) "a" offered))
+            ((:accept-setup ui) "a" offered)
+            ((:accept-setup ui) "a" offered)
+            (is (= 1 (count @calls)))
+            (is (= "luna" (:model (nth (first @calls) 2))))
+            (is (= "receipt" (get-in @sig/workflow-editor-state [k :drafts "a" :submission :reply :id])))
+            (is (empty? @grants))
+            (is (zero? @confirms))))))))
+
+(deftest stale-source-default-permissions-and-form-refuse-inline-confirmation
+  (doseq [change [(fn [k] (swap! sig/workflow-editor-state assoc-in [k :drafts "a" :source-stale?] true))
+                  (fn [k] (swap! sig/workflow-editor-state assoc-in [k :readiness :default-model :id] "other"))
+                  (fn [k] (swap! sig/workflow-editor-state assoc-in [k :permissions :merge?] false))
+                  (fn [k] (swap! sig/workflow-editor-state assoc-in [k :drafts "a" :form :max-dispatches] "2"))
+                  (fn [_] (reset! sig/user-rooms {:rooms []}))]]
+    (with-state
+      (fn [ui k]
+        (ready-setup! k)
+        (let [calls (atom [])]
+          (with-redefs [remote/submit-workflow-run! (deferred calls)]
+            ((:prepare-setup ui) "a" nil)
+            (let [offered (get-in @sig/workflow-editor-state [k :drafts "a" :setup-offer])]
+              (change k)
+              ((:accept-setup ui) "a" offered)
+              (is (empty? @calls))
+              (is (nil? (get-in @sig/workflow-editor-state [k :drafts "a" :submission]))))))))))
+
+(deftest schedule-offer-and-advanced-use-one-frozen-form-and-journal
+  (with-state
+    (fn [ui k]
+      (ready-setup! k)
+      (swap! sig/workflow-editor-state assoc-in [k :drafts "a" :source :setup]
+             {:status :ready :intent {:version 1 :action :schedule
+              :cadence {:every "week" :on "monday" :at "09:00" :tz "America/Vancouver"}}})
+      (let [calls (atom []) tabs (atom [])]
+        (with-redefs [remote/create-workflow-schedule! (deferred calls)
+                      sig/open-tab! (fn [& args] (swap! tabs conj args))]
+          ((:prepare-setup ui) "a" nil)
+          (let [offered (get-in @sig/workflow-editor-state [k :drafts "a" :setup-offer])]
+            ((:open-advanced ui) "a")
+            (is (= (:form offered) (get-in @sig/workflow-editor-state [k :drafts "a" :form])))
+            (is (= "week" (get-in @sig/workflow-editor-state [k :drafts "a" :form :schedule-cadence])))
+            ((:accept-setup ui) "a" offered)
+            (is (= 1 (count @calls)))
+            (let [sent (nth (:args (first @calls)) 2)]
+              ((:error (first @calls)) (js/Error. "ACK lost"))
+              (is (false? (get-in @sig/workflow-editor-state [k :loading [:schedule "a"]])))
+              ;; Lost ACK retains the original payload even after Advanced edits.
+              ((:change ui) "a" assoc-in [:form :schedule-at] "11:00")
+              ((:schedule ui) "a" true)
+              (is (= 2 (count @calls)))
+              (is (= sent (nth (:args (last @calls)) 2)))
+              (is (= "09:00" (get-in sent [:cadence :at]))))))))))
+
+(deftest copied-ready-offer-cannot-confirm-through-the-live-socket
+  (with-state
+    (fn [ui k]
+      (ready-setup! k)
+      ((:prepare-setup ui) "a" nil)
+      (let [copy (context/fork-context ec/*execution-context*) calls (atom [])]
+        (try
+          (binding [ec/*execution-context* copy]
+            (let [copied-ui (actions/controller {:room-id "room"})]
+              ((:prepare-setup copied-ui) "a" nil)
+              (let [offered (get-in @sig/workflow-editor-state [k :drafts "a" :setup-offer])]
+                (with-redefs [remote/submit-workflow-run! (deferred calls)]
+                  (is (not ((:offer-current? copied-ui) "a" offered)))
+                  ((:accept-setup copied-ui) "a" offered)
+                  (is (empty? @calls))))))
+          (finally (context/close-context! copy)))))))
+
+(deftest early-advanced-does-not-manufacture-a-partial-draft
+  (with-state
+    (fn [ui k]
+      (swap! sig/workflow-editor-state update-in [k :drafts] dissoc "a")
+      (let [requests (atom [])]
+        (with-redefs [sig/open-tab! (fn [& _]) remote/load-workflow-source! (deferred requests)]
+          ((:open-advanced ui) "a")
+          (is (nil? (get-in @sig/workflow-editor-state [k :drafts "a"])))
+          ((:reload ui) "a")
+          ((:ok (first @requests)) (source "a" initial-revision))
+          (is (= "100000" (get-in @sig/workflow-editor-state [k :drafts "a" :form :budget-microdollars])))
+          (is (= "4" (get-in @sig/workflow-editor-state [k :drafts "a" :form :max-dispatches]))))))))
+
+(deftest canonical-advanced-selection-cannot-retarget-another-chat-workflow
+  (with-state
+    (fn [_ _]
+      (let [data {:room-id "room" :tab-id "actual-tab" :workflow-state-owner [:chat-workflow "a"]}
+            k (actions/state-key "room" [:chat-workflow "a"])
+            ui (actions/controller data) calls (atom [])]
+        (swap! sig/workflow-editor-state assoc k {:selected "a" :drafts {"a" (editor/draft (source "a" initial-revision))}})
+        (with-redefs [remote/load-workflow-source! (deferred calls)]
+          ((:select ui) "b")
+          (is (= "a" (get-in @sig/workflow-editor-state [k :selected])))
+          (is (empty? @calls))
+          (is (= "a" (:canonical-workflow ui))))))))
+
+(deftest malformed-inline-confirmation-neither-dispatches-nor-opens-a-modal
+  (with-state
+    (fn [ui k]
+      (ready-setup! k)
+      (let [calls (atom []) modals (atom [])]
+        (with-redefs [remote/submit-workflow-run! (deferred calls)
+                      remote/create-workflow-schedule! (deferred calls)
+                      actions/confirm! (fn [& args] (swap! modals conj args) true)]
+          (doseq [offer [nil {} {:action :run}]] ((:accept-setup ui) "a" offer))
+          (is (empty? @calls))
+          (is (empty? @modals)))))))

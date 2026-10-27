@@ -1105,6 +1105,17 @@
 
 (defn family? [s] (str/includes? (str s) "*"))
 
+(defn registered-choice
+  "Choose metadata within the configured selection only, without refreshing
+   catalogs or asserting account access. Admission still checks availability."
+  [choice rows]
+  (if (family? choice)
+    (->> rows
+         (filter #(= choice (family-of (:id %))))
+         (sort-by #(version-key (version-of (:id %))) #(compare %2 %1))
+         first :id)
+    (some #(when (= choice (:id %)) choice) rows)))
+
 (defn default-family
   "Family form of the current `default-model`, for callers making an explicit
    family selection. New agents inherit instead of storing this value. Nil

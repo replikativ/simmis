@@ -1,6 +1,7 @@
 (ns is.simm.ops.workflow-readiness
   "Read-only workflow choices and the actual shared Room wallet observation."
   (:require [clojure.string :as str]
+            [datahike.api :as d]
             [dvergr.model.registry :as registry]
             [dvergr.resource :as resource]
             [dvergr.runtime.preparation :as preparation]
@@ -16,7 +17,7 @@
 (defn- refuse! []
   (throw (ex-info "Workflow readiness unavailable" {:type ::unavailable})))
 
-(defn exact-model-options
+(defn- local-model-options
   "Local registered metadata and credential presence only. No catalog refresh,
    provider initialization, token refresh, model request or implicit selection."
   []
@@ -40,7 +41,7 @@
                                   (if (= :codex-subscription provider) "Login present; connection not tested"
                                       "Credential configured; account access not checked")
                                   "Default credential not detected; connection not verified")}))
-           (take 256 models))
+           models)
      :models-truncated? (> (count models) 256)}))
 
 (defn- exact-quantity [value]
@@ -71,6 +72,34 @@
       (when (> (count text) 512) (refuse!))
       text)))
 
+(defn- configured-choice [control-db party]
+  (let [preference (when control-db (:party/preferred-model (d/entity control-db [:party/id party])))]
+    {:model (or (not-empty preference) (:model (selection/default-model-choice)))
+     :source (if (seq preference) :user-preference :deployment-default)}))
+
+(defn exact-model-options
+  "Bounded local options, retaining the configured choice even past the first
+   page. No catalog refresh or claim of account access."
+  ([] (exact-model-options nil))
+  ([choice]
+   (let [{:keys [models] :as data} (local-model-options)
+         selected (selection/registered-choice choice models)
+         first-page (vec (take 256 models))
+         selected-row (some #(when (= selected (:id %)) %) models)]
+     (assoc data :models (if (and selected-row (not-any? #(= selected (:id %)) first-page))
+                           (conj (vec (take 255 first-page)) selected-row) first-page)))))
+
+(defn default-model
+  "Metadata recommendation from this human's preference, then the configured
+   deployment default. Never switch to an unrelated credential or provider."
+  [control-db party rows]
+  (let [{:keys [model source]} (configured-choice control-db party)
+        id (selection/registered-choice model rows)
+        row (some #(when (= id (:id %)) %) rows)]
+    (if (= :present (:credential-status row))
+      {:status :selected :id id :label (:label row) :source source}
+      {:status :unavailable :reason :configured-model-unavailable})))
+
 (defn- allowance [room]
   (try
     (binding [ec/*execution-context* (:ctx room)]
@@ -92,14 +121,15 @@
   (let [original (reads/resolve-registered-host-read-room! host principal handle)
         room (:room original)
         observe (fn []
-                  (let [models (exact-model-options)
+                  (let [models (exact-model-options (:model (configured-choice (:control-db original) (:party original))))
                         balance (if room (allowance room) {:status :unavailable :reason :room-not-active})
                         current (reads/resolve-registered-host-read-room! host principal handle)]
                     (when-not (and (= (select-keys original [:party :room-id :slug])
                                       (select-keys current [:party :room-id :slug]))
                                    (identical? room (:room current))) (refuse!))
                     (when room (reads/validate-host-read-room! host principal handle original))
-                    (assoc models :allowance balance)))]
+                    (assoc models :allowance balance
+                           :default-model (default-model (:control-db current) (:party current) (:models models)))))]
     (binding [ec/*execution-context* (:execution-ctx host)]
       (if room
         (preparation/with-host-operation!

@@ -34,7 +34,10 @@
   [room-data]
   (let [ctx (or ec/*execution-context* runtime)
         session (web/current-session)
-        room (str (:room-id room-data)) k (state-key room (:tab-id room-data))
+        room (str (:room-id room-data))
+        canonical (when (= :chat-workflow (first (:workflow-state-owner room-data)))
+                    (second (:workflow-state-owner room-data)))
+        k (state-key room (or (:workflow-state-owner room-data) (:tab-id room-data)))
         update! (fn [f & args]
                   (binding [ec/*execution-context* ctx]
                     (when (web/current-session? session)
@@ -100,7 +103,25 @@
                 (catch :default error
                   (finish! #(-> % (assoc-in [:loading slot] false)
                                 (assoc-in [:errors slot] (rem/error-text error)))))))))]
-    (letfn [(observe-all! []
+    (letfn [(offer-generation []
+              [(authority-generation) (:readiness-status (state)) (:readiness (state)) (:permissions (state))])
+            (verified-offer! [name offered]
+              (let [draft (get-in (state) [:drafts name])]
+                (when-not (and (some? (ec/home-context ctx))
+                               (identical? (ec/home-context ctx) (ec/home-context runtime))
+                               (web/current-session? session) (connection/snapshot)
+                               (= :ready (:readiness-status (state)))
+                               (:merge? (:permissions (state)))
+                               (not (:access-denied? (state)))
+                               (= (:generation offered) (offer-generation))
+                               (= offered (:setup-offer draft))
+                               (= (:form offered) (:form draft))
+                               (nil? (:submission draft)) (nil? (:schedule-submission draft))
+                               (= (dissoc offered :generation)
+                                  (editor/setup-offer draft (:readiness (state)) (:action offered))))
+                  (throw (js/Error. "Setup changed. Review the current proposal before confirming.")))
+                offered))
+            (observe-all! []
               (let [socket (connection/snapshot)
                     owner [socket (:fork-id (ec/home-context ctx))]
                     roster (binding [ec/*execution-context* ctx] @sig/user-rooms)
@@ -163,6 +184,8 @@
                   (observe! :readiness readiness-generation
                             #(remote/load-workflow-readiness! web/server-id room)
                             (fn [s reply] (-> s (assoc :readiness reply :readiness-status :ready)
+                                                  (update :drafts (fn [drafts]
+                                                                    (into {} (map (fn [[n d]] [n (editor/automatic-model d reply)])) drafts)))
                                               (update :errors dissoc :readiness)))
                             (fn [s _] (-> s (dissoc :readiness) (assoc :readiness-status :unavailable)
                                           (assoc-in [:errors :readiness] "Model and allowance observations are unavailable. Retry updates when the connection is ready."))))
@@ -198,7 +221,7 @@
                     (observe! [:source selected] generation
                               #(remote/load-workflow-source! web/server-id room selected)
                               (fn [s reply] (-> s (assoc :permissions (:permissions reply))
-                                                (update-in [:drafts selected] editor/observed reply)
+                                                (update-in [:drafts selected] #(editor/automatic-model (editor/observed % reply) (:readiness s)))
                                                 (update :errors dissoc [:source selected])))
                               (fn [s error] (-> s (dissoc :permissions)
                                                 (assoc-in [:errors [:source selected]] error))))))))
@@ -218,7 +241,8 @@
                           (fn [s reply]
                             (assoc s :workers (cond-> reply after (update :workers #(into (:workers prior) %))))))))
             (select! [name reload? & [create?]]
-              (update! #(-> % (assoc :selected name) (dissoc :pending-navigation)))
+              (when (or (nil? canonical) (= canonical name))
+               (update! #(-> % (assoc :selected name) (dissoc :pending-navigation)))
               (when (and (not (get-in (state) [:loading [:save name]]))
                          (not (get-in (state) [:loading [:source name]]))
                          (or reload? (nil? (get-in (state) [:drafts name :source]))))
@@ -227,7 +251,7 @@
                                             (assoc-in [:drafts name]
                                                       (cond-> (editor/reloaded (get-in s [:drafts name]) reply)
                                                         (and create? (empty? (:files reply)))
-                                                        (assoc :files editor/scaffold :path "workflow.edn"))))))))
+                                                        (assoc :files editor/scaffold :path "workflow.edn")))))))))
             (save! [name]
               (when-not (or (get-in (state) [:loading [:save name]])
                             (get-in (state) [:loading [:source name]]))
@@ -246,18 +270,19 @@
                             ;; mark the new default verified.
                             (fn [s reply]
                               (update-in s [:drafts name] editor/acknowledged-save (:expected-revision edits) sent reply))))))
-            (submit! [name retry?]
-              (let [draft (get-in (state) [:drafts name])
+            (submit! [name retry? & [offered]]
+              (let [draft (cond-> (get-in (state) [:drafts name]) offered (assoc :form (:form offered)))
                     pending (:submission draft)]
                 (try
                   (when (or (get-in (state) [:loading [:submit name]])
                             (and (not retry?) pending (nil? (:reply pending))))
                     (throw (js/Error. "Retry the existing unresolved request instead of creating another")))
+                  (when offered (verified-offer! name offered))
                   (let [payload (if retry? (:payload pending) (editor/submission draft (str (random-uuid))))
                         mode (if retry? (:mode pending) (get-in draft [:form :mode]))
                         backend (if retry? (get pending :backend "hosted") (get-in draft [:form :backend] "hosted"))]
                     (when-not payload (throw (js/Error. "There is no request to retry")))
-                    (when-not (or retry?
+                    (when-not (or retry? offered
                                   (confirm!
                                    (str "Submit " (:name payload) " at bundle " (:expected-bundle payload)
                                         "?\n" (cond (= backend "cli")
@@ -282,7 +307,7 @@
                                             "Only pinned workflow/source inputs reach the local guest. Completion is not a correctness check; nothing auto-merges."
                                             "The Run inherits room files. Frozen workflow/source inputs appear in its proposed diff. Completion is not a correctness check; nothing auto-merges.")))))
                       (throw (js/Error. "Submission cancelled")))
-                    (change! name assoc :submission
+                    (change! name assoc :form (:form draft) :submission
                              (if retry? pending
                                  {:payload payload :mode mode :backend backend
                                   :knowledge? (contains? (get-in draft [:source :files]) "input-selection.edn")}))
@@ -293,21 +318,22 @@
                               (fn [s reply] (-> s (assoc-in [:drafts name :submission :reply] (dissoc reply :permissions))
                                                 (update :readiness-revision (fnil inc 0))))))
                   (catch :default error (update! assoc-in [:errors :submit] (rem/error-text error))))))
-            (schedule! [name retry? & [enabled?]]
+            (schedule! [name retry? & [enabled? offered]]
               (try
-                (let [draft (get-in (state) [:drafts name])
+                (let [draft (cond-> (get-in (state) [:drafts name]) offered (assoc :form (:form offered)))
                       pending (:schedule-submission draft)]
+                  (when offered (verified-offer! name offered))
                   (when (or (get-in (state) [:loading [:schedule name]])
                             (and (not retry?) pending (nil? (:reply pending))))
                     (throw (js/Error. "Retry the unresolved schedule request first")))
                   (let [payload (if retry? (:payload pending)
                                     (editor/scheduled-submission draft (str (random-uuid)) (if (nil? enabled?) true enabled?)))]
                     (when-not payload (throw (js/Error. "No schedule request to retry")))
-                    (when (or retry? (false? (:enabled? payload))
+                    (when (or retry? offered (false? (:enabled? payload))
                               (confirm! (str "Activate recurring " (:kind payload) " · " name "?\n"
                                              (editor/cadence-label (:cadence payload)) ".\n"
                                              "Pins this saved source and current execution settings. Each occurrence uses the shared room allowance; no automatic funding or merging. Overlapping occurrences are skipped.")))
-                      (change! name assoc :schedule-submission (if retry? pending {:payload payload}))
+                      (change! name assoc :form (:form draft) :schedule-submission (if retry? pending {:payload payload}))
                       (request! :schedule name #(remote/create-workflow-schedule! web/server-id room payload)
                                 (fn [s reply]
                                   (-> s (assoc-in [:drafts name :schedule-submission :reply] (dissoc reply :permissions))
@@ -388,7 +414,58 @@
                    (if (and (string? name) (re-matches #"[a-z0-9][a-z0-9-]{0,63}" name))
                      (select! name (nil? (get-in (state) [:drafts name])) true)
                      (update! assoc-in [:errors :source] "Use a lowercase workflow name with letters, digits and dashes (max64)."))))
-       :owner k :room-id room :change change! :save save! :submit submit! :fund fund! :schedule schedule!
+       :prepare-setup (fn [name action]
+                        (try
+                          (let [draft (get-in (state) [:drafts name])
+                                offered (assoc (editor/setup-offer draft (:readiness (state)) action)
+                                               :generation (offer-generation))]
+                            (change! name assoc :form (:form offered) :execution-open? false
+                                     :schedule-open? (= :schedule (:action offered))
+                                     :setup-form-revision (get-in draft [:source :revision])
+                                     :setup-default-model (when (#{:user-preference :deployment-default} (:model-source offered))
+                                                            (get-in offered [:form :model]))
+                                     :setup-offer offered :setup-dismissed? false)
+                            (update! update :errors dissoc :setup))
+                          (catch :default error (update! assoc-in [:errors :setup] (rem/error-text error)))))
+       :offer-current? (fn [name offered] (try (verified-offer! name offered) true (catch :default _ false)))
+       :accept-setup (fn [name offered]
+                       (try
+                         (verified-offer! name offered)
+                         (case (:action offered)
+                           :schedule (schedule! name false true offered)
+                           :run (submit! name false offered)
+                           (throw (js/Error. "Review a valid setup proposal before confirming.")))
+                         (catch :default error (update! assoc-in [:errors :setup] (rem/error-text error)))))
+       :open-advanced (fn [name]
+                        (let [draft (get-in (state) [:drafts name])]
+                          (when (and draft (nil? (:submission draft)) (nil? (:schedule-submission draft))
+                                     (not= (:setup-form-revision draft) (get-in draft [:source :revision])))
+                            (try
+                              (let [configuration (editor/setup-configuration draft (:readiness (state)) nil)]
+                                (change! name assoc :form (:form configuration)
+                                         :schedule-open? (= :schedule (:action configuration))
+                                         :setup-form-revision (get-in draft [:source :revision])
+                                         :setup-default-model (when (#{:user-preference :deployment-default} (:model-source configuration))
+                                                                (get-in configuration [:form :model]))))
+                              (catch :default error (update! assoc-in [:errors :setup] (rem/error-text error)))))
+                          (when draft (change! name assoc :execution-open? true)))
+                        (binding [ec/*execution-context* ctx]
+                          (when (web/current-session? session)
+                            (update! assoc :selected name)
+                            (sig/open-tab! :workflows
+                                           (assoc room-data :workflow-state-owner (or (:workflow-state-owner room-data) (:tab-id room-data)))
+                                           {:title "Workflow · Advanced" :new-tab? true :col-id (:col-id room-data)}))))
+       :owner k :room-id room :canonical-workflow canonical
+       :change (fn [name f & args]
+                 (change! name
+                          (fn [draft]
+                            (let [next (apply f draft args)]
+                              (cond-> next
+                                (not= (:form draft) (:form next))
+                                (assoc :setup-form-revision (get-in draft [:source :revision]))
+                                (not= (get-in draft [:form :model]) (get-in next [:form :model]))
+                                (dissoc :setup-default-model))))))
+       :save save! :submit submit! :fund fund! :schedule schedule!
        :collect-output collect-output!
        :inspect-wiki-setup inspect-setup! :install-wiki-setup install-setup! :upgrade-wiki-setup upgrade-setup!
        :open-schedules (fn []

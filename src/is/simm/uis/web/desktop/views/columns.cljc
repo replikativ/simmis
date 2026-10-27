@@ -2025,6 +2025,7 @@
                     ;; default: :message
                     (chat/message-view
                       {:room-id (str room-id)
+                       :workflow-context {:tab-id tab-id :col-id col-id :read-only? time-travel?}
                        :id (str (:entity/uuid item))
                        :author-id (str (:S.Message/author-uuid item))
                        :author-name (:S.Message/author-name item)

@@ -35,6 +35,7 @@
             #?(:cljs [is.simm.uis.web.desktop.markdown :as md])
             #?(:cljs [is.simm.uis.web.desktop.views.conversation-capture :as capture-view])
             #?(:cljs [is.simm.uis.web.desktop.views.mermaid :as mmd])
+            #?(:cljs [is.simm.uis.web.desktop.views.workflow-setup :as workflow-setup])
             #?(:cljs [superficie.api :refer [toSup]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el]
                             [org.replikativ.spindel.dom.foreign :refer [foreign-node]])))
@@ -456,7 +457,7 @@
 
    Note: Always renders all elements to avoid spindel delta rendering issues.
   CSS handles visibility based on .chat-message--own class."
-  [{:keys [id room-id author-id author-name content reasoning timestamp is-own? is-ai?
+  [{:keys [id room-id workflow-context author-id author-name content reasoning timestamp is-own? is-ai?
            syntax-pref attachment-blob attachment-mime thread-parent
            in-reply-to reply-count on-jump-parent on-reply audience run-id
            activities mention-handles on-open-thread on-open-run on-open-proposal
@@ -583,13 +584,14 @@
       #?(:cljs (when capture (capture-view/panel capture)) :clj nil)
         (when (and is-ai? room-id)
           (for [workflow (workflow-links/mentioned-workflows content)]
-            (el/div {:key (str "workflow-" workflow) :class "workflow-chat-card"}
-              (el/strong {} workflow)
-              (el/p {} "Workflow draft · open to check setup and choose limits.")
-              (el/div {:class "workflow-toolbar"}
-                (for [[action label] [[:run "Run once"] [:schedule "Schedule"] [:benchmark "Benchmark"]]]
-                  (el/a {:key (name action)
-                         :href (workflow-links/route {:room room-id :workflow workflow :action action})} label))))))
+            #?(:cljs
+               (if (and workflow-context (not (:read-only? workflow-context)))
+                 (workflow-setup/panel (merge workflow-context {:room-id room-id :workflow workflow :message-id id}))
+                 (el/a {:key (str "workflow-" workflow)
+                        :href (workflow-links/route {:room room-id :workflow workflow :action :run})} workflow))
+               :clj
+               (el/a {:key (str "workflow-" workflow)
+                      :href (workflow-links/route {:room room-id :workflow workflow :action :run})} workflow))))
 
       ;; One typed application object may replace the generic prose body with
       ;; a domain-aware projection. The Proposal remains owned by Simmis; this
