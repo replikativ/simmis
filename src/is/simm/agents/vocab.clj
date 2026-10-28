@@ -138,6 +138,10 @@
                :doc "Source-selected Markdown descriptors from the current file world, with status and selection receipt. Invalid/pending views are explicit."}
     read {:arglists ([path])
           :doc "Exact Markdown source, semantic blocks and properties at a repository-relative path, with selection receipt. Includes file-backed wiki and capture notes; media links/provenance are data, not visual inspection. Missing document is nil; non-ready views carry diagnostics."}
+    write! {:arglists ([request])
+            :doc "Edit Markdown in the selected worktree with {:path path :expected entry :text source}. Pass the exact :entry from memory/read, or nil for a new file. Refuses concurrent changes. :written acknowledges this worktree edit, not publication; proposal/file! handles review. Never retry an uncertain acknowledgement without reading again."}
+    link {:arglists ([path] [path options])
+          :doc "Get a scoped Markdown link for an existing shared file, optionally {:label text :block block-uuid}. Missing files are never created. Unpublished proposal/child-world files return :unpublished without a misleading trunk link. File URLs are path-based; explicit block references preserve block identity."}
     search {:arglists ([text])
             :doc "Literal case-sensitive source search, at most 50 hits, with UTF-16 ranges and source/selection identifiers. Receipts borrow source lifetime, not archival retention."}})
 

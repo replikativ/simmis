@@ -545,17 +545,12 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- room-repo-scope
-  "`:system/id` of the room's OWN writable repo, or nil.
+  "`:system/id` of the explicit room-owned default repo, or nil.
 
    The id rather than the path, because that is what a filed fork can carry:
    `:proposal.fork/scope` is `:db.type/uuid`."
   [room-uuid]
-  (->> (sdb/systems-for-room room-uuid)
-       (filter #(and (= :repo (get-in % [:system :system/type]))
-                     (#{:owner :read-write} (:permission %))))
-       (sort-by (juxt #(if (= :owner (:permission %)) 0 1)
-                      #(str (get-in % [:system :system/id]))))
-       first :system :system/id))
+  (:system/id (sdb/default-repository room-uuid)))
 
 (defn- repo-fork!
   "The [scope agent] code fork under `overlay`, minted on first WRITE.
@@ -693,6 +688,72 @@
       (throw (ex-info "Agent may not read this room repository"
                       {:type :not-authorized :room room-id})))))
 
+(defn- authorize-source-memory-write!
+  [{:keys [room-id agent-id scope owner-world?]}]
+  (let [party (access/actor->party-uuid agent-id)
+        db (some-> (system-db/get-conn) deref)
+        overlay (when (not= false owner-world?)
+                  (let [campaign (get @room-campaigns room-id)]
+                    (if (and campaign (contains? (:members @campaign) party))
+                      campaign (get @proposal-overlays [room-id party]))))]
+    (when-not (access/sandbox-room-repository-allows? db party room-id scope :write)
+      (throw (ex-info "Agent may not edit this room repository"
+                      {:type :not-authorized :room room-id})))
+    ;; Rechecked at selection AND the native effect gate, including cached
+    ;; workspaces: repo-fork! itself can return an already-open fork first.
+    (when (and overlay (:closed @overlay))
+      (throw (ex-info "Filed proposal is closed to further edits"
+                      {:type ::closed-proposal})))))
+
+(defn- source-write-route-guard
+  "Capture routing AFTER lazy fork selection; validate without creating cells
+   or forks at native dispatch. The witness never escapes the host call."
+  [{:keys [room-id agent-id scope owner-world?]} proposal]
+  (if (= false owner-world?)
+    (constantly true)
+    (let [agent (access/actor->party-uuid agent-id)
+          current (fn []
+                    (let [campaign (get @room-campaigns room-id)
+                          cell (if (and campaign (contains? (:members @campaign) agent))
+                                 campaign (get @proposal-overlays [room-id agent]))
+                          state (when cell @cell)]
+                      {:cell cell :state state
+                       :fork (get-in state [:ctx-forks [scope agent]])
+                       :branch (get-in state [:forks [scope agent]])}))
+          chosen (current)
+          valid? (fn [now]
+                   (if proposal
+                     (and (:state now) (not (:closed (:state now)))
+                          (identical? (:cell chosen) (:cell now))
+                          (identical? (:fork chosen) (:fork now))
+                          (= (:branch chosen) (:branch now))
+                          (identical? (:conn proposal)
+                                      (some-> (:fork now) branching/repo-fork-workspace :workspace :conn)))
+                     (nil? (:state now))))
+          check! (fn []
+                   (when-not (= scope (room-repo-scope room-id))
+                     (throw (ex-info "Memory target changed; inspect before editing"
+                                     {:type ::changed-source-repository})))
+                   (when-not (valid? (current))
+                     (throw (ex-info "Proposal routing changed; inspect before editing"
+                                     {:type ::changed-proposal-route}))))]
+      (check!)
+      check!)))
+
+(defn- source-proposal-workspace!
+  [{:keys [room-id agent-id scope] :as target}]
+  (authorize-source-memory-write! target)
+  (when-not (= scope (room-repo-scope room-id))
+    (throw (ex-info "Room repository selection changed"
+                    {:type ::changed-source-repository})))
+  (let [agent-uuid (access/actor->party-uuid agent-id)
+        overlay (active-overlay room-id agent-uuid)]
+    (when (and overlay @overlay)
+      (or (some-> (repo-fork! overlay room-id agent-uuid)
+                  branching/repo-fork-workspace :workspace)
+          (throw (ex-info "Proposal source workspace is unavailable"
+                          {:type ::missing-proposal-workspace}))))))
+
 (defn- add-source-memory-ns! [sci-ctx cctx room room-uuid agent-uuid]
   (when-let [scope (room-repo-scope room-uuid)]
     (let [owner (:ctx room) capability-id (:capability-id cctx)
@@ -709,7 +770,10 @@
         'memory
         (source-memory/bindings owner capability-id (:receipts cctx)
                                 {:authorize! authorize-source-memory!
+                                 :authorize-write! authorize-source-memory-write!
                                  :proposal-workspace existing-source-proposal-workspace
+                                 :proposal-workspace! source-proposal-workspace!
+                                 :write-route-guard source-write-route-guard
                                  :options {:schema-revision :simmis-source-memory-v1}})
         vocab/memory-docs)))))
 
@@ -2556,7 +2620,11 @@
         {:keys [model provider]} chosen
         agent-uuid (:party/id agent-party)
             actor-kw (party->actor-kw agent-party)
-            kb-conns (get-room-kb-conns room-uuid agent-uuid)
+            source-memory? (some? (room-repo-scope room-uuid))
+            kb-conns (when-not source-memory? (get-room-kb-conns room-uuid agent-uuid))
+            tool-names (cond-> #{"clojure_eval" "read_file" "write_file" "edit_file" "clojure_edit"
+                                 "clj_kondo" "shell" "grep" "glob" "run_tests"}
+                         (not source-memory?) (conj "knowledge_search" "knowledge_add"))
             budget-dollars (rooms/get-room-budget-dollars room-uuid)
             ;; Base prompt via dvergr's ONE assembler (discourse-preamble +
             ;; [SKIP] convention + skills + tool-use-guideline + the sandbox
@@ -2568,9 +2636,7 @@
             assembled-prompt (binding [rtc/*execution-context* (:ctx room)]
                                ((requiring-resolve 'dvergr.agent.prompt/assemble-system-prompt)
                                 base-prompt
-                                {:tools #{"clojure_eval" "knowledge_search" "knowledge_add"
-                                          "read_file" "write_file" "edit_file" "clojure_edit"
-                                          "clj_kondo" "shell" "grep" "glob" "run_tests"}}))
+                                {:tools tool-names}))
             system-prompt (str assembled-prompt
                                ;; Self-identity: schedules/hires address participants by
                                ;; keyword id; without this the agent guesses (:var) and
@@ -2592,6 +2658,7 @@
                                " Use that as :agent-id when scheduling work for yourself."
                                (when (seq kb-conns)
                                  (build-room-context-block kb-conns))
+                               (when source-memory? source-memory/prompt-block)
                                ;; The drive is a MOUNT, not a tool: the shell's
                                ;; filesystem carries it at /drive (muschel MountFS
                                ;; over the datahike tree + CAS blobs).
@@ -2624,9 +2691,10 @@
                 ;; resolved per write, not captured: `join-campaign!` changes
                 ;; which overlay is active in the middle of a turn
                 (let [overlay-fn #(active-overlay room-uuid agent-uuid)]
-                  (add-wiki-ns! sci-ctx kb-conns room-uuid agent-uuid)
+                  (when-not source-memory?
+                    (add-wiki-ns! sci-ctx kb-conns room-uuid agent-uuid)
+                    (add-kb-write-ns! sci-ctx kb-conns overlay-fn agent-uuid))
                   (add-source-memory-ns! sci-ctx cctx room room-uuid agent-uuid)
-                  (add-kb-write-ns! sci-ctx kb-conns overlay-fn agent-uuid)
                   (add-proposal-ns! sci-ctx room-uuid agent-uuid)
                   (add-book-ns! sci-ctx room-uuid overlay-fn agent-uuid)
                   (add-sheet-ns! sci-ctx cctx room room-uuid)
@@ -2647,10 +2715,7 @@
             ;; model retries variations, burning budget on work that
             ;; just needed runway.
             _ (reset! tools/eval-timeout-ms 180000)
-            base-tools (select-keys @tools/registry
-                                    ["clojure_eval" "knowledge_search" "knowledge_add"
-                                     "read_file" "write_file" "edit_file" "clojure_edit"
-                                     "clj_kondo" "shell" "grep" "glob" "run_tests"])
+            base-tools (select-keys @tools/registry tool-names)
             agent-tools (cond-> base-tools
                           (get base-tools "knowledge_add")
                           (assoc "knowledge_add"
@@ -2701,7 +2766,9 @@
                      :budget {:dollars budget-dollars}
                      ;; Resolve bare [[Title]] links in replies to [[dh://…]] and
                      ;; nudge the agent (system note) on anything unresolvable.
-                     :on-reply (make-link-reply-hook room-uuid)})))
+                     :on-reply (if source-memory?
+                                 (fn [content] {:content content :notes []})
+                                 (make-link-reply-hook room-uuid))})))
         (swap! joined conj k)
         (log/log! {:level :info :id ::participant-created
                    :msg "LLM participant joined (dvergr harness)"
