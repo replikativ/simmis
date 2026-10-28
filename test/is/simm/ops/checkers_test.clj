@@ -168,7 +168,11 @@
     (is (thrown? Exception (checkers/run-checker heavy {:files {} :gold "answer"}
                                                  (assoc checkers/policy :max-allocated-bytes (quot per-answer 2))))
         "a single call needs more than half the per-answer budget")
-    (is (:ok? (checkers/calibrate bundle (assoc checkers/calibration-policy :max-allocated-bytes per-answer))))))
+    (is (:ok? (checkers/calibrate bundle (assoc checkers/calibration-policy :max-allocated-bytes per-answer))))
+    (is (thrown? Exception
+                 (checkers/calibrate bundle (assoc checkers/calibration-policy
+                                                   :max-allocated-bytes (quot per-answer 2))))
+        "answers share the aggregate allowance instead of resetting it per call")))
 
 (deftest per-answer-budget-has-a-distinct-calibration-setup-identity
   (let [setup-ref #(evaluation/world-setup-ref (checkers/world-setup calibrated-bundle))
@@ -209,3 +213,24 @@
       (let [setup (checkers/world-setup (assoc-in calibrated-bundle [:calibration :reference "/out/answer"] "wrong"))]
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"reference checks" ((:prepare setup) {})))
         (is (empty? @contexts) "failed calibration cannot proceed to candidate fixture setup")))))
+
+(deftest ordinary-checkers-own-their-allocation-extent
+  (doseq [options [checkers/policy (assoc checkers/policy :allocation-check nil)]]
+    (let [limit (* 16 1024 1024)
+          error (try
+                  (checkers/run-checker
+                   "(ns checker) (defn check [_] {:checks {:a true} :reward 1})"
+                   {}
+                   (assoc options :max-allocated-bytes limit
+                          :prepare-input
+                          (fn [guard! input]
+                            (let [retained (byte-array (* 32 1024 1024))]
+                              (dotimes [_ 10000] (guard!))
+                              (assoc input :size (alength retained))))))
+                  nil
+                  (catch clojure.lang.ExceptionInfo error
+                    (loop [error error]
+                      (if-let [cause (.getCause error)] (recur cause) (ex-data error)))))]
+      (is (= :evaluation (:allocation-scope error)))
+      (is (= limit (:limit-bytes error)))
+      (is (> (:allocated-bytes error) limit)))))
