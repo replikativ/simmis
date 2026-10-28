@@ -315,12 +315,13 @@
         nrepl/nrepl {:mvn/version "1.3.1"}
 
         ;; Agent runtime, durable workflow receipts and owned HOST cleanup.
-        ;; 0.1.376 retains failed construction cleanup for retry, scopes SCI
+        ;; 0.1.377 retains failed construction cleanup for retry, scopes SCI
         ;; allocation metering to the actual evaluator, and bounds model
-        ;; response opening. It aligns SCI .8 and Spindel .150 with this UI.
+        ;; response opening. Allocation checkpoints avoid reflection overhead.
+        ;; It aligns SCI .8 and Spindel .150 with this UI.
         ;; Change dependencies only in a fresh runtime. Alpha stores require
         ;; classified wallets; no legacy wallet migration is implied.
-        org.replikativ/dvergr {:mvn/version "0.1.376"
+        org.replikativ/dvergr {:mvn/version "0.1.377"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.
