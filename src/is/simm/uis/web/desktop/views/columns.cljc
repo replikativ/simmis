@@ -1250,11 +1250,10 @@
     #?(:cljs
        (if-let [page-uuid (:page-uuid data)]
          (let [db-scope (:db-scope data)
-               ;; Trigger KB connection if needed (fire-and-forget — the
-               ;; per-KB signal is created lazily inside render-page-editor
-               ;; via ensure-kb-db-signal!, so the spin tracks the right
-               ;; signal even before connect-kb! finishes).
-               _ (when (and db-scope (nil? (db-sig/kb-db-signal db-scope)))
+               ;; A signal may already exist while its DB is still nil (e.g.
+               ;; another viewer prepared it). Signal existence is not evidence
+               ;; of a live replica. connect-kb! owns idempotence and authorization.
+               _ (when db-scope
                    (db-sig/connect-kb! db-scope @is.simm.runtimes.web/client))]
            ;; render-page-editor tracks its KB's signal itself. We no
            ;; longer build an effective-db Interval here, so the parent

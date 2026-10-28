@@ -35,6 +35,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [yggdrasil.protocols :as yp]
+            [datahike.api :as d]
             [datahike.versioning :as dv]
             [datahike.connections :as dconns]
             [datahike.store :as dstore]
@@ -426,12 +427,31 @@
   (when-let [sys (get-kb-system db-scope)]
     (yp/diff sys from-branch to-branch)))
 
+(defn- kb-title-conflicts
+  "Different page identities claiming the same title cannot be force-merged.
+   Compare logical identities, never branch-local numeric entity ids."
+  [sys a-branch b-branch]
+  (let [ours @(:conn (yp/checkout sys a-branch))
+        theirs @(:conn (yp/checkout sys b-branch))
+        pages (fn [db]
+                (into {} (d/q '[:find ?title ?uuid :where
+                                 [?e :S.Page/title ?title] [?e :entity/uuid ?uuid]] db)))]
+    (if (and (contains? (:schema ours) :S.Page/title)
+             (contains? (:schema theirs) :S.Page/title))
+      (let [a (pages ours) b (pages theirs)]
+        (into [] (keep (fn [[title uuid]]
+                         (when-let [other (get b title)]
+                           (when (not= uuid other)
+                             {:kind :page-identity-conflict :attr :S.Page/title
+                              :value title :ours uuid :theirs other :blocking? true})))) a))
+      [])))
+
 (defn kb-conflicts
-  "Return the conflict descriptors between two branches via yggdrasil's
-   Mergeable.conflicts. Datahike adapter currently returns []."
+  "Backend conflicts plus product-wiki identity collisions between branches."
   [db-scope a-branch b-branch]
   (when-let [sys (get-kb-system db-scope)]
-    (yp/conflicts sys a-branch b-branch)))
+    (into (vec (yp/conflicts sys a-branch b-branch))
+          (kb-title-conflicts sys a-branch b-branch))))
 
 (defn merge-kb!
   "Merge `source-branch` into `target-branch`. Computes the diff via
@@ -444,6 +464,9 @@
       (when-not target-conn
         (throw (ex-info "Target branch not resolvable" {:db-scope db-scope
                                                         :target target-branch})))
+      (when-let [conflicts (seq (kb-title-conflicts sys target-branch source-branch))]
+        (throw (ex-info "Different wiki pages share a title; reconcile their identities before merging"
+                        {:type :page-identity-conflict :conflicts conflicts})))
       ;; yggdrasil's Mergeable.merge! computes diff internally when source is
       ;; a branch keyword. We checkout the target-conn first so the merge
       ;; commits onto target.

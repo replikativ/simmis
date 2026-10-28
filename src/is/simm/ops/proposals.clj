@@ -928,8 +928,8 @@
         (authorize-forks! id by forks)
         (ctx/with-server-context
           (let [warnings (vec (mapcat fork-conflicts forks))]
-            (if (and (seq warnings) (not force?))
-              {:warnings warnings}
+            (if (or (some :blocking? warnings) (and (seq warnings) (not force?)))
+              (if (some :blocking? warnings) {:blocked warnings} {:warnings warnings})
               ;; ONE FORK AT A TIME, each recording its own outcome before the next
               ;; is attempted. Two things forced this shape, and both are only
               ;; reachable on a backend whose merge can actually fail — repos, since
@@ -1081,8 +1081,8 @@
         (authorize-forks! id by [f])
         (ctx/with-server-context
           (let [warnings (vec (fork-conflicts f))]
-            (if (and (seq warnings) (not force?))
-              {:warnings warnings}
+            (if (or (some :blocking? warnings) (and (seq warnings) (not force?)))
+              (if (some :blocking? warnings) {:blocked warnings} {:warnings warnings})
               (do
                 ;; RECORD THE LAND EVEN IF SOMETHING AFTER IT THROWS. `land-fork!`
                 ;; merges onto trunk and then deletes the branch; once that has

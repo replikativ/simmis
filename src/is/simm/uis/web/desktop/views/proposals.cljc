@@ -273,7 +273,9 @@
                        (reset! sig/proposals-data
                                {:proposals [] :error (rem/error-text err)}))
                    (do (reset! sig/proposals-data
-                               {:proposals (vec ok) :loaded-at (js/Date.now)})
+                               {:proposals (card-model/retain-action-feedback
+                                            (:proposals @sig/proposals-data) ok)
+                                :loaded-at (js/Date.now)})
                        (doseq [p ok] (load-diff-into-signal! (:id p)))))))
              (done))))))))
 
@@ -397,6 +399,13 @@
            err (do (js/console.error "[proposals] accept error:" err)
                    (update-proposal! pid #(-> % (dissoc :busy?)
                                               (assoc :action-error (rem/error-text err)))))
+           (:blocked ok)
+           (update-proposal! pid
+                             #(-> % (dissoc :busy? :accept-warned?)
+                                  (assoc :action-error
+                                         (str "Nothing merged. Different pages share a title: "
+                                              (str/join ", " (keep :value (:blocked ok)))
+                                              ". Reconcile the pages before accepting."))))
            (:warnings ok)
            (update-proposal! pid
                              #(-> % (dissoc :busy?)
@@ -573,6 +582,9 @@
           err (do (js/console.error "[proposals] fork action error:" err)
                   (update-proposal! pid #(-> % (dissoc :busy?)
                                              (assoc :action-error (rem/error-text err)))))
+          (:blocked ok)
+          (update-proposal! pid #(-> % (dissoc :busy? :accept-warned?)
+                                     (assoc :action-error "This contribution has an unresolved page identity conflict.")))
           (:warnings ok)
           (update-proposal! pid
                             #(-> % (dissoc :busy?)
