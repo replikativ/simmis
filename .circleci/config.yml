@@ -85,6 +85,11 @@ jobs:
           name: Execute client lifecycle tests in Chrome
           command: SIMMIS_TEST_CHROME_NO_SANDBOX=1 npm run test:browser
           no_output_timeout: 15m
+      # Keep the production bundle built above available for deployment without
+      # another memory-heavy workstation build. Browser tests write to target/.
+      - store_artifacts:
+          path: public
+          destination: frontend
       - save_cache:
           key: frontend-deps-v1-{{ checksum "deps.edn" }}
           paths:

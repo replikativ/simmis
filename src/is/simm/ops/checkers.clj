@@ -20,12 +20,12 @@
 (defn- refuse! [message]
   (throw (ex-info message {:type ::invalid})))
 
-(defn run-checker
+(defn- run-checker*
   "Execute and fully validate one checker ON THE CALLING scoring worker.
    Caller must have explicitly admitted this exact source as trusted operator
    code. Never invoke this on Spindel's event-drain thread. Options are a
    trusted host test seam, not externally supplied checker permissions."
-  ([source input] (run-checker source input policy))
+  ([source input] (run-checker* source input policy))
   ([source input {:keys [timeout-ms max-allocated-bytes max-checks max-check-key-length deadline-nanos allocation-check prepare-input]}]
    (let [deadline (or deadline-nanos (+ (System/nanoTime) (* 1000000 (long timeout-ms))))
          stopped (AtomicBoolean. false)
@@ -64,6 +64,17 @@
          (refuse! "Checker must return bounded boolean checks and a finite reward in [0,1]"))
        (guard!)
        {:checks (into {} checks) :reward (double reward)}))))
+
+(defn run-checker
+  "Execute one checker in a fresh allocation extent on the calling scoring
+   worker, never on Spindel's event-drain thread. A non-nil :allocation-check
+   is a trusted host-owned account: its caller
+   must own the surrounding allocation extent, as calibration does."
+  ([source input] (run-checker source input policy))
+  ([source input options]
+   (if (:allocation-check options)
+     (run-checker* source input options)
+     (sandbox/call-with-allocation-scope #(run-checker* source input options)))))
 
 (def calibration-policy
   {:version 2 :budget-scaling :per-answer
@@ -176,37 +187,39 @@
   ([bundle] (calibrate bundle calibration-policy))
   ([bundle options] (calibrate bundle options nil))
   ([{:keys [calibration definition id] :as bundle} options selection-policy]
-   (validate-calibration! bundle)
-   (when calibration
-     (let [multiple? (structural-calibration? bundle)
-           answers (+ (if multiple? (count (:references calibration)) 1) (count (:damaged calibration)))
-           per-answer-bytes (or (:max-allocated-bytes options) (:max-allocated-bytes policy))
-           limits (assoc policy
-                         :deadline-nanos (+ (System/nanoTime) (* 1000000 answers (long (:timeout-ms options))))
-                         :allocation-check (sandbox/make-resource-limits :max-bytes (* answers per-answer-bytes)))
-           check (fn [case-id files]
-                   (score bundle selection-policy {:environment/metadata (cond-> {} case-id (assoc :case case-id))}
-                          files limits
-                          ;; Preserve the pre-profile calibration contract;
-                          ;; verification historically used catalog/gold-of.
-                          (if (wiki-scoring/selected-profile bundle) {}
-                              {:params (:params definition)
-                               :gold (if case-id (get-in bundle [:cases case-id :gold]) (:gold bundle))})))
-           references (when multiple?
-                        (into {} (for [[k {:keys [case files]}] (:references calibration)] [k (check case files)])))
-           reference (when-not multiple? (check (:case calibration) (:reference calibration)))
-           reference-reward (if multiple? (apply min (map :reward (vals references))) (:reward reference))
-           damaged (into {} (for [[k {:keys [files loses]}] (:damaged calibration)
-                                  :let [verdict (check (if multiple? (get-in calibration [:damaged k :case]) (:case calibration)) files)]]
-                              [k {:verdict verdict
-                                  :ok? (and (every? #(false? (get-in verdict [:checks %])) loses)
-                                            (< (:reward verdict) reference-reward))}]))]
-       (cond-> {:ok? (and (if multiple? (every? #(every? true? (vals (:checks %))) (vals references))
-                             (every? true? (vals (:checks reference))))
-                          (every? :ok? (vals damaged)))
-                :bundle (str id) :damaged damaged}
-         multiple? (assoc :references references)
-         (not multiple?) (assoc :reference reference))))))
+   (sandbox/call-with-allocation-scope
+    (fn []
+      (validate-calibration! bundle)
+      (when calibration
+        (let [multiple? (structural-calibration? bundle)
+              answers (+ (if multiple? (count (:references calibration)) 1) (count (:damaged calibration)))
+              per-answer-bytes (or (:max-allocated-bytes options) (:max-allocated-bytes policy))
+              limits (assoc policy
+                            :deadline-nanos (+ (System/nanoTime) (* 1000000 answers (long (:timeout-ms options))))
+                            :allocation-check (sandbox/make-resource-limits :max-bytes (* answers per-answer-bytes)))
+              check (fn [case-id files]
+                      (score bundle selection-policy {:environment/metadata (cond-> {} case-id (assoc :case case-id))}
+                             files limits
+                             ;; Preserve the pre-profile calibration contract;
+                             ;; verification historically used catalog/gold-of.
+                             (if (wiki-scoring/selected-profile bundle) {}
+                                 {:params (:params definition)
+                                  :gold (if case-id (get-in bundle [:cases case-id :gold]) (:gold bundle))})))
+              references (when multiple?
+                           (into {} (for [[k {:keys [case files]}] (:references calibration)] [k (check case files)])))
+              reference (when-not multiple? (check (:case calibration) (:reference calibration)))
+              reference-reward (if multiple? (apply min (map :reward (vals references))) (:reward reference))
+              damaged (into {} (for [[k {:keys [files loses]}] (:damaged calibration)
+                                     :let [verdict (check (if multiple? (get-in calibration [:damaged k :case]) (:case calibration)) files)]]
+                                 [k {:verdict verdict
+                                     :ok? (and (every? #(false? (get-in verdict [:checks %])) loses)
+                                               (< (:reward verdict) reference-reward))}]))]
+          (cond-> {:ok? (and (if multiple? (every? #(every? true? (vals (:checks %))) (vals references))
+                                (every? true? (vals (:checks reference))))
+                             (every? :ok? (vals damaged)))
+                   :bundle (str id) :damaged damaged}
+            multiple? (assoc :references references)
+            (not multiple?) (assoc :reference reference))))))))
 
 (defn world-setup
   "Calibrate before candidate execution, on Dvergr's physically owned
