@@ -443,9 +443,11 @@ consumes its own covered observation once before issuing followup reads.
 
 The shared Signal contains metadata, admission frames and bounded batch results,
 with no file bodies, mutable editor models, native handles or callbacks. File
-tabs and the sidebar track it at the top of their rendering Spins. Closed tabs
-and collapsed trees stop contributing demand; remaining navigation rendering
-prunes unused batches. Unsupported demands are refused per view rather than
+tabs and the sidebar track it at the top of their rendering Spins. Sync actions
+sample the current stream Signal in the owning execution context when they run;
+a resumed render must not write its older tracked stream snapshot back into the
+editor marker. Closed tabs and collapsed trees stop contributing demand;
+remaining navigation rendering prunes unused batches. Unsupported demands are refused per view rather than
 blocking valid siblings. Write acknowledgements invalidate the shared Room
 observation; private source hints and reconnects also trigger reconciliation.
 

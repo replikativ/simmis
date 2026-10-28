@@ -821,7 +821,7 @@
 (defn render [data]
   (spin
    (let [connection (iv/get-new (track sig/memory-connection))
-         stream (iv/get-new (track sync/state))
+         _stream (iv/get-new (track sync/state))
          _metadata (iv/get-new (track sig/memory-room-metadata))
          _layout (iv/get-new (track sig/layout-columns))
          rooms (iv/get-new (track sig/user-rooms))
@@ -836,7 +836,7 @@
          a (actions/controller data) state (get states (:owner a))]
      ((:ensure-path a))
      ((:observe-receipt-context a) (saved-view-state/receipt-context (:room-id data) rooms))
-     ((:ensure-sync a) connection stream)
+     ((:ensure-sync a) connection)
      ((:ensure-properties a))
      ((:ensure-charts a))
      ((:ensure-saved-views a))
@@ -870,7 +870,7 @@
 (defn render-context [data]
   (spin
    (let [connection (iv/get-new (track sig/memory-connection))
-         stream (iv/get-new (track sync/state))
+         _stream (iv/get-new (track sync/state))
          _metadata (iv/get-new (track sig/memory-room-metadata))
          _layout (iv/get-new (track sig/layout-columns))
          _rooms (iv/get-new (track sig/user-rooms))
@@ -882,7 +882,7 @@
                         (= (:target-stamp state) (get-in draft [:source :target-stamp])))
          history (get-in state [:history path]) preview (get-in state [:history-preview path])]
      ((:ensure-path a))
-     ((:ensure-sync a) connection stream)
+     ((:ensure-sync a) connection)
      ((:ensure-backlinks a))
      (el/div {:class "memory-history context-section"}
              (when (and path (or (= :markdown (get-in draft [:source :kind]))
