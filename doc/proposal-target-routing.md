@@ -57,3 +57,14 @@ closed proposals, explicit trunk work, campaign changes, current authority,
 missing targets, unrelated execution contexts, owning-room access to server KBs,
 reads without branch creation, full/per-contribution identity blocking, and
 failure feedback across canonical refreshes.
+
+## Independent checks
+
+Proposal filing and its subsequent code check are different outcomes. A known
+clean SCI affine-value refusal during check-fork construction is an explicit
+`:error` check result, not a failed filing and not a passing test. Exceptions
+carrying construction recovery ownership, a cause, suppressed cleanup failures,
+or unknown data propagate intact; the released native constructor distinguishes
+incomplete cleanup with its own wrapper. Successful fork cleanup retains its
+existing owner and failure behavior. Infrastructure check errors are retryable
+without changing the branch head; successful branch evidence remains cached.

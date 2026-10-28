@@ -14,6 +14,7 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [is.simm.ops.checks :as checks]
+            [is.simm.runtimes.branching :as branching]
             [muschel.fs :as mfs]))
 
 (defn- fake-fs
@@ -85,3 +86,45 @@
     (is (= "Ran 4 tests containing 6 assertions.\n0 failures, 0 errors." out)
         "with no FAIL to lead with, the preamble is still dropped — a card
          showing a dozen 'Testing …' lines for a green run is noise")))
+
+
+(deftest interpreter-copy-failure-is-a-check-error-not-a-filing-error
+  (let [closed (atom [])]
+    (with-redefs [branching/head-id (fn [& _] "checked-head")
+                  branching/open-repo-fork! (fn [& _] (throw (ex-info "Cannot fork snapshot" {:type :sci.fork/affine-resource})))
+                  branching/close-repo-fork! #(swap! closed conj %)]
+      (is (= {:status :error :head "checked-head" :output "Cannot fork snapshot"}
+             (checks/run-fork-checks! (random-uuid) :repo :main)))
+      (is (empty? @closed) "No capability was returned to settle"))))
+
+(deftest infrastructure-check-error-can-be-retried-without-editing-the-branch
+  (let [calls (atom 0) scope (random-uuid)]
+    (with-redefs [branching/head-id (fn [& _] "unchanged-head")
+                  checks/run-fork-checks! (fn [& _] (if (= 1 (swap! calls inc))
+                                                     {:status :error :head "unchanged-head"}
+                                                     {:status :pass :head "unchanged-head"}))]
+      (is (= :error (:status (checks/fork-checks scope :repo :main))))
+      (is (= :pass (:status (checks/fork-checks scope :repo :main))))
+      (is (= :pass (:status (checks/fork-checks scope :repo :main))))
+      (is (= 2 @calls) "Only successful branch evidence is cached"))))
+
+
+(deftest failed-construction-keeps-its-recovery-owner-exception
+  (let [owner (Object.)
+        error (ex-info "Cleanup remains owned" {:type :sci.fork/affine-resource :construction/owner owner})
+        attempts (atom 0) closed (atom 0)]
+    (with-redefs [branching/head-id (fn [& _] "owned-head")
+                  branching/open-repo-fork! (fn [& _] (swap! attempts inc) (throw error))
+                  branching/close-repo-fork! (fn [_] (swap! closed inc))]
+      (is (identical? error (try (checks/fork-checks (random-uuid) :repo :main)
+                                 (catch Exception e e))))
+      (is (= 1 @attempts))
+      (is (zero? @closed)))))
+
+(deftest suppressed-cleanup-error-is-never-converted-to-a-check-result
+  (let [error (ex-info "Refused fork" {:type :sci.fork/affine-resource})]
+    (.addSuppressed error (ex-info "Cleanup failed" {}))
+    (with-redefs [branching/head-id (fn [& _] "owned-head")
+                  branching/open-repo-fork! (fn [& _] (throw error))]
+      (is (identical? error (try (checks/run-fork-checks! (random-uuid) :repo :main)
+                                 (catch Exception e e)))))))
