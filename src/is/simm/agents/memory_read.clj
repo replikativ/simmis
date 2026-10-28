@@ -39,7 +39,8 @@
      (let [view (snapshot! resolve-view!)]
        (cond-> (receipt view)
          (= :ready (:status view))
-         (assoc :document
+         (assoc :entry (get-in view [:selection :files path])
+                :document
                 (when-let [doc (some #(when (= path (:path %)) %) (:documents view))]
                   (merge (descriptor doc)
                          (select-keys doc [:source :semantic :properties])))))))

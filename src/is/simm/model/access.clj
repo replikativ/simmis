@@ -1160,16 +1160,19 @@
   "Live room read authority plus an attached repository grant, from ONE host
    snapshot. A saved source capability loses access after detach or membership
    revocation; an unknown permission never grants access."
-  [db subject room-id scope]
-  (boolean
-   (and db subject room-id scope
-        (can? db subject :read {:room room-id})
-        (some #{:owner :read-write :read}
+  ([db subject room-id scope]
+   (sandbox-room-repository-allows? db subject room-id scope :read))
+  ([db subject room-id scope action]
+   (boolean
+    (and db subject room-id scope
+        (contains? #{:read :write} action)
+        (can? db subject action {:room room-id})
+        (some (if (= :write action) #{:owner :read-write} #{:owner :read-write :read})
               (d/q '[:find [?permission ...] :in $ ?room-id ?scope
                      :where [?r :room/id ?room-id]
                      [?s :system/id ?scope] [?s :system/type :repo]
                      [?g :grant/room ?r] [?g :grant/system ?s]
-                     [?g :grant/permission ?permission]] db room-id scope)))))
+                     [?g :grant/permission ?permission]] db room-id scope))))))
 
 (defn may-eval-in-room?
   "May `subject` evaluate code in room `room-id`'s sandbox? The `eval-in-room!`

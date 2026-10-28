@@ -449,15 +449,12 @@
                                     " specific database. (Cross-wiki links need the"
                                     " dh:// form; older bare [[links]] may not resolve.)"))))
 
-          ;; Genuine not-found (nil/false) — create it.
+          ;; Navigation is read-only. A missing title must never create a
+          ;; placeholder in a deprecated KB merely because someone followed it.
           :else
-          (let [new-uuid (random-uuid)]
-            (when (some? (<! (block-editor/ensure-page-remote! new-uuid page-name db-scope)))
-              (sig/open-tab! :wiki (cond-> {:page-uuid new-uuid}
-                                     db-scope (assoc :db-scope db-scope))
-                             {:title page-name
-                              :new-column? new-column?
-                              :col-id source-col-id}))))))))
+          (binding [rtc/*execution-context* runtime]
+            (sig/show-error! (str "No page found for \"" page-name
+                                  "\". Ask for a link to the file in Memory."))))))))
 
 (defn- open-dh-reference!
   "Open a cross-database `[[dh://…]]` link. The URI already carries the target

@@ -93,7 +93,10 @@
       (doseq [permission [:read :read-write :owner]]
         (let [grant (d/q '[:find ?g . :in $ ?scope :where [?s :system/id ?scope] [?g :grant/system ?s]] @conn scope)]
           (d/transact conn [{:db/id grant :grant/permission permission}]))
-        (is (access/sandbox-room-repository-allows? @conn room-mate room-id scope)))
+        (is (access/sandbox-room-repository-allows? @conn room-mate room-id scope))
+        (is (= (contains? #{:owner :read-write} permission)
+               (access/sandbox-room-repository-allows? @conn room-mate room-id scope :write))))
+      (is (not (access/sandbox-room-repository-allows? @conn room-mate room-id scope :merge)))
       (is (not (access/sandbox-room-repository-allows? @conn stranger room-id scope)))
       (is (not (access/sandbox-room-repository-allows? @conn room-mate room-id (random-uuid))))
       (d/transact conn [{:system/id scope :system/type :kb}])

@@ -30,8 +30,8 @@ a curated vocabulary, injected as namespaces:
 
 | Namespace | For |
 |---|---|
-| `wiki` / `kb` | pages, blocks, attributes, typed properties |
-| `memory` | bounded source-selected Markdown descriptors, reads and literal search in the current file world |
+| `wiki` / `kb` | legacy pages/blocks/properties in rooms without a canonical source repository |
+| `memory` | source-selected Markdown reads, search, guarded worktree edits and scoped links |
 | `kontor` | the room's double-entry book — `entry!`, `balances`, `accounts` |
 | `proposal` | opening, filing and releasing proposals |
 | `sheet` | spreadsheet intake |
@@ -51,6 +51,47 @@ ordinary participant's existing proposal file workspace, never opening a fork
 just to read. Membership, exact repository attachment and the world's read
 effect policy are rechecked on use. The isolated workflow worker does not gain
 live room access through this namespace.
+
+For source-backed rooms, `memory/*` is the default knowledge vocabulary.
+The default tool list and prompt omit `knowledge_add`, `knowledge_search`,
+`kb/*` and `wiki/*`; agent replies are not rewritten into old `dh://` links.
+Existing legacy KB content is retained and remains readable through its
+explicit links and legacy viewer. This change does not migrate those pages
+or imply that they are already Markdown files. Rooms without a selected source
+repository retain the existing KB vocabulary.
+
+`memory/read` also returns `:entry`, the exact content/size/mode descriptor from
+the same selected view. Pass it to `memory/write!`:
+
+```clojure
+(let [{:keys [entry document]} (memory/read "wiki/Company.md")]
+  (memory/write! {:path "wiki/Company.md" :expected entry
+                  :text (str (:source document) "\nA new finding.\n")}))
+```
+
+For a new Markdown file, pass `:expected nil`. Both the editor and REPL use the
+same bounded input validation. Writes require live room write permission and
+an attached repository owner/read-write grant; a read grant cannot mint a
+proposal fork. The native writer checks the inspected database basis, including
+mode changes, and applies the selected world's effect policy. The owner-world
+route guard also rechecks the explicit default repository and active proposal
+at dispatch without minting forks. A saved function
+follows child worlds without consulting its ancestor's proposal registry.
+Ordinary proposals open their workspace lazily on the first write; a filed
+proposal refuses edits even if its old workspace is still cached.
+
+A `:written` receipt acknowledges a **worktree edit**, not a logical commit or
+proposal acceptance. Existing proposal filing/review controls publication.
+An uncertain native acknowledgement returns a pending error: inspect before
+retrying. Unknown cleanup/recovery errors retain their original ownership data.
+
+`memory/link` returns scoped Markdown for an existing shared file, or explicit
+`:missing`/`:unpublished` status. It does not create anything. File URLs are
+path-based; an optional explicit block UUID uses canonical uniqueness checking
+and remains resolvable after moving its file. Private proposal and child-world
+files do not claim a shared URL. Relative and `[[wiki]]` spellings are not yet
+unified with canonical Memory backlinks. Following an unresolved legacy title
+now reports a missing link instead of creating a database placeholder.
 
 `office/open` reads bounded Office files from that same selected source repository,
 for example `documents/report.docx`. Handles and staged XML are immutable values

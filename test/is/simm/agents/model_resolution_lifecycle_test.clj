@@ -14,6 +14,45 @@
 (defn- room-agents-var [sym]
   (ns-resolve 'is.simm.agents.room-agents sym))
 
+(deftest source-room-joins-with-one-knowledge-vocabulary-and-keeps-memory-links
+  (let [room-id (random-uuid) agent-id (random-uuid) installed (atom #{})
+        offered (atom nil) participant (atom nil)
+        installers '[add-source-memory-ns! add-wiki-ns! add-kb-write-ns!
+                     add-proposal-ns! add-book-ns! add-sheet-ns! add-office-ns!
+                     add-screen-ns! add-transcript-ns! add-workflow-ns! add-web-ns!]
+        redefs {(room-agents-var 'room-repo-scope) (constantly (random-uuid))
+                (room-agents-var 'get-room-kb-conns)
+                (fn [& _] (throw (ex-info "Source room must not load legacy KBs" {})))
+                (room-agents-var 'persona+tools) (constantly "A test agent")
+                #'rooms/get-room-budget-dollars (constantly 1.0)
+                #'rooms/get-room (constantly {:room/slug "source-vocabulary"})
+                #'drives/get-room-drives (constantly [])
+                #'room-ctx/ensure-ctx! (fn [& _] {})
+                #'chat-ctx/sci-context-in (fn [& _] :sandbox)
+                #'agent-prompt/assemble-system-prompt
+                (fn [prompt opts] (reset! offered (:tools opts)) prompt)
+                #'tools/registry (atom (into {} (for [name ["clojure_eval" "knowledge_add" "knowledge_search"]]
+                                                 [name {:name name :execute (fn [& _] nil)}])))
+                #'llm/llm-agent (fn [opts] (reset! participant opts) opts)
+                #'discourse/join (fn [& _] nil)}
+        redefs (into redefs (for [name installers]
+                             [(room-agents-var name) (fn [& _] (swap! installed conj name))]))]
+    (try
+      (with-redefs-fn redefs
+        (fn []
+          (@(room-agents-var 'join-participant!) {:ctx nil} room-id
+           {:party/id agent-id :party/display-name "Source probe"} nil
+           {:provider :openai :model "test"})
+          (is (contains? @installed 'add-source-memory-ns!))
+          (is (not-any? @installed '[add-wiki-ns! add-kb-write-ns!]))
+          (is (contains? @offered "clojure_eval"))
+          (is (not-any? @offered ["knowledge_add" "knowledge_search"]))
+          (is (= #{"clojure_eval"} (set (keys (:tools @participant)))))
+          (is (.contains ^String (get-in @participant [:spec :system-prompt]) "memory/write!"))
+          (is (= {:content "See [[A]]" :notes []}
+                 ((:on-reply @participant) "See [[A]]")))))
+      (finally (swap! @(room-agents-var 'joined) disj [room-id agent-id])))))
+
 (deftest joined-participant-keeps-captured-spec-until-explicit-reset
   (let [room-id (random-uuid)
         agent-id (random-uuid)

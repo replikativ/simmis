@@ -337,15 +337,10 @@
                   (authorize!)
                   (next effect)))))))
 
-(defn- save-file-through!
-  "One canonical effect-checked writer with the opened revision included in
-   its before snapshot. Editing source does not reload an agent interpreter."
-  [room system {:keys [path expected text base64] :as request} {:keys [authorize! validated-basis] :as host-options}]
-  (when-not (every? room-files/write-capabilities [:expected-worktree :applied-receipt])
-    (refuse! ::unavailable "The file writer must support opened-revision preconditions"))
-  (when (and (contains? host-options :validated-basis)
-             (not (contains? room-files/write-capabilities :validated-basis)))
-    (refuse! ::unavailable "The file writer must support atomic validation preconditions"))
+(defn prepare-file-write
+  "Pure editor/REPL write validation. Returns strict bytes and the exact opened
+   descriptor; establishes neither authority nor a selected native writer."
+  [{:keys [path expected text base64] :as request}]
   (path! path)
   (when-not (and (contains? request :expected)
                  (or (= #{:path :expected :text} (set (keys request)))
@@ -358,7 +353,19 @@
                       (refuse! ::limit "Upload exceeds the bounded file size"))
                     (try (.decode (Base64/getDecoder) ^String base64)
                          (catch IllegalArgumentException _ (refuse! ::invalid "Invalid file encoding")))))
-        _ (when (> (alength ^bytes bytes) max-open-bytes) (refuse! ::limit "File is too large"))
+        _ (when (> (alength ^bytes bytes) max-open-bytes) (refuse! ::limit "File is too large"))]
+    {:path path :expected expected :bytes bytes}))
+
+(defn- save-file-through!
+  "One canonical effect-checked writer with the opened revision included in
+   its before snapshot. Editing source does not reload an agent interpreter."
+  [room system {:keys [path expected text base64] :as request} {:keys [authorize! validated-basis] :as host-options}]
+  (when-not (every? room-files/write-capabilities [:expected-worktree :applied-receipt])
+    (refuse! ::unavailable "The file writer must support opened-revision preconditions"))
+  (when (and (contains? host-options :validated-basis)
+             (not (contains? room-files/write-capabilities :validated-basis)))
+    (refuse! ::unavailable "The file writer must support atomic validation preconditions"))
+  (let [{:keys [bytes]} (prepare-file-write request)
         target (str "/" path)
         batch {target {:base64 (.encodeToString (Base64/getEncoder) bytes)}}
         options (cond-> {:expected-worktree {target expected}
