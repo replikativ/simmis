@@ -609,7 +609,8 @@
 
 #?(:cljs
    (defn resync-open!
-     "After an authoritative roster read, reauthorize only already-open replicas.
+     "After an authoritative roster read, admit requested views and reauthorize
+      already-open replicas; never eagerly open the whole authorized roster.
       Preserve exact connections/overlays on SAME-peer reconnect; a new peer must
       first clear-session!. No cache wipe, write retry, or eager wiki connection."
      [connection roster kabel-peer]
@@ -618,7 +619,16 @@
          (let [rooms (into #{} (keep #(some-> (:room/content-db-scope %) str)) (:rooms roster))
                kbs (into #{} (keep #(some-> (:kb/db-scope %) str)) (:knowledge-bases roster))
                pending-rooms (keep (fn [[scope attempt]] (when (not= connection (:connection attempt)) scope)) @room-connecting)
-               pending-kbs (keep (fn [[scope attempt]] (when (not= connection (:connection attempt)) scope)) @kb-connecting)]
+               ;; A viewer may create its nil DB signal before roster admission.
+               ;; That is requested work, even though connect-scope! correctly
+               ;; declined to start an unauthorized constructor at the time.
+               ;; Admit only requested scopes, preserving current pending/error
+               ;; attempts and never eagerly opening the whole authorized roster.
+               pending-kbs (distinct
+                             (concat
+                               (keep (fn [[scope attempt]] (when (not= connection (:connection attempt)) scope)) @kb-connecting)
+                               (remove #(or (contains? @kb-connecting %) (live-replica :kb %))
+                                       (keys @kb-db-signals))))]
            (reset! authorized-roster {:connection connection :rooms rooms :kbs kbs})
            (doseq [scope (keys @room-connecting) :when (and (epoch/current? connection) (not (contains? rooms scope)))]
              (disconnect-room! scope))
