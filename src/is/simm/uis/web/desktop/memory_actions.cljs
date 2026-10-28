@@ -703,10 +703,14 @@
                 (when-let [stamp (and (not (str/blank? query)) (target! :search))]
                   (request! :search #(remote/search-memory-files! web/server-id room {:query query :expected-target-stamp stamp})
                             #(assoc %1 :search %2) nil {:stamp stamp :accept? (fn [s _] (= query (:query s)))}))))
-            (ensure-sync! [c stream]
+            (ensure-sync! [c]
               (connected!)
               (when (and c (= c (connection)) (current?))
-                (let [marker [(:connection stream) (:status stream) (get-in stream [:dirty room] 0)]]
+                ;; A resumed render may hold an older tracked stream value. Sample
+                ;; the current signal here, as connected! does, so two render
+                ;; paths cannot alternate current and obsolete markers forever.
+                (let [stream (binding [ec/*execution-context* ctx] @sync/state)
+                      marker [(:connection stream) (:status stream) (get-in stream [:dirty room] 0)]]
                   (when (not= marker (:stream-marker (state)))
                     (update! #(-> % tree/invalidate-closed-folders (assoc :stream-marker marker)))))
                 (when (not= c (:watch-connection (state)))
@@ -728,7 +732,7 @@
                               (dissoc :watch-connection))))
               (navigation-refresh!)
               (when-let [c (connection)]
-                (ensure-sync! c (binding [ec/*execution-context* ctx] @sync/state))))]
+                (ensure-sync! c)))]
       {:owner key :room-id room :state state :change change! :edit edited! :folder folder! :open #(open! % false) :reload #(open! % true)
        :observe-receipt-context
        (fn [context]

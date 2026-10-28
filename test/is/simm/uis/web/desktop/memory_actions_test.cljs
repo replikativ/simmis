@@ -54,6 +54,10 @@
         (when (zero? remaining) (throw (ex-info "Metadata consumption did not settle" {})))
         (recur (dec remaining))))))
 
+(defn- publish-stream! [a connection stream]
+  (reset! sync/state stream)
+  ((:ensure-sync a) connection))
+
 (defn- reply! [callback value]
   (callback value)
   (pump!))
@@ -74,6 +78,41 @@
                                            (let [a (make-controller data)]
                                              (swap! *controllers* assoc (:owner a) a) a))]
           (test-fn))))))
+
+(deftest resumed-render-actions-use-the-current-stream-without-rewinding-it
+  (binding [ec/*execution-context* runtime]
+    (let [session {:id (random-uuid)} connection {:epoch (random-uuid)} stamp (random-uuid)
+          states (signal runtime {}) calls (atom 0)
+          stream {:connection connection :status :pending :dirty {"test-room" 2}}]
+      (with-redefs [web/current-session (constantly session) web/current-session? (constantly true)
+                    sig/memory-connection (signal runtime connection)
+                    remote/load-memory-metadata! (fn [& _] (fn [_ _] (swap! calls inc)))]
+        (let [data {:room-id "test-room" :col-id :test :state-signal states}
+              ;; Both renders are created before the stream is available. Their
+              ;; actions must consult the live signal when they later resume.
+              page (actions/controller data) footer (actions/controller data)
+              state #(get @states (:owner page))]
+          (swap! states assoc (:owner page) (verified connection stamp))
+          (reset! sync/state stream)
+          ((:ensure-sync page) connection)
+          (is (= [connection :pending 2] (:stream-marker (state))))
+          (let [settled @states metadata @sig/memory-room-metadata commits (atom [])]
+            (add-watch states ::replayed-render (fn [& _] (swap! commits conj :editor)))
+            (add-watch sig/memory-room-metadata ::replayed-render (fn [& _] (swap! commits conj :metadata)))
+            (try
+              (dotimes [_ 10]
+                ((:ensure-sync footer) connection)
+                ((:ensure-sync page) connection))
+              (is (= settled @states) "Repeated render actions leave the current marker stable")
+              (is (= metadata @sig/memory-room-metadata) "No alternating metadata observations")
+              (is (empty? @commits) "Stable actions emit no signal commits, even equal-value ones")
+              (is (= 1 @calls))
+              (finally
+                (remove-watch states ::replayed-render)
+                (remove-watch sig/memory-room-metadata ::replayed-render))))
+          (reset! sync/state (assoc-in stream [:dirty "test-room"] 3))
+          ((:ensure-sync footer) connection)
+          (is (= [connection :pending 3] (:stream-marker (state)))))))))
 
 (deftest reopening-a-fresh-folder-is-local-and-closed-caches-remain-bounded
   (binding [ec/*execution-context* runtime]
@@ -120,7 +159,7 @@
                         :stream-marker [connection :ready 0]
                         :folders {"" {:entries []} "closed" {:entries [:old]}}))
           ((:folder a) "slow")
-          ((:ensure-sync a) connection stream)
+          (publish-stream! a connection stream)
           (is (nil? (get-in (state) [:folders "closed"])))
           (reply! @folder (wire stamp {:entries [:stale]}))
           (is (nil? (get-in (state) [:folders "slow"])))
@@ -140,10 +179,10 @@
           (swap! states assoc (:owner a)
                  (assoc (verified connection stamp) :root-expanded? true :expanded {"wiki" true}
                         :folders {"" {:entries [{:path "wiki" :kind :folder}]} "wiki" {:entries []}}))
-          ((:ensure-sync a) connection stream)
+          (publish-stream! a connection stream)
           (let [before @metadata]
             ((:toggle a) "wiki")
-            ((:ensure-sync a) connection (assoc-in stream [:dirty "test-room"] 1))
+            (publish-stream! a connection (assoc-in stream [:dirty "test-room"] 1))
             (is (nil? (get-in (state) [:folders "wiki"])))
             (before (wire stamp {:folders {"wiki" {:entries [:stale]}} :entries {}}))
             (is (nil? (get-in (state) [:folders "wiki"])))))))))
@@ -200,8 +239,8 @@
                                          :drafts {"a.clj" (editor/draft a-file) "b.clj" (editor/draft b-file)}))
           ((:folder a) "slow")
           (let [old-folder (:folder @replies)]
-            ((:ensure-sync a) connection stream)
-            ((:ensure-sync a) connection stream)
+            (publish-stream! a connection stream)
+            (publish-stream! a connection stream)
             (reply! (:metadata @replies) (wire stamp {:folders {"" {:entries [:new]} "slow" {:entries [:current]}}
                                                :entries {"a.clj" (:entry a-file) "b.clj" {:content :new-b}} :revision :v1}))
             (is (= "a.clj" (:selected (state))) "Background B refresh does not select B")
@@ -209,7 +248,7 @@
             (is (= [:current] (get-in (state) [:folders "slow" :entries])))
             ((:reload a) "a.clj")
             (let [old-file (get @replies [:file "a.clj"])]
-              ((:ensure-sync a) connection (assoc-in stream [:dirty "test-room"] 1))
+              (publish-stream! a connection (assoc-in stream [:dirty "test-room"] 1))
               (reply! (:metadata @replies) (wire stamp {:folders {"" {:entries []} "slow" {:entries []}}
                                                  :entries {"a.clj" nil "b.clj" (:entry b-file)} :revision :v2}))
               (old-file a-file)
@@ -229,15 +268,15 @@
         (let [a (actions/controller {:room-id "test-room" :col-id :test :state-signal states})
               stream {:connection connection :status :ready :dirty {}}
               later (assoc-in stream [:dirty "test-room"] 1)]
-          ((:ensure-sync a) connection stream)
-          ((:ensure-sync a) connection stream)
-          ((:ensure-sync a) connection later)
+          (publish-stream! a connection stream)
+          (publish-stream! a connection stream)
+          (publish-stream! a connection later)
           (is (= 1 @calls))
           (@pending (wire stamp {:folders {} :entries {} :revision :one}))
-          ((:ensure-sync a) connection later)
+          (publish-stream! a connection later)
           (is (= 2 @calls))
           (@pending (wire stamp {:folders {} :entries {} :revision :two}))
-          ((:ensure-sync a) connection later)
+          (publish-stream! a connection later)
           (is (= 2 @calls)))))))
 
 (deftest intent-ack-and-transport-readiness-catch-up-on-either-side-of-the-worker-hint
@@ -255,18 +294,18 @@
                 ready (assoc connecting :status :ready)
                 first-event (if (= ordering :hint-before-ready) (assoc-in connecting [:dirty "test-room"] 1) ready)
                 settled (assoc-in ready [:dirty "test-room"] 1)]
-            ((:ensure-sync a) connection connecting)
+            (publish-stream! a connection connecting)
             (is (= 1 @calls))
-            ((:ensure-sync a) connection first-event)
+            (publish-stream! a connection first-event)
             (is (= 1 @calls) "Do not race two metadata reads while the first is in flight")
             (@pending (wire stamp {:folders {} :entries {} :revision :before}))
-            ((:ensure-sync a) connection first-event)
+            (publish-stream! a connection first-event)
             (is (= 2 @calls) "The changed stream marker catches up after the old read completes")
             (@pending (wire stamp {:folders {} :entries {} :revision :first-event}))
-            ((:ensure-sync a) connection settled)
+            (publish-stream! a connection settled)
             (is (= 3 @calls) "Readiness or the later initial hint forces the final catch-up")
             (@pending (wire stamp {:folders {} :entries {} :revision :current}))
-            ((:ensure-sync a) connection settled)
+            (publish-stream! a connection settled)
             (is (= 3 @calls))
             (is (= 2 @watches) "Initial target discovery intentionally renews the Room interest once")))))))
 
@@ -287,8 +326,8 @@
           (swap! states assoc (:owner a) (verified connection stamp))
           ((:open a) "a.clj")
           (let [initial (:file @replies)]
-            ((:ensure-sync a) connection stream)
-            ((:ensure-sync a) connection stream)
+            (publish-stream! a connection stream)
+            (publish-stream! a connection stream)
             (initial (wire stamp {:path "a.clj" :entry {:content :old} :text "old"}))
             (reply! (:metadata @replies) (wire stamp {:folders {} :entries {"a.clj" {:content :new}} :revision :new}))
             (is (= 2 @loads) "The newer metadata must trigger a fresh body read")
@@ -318,8 +357,8 @@
             ;; Keep the browser-proved ordering exactly: verified target, M
             ;; snapshots no uploaded path, THEN that path's body starts.
             (swap! states assoc (:owner a) (verified connection stamp))
-            ((:ensure-sync a) connection stream)
-            ((:ensure-sync a) connection stream)
+            (publish-stream! a connection stream)
+            (publish-stream! a connection stream)
             ;; Like upload completion: this path did not exist when metadata
             ;; captured its request. No selected/deep-link rerender retries it.
             ((:open a) "uploaded.clj")
@@ -744,7 +783,7 @@
       ((:open a) "x.clj")
       (is (= 1 (count (:metadata @calls))))
       (is (empty? (:file @calls)) "No unbound body read before discovery")
-      ((:ensure-sync a) connection {:connection connection :status :error})
+      (publish-stream! a connection {:connection connection :status :error})
       (reply! (:ok (last-call :metadata)) (wire stamp {:folders {} :entries {"x.clj" {:content :x}} :permissions {:write? true}}))
       (is (not (actions/verified? (state) connection)) "The changed stream retires its old admission")
       (reply! (:ok (last-call :metadata)) (wire stamp {:folders {} :entries {"x.clj" {:content :x}} :permissions {:write? true}}))
@@ -1333,7 +1372,7 @@
         ;; The next connection event retires request tokens, not the durable
         ;; context-owned hold. A late old callback cannot release it.
         (swap! states assoc-in [(:owner a) :connection] :retired-connection)
-        ((:ensure-sync a) connection {:connection connection :status :ready :dirty {}})
+        (publish-stream! a connection {:connection connection :status :ready :dirty {}})
         (reply! (:ok old) (wire stamp {:entry {:content :possibly-committed}}))
         (reply! (:ok (last-call :metadata))
          (wire stamp {:folders {} :entries {"x.clj" (:entry file)} :permissions {:write? true}}))

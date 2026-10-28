@@ -12,6 +12,10 @@
             [org.replikativ.spindel.engine.core :as ec])
   (:require-macros [org.replikativ.spindel.signal :refer [signal]]))
 
+(defn- publish-stream! [a connection stream]
+  (reset! sync/state stream)
+  ((:ensure-sync a) connection))
+
 (defn- with-controller [f]
   (binding [ec/*execution-context* runtime]
     (let [session {:id (random-uuid)} connection {:epoch (random-uuid)}
@@ -58,7 +62,7 @@
       ((:ensure-charts a))
       (let [old (:ok (first @charts)) slot [:chart "wiki/a.md" fixture/block]]
         (is (true? (get-in (state) [:loading slot])))
-        ((:ensure-sync a) connection {:connection connection :status :ready :dirty {}})
+        (publish-stream! a connection {:connection connection :status :ready :dirty {}})
         ((:ok (first @metadata)) {:target-stamp fixture/stamp :protocol-version 2 :folders {"" {:entries []}}
                                  :entries {"wiki/a.md" fixture/entry} :definition-basis fixture/revision
                                  :revision :new-epoch})
@@ -101,13 +105,13 @@
       (let [stream {:connection connection :status :ready :dirty {}}
             metadata-reply {:target-stamp fixture/stamp :protocol-version 2 :folders {"" {:entries []}}
                             :entries {"wiki/a.md" fixture/entry} :definition-basis fixture/revision}]
-        ((:ensure-sync a) connection stream)
+        (publish-stream! a connection stream)
         ((:ok (first @metadata)) (assoc metadata-reply :revision :initial))
         ((:consume-metadata a))
         ((:ensure-charts a))
         ((:ok (first @charts)) fixture/reply)
         (is (= 1 (count ((:chart-models a) "wiki/a.md"))))
-        ((:ensure-sync a) connection (assoc-in stream [:dirty "chart-room"] 1))
+        (publish-stream! a connection (assoc-in stream [:dirty "chart-room"] 1))
         ((:ok (second @metadata)) (assoc metadata-reply :revision :spec-only-commit))
         ((:consume-metadata a))
         (is (empty? ((:chart-models a) "wiki/a.md")))

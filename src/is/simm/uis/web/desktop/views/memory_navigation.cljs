@@ -90,7 +90,7 @@
                    (do ((:select-path a) path) (open-file! id title path nil (:target-stamp ((:state a)))))
                    ((:discover a))))
          search (when (= (:query state) (get-in state [:search :query])) (:search state))]
-     (when (:root-expanded? state) ((:ensure-sync a) connection stream))
+     (when (:root-expanded? state) ((:ensure-sync a) connection))
      ((:maintain-metadata a))
      (el/div {:key (str "workspace-" id) :class "nav-subsection memory-navigation"}
              (el/button {:class "nav-item memory-room-toggle" :aria-expanded (str (boolean (:root-expanded? state)))
