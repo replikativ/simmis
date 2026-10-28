@@ -2251,6 +2251,7 @@
           ;; (`kbs/sidebar-kbs`, `:kb/read-only?` — a wiki reached through a
           ;; room's `:read` grant). At the top, like every track.
           roster (iv/get-new (track sig/user-rooms))
+          replica-status (iv/get-new (track db-signal/replica-sync))
           kb-read-only? (boolean
                          (and db-scope (map? roster)
                               (some #(and (= (str db-scope) (str (:kb/db-scope %)))
@@ -2336,8 +2337,12 @@
                                   "branch=" active-branch)]
 
       (if-not db-value
-        (el/div {:class "block-editor loading" :key (str "page-view-" page-uuid)}
-          (el/p "Loading database..."))
+        (let [state (get replica-status [:kb (str db-scope)])]
+          (el/div {:class "empty-state" :key (str "page-view-" page-uuid)}
+            (el/p {:class "empty-state-message"}
+              (if (= :error (:status state))
+                "This memory could not be loaded. Reconnect and reopen it to retry."
+                "Loading memory…"))))
 
       (let [;; If we projected onto a branch, wrap the projected db-value
             ;; as a fresh interval so `query-with-deltas` runs the query

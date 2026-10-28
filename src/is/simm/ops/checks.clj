@@ -142,48 +142,67 @@
   [scope system-type branch]
   (when (= :repo system-type)
     (let [head (branching/head-id scope :repo branch)
-          fork (branching/open-repo-fork! scope branch)]
-      (try
-        (if-not fork
-          {:status :error :output "the repository did not resolve" :head head}
-          (let [{:keys [filesystem]} (branching/repo-fork-workspace fork)
-                nss (test-namespaces filesystem)]
-            (if (empty? nss)
-              {:status :none :head head
-               :output "No test namespaces on this branch."}
-              (let [r (run-in-sandbox filesystem)]
-                (cond
-                  (:load-failed r)
-                  {:status :error :head head
-                   :output (str "Could not load any test namespace:\n"
-                                (str/join "\n" (map #(str "  " (:ns %) " — " (:error %))
-                                                    (:load-failed r))))}
-
-                  (not (:success r))
-                  {:status :error :head head
-                   :output (str "The test run itself failed: "
-                                (get-in r [:error :message]))}
-
-                  :else
-                  (let [{:keys [test pass fail error]
-                         :or {test 0 pass 0 fail 0 error 0}} (:value r)
-                        broken? (pos? (+ fail error))
-                        out (str (when (seq (:load-failures r))
-                                   (str "Some namespaces did not load:\n"
-                                        (str/join "\n" (map #(str "  " (:ns %) " — " (:error %))
-                                                            (:load-failures r)))
-                                        "\n\n"))
-                                 (interesting-output (:stdout r)))]
-                    {:status (if broken? :fail :pass)
-                     :tests test :passed pass :failed fail :errors error
-                     :head head
-                     :output (subs (or out "") 0 (min max-output (count (or out ""))))}))))))
-        (catch Exception e
-          (log/log! {:level :warn :id ::check-failed
+          opened (try
+                   {:fork (branching/open-repo-fork! scope branch)}
+                   (catch Exception e
+                     ;; An incomplete construction may retain its sole cleanup
+                     ;; owner in this exception. Never turn that into UI text.
+                     (if (and (= :sci.fork/affine-resource (:type (ex-data e)))
+                              (every? #{:type :resource} (keys (ex-data e)))
+                              (nil? (ex-cause e))
+                              (empty? (.getSuppressed e)))
+                       {:error e}
+                       (throw e))))]
+      ;; Construction failure must not turn an already-filed proposal into a
+      ;; reported filing failure. Cleanup still belongs to its original owner.
+      (if-let [error (:error opened)]
+        (do
+          (log/log! {:level :warn :id ::check-construction-failed
                      :data {:scope (str scope) :branch (str branch)
-                            :error (.getMessage e)}})
-          {:status :error :head head :output (.getMessage e)})
-        (finally (branching/close-repo-fork! fork))))))
+                            :error (ex-message error)}})
+          {:status :error :head head :output (ex-message error)})
+        (let [fork (:fork opened)]
+          (try
+            (if-not fork
+              {:status :error :output "the repository did not resolve" :head head}
+              (let [{:keys [filesystem]} (branching/repo-fork-workspace fork)
+                    nss (test-namespaces filesystem)]
+                (if (empty? nss)
+                  {:status :none :head head
+                   :output "No test namespaces on this branch."}
+                  (let [r (run-in-sandbox filesystem)]
+                    (cond
+                      (:load-failed r)
+                      {:status :error :head head
+                       :output (str "Could not load any test namespace:\n"
+                                    (str/join "\n" (map #(str "  " (:ns %) " — " (:error %))
+                                                        (:load-failed r))))}
+
+                      (not (:success r))
+                      {:status :error :head head
+                       :output (str "The test run itself failed: "
+                                    (get-in r [:error :message]))}
+
+                      :else
+                      (let [{:keys [test pass fail error]
+                             :or {test 0 pass 0 fail 0 error 0}} (:value r)
+                            broken? (pos? (+ fail error))
+                            out (str (when (seq (:load-failures r))
+                                       (str "Some namespaces did not load:\n"
+                                            (str/join "\n" (map #(str "  " (:ns %) " — " (:error %))
+                                                                (:load-failures r)))
+                                            "\n\n"))
+                                     (interesting-output (:stdout r)))]
+                        {:status (if broken? :fail :pass)
+                         :tests test :passed pass :failed fail :errors error
+                         :head head
+                         :output (subs (or out "") 0 (min max-output (count (or out ""))))}))))))
+            (catch Exception e
+              (log/log! {:level :warn :id ::check-failed
+                         :data {:scope (str scope) :branch (str branch)
+                                :error (.getMessage e)}})
+              {:status :error :head head :output (.getMessage e)})
+            (finally (branching/close-repo-fork! fork))))))))
 
 (defonce ^:private cache
   ;; {[scope branch head] → result}. Keyed on the branch HEAD, so a fork that
@@ -200,7 +219,8 @@
       (if (contains? @cache k)
         (get @cache k)
         (let [r (run-fork-checks! scope system-type branch)]
-          (swap! cache assoc k r)
+          ;; Infrastructure failures are retryable without a branch edit.
+          (when-not (= :error (:status r)) (swap! cache assoc k r))
           r)))))
 
 (defn run-tests-on-fs

@@ -14,6 +14,16 @@
     (assoc item proposal-state-key state)
     item))
 
+(defn retain-action-feedback
+  "Refresh canonical contributions without erasing a still-open decision failure.
+   A new action explicitly clears feedback; resolved proposals leave the list."
+  [previous proposals]
+  (let [by-id (into {} (map (juxt :id identity)) previous)]
+    (mapv (fn [p]
+            (if-let [error (:action-error (get by-id (:id p)))]
+              (assoc p :action-error error)
+              p)) proposals)))
+
 (defn verification-outcome
   "Stable result of one visibility-safe proposal status request."
   [status error]

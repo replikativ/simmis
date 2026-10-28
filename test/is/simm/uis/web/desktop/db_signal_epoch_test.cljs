@@ -1,6 +1,6 @@
 (ns is.simm.uis.web.desktop.db-signal-epoch-test
   (:require [cljs.test :refer-macros [deftest is async]]
-            [clojure.core.async :refer [go <! put! chan promise-chan] :include-macros true]
+            [clojure.core.async :refer [go <! put! chan promise-chan alts! timeout] :include-macros true]
             [datahike.versioning :as versioning]
             [datahike.kabel.connector :as connector]
             [datahike.optimistic :as optimistic]
@@ -214,3 +214,46 @@
                          (is (= {:private :fresh} @replacement)))))))
                (catch :default error (is false (str error)))
                (finally (done)))))))
+
+
+(deftest a-view-requested-before-roster-opens-once-when-authorized
+  (async done
+    (go
+      (let [scope (random-uuid) unused (random-uuid)
+            connection {:session-id (random-uuid) :epoch (random-uuid)}
+            request (promise-chan) result (promise-chan) opens (atom [])]
+        (try
+          (with-redefs [db/local-conn (atom nil) db/room-states (signal runtime {})
+                        db/room-connecting (atom {}) db/kb-conns (atom {}) db/kb-overlays (atom {})
+                        db/kb-db-signals (atom {}) db/kb-connecting (atom {})
+                        db/replica-sync (signal runtime {})
+                        io/open! (fn [cfg opts] (swap! opens conj (get-in cfg [:store :id]))
+                                   (put! request opts) result)]
+            (binding [ec/*execution-context* runtime]
+              (reset! epoch/connection connection)
+              ;; Exactly the cold direct-page sequence: its signal exists,
+              ;; but current authorization has not arrived yet.
+              (db/ensure-kb-db-signal! scope)
+              (db/connect-kb! scope :peer)
+              (is (empty? @opens))
+              (is (nil? (db/get-kb-conn scope)))
+              (db/resync-open! connection {:rooms [] :knowledge-bases [{:kb/db-scope scope} {:kb/db-scope unused}]} :peer))
+            (let [opts (<! request)]
+              (is (= [scope] @opens) "Only the requested KB opens")
+              (is (true? ((:valid? opts))))
+              (binding [ec/*execution-context* runtime]
+                (db/resync-open! connection {:rooms [] :knowledge-bases [{:kb/db-scope scope} {:kb/db-scope unused}]} :peer)
+                (db/connect-kb! scope :peer))
+              (is (= [scope] @opens) "Roster/render repeats do not restart a pending open")
+              (let [finished (promise-chan) watch-key (random-uuid)]
+                (add-watch db/replica-sync watch-key
+                           (fn [_ _ _ state]
+                             (when (= :error (get-in state [[:kb (str scope)] :status]))
+                               (put! finished true))))
+                (try
+                  (put! result {:status :superseded})
+                  (let [[_ port] (alts! [finished (timeout 2000)])]
+                    (is (identical? finished port) "The open continuation completed before fixtures retire"))
+                  (finally (remove-watch db/replica-sync watch-key))))))
+          (catch :default error (is false (str error)))
+          (finally (done)))))))

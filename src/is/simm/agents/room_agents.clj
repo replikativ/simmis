@@ -943,6 +943,39 @@
   (when (and overlay @overlay)
     (get-in @overlay [:forks [db-scope agent-uuid]])))
 
+(defn- resolve-kb-conn!
+  "Resolve authority and execution target at operation time. Reads never mint
+   branches; governed writes must resolve their branch or refuse, never trunk."
+  [{:keys [db-scope room-id kb-id]} overlay-fn agent-uuid action]
+  (access/require-sandbox-kb! agent-uuid room-id kb-id action)
+  (let [execution-context rtc/*execution-context*
+        ;; Product KBs live on the server registry. Only the owning live room
+        ;; and the server may use that explicit root route. A child world must
+        ;; carry its own selected system, never borrow a captured root handle.
+        root-route? (or (identical? execution-context ctx/server-context)
+                        (when-let [room (live-room room-id)]
+                          (identical? execution-context (:ctx room))))
+        _ (when-not root-route?
+            (throw (ex-info "Product KB operations require their owning room or server context"
+                            {:type :kb-target-context-unavailable :scope db-scope})))
+        overlay (overlay-fn)
+        writing? (= :write action)
+        governed? (and writing? (some? (some-> overlay deref)))
+        branch (if writing?
+                 (overlay-branch! overlay db-scope agent-uuid :kb)
+                 (existing-fork overlay db-scope agent-uuid))]
+    (when (and governed? (nil? branch))
+      (throw (ex-info "Proposal database branch could not be created"
+                      {:type :proposal-target-unavailable :scope db-scope})))
+    (if branch
+      (or (ctx/with-server-context
+            (branching/get-kb-conn-on-branch db-scope branch))
+          (throw (ex-info "Proposal database branch is unavailable"
+                          {:type :proposal-target-unavailable :scope db-scope :branch branch})))
+      (or (ctx/with-server-context (branching/get-kb-conn db-scope))
+          (throw (ex-info "Knowledge base is unavailable"
+                          {:type :kb-unavailable :scope db-scope}))))))
+
 (defn- add-kb-write-ns!
   "Install the `kb/*` SCI vocabulary — the agent's GUARDED datahike write surface
    over the room's product KBs. EVERY fn takes an EXPLICIT database as its first
@@ -980,16 +1013,8 @@
         ;; `write-conn-of`, a pure reader `read-conn-of`, and a CONDITIONAL
         ;; writer reads first and only takes the write conn on the branch that
         ;; actually transacts — so a no-op call cannot mint a fork either.
-        write-conn-for (fn [{:keys [db-scope conn]}]
-                         (or (when-let [b (overlay-branch! (overlay-fn) db-scope agent-uuid :kb)]
-                               (ctx/with-server-context (branching/get-kb-conn-on-branch db-scope b)))
-                             (branching/get-kb-conn db-scope)
-                             conn))
-        read-conn-for (fn [{:keys [db-scope conn]}]
-                        (or (when-let [b (existing-fork (overlay-fn) db-scope agent-uuid)]
-                              (ctx/with-server-context (branching/get-kb-conn-on-branch db-scope b)))
-                            (branching/get-kb-conn db-scope)
-                            conn))
+        write-conn-for (fn [t] (resolve-kb-conn! t overlay-fn agent-uuid :write))
+        read-conn-for (fn [t] (resolve-kb-conn! t overlay-fn agent-uuid :read))
         write-conn-of (fn [db] (write-conn-for (target db :write)))
         read-conn-of  (fn [db] (read-conn-for (target db)))
         ;; the conditional writers' shape: check on read, transact on write
@@ -2112,7 +2137,7 @@
 
    Only KBs the room grants WRITE on are targets, and each call is authorized
    for `agent-uuid` again (`access/require-sandbox-kb!`), like `kb/*`."
-  [ka-tool all-kb-conns agent-uuid]
+  [ka-tool all-kb-conns agent-uuid overlay-fn]
   (let [kb-conns (filterv :writable? all-kb-conns)]
     (if (empty? kb-conns)
       ka-tool
@@ -2134,9 +2159,12 @@
                           :description "Target knowledge base by name (default: primary)"})
           (assoc :execute
                  (fn [{:keys [title summary context source url kb] :as _params} _tctx]
-                   (let [target (or (when kb (first (filter #(= kb (:name %)) kb-conns)))
-                                    (first kb-conns))
-                         conn (:conn target)]
+                   (let [target (if kb
+                                  (or (first (filter #(= kb (:name %)) kb-conns))
+                                      (throw (ex-info "Unknown writable knowledge base"
+                                                      {:type :unknown-kb :kb kb})))
+                                  (first kb-conns))
+                         conn (resolve-kb-conn! target overlay-fn agent-uuid :write)]
                      (if-not conn
                        {:error (str "knowledge base " (:name target) " not reachable")}
                        (let [_ (access/require-sandbox-kb! agent-uuid (:room-id target)
@@ -2627,7 +2655,8 @@
                           (get base-tools "knowledge_add")
                           (assoc "knowledge_add"
                                  (wrap-knowledge-add-tool
-                                  (get base-tools "knowledge_add") kb-conns agent-uuid)))
+                                  (get base-tools "knowledge_add") kb-conns agent-uuid
+                                  #(active-overlay room-uuid agent-uuid))))
             ;; Code forks. Applied LAST and over the already-wrapped map, so
             ;; `clojure_eval` keeps its transcript persistence and additionally
             ;; writes into the fork. The overlay is resolved PER CALL for the
