@@ -800,7 +800,9 @@
 ;; ============================================================================
 
 (defn open-repo-fork!
-  "Fork the execution context of the room owning repo `scope`.
+  "Fork only repo `scope` from its owning room, with no interpreter components.
+   This is a file workspace, not an execution world. Excluding unrelated
+   systems and live SCI heaps permits checks/Memory edits during evaluation.
 
    Returns `{:handle … :child-ctx … :scope …}`, or nil when the repo does not
    resolve. The caller MUST eventually `close-repo-fork!` — a ForkHandle is an
@@ -810,7 +812,9 @@
   ([scope branch-kw]
    (when-let [path (repo-scope-path scope)]
      (when-let [room-ctx (room-ctx-owning-repo path)]
-       (let [fh (binding [rtc/*execution-context* room-ctx] (ygg/fork!))
+       (let [fh (binding [rtc/*execution-context* room-ctx]
+                  (ygg/fork! {:systems #{(repo-system-id path)}
+                              :forkable-components #{}}))
              fork {:handle fh :child-ctx (:child-ctx fh) :scope scope}]
          ;; Start the workspace ON the fork's branch.
          ;;

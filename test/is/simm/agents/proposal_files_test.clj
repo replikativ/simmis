@@ -243,9 +243,10 @@
 (deftest native-threaded-eval-can-file-without-holding-its-callers-monitor
   (with-repo
     (fn [{:keys [room agent native-room]}]
-      (let [interpreter (sci/init {}) overlay (#'agents/private-overlay room agent)
+      (let [overlay (#'agents/private-overlay room agent)
             cctx (dvergr.chat.context/create-chat-context
-                  {:execution-context (:ctx native-room) :with-sci? false})
+                  {:execution-context (:ctx native-room)})
+            interpreter (dvergr.chat.context/sci-context-in cctx (:ctx native-room))
             tool (#'agents/wrap-repo-tool (dvergr.tools/get-tool "clojure_eval")
                                           (constantly overlay) room agent)
             write (#'agents/wrap-repo-tool (dvergr.tools/get-tool "write_file")
@@ -332,3 +333,48 @@
                        (dvergr.tools/workspace-write! @captured "/unexpected.txt" "Must refuse" {:expect nil})))
           (is (nil? (repo/read conn "unexpected.txt")))
           (finally (swap! @#'agents/proposal-overlays dissoc [room agent])))))))
+
+(deftest registered-live-sci-can-write-memory-and-file-in-one-evaluation
+  (with-repo
+    (fn [{:keys [conn room agent native-room]}]
+      (let [cctx (assoc (dvergr.chat.context/create-chat-context
+                         {:execution-context (:ctx native-room)}) :capability-id (random-uuid))
+            interpreter (dvergr.chat.context/sci-context-in cctx (:ctx native-room))
+            actor (keyword "party" (str agent))
+            overlay (#'agents/private-overlay room agent)
+            tool (#'agents/wrap-repo-tool (dvergr.tools/get-tool "clojure_eval")
+                                          (constantly overlay) room agent)
+            tctx (dvergr.tools/make-context {:sci-ctx interpreter :chat-ctx cctx
+                                             :execution-ctx (:ctx native-room)})
+            open! branching/open-repo-fork! selections (atom [])]
+        (try
+          (dvergr.runtime.ctx/install-sandbox-binding! (:ctx native-room) (:capability-id cctx)
+                                                       {:agent-id actor :room-runtime-id (:id native-room)})
+          (#'agents/add-proposal-ns! interpreter room agent)
+          (#'agents/add-source-memory-ns! interpreter cctx native-room room agent)
+          (sci/eval-string* interpreter "(def preserved (atom :unchanged))")
+          (with-redefs [branching/open-repo-fork!
+                        (fn [& args]
+                          (let [fork (apply open! args)]
+                            (swap! selections conj
+                                   (binding [ec/*execution-context* (:child-ctx fork)]
+                                     {:systems (set (keys (org.replikativ.spindel.yggdrasil/registered-systems)))
+                                      :components (ec/get-state [:world/forkable-components])}))
+                            fork))]
+            (let [result ((:execute tool)
+                          {:code "(do (proposal/start! \"Inline memory\") (memory/write! {:path \"wiki/Note.md\" :expected nil :text \"# Test\"}) (proposal/file! \"Memory write\"))"} tctx)
+                  id (some-> result :metadata :value :proposal parse-uuid)
+                  proposal (when id (proposals/get-proposal id))]
+              (is (= :success (:type result)) (pr-str result))
+              (is (= :open (:proposal/status proposal)))
+              (is (not= (get-in proposal [:proposal/forks 0 :proposal.fork/base-commit])
+                        (get-in proposal [:proposal/forks 0 :proposal.fork/head-commit])))
+              (is (nil? (repo/read conn "wiki/Note.md")))))
+          (is (= 2 (count @selections)) "Private workspace and independent frozen check")
+          (doseq [selection @selections]
+            (is (= #{(systems/system-id (branching/get-repo-system nil))} (:systems selection)))
+            (is (empty? (:components selection))))
+          (is (= :unchanged (sci/eval-string* interpreter "@preserved")))
+          (finally
+            (dvergr.chat.context/close-chat! cctx)
+            (swap! @#'agents/proposal-overlays dissoc [room agent])))))))
