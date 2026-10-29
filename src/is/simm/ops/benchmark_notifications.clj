@@ -16,6 +16,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-room-operation :as operation]
+            [is.simm.ops.benchmark-result-evidence :as evidence]
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [org.replikativ.spindel.engine.core :as ec]))
 
@@ -71,13 +72,16 @@
 (defn record-result!
   "Fixed native Job callback: keep inert IDs before retiring the actual result.
    Failure retains the Job's existing recovery owner; it never reruns work."
-  [conn expected room status value expected-experiment]
+  [conn expected room status value]
   (let [store (store-id! room)
         id (when (= :completed status) (get-in value [:scorecard :scorecard/content-id]))
         outcome (if (= :completed status) (if (uuid? id) :completed :incomplete) status)]
     (when-not (and (contains? kinds (:work.request/kind expected))
                    (or (not= :completed status)
-                       (and (= expected-experiment (get-in value [:experiment :experiment/content-id]))
+                       (and (or (nil? id)
+                                (and (= (evidence/experiment! conn expected) (:experiment value)
+                                        (get-in value [:scorecard :scorecard/experiment]))
+                                     (experiment/validate-scorecard (:scorecard value))))
                             (= (:work.request/job expected) (get-in value [:execution :cleanup-group]))
                             (or (nil? id) (uuid? id))))) (refuse!))
     (d/transact conn [[:db.fn/call record-result-tx expected store outcome id (java.util.Date.)]])))
@@ -153,13 +157,10 @@
                       _ (when-not (and (:work.request/result-at row)
                                        (= store (:work.request/result-store row))) (refuse!))
                       id (:work.request/result-scorecard row)
-                      retained (:value (artifact/get-bounded-value (artifact/datahike-store conn)
-                                                                   (:work.request/payload-ref expected) (* 32 1024 1024)))
-                      _ (when-not (= (:work.request/intent-id expected) (hasch/uuid retained)) (refuse!))
                       card (when (uuid? id)
                              (binding [ec/*execution-context* (:ctx room)] (experiment/scorecard-bounded room id)))
                       _ (when (and id (not (and card
-                                                (= (:scorecard/experiment card) (get-in retained [:input :experiment]))))) (refuse!))
+                                                (= (:scorecard/experiment card) (evidence/experiment! conn expected))))) (refuse!))
                       outcome (:work.request/result-status row)
                       content (if card
                                 (result/content {:room room-id :store store} (native/scorecard-summary card)

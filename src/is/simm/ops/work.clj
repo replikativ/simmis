@@ -442,8 +442,7 @@
                            ;; owner before App admission or optional formatting.
                            (when (and row (contains? notifications/kinds (:request-kind prepared)))
                              (journal #(notifications/record-result!
-                                        conn original room status value
-                                        (get-in prepared [:basis :experiment :experiment/content-id]))))
+                                        conn original room status value)))
                            ;; Adapter retirement may close job-ctx. Dvergr
                            ;; retains the Job lease and uses control ctx here.
                            (when-let [settled! (:settled! prepared)] (settled! job-id))

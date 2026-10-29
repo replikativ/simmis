@@ -341,6 +341,9 @@ Advanced remains available for other backends and detailed configuration.
 
 Native-provider and Claude-text benchmark Jobs record the exact returned
 Scorecard identity on their original WorkRequest before optional notification.
+Checkpoint results are checked against their exact retained READY execution
+definition, rather than the earlier unresolved experiment or the newest room
+result. This proof read neither executes setup nor needs retired native roots.
 Incomplete, failed and cancelled results remain distinct from a complete
 Scorecard. Canonical bookkeeping failure retains the existing native Job owner
 for explicit cleanup recovery; no benchmark is rescheduled. Chat delivery uses

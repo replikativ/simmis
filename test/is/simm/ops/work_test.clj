@@ -155,7 +155,7 @@
           (resource/mint! room {:id (random-uuid) :resources (work/resources (:limits input))})
           (try
             (with-redefs [notifications/record-result!
-                          (fn [_ expected actual status value _]
+                          (fn [_ expected actual status value]
                             (is (identical? room actual))
                             (is (= :completed status)) (is (= :actual-result value))
                             (is (uuid? (:work.request/claim expected)))

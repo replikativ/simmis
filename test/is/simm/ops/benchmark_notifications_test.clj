@@ -30,8 +30,7 @@
                                    value (if (map? value)
                                            (merge {:experiment (:scorecard/experiment card)
                                                    :execution {:cleanup-group job}} value) value)]
-                               (notifications/record-result! conn original room status value
-                                                             (get-in card [:scorecard/experiment :experiment/content-id]))
+                               (notifications/record-result! conn original room status value)
                                (lifetime/with-operation!
                                  owner #(notifications/complete! conn principal (:room w) room original))))))))))
 

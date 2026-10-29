@@ -1182,6 +1182,11 @@ allowance; confirmation never provisions funds or executes an uninspected checke
 
 Native-provider and Claude-text benchmark completion records its exact returned
 Scorecard/store/status on the original WorkRequest before optional notification.
+For checkpoint benchmarks, the admitted READY artifact supplies the resolved
+ExperimentDef: checkpoint setup substitution changes its identity from the
+original submission. The read-only result proof checks the original
+Request/Job/claim/intent, READY digest/family and retained case bindings. It does
+not rebuild checkers or retired roots, and remains usable after settlement.
 This native Job-owned bookkeeping survives App retirement; failure retains the
 existing Job recovery owner without rerunning the experiment. Delivery enters
 a new short operation on the original installation and cannot change execution
