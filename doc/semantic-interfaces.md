@@ -123,6 +123,9 @@ must participate in that lifecycle rather than introduce its own global state.
 
 ### Room websites and publication
 
+The planned [publication and collaboration agenda](publication-and-collaboration.md)
+covers public Memory/Git/data readers, invitations, activity and room connectors.
+
 The same display components should support a supplied data snapshot, while a
 connected editor additionally needs an authorized action adapter. A static
 export cannot perform a live edit without such a connection.
