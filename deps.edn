@@ -247,7 +247,8 @@
         ;; 0.1.22 provides prepare-commit, required by Dvergr's atomic scoped
         ;; publication. A direct older pin shadows Dvergr's compatible version
         ;; and fails only when a fresh process loads the publication namespace.
-        org.replikativ/geschichte {:mvn/version "0.1.25"}
+        ;; 0.1.26 retains cloned remotes and forwards explicit incremental-fetch haves.
+        org.replikativ/geschichte {:mvn/version "0.1.26"}
         ;; Datahike's bundled secondary-index adapter uses
         ;; scriptum.core/warm!, introduced before this release.
         org.replikativ/scriptum {:mvn/version "0.1.32"}

@@ -91,7 +91,7 @@
       (when (> (reduce + 0 (map :size (vals files))) max-total-bytes)
         (refuse! :too-many-source-bytes))
       (cond-> {:repository-id repository-id :selection-kind :worktree
-               :roots prefixes :exclude-prefixes excluded :projection-version 3
+               :roots prefixes :exclude-prefixes excluded :projection-version 4
                :files files :codec markdown/syntax-profile :block-codec blocks/profile
                :property-schema (:revision (properties/compile-schema db property-bindings))
                :schema-revision schema-revision}
@@ -415,11 +415,11 @@
                               (merge (:values properties)
                                      {:document/id id :document/path path
                                       :document/source-content [:geschichte.content/id content]
-                                      :document/revision revision :document/projection-version 3
+                                      :document/revision revision :document/projection-version 4
                                       :document/valid? true
                                       :document/blocks (mapv blocks/entity-tx (:blocks semantic))
                                       :document/nodes (mapv documents/syntax-node-tx (range) nodes)}
-                                     (when canonical? (canonical/document-tx document))))
+                                     (when (:canonical document) (canonical/document-tx document))))
                             (if canonical? (:documents canonical-result) docs))
             tx (vec (concat missing (when-not canonical? (map #(vector :db/retractEntity %) old)) projection))]
         (assoc base :status :ready :db (if (seq tx) (d/db-with source-db tx) source-db))))))

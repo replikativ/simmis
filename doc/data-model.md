@@ -497,9 +497,10 @@ Scalar fields commit on blur or Enter; reference/boolean choices commit when sel
 The controller requires a current pending draft, so Enter followed by blur cannot
 repeat an acknowledged edit. Property saves and file moves exclude each other, and typing or newer incoming
 file changes observed during publication survive its receipt. Unsaved source
-drafts must be resolved before applying a property. Legacy/provisional
-workspaces explicitly report unavailability rather than pretending to be
-canonical spaces. Manage properties assigns existing trusted types and bindings;
+drafts must be resolved before applying a property. Property controls require
+an explicit document identity in a canonical workspace. Ordinary provisional
+Markdown remains available for file editing and source search without acquiring
+typed semantic identity. Manage properties assigns existing trusted types and bindings;
 it does not create definitions from document content. Structured source edits and
 MCP property commands remain separate from these controls.
 

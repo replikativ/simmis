@@ -252,7 +252,21 @@ A canonical `simmis-id` UUID in YAML frontmatter supplies explicit document
 identity. Missing IDs are marked **provisional**, deterministically scoped to
 repository/path, and are not promised to survive external renames. Invalid or
 duplicate IDs are refused, never silently upserted into one document. This is
-not yet the semantic block/property identity codec.
+not an implicit semantic adoption.
+
+Canonical Memory views retain ordinary Markdown as source-backed `document/*`
+syntax rows alongside explicit semantic pages. Plain files can be read, searched
+through the Memory source API and edited without inserting metadata. They do not
+receive `entity/uuid`, Page roles, typed properties or rows in semantic page
+queries. An unrelated authored entity sharing a provisional document UUID cannot
+supply types or property values for that file. Durable semantic identity requires
+an explicit `simmis-id` source edit; importing or viewing a repository does not
+perform that edit. Reserved `simmis` declarations require explicit identity and
+validation, even when empty, rather than being ignored as ordinary YAML.
+
+Projection version 4 and canonical codec version 2 record this mixed-document
+policy in the view/selection identity. Freshness checks retain all selected file
+revisions but inspect canonical entity ownership only for explicit documents.
 
 Selection is prefix-indexed and bounded to 200 entries, 2 MiB per source,
 8 MiB total source and 100,000 syntax nodes, stopping between files. Only
