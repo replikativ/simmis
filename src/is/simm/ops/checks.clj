@@ -178,7 +178,14 @@
             (if-not fork
               {:status :error :output "the repository did not resolve" :head head}
               (let [_ (when frozen-head
-                        (repo/reset! (branching/repo-fork-conn fork) (parse-uuid frozen-head) {:mode :hard}))
+                        (let [private (branching/repo-fork-conn fork)
+                              commit (parse-uuid frozen-head)]
+                          (repo/reset! private commit {:mode :hard})
+                          ;; Git-style hard reset preserves untracked paths.
+                          ;; A check must see only its named commit, including
+                          ;; when the canonical room has unrelated dirty files.
+                          (repo/restore-paths! private (keys (repo/worktree private))
+                                               {:source commit :staged? true :worktree? true})))
                     {:keys [filesystem]} (branching/repo-fork-workspace fork)
                     nss (test-namespaces filesystem)]
                 (if (empty? nss)
