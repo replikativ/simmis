@@ -170,7 +170,7 @@
    - :room-id - Room ID (for :agent items)
    - :model-resolution - desired model-resolution map (for :agent items)"
   [{:keys [id uuid type title project icon obj-icon unread active? db-scope room-id model-resolution
-            kind-label experiment?]}]
+            kind-label]}]
   (el/div {:key (or id (str uuid))
            :class (vc/class-names "nav-item"
                                   (when active? "active"))
@@ -190,18 +190,12 @@
                                                    :agent-name title
                                                    :model-resolution model-resolution}
                                            nil)]
-                            ;; Nav clicks always open new tabs (not replace current).
-                            ;; An experiment room opens on its leaderboard; its
-                            ;; chat is one click back from there.
-                            (if (and experiment? (= type :chat))
-                              (sig/open-tab! :leaderboard tab-data
-                                             {:title (str title " Leaderboard")
-                                              :new-column? cmd-key?
-                                              :new-tab? (not cmd-key?)})
-                              (sig/open-tab! type tab-data
-                                             {:title title
-                                              :new-column? cmd-key?
-                                              :new-tab? (not cmd-key?)}))
+                            ;; A room stays a conversation even after it has
+                            ;; benchmark receipts. Reports are explicit destinations.
+                            (sig/open-tab! type tab-data
+                                           {:title title
+                                            :new-column? cmd-key?
+                                            :new-tab? (not cmd-key?)})
                             ;; Opening a chat clears its unread badge (and
                             ;; advances the durable server read cursor).
                             (when (= type :chat) (mns/mark-read! id)))
@@ -671,8 +665,6 @@
                                           :type :chat
                                           :title (or (:room/name r) "Chat")
                                           :db-scope (:room/content-db-scope r)
-                                          :experiment? (boolean (:room/experiment? r))
-                                          :obj-icon (when (:room/experiment? r) "medal")
                                           :active? (or (contains? active [:chat rid])
                                                        (contains? active [:leaderboard rid]))
                                           ;; IN the item, not read from a closure —
@@ -686,15 +678,13 @@
                                           ;; rather than by room type, so a
                                           ;; telegram room someone calls "Telegram
                                           ;; bridge" drops its chip too.
-                                          :kind-label (if (:room/experiment? r)
-                                                        "Experiment"
-                                                        (let [noun (when-not (vc/team-like? (:room/type r))
+                                          :kind-label (let [noun (when-not (vc/team-like? (:room/type r))
                                                                    (vc/room-noun (:room/type r)))]
                                                         (when (and noun
                                                                    (not (str/includes?
                                                                          (str/lower-case (or (:room/name r) ""))
                                                                          (str/lower-case noun))))
-                                                          noun)))
+                                                          noun))
                                           :unread (when (pos? u) u)})))
                                (filterv #(search-matches? search-q (:title %)))))]
          (el/div {:class "nav-section"}
