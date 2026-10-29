@@ -217,6 +217,10 @@
     :db/valueType :db.type/uuid
     :db/cardinality :db.cardinality/one
     :db/doc "Immutable canonical creation request digest; observation never authorizes a retry"}
+   {:db/ident :room/github-source
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "HOST-recorded canonical public GitHub owner/repository; never read from imported files"}
    {:db/ident :room/created
     :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one

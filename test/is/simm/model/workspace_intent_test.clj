@@ -33,6 +33,40 @@
     (is (not= (intent/basis owner request) (intent/basis other request)))
     (is (= "Research" (:name (intent/request! {:id (str (:id request)) :name " Research " :members []}))))))
 
+(deftest github-source-is-part-of-the-exact-one-shot-intent
+  (let [{:keys [owner request]} (fixture)
+        wire {:id (str (:id request)) :name "Research" :members []
+              :source {:kind :github :repository "https://github.com/Owner/Repo.git"}}
+        imported (intent/request! wire)]
+    (is (= {:kind :github :repository "owner/repo"} (:source imported)))
+    (is (= (intent/slug owner request) (intent/slug owner imported)))
+    (is (not= (intent/basis owner request) (intent/basis owner imported)))
+    (is (not= (intent/basis owner imported)
+              (intent/basis owner (assoc-in imported [:source :repository] "owner/other"))))
+    (is (thrown? clojure.lang.ExceptionInfo (intent/request! (assoc wire :source nil))))))
+
+(deftest pending-import-records-source-before-network-without-publishing-membership
+  (let [{:keys [owner request pending room]} (fixture)
+        imported (assoc request :source {:kind :github :repository "owner/repo"})
+        recorded (d/db-with pending (intent/record-source-tx pending owner imported))]
+    (is (= "owner/repo" (:room/github-source (d/entity recorded [:room/id room]))))
+    (is (nil? (:room/parties (d/entity recorded [:room/id room]))))
+    (is (nil? (:room/content-db-scope (d/entity recorded [:room/id room]))))
+    (is (= [] (intent/record-source-tx recorded owner imported)))
+    (is (= {:status :preparing} (intent/observe recorded owner imported)))
+    (is (= {:status :conflict} (intent/observe recorded owner request)))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (intent/record-source-tx recorded owner (assoc-in imported [:source :repository] "other/repo"))))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (intent/record-source-tx (d/db-with pending [[:db/add [:room/id room] :room/provisioning-state :ready]])
+                                         owner imported)))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (intent/record-source-tx (d/db-with pending [[:db/add [:room/id room] :room/archived-at (java.util.Date.)]])
+                                         owner imported)))
+    (is (= {:status :conflict}
+           (intent/observe (d/db-with recorded [[:db/add [:room/id room] :room/github-source "other/repo"]])
+                           owner imported)))))
+
 (deftest malformed-or-oversized-wire-requests-refuse-before-any-native-work
   (let [id (str (random-uuid))]
     (doseq [request [nil {} {:id id :name "" :members []} {:id id :name "   " :members []}

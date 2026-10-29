@@ -23,6 +23,18 @@
 
 (def options {:profile space/profile})
 
+(deftest import-foundation-never-seeds-files-or-local-git-history
+  (with-store
+    (fn [conn]
+      (with-redefs [starter/read-packaged! (fn [] (throw (AssertionError. "No packaged sources during import")))
+                    wiki/source (fn [] (throw (AssertionError. "No workflow defaults during import")))]
+        (is (identical? conn (profile/initialize-foundation! conn options))))
+      (is (space/provisioned? @conn))
+      (is (empty? (repo/worktree conn)))
+      (is (nil? (repo/head-commit conn)))
+      (is (identical? conn (profile/prepare-open! conn options)))
+      (is (thrown? clojure.lang.ExceptionInfo (profile/initialize-foundation! conn options))))))
+
 (deftest encoded-benchmark-fixtures-do-not-acquire-live-wiki-identities
   (with-store
     (fn [conn]

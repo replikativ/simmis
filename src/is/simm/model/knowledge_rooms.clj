@@ -86,6 +86,9 @@
    and live registration succeed. Failure preserves the known Room/data; it
    never deletes resources or automatically retries creation."
   [creator name party-ids requested-type slug request current!]
+  ;; The source descriptor can already be normalized/frozen by the client, but
+  ;; importing stays fail-closed until the fixed budgeted HOST path is wired.
+  (when (:source request) (refuse! :github-import-unavailable))
   ;; An ordinary unbound HOST may enter its configured root, but an already
   ;; selected child/foreign world must never be promoted by rebinding it.
   (when (or (simple/on-drain-thread?)

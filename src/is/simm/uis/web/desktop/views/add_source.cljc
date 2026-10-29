@@ -63,6 +63,7 @@
                    @sig/layout-columns))
          (case id
            :workspace (sig/open-tab! :new-kb nil {:col-id col-id :title "New workspace"})
+           :github (sig/open-tab! :new-kb {:source-kind :github} {:col-id col-id :title "Import GitHub repository"})
            :mail (sig/open-or-activate-tab! :mail nil {:col-id col-id :title "Mail"})
            :team (sig/open-tab! :new-room nil {:col-id col-id :title "New team"})
            nil)))))

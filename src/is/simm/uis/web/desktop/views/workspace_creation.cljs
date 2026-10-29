@@ -29,6 +29,7 @@
          user (iv/get-new (track sig/current-user))
          a (actions/controller data) state (get states (:owner a))
          submitted? (some? (:submission state)) memory? (= :memory (:landing data))
+         github? (= :github (:source-kind data))
          created? (editor/created? (:outcome state))
          created-id (get-in state [:outcome :room :room/id])
          visible? (some #(= created-id (str (:room/id %))) (:rooms rooms))]
@@ -36,9 +37,20 @@
      (el/div {:class "settings-page workspace-creation"}
              (el/div {:class "settings-header"}
                      (vc/icon (if memory? "folder" "users") {:class "settings-header-icon"})
-                     (el/h2 {} (if memory? "New knowledge workspace" "New team")))
+                     (el/h2 {} (cond github? "Import GitHub repository" memory? "New knowledge workspace" :else "New team")))
              (el/p {:class "settings-section-desc"}
-                   "A shared place for chat, Markdown knowledge, files and workflow source. Wiki maintenance is included; nothing is scheduled automatically.")
+                   (if github?
+                     "Import a public repository into Memory. Files stay unchanged; imported code is not executed. Updating from GitHub requires a separate review and confirmation."
+                     "A shared place for chat, Markdown knowledge, files and workflow source. Wiki maintenance is included; nothing is scheduled automatically."))
+             (when github?
+               (el/div {:class "settings-section"}
+                       (el/label {:class "settings-section-title"}
+                                 "Public GitHub repository"
+                                 (el/input {:class "settings-input" :aria-label "Public GitHub repository"
+                                            :type "text" :maxlength 256 :disabled submitted?
+                                            :value (or (get-in state [:submission :source :repository]) (:repository state) "")
+                                            :placeholder "owner/repository"
+                                            :on-input (fn [event] ((:set-repository a) (.. event -target -value)))}))))
              (el/div {:class "settings-section"}
                      (el/label {:class "settings-section-title"}
                                "Name"
@@ -69,7 +81,7 @@
                (el/button {:class "settings-btn settings-btn--primary"
                            :disabled (not (editor/valid? state))
                            :on-click (fn [_] ((:create a)))}
-                          (if memory? "Create workspace" "Create team"))
+                          (cond github? "Import repository" memory? "Create workspace" :else "Create team"))
                (if created?
                  (el/button {:class "settings-btn settings-btn--primary" :disabled (not visible?)
                              :on-click (fn [_] ((:open a)))}
