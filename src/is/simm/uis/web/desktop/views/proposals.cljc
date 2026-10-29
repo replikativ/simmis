@@ -972,7 +972,7 @@
    dismissed block carries a line saying so instead of an empty change list."
   ([pid fk] (fork-diff-view pid fk true))
   ([pid {:keys [system-type pages files entries counts stat patch patch-truncated?
-                baseless? status author-name checks file-bodies file-adoption retained-sources scope] :as fk} body?]
+                baseless? status author-name checks head-commit file-bodies file-adoption retained-sources scope] :as fk} body?]
    (let [resolved? (some? status)
          ;; A campaign puts one fork per AGENT on the same database, so without
          ;; the author two contributions render as two identical rows and the
@@ -987,7 +987,7 @@
          {:keys [changed kind label]} (card-model/fork-diff-model fk)]
      (el/div {:class (str "proposal-fork"
                           (when status (str " proposal-fork--" (name status))))
-              :style (when resolved? resolved-style)}
+              :style (when (= :dismissed status) resolved-style)}
              (el/div {:class "proposal-fork-head"}
                      (str label
                           (when author-name (str " · " author-name))
@@ -1014,10 +1014,10 @@
                        "No fork point recorded — compared against trunk's current state, so
             changes made elsewhere since may appear here as removals."))
              (cond
-               (and (= :dismissed status) (not= :file-output system-type))
+               (and (= :dismissed status) (not= :file-output system-type) (nil? head-commit))
                (el/div {:class "proposal-fork-resolved"}
                        "Refused — its branch was discarded, so there is nothing left to show.")
-               (and (= :accepted status) (not= :file-output system-type))
+               (and (= :accepted status) (not= :file-output system-type) (nil? head-commit))
                (el/div {:class "proposal-fork-resolved"} "Landed on its trunk.")
                (not body?) nil
                (= :file-output system-type)

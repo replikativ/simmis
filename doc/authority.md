@@ -210,19 +210,28 @@ If the server refuses to boot with `:http/undeclared-routes`, that is this.
 Decide what the route needs; do not reach for `:public` to make the message go
 away.
 
-Room apps under `/apps/<slug>/...` remain private and require bearer
-authentication. `runtimes.room-apps` uses Dvergr's authorization callback on the
-actual resolved room UUID, rather than preauthorizing one slug lookup and
-serving another. It enters the original App operation, binds that App's root,
-and checks current room-read permission before native file access and again
-before returning bytes. App shutdown joins the synchronous read. An administrator
-without room-read authority cannot use the endpoint to inspect private content.
+Room websites under `/apps/<slug>/...` are public, but only the canonical
+default repository's committed `main` files under `app/` are published. Private
+worktree changes, other folders, dotfiles, symlinks, fork worlds, arbitrary refs
+and other attached repositories are excluded. Publishing through a Proposal is
+controlled by existing repository merge authority; an intentional direct trunk
+edit under `app/` also changes the public site. Materialization owns both the
+original App and actual Room lifetime and revalidates the canonical default
+mapping before returning bytes.
+
+Private previews at `/apps-preview/<slug>/...` require bearer authentication
+and current room-read permission. Their native callback authorizes the actual
+resolved UUID. An administrator without room-read authority cannot use previews
+to inspect private content.
 
 All responses produced by this adapter carry
 `Content-Security-Policy: sandbox allow-scripts` and
 `Referrer-Policy: no-referrer`. Script execution therefore has an opaque browser
-origin; it cannot borrow the Simmis parent DOM or browser storage. Dvergr retains
-its current-worktree path, containment, content-type and asset-redirect rules.
+origin; it cannot borrow the Simmis parent DOM or browser storage. Public assets
+allow wildcard anonymous CORS for opaque-origin module/data fetches, with no
+credential grant. Private previews retain Dvergr's worktree containment rules.
+Public reads select immutable tree entries and never resolve a filesystem path
+outside `app/`.
 The adapter distinguishes authentication/permission denial from unavailable App
 or IO state and logs unexpected serving failures at error level.
 

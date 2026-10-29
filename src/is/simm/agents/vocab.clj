@@ -173,7 +173,7 @@
 (def proposal-docs
   '{start!
     {:arglists ([title])
-     :doc "Open a PRIVATE proposal: your subsequent kb/* and kontor/* writes land on fork BRANCHES, leaving trunk untouched, until file! or abandon!. Use for anything structural."}
+     :doc "Open a PRIVATE proposal: your subsequent file, memory/*, kb/* and kontor/* writes land on private fork BRANCHES, leaving trunk untouched, until file! or abandon!. Use for anything structural."}
 
     open-campaign!
     {:arglists ([title])
@@ -189,7 +189,7 @@
 
     file!
     {:arglists ([] [rationale])
-     :doc "Submit YOUR part for human review with an AI summary of the diff. On a private proposal this files it immediately. In a campaign it means \"I am done\": the campaign stays open for the other members and files itself when the last of them calls file! too — the reply names who is still outstanding, so tell them in the room. State WHY in `rationale`; the reviewer sees it."}
+     :doc "Submit YOUR part for human review. Freezes all current file additions, edits and deletions automatically; git commit is optional. Records the exact commit and its checks so the diff stays inspectable after acceptance. Empty file changes are refused; a failed filing preserves your workspace for retry. On a private proposal this files it immediately. In a campaign it means \"I am done\": the campaign stays open for the other members and files itself when the last of them calls file! too — the reply names who is still outstanding, so tell them in the room. State WHY in `rationale`; the reviewer sees it."}
 
     release!
     {:arglists ([])

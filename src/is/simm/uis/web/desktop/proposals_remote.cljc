@@ -16,6 +16,7 @@
             #?(:clj [org.replikativ.spindel.engine.core :as ec])
             #?(:clj [is.simm.ops.semantic-diff :as sdiff])
             #?(:clj [is.simm.ops.file-output-review :as file-review])
+            #?(:clj [is.simm.ops.proposal-evidence :as evidence])
             #?(:clj [is.simm.ops.file-output-service :as file-service])
             #?(:clj [is.simm.ops.retained-knowledge-sources :as retained-sources])
             #?(:clj [is.simm.ops.file-output-adoption :as adoption])
@@ -166,7 +167,8 @@
                            (when-let [p (props/get-proposal (java.util.UUID/fromString s))]
                              (let [party (access/authenticated-party-id)
                                    open (filterv #(or (props/fork-open? %)
-                                                      (= :file-output (:proposal.fork/system-type %)))
+                                                      (= :file-output (:proposal.fork/system-type %))
+                                                      (:proposal.fork/head-commit %))
                                                  (:proposal/forks p))
                                    review (props/proposal-review p)
                         ;; Live branches are diffed only while open. Retained
@@ -213,7 +215,8 @@
                                                             :branch branch
                                                             :system-type (or (:proposal.fork/system-type f) :kb)
                                                             :author-name (fork-author-name f)
-                                                            :status (:proposal.fork/status f))
+                                                            :status (:proposal.fork/status f)
+                                                            :head-commit (:proposal.fork/head-commit f))
                                                      (update :pages
                                                              (fn [ps]
                                                                (mapv #(update % :page-uuid str) ps))))))
@@ -232,15 +235,6 @@
                                                            (java.util.UUID/fromString scope-str) path)))))
                   :cljs nil)))
 
-(defn-spin-remote proposal-retained-audit!
-  [server-id proposal-id-str]
-  (spin-remote server-id [proposal-id-str]
-               #?(:clj (let [party (access/authenticated-party-id)]
-                         (await (blocking/blocking
-                                 #(ctx/with-server-context
-                                    (file-review/audit party (java.util.UUID/fromString proposal-id-str))))))
-                  :cljs nil)))
-
 #?(:clj
    (defn- wire-uuid [value]
      (when (and (string? value)
@@ -253,7 +247,7 @@
      [party operation proposal component options]
      (when-not (uuid? party)
        (throw (ex-info "Authentication required" {:type :authentication-required})))
-     (when-not (#{:list :read} operation)
+     (when-not (#{:list :read :audit} operation)
        (throw (ex-info "Unknown retained source operation" {:type :validation-error})))
      (let [unavailable (fn [error]
                          (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)))
@@ -265,11 +259,21 @@
              (try
                (invoke (fn [host]
                          (case operation
+                           :audit (or (evidence/audit host party proposal)
+                                      (file-review/audit party proposal))
                            :list (retained-sources/list! host party proposal component)
                            :read (retained-sources/read! host party proposal component options))))
                (catch Throwable error (unavailable error)))))
          (catch Throwable error
            (let [result (unavailable error)] (constantly result)))))))
+
+(defn-spin-remote proposal-retained-audit!
+  [server-id proposal-id-str]
+  (spin-remote server-id [proposal-id-str]
+               #?(:clj (let [body (prepare-source-operation (access/authenticated-party-id) :audit
+                                                            proposal-id-str nil nil)]
+                         (await (blocking/blocking body)))
+                  :cljs nil)))
 
 (defn-spin-remote list-proposal-sources!
   [server-id proposal-id-str component-id-str]
@@ -331,19 +335,22 @@
 (defn-spin-remote proposal-checks!
   [server-id proposal-id-str]
   (spin-remote server-id [proposal-id-str]
-               (let [s (identity proposal-id-str)]
-                 #?(:clj (ctx/with-server-context
-                           (when-let [p (props/get-proposal (java.util.UUID/fromString s))]
-                             (vec (keep (fn [f]
-                                          (when (= :repo (:proposal.fork/system-type f))
-                                            (some-> (checks/fork-checks
-                                                     (:proposal.fork/scope f)
-                                                     :repo
-                                                     (keyword (:proposal.fork/branch f)))
-                                                    (assoc :scope (str (:proposal.fork/scope f))
-                                                           :branch (:proposal.fork/branch f)))))
-                                        (props/open-forks p)))))
-                    :cljs nil))))
+               #?(:clj (ctx/with-server-context
+                         (when-let [p (props/get-proposal (java.util.UUID/fromString proposal-id-str))]
+                           (vec (keep (fn [f]
+                                        (when (= :repo (:proposal.fork/system-type f))
+                                          (let [stored (:proposal.fork/checks f)
+                                                result (if stored
+                                                         (into {} (map (fn [[k v]] [(keyword (name k)) v]))
+                                                               (dissoc stored :db/id))
+                                                         (when (props/fork-open? f)
+                                                           (checks/fork-checks (:proposal.fork/scope f) :repo
+                                                                               (keyword (:proposal.fork/branch f))
+                                                                               (:proposal.fork/head-commit f))))]
+                                            (when result (assoc result :scope (str (:proposal.fork/scope f))
+                                                                :branch (:proposal.fork/branch f))))))
+                                      (:proposal/forks p)))))
+                  :cljs nil)))
 
 (defn-spin-remote comment-on-proposal!
   [server-id proposal-id-str body fork-branch]

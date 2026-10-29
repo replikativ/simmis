@@ -230,8 +230,8 @@
 (def auth-vocabulary
   "What a route's `:auth` may say.
 
-     :public         — no check. The SPA shell, its assets, and the login
-                       endpoints, which cannot require a token to issue one.
+     :public         — no check. The SPA shell, its assets, explicitly
+                       published committed room sites, and the login endpoints, which cannot require a token to issue one.
      :authenticated  — a valid bearer token, nothing more. Correct when the
                        HANDLER scopes to `party-id`, which is how the media
                        routes work.

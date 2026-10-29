@@ -20,6 +20,8 @@
   (:require [clojure.string :as str]
             [is.simm.runtimes.branching :as branching]
             [muschel.fs :as mfs]
+            [geschichte.repo :as repo]
+            [sci.core :as sci]
             [taoensso.telemere :as log]))
 
 (def ^:private max-output
@@ -114,6 +116,16 @@
         eval-code (requiring-resolve 'dvergr.sandbox/eval-code)
         roots-var (requiring-resolve 'dvergr.sandbox.workspace/*workspace-roots*)
         ctx (create)]
+    ;; Tests may inspect their frozen input files, but never host paths or URLs.
+    ;; The only IO capability is this bounded read on the supplied virtual FS.
+    (sci/add-namespace! ctx 'clojure.core
+                        {'slurp (fn [path]
+                                  (when-not (string? path) (throw (ex-info "Use a virtual file path" {})))
+                                  (let [path (mfs/resolve fs path) info (mfs/stat fs path)]
+                                    (when-not (and (= :file (:type info))
+                                                   (<= (:size info) (* 8 1024 1024)))
+                                      (throw (ex-info "Check file is missing or exceeds the read limit" {})))
+                                    (mfs/read-file fs path)))})
     ;; The fork's workspace is the ONLY root — a check must not silently pass
     ;; because a namespace resolved from the daemon's shared workspace instead
     ;; of the branch under review.
@@ -139,11 +151,11 @@
 
    Only meaningful for `:repo` forks; anything else returns nil rather than
    pretending a datom branch has a test suite."
-  [scope system-type branch]
+  [scope system-type branch & [frozen-head]]
   (when (= :repo system-type)
-    (let [head (branching/head-id scope :repo branch)
+    (let [head (or frozen-head (branching/head-id scope :repo branch))
           opened (try
-                   {:fork (branching/open-repo-fork! scope branch)}
+                   {:fork (branching/open-repo-fork! scope (when-not frozen-head branch))}
                    (catch Exception e
                      ;; An incomplete construction may retain its sole cleanup
                      ;; owner in this exception. Never turn that into UI text.
@@ -165,7 +177,9 @@
           (try
             (if-not fork
               {:status :error :output "the repository did not resolve" :head head}
-              (let [{:keys [filesystem]} (branching/repo-fork-workspace fork)
+              (let [_ (when frozen-head
+                        (repo/reset! (branching/repo-fork-conn fork) (parse-uuid frozen-head) {:mode :hard}))
+                    {:keys [filesystem]} (branching/repo-fork-workspace fork)
                     nss (test-namespaces filesystem)]
                 (if (empty? nss)
                   {:status :none :head head
@@ -212,13 +226,13 @@
 
 (defn fork-checks
   "Cached `run-fork-checks!`. Runs once per branch head."
-  [scope system-type branch]
+  [scope system-type branch & [frozen-head]]
   (when (= :repo system-type)
-    (let [head (branching/head-id scope :repo branch)
+    (let [head (or frozen-head (branching/head-id scope :repo branch))
           k [scope (str branch) head]]
       (if (contains? @cache k)
         (get @cache k)
-        (let [r (run-fork-checks! scope system-type branch)]
+        (let [r (run-fork-checks! scope system-type branch frozen-head)]
           ;; Infrastructure failures are retryable without a branch edit.
           (when-not (= :error (:status r)) (swap! cache assoc k r))
           r)))))

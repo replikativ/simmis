@@ -701,7 +701,7 @@
                       {:type :not-authorized :room room-id})))
     ;; Rechecked at selection AND the native effect gate, including cached
     ;; workspaces: repo-fork! itself can return an already-open fork first.
-    (when (and overlay (:closed @overlay))
+    (when (and overlay (or (:closed @overlay) (:filing? @overlay) (:filing-value @overlay)))
       (throw (ex-info "Filed proposal is closed to further edits"
                       {:type ::closed-proposal})))))
 
@@ -774,8 +774,70 @@
                                  :proposal-workspace existing-source-proposal-workspace
                                  :proposal-workspace! source-proposal-workspace!
                                  :write-route-guard source-write-route-guard
+                                 :with-write-selection!
+                                 (fn [_ next!]
+                                   (if (= (:fork-id owner)
+                                          (:fork-id (runtime-ctx/selected-context owner)))
+                                     (locking (active-overlay room-uuid agent-uuid) (next!))
+                                     (next!)))
                                  :options {:schema-revision :simmis-source-memory-v1}})
         vocab/memory-docs)))))
+
+(defn- guarded-proposal-filesystem
+  "Serialize actual mutations with freezing, never the tool's worker dispatch.
+   Streams buffer privately (at most 16 MiB) and publish only on guarded close."
+  [fs overlay valid!]
+  (let [mutate! (fn [f] (locking overlay (valid!) (f)))]
+    (reify mfs/FS
+      (-resolve [_ p] (mfs/-resolve fs p))
+      (-cwd [_] (mfs/-cwd fs))
+      (-cd! [_ p] (mfs/-cd! fs p))
+      (-exists? [_ p] (mfs/-exists? fs p))
+      (-stat [_ p] (mfs/-stat fs p))
+      (-list-dir [_ p] (mfs/-list-dir fs p))
+      (-read-file [_ p] (mfs/-read-file fs p))
+      (-read-bytes [_ p] (mfs/-read-bytes fs p))
+      (-open-source [_ p] (mfs/-open-source fs p))
+      (-sandbox-relativize [_ p] (mfs/-sandbox-relativize fs p))
+      (-physical-path [_ p] (mfs/-physical-path fs p))
+      (-open-sink [_ p append?]
+        (let [path (mfs/-resolve fs p)
+              buffer (java.io.ByteArrayOutputStream.)
+              closed? (volatile! false)
+              failed? (volatile! false)
+              write! (fn [f n]
+                       (try
+                         (when @closed? (throw (java.io.IOException. "Stream is closed")))
+                         (when @failed? (throw (java.io.IOException. "Stream write failed")))
+                         (when (> (+ (.size buffer) n) (* 16 1024 1024))
+                           (throw (java.io.IOException. "Proposal file exceeds 16 MiB")))
+                         (f)
+                         (catch Throwable failure
+                           (vreset! failed? true)
+                           (throw failure))))]
+          (when path
+            (proxy [java.io.OutputStream] []
+              (write
+                ([b] (if (bytes? b)
+                       (write! #(.write buffer ^bytes b 0 (alength ^bytes b)) (alength ^bytes b))
+                       (write! #(.write buffer (int b)) 1)))
+                ([b off len] (write! #(.write buffer ^bytes b (int off) (int len)) len)))
+              (close []
+                (when-not @closed?
+                  (vreset! closed? true)
+                  (try
+                    (when @failed? (throw (java.io.IOException. "Failed stream cannot be published")))
+                    (mutate! #(with-open [out (or (mfs/-open-sink fs path append?)
+                                                  (throw (java.io.IOException. "File destination unavailable")))]
+                                (.writeTo buffer out)))
+                    (finally (.reset buffer)))))))))
+      (-mkdir [_ p] (mutate! #(mfs/-mkdir fs p)))
+      (-delete [_ p] (mutate! #(mfs/-delete fs p)))
+      (-rename [_ a b] (mutate! #(mfs/-rename fs a b)))
+      (-touch [_ p] (mutate! #(mfs/-touch fs p)))
+      (-chmod [_ p mode] (mutate! #(mfs/-chmod fs p mode)))
+      (-symlink [_ target p] (mutate! #(mfs/-symlink fs target p)))
+      (-chown [_ p owner group] (mutate! #(mfs/-chown fs p owner group))))))
 
 (defn- wrap-repo-tool
   "Redirect one file tool onto the agent's code fork when a proposal is active.
@@ -793,48 +855,53 @@
   [tool overlay-fn room-uuid agent-uuid]
   (assoc tool :execute
          (fn [params tctx]
-           (let [ov     (overlay-fn)
-                 closed (when (and ov @ov (:closed @ov)) @ov)
-                 write? (contains? repo-write-tools (:name tool))
-                 fs
-                 (cond
-                   ;; FILED. The tool still RUNS — refusing outright bricked the
-                   ;; agent, because `clojure_eval` is in `repo-tools` and the
-                   ;; recovery verb `(proposal/release!)` is evaluated THROUGH
-                   ;; `clojure_eval`, so the escape hatch sat behind the door it
-                   ;; was meant to open.
-                   ;;
-                   ;; But it must not WRITE. An earlier attempt handed the tool
-                   ;; nothing here, reasoning that with no fork there was
-                   ;; nothing of the proposal's to protect. That conflated two
-                   ;; different no-fork states: never-had-one (true, harmless)
-                   ;; and `file!`-discarded-it — and since `file!` drops
-                   ;; `:ctx-forks` when it stamps the closed token, the second is
-                   ;; the ONLY state reachable after filing. Handing back nothing
-                   ;; let the tool resolve its own default workspace, writable,
-                   ;; so a `write_file` after filing landed on trunk unrefused —
-                   ;; fail-OPEN, in the guard that exists to prevent exactly that.
-                   ;;
-                   ;; So: wrap whichever tree it would have used, read-only.
-                   closed
-                   (let [base (or (some-> (existing-ctx-fork ov room-uuid agent-uuid)
-                                          branching/repo-fork-workspace)
-                                  (default-repo-workspace))]
-                     (assoc (or base {})
-                            :filesystem (read-only-filesystem (:filesystem base) closed)))
+           (let [ov (overlay-fn)
+                 selected
+                 (locking (or ov tool)
+                   (let [state (when ov @ov)
+                         closed (when (or (:closed state) (:filing? state) (:filing-value state)) state)
+                         write? (contains? repo-write-tools (:name tool))
+                         selected (cond
+                                    closed
+                                    (let [base (or (some-> (existing-ctx-fork ov room-uuid agent-uuid)
+                                                           branching/repo-fork-workspace)
+                                                   (default-repo-workspace))]
+                                      (assoc (dissoc (or base {}) :workspace) :filesystem
+                                             (read-only-filesystem (:filesystem base) closed)))
+                                    write? (some-> (repo-fork! ov room-uuid agent-uuid)
+                                                   branching/repo-fork-workspace)
+                                    :else (some-> (existing-ctx-fork ov room-uuid agent-uuid)
+                                                  branching/repo-fork-workspace))
+                         fork (existing-ctx-fork ov room-uuid agent-uuid)]
+                     (if (and ov (:filesystem selected))
+                       (let [valid! (fn []
+                                      (let [now @ov]
+                                        (when (or closed (not (identical? ov (overlay-fn)))
+                                                  (:closed now) (:filing? now) (:filing-value now)
+                                                  (not (identical? fork (existing-ctx-fork ov room-uuid agent-uuid))))
+                                          (throw (ex-info "Proposal changed; select the workspace again"
+                                                          {:type ::changed-proposal-route})))))
+                             boundary (tools/effect-boundary tctx)]
+                         (assoc selected
+                                :filesystem (if closed (:filesystem selected)
+                                                (guarded-proposal-filesystem (:filesystem selected) ov valid!))
+                                ;; Expected-content writes transact directly on
+                                ;; :workspace, bypassing FS. Guard their native
+                                ;; effect forwarding on the executing thread too.
+                                :effect-boundary
+                                (fn []
+                                  (update (boundary) :handlers (fnil conj [])
+                                          (fn [effect next!]
+                                            (if (or (= "fs" (namespace (:effect effect)))
+                                                    (#{:git/add :git/commit} (:effect effect)))
+                                              (locking ov (valid!) (next! effect))
+                                              (next! effect)))))))
+                       selected)))]
+             ;; clojure_eval dispatches onto another thread and waits: never
+             ;; retain the overlay monitor across that call.
+             ((:execute tool) params (if selected (merge tctx selected) tctx))))))
 
-                   ;; Can change the tree ⇒ mint the fork so the change is
-                   ;; governed.
-                   write?
-                   (some-> (repo-fork! ov room-uuid agent-uuid)
-                           branching/repo-fork-workspace)
 
-                   ;; Read-only ⇒ an already-open fork if there is one, else
-                   ;; trunk. Never mints. See `repo-write-tools`.
-                   :else
-                   (some-> (existing-ctx-fork ov room-uuid agent-uuid)
-                           branching/repo-fork-workspace))]
-             ((:execute tool) params (if fs (merge tctx fs) tctx))))))
 
 (defn- wrap-run-tests-tool
   "Run the agent's tests the way the REVIEWER's check runs them: from the files
@@ -891,25 +958,26 @@
     "shell" "grep" "glob" "run_tests" "clojure_eval"})
 
 (defn- publish-code-forks!
-  "Publish every open code fork onto its canonical branch, then close it.
-
-   Called when a proposal is FILED — the point at which the agent's work stops
-   being private and becomes something a reviewer must be able to see. Until
-   then the commits live only in the workspace, which is what keeps an
-   in-progress fork off the review surface."
+  "Freeze and publish private files. Keep every handle until durable filing;
+   failed or ambiguous publication must leave the same work available to retry."
   [overlay]
-  (doseq [[[scope agent] fork] (:ctx-forks @overlay)]
-    (let [branch (get-in @overlay [:forks [scope agent]])]
-      (try
-        (when branch
-          (branching/publish-repo-fork! fork (keyword (name branch))))
-        (catch Exception e
-          (log/log! {:level :error :id ::code-fork-publish-failed
-                     :msg "Code fork not published — its work is only in the workspace"
-                     :data {:scope (str scope) :branch (str branch)
-                            :error (.getMessage e)}}))
-        (finally (branching/close-repo-fork! fork)))))
-  (swap! overlay dissoc :ctx-forks))
+  (doseq [[k fork] (:ctx-forks @overlay)]
+    (let [[scope _] k branch (get-in @overlay [:forks k])]
+      (when-not branch (throw (ex-info "Proposal workspace has no branch" {})))
+      (let [head (branching/freeze-repo-fork! fork (str "Proposal: " (:title @overlay)))
+            published (branching/publish-repo-fork! fork branch)]
+        (when-not (= head published)
+          (throw (ex-info "Proposal publication did not acknowledge its frozen commit"
+                          {:type ::publication-unacknowledged})))
+        (swap! overlay assoc-in [:heads k] head)))))
+
+(defn- close-filed-code-forks!
+  "Release private copies only after the canonical Proposal owns their evidence.
+   Remove each completed cleanup separately; retain failed owners for retry."
+  [overlay]
+  (doseq [[k fork] (:ctx-forks @overlay)]
+    (branching/close-repo-fork! fork)
+    (swap! overlay update :ctx-forks dissoc k)))
 
 (defn- discard-code-forks!
   "Close every open code fork WITHOUT publishing — the withdrawal path."
@@ -1344,7 +1412,8 @@
           (cond-> {:scope (first k) :branch branch
                    :author (second k)
                    :system-type (get-in o [:types k] :kb)}
-            (get-in o [:bases k]) (assoc :base-commit (get-in o [:bases k]))))
+            (get-in o [:bases k]) (assoc :base-commit (get-in o [:bases k]))
+            (get-in o [:heads k]) (assoc :head-commit (get-in o [:heads k]))))
         (:forks o)))
 
 (defn- discard-overlay-forks!
@@ -1411,7 +1480,7 @@
             :else
             (do (reset! (priv) {:title (str title) :forks {}})
                 {:started (str title)
-                 :note "kb/* and kontor/* writes now land on fork branches; file! when done"})))
+                                    :note "Files and structured edits now land in your private proposal; file! freezes them for review"})))
 
         'open-campaign!
         (fn [title]
@@ -1443,27 +1512,31 @@
         ;; a DIFFERENT campaign, because then the agent's model of the room is
         ;; wrong and silently joining the other one would hide that.
         (fn [& [title]]
-          (clear-closed!)
-          (when (and title @(camp) (not= (str title) (:title @(camp))))
-            (log/log! {:level :warn :id ::campaign-title-mismatch
-                       :data {:room (str room-uuid) :agent (str agent-uuid)
-                              :asked (str title) :open (:title @(camp))}}))
-          (cond
-            (nil? @(camp))
-            {:error "no campaign open in this room — (proposal/open-campaign! \"title\") opens one"}
+          (locking (camp)
+            (clear-closed!)
+            (when (and title @(camp) (not= (str title) (:title @(camp))))
+              (log/log! {:level :warn :id ::campaign-title-mismatch
+                         :data {:room (str room-uuid) :agent (str agent-uuid)
+                                :asked (str title) :open (:title @(camp))}}))
+            (cond
+              (nil? @(camp))
+              {:error "no campaign open in this room — (proposal/open-campaign! \"title\") opens one"}
 
-            (open-priv)
-            {:error "you have a private proposal open — file! or abandon! it first"}
+              (or (:filing? @(camp)) (:filing-value @(camp)))
+              {:error "The campaign is filing; retry proposal/file! before joining"}
 
-            (member?) {:joined (:title @(camp)) :note "you were already a member"}
+              (open-priv)
+              {:error "you have a private proposal open — file! or abandon! it first"}
 
-            :else
-            (do (swap! (camp) update :members conj agent-uuid)
-                (log/log! {:level :info :id ::campaign-joined
-                           :data {:room (str room-uuid) :agent (str agent-uuid)}})
-                {:joined (:title @(camp))
-                 :note (str "your kb/* and kontor/* writes now fork into the campaign;"
-                            " (proposal/abandon!) withdraws just your part")})))
+              (member?) {:joined (:title @(camp)) :note "you were already a member"}
+
+              :else
+              (do (swap! (camp) update :members conj agent-uuid)
+                  (log/log! {:level :info :id ::campaign-joined
+                             :data {:room (str room-uuid) :agent (str agent-uuid)}})
+                  {:joined (:title @(camp))
+                   :note (str "your kb/* and kontor/* writes now fork into the campaign;"
+                              " (proposal/abandon!) withdraws just your part")}))))
 
         'active
         (fn []
@@ -1518,6 +1591,8 @@
           (let [o @(active)]
             (cond
               (nil? o) {:error "no proposal active — (proposal/start! \"title\") opens one"}
+              (:filing-value o)
+              {:error "Filing acknowledgement is pending; retry proposal/file! before refreshing"}
               (empty? (:ctx-forks o))
               {:error "no code fork to refresh — write a file first"}
               :else
@@ -1555,6 +1630,9 @@
         (fn []
           (let [ov (active) o @ov]
             (cond
+              (:filing-value o)
+              {:abandoned false :error "Filing acknowledgement is pending; retry proposal/file! before abandoning"}
+
               ;; Nothing to abandon. Returning nil told the agent nothing at all.
               (nil? o)
               {:abandoned false :note "you have no open proposal"}
@@ -1618,77 +1696,68 @@
                 ;; `overlay-branch!`).
                 perform!
                 (fn [o]
-                  ;; FIRST, before anything reads a branch: a code fork's commits
-                  ;; live only in its private workspace until now. Publishing is
-                  ;; what turns them into the branch the diff below reads and the
-                  ;; reviewer later merges — run it after the diff and every code
-                  ;; fork would render as empty.
-                  (publish-code-forks! (if (:campaign? o) (camp) (priv)))
-                  (let [o (if (:campaign? o) @(camp) @(priv))
-                        forks (overlay-forks o)
-                        diffs (ctx/with-server-context
-                                (mapv (fn [{:keys [scope branch system-type base-commit]}]
-                                        ((requiring-resolve 'is.simm.ops.semantic-diff/semantic-diff)
-                                         scope branch system-type :base-commit base-commit))
-                                      forks))
-                        ;; `:entries` rides along with `:pages` so a book fork's
-                        ;; postings reach the summarizer as postings rather than as
-                        ;; a datom count it can say nothing about
-                        diff-text (pr-str (mapv #(select-keys % [:pages :files :entries :counts]) diffs))
-                        rationales (or (not-empty (vals (:rationales o))) (when rationale [rationale]))
-                        summary (let [r ((requiring-resolve 'dvergr.tools.llm-call/cheap-llm-call)
-                                         (str "Summarize this proposed change in 2-3 plain sentences "
-                                              "for a review card. Title: " (:title o)
-                                              (when (:campaign? o)
-                                                (str "\nJoint proposal by " (count (:members o))
-                                                     " agents."))
-                                              (when (seq rationales)
-                                                (str "\nContributor rationales:\n"
-                                                     (clojure.string/join "\n" rationales)))
-                                              "\nChange data (EDN):\n" diff-text)
-                                         "" {:max-tokens 700})]
-                                  (or (not-empty (:text r)) (str "(no summary) " (:title o))))
-                        pid ((requiring-resolve 'is.simm.ops.proposals/file-proposal!)
-                             {:title (:title o)
-                              :summary summary
-                              ;; the FILER authors the row; a campaign's real
-                              ;; authorship is the fork set, which per-fork accept
-                              ;; already addresses one contribution at a time
-                              :author agent-uuid
-                              :room room-uuid
-                              :forks forks})
-                        token {:closed true :title (:title o) :proposal (str pid)}]
-                    ;; every contributor — not just the filer — learns on its next
-                    ;; governed write that this proposal is closed
-                    (doseq [m (or (not-empty (:members o)) #{agent-uuid})]
-                      (reset! (private-overlay room-uuid m) token))
-                    (log/log! {:level :info :id ::proposal-filed
-                               :data {:proposal (str pid) :room (str room-uuid)
-                                      :campaign? (boolean (:campaign? o))
-                                      :forks (count forks)}})
-                    (cond->
-                     {:proposal (str pid) :summary summary
-                      :forks (count forks)
-                      :campaign? (boolean (:campaign? o))
-                      :contributors (count (distinct (map second (keys (:forks o)))))}
-                      ;; Run the checks NOW and tell the agent, rather than
-                      ;; leaving the reviewer to discover a red suite. This is
-                      ;; the shift-left half of CI: at this instant the agent is
-                      ;; still live, still holds the context, and can open a
-                      ;; follow-up; an hour later a human reads a failure with
-                      ;; none of that. Reported, never blocking — filing a
-                      ;; change whose tests fail is sometimes exactly right, and
-                      ;; the reviewer sees the same result on the card.
-                      true
-                      (assoc :checks
-                             (vec (keep (fn [{:keys [scope branch system-type]}]
-                                          (when (= :repo system-type)
-                                            (some-> ((requiring-resolve
-                                                      'is.simm.ops.checks/fork-checks)
-                                                     scope :repo branch)
-                                                    (select-keys [:status :passed :failed :errors])
-                                                    (assoc :branch (name branch)))))
-                                        forks))))))
+                  (locking (active)
+                    ;; FIRST, before anything reads a branch: a code fork's commits
+                    ;; live only in its private workspace until now. Publishing is
+                    ;; what turns them into the branch the diff below reads and the
+                    ;; reviewer later merges — run it after the diff and every code
+                    ;; fork would render as empty.
+                    (when-not (:filing-value @(active))
+                      (publish-code-forks! (active)))
+                    (let [o @(active) prepared (:filing-value o)
+                          forks (or (:forks prepared) (overlay-forks o))
+                          diffs (when-not prepared
+                                  (ctx/with-server-context
+                                    (mapv (fn [{:keys [scope branch system-type base-commit head-commit]}]
+                                            ((requiring-resolve 'is.simm.ops.semantic-diff/semantic-diff)
+                                             scope branch system-type :base-commit base-commit :head-commit head-commit))
+                                          forks)))
+                          ;; `:entries` rides along with `:pages` so a book fork's
+                          ;; postings reach the summarizer as postings rather than as
+                          ;; a datom count it can say nothing about
+                          _ (when (and (not prepared) (every? #(= :repo (:system-type %)) forks)
+                                       (every? #(zero? (get-in % [:counts :files-changed] 0)) diffs))
+                              (throw (ex-info "No file changes to propose; workspace preserved" {:type ::empty-proposal})))
+                          diff-text (pr-str (mapv #(select-keys % [:pages :files :entries :counts]) diffs))
+                          rationales (or (not-empty (vals (:rationales o))) (when rationale [rationale]))
+                          summary (or (:summary prepared) (let [r ((requiring-resolve 'dvergr.tools.llm-call/cheap-llm-call)
+                                                                   (str "Summarize this proposed change in 2-3 plain sentences "
+                                                                        "for a review card. Title: " (:title o)
+                                                                        (when (:campaign? o)
+                                                                          (str "\nJoint proposal by " (count (:members o))
+                                                                               " agents."))
+                                                                        (when (seq rationales)
+                                                                          (str "\nContributor rationales:\n"
+                                                                               (clojure.string/join "\n" rationales)))
+                                                                        "\nChange data (EDN):\n" diff-text)
+                                                                   "" {:max-tokens 700})]
+                                                            (or (not-empty (:text r)) (str "(no summary) " (:title o)))))
+                          checked-forks (or (:forks prepared)
+                                            (mapv (fn [f]
+                                                    (if (= :repo (:system-type f))
+                                                      (assoc f :checks
+                                                             ((requiring-resolve 'is.simm.ops.checks/fork-checks)
+                                                              (:scope f) :repo (:branch f) (:head-commit f)))
+                                                      f)) forks))
+                          filing (or prepared {:id (random-uuid) :title (:title o) :summary summary
+                                               :author agent-uuid :room room-uuid :forks checked-forks})
+                          _ (swap! (active) assoc :filing-value filing)
+                          pid ((requiring-resolve 'is.simm.ops.proposals/file-proposal!) filing)
+                          token {:closed true :title (:title o) :proposal (str pid)}]
+                      (close-filed-code-forks! (if (:campaign? o) (camp) (priv)))
+                      ;; every contributor — not just the filer — learns on its next
+                      ;; governed write that this proposal is closed
+                      (doseq [m (or (not-empty (:members o)) #{agent-uuid})]
+                        (reset! (private-overlay room-uuid m) token))
+                      (log/log! {:level :info :id ::proposal-filed
+                                 :data {:proposal (str pid) :room (str room-uuid)
+                                        :campaign? (boolean (:campaign? o))
+                                        :forks (count forks)}})
+                      {:proposal (str pid) :summary summary :forks (count forks)
+                       :campaign? (boolean (:campaign? o))
+                       :contributors (count (distinct (map second (keys (:forks o)))))
+                       :checks (mapv (fn [f] (assoc (:checks f) :branch (name (:branch f))))
+                                     (filter #(= :repo (:system-type %)) checked-forks))})))
                 outstanding #(vec (clojure.set/difference (:members %) (:done %)))]
             (cond
               (closed?)

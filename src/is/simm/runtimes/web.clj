@@ -438,14 +438,15 @@
                                 ((requiring-resolve 'is.simm.runtimes.screen-recording/end-session!)
                                  (hauth/party-id req)
                                  {:session-id (get (query-params req) "session")})))}]
-                  ;; The native server authorizes its actual resolved room row
-                  ;; inside the App operation, then adds script-isolation headers.
-                  ;; Bearer authentication remains required; no iframe token or
-                  ;; public publishing is introduced by this route.
+                  ;; Public deployment is the accepted main commit's app/ only.
                   ["/apps/*path"
+                  {:auth :public
+                   :get {:handler room-apps/handle}
+                   :head {:handler room-apps/handle}}]
+                 ["/apps-preview/*path"
                    {:auth :authenticated
-                    :get  {:handler room-apps/handle}
-                    :head {:handler room-apps/handle}}]
+                   :get {:handler room-apps/preview}
+                   :head {:handler room-apps/preview}}]
                   ["/blobs/workspaces/:room"
                    {:auth :blob-read
                     :get (fn [req] (workspace-media/handle (assoc req :query-params (query-params req))))

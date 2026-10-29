@@ -23,7 +23,7 @@
        " :document with :source and an :entry for concurrency control. Edit with"
        " (memory/write! {:path \"wiki/Note.md\" :expected entry :text source}); use nil"
        " only when the file does not exist. Keep existing metadata and block IDs."
-       " Filesystem tools and Muschel access the same selected worktree."
+       " The file tools access the same selected worktree."
        " For reviewed changes, start a proposal before editing, then file it."
        " A worktree write is not acceptance or publication."
        " Use (memory/link path) for a room-scoped Markdown link to a shared file."
@@ -115,11 +115,12 @@
     (if-let [authorize-write! (:authorize-write! policy)]
       (let [boundary (sandbox/agent-effect-boundary owner capability-id nil receipts)
             with-selected! (selection-resolver owner capability-id
-                             (assoc policy :authorize! authorize-write!
-                                           :capture-write-route! (:write-route-guard policy)
-                                           :proposal-workspace (:proposal-workspace! policy)
+                                               (assoc policy :authorize! authorize-write!
+                                                      :capture-write-route! (:write-route-guard policy)
+                                                      :proposal-workspace (:proposal-workspace! policy)
                                            ;; Selection is not a replayable read. The native
                                            ;; workspace writer owns the mutation effect.
-                                           :with-selection! (fn [_ next!] (next!))))]
+                                                      :with-selection! (or (:with-write-selection! policy)
+                                                                           (fn [_ next!] (next!)))))]
         (merge reads (writes/bindings with-selected! boundary authorize-write!)))
       reads)))

@@ -140,3 +140,35 @@
                 (render/render-spin! container
                                      (spin (@#'proposals/retained-sources-view fixture/pid fixture/scope state))
                                      (browser/make-dom-discharge js/document)))))))
+
+
+(deftest accepted-code-keeps-its-patch-and-checks-readable
+  (async done
+         (let [ctx (context/fork-context runtime/runtime)
+               container (.createElement js/document "div") handle (atom nil)
+               state {:system-type :repo :status :accepted :scope "scope" :branch "review"
+                      :head-commit "filed-head" :counts {:files-changed 1}
+                      :files [{:path "app/index.html" :status :added}]
+                      :patch "diff --git a/app/index.html b/app/index.html\n+<script>inert evidence</script>"
+                      :checks {:status :pass :tests 1 :passed 1 :failed 0 :errors 0}}
+               observer (js/MutationObserver.
+                         (fn [_ observer]
+                           (when (.querySelector container ".proposal-patch")
+                             (.disconnect observer)
+                             (try
+                               (is (.includes (.-textContent container) "app/index.html"))
+                               (is (.includes (.-textContent container) "inert evidence"))
+                               (is (.includes (.-textContent container) "TESTS PASS"))
+                               (is (nil? (.querySelector container "script")))
+                               (is (not (.includes (.-textContent container) "Landed on its trunk.")))
+                               (finally
+                                 (when-let [stop (:stop! @handle)] (stop))
+                                 (.remove container) (context/close-context! ctx) (done))))))]
+           (set! (.. container -style -display) "none")
+           (.appendChild (.-body js/document) container)
+           (.observe observer container #js {:childList true :subtree true})
+           (binding [ec/*execution-context* ctx]
+             (reset! handle
+                     (render/render-spin! container
+                                          (spin (@#'proposals/fork-diff-view "proposal" state))
+                                          (browser/make-dom-discharge js/document)))))))

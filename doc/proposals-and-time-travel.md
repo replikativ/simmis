@@ -118,6 +118,30 @@ mount resolution — verify dvergr mount wiring, else v1 = explicit
 proposal drive ops), `proposal/file!` (semantic diff → cheap-llm summary
 → registry row), `proposal/abandon!`.
 
+**Code filing and retained evidence.** `proposal/file!` serializes with the
+proposal's file-tool writers, stages the complete private worktree (including
+additions, deletions and modes), and commits dirty files before publication.
+Agents need not remember a separate Git commit. Empty code-only proposals refuse
+filing without dropping their workspace. Publication/storage failures preserve
+private handles and an identical prepared filing value for retry; cleanup happens
+only after the canonical Proposal acknowledges that handoff. Native file-tool
+mutations and `memory/write!` share this freeze boundary; the tool caller never
+holds the lock while waiting for the interpreter worker. This ordinary proposal
+adapter is not a whole-world fork: the current Dvergr SCI `git/*` and shell
+bindings still select their ChatContext world rather than this private workspace.
+Use file tools and `memory/write!` for proposal edits; Git/shell proposal routing
+needs a separate integration with Dvergr's workspace resolver.
+
+Each code contribution records immutable base and filed-head commit IDs, retained
+under an internal `refs/proposals/` ref, plus typed check results naming that exact
+head. Checks run in a fresh private workspace reset to the frozen commit, and can
+read bounded files only through its virtual filesystem. Acceptance merges the
+filed commit, not a later branch head; conditional ref cleanup preserves concurrent
+newer branch work. Resolved code diffs and checks remain readable through the
+retained-audit path after review-branch deletion. The storage policy remains
+orphan-only/full physical history: this is not permission to prune historical
+Datahike checkpoints with a time-based retention window.
+
 **Campaigns (2026-07-27).** A second overlay, per ROOM rather than per
 agent: `proposal/open-campaign!` opens it, `proposal/join-campaign!`
 opts an agent in, and its members' forked writes record into the shared

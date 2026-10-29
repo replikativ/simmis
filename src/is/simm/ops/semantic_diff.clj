@@ -372,15 +372,17 @@
    branches by construction. The fork point still matters for the same reason —
    diffing against trunk's current head would report everything trunk committed
    while the proposal sat open as deletions by the branch."
-  [scope branch & {:keys [base-commit]}]
-  (let [trunk (branching/repo-trunk scope)
+  [scope branch & {:keys [base-commit head-commit system]}]
+  (let [trunk (when-not system (branching/repo-trunk scope))
         base (or base-commit
                  (some-> (branching/get-repo-system scope)
                          (yp/common-ancestor branch trunk)))
         baseless? (nil? base)
         ;; With no resolvable fork point, diff from trunk and SAY so, rather
         ;; than silently showing trunk's own advance as the fork's deletions.
-        diff (branching/repo-diff scope (or base trunk) branch)
+        diff (if system
+               (yp/diff system (parse-uuid base-commit) (parse-uuid head-commit) {})
+               (branching/repo-diff scope (or base trunk) (if head-commit (parse-uuid head-commit) branch)))
         patch (or (:patch diff) "")
         long? (> (count patch) max-patch-chars)]
     {:scope scope :system-type :repo
@@ -395,13 +397,13 @@
 (defn semantic-diff
   "Dispatch on system-type keyword (:kb :fs :book :repo; :room and unknown fall
    back to counts). `base-commit` is the fork point when the caller knows it."
-  [scope branch system-type & {:keys [base-commit principal]}]
+  [scope branch system-type & {:keys [base-commit head-commit principal]}]
   (case system-type
     :file-output (file-review/summary principal scope)
     :kb (semantic-kb-diff scope branch :base-commit base-commit)
     :fs (semantic-fs-diff scope branch :base-commit base-commit)
     :book (semantic-book-diff scope branch :base-commit base-commit)
-    :repo (semantic-repo-diff scope branch :base-commit base-commit)
+    :repo (semantic-repo-diff scope branch :base-commit base-commit :head-commit head-commit)
     :world (let [delta (branching/delta scope :world branch {:patch? false})
                  _ (when (or (nil? delta) (:error delta))
                      (throw (ex-info "Adopted world change details are unavailable"
@@ -433,5 +435,6 @@
                          (keyword (:proposal.fork/branch f))
                          (or (:proposal.fork/system-type f) :kb)
                          :base-commit (:proposal.fork/base-commit f)
+                         :head-commit (:proposal.fork/head-commit f)
                          :principal principal))
         (:proposal/forks proposal)))
