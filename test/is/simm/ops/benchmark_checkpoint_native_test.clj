@@ -6,6 +6,7 @@
             [datahike.api :as d]
             [dvergr.agent.experiment :as experiment]
             [dvergr.agent.run :as run]
+            [dvergr.discourse :as discourse]
             [dvergr.jobs :as jobs]
             [dvergr.model.api.codex-subscription :as codex]
             [dvergr.model.gateway :as gateway]
@@ -26,6 +27,8 @@
             [is.simm.ops.benchmark-fixture-test :as fixture-test]
             [is.simm.ops.benchmark-fixture-snapshot :as snapshot]
             [is.simm.ops.benchmark-resolution :as resolution]
+            [is.simm.ops.benchmark-result-evidence :as result-evidence]
+            [is.simm.ops.benchmark-notifications :as notifications]
             [is.simm.ops.benchmark-resolution-test :as source-fixture]
             [is.simm.ops.owned-benchmark-admission :as admission]
             [is.simm.ops.owned-benchmark-admission-test :as answers]
@@ -126,6 +129,7 @@
 (defn- with-benchmark [f]
   (with-native-host
     (fn [{:keys [conn w root] :as env}]
+      (d/transact conn requests/schema)
       (d/transact conn [{:party/id (:owner w) :party/role :admin}])
       (@#'fixture-test/with-template
        (fn []
@@ -133,7 +137,10 @@
                source-id (:persistent-id source) room (:room source)
                app (doto (lifetime/create) lifetime/open!)]
            (try
-             (d/transact conn [{:room/id source-id :room/owner [:party/id (:owner w)]}])
+             (d/transact conn [{:room/id source-id :room/owner [:party/id (:owner w)]
+                               :room/content-db-scope
+                               (binding [ec/*execution-context* (:ctx room)]
+                                 (get-in @(:conn (:store room)) [:config :store :id]))}])
              (let [files (source-files)
                    source-conn (:conn (native/default-workspace source-id))
                    _ (@#'answers/seed! source-conn files)
@@ -177,10 +184,27 @@
             (is (= #{"ALPHA" "BETA"} (set (map #(get-in % [:attempt/evidence :files "/out/result.md"]) attempts))))
             (is (= 1 (count scorecards)))
             (is (= 2 (get-in (first scorecards) [:scorecard/summary 0 :passed-count])))
+            (is (not= (get-in (requests/payload conn row) [:input :experiment :experiment/content-id])
+                      (get-in (first scorecards) [:scorecard/experiment :experiment/content-id])))
+            (is (= (:scorecard/experiment (first scorecards)) (result-evidence/experiment! conn row)))
+            (is (= (:scorecard/content-id (first scorecards)) (:work.request/result-scorecard row)))
+            (is (:work.request/result-published? row))
+            (is (= 1 (count (filter #(= :benchmark/result (get-in % [:metadata :kind]))
+                                    (discourse/log room)))))
+            (is (= :published (:status (notifications/retry! host principal (str source-id) (:id submission)))))
+            (is (= 1 (count (filter #(= :benchmark/result (get-in % [:metadata :kind]))
+                                    (discourse/log room)))))
             (is (= 4 @calls))
             (is (not-any? #(re-find #"HOST-ONLY-GOLD-CANARY" %) @transcripts))
             (is (= before (manifests/inventory @source-conn)))
             (is (false? (:return-pending? (work/status conn root principal source-id (:id submission)))))
+            (let [ready (journal/resolution @conn (:id submission))
+                  entity (:db/id ready)]
+              (doseq [attribute [:benchmark.resolution/claim :benchmark.resolution/resolved-id]]
+                (try
+                  (d/transact conn [[:db/add entity attribute (random-uuid)]])
+                  (is (thrown? clojure.lang.ExceptionInfo (result-evidence/experiment! conn row)))
+                  (finally (d/transact conn [[:db/add entity attribute (get ready attribute)]])))))
             (let [retry (admission/submit-native! host principal (str source-id) input)]
               (is (= (select-keys submission [:id :job]) (select-keys retry [:id :job])))
               (is (= (work/status conn root principal source-id (:id submission)) retry))

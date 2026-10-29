@@ -7,7 +7,7 @@
 
 (defn view [workflow state ui]
   (let [draft (get-in state [:drafts workflow]) offered (:setup-offer draft)
-        scheduled? (= :schedule (:action offered))
+        scheduled? (= :schedule (:action offered)) benchmark? (= :benchmark (:action offered))
         journal (or (:schedule-submission draft) (:submission draft))
         reply (:reply journal)
         schedules (editor/workflow-activations state (:room-id ui) workflow)
@@ -19,7 +19,8 @@
                      (>= (js/Number (:model-dispatches allowance)) (get-in execution [:limits :max-dispatches] 1)))
         ready? (and draft (= :ready (:readiness-status state))
                     (editor/source-current? draft) (get-in draft [:source :inspection :ok])
-                    (not (:access-denied? state)) (:merge? (:permissions state)))
+                    (not (:access-denied? state)) (:merge? (:permissions state))
+                    (or (not benchmark?) (:operator? (:permissions state))))
         error (or (get-in state [:errors :setup]) (get-in state [:errors :submit])
                   (get-in state [:errors :schedule]))]
     (el/section {:class "workflow-chat-card" :aria-label (str "Workflow setup · " workflow)}
@@ -55,6 +56,13 @@
                      "Capture output and discard the execution world; wiki changes need separate review."
                      "Retain the execution world as a proposal for review."))
           (el/p {} (str "Results in this room’s Memory: " (pr-str (:outputs offered))))
+          (when benchmark?
+            (el/p {} (str "Checks the saved workflow and checker on "
+                         (count (:cases payload)) " case(s), " (:repetitions payload) " repetition(s). "
+                         "Candidate worlds are discarded. A result summary returns to this chat; "
+                         "creating its Memory report is a separate action.")))
+          (when (and benchmark? (not (:operator? (:permissions state))))
+            (el/p {:role "status"} "Benchmarking executes the saved checker and requires an installation operator with room authority."))
           (el/details {}
             (el/summary {} "What this workflow does")
             (el/p {} (:task offered))
@@ -70,7 +78,8 @@
                         :on-click (fn [event]
                                     (when (.. event -currentTarget -isConnected)
                                       ((:accept-setup ui) workflow offered)))}
-              (if scheduled? (if (seq schedules) "Confirm additional schedule" "Confirm schedule") "Confirm and run"))
+              (cond scheduled? (if (seq schedules) "Confirm additional schedule" "Confirm schedule")
+                    benchmark? "Confirm benchmark" :else "Confirm and run"))
             (el/button {:type "button" :disabled (not ready?)
                         :on-click (fn [_] ((:prepare-setup ui) workflow nil))} "Review current setup")
             (el/button {:type "button" :on-click (fn [_] ((:change ui) workflow assoc :setup-dismissed? true))} "Dismiss")))

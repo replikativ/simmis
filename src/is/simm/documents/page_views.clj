@@ -5,18 +5,14 @@
   (:require [clojure.string :as str]
             [datahike.api :as d]
             [hasch.core :as hasch]
+            [is.simm.documents.display-title :as display-title]
             [is.simm.documents.canonical :as canonical]
             [is.simm.documents.saved-view-spec :as spec]
             [is.simm.documents.properties :as properties]
             [is.simm.documents.space :as space]
             [is.simm.documents.view :as view]))
 
-(defn- title [{:keys [path frontmatter]}]
-  (let [label (get-in frontmatter [:properties "title"])]
-    (if (and (string? label) (<= 1 (count label) 256)
-             (not (str/blank? label)) (not (re-find #"[\p{Cntrl}]" label)))
-      (str/trim label)
-      (str/replace (last (str/split path #"/")) #"(?i)\.(md|markdown)$" ""))))
+(def ^:private title display-title/title)
 
 (def max-cell-characters 1024)
 (def max-display-characters 65536)

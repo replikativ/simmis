@@ -36,6 +36,7 @@
             #?(:cljs [is.simm.uis.web.desktop.views.conversation-capture :as capture-view])
             #?(:cljs [is.simm.uis.web.desktop.views.mermaid :as mmd])
             #?(:cljs [is.simm.uis.web.desktop.views.workflow-setup :as workflow-setup])
+            #?(:cljs [is.simm.uis.web.desktop.views.benchmark-result :as benchmark-result])
             #?(:cljs [superficie.api :refer [toSup]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el]
                             [org.replikativ.spindel.dom.foreign :refer [foreign-node]])))
@@ -457,7 +458,7 @@
 
    Note: Always renders all elements to avoid spindel delta rendering issues.
   CSS handles visibility based on .chat-message--own class."
-  [{:keys [id room-id workflow-context workflow-states author-id author-name content reasoning timestamp is-own? is-ai?
+  [{:keys [id room-id workflow-context workflow-states report-state report-owner author-id author-name content reasoning timestamp is-own? is-ai?
            syntax-pref attachment-blob attachment-mime thread-parent
            in-reply-to reply-count on-jump-parent on-reply audience run-id
            activities mention-handles on-open-thread on-open-run on-open-proposal
@@ -581,6 +582,10 @@
                         :src (str "/blobs/" attachment-blob)})))
          :clj nil)
       (activity-chips activities)
+      #?(:cljs (when (and (= :benchmark-result (:kind object)) report-owner
+                          (not (:read-only? workflow-context)))
+                 (benchmark-result/actions report-owner (str (:id object)) report-state))
+         :clj nil)
       #?(:cljs (when capture (capture-view/panel capture)) :clj nil)
         (when (and is-ai? room-id)
           (for [workflow (workflow-links/mentioned-workflows content)]
@@ -653,7 +658,7 @@
                    "Dismiss")]))))
         ;; Generic message content - markdown for AI, rich text for user
         #?(:cljs
-           (if is-ai?
+           (if (or is-ai? (= :benchmark-result (:kind object)))
            (foreign-node
              {:key (str "md-" id "-" (name (or syntax-pref :clojure)))
               :class "chat-message-content message-text"

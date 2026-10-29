@@ -24,8 +24,10 @@
             [is.simm.ops.owned-room-operation :as room-operation]
             [is.simm.ops.owned-workspace :as owned]
             [is.simm.ops.work-sandbox :as work-sandbox]
+            [is.simm.ops.benchmark-notifications :as notifications]
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [malli.core :as m]
+            [taoensso.telemere :as log]
             [org.replikativ.spindel.engine.core :as ec]))
 
 (def limits-schema work-limits/schema)
@@ -356,6 +358,11 @@
         journal (fn [f] (binding [ec/*execution-context* host-ctx] (f)))
         party (journal #(authorize! conn principal room-id))
         construction-job (volatile! nil)
+        ;; Retain only this native installation owner, never an App/lease or
+        ;; the same-thread call-detached handoff. Completion may enter a NEW
+        ;; short operation on this owner; a fenced/replaced App refuses it.
+        notification-owner (when (contains? notifications/kinds (:request-kind prepared))
+                             (:owner lifetime/*ticket*))
         {:keys [request claimed?]}
         (journal #(if (contains? (:basis prepared) :knowledge/batch)
                     (claim-batch-prepared! conn host-ctx principal room-id room input admission-prepared)
@@ -427,14 +434,37 @@
               :before-finish (fn [job-id _ _]
                                (when-let [row (finish-row! job-id)]
                                  (return-job-resources! room row)))
-              :settled (fn [_ _]
+              :settled (fn [status value]
                          (let [job-id (:id @construction-job)
-                               row (finish-row! job-id)]
+                               row (finish-row! job-id)
+                               original (assoc request :work.request/job job-id)]
+                           ;; Preserve exact result IDs under the Job's native
+                           ;; owner before App admission or optional formatting.
+                           (when (and row (contains? notifications/kinds (:request-kind prepared)))
+                             (journal #(notifications/record-result!
+                                        conn original room status value)))
                            ;; Adapter retirement may close job-ctx. Dvergr
                            ;; retains the Job lease and uses control ctx here.
                            (when-let [settled! (:settled! prepared)] (settled! job-id))
                            (when row
-                             (journal #(requests/mark-returned! conn id)))))))))
+                             (journal #(requests/mark-returned! conn id)))
+                           (when (and row notification-owner)
+                             ;; Reporting cannot hold Job cleanup or change a
+                             ;; completed outcome. A reserved failed post can
+                             ;; be explicitly retried without running work.
+                             (try
+                               (lifetime/with-operation!
+                                notification-owner
+                                #(journal (fn []
+                                            (notifications/complete! conn principal room-id room original))))
+                               (catch Throwable error
+                                 (when (or (instance? InterruptedException error)
+                                           (.isInterrupted (Thread/currentThread)))
+                                   (.interrupt (Thread/currentThread)))
+                                 (try
+                                   (log/log! {:level :warn :id ::benchmark-notification-pending
+                                              :data {:request id :job job-id}})
+                                   (catch Throwable _ nil)))))))))))
         (catch Throwable e
           ;; Before the Jobs callback begins, this scope owns abandonment.
           ;; Once entered, Jobs owns retirement even if pointer publication

@@ -7,6 +7,7 @@
             [is.simm.model.system-db :as system-db]
             [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.benchmark-reports :as benchmark-reports]
+            [is.simm.ops.benchmark-notifications :as benchmark-notifications]
             [is.simm.ops.chat :as chat]
             [is.simm.ops.coordinator :as coordinator]
             [is.simm.ops.dvergr :as simmis-ops]
@@ -42,6 +43,7 @@
 (def workflow-output-schema [:map {:closed true} [:room uuid-string] [:id uuid-string]])
 (def benchmark-report-prepare-schema (external-schema benchmark-reports/prepare-schema))
 (def benchmark-report-publish-schema (external-schema benchmark-reports/publish-schema))
+(def benchmark-notification-schema (external-schema [:map {:closed true} [:request :uuid]]))
 (def post-schema
   [:map {:closed true} room-entry [:id uuid-string]
    [:content [:string {:min 1 :max 16000}]]
@@ -419,7 +421,16 @@
 
 (def specifications
   (room-specifications
-   {:simmis/benchmark-report-prepare
+   {:simmis/benchmark-result-retry
+    {:kind :write :schema benchmark-notification-schema :authz {:action :write}
+     :doc "Retry an already reserved benchmark-result chat notification in its original room. Posts its same immutable envelope at most once; never reruns a benchmark, adds allowance or creates report files."
+     :impl (fn [host args]
+             (checked! benchmark-notification-schema args)
+             (when-not (owned-reads/owned-host? host)
+               (ops/op-error! "Owned report host required" ::owned-report-host-required 503))
+             (owned-service-result!
+              #(benchmark-notifications/retry! host ops/*principal* (:room args) (owned-uuid! (:request args)))))}
+    :simmis/benchmark-report-prepare
     {:kind :write :schema benchmark-report-prepare-schema :authz {:action :write}
      :doc "Prepare ordinary Markdown report/index source for one exact saved Scorecard in this room's owned Memory. Requires room write access. Does not publish, execute, fund, or schedule. Retain returned plan digest and target-stamp for explicit publish and uncertain retries."
      :impl (fn [host args]

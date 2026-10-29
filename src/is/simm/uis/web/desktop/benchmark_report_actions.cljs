@@ -10,13 +10,15 @@
             [is.simm.uis.web.desktop.views.memory-navigation :as navigation]
             [is.simm.runtimes.web :as web]))
 
-(defn owner-key [session data] [(:id session) (str (:room-id data)) (:tab-id data)])
+(defn owner-key [session data]
+  [(:id session) (str (:room-id data)) (:tab-id data) (get data :tab-type :leaderboard)])
 
-(defn tab-current? [columns {:keys [room-id tab-id]}]
+(defn tab-current? [columns {:keys [room-id tab-id] :as data}]
   (let [matches (for [column columns tab (:tabs column) :when (= tab-id (:id tab))]
                   {:column column :tab tab})
         {:keys [tab]} (when (= 1 (count matches)) (first matches))]
-    (and (some? tab-id) (= :leaderboard (:type tab))
+    (and (some? tab-id) (contains? #{:leaderboard :chat :chat-thread} (get data :tab-type :leaderboard))
+         (= (get data :tab-type :leaderboard) (:type tab))
          (= (str room-id) (str (get-in tab [:data :room-id]))))))
 
 (defn controller [data]

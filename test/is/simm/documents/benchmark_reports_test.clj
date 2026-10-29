@@ -72,7 +72,7 @@
           (is (= 1 (:total result)))
           (is (= (get-in plan [:report :path]) (get-in result [:rows 0 :path])))
           (is (= (get-in plan [:report :page]) (get-in result [:rows 0 :id])))
-          (is (str/starts-with? (get-in result [:rows 0 :title]) "research — "))
+          (is (= "Research benchmark results" (get-in result [:rows 0 :title])))
           (is (= (get-in result [:rows 0 :title]) (get-in result [:rows 0 :cells 0 :text])))
           (is (= (get-in plan [:report :path])
                  (:S.Page/title (d/entity (:db projected) [:entity/uuid (get-in plan [:report :page])]))))
@@ -83,7 +83,7 @@
   (let [summary (assoc-in fixture/summary [:leaderboard 0 :spend :priced?] false)
         definition (dissoc fixture/definition :experiment/metadata)
         plan (reports/prepare fixture/context summary definition)]
-    (is (str/includes? (get-in plan [:report :text]) "# Benchmark — "))
+    (is (str/includes? (get-in plan [:report :text]) "# Saved benchmark results"))
     (is (not (str/includes? (get-in plan [:report :text]) "Workflow revision:")))
     (is (not (str/includes? (get-in plan [:report :text]) "$0")))
     (is (str/includes? (get-in plan [:report :text]) ":kind :cost"))))

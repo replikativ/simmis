@@ -445,7 +445,7 @@
   (let [intent (get-in draft [:source :setup :intent])
         action (or action (:action intent) :run)
         configured? (= (:setup-form-revision draft) (get-in draft [:source :revision]))
-        explicit (:model intent)
+        explicit (or (:model intent) (first (:models intent)))
         model (if configured?
                 (if (and (nil? explicit) (= (get-in draft [:form :model]) (:setup-default-model draft)))
                   (get-in readiness [:default-model :id]) (get-in draft [:form :model]))
@@ -453,7 +453,9 @@
         cadence (:cadence intent)
         form (if configured? (assoc (:form draft) :model model)
                (merge (dissoc (:form draft) :models)
-                      {:backend "hosted" :mode "run" :model model}
+                      {:backend "hosted" :mode (if (= :benchmark action) "benchmark" "run") :model model}
+                      (when (and (= :benchmark action) (:models intent)) {:models (:models intent)})
+                      (when (and (= :benchmark action) (:repetitions intent)) {:repetitions (str (:repetitions intent))})
                       (when (:case intent) {:case (:case intent)})
                       (into {} (map (fn [[key value]] [key (str value)])) (:limits intent))
                       (when (and (= :schedule action) cadence)
@@ -461,7 +463,8 @@
                          :schedule-tz (:tz cadence) :schedule-at (:at cadence)
                          :schedule-on (:on cadence) :schedule-day (str (:on-day cadence))
                          :schedule-minutes (str (when-let [ms (:interval-ms cadence)] (quot ms 60000)))})))]
-    {:action action :form form :cadence cadence :initial? (not configured?)
+    {:action action :form (assoc form :mode (if (= :benchmark action) "benchmark" "run"))
+     :cadence cadence :initial? (not configured?)
      :model-source (cond (= model explicit) :workflow-proposal
                          (= model (get-in readiness [:default-model :id])) (get-in readiness [:default-model :source])
                          :else :human-choice)}))
@@ -472,11 +475,14 @@
   [draft readiness action]
   (let [{:keys [action form cadence initial? model-source]} (setup-configuration draft readiness action)
         model (:model form)
-        row (some #(when (= model (:id %)) %) (:models readiness))
-        _ (when-not (and row (= :present (:credential-status row)))
+        models (if (= :benchmark action) (benchmark-models form) [model])
+        rows (mapv (fn [id] (some #(when (= id (:id %)) %) (:models readiness))) models)
+        row (first rows)
+        _ (when-not (and (seq rows) (every? #(= :present (:credential-status %)) rows))
             (invalid! "Configure your preferred model or choose a model under Advanced"))
-        _ (when-not (and (contains? #{:run :schedule} action) (= "run" (:mode form)) (= "hosted" (:backend form)))
-            (invalid! "Use Advanced for benchmarks and alternative execution backends"))
+        _ (when-not (and (contains? #{:run :schedule :benchmark} action)
+                         (= (if (= :benchmark action) "benchmark" "run") (:mode form)) (= "hosted" (:backend form)))
+            (invalid! "Use Advanced for alternative execution backends"))
         _ (when (and initial? (= :schedule action) (nil? cadence))
             (invalid! "Ask the agent to propose a time and timezone, or set them under Advanced"))
         _ (when (and initial? cadence (:interval-ms cadence)
@@ -488,7 +494,7 @@
                     (submission prepared nil))
         _ (when (and initial? (= :schedule action) (not= cadence (:cadence payload)))
             (invalid! "Use only the supported fields for the proposed schedule cadence"))]
-    {:action action :model-label (:label row) :model-source model-source
+    {:action action :model-label (str/join ", " (map :label rows)) :model-source model-source
      :payload payload :form form
      :title (or (get-in draft [:source :definition :title]) (get-in draft [:source :name]))
      :task (get-in draft [:source :definition :task])

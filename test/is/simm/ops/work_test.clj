@@ -24,6 +24,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.work :as work]
+            [is.simm.ops.benchmark-notifications :as notifications]
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [kontor.governance :as governance]
             [org.replikativ.spindel.engine.core :as ec]
@@ -139,6 +140,46 @@
       (if (pos? remaining)
         (do (jobs/status id 100) (recur (dec remaining)))
         (throw (ex-info "Job cleanup did not become held" {:job id}))))))
+
+(deftest benchmark-result-bookkeeping-is-recoverable-and-delivery-cannot-hold-cleanup
+  (world/with-world [conn w]
+    (with-room
+      (fn [room]
+        (let [[input prepared] (fixture)
+              owner (doto (lifetime/create) lifetime/open!)
+              recorded (atom 0) delivered (atom 0) retired (atom 0)
+              prepared (assoc prepared :request-kind :benchmark
+                              :start! (fn [_] (spin :actual-result))
+                              :settled! (fn [_] (swap! retired inc)))
+              host-ctx ec/*execution-context*]
+          (resource/mint! room {:id (random-uuid) :resources (work/resources (:limits input))})
+          (try
+            (with-redefs [notifications/record-result!
+                          (fn [_ expected actual status value]
+                            (is (identical? room actual))
+                            (is (= :completed status)) (is (= :actual-result value))
+                            (is (uuid? (:work.request/claim expected)))
+                            (when (= 1 (swap! recorded inc)) (throw (ex-info "Bookkeeping unavailable" {}))))
+                          notifications/complete!
+                          (fn [& _]
+                            (lifetime/check-current!) (swap! delivered inc)
+                            (throw (proxy [RuntimeException] []
+                                     (getMessage [] (throw (AssertionError. "Unsafe diagnostic"))))))]
+              (let [request (lifetime/with-operation!
+                             owner #(work/submit-prepared! conn host-ctx (ops/party-principal (:owner w))
+                                                            (:room w) room input prepared))
+                    id (:job request) held (await-job-cleanup id)]
+                (is (= :settled (:stage held)))
+                (is (zero? @retired))
+                (is (:return-pending? (work/status conn host-ctx (ops/party-principal (:owner w)) (:room w) (:id request))))
+                (jobs/recover! id held :retry)
+                (let [status (jobs/status id 25000)]
+                  (is (= :completed (:status status)))
+                  (is (:settled? status))
+                  (is (nil? (jobs/recovery-state id))))
+                (is (= 2 @recorded)) (is (= 1 @retired)) (is (= 1 @delivered))
+                (is (false? (:return-pending? (work/status conn host-ctx (ops/party-principal (:owner w)) (:room w) (:id request)))))))
+            (finally (lifetime/fence! owner) (lifetime/join! owner 5000))))))))
 
 (deftest adapter-retirement-keeps-request-pending-and-run-leased-after-resource-return
   (world/with-world [conn w]

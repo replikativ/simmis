@@ -88,3 +88,21 @@
           (is (identical? ctx (:construction call)))
           (is (identical? ctx (:context call)))
           (is (nil? (:spin call))))))))
+
+(deftest chat-result-controls-share-publication-semantics-but-not-a-repurposed-owner
+  (with-state
+    (fn [{:keys [data calls]}]
+      (let [chat (assoc data :tab-type :chat) id (str fixture/scorecard)]
+        (swap! sig/layout-columns assoc-in [0 :tabs 0 :type] :chat)
+        (let [ui (actions/controller chat)]
+          ((:publish ui) id)
+          (is (= 1 (count (:prepare @calls))))
+          ((:ok (first (:prepare @calls))) fixture/prepared)
+          (is (= 1 (count (:publish @calls))))
+          (is (= (:target-stamp fixture/prepared) (:expected-target-stamp (:request (first (:publish @calls))))))
+          (swap! sig/layout-columns assoc-in [0 :tabs 0 :type] :chat-thread)
+          ((:ok (first (:publish @calls))) fixture/receipt)
+          ((:open ui) id)
+          (is (empty? (:open @calls)))
+          (is (not= (actions/owner-key (web/current-session) chat)
+                    (actions/owner-key (web/current-session) (assoc chat :tab-type :chat-thread)))))))))

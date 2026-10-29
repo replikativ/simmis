@@ -9,6 +9,7 @@
             [org.replikativ.spindel.effects.track :refer [track]]
             [is.simm.documents.rich-text :as rich]
             [is.simm.documents.links :as links]
+            [is.simm.documents.display-title :as display-title]
             [is.simm.documents.attachments :as attachments]
             [is.simm.documents.markdown-scene :as markdown-scene]
             [is.simm.documents.inline-charts :as inline-charts]
@@ -622,7 +623,8 @@
                                (if (< i (dec (count (str/split path #"/"))))
                                  (el/button {:on-click (fn [_] (navigation/focus-folder! (:room-id data)
                                                                                        (str/join "/" (take (inc i) (str/split path #"/")))))} part)
-                                 (el/span {:class "memory-file-name" :title path} part)))))
+                                 (el/span {:class "memory-file-name" :title path}
+                                          (if markdown? (display-title/title (assoc (:analysis draft) :path path)) part))))))
             (when markdown?
               (let [target {:kind :page} model (get-in state [:property-models [path target]])]
                 (when (and coherent? model

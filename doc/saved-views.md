@@ -328,4 +328,43 @@ The room header has one **Reports** menu: its primary entry opens an authored
 `reports/index.md`, or focuses the reports folder when no index exists. Opening
 it creates no files. Detailed attempts/jobs and candidate comparisons remain
 secondary menu entries until Markdown views cover all their inspection features.
-Inline chat summaries remain follow-up integration work.
+
+## Benchmark results in conversation
+
+An agent can offer `{:version 1 :action :benchmark}` in a saved workflow's
+`proposal.edn`. Omitting the model uses the confirming human's preference;
+`:models ["model-a" "model-b"]` proposes a comparison, with optional `:case`
+and `:repetitions` (one or two). The inline card uses the existing inspected
+source, exact model observations, operator/room checks and finite allowance.
+Confirmation never adds funding; checker execution still requires an operator.
+Advanced remains available for other backends and detailed configuration.
+
+Native-provider and Claude-text benchmark Jobs record the exact returned
+Scorecard identity on their original WorkRequest before optional notification.
+Checkpoint results are checked against their exact retained READY execution
+definition, rather than the earlier unresolved experiment or the newest room
+result. This proof read neither executes setup nor needs retired native roots.
+Incomplete, failed and cancelled results remain distinct from a complete
+Scorecard. Canonical bookkeeping failure retains the existing native Job owner
+for explicit cleanup recovery; no benchmark is rescheduled. Chat delivery uses
+a new short operation on the original installation, so a fenced App cannot
+adopt a replacement silently. Delivery failure never changes the Job outcome
+or retains its cleanup resources.
+
+A result message shows a compact immutable Markdown table using the same typed
+Scorecard cells as reports, including unknown and list-price costs. It is a
+conversational projection, not another accounting authority or a Proposal.
+The message is posted to the room log without activating agents. The native
+message UUID/envelope is reserved durably before delivery; retries reuse its
+original bytes, timestamp and receipt reference, without requiring the current
+formatter to reproduce them. `simmis_benchmark-result-retry` is a fixed human
+work-credential action for an exact saved Request. It may reconstruct a missing
+envelope from that Request's recorded exact result, never the newest Scorecard.
+It does not run models, create a report or fund work.
+
+**Create report in Memory** beside the chat result reuses the explicit
+prepare/publish controller above. **Open report in Memory** follows only after
+acknowledgement. Report interaction state belongs to the original Spindel
+context, session, Room, tab and tab type; keyed message rows observe its changes.
+Time-travel views do not offer publication actions. Local worker benchmarks and
+general workflow completions do not yet use this notification adapter.

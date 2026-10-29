@@ -17,8 +17,11 @@
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.routes :as routes]
             [is.simm.documents.workflow-links :as workflow-links]
+            [is.simm.documents.display-title :as display-title]
+            [is.simm.uis.web.desktop.memory-owner :as memory-owner]
             #?(:cljs [is.simm.uis.web.desktop.views.workflow-setup :as workflow-setup])
             #?(:cljs [is.simm.uis.web.desktop.workflow-actions :as workflow-actions])
+            #?(:cljs [is.simm.uis.web.desktop.benchmark-report-actions :as report-actions])
             #?(:cljs [is.simm.uis.web.desktop.memory-sync :as memory-sync])
             [is.simm.uis.web.desktop.backlink-target :as bt]
             [is.simm.uis.web.desktop.tab-heal :as tab-heal]
@@ -949,6 +952,8 @@
              run-facts (iv/get-new (track sig/run-server-facts))
              captured-results (iv/get-new (track sig/captured-results))
              workflow-state (iv/get-new (track sig/workflow-editor-state))
+             benchmark-reports (iv/get-new (track sig/benchmark-report-publications))
+             memory-editors (iv/get-new (track sig/memory-editor-state))
              _workflow-stream (iv/get-new (track memory-sync/state))
              conversation-captures (iv/get-new (track sig/conversation-captures))
              capture-connection (iv/get-new (track sig/memory-connection))
@@ -1013,6 +1018,7 @@
                            (render-tab-content (:type active-tab-data)
                                                (cond-> (assoc (:data active-tab-data)
                                                               :conversation-captures conversation-captures
+                                                              :benchmark-reports benchmark-reports
                                                               :capture-connection capture-connection)
                                                  (#{:memory :proposal-source :new-room :new-kb :add-memory :add-team :workflows} (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
                                                local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
@@ -1036,7 +1042,16 @@
                               (when (not= id @sig/active-column-id)
                                 (sig/set-active-column! id)))}
            ;; Tab bar
-           (render-tab-bar id tabs active-tab wiki-titles)
+           (render-tab-bar id tabs active-tab
+                           (merge wiki-titles
+                                  (into {} (keep (fn [tab]
+                                                   (when (= :memory (:type tab))
+                                                     (let [data (assoc (:data tab) :tab-id (:id tab) :col-id id)
+                                                           state (get memory-editors (memory-owner/key (:id (web/current-session)) data))
+                                                           path (or (:selected state) (:path data))
+                                                           draft (get-in state [:drafts path])]
+                                                       (when (and (not (:target-stale? draft)) (:analysis draft))
+                                                         [(:id tab) (display-title/title (assoc (:analysis draft) :path path))])))) tabs))))
 
            ;; Content area. The call hosts are SIBLINGS of the tab content, not
            ;; children of it: a tab switch replaces the content slot and leaves a
@@ -1598,7 +1613,16 @@
                                   (workflow-links/mentioned-workflows (:block/content item)))
                       _ (doseq [workflow workflows]
                           (workflow-setup/observe! {:room-id (str room-id) :workflow workflow :tab-id tab-id :col-id col-id}))
-                      item (assoc item ::workflow-states
+                      report-owner {:room-id (str room-id) :room-name room-name :tab-id tab-id
+                                    :tab-type (if thread-view? :chat-thread :chat)}
+                      _ (when (and (not time-travel?)
+                                   (= :benchmark-result (get-in item [:message/metadata :object :kind])))
+                          (report-actions/controller report-owner))
+                      item (assoc item ::report-state
+                                  (get-in (:benchmark-reports data)
+                                          [(report-actions/owner-key (web/current-session) report-owner)
+                                           (str (get-in item [:message/metadata :object :id]))])
+                                  ::workflow-states
                                   (into {} (map (fn [workflow]
                                                   [workflow (get workflow-state (workflow-actions/state-key room-id (workflow-setup/owner workflow)))])) workflows)
                                  ::capture-state
@@ -2035,6 +2059,9 @@
                       {:room-id (str room-id)
                        :workflow-context {:tab-id tab-id :col-id col-id :read-only? time-travel?}
                        :workflow-states (::workflow-states item)
+                       :report-state (::report-state item)
+                       :report-owner {:room-id (str room-id) :room-name room-name :tab-id tab-id
+                                      :tab-type (if thread-view? :chat-thread :chat)}
                        :id (str (:entity/uuid item))
                        :author-id (str (:S.Message/author-uuid item))
                        :author-name (:S.Message/author-name item)

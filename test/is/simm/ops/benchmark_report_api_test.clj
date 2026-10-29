@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is]]
             [dvergr.ops :as native]
             [is.simm.ops.benchmark-reports :as reports]
+            [is.simm.ops.benchmark-notifications :as notifications]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-workflow-host :as policy]
             [is.simm.ops.work-api :as api]
@@ -31,6 +32,7 @@
 
 (deftest report-publication-needs-a-work-credential-and-canonical-human-host
   (doseq [[op tool] [[:simmis/benchmark-report-prepare "simmis_benchmark-report-prepare"]
+                     [:simmis/benchmark-result-retry "simmis_benchmark-result-retry"]
                      [:simmis/benchmark-report-publish "simmis_benchmark-report-publish"]]]
     (is (= :write (get-in api/specifications [op :kind])))
     (is (= :write (get-in api/specifications [op :authz :action])))
@@ -43,3 +45,15 @@
     (is (thrown? clojure.lang.ExceptionInfo
                  ((get-in api/specifications [:simmis/benchmark-report-prepare :impl])
                   {} {:room "native-slug" :scorecard (str (random-uuid))})))))
+
+(deftest notification-retry-uses-original-room-and-exact-request-only
+  (let [room (str (random-uuid)) request (random-uuid) calls (atom [])
+        retry (get-in api/specifications [:simmis/benchmark-result-retry :impl])]
+    (with-redefs [reads/owned-host? (constantly true)
+                  notifications/retry! (fn [& args] (swap! calls conj args) {:status :published})]
+      (is (= {:status :published} (retry {} {:room room :request (str request)})))
+      (is (= room (nth (first @calls) 2)))
+      (is (= request (nth (first @calls) 3)))
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (retry {} {:room room :request (str request) :scorecard (str (random-uuid))})))
+      (is (= 1 (count @calls))))))

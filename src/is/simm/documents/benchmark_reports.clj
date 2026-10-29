@@ -2,19 +2,23 @@
   "Ordinary Markdown report plans from an already authorized native Scorecard.
    Pure formatting only: no publication, execution, authority or receipt edits."
   (:require [clj-yaml.core :as yaml]
+            [clojure.string :as str]
             [hasch.core :as hasch]
+            [is.simm.documents.links :as links]
             [is.simm.documents.saved-view-spec :as spec]
             [is.simm.documents.scorecard-views :as scorecards]))
 
-(def version 1)
+(def version 2)
 (def index-path "reports/index.md")
 (def report-root "reports/benchmarks")
 
 (defn- report-id [kind context scorecard]
-  (hasch/uuid [::report version kind context scorecard]))
+  ;; Presentation revisions must not change a document/view's stable identity.
+  (hasch/uuid [::report 1 kind context scorecard]))
 
-(defn- document [id title descriptor introduction]
-  (str "---\n" (yaml/generate-string {"simmis-id" (str id) "title" title}) "---\n# " title "\n\n"
+(defn- document [id title descriptor introduction & [provenance]]
+  (str "---\n" (yaml/generate-string (cond-> {"simmis-id" (str id) "title" title}
+                                      provenance (assoc "benchmark-provenance" provenance))) "---\n# " title "\n\n"
        introduction "\n\n```simmis-view\n" (pr-str descriptor) "\n```\n"))
 
 (defn prepare
@@ -43,24 +47,31 @@
                       {:type ::unavailable :reason (:reason prepared)})))
     (let [provenance (:provenance prepared)
           workflow (:workflow provenance)
-          title (str (or (:name workflow) "Benchmark") " — " (subs (str scorecard) 0 8))
+          name (when workflow (str/capitalize (str/replace (:name workflow) "-" " ")))
+          title (str (or name "Saved") " benchmark results")
           index-view (spec/validate
                       {:version 1 :id (report-id :index-view context nil)
                        :source {:kind :pages :roots [report-root]}
                        :presentation :table :columns [{:kind :title}]
                        :order [{:kind :title :direction :asc}]})
           introduction (str "Benchmark results. The table shows the retained result, "
-                            "including unknown costs; editing this document does not change the evidence.\n\n"
-                            "Experiment: `" (:experiment-content-id provenance) "`.\n\n"
-                            "Dataset: `" (:dataset-content-id provenance) "`."
-                            (when workflow (str "\n\nWorkflow revision: `" (:bundle workflow) "`."))
+                            "including unknown costs; editing this document does not change the evidence."
+                            (when workflow
+                              (str "\n\nCurrent workflow: [" name "](" (links/route {:kind :memory-file :room (:room context)
+                                                                                :path (str "workflows/" (:name workflow) "/workflow.edn")})
+                                   "). This benchmark used a saved revision."))
                             "\n\nCost is recorded model usage; list-price cost is shown separately. "
-                            "Use Save snapshot on the table for portable result values.")]
+                            "Use Save snapshot on the table for portable result values. "
+                            "Exact record and revision identities are retained in the document's metadata.")
+          metadata (cond-> {"scorecard" (str scorecard)
+                            "experiment" (str (:experiment-content-id provenance))
+                            "dataset" (str (:dataset-content-id provenance))}
+                     workflow (assoc "workflow-revision" (:bundle workflow)))]
       {:version version
        :source (assoc context :scorecard scorecard)
        :report {:path (str report-root "/" scorecard ".md")
                 :page (report-id :page context scorecard)
-                :text (document (report-id :page context scorecard) title descriptor introduction)}
+                :text (document (report-id :page context scorecard) title descriptor introduction metadata)}
        :index {:path index-path :page (report-id :index-page context nil)
                :text (document (report-id :index-page context nil) "Reports" index-view
                                "Benchmark reports in this Memory. Open a report for results, workflow revisions and interpretation.")}})))

@@ -1166,12 +1166,39 @@ Chat repository-relative links resolve against the message's own Room, rather
 than the browser's current URL. Links to workflow files expose a small action
 card for the current canonical saved workflow, rather than freezing the historical
 message's file contents. A small, inert `proposal.edn` beside `workflow.edn`
-can propose one Run or a schedule: `{:version 1 :action :run}`, or
+can propose one Run, benchmark or schedule: `{:version 1 :action :run}`, or
 `{:version 1 :action :schedule :cadence {:every "week" :on "monday"
 :at "09:00" :tz "America/Vancouver"}}`. Its closed host-side reader accepts
 one EDN form of at most 4096 UTF-8 bytes, with optional exact model, case and
 existing finite execution limits. It grants no authority. Content Proposal
 edits must be adopted before the canonical setup becomes actionable.
+
+`{:version 1 :action :benchmark}` offers the same inline confirmation for an
+executable benchmark pack. Optional `:models ["model-a" "model-b"]`, `:case`
+and `:repetitions` (one or two) select a bounded comparison. Omit the models to
+use the confirming human's preference. This still requires installation-operator
+and Room execution authority, an inspected source revision and existing finite
+allowance; confirmation never provisions funds or executes an uninspected checker.
+
+Native-provider and Claude-text benchmark completion records its exact returned
+Scorecard/store/status on the original WorkRequest before optional notification.
+For checkpoint benchmarks, the admitted READY artifact supplies the resolved
+ExperimentDef: checkpoint setup substitution changes its identity from the
+original submission. The read-only result proof checks the original
+Request/Job/claim/intent, READY digest/family and retained case bindings. It does
+not rebuild checkers or retired roots, and remains usable after settlement.
+This native Job-owned bookkeeping survives App retirement; failure retains the
+existing Job recovery owner without rerunning the experiment. Delivery enters
+a new short operation on the original installation and cannot change execution
+or resource settlement. An immutable typed result message shows the shared
+Scorecard cells as a compact table in chat; incomplete/failed work is explicit,
+not a zero score. Its reserved native message ID and envelope make lost-ACK
+retries idempotent. The fixed `simmis_benchmark-result-retry` work operation can
+deliver that exact result with current original-requester Room write authority,
+without inference, funding or selecting the newest Scorecard. Existing signed
+tool ceilings are not automatically widened. The chat action to create/open
+the full Memory report reuses explicit report preparation/publication; rendering
+or delivery never writes report files. This is a result reference, not a Proposal.
 
 Review setup shows the exact model, cadence, ceilings, output paths and retained
 or discarded execution mode inline. An omitted model follows the confirming

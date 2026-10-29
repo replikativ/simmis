@@ -936,6 +936,41 @@
             (is (empty? @grants))
             (is (zero? @confirms))))))))
 
+(deftest inline-benchmark-confirmation-uses-existing-admission-without-funding
+  (with-state
+    (fn [ui k]
+      (ready-setup! k)
+      (swap! sig/workflow-editor-state assoc-in [k :permissions :operator?] true)
+      (swap! sig/workflow-editor-state assoc-in [k :drafts "a" :source :setup :intent]
+             {:version 1 :action :benchmark})
+      (let [calls (atom []) grants (atom []) confirms (atom 0)]
+        (with-redefs [remote/submit-workflow-benchmark!
+                      (fn [& args] (swap! calls conj args) (fn [ok _] (ok {:id "receipt" :job "job"})))
+                      remote/provision-workflow-allowance! (deferred grants)
+                      actions/confirm! (fn [& _] (swap! confirms inc) false)]
+          ((:prepare-setup ui) "a" nil)
+          (let [offered (get-in @sig/workflow-editor-state [k :drafts "a" :setup-offer])]
+            (is (= :benchmark (:action offered)))
+            (is ((:offer-current? ui) "a" offered))
+            ((:accept-setup ui) "a" offered)
+            ((:accept-setup ui) "a" offered)
+            (is (= 1 (count @calls)))
+            (is (= ["luna"] (:models (nth (first @calls) 2))))
+            (is (empty? @grants)) (is (zero? @confirms))))))))
+
+(deftest benchmark-confirmation-rechecks-operator-status
+  (with-state
+    (fn [ui k]
+      (ready-setup! k)
+      (swap! sig/workflow-editor-state assoc-in [k :permissions :operator?] true)
+      (let [calls (atom [])]
+        (with-redefs [remote/submit-workflow-benchmark! (deferred calls)]
+          ((:prepare-setup ui) "a" :benchmark)
+          (let [offered (get-in @sig/workflow-editor-state [k :drafts "a" :setup-offer])]
+            (swap! sig/workflow-editor-state assoc-in [k :permissions :operator?] false)
+            ((:accept-setup ui) "a" offered)
+            (is (empty? @calls))))))))
+
 (deftest stale-source-default-permissions-and-form-refuse-inline-confirmation
   (doseq [change [(fn [k] (swap! sig/workflow-editor-state assoc-in [k :drafts "a" :source-stale?] true))
                   (fn [k] (swap! sig/workflow-editor-state assoc-in [k :readiness :default-model :id] "other"))
