@@ -30,8 +30,8 @@
      {:id :notion :verb :connect :icon "book-open" :label "Notion"
       :blurb "Pages replicated in as a wiki." :ready? false}
      {:id :github :verb :connect :icon "git-branch" :label "GitHub repository"
-      :blurb "Code as a geschichte repo — already the substrate agents work in."
-      :ready? false}]}
+      :blurb "Import public repository files and review updates before applying."
+      :ready? true}]}
 
    :team
    {:title "Add team"
@@ -63,6 +63,7 @@
                    @sig/layout-columns))
          (case id
            :workspace (sig/open-tab! :new-kb nil {:col-id col-id :title "New workspace"})
+           :github (sig/open-tab! :new-kb {:source-kind :github} {:col-id col-id :title "Import GitHub repository"})
            :mail (sig/open-or-activate-tab! :mail nil {:col-id col-id :title "Mail"})
            :team (sig/open-tab! :new-room nil {:col-id col-id :title "New team"})
            nil)))))

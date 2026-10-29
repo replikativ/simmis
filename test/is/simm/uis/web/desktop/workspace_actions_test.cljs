@@ -114,6 +114,21 @@
           (is (= (get-in result [:room :room/id]) (get-in tab [:data :room-id])))
           (when (= landing :memory) (is (= "wiki/Welcome.md" (get-in tab [:data :path])))))))))
 
+(deftest github-creation-opens-the-root-without-inventing-a-file
+  (with-client :memory
+    (fn [{:keys [data last-call result]}]
+      (let [a (actions/controller (assoc data :source-kind :github))]
+        ((:set-name a) "GitHub source")
+        ((:set-repository a) "octocat/hello-world")
+        ((:create a))
+        ((:ok (last-call :create)) result)
+        (reset! sig/user-rooms {:rooms [(:room result)]})
+        ((:open a))
+        (let [tab (first (:tabs (first @sig/layout-columns)))]
+          (is (= :memory (:type tab)))
+          (is (= (get-in result [:room :room/id]) (get-in tab [:data :room-id])))
+          (is (nil? (get-in tab [:data :path]))))))))
+
 (deftest mounted-form-freezes-the-request-and-shows-observed-result
   (with-client :memory
     (fn [{:keys [data calls last-call result]}]

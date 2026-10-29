@@ -4,6 +4,7 @@
   (:require [clojure.string :as str]
             [datahike.api :as d]
             [hasch.core :as hasch]
+            [is.simm.documents.github-source :as github]
             [is.simm.documents.space :as space]
             [is.simm.model.access :as access]))
 
@@ -16,13 +17,16 @@
   (let [canonical-uuid (fn [value]
                          (when (and (string? value) (= value (some-> value parse-uuid str)))
                            (parse-uuid value)))]
-    (when-not (and (map? request) (= #{:id :name :members} (set (keys request)))
+    (when-not (and (map? request)
+                   (or (= #{:id :name :members} (set (keys request)))
+                       (= #{:id :name :members :source} (set (keys request))))
                    (canonical-uuid id) (string? name) (<= 1 (count name) 512)
                    (not (str/blank? name)) (vector? members) (<= (count members) 255)
                    (every? canonical-uuid members))
       (refuse! :invalid-request))
-    {:id (canonical-uuid id) :name (str/trim name)
-     :members (vec (sort-by str (set (map canonical-uuid members))))}))
+    (cond-> {:id (canonical-uuid id) :name (str/trim name)
+             :members (vec (sort-by str (set (map canonical-uuid members))))}
+      (contains? request :source) (assoc :source (github/source! (:source request))))))
 
 (defn human! [snapshot creator]
   (let [party (when (uuid? creator) (d/entity snapshot [:party/id creator]))]
@@ -48,6 +52,31 @@
 (defn receipt [creator request]
   {:room/creation-intent (:id request) :room/creation-basis (basis creator request)})
 
+(defn record-source-tx
+  "Fixed HOST writer for a newly pending GitHub import, before any network IO.
+   Neither creates a native Room nor publishes membership. Exact replay only."
+  [snapshot creator request]
+  (authorize! snapshot creator request)
+  (let [source (github/source! (:source request))
+        row (d/pull snapshot '[:db/id :room/id :room/name :room/type :room/slug
+                              :room/provisioning-state :room/provisioning-version
+                              :room/created-by :room/content-db-scope :room/parties :room/archived-at
+                              :room/creation-intent :room/creation-basis :room/github-source
+                              {:room/owner [:party/id]}
+                              {:room/default-repository [:system/repository-profile]}]
+                    [:room/slug (slug creator request)])
+        expected (assoc (receipt creator request) :room/github-source (:repository source))
+        actual (select-keys row (keys expected))]
+    (when-not (and (uuid? (:room/id row)) (= creator (get-in row [:room/owner :party/id]))
+                   (= (:name request) (:room/name row)) (= :project (:room/type row))
+                   (= :pending (:room/provisioning-state row)) (= 1 (:room/provisioning-version row))
+                   (nil? (:room/archived-at row))
+                   (= space/profile (get-in row [:room/default-repository :system/repository-profile]))
+                   (not-any? #(contains? row %) [:room/created-by :room/content-db-scope :room/parties])
+                   (or (empty? actual) (= expected actual)))
+      (refuse! :source-intent-changed))
+    (if (= expected actual) [] [(assoc expected :db/id (:db/id row))])))
+
 (defn observe
   "Read an exact owner's one-shot intent. Not-observed is uncertain, NOT
    permission to resend: the original worker may not have recorded intent yet."
@@ -56,7 +85,7 @@
   (let [eid (d/q '[:find ?e . :in $ ?slug :where [?e :room/slug ?slug]] snapshot (slug creator request))
         row (when eid (d/pull snapshot '[:room/id :room/name :room/type :room/provisioning-state
                               :room/provisioning-version :room/content-db-scope :room/created-by
-                              :room/creation-intent :room/creation-basis :room/archived-at
+                              :room/creation-intent :room/creation-basis :room/archived-at :room/github-source
                               {:room/owner [:party/id]}
                               {:room/default-repository [:system/repository-profile]}]
                               eid))]
@@ -68,8 +97,13 @@
           (not= 1 (:room/provisioning-version row))) {:status :unavailable}
       (or (:room/creation-intent row) (:room/creation-basis row))
       (cond
-        (not= (receipt creator request) (select-keys row [:room/creation-intent :room/creation-basis]))
+        (or (not= (receipt creator request) (select-keys row [:room/creation-intent :room/creation-basis]))
+            (not= (get-in request [:source :repository]) (:room/github-source row)))
         {:status :conflict}
+        (= :pending (:room/provisioning-state row)) {:status :preparing}
+        (and (= :ready (:room/provisioning-state row))
+             (nil? (:room/content-db-scope row)) (nil? (:room/created-by row)))
+        {:status :prepared-not-published}
         (and (= :ready (:room/provisioning-state row)) (= creator (:room/created-by row))
              (uuid? (:room/content-db-scope row))
              (access/can? snapshot creator :read {:room (:room/id row)}))

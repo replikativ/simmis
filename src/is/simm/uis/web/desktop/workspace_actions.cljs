@@ -79,6 +79,9 @@
                             (invoke! :create)))))
             (ensure! []
               (binding [ec/*execution-context* ctx]
+                (when (and (current?) (= :github (:source-kind data))
+                           (not (:submission (state))) (not (contains? (state) :source-kind)))
+                  (update! assoc :source-kind :github))
                 (when (and (current?) (:submission (state)) (= :submitting (:phase (state)))
                            (not= (:submitted-on (state)) (connection/snapshot)))
                   (update! #(-> % (assoc :phase :unconfirmed)
@@ -115,14 +118,16 @@
                           (let [memory? (= :memory (:landing data))]
                             (sig/open-tab! (if memory? :memory :chat)
                                            (cond-> {:room-id (str (:room/id room)) :room-name (:room/name room)}
-                                             memory? (assoc :path "wiki/Welcome.md")
+                                             (and memory? (not= :github (:source-kind data))) (assoc :path "wiki/Welcome.md")
                                              (not memory?) (assoc :db-scope (str (:room/content-db-scope room))))
                                            {:col-id column :new-tab? true
-                                            :title (if memory? "Welcome.md" (:room/name room))})
+                                            :title (if (and memory? (not= :github (:source-kind data)))
+                                                     "Welcome.md" (:room/name room))})
                             (sig/close-tab! column (:tab-id data))))))))))]
       {:owner key :state state :ensure ensure! :create create! :open open!
        :check #(invoke! :observe)
        :set-name #(when-not (:submission (state)) (update! assoc :name %))
+       :set-repository #(when-not (:submission (state)) (update! assoc :repository %))
        :toggle-member #(when-not (:submission (state))
                          (update! update :members (fn [members]
                                                     (let [members (set members)]

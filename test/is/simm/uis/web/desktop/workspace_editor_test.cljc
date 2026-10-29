@@ -3,6 +3,18 @@
             #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is]])))
 
+(deftest github-import-freezes-canonical-source-and-does-not-retry-on-edit
+  (let [draft {:name "Imported source" :source-kind :github
+               :repository "https://github.com/Owner/Repo.git"}
+        submitted (editor/submit draft (random-uuid) :socket)
+        edited (assoc submitted :repository "other/repository")]
+    (is (editor/valid? draft))
+    (is (= {:kind :github :repository "owner/repo"} (get-in submitted [:submission :source])))
+    (is (= (:submission submitted)
+           (:submission (editor/submit edited (random-uuid) :reconnected))))
+    (is (not (editor/valid? (assoc draft :repository "https://evil.example/owner/repo"))))
+    (is (not (editor/valid? (assoc draft :source-kind :arbitrary-provider))))))
+
 (deftest submission-freezes-one-request-and-never-becomes-a-resend
   (let [a (str (random-uuid)) b (str (random-uuid)) id (random-uuid)
         state (editor/submit {:name " Research " :members #{a b}} id :socket)]

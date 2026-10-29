@@ -17,6 +17,8 @@
             [is.simm.documents.chart-contract :as chart-contract]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.memory-actions :as actions]
+            [is.simm.uis.web.desktop.github-sync :as github]
+            [is.simm.uis.web.desktop.views.github-sync :as github-view]
             [is.simm.uis.web.desktop.memory-editor :as editor]
             [is.simm.uis.web.desktop.memory-charts :as chart-state]
             [is.simm.uis.web.desktop.memory-cells :as cells]
@@ -705,7 +707,7 @@
                                   (el/details {:class "memory-properties"}
                                               (el/summary {} "Saved file revision") (el/code {} (str content)))))))))
 
-(defn- view [data state a syntax-pref]
+(defn- view [data state a syntax-pref github-action github-state]
   (let [path (:selected state) draft (get-in state [:drafts path])
         verified? (actions/verified? state @sig/memory-connection)
         workspace-write? (and verified? (true? (get-in state [:permissions :write?])))
@@ -719,6 +721,7 @@
         office? (= :office (get-in draft [:source :kind]))]
     (el/div {:class "memory-panel"}
             (file-header data state a draft workspace-write? write? coherent? syntax-pref)
+            (when verified? (github-view/view state github-action github-state))
             (when (get-in state [:loading :reference])
               (el/p {:class "memory-note" :role "status"} "Locating block in the current workspace…"))
             (when-let [error (get-in state [:errors :reference])]
@@ -834,15 +837,18 @@
                        (not-empty (:room-name data))
                        (str "Memory · " (:room-id data)))
          states (iv/get-new (track sig/memory-editor-state))
+         git-states (iv/get-new (track sig/github-sync-state))
          syntax-pref (iv/get-new (track sig/syntax-pref))
-         a (actions/controller data) state (get states (:owner a))]
+         a (actions/controller data) state (get states (:owner a))
+         github-action (github/controller data (:state a))]
      ((:ensure-path a))
      ((:observe-receipt-context a) (saved-view-state/receipt-context (:room-id data) rooms))
      ((:ensure-sync a) connection)
      ((:ensure-properties a))
      ((:ensure-charts a))
      ((:ensure-saved-views a))
-     (view (assoc data :room-name room-name) state a syntax-pref))))
+     ((:ensure github-action))
+     (view (assoc data :room-name room-name) state a syntax-pref github-action (get git-states (:owner github-action))))))
 
 (defn- backlinks-view [a]
   (let [{:keys [open? reply error loading?]} ((:backlinks a))]

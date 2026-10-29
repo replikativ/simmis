@@ -27,6 +27,7 @@
             [is.simm.model.work-requests :as work-requests]
             [is.simm.model.work-request-checkpoints :as work-request-checkpoints]
             [is.simm.model.benchmark-resolutions :as benchmark-resolutions]
+            [is.simm.model.github-sync :as github-sync]
             [is.simm.model.knowledge-dispositions :as knowledge-dispositions]
             [is.simm.model.knowledge-streams :as knowledge-streams]
             [is.simm.model.knowledge-pins :as knowledge-pins]
@@ -217,6 +218,16 @@
     :db/valueType :db.type/uuid
     :db/cardinality :db.cardinality/one
     :db/doc "Immutable canonical creation request digest; observation never authorizes a retry"}
+   {:db/ident :room/github-source
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "HOST-recorded canonical public GitHub owner/repository; never read from imported files"}
+   {:db/ident :room/github-ref :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+    :db/doc "Exact upstream branch selected by the original GitHub import"}
+   {:db/ident :room/github-import-head :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one
+    :db/doc "Original imported logical Git head; later sync does not rewrite this provenance"}
+   {:db/ident :room/github-repository :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+    :db/doc "Exact native registry repository of the completed GitHub import"}
    {:db/ident :room/created
     :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one
@@ -779,7 +790,7 @@
 
 (def schema
   "Simmis control-plane extension attributes, including host work admission."
-  (merge-schemas core-schema work-requests/schema work-request-checkpoints/schema benchmark-resolutions/schema workers/schema workflow-schedules/schema
+  (merge-schemas core-schema work-requests/schema work-request-checkpoints/schema benchmark-resolutions/schema github-sync/schema workers/schema workflow-schedules/schema
                  file-outputs/schema file-adoptions/schema knowledge-dispositions/schema
                  knowledge-streams/schema knowledge-pins/schema knowledge-batches/schema
                  knowledge-processing/schema knowledge-batch-recovery/schema

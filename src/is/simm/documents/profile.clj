@@ -93,6 +93,18 @@
     (repo/write! conn "code/welcome.clj"
                  (markdown/source-bytes ";; Ordinary editable source, not executed on open.\n(str \"Hello, \" \"Simmis\")\n"))))
 
+(defn initialize-foundation!
+  "HOST-only pristine schema/governance foundation for an unpublished source
+   import. Writes no files, Git commits or workflow defaults. The importer owns
+   validation and publication; authored code is never evaluated here."
+  [conn options]
+  (profile! options)
+  (space/provision! conn)
+  (chat-schema/install-schema! conn)
+  (d/transact conn (charts/installation-tx @conn))
+  (validate-foundation! @conn)
+  conn)
+
 (defn initialize!
   "Pristine exclusive connection only. Seed and validate the whole starter wiki
    before its owner can publish a Room. Failure belongs to that bootstrap owner,
@@ -101,11 +113,9 @@
   ([conn options bundle wiki-source]
    (profile! options)
    (starter/verify! bundle)
-   (space/provision! conn)
-   (chat-schema/install-schema! conn)
+   (initialize-foundation! conn options)
    ;; Optional feature definitions belong only to explicit NEW-space creation.
    ;; Existing canonical v1 repositories are valid without this feature.
-   (d/transact conn (charts/installation-tx @conn))
    (let [{:keys [files provenance]} (starter/adapt bundle (:geschichte.repo/id (query/repository @conn)))]
      (doseq [[path text] files] (repo/write! conn path (markdown/source-bytes text)))
      (repo/write! conn "code/starter-provenance.edn" (markdown/source-bytes (str (pr-str provenance) "\n"))))

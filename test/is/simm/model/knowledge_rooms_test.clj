@@ -148,3 +148,33 @@
                     [[:db/retractEntity [:party/id agent]]]
                     [[:db/retractEntity [:party/id creator]]]]]
       (is (thrown? clojure.lang.ExceptionInfo (d/db-with (d/db-with prepared change) tx))))))
+
+(deftest github-publication-requires-exact-pre-network-receipt-and-host-source-proof
+  (let [{:keys [db creator id provisioned]} (fixture)
+        request (creation/request! {:id (str (random-uuid)) :name "Fixture" :members []
+                                    :source {:kind :github :repository "owner/repo"}})
+        pending (d/db-with db [[:db/add [:room/id id] :room/slug (creation/slug creator request)]
+                               [:db/add [:room/id id] :room/provisioning-state :pending]])
+        recorded (d/db-with pending (creation/record-source-tx pending creator request))
+        ready (d/db-with recorded [[:db/add [:room/id id] :room/provisioning-state :ready]])
+        expected (@#'rooms/prepared-basis! ready provisioned creator)
+        proof {:repository "owner/repo" :ref "refs/heads/main" :head (random-uuid)
+               :registry-system (:repo-id provisioned)}
+        scope (random-uuid)
+        publish (fn [snapshot request proof]
+                  (@#'rooms/publish-tx snapshot expected creator #{creator} scope :project request proof))
+        after (d/db-with ready (publish ready request proof))]
+    (is (= :created (:status (creation/observe after creator request))))
+    (is (= "refs/heads/main" (:room/github-ref (d/entity after [:room/id id]))))
+    (is (= (:head proof) (:room/github-import-head (d/entity after [:room/id id]))))
+    (is (nil? (:room/content-db-scope (d/entity ready [:room/id id]))))
+    (doseq [changed [nil (assoc proof :repository "other/repo") (assoc proof :head nil)
+                     (assoc proof :registry-system (random-uuid))
+                     (assoc proof :ref "refs/heads/main\n") (assoc proof :extra true)]]
+      (is (thrown? clojure.lang.ExceptionInfo (publish ready request changed))))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (publish (d/db-with ready [[:db/add [:room/id id] :room/github-source "other/repo"]]) request proof)))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (publish (d/db-with ready [[:db/retract [:room/id id] :room/creation-basis
+                                            (:room/creation-basis (d/entity ready [:room/id id]))]]) request proof)))
+    (is (thrown? clojure.lang.ExceptionInfo (publish ready (dissoc request :source) nil)))))

@@ -2,13 +2,37 @@
   "Fixed human metadata observation under the original App and actual Room.
    One immutable source snapshot; current authority/default gates at publication."
   (:require [dvergr.runtime.preparation :as preparation]
+            [datahike.api :as d]
+            [geschichte.query :as query]
             [is.simm.documents.files :as files]
+            [is.simm.documents.github-source :as github]
             [is.simm.model.access :as access]
+            [is.simm.model.github-sync :as github-sync]
             [is.simm.ops.owned-files :as owned-files]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-workspace :as owned]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.simple :as simple]))
+
+(defn- github-source [control bound]
+  (let [row (d/entity control [:room/id (:room-id bound)])
+        repository (:room/github-source row)
+        ref (:room/github-ref row)
+        import-head (:room/github-import-head row)
+        registry-system (:system/id (:room/github-repository row))
+        active (when repository (github-sync/active-in control (:room-id bound)))]
+    (when (and repository
+               (= repository (try (github/repository! repository) (catch Exception _ nil)))
+               (string? ref) (<= 12 (count ref) 512)
+               (uuid? import-head) (uuid? registry-system))
+      (cond-> {:kind :github :repository repository :ref ref :import-head import-head
+               :available? (and (= registry-system (get-in bound [:target :registry-system]))
+                                (= ref (query/current-ref (:db bound))))}
+        active (assoc :sync-active? true)
+        (and active (access/can? control (:party bound) :admin {:room (:room-id bound)}))
+        (assoc :sync-id (str (:github.sync/id active)) :can-retire? true)
+        (= (:party bound) (:github.sync/by active))
+        (assoc :sync-client-id (str (:github.sync/client-id active)))))))
 
 (defn read! [host principal handle request]
   (when (simple/on-drain-thread?)
@@ -39,6 +63,7 @@
                       ;; Same-target writes may make this an older observation.
                       ;; It remains one coherent snapshot; hints drive catch-up.
                       (let [reply (assoc result :protocol-version 2
+                                         :github-source (github-source control bound)
                                          :permissions {:write? (access/can? control party :write resource)
                                                        :evaluate? (access/can? control party :merge resource)})]
                         ;; Default validation may perform IO. Cancellation after

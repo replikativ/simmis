@@ -9,7 +9,7 @@
     {:folders (:folders base)
      :paths (vec (sort (set (concat (:paths base) (keys (:file-intents state))
                                     (keys (:create-intents state))
-                                    (when-let [path (:selected state)] [path])))))}))
+                                    (when-let [path (not-empty (:selected state))] [path])))))}))
 
 (defn request [state]
   (let [base (file-request state) path (:selected state)
@@ -35,7 +35,7 @@
   (let [slots (set (keep (fn [[slot frame]] (when (= :target (:scope frame)) slot))
                          (:request-contexts state)))]
     (-> state retire-upload (assoc :target-verified? false)
-        (dissoc :verified-connection :permissions)
+        (dissoc :verified-connection :permissions :github-source)
         (update :requests #(apply dissoc % slots))
         (update :request-contexts #(apply dissoc % slots))
         (update :loading #(apply dissoc % slots))
@@ -97,6 +97,7 @@
     (-> next
         (assoc :connection connection :target-verified? true :verified-connection connection
                :permissions (:permissions reply) :sandbox-permissions (:permissions reply)
+               :github-source (:github-source reply)
                :workspace (:workspace reply) :definition-basis (:definition-basis reply)
                :metadata-followups pending)
         (update :read-epoch (fnil inc 0))
