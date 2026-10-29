@@ -289,8 +289,35 @@ portable export when another instance does not hold that receipt.
 
 The formatter is pure and does not publish files or select a Memory. Its caller
 must authorize the native read and retain the original Room/store identity. A
-future product publisher must also capture its owned Memory target, use the
+publisher must also capture its owned Memory target, use the
 ordinary expected-revision writer, preserve authored files, and reconcile exact
 prepared bytes after a lost acknowledgement. Generating or opening a report
 does not run a model, enable a schedule, or accept a proposal. The current
-formatter is groundwork; no automatic report publication is installed here.
+formatter itself installs no automatic report publication.
+
+## Explicit report publication
+
+Work-capable human MCP clients can call `simmis_benchmark-report-prepare` with
+`room` and `scorecard`. This returns the exact report/index source, original
+`target-stamp`, and `plan` digest. The caller retains those values, then calls
+`simmis_benchmark-report-publish` with the same `room`/`scorecard`,
+`expected-target-stamp` and `expected-plan`. Preparation requires current room
+write permission but publishes nothing. Existing read credentials and previously
+issued work credentials do not automatically gain these new tools.
+
+Publication retains the original App and physical Room lifetimes, verifies the
+native receipt store, and uses the ordinary owned writer's current permission,
+target and absent-entry checks. It writes the report first, then the index. The
+two writes are independent; an error can leave only the report published. Retry
+the same retained target and plan: exact existing bytes acknowledge the original
+artifact rather than writing another revision. A different authored report
+refuses publication. A different authored index is preserved and returned with
+`:status :preserved` and `:complete? false`; the report remains accessible at its
+returned path. No changed content is silently overwritten.
+
+Recovery is caller-carried. Losing the prepared values, or a formatter change
+that produces a different digest, does not authorize resuming with a new plan.
+There is no durable server publication queue or background reconciliation.
+These operations never run a benchmark, add funding, enable a schedule or accept
+a proposal. The browser's Create report action and inline chat summary are
+separate integration work.

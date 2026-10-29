@@ -6,6 +6,7 @@
             [dvergr.room.store :as store]
             [is.simm.model.system-db :as system-db]
             [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.benchmark-reports :as benchmark-reports]
             [is.simm.ops.chat :as chat]
             [is.simm.ops.coordinator :as coordinator]
             [is.simm.ops.dvergr :as simmis-ops]
@@ -39,6 +40,8 @@
 (def allowance-schema (external-schema work/allowance-schema))
 (def status-schema [:map {:closed true} room-entry [:id uuid-string]])
 (def workflow-output-schema [:map {:closed true} [:room uuid-string] [:id uuid-string]])
+(def benchmark-report-prepare-schema (external-schema benchmark-reports/prepare-schema))
+(def benchmark-report-publish-schema (external-schema benchmark-reports/publish-schema))
 (def post-schema
   [:map {:closed true} room-entry [:id uuid-string]
    [:content [:string {:min 1 :max 16000}]]
@@ -416,7 +419,26 @@
 
 (def specifications
   (room-specifications
-   {:simmis/workflow-schedule-list
+   {:simmis/benchmark-report-prepare
+    {:kind :write :schema benchmark-report-prepare-schema :authz {:action :write}
+     :doc "Prepare ordinary Markdown report/index source for one exact saved Scorecard in this room's owned Memory. Requires room write access. Does not publish, execute, fund, or schedule. Retain returned plan digest and target-stamp for explicit publish and uncertain retries."
+     :impl (fn [host args]
+             (checked! benchmark-report-prepare-schema args)
+             (when-not (owned-reads/owned-host? host)
+               (ops/op-error! "Owned report host required" ::owned-report-host-required 503))
+             (let [input {:scorecard (owned-uuid! (:scorecard args))}]
+               (owned-service-result! #(benchmark-reports/prepare! host ops/*principal* (:room args) input))))}
+    :simmis/benchmark-report-publish
+    {:kind :write :schema benchmark-report-publish-schema :authz {:action :write}
+     :doc "Explicitly publish the report prepared for this Scorecard using its original target-stamp and exact plan digest. Absent destinations only; exact existing bytes acknowledge retries. Authored reports refuse and authored index is preserved with complete?false. Report-first/index-second writes are independent. No server restart recovery or model execution."
+     :impl (fn [host args]
+             (checked! benchmark-report-publish-schema args)
+             (when-not (owned-reads/owned-host? host)
+               (ops/op-error! "Owned report host required" ::owned-report-host-required 503))
+             (let [input (into {} (for [key [:scorecard :expected-target-stamp :expected-plan]]
+                                    [key (owned-uuid! (get args key))]))]
+               (owned-service-result! #(benchmark-reports/publish! host ops/*principal* (:room args) input))))}
+    :simmis/workflow-schedule-list
     {:kind :read :schema workflow-schedule-list-schema :authz {:action :read}
      :doc "List this room's pinned workflow/benchmark schedules and recent occurrence links to canonical Jobs. Requires current room read authority. Does not execute, fund or resume anything."
      :impl (fn [host args]
