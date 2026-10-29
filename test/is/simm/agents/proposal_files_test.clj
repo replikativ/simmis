@@ -13,6 +13,7 @@
             [is.simm.model.system-db :as sdb]
             [is.simm.ops.proposal-publication :as publication]
             [is.simm.ops.proposals :as proposals]
+            [is.simm.ops.checks :as checks]
             [is.simm.ops.proposal-evidence :as evidence]
             [is.simm.ops.knowledge-admission :as admission]
             [is.simm.ops.owned-reads :as reads]
@@ -378,3 +379,27 @@
           (finally
             (dvergr.chat.context/close-chat! cctx)
             (swap! @#'agents/proposal-overlays dissoc [room agent])))))))
+
+(deftest frozen-checks-exclude-untracked-canonical-files
+  (with-repo
+    (fn [{:keys [conn scope]}]
+      (let [branch :isolated-checks
+            _ (systems/branch! (branching/get-repo-system scope) branch :main)
+            fork (branching/open-repo-fork! scope branch)]
+        (try
+          (let [private (branching/repo-fork-conn fork)]
+            (repo/write! private "snapshot_test.clj"
+                         (.getBytes "(ns snapshot-test (:require [clojure.test :refer [deftest is]])) (deftest frozen (is (= \"before\" (slurp \"base.txt\"))))" "UTF-8"))
+            (let [head (branching/freeze-repo-fork! fork "Frozen checks")]
+              (branching/publish-repo-fork! fork branch)
+              (repo/write! conn "outside_test.clj"
+                           (.getBytes "(ns outside-test (:require [clojure.test :refer [deftest is]])) (deftest must-not-load (is false))" "UTF-8"))
+              (repo/write! conn "base.txt" (.getBytes "Uncommitted change" "UTF-8"))
+              (let [before {:work (repo/worktree conn) :index (repo/index-tree conn) :status (repo/status conn)}
+                    result (checks/fork-checks scope :repo branch head)]
+                (is (= :pass (:status result)) (:output result))
+                (is (= 1 (:tests result)))
+                (is (= before {:work (repo/worktree conn) :index (repo/index-tree conn) :status (repo/status conn)})))))
+          (finally
+            (branching/close-repo-fork! fork)
+            (branching/discard-repo-branch! scope branch)))))))
