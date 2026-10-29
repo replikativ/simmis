@@ -248,7 +248,10 @@
         ;; publication. A direct older pin shadows Dvergr's compatible version
         ;; and fails only when a fresh process loads the publication namespace.
         ;; 0.1.26 retains cloned remotes and forwards explicit incremental-fetch haves.
-        org.replikativ/geschichte {:mvn/version "0.1.26"}
+        ;; 0.1.34 includes reviewed ref-publication, ancestry, tree/path,
+        ;; merge-cancellation and Git filename fixes (#23–30). Public imports
+        ;; still require a separate cumulative resource budget.
+        org.replikativ/geschichte {:mvn/version "0.1.34"}
         ;; Datahike's bundled secondary-index adapter uses
         ;; scriptum.core/warm!, introduced before this release.
         org.replikativ/scriptum {:mvn/version "0.1.32"}

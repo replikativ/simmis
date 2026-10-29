@@ -150,3 +150,12 @@
           (is (thrown? clojure.lang.ExceptionInfo (reports/publish! host principal handle (request prepared)))))
         (is (zero? @saves))
         (is (= before @owned))))))
+
+(deftest report-publication-cannot-turn-an-authored-file-into-a-folder
+  (with-fixture
+    (fn [{:keys [host principal handle id owned]}]
+      (let [prepared (reports/prepare! host principal handle {:scorecard id})]
+        (repo/write! owned "reports" (markdown/source-bytes "Authored file occupying the report folder name\n"))
+        (let [before @owned]
+          (is (thrown? clojure.lang.ExceptionInfo (reports/publish! host principal handle (request prepared))))
+          (is (= before @owned) "No partial child or parent replacement is published"))))))

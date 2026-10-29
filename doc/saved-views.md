@@ -324,5 +324,8 @@ and publishes the report; **Open report in Memory** then opens it separately,
 without moving the user away while publication is running. A reconnect retains
 the original target/digest for explicit retry. Closed or repurposed tabs and
 late replies cannot start a dependent write or open another tab's destination.
-Inline chat summaries and the consolidated room Reports destination remain
-follow-up integration work.
+The room header has one **Reports** menu: its primary entry opens an authored
+`reports/index.md`, or focuses the reports folder when no index exists. Opening
+it creates no files. Detailed attempts/jobs and candidate comparisons remain
+secondary menu entries until Markdown views cover all their inspection features.
+Inline chat summaries remain follow-up integration work.

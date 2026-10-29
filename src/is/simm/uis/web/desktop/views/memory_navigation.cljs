@@ -10,6 +10,9 @@
             [is.simm.uis.web.desktop.memory-tree :as tree]
             [is.simm.uis.web.desktop.memory-sync :as sync]
             [is.simm.uis.web.desktop.memory-actions :as actions]
+            [is.simm.uis.web.desktop.memory-remote :as remote]
+            [is.simm.uis.web.desktop.connection-epoch :as connection]
+            [is.simm.runtimes.web :as web]
             [is.simm.uis.web.desktop.views.core :as vc])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]))
 
@@ -40,6 +43,36 @@
   (actions/controller {:room-id room :col-id :navigation :state-signal sig/memory-navigation-state}))
 
 (defn focus-folder! [room folder] ((:focus-folder (controller room)) folder))
+
+(defn room-folder-action
+  "Explicit room-header navigation, preferring an authored index.md. Missing
+   index means a folder view, never source generation or a failed file read."
+  [{:keys [room-id room-name tab-id]} folder]
+  (let [ctx (or ec/*execution-context* runtime) session (web/current-session)
+        room (str room-id) path (str (when (seq folder) (str folder "/")) "index.md")
+        owner (fn [epoch]
+                (binding [ec/*execution-context* ctx]
+                  (when (and (web/current-session? session) (connection/current? epoch) (some? tab-id))
+                    (let [matches (for [column @sig/layout-columns tab (:tabs column) :when (= tab-id (:id tab))]
+                                    {:column column :tab tab})
+                          {:keys [column tab]} (when (= 1 (count matches)) (first matches))]
+                      (when (and (#{:chat :chat-thread} (:type tab)) (= tab-id (:active-tab column))
+                                 (= room (str (get-in tab [:data :room-id]))))
+                        (:id column))))))]
+    (fn []
+      (binding [ec/*execution-context* ctx ec/*spin-id* nil]
+        (let [epoch (connection/snapshot)]
+          (when (owner epoch)
+            ((remote/load-memory-metadata! web/server-id room {:folders [] :paths [path]})
+             (fn [metadata]
+               (binding [ec/*execution-context* ctx ec/*spin-id* nil]
+                 (when-let [column (owner epoch)]
+                   (if (and (uuid? (:target-stamp metadata)) (get-in metadata [:entries path]))
+                     (open-file! room room-name path column (:target-stamp metadata))
+                     (focus-folder! room folder)))))
+             (fn [_]
+               (binding [ec/*execution-context* ctx ec/*spin-id* nil]
+                 (when (owner epoch) (focus-folder! room folder)))))))))))
 
 (declare folder-tree)
 
