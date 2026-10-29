@@ -69,6 +69,7 @@
             [is.simm.uis.web.desktop.workflows-remote]
             [is.simm.uis.web.desktop.memory-remote]
             [is.simm.uis.web.desktop.workspace-remote]
+            [is.simm.uis.web.desktop.github-remote]
             [is.simm.uis.web.desktop.chart-remote]
             [is.simm.uis.web.desktop.benchmark-report-remote]
             [is.simm.uis.web.desktop.saved-view-remote]

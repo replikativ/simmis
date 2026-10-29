@@ -10,6 +10,8 @@
             [is.simm.documents.profile :as profile]
             [is.simm.documents.space :as space]
             [is.simm.model.workspace-intent :as intent]
+            [is.simm.ops.benchmark-case-manifest :as manifests]
+            [is.simm.ops.github-sync-data :as sync-data]
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [kontor.governance :as governance])
   (:import [java.util.concurrent Semaphore]))
@@ -23,7 +25,7 @@
    :object-bytes (* 4 1024 1024) :inflated-bytes (* 128 1024 1024)
    :delta-result-bytes (* 4 1024 1024) :reconstructed-bytes (* 128 1024 1024)
    :delta-depth 32 :commit-visits 4096 :tree-entries 5000 :tree-depth 32
-   :checkout-files 2000 :checkout-bytes (* 32 1024 1024)})
+   :checkout-files 1024 :checkout-bytes (* 32 1024 1024)})
 
 (defn- refuse! [reason]
   (throw (ex-info "GitHub import could not complete" {:type ::held :reason reason})))
@@ -108,6 +110,14 @@
           ;; Checkout validated every blob using the SAME operation budget;
           ;; this metadata validation preserves explicit directory constraints.
           (repo/validate-worktree! @conn (repo/worktree conn))
+          ;; Share the complete metadata bounds used by reviewed sync. This
+          ;; alpha accepts ordinary/executable files, not symlinks/submodules;
+          ;; unsupported repositories remain unpublished without rewriting bytes.
+          (manifests/inventory @conn)
+          (let [pending (d/entity @control-conn [:room/slug (intent/slug creator request)])]
+            (sync-data/capture @conn {:repository (:repository source) :ref ref
+                                     :import-head (:geschichte.commit/id head)
+                                     :registry-system (:system/id (:room/default-repository pending))}))
           (profile/prepare-open! conn options)
           (budget/check! operation)
           (current!)

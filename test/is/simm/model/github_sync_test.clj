@@ -49,7 +49,8 @@
   (fixture
    (fn [conn]
      (let [binding (binding-for) original (prepare! conn binding {:source "repo"})
-           ready (transition! conn original :ready)]
+           allocated (transition! conn original :allocated)
+           ready (transition! conn allocated :ready)]
        (is (thrown? clojure.lang.ExceptionInfo
                     (sync/transition-tx @conn original :applying nil nil)))
        (is (thrown? clojure.lang.ExceptionInfo (transition! conn ready :closed)))
@@ -71,6 +72,7 @@
    (fn [conn]
      (let [binding (binding-for)
            held (-> (prepare! conn binding {:source "repo"})
+                    (#(transition! conn % :allocated))
                     (#(transition! conn % :ready))
                     (#(transition! conn % :applying))
                     (#(transition! conn % :held)))]
@@ -113,7 +115,8 @@
 (deftest a-frozen-ready-receipt-cannot-be-replaced
   (fixture
    (fn [conn]
-     (let [row (-> (prepare! conn (binding-for) {:source "repo"}) (#(transition! conn % :ready)))
+     (let [row (-> (prepare! conn (binding-for) {:source "repo"}) (#(transition! conn % :allocated))
+                    (#(transition! conn % :ready)))
            before @conn]
        (is (empty? (sync/transition-tx @conn row :ready (:github.sync/ready row) (:github.sync/ready-id row))))
        (is (thrown? clojure.lang.ExceptionInfo

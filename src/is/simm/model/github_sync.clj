@@ -15,6 +15,7 @@
          [:github.sync/claim :db.type/uuid] [:github.sync/active-room :db.type/uuid]
          [:github.sync/state :db.type/keyword] [:github.sync/held-from :db.type/keyword]
          [:github.sync/preparation :db.type/store-ref] [:github.sync/preparation-id :db.type/uuid]
+         [:github.sync/workspace :db.type/store-ref] [:github.sync/workspace-id :db.type/uuid]
          [:github.sync/ready :db.type/store-ref] [:github.sync/ready-id :db.type/uuid]
          [:github.sync/outcome :db.type/store-ref] [:github.sync/outcome-id :db.type/uuid]
          [:github.sync/closure :db.type/store-ref] [:github.sync/closure-id :db.type/uuid]
@@ -58,7 +59,8 @@
                   identity immutable)]))))
 
 (def ^:private next-states
-  {:creating #{:ready :held}
+  {:creating #{:allocated :held}
+   :allocated #{:ready :held :closing}
    :ready #{:applying :closing :held}
    :applying #{:applied :satisfied-observed :held}
    :applied #{:closing :held}
@@ -68,7 +70,7 @@
    :closed #{}})
 
 (def ^:private receipt-slot
-  {:ready :ready :applied :outcome :satisfied-observed :outcome
+  {:allocated :workspace :ready :ready :applied :outcome :satisfied-observed :outcome
    :closed :closure :held :incident})
 
 (defn transition-tx
@@ -88,7 +90,7 @@
       (refuse! :invalid-receipt))
     (when-not (or (= from to-state) (contains? (next-states from) to-state)) (refuse! :invalid-transition))
     (when (and (= :held from) (= :ready to-state)
-               (not (#{:creating :ready} (:github.sync/held-from row))))
+               (not (#{:allocated :ready} (:github.sync/held-from row))))
       (refuse! :uncertain-apply))
     (when (and slot (not= :incident slot) (contains? row ref-key)
                (not= receipt (select-keys row (keys receipt))))

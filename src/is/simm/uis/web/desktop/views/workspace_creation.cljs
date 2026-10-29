@@ -44,6 +44,8 @@
                      "A shared place for chat, Markdown knowledge, files and workflow source. Wiki maintenance is included; nothing is scheduled automatically."))
              (when github?
                (el/div {:class "settings-section"}
+                       (el/p {:class "memory-note"}
+                             "Public repositories only: up to 1,024 regular or executable files, 4 MiB per Git object and 32 MiB checked out. Symlinks and submodules are not imported.")
                        (el/label {:class "settings-section-title"}
                                  "Public GitHub repository"
                                  (el/input {:class "settings-input" :aria-label "Public GitHub repository"

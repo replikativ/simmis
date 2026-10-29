@@ -829,6 +829,9 @@
      ;; client-selected party, profile or native path is accepted.
      "create-workspace!"       {:action W :resource (always :authenticated)}
      "observe-workspace-creation!" {:action R :resource (always :authenticated)}
+     "load-github-memory-sync!" {:action R :resource (room :room-id-str)}
+     "sync-github-memory!"      {:action M :resource (room :room-id-str)}
+     "retire-github-memory-sync!" {:action A :resource (room :room-id-str)}
      "load-rooms!"             {:action R :resource (self :party-id-str)}
      ;; --- drives (create) ---
      "create-drive!"           {:action W :resource (always :authenticated)}
