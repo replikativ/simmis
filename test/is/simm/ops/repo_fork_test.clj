@@ -245,14 +245,13 @@
       (is (not (contains? (yp/branches sys) :feature))))))
 
 (deftest parent-ids-reports-the-tip-s-real-parents
-  ;; `repo/head-commit` pulls the ref TARGET, and that pull pattern carries no
-  ;; `:geschichte.commit/parents` — so reading parents off it answers #{} for
-  ;; every repository, and every ancestry question built on it is silently
-  ;; wrong. The adapter re-resolves the tip; this pins that it must.
+  ;; Both the repository API and the substrate must expose the tip's real
+  ;; parents. Geschichte now includes these in head-commit's pull pattern.
   (let [conn (fresh-repo)
         sys (system conn)]
     (commit-in! conn "b.txt" "second\n" "second commit")
-    (testing "the trap itself: the ref-target pull carries no parents"
-      (is (empty? (:geschichte.commit/parents (grepo/head-commit conn)))))
-    (testing "so parent-ids must re-resolve, and does"
-      (is (seq (yp/parent-ids sys))))))
+    (testing "the repository and substrate agree on ancestry"
+      (let [parents (set (map :geschichte.commit/id
+                              (:geschichte.commit/parents (grepo/head-commit conn))))]
+        (is (seq parents))
+        (is (= (set (map str parents)) (set (yp/parent-ids sys))))))))

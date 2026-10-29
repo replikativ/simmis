@@ -10,6 +10,7 @@
             [is.simm.uis.web.desktop.leaderboard :as lb]
             [is.simm.uis.web.desktop.views.core :as vc]
             #?(:cljs [is.simm.uis.web.desktop.signals :as sig])
+            #?(:cljs [is.simm.uis.web.desktop.benchmark-report-actions :as publications])
             #?(:cljs [clojure.core.async :refer [go <! put! promise-chan] :include-macros true])
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
             #?(:cljs [is.simm.uis.web.desktop.runtime :refer [runtime]])
@@ -196,7 +197,8 @@
         "\"No detectable difference\" is not \"equal\": more cases, or cases where the candidates differ, can still separate them."))))
 
 (defn- experiment-section
-  [{:keys [experiment experiment-id workflow evaluation execution complete? candidates paired cells environments repetitions verifier-trust] :as result}]
+  [{:keys [experiment experiment-id workflow evaluation execution complete? candidates paired cells environments repetitions verifier-trust scorecard] :as result}
+   publication on-publish on-open]
   (el/section {:key (str experiment) :class "attempt-board-experiment" :data-experiment experiment}
     (el/div {:class "attempt-board-experiment-title"}
       (el/span {:class "leaderboard-experiment-name" :title experiment-id} (lb/experiment-label result))
@@ -226,11 +228,23 @@
       (progress-table candidates))
     (if (seq (:comparisons paired))
       (paired-table paired)
-      (el/p {:class "attempt-board-range"} "Paired comparisons need two candidates with verdicts on the same cases."))))
+      (el/p {:class "attempt-board-range"} "Paired comparisons need two candidates with verdicts on the same cases."))
+    (when (and complete? scorecard on-publish)
+      (el/div {:class "workflow-note workflow-output-review"}
+        (if (:result publication)
+          (el/button {:on-click (fn [_] (on-open scorecard))} "Open report in Memory")
+          (el/button {:disabled (boolean (:loading? publication))
+                      :on-click (fn [_] (on-publish scorecard))}
+            (cond (:loading? publication) "Creating report…"
+                  (:pending publication) "Retry report publication"
+                  :else "Create report in Memory")))
+        (when (= :preserved (get-in publication [:result :index :status]))
+          (el/p {:role "status"} "The report is available. Your existing Reports index was kept."))
+        (when-let [error (:error publication)] (el/p {:class "proposal-error" :role "alert"} error))))))
 
 (defn view
   "`leaderboard` is `{:data :error}` as loaded (`is.simm.ops.experiments`)."
-  [{:keys [room-name leaderboard on-back-room on-refresh]}]
+  [{:keys [room-name leaderboard on-back-room on-refresh report-publications on-publish-report on-open-report]}]
   (let [{:keys [data error]} leaderboard
         {:keys [experiments running]} data]
     (el/div {:class "run-history attempt-board leaderboard"}
@@ -263,7 +277,7 @@
             (el/p {} "Benchmark candidates on a workflow (catalog_benchmark, room-run) and its leaderboard appears here."))
           :else
           (el/div {:class "attempt-board-sections"}
-            (map experiment-section experiments)))))))
+            (map #(experiment-section % (get report-publications (:scorecard %)) on-publish-report on-open-report) experiments)))))))
 
 (defn leaderboard-tab
   "The Leaderboard tab of a room: loads its leaderboard on first sight and
@@ -275,6 +289,8 @@
      (spin
        (let [epoch (iv/get-new (track sig/memory-connection))
              boards (iv/get-new (track sig/leaderboards))
+             reports (iv/get-new (track sig/benchmark-report-publications))
+             actions (publications/controller (:publication-owner props))
              entry (get boards room-id)
              _ (when (or (not= epoch (:epoch (get @requested room-id)))
                          (not (contains? @requested room-id))
@@ -282,5 +298,7 @@
                  (load-leaderboard! room-id attempts))]
          (view (assoc props
                       :leaderboard entry
+                      :report-publications (get reports (publications/owner-key (web/current-session) (:publication-owner props)))
+                      :on-publish-report (:publish actions) :on-open-report (:open actions)
                       :on-refresh #(load-leaderboard! room-id attempts)))))
      :clj (view (assoc props :leaderboard nil))))

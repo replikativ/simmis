@@ -151,11 +151,20 @@
     (with-repository
       (fn [conn]
         (write! conn "out/wiki/a.md" "Parent file")
-        (if child?
-          (write! conn "out/wiki/a.md/b.md" "Impossible child")
-          (d/transact conn [{:geschichte.work-dir/path "out/wiki/a.md"}]))
-        (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Collision loaded content")))]
-          (is (thrown? clojure.lang.ExceptionInfo (outputs/capture-db @conn))))))))
+        ;; Ordinary writes now prevent these invalid trees. Construct an
+        ;; immutable corrupt snapshot explicitly to retain the reader's
+        ;; defensive validation coverage without weakening the write guard.
+        (let [db @conn
+              invalid (:db-after
+                       (d/with db
+                               [(if child?
+                                  (assoc (d/pull db '[:geschichte.work/size :geschichte.work/mode
+                                                      {:geschichte.work/content [:geschichte.content/id]}]
+                                                 [:geschichte.work/path "out/wiki/a.md"])
+                                         :geschichte.work/path "out/wiki/a.md/b.md")
+                                  {:geschichte.work-dir/path "out/wiki/a.md"})]))]
+          (with-redefs [content/read-by-id (fn [& _] (throw (AssertionError. "Collision loaded content")))]
+            (is (thrown? clojure.lang.ExceptionInfo (outputs/capture-db invalid)))))))))
 
 (deftest wrapper-preserves-portable-evidence-through-observe-and-versioned-ref
   (let [room (discourse/make-room {:id (keyword (str "output-wrapper-" (random-uuid)))

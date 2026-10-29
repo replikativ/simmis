@@ -798,6 +798,8 @@
      "load-memory-properties!" {:action R :resource (room :room-id-str)}
      "load-memory-chart!"      {:action R :resource (room :room-id-str)}
      "load-memory-saved-view!"  {:action R :resource (room :room-id-str)}
+     "prepare-report!"          {:action W :resource (room :room-id-str)}
+     "publish-report!"          {:action W :resource (room :room-id-str)}
      "resolve-memory-block!"   {:action R :resource (room :room-id-str)}
      "load-memory-backlinks!"  {:action R :resource (room :room-id-str)}
      "save-memory-property!"   {:action W :resource (room :room-id-str)}

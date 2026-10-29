@@ -102,16 +102,16 @@
         (is (not= (:id basis) (:id (inputs/publication-basis @conn))))))))
 
 (deftest publication-basis-refuses-files-and-symlinks-as-parent-directories
-  (with-repository
-    (fn [conn]
-      (write! conn "wiki/link" "symlink target")
-      (d/transact conn [[:db/add [:geschichte.work/path "wiki/link"] :geschichte.work/mode (long 40960)]])
-      (let [basis (inputs/publication-basis @conn)]
+  (doseq [[path mode] [["wiki/link" 40960] ["wiki" 33188]]]
+    (with-repository
+      (fn [conn]
+        ;; Test each occupied parent in its own valid repository: a file
+        ;; cannot replace the directory containing the symlink fixture.
+        (write! conn path "Occupied parent")
+        (d/transact conn [[:db/add [:geschichte.work/path path] :geschichte.work/mode (long mode)]])
         (is (thrown? clojure.lang.ExceptionInfo
-                     (inputs/publication-before basis "wiki/link/new.md"))))
-      (write! conn "wiki" "Root occupied by a file")
-      (is (thrown? clojure.lang.ExceptionInfo
-                   (inputs/publication-before (inputs/publication-basis @conn) "wiki/new.md"))))))
+                     (inputs/publication-before (inputs/publication-basis @conn)
+                                                (str path "/new.md"))))))))
 
 (deftest publication-basis-binds-the-physical-workspace-and-logical-ref
   (with-repository

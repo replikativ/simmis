@@ -33,6 +33,7 @@
             [is.simm.uis.web.desktop.views.room-settings :as room-settings-view]
             [is.simm.uis.web.desktop.views.files :as files-view]
             #?(:cljs [is.simm.uis.web.desktop.views.memory :as memory-view])
+            #?(:cljs [is.simm.uis.web.desktop.views.memory-navigation :as memory-navigation])
             [is.simm.uis.web.desktop.views.mail :as mail-view]
             [is.simm.uis.web.desktop.views.kb-settings :as kb-settings-view]
             [is.simm.uis.web.desktop.views.sandbox-panel :as sandbox-panel]
@@ -1370,6 +1371,7 @@
          (leaderboard-view/leaderboard-tab
           {:room-id room-id
            :room-name room-name
+           :publication-owner data
            :attempts (when room-db
                        (try (attempt-board/experiment-fingerprint room-db)
                             (catch :default _ nil)))
@@ -1837,28 +1839,23 @@
                (vc/icon "list-tree" {:class "chat-settings-icon"})
                (when (seq active-runs)
                  (el/span {:class "chat-runs-history-dot"})))
-             (el/button {:class "chat-settings-btn"
-                         :title "Attempts: jobs, experiments, models"
-                         :on-click (fn [_]
-                                     (sig/open-tab!
-                                      :attempt-board
-                                      {:room-id room-id
-                                       :room-name room-name
-                                       :db-scope room-db-scope}
-                                      {:title (str room-name " Attempts")
-                                       :new-tab? true}))}
-               (vc/icon "trophy" {:class "chat-settings-icon"}))
-             (el/button {:class "chat-settings-btn"
-                         :title "Leaderboard: each experiment's candidates, compared on the same cases"
-                         :on-click (fn [_]
-                                     (sig/open-tab!
-                                      :leaderboard
-                                      {:room-id room-id
-                                       :room-name room-name
-                                       :db-scope room-db-scope}
-                                      {:title (str room-name " Leaderboard")
-                                       :new-tab? true}))}
-               (vc/icon "medal" {:class "chat-settings-icon"}))
+             (el/details {:class "memory-file-menu chat-reports-menu"}
+               (el/summary {:class "chat-settings-btn" :title "Reports" :aria-label "Reports"}
+                 (vc/icon "file-chart-column" {:class "chat-settings-icon"}))
+               (el/div {:class "memory-file-menu-content"}
+                 (el/button {:on-click (let [open! (memory-navigation/room-folder-action data "reports")]
+                                        (fn [_] (open!)))}
+                   "Reports in Memory")
+                 (el/button {:on-click (fn [_]
+                                        (sig/open-tab! :attempt-board
+                                                       {:room-id room-id :room-name room-name :db-scope room-db-scope}
+                                                       {:title (str room-name " Attempts") :new-tab? true}))}
+                   "Detailed attempts and jobs")
+                 (el/button {:on-click (fn [_]
+                                        (sig/open-tab! :leaderboard
+                                                       {:room-id room-id :room-name room-name :db-scope room-db-scope}
+                                                       {:title (str room-name " Comparisons") :new-tab? true}))}
+                   "Candidate comparisons")))
              (el/button {:class (vc/class-names "chat-settings-btn"
                                                 (when (and screen-sharing
                                                            (contains? screen-sharing room-id))

@@ -9160,6 +9160,8 @@ body.tab-dragging .column-drop-zone {
 .memory-file-menu-content { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; display: flex; flex-direction: column; gap: 4px; width: 240px; max-height: 65vh; overflow: auto; padding: 8px; background: var(--mono-bg-elevated, #202124); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: 0 8px 24px #0004; }
 .memory-file-menu-content > button { text-align: left; border: 0; }
 .memory-file-menu-content > button:hover { background: var(--mono-bg-overlay); }
+.chat-reports-menu .memory-file-menu-content > button { padding: 6px 8px; background: transparent; color: var(--mono-text-primary); font: inherit; border-radius: var(--radius-sm); cursor: pointer; }
+.chat-reports-menu .memory-file-menu-content > button:hover { background: var(--mono-bg-overlay); }
 .memory-file-menu-content .memory-upload { border: 0; padding: 5px 8px; font-size: 12px; }
 .memory-file-menu-content input[type=file] { display: block; max-width: 100%; margin: 6px 0 0; }
 .memory-file-menu-content code { overflow-wrap: anywhere; }
