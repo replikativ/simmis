@@ -56,14 +56,15 @@
         url (github/public-url source)
         ref (reference! (repo/current-ref conn))
         head (:geschichte.commit/id (repo/head-commit conn))
-        config (repo/configuration conn)]
+        config (repo/configuration conn)
+        oid (:geschichte.commit/git-oid (repo/commit-by-id conn head))]
     (when-not (and (uuid? head) (:clean? (repo/status conn))
-                   (string? (:geschichte.commit/git-oid (repo/commit-by-id conn head)))
+                   (and (string? oid) (re-matches #"[0-9a-f]{40}" oid))
                    (= url (get config "remote.origin.url"))
                    (= "origin" (get config (str "branch." (subs ref 11) ".remote")))
                    (= ref (get config (str "branch." (subs ref 11) ".merge"))))
       (refuse! :import-correspondence))
-    {:repository (:repository source) :ref ref :head head}))
+    {:repository (:repository source) :ref ref :head head :git-oid oid}))
 
 (defn policies
   "Trusted synchronous create-only policy. Caller holds its original App;

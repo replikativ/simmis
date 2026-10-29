@@ -11,6 +11,8 @@
             [is.simm.documents.space :as space]
             [is.simm.documents.starter-bundle :as starter]
             [is.simm.model.knowledge-rooms :as rooms]
+            [is.simm.model.github-integrations :as integrations]
+            [is.simm.model.github-connections :as git-connections]
             [is.simm.model.rooms :as legacy]
             [is.simm.model.system-db :as system-db]
             [is.simm.model.workspace-intent :as creation]
@@ -158,8 +160,17 @@
         recorded (d/db-with pending (creation/record-source-tx pending creator request))
         ready (d/db-with recorded [[:db/add [:room/id id] :room/provisioning-state :ready]])
         expected (@#'rooms/prepared-basis! ready provisioned creator)
-        proof {:repository "owner/repo" :ref "refs/heads/main" :head (random-uuid)
-               :registry-system (:repo-id provisioned)}
+        connection {:version 1 :room id :source (:source request) :ref "refs/heads/main" :target-stamp (random-uuid)
+                    :target {:repository (random-uuid) :store (random-uuid) :backend :memory
+                             :branch :db :ref "refs/heads/main" :registry-system (:repo-id provisioned)
+                             :runtime-system "prepared-repository"}}
+        head (random-uuid) oid (apply str (repeat 40 "a"))
+        receipt (integrations/import-body connection creator (creation/receipt creator request) head oid)
+        proof {:repository "owner/repo" :ref "refs/heads/main" :head head :git-oid oid
+               :registry-system (:repo-id provisioned)
+               :integration {:connection connection :connection-id (git-connections/connection-id connection)
+                             :connection-ref (random-uuid) :receipt receipt :receipt-id (integrations/import-id receipt)
+                             :receipt-ref (random-uuid)}}
         scope (random-uuid)
         publish (fn [snapshot request proof]
                   (@#'rooms/publish-tx snapshot expected creator #{creator} scope :project request proof))
@@ -167,10 +178,20 @@
     (is (= :created (:status (creation/observe after creator request))))
     (is (= "refs/heads/main" (:room/github-ref (d/entity after [:room/id id]))))
     (is (= (:head proof) (:room/github-import-head (d/entity after [:room/id id]))))
+    (is (= (:head proof) (:github.integration/head (integrations/current-in after id))))
+    (is (= oid (:github.integration/oid (integrations/current-in after id))))
+    (is (nil? (integrations/current-in ready id)))
     (is (nil? (:room/content-db-scope (d/entity ready [:room/id id]))))
     (doseq [changed [nil (assoc proof :repository "other/repo") (assoc proof :head nil)
                      (assoc proof :registry-system (random-uuid))
-                     (assoc proof :ref "refs/heads/main\n") (assoc proof :extra true)]]
+                     (assoc proof :ref "refs/heads/main\n") (assoc proof :extra true)
+                     (assoc proof :git-oid "bad") (dissoc proof :integration)
+                     (assoc-in proof [:integration :connection-id] (random-uuid))
+                     (assoc-in proof [:integration :receipt-id] (random-uuid))
+                     (assoc-in proof [:integration :connection :room] (random-uuid))
+                     (assoc-in proof [:integration :connection :source :repository] "other/repo")
+                     (assoc-in proof [:integration :receipt :head] (random-uuid))
+                     (assoc-in proof [:integration :receipt :by] (random-uuid))]]
       (is (thrown? clojure.lang.ExceptionInfo (publish ready request changed))))
     (is (thrown? clojure.lang.ExceptionInfo
                  (publish (d/db-with ready [[:db/add [:room/id id] :room/github-source "other/repo"]]) request proof)))

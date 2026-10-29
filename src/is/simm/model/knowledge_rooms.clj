@@ -2,6 +2,7 @@
   "Explicit HOST creation of new file-backed knowledge project Rooms.
    Not a migration, transport endpoint or agent-facing provisioning capability."
   (:require [datahike.api :as d]
+            [dvergr.artifact :as artifact]
             [dvergr.rooms :as live]
             [dvergr.system.room-intent :as intent]
             [dvergr.system.rooms :as native]
@@ -9,6 +10,8 @@
             [is.simm.documents.space :as space]
             [is.simm.documents.starter-bundle :as starter]
             [is.simm.model.rooms :as rooms]
+            [is.simm.model.github-integrations :as integrations]
+            [is.simm.model.github-connections :as git-connections]
             [is.simm.model.store :as store]
             [is.simm.model.system-db :as system-db]
             [is.simm.model.workspace-intent :as creation]
@@ -26,6 +29,23 @@
                  (<= 1 (count members) 256)
                  (every? #(and (uuid? %) (d/entity snapshot [:party/id %])) members))
     (refuse! :invalid-members)))
+
+(defn- initial-integration-tx [snapshot room-id creator request source-proof]
+  (let [{:keys [connection connection-id connection-ref receipt receipt-id receipt-ref] :as proof}
+        (:integration source-proof)]
+    (when-not (and (map? proof)
+                   (= #{:connection :connection-id :connection-ref :receipt :receipt-id :receipt-ref} (set (keys proof)))
+                   (every? uuid? [connection-id connection-ref receipt-id receipt-ref])
+                   (= room-id (:room connection)) (= (:source request) (:source connection))
+                   (= (:ref source-proof) (:ref connection))
+                   (= (:registry-system source-proof) (get-in connection [:target :registry-system]))
+                   (= connection-id (git-connections/connection-id connection))
+                   (= receipt (integrations/import-body connection creator (creation/receipt creator request)
+                                                        (:head source-proof) (:git-oid source-proof)))
+                   (= receipt-id (integrations/import-id receipt)))
+      (refuse! :invalid-integration-proof))
+    (integrations/initialize-tx snapshot room-id connection-ref connection-id
+                                (:head source-proof) (:git-oid source-proof) receipt-ref receipt-id)))
 
 (defn- publish-tx
   ([snapshot expected creator members scope]
@@ -46,7 +66,8 @@
        (refuse! :creation-request-changed)))
    (let [id (get-in expected [:room :room/id])
          actual (intent/basis snapshot id)
-         msgs (filter #(= :msgs (get-in % [:grant/system :system/type])) (:attachments actual))]
+         msgs (filter #(= :msgs (get-in % [:grant/system :system/type])) (:attachments actual))
+         integration-tx (when (:source request) (initial-integration-tx snapshot id creator request source-proof))]
      (when-not (and (= expected actual) (= :ready (get-in actual [:room :room/provisioning-state]))
                     (= creator (get-in actual [:room :room/owner :party/id]))
                     (= 1 (count msgs)) (= :owner (:grant/permission (first msgs)))
@@ -62,7 +83,7 @@
                         (and (= (creation/receipt creator request)
                                 (select-keys row [:room/creation-intent :room/creation-basis]))
                              (= (get-in request [:source :repository]) (:room/github-source row))
-                             (= #{:repository :ref :head :registry-system} (set (keys source-proof)))
+                             (= #{:repository :ref :head :git-oid :registry-system :integration} (set (keys source-proof)))
                              (= (:room/github-source row) (:repository source-proof))
                              (= (:registry-system source-proof)
                                 (get-in actual [:room :room/default-repository :system/id]))
@@ -72,12 +93,12 @@
                                                     (:db/id (d/entity snapshot [:room/id id])) %))
                                      [:room/creation-intent :room/creation-basis :room/github-source]))))
        (refuse! :prepared-room-changed))
-     [(cond-> (assoc {:room/id id :room/created-by creator :room/content-db-scope scope}
+     (into [(cond-> (assoc {:room/id id :room/created-by creator :room/content-db-scope scope}
                      :room/parties (mapv #(vector :party/id %) (sort-by str members)))
         request (merge (creation/receipt creator request))
         source-proof (assoc :room/github-ref (:ref source-proof)
                             :room/github-import-head (:head source-proof)
-                            :room/github-repository [:system/id (:registry-system source-proof)]))])))
+                            :room/github-repository [:system/id (:registry-system source-proof)]))] integration-tx))))
 
 (defn- prepared-basis!
   ([snapshot provisioned creator] (prepared-basis! snapshot provisioned creator :project))
@@ -151,10 +172,24 @@
             (binding [ec/*execution-context* room-ctx] (store/ensure! messages scope))
             (current!)
             (when request (creation/authorize! @conn creator request))
-            (live/register-prepared-room! room-id)
-            (current!)
-            (d/transact conn [[:db.fn/call publish-tx expected creator members scope requested-type request source-proof]])
-            (rooms/get-room room-id))
+            (let [room (live/register-prepared-room! room-id)
+                  integration (when (:source request)
+                                ((requiring-resolve 'is.simm.ops.github-connection/prepare-import!)
+                                 conn creator request room-id room source-proof))
+                  write! (fn [proof]
+                           (current!)
+                           (d/transact conn [[:db.fn/call publish-tx expected creator members scope requested-type request proof]]))]
+              (if integration
+                (artifact/publish-value!
+                 (artifact/datahike-store conn) (:connection integration)
+                 (fn [connection-ref]
+                   (artifact/publish-value!
+                    (artifact/datahike-store conn) (:receipt integration)
+                    (fn [receipt-ref]
+                      (write! (assoc source-proof :integration
+                                     (assoc integration :connection-ref connection-ref :receipt-ref receipt-ref)))))))
+                (write! source-proof))
+              (rooms/get-room room-id)))
           (catch Throwable error
             (throw (ex-info "Knowledge Room prepared but Simmis activation failed"
                             {:type ::activation-failed :room/id room-id} error))))))))
