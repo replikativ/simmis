@@ -319,5 +319,10 @@ Recovery is caller-carried. Losing the prepared values, or a formatter change
 that produces a different digest, does not authorize resuming with a new plan.
 There is no durable server publication queue or background reconciliation.
 These operations never run a benchmark, add funding, enable a schedule or accept
-a proposal. The browser's Create report action and inline chat summary are
-separate integration work.
+a proposal. Completed results also offer **Create report in Memory**. One click prepares
+and publishes the report; **Open report in Memory** then opens it separately,
+without moving the user away while publication is running. A reconnect retains
+the original target/digest for explicit retry. Closed or repurposed tabs and
+late replies cannot start a dependent write or open another tab's destination.
+Inline chat summaries and the consolidated room Reports destination remain
+follow-up integration work.

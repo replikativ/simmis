@@ -219,6 +219,11 @@
             (`attempt-board/experiment-fingerprint`): a newer one loads it again."
            (signal runtime {})))
 
+#?(:cljs (def benchmark-report-publications
+           "Context-owned tab/Scorecard requests: original pending digest and
+            Memory target, status and result link. No automatic publication."
+           (signal runtime {})))
+
 #?(:cljs (def accounting-data
            "Signal for the Accounting perspective:
             {:books [{:room :room-name :accounts [...] :error?}] :loaded-at ms}

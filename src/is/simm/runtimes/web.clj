@@ -70,6 +70,7 @@
             [is.simm.uis.web.desktop.memory-remote]
             [is.simm.uis.web.desktop.workspace-remote]
             [is.simm.uis.web.desktop.chart-remote]
+            [is.simm.uis.web.desktop.benchmark-report-remote]
             [is.simm.uis.web.desktop.saved-view-remote]
             [is.simm.uis.web.desktop.memory-reference-remote]
             [is.simm.uis.web.desktop.conversation-capture-remote]

@@ -1370,6 +1370,7 @@
          (leaderboard-view/leaderboard-tab
           {:room-id room-id
            :room-name room-name
+           :publication-owner data
            :attempts (when room-db
                        (try (attempt-board/experiment-fingerprint room-db)
                             (catch :default _ nil)))
