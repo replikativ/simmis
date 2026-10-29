@@ -8,8 +8,17 @@ execution. Ordinary Markdown needs no Simmis identity. Malformed explicitly
 authored Simmis metadata remains a source repair diagnostic.
 
 **Add Memory → GitHub repository** opens the fixed import form. Geschichte
-0.1.37 supplies the reviewed finite import budget, native
-HTTP deadlines and inspected-target checkpoint precondition.
+0.1.40 includes the reviewed finite import budget, native HTTP deadlines and
+inspected-target checkpoint precondition, plus fixes for whitespace-only text,
+invalid UTF-8 and overlapping content-merge regions.
+
+New imports publish their exact source Git OID, native head, physical connection
+identity and retained creation receipt in the same control transaction as
+Memory membership. Failure before that transaction publishes neither membership
+nor an integration row; an uncertain acknowledgment is observed using the same
+creation request, never by cloning again. Existing Memories are not assigned
+inferred upstream metadata. This metadata does not itself pin native snapshots
+against GC or enable merging local edits, pushing, or automatic sync.
 
 ## Import limits
 
