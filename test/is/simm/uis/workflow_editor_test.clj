@@ -463,6 +463,26 @@
     (is (thrown? Exception (editor/setup-offer (assoc-in draft [:source :setup :intent] {:limits {:max-dispatches 1000}}) setup-readiness nil)))
     (is (thrown? Exception (editor/setup-offer (assoc-in draft [:source :setup :intent] {:action :schedule :cadence {:every "week" :on "monday" :at "09:00" :tz "UTC" :interval-ms 60000}}) setup-readiness nil)))))
 
+(deftest benchmark-setup-offers-use-preferred-or-explicit-models-and-frozen-cases
+  (let [draft (-> (editor/draft source)
+                  (assoc-in [:source :inspection :cases] ["supported"])
+                  (assoc-in [:source :inspection :benchmark-ready?] true)
+                  (assoc-in [:source :setup :intent] {:version 1 :action :benchmark}))
+        automatic (editor/setup-offer draft setup-readiness nil)
+        comparison (editor/setup-offer
+                    (assoc-in draft [:source :setup :intent]
+                              {:version 1 :action :benchmark :models ["luna" "sol"] :repetitions 2})
+                    setup-readiness nil)]
+    (is (= :benchmark (:action automatic)))
+    (is (= ["luna"] (get-in automatic [:payload :models])))
+    (is (= ["luna" "sol"] (get-in comparison [:payload :models])))
+    (is (= ["supported"] (get-in comparison [:payload :cases])))
+    (is (= 2 (get-in comparison [:payload :repetitions])))
+    (is (= "discard" (get-in comparison [:payload :limits :settlement])))
+    (is (nil? (:submission draft)))
+    (is (thrown? Exception (editor/setup-offer (assoc-in draft [:source :inspection :benchmark-ready?] false)
+                                              setup-readiness nil)))))
+
 (deftest checkpoint-offer-preserves-discard-and-advanced-edits-can-be-reviewed
   (let [draft (editor/draft (assoc source :files (starter/source)))
         offer (editor/setup-offer draft setup-readiness nil)

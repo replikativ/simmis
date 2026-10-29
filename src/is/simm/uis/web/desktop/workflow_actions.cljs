@@ -112,6 +112,7 @@
                                (web/current-session? session) (connection/snapshot)
                                (= :ready (:readiness-status (state)))
                                (:merge? (:permissions (state)))
+                               (or (not= :benchmark (:action offered)) (:operator? (:permissions (state))))
                                (not (:access-denied? (state)))
                                (= (:generation offered) (offer-generation))
                                (= offered (:setup-offer draft))
@@ -434,6 +435,7 @@
                          (case (:action offered)
                            :schedule (schedule! name false true offered)
                            :run (submit! name false offered)
+                           :benchmark (submit! name false offered)
                            (throw (js/Error. "Review a valid setup proposal before confirming.")))
                          (catch :default error (update! assoc-in [:errors :setup] (rem/error-text error)))))
        :open-advanced (fn [name]

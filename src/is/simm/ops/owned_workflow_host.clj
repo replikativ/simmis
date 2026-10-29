@@ -11,6 +11,7 @@
 (def owned-actions
   {:simmis/workspace-bundle :read :simmis/workspace-bundle-chunk :read
    :simmis/benchmark-report-prepare :write :simmis/benchmark-report-publish :write
+   :simmis/benchmark-result-retry :write
    :simmis/workflow-list :read :simmis/workflow-source :read
    :simmis/workflow-check :read :simmis/workflow-schedule-list :read
    :simmis/workflow-write :write

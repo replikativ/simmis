@@ -15,8 +15,16 @@
             options {:eof eof :readers {} :default (fn [& _] (invalid!))}
             value (edn/read options reader)]
         (when-not (and (identical? eof (edn/read options reader)) (map? value)
-                       (every? #{:version :action :cadence :model :case :limits} (keys value))
-                       (= 1 (:version value)) (#{:run :schedule} (:action value))
+                       (every? #{:version :action :cadence :model :models :repetitions :case :limits} (keys value))
+                       (= 1 (:version value)) (#{:run :schedule :benchmark} (:action value))
+                       (if (= :benchmark (:action value))
+                         (and (not (and (:model value) (:models value)))
+                              (or (not (contains? value :models))
+                                  (and (vector? (:models value)) (<= 1 (count (:models value)) 3)
+                                       (= (count (:models value)) (count (distinct (:models value))))
+                                       (every? #(and (string? %) (<= 1 (count %) 200)) (:models value))))
+                              (or (not (contains? value :repetitions)) (#{1 2} (:repetitions value))))
+                         (not-any? #(contains? value %) [:models :repetitions]))
                        (or (nil? (:model value)) (and (string? (:model value)) (<= 1 (count (:model value)) 200)))
                        (or (nil? (:case value)) (and (string? (:case value)) (<= 1 (count (:case value)) 200)))
                        (if (= :schedule (:action value))
