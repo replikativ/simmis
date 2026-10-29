@@ -108,6 +108,29 @@
             (when @stop (browser/unmount! @stop))
             (.remove container)))))))
 
+(deftest known-local-history-refusal-explains-what-is-kept-and-closes-only-the-attempt
+  (with-client
+    (fn [{:keys [a state calls memory]}]
+      (act! a :sync)
+      ((:ok (first @calls)) {:status :held :reason :local-history :can-discard? true})
+      (let [container (.createElement js/document "div") stop (atom nil)]
+        (.appendChild (.-body js/document) container)
+        (try
+          (reset! stop (browser/mount! container (view/view @memory a (state))))
+          (is (.includes (.-textContent container) "Your edits are saved in this Memory."))
+          (is (.includes (.-textContent container) "nothing was pushed"))
+          (is (not (.includes (.-textContent container) "This sync needs inspection")))
+          (let [close (some #(when (= "Close attempt (keep edits)" (.-textContent %)) %)
+                            (array-seq (.querySelectorAll container "button")))]
+            (is (some? close))
+            (.click close)
+            (is (= [:prepare :discard] (mapv :operation @calls)))
+            (is (= (get-in (first @calls) [:request :client-id])
+                   (get-in (second @calls) [:request :client-id]))))
+          (finally
+            (when @stop (browser/unmount! @stop))
+            (.remove container)))))))
+
 (deftest connected-old-review-buttons-cannot-approve-or-discard-a-later-intent
   (with-client
     (fn [{:keys [a state calls ready memory]}]
