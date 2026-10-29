@@ -615,21 +615,21 @@
             (when-let [error (:action-error action)]
               (el/div {:class "chat-proposal-card-error"} error))
             (el/div {:class "chat-proposal-card-actions"}
-              (el/button {:class "button button--primary chat-proposal-review"
+              (el/button {:class "btn btn-secondary chat-proposal-review"
                           :on-click
                           (fn [event]
                             (when on-open-proposal
                               (on-open-proposal event proposal-id title)))}
                 "Review changes")
               (when (:retry? action)
-                (el/button {:class "button chat-proposal-retry"
+                (el/button {:class "btn btn-secondary chat-proposal-retry"
                             :on-click (fn [event]
                                         (.stopPropagation event)
                                         (when on-retry-proposal
                                           (on-retry-proposal proposal-id)))}
                   "Retry"))
               (when (= :open (:status action))
-                [(el/button {:class "button chat-proposal-accept"
+                [(el/button {:class "btn btn-affirm chat-proposal-accept"
                              :disabled (:accept-disabled? action)
                              :on-click (fn [event]
                                          (.stopPropagation event)
@@ -637,14 +637,14 @@
                                            (on-accept-proposal
                                             proposal-id (:accept-force? action))))}
                    (:accept-label action))
-                 (el/button {:class "button chat-proposal-request"
+                 (el/button {:class "btn btn-secondary chat-proposal-request"
                              :disabled (:request-disabled? action)
                              :on-click (fn [event]
                                          (.stopPropagation event)
                                          (when on-request-proposal-changes
                                            (on-request-proposal-changes proposal-id)))}
                    "Request changes")
-                 (el/button {:class "button chat-proposal-dismiss"
+                 (el/button {:class "btn btn-secondary chat-proposal-dismiss"
                              :disabled (:dismiss-disabled? action)
                              :on-click (fn [event]
                                          (.stopPropagation event)

@@ -2607,6 +2607,17 @@ body {
   margin-top: var(--spacing-md);
 }
 
+/* Keep inline proposal actions compact while sharing themed button states. */
+.chat-proposal-card-actions .btn {
+  padding: 6px 10px;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
+.chat-proposal-card-actions .btn:disabled {
+  cursor: default;
+}
+
 /* Inline Vega-Lite chart in chat messages */
 .chat-vega-chart {
   margin: var(--spacing-sm) 0;
