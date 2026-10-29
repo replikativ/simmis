@@ -3,6 +3,9 @@
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.dom.router :as spin-router]
+            [org.replikativ.spindel.dom.browser :as browser]
+            [is.simm.uis.web.desktop.views.nav :as nav]
+            [is.simm.uis.web.desktop.message-notify-sync :as notifications]
             [is.simm.uis.web.desktop.runtime :as runtime]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.db-signal :as db]
@@ -181,3 +184,29 @@
               (binding [ec/*execution-context* nil] (sig/close-tab! "first" "wiki"))
               (is (= [[:query page] [:disconnect "kb-scope"] [:view "kb-scope"]] @calls))
               (finally (context/close-context! fork)))))))))
+
+(deftest benchmark-receipts-do-not-change-the-room-navigation-destination
+  (with-navigation
+    (fn [{:keys [live]}]
+      (let [container (.createElement js/document "div") marks (atom [])]
+        (.appendChild (.-body js/document) container)
+        (try
+          (with-redefs [notifications/mark-read! #(swap! marks conj %)]
+            (doseq [modifiers [#js {} #js {:ctrlKey true} #js {:metaKey true}]]
+              (let [before (count @sig/layout-columns)
+                    mounted (browser/mount! container
+                                            (nav/nav-item {:id (str room) :type :chat :title "Playground"
+                                                           :db-scope "room-scope" :experiment? true}))]
+                (try
+                  (.dispatchEvent (.querySelector container ".nav-item")
+                                  (js/MouseEvent. "click" modifiers))
+                  (is (= :chat (:type (focused))))
+                  (is (= (str room) (get-in (focused) [:data :room-id])))
+                  (is (= "root-scope" (get-in (focused) [:data :db-scope]))
+                      "The current roster supplies the scope, rather than a stale sidebar hint")
+                  (is (= "Playground" (:title (focused))))
+                  (is (= (if (or (.-ctrlKey modifiers) (.-metaKey modifiers)) (inc before) before)
+                         (count @sig/layout-columns)))
+                  (finally (browser/unmount! mounted))))))
+          (is (= [(str room) (str room) (str room)] @marks))
+          (finally (.remove container)))))))
