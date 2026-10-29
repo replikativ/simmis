@@ -400,3 +400,65 @@
             (is (= text (:text (is.simm.documents.files/read-file-in before "wiki/a.md"))))
             (is (= before @conn))))
         (finally (d/release conn) (d/delete-database cfg))))))
+
+(deftest ordinary-markdown-coexists-with-semantic-pages-without-adoption
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write :keep-history? false}
+        plain (str "---\ntitle: Upstream readme\n---\n# Imported documentation\n\n"
+                   "Ordinary Markdown stays portable.\n")]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (try
+        (space/provision! conn)
+        (write! conn "README.md" plain)
+        (let [before @conn only-plain (view/prepare before options)]
+          (is (= :ready (:status only-plain)))
+          (is (= 1 (count (:documents only-plain))))
+          (is (empty? (d/q '[:find ?id :where [?e :document/path] [?e :entity/uuid ?id]] (:db only-plain))))
+          (is (view/current? @conn options only-plain))
+          (is (view/current? (:db only-plain) options only-plain))
+          (is (view/same-source? before @conn)))
+        (write! conn "wiki/Company.md" (source {"simmis-id" (str page-a)} "# Company\n"))
+        (let [before @conn prepared (view/prepare before options)
+              doc (first (filter #(= "README.md" (:path %)) (:documents prepared)))
+              projected (:db prepared)]
+          (is (= :ready (:status prepared)) (pr-str (:diagnostics prepared)))
+          (is (= :provisional (:identity-status doc)))
+          (is (= #{"README.md" "wiki/Company.md"}
+                 (set (d/q '[:find [?path ...] :where [_ :document/path ?path]] projected))))
+          (is (= #{page-a} (set (d/q '[:find [?id ...] :where [?e :document/path] [?e :entity/uuid ?id]] projected))))
+          (is (nil? (:entity/uuid (d/pull projected [:entity/uuid] [:document/id (:id doc)]))))
+          (is (= #{"wiki/Company.md"} (set (d/q '[:find [?title ...] :where [?e :document/path] [?e :S.Page/title ?title]] projected))))
+          (is (view/current? @conn options prepared))
+          (is (view/current? projected options prepared))
+          (is (view/same-source? before @conn) "Reading/projection never adopts or rewrites a file")
+          (is (= plain (String. ^bytes (repo/read conn "README.md") "UTF-8")))
+          (is (= 4 (get-in prepared [:selection :projection-version])))
+          (is (= 2 (get-in prepared [:selection :canonical-codec :version])))
+          (testing "unrelated authored entity sharing a provisional UUID is not a canonical collision"
+            (d/transact conn [{:entity/uuid (:id doc)}])
+            (is (view/current? @conn options prepared))
+            (is (= :ready (:status (view/prepare @conn options)))))
+          (testing "ordinary edits are valid without semantic adoption"
+            (let [entry (get-in prepared [:selection :files "README.md"])]
+              (is (= :valid (:status (view/validate-replacement @conn options
+                                                                {:path "README.md" :expected entry :source (str plain "\nMore documentation.\n")}))))))
+          (testing "malformed reserved metadata does not silently become a plain file"
+            (doseq [raw [{"simmis-id" "not-a-uuid"}
+                         {"simmis" {"version" 99}}
+                         {"simmis" {"version" 1}}
+                         {"simmis" {"version" 1 "blocks" {(str block-id) {"values" {"unknown" 123}}}}}
+                         {"simmis" {"version" 1 "types" [(str (:entity/uuid seed/object-Page))]}}]]
+              (write! conn "README.md" (source raw (str "# Broken declarations\n\n<!-- simmis:block " block-id " -->\n\nA block.\n\n<!-- /simmis:block -->\n")))
+              (is (= :invalid (:status (view/prepare @conn options))))))
+          (testing "explicit adoption participates in the existing canonical constraints"
+            (write! conn "README.md" (source {"simmis-id" (str page-b)} "# Adopted documentation\n"))
+            (let [adopted (view/prepare @conn options)]
+              (is (= :ready (:status adopted)))
+              (is (= #{page-a page-b} (set (d/q '[:find [?id ...] :where [?e :document/path] [?e :entity/uuid ?id]] (:db adopted))))))
+            (write! conn "README.md" (source {"simmis-id" (str page-a)} "# Duplicate\n"))
+            (is (= :invalid (:status (view/prepare @conn options))))))
+        (finally
+          (governance/ungovern! conn)
+          (d/release conn)
+          (d/delete-database cfg))))))

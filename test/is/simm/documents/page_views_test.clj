@@ -89,7 +89,7 @@
         (is (= :unavailable (:status unknown-property)))
         (is (= :unavailable (:status unknown-type)))
         (is (false? (:complete? unknown-type))))
-      (repo/write! conn "companies/import.md" (markdown/source-bytes "# Missing durable identity\n"))
+      (repo/write! conn "companies/import.md" (markdown/source-bytes "---\nsimmis-id: invalid\n---\n# Invalid durable identity\n"))
       (let [result (views/prepare @conn descriptor)]
         (is (= :unavailable (:status result)))
         (is (= :invalid-source (:reason result)))
@@ -217,3 +217,19 @@
           (is (= ["companies/alpha.md"] (vec (keep :path (:diagnostics result)))))
           (is (every? keyword? (map :kind (:diagnostics result))))
           (is (every? keyword? (map :reason (:diagnostics result)))))))))
+
+(deftest ordinary-documents-never-impersonate-semantic-pages
+  (with-fixture
+    (fn [{:keys [conn descriptor company]}]
+      (repo/write! conn "companies/README.md" (markdown/source-bytes "# Ordinary imported documentation\n"))
+      (let [prepared (projection/prepare @conn {:roots ["companies"] :schema-revision spec/profile :entity-profile space/profile})
+            ordinary (first (filter #(= "companies/README.md" (:path %)) (:documents prepared)))
+            untyped (-> descriptor (assoc-in [:source :types] []) (assoc :columns [{:kind :title}]))]
+        (is (= :ready (:status prepared)))
+        (is (= #{page-a page-b page-c} (set (map :id (:rows (views/prepare @conn untyped))))))
+        (d/transact conn [{:entity/uuid (:id ordinary) :instance/of-role [[:entity/uuid company]]}])
+        (let [typed-result (views/prepare @conn descriptor)
+              untyped-result (views/prepare @conn untyped)]
+          (is (= :ready (:status typed-result)))
+          (is (= #{page-a page-b} (set (map :id (:rows typed-result)))))
+          (is (= #{page-a page-b page-c} (set (map :id (:rows untyped-result))))))))))

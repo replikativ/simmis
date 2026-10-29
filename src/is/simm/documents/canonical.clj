@@ -8,7 +8,7 @@
             [is.simm.documents.properties :as properties]
             [is.simm.model.seed :as seed]))
 
-(def profile {:id :simmis/canonical-markdown :version 1
+(def profile {:id :simmis/canonical-markdown :version 2
               :candidate-codec properties/candidate-profile :constraint-codec constraints/profile
               :page-role (:entity/uuid seed/object-Page)
               :block-role (:entity/uuid seed/object-Block)
@@ -72,19 +72,19 @@
       ;; The generated title now carries the same pending uniqueness claim as
       ;; every ordinary unique property. No schema constraint is stripped.
       (properties/decode-candidate (update compiled :bindings #(assoc (into {} %) slot title))
-                               (assoc (into {} raw) slot path)))))
+                                   (assoc (into {} raw) slot path)))))
 
 (defn- resolve-values [db result]
   (if (seq (:diagnostics result))
     result
     (try
       (let [entities (vec (mapcat (fn [document]
-                                   (let [canonical (:canonical document)]
-                                     (cons {:id (:id document) :types (set (keys (:types canonical)))
-                                            :candidate (:candidate canonical)}
-                                           (for [[id block] (:blocks canonical)]
-                                             {:id id :types (set (keys (:types block))) :candidate (:candidate block)}))))
-                                 (:documents result)))
+                                    (let [canonical (:canonical document)]
+                                      (cons {:id (:id document) :types (set (keys (:types canonical)))
+                                             :candidate (:candidate canonical)}
+                                            (for [[id block] (:blocks canonical)]
+                                              {:id id :types (set (keys (:types block))) :candidate (:candidate block)}))))
+                                  (filter :canonical (:documents result))))
             resolved (constraints/resolve-selection db entities)
             by-id (into {} (map (juxt :id identity) (:entities resolved)))
             resolved-scope (fn [id scope]
@@ -95,10 +95,12 @@
             (update :documents
                     (fn [documents]
                       (mapv (fn [document]
-                              (update document :canonical
-                                      (fn [scope]
-                                        (-> (resolved-scope (:id document) scope)
-                                            (update :blocks #(into {} (for [[id block] %] [id (resolved-scope id block)])))))))
+                              (if-not (:canonical document)
+                                document
+                                (update document :canonical
+                                        (fn [scope]
+                                          (-> (resolved-scope (:id document) scope)
+                                              (update :blocks #(into {} (for [[id block] %] [id (resolved-scope id block)]))))))))
                             documents)))))
       (catch clojure.lang.ExceptionInfo error
         (if (= :is.simm.documents.constraints/refused (:type (ex-data error)))
@@ -114,11 +116,12 @@
    Only call on a canonical source snapshot, not this view's own projection."
   [db documents]
   (try
-    (let [ids (vec (take (inc max-entities)
+    (let [documents (filter #(= :explicit (:identity-status %)) documents)
+          ids (vec (take (inc max-entities)
                          (mapcat (fn [document]
                                    (cons (:id document)
                                          (for [block (mapcat #(tree-seq (comp seq :children) :children %)
-                                                              (get-in document [:semantic :blocks]))
+                                                             (get-in document [:semantic :blocks]))
                                                :when (= :explicit (:identity-status block))]
                                            (:id block)))) documents)))]
       (when (> (count ids) max-entities) (refuse! :too-many-canonical-entities))
@@ -133,8 +136,9 @@
 (defn prepare
   "Decorate parsed documents, preserving the single acquisition/parser pipeline.
    Returns diagnostics and no publishable partial entity DB. All canonical
-   identities must be explicit and absent from the canonical base. Syntax and
-   provisional groups remain noncanonical. Scope compilation is bounded across
+   identities must be explicit and absent from the canonical base. Ordinary
+   provisional documents retain syntax projection without canonical entities.
+   Reserved declarations are validated for every document. Scope compilation is bounded across
    the WHOLE selection and deduplicated locally, not in global runtime state."
   [db documents]
   (let [result
@@ -143,56 +147,59 @@
            (if (seq (:diagnostics state))
              (reduced state)
              (try
-             (let [all-blocks (mapcat #(tree-seq (comp seq :children) :children %)
-                                      (get-in document [:semantic :blocks]))
-                   explicit (filterv #(= :explicit (:identity-status %)) all-blocks)
-                   count (+ count 1 (clojure.core/count explicit))
-                   _ (when (> count max-entities) (refuse! :too-many-canonical-entities))
-                   _ (when-not (= :explicit (:identity-status document))
-                       (refuse! :canonical-document-needs-explicit-identity))
-                   _ (entity! db (:id document))
-                   _ (doseq [block explicit] (entity! db (:id block)))
-                   decoded (metadata/decode (get-in document [:frontmatter :properties])
-                                            (set (map :id explicit)))
-                   _ (when (= :invalid (:status decoded)) (refuse! :invalid-typed-declarations))
-                   page (:page decoded)
-                   declarations (declaration :page page)
-                   [compiled cache] (compile-once db cache declarations)
-                   values (page-candidate compiled (:values page) (:path document))
-                   blocks-result
-                   (reduce (fn [{:keys [cache] :as state} block]
-                             (let [scope (get (:blocks decoded) (:id block) {})
-                                   declarations (declaration :block scope)
-                                   [compiled cache] (compile-once db cache declarations)
-                                   values (properties/decode-candidate compiled (:values scope {}))]
-                               (-> state (assoc :cache cache)
-                                   (assoc-in [:blocks (:id block)]
-                                             {:types (:types compiled) :candidate values})
-                                   (update :diagnostics into (:diagnostics values)))))
-                           {:cache cache :blocks {} :diagnostics []} explicit)
-                   diagnostics (into (:diagnostics values) (:diagnostics blocks-result))]
-               (-> state
-                   (assoc :cache (:cache blocks-result) :count count)
-                   (update :documents conj (assoc document :metadata decoded
-                                                   :canonical {:types (:types compiled)
-                                                               :candidate values
-                                                               :blocks (:blocks blocks-result)}))
-                   (update :diagnostics into (map #(assoc % :path (:path document)) diagnostics))))
-             (catch clojure.lang.ExceptionInfo error
+               (let [all-blocks (mapcat #(tree-seq (comp seq :children) :children %)
+                                        (get-in document [:semantic :blocks]))
+                     explicit (filterv #(= :explicit (:identity-status %)) all-blocks)
+                     decoded (metadata/decode (get-in document [:frontmatter :properties])
+                                              (set (map :id explicit)))
+                     _ (when (= :invalid (:status decoded)) (refuse! :invalid-typed-declarations))
+                     _ (when (and (not= :explicit (:identity-status document))
+                                  (contains? (get-in document [:frontmatter :properties]) "simmis"))
+                         (refuse! :canonical-document-needs-explicit-identity))]
+                 (if-not (= :explicit (:identity-status document))
+                   (update state :documents conj document)
+                   (let [count (+ count 1 (clojure.core/count explicit))
+                         _ (when (> count max-entities) (refuse! :too-many-canonical-entities))
+                         _ (entity! db (:id document))
+                         _ (doseq [block explicit] (entity! db (:id block)))
+                         page (:page decoded)
+                         declarations (declaration :page page)
+                         [compiled cache] (compile-once db cache declarations)
+                         values (page-candidate compiled (:values page) (:path document))
+                         blocks-result
+                         (reduce (fn [{:keys [cache] :as state} block]
+                                   (let [scope (get (:blocks decoded) (:id block) {})
+                                         declarations (declaration :block scope)
+                                         [compiled cache] (compile-once db cache declarations)
+                                         values (properties/decode-candidate compiled (:values scope {}))]
+                                     (-> state (assoc :cache cache)
+                                         (assoc-in [:blocks (:id block)]
+                                                   {:types (:types compiled) :candidate values})
+                                         (update :diagnostics into (:diagnostics values)))))
+                                 {:cache cache :blocks {} :diagnostics []} explicit)
+                         diagnostics (into (:diagnostics values) (:diagnostics blocks-result))]
+                     (-> state
+                         (assoc :cache (:cache blocks-result) :count count)
+                         (update :documents conj (assoc document :metadata decoded
+                                                        :canonical {:types (:types compiled)
+                                                                    :candidate values
+                                                                    :blocks (:blocks blocks-result)}))
+                         (update :diagnostics into (map #(assoc % :path (:path document)) diagnostics))))))
+               (catch clojure.lang.ExceptionInfo error
                ;; Only our known declaration/schema refusals are diagnostics;
                ;; storage/parser/runtime failures must not masquerade as input.
-               (if (contains? #{::refused :is.simm.documents.properties/invalid-schema}
-                              (:type (ex-data error)))
-                 (-> state (update :documents conj document)
-                     (update :diagnostics conj {:kind :invalid-canonical-document
-                                                :path (:path document)
-                                                :reason (or (:reason (ex-data error)) :invalid-schema)}))
-                 (throw error))))))
+                 (if (contains? #{::refused :is.simm.documents.properties/invalid-schema}
+                                (:type (ex-data error)))
+                   (-> state (update :documents conj document)
+                       (update :diagnostics conj {:kind :invalid-canonical-document
+                                                  :path (:path document)
+                                                  :reason (or (:reason (ex-data error)) :invalid-schema)}))
+                   (throw error))))))
          {:documents [] :cache {} :count 0 :diagnostics []} documents)]
     (-> (resolve-values db result)
         (assoc :scopes (mapv (fn [[declarations compiled]]
-                              {:declarations declarations :revision (:revision compiled)})
-                            (sort-by (comp pr-str key) (:cache result))))
+                               {:declarations declarations :revision (:revision compiled)})
+                             (sort-by (comp pr-str key) (:cache result))))
         (dissoc :cache :count))))
 
 (defn current? [db scopes dependencies own-derived?]

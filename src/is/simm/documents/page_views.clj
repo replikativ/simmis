@@ -168,9 +168,10 @@
       (assoc base :status :unavailable :reason :invalid-source :complete? false
              :diagnostics (safe-diagnostics source options (:diagnostics prepared)))
       (let [projected (:db prepared)
+            canonical-docs (filter #(= :explicit (:identity-status %)) (:documents prepared))
             bindings (column-bindings source (:columns descriptor))
             known-pages (into {} (map (fn [{:keys [id path]}] [id {:label (title path) :path path}]))
-                              (:documents prepared))
+                              canonical-docs)
             wanted-types (set (get-in descriptor [:source :types]))
             wanted-page (get-in descriptor [:source :page])
             selected
@@ -181,7 +182,7 @@
                                       (every? types wanted-types))
                              {:id id :path path :title (title path) :revision revision
                               :entry (get-in prepared [:selection :files path])})))
-                       (:documents prepared)))
+                       canonical-docs))
             direction (get-in descriptor [:order 0 :direction])
             ordered (sort (fn [a b]
                             (let [c (compare (str/lower-case (:title a)) (str/lower-case (:title b)))

@@ -156,10 +156,18 @@
         (let [prepared (view/prepare @conn profile/selection-options)]
           (is (= :ready (:status prepared)) (pr-str (:diagnostics prepared)))
           (is (= ["wiki/existing.md"] (d/q '[:find [?path ...] :where [_ :document/path ?path]] (:db prepared)))))
-        ;; A Markdown prompt fixture really would invalidate this whole view:
-        ;; the fix is its data role/extension, not hiding /workflows globally.
+        ;; Ordinary Markdown remains visible without acquiring canonical identity.
+        ;; Explicit but malformed authored identity must still invalidate the view.
         (repo/write! conn "workflows/maintain-wiki/fixtures/workflow-context/wiki-maintenance.md"
                      (markdown/source-bytes "# Not an identified knowledge document\n"))
+        (let [prepared (view/prepare @conn profile/selection-options)]
+          (is (= :ready (:status prepared)))
+          (is (= #{"wiki/existing.md" "workflows/maintain-wiki/fixtures/workflow-context/wiki-maintenance.md"}
+                 (set (d/q '[:find [?path ...] :where [_ :document/path ?path]] (:db prepared)))))
+          (is (= #{"wiki/existing.md"}
+                 (set (d/q '[:find [?path ...] :where [?e :document/path ?path] [?e :entity/uuid]] (:db prepared))))))
+        (repo/write! conn "workflows/maintain-wiki/fixtures/workflow-context/wiki-maintenance.md"
+                     (markdown/source-bytes "---\nsimmis-id: invalid\n---\n# Invalid identity\n"))
         (is (= :invalid (:status (view/prepare @conn profile/selection-options))))
         (finally
           (governance/ungovern! conn)
