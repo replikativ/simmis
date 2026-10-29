@@ -1,5 +1,6 @@
 (ns is.simm.documents.github-source-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require #?(:clj [clojure.test :refer [deftest is]]
+               :cljs [cljs.test :refer-macros [deftest is]])
             [is.simm.documents.github-source :as source]))
 
 (deftest public-identities-have-one-canonical-network-target
@@ -22,8 +23,8 @@
                  "https://github.com.evil/owner/repo" "http://github.com/owner/repo"
                  "git@github.com:owner/repo" "file:///owner/repo"
                  "https://github.com/owner/repo//" (str "owner/" (apply str (repeat 101 "x")))]]
-    (is (thrown? clojure.lang.ExceptionInfo (source/repository! input)) (pr-str input)))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error) (source/repository! input)) (pr-str input)))
   (doseq [descriptor [{:kind :github :repository "owner/repo" :token "secret"}
                       {:kind :github :repository "owner/repo" :ref "main"}
                       {:kind :git :repository "owner/repo"} nil]]
-    (is (thrown? clojure.lang.ExceptionInfo (source/source! descriptor)))))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error) (source/source! descriptor)))))

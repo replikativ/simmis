@@ -12,7 +12,9 @@
             [is.simm.model.store :as store]
             [is.simm.model.system-db :as system-db]
             [is.simm.model.workspace-intent :as creation]
+            [is.simm.ops.github-import :as github]
             [is.simm.runtimes.context :as context]
+            [is.simm.runtimes.operation-lifetime :as lifetime]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.simple :as simple]))
 
@@ -31,6 +33,8 @@
   ([snapshot expected creator members scope requested-type]
    (publish-tx snapshot expected creator members scope requested-type nil))
   ([snapshot expected creator members scope requested-type request]
+   (publish-tx snapshot expected creator members scope requested-type request nil))
+  ([snapshot expected creator members scope requested-type request source-proof]
   ;; Native preparation is not a cross-store transaction. The final control
   ;; transaction rechecks its exact metadata/grants before exposing membership.
    (members! snapshot creator members)
@@ -51,12 +55,29 @@
                     (nil? (:room/archived-at (d/pull snapshot [:room/archived-at] [:room/id id])))
                     (not-any? #(seq (d/datoms snapshot :eavt
                                               (:db/id (d/entity snapshot [:room/id id])) %))
-                              [:room/content-db-scope :room/created-by :room/parties
-                               :room/creation-intent :room/creation-basis]))
+                              [:room/content-db-scope :room/created-by :room/parties])
+                    (if (:source request)
+                      (let [row (d/pull snapshot [:room/creation-intent :room/creation-basis :room/github-source]
+                                        [:room/id id])]
+                        (and (= (creation/receipt creator request)
+                                (select-keys row [:room/creation-intent :room/creation-basis]))
+                             (= (get-in request [:source :repository]) (:room/github-source row))
+                             (= #{:repository :ref :head :registry-system} (set (keys source-proof)))
+                             (= (:room/github-source row) (:repository source-proof))
+                             (= (:registry-system source-proof)
+                                (get-in actual [:room :room/default-repository :system/id]))
+                             (github/reference? (:ref source-proof)) (uuid? (:head source-proof))))
+                      (and (nil? source-proof)
+                           (not-any? #(seq (d/datoms snapshot :eavt
+                                                    (:db/id (d/entity snapshot [:room/id id])) %))
+                                     [:room/creation-intent :room/creation-basis :room/github-source]))))
        (refuse! :prepared-room-changed))
      [(cond-> (assoc {:room/id id :room/created-by creator :room/content-db-scope scope}
                      :room/parties (mapv #(vector :party/id %) (sort-by str members)))
-        request (merge (creation/receipt creator request)))])))
+        request (merge (creation/receipt creator request))
+        source-proof (assoc :room/github-ref (:ref source-proof)
+                            :room/github-import-head (:head source-proof)
+                            :room/github-repository [:system/id (:registry-system source-proof)]))])))
 
 (defn- prepared-basis!
   ([snapshot provisioned creator] (prepared-basis! snapshot provisioned creator :project))
@@ -86,9 +107,6 @@
    and live registration succeed. Failure preserves the known Room/data; it
    never deletes resources or automatically retries creation."
   [creator name party-ids requested-type slug request current!]
-  ;; The source descriptor can already be normalized/frozen by the client, but
-  ;; importing stays fail-closed until the fixed budgeted HOST path is wired.
-  (when (:source request) (refuse! :github-import-unavailable))
   ;; An ordinary unbound HOST may enter its configured root, but an already
   ;; selected child/foreign world must never be promoted by rebinding it.
   (when (or (simple/on-drain-thread?)
@@ -104,24 +122,38 @@
         _ (members! @conn creator members)
         _ (when request (creation/authorize! @conn creator request))
         ;; Acquire immutable reviewed source before recording any durable intent.
-        policies (profile/policies (starter/read-packaged!))]
+        policies (when-not (:source request) (profile/policies (starter/read-packaged!)))]
     (context/with-server-context
-      (let [{:keys [room-id room-ctx msgs-path] :as provisioned} (native/provision-profiled-room!
-                                                                  {:slug slug :name name :owner-id creator :type requested-type
-                                                                   :repository-profile space/profile} policies)]
+      (let [provision! #(native/provision-profiled-room!
+                        {:slug slug :name name :owner-id creator :type requested-type
+                         :repository-profile space/profile} %)
+            {:keys [room-id room-ctx msgs-path] :as provisioned}
+            (if (:source request)
+              (github/with-admission!
+               (fn []
+                 (lifetime/call-detached
+                  (fn [restore!]
+                    (let [policies (restore! (fn [] (github/policies conn creator request #(restore! current!))))]
+                      (provision! policies))))))
+              (provision! policies))]
         (try
           (let [expected (prepared-basis! @conn provisioned creator requested-type)
                 scope (native/store-id msgs-path)
-                messages (binding [ec/*execution-context* room-ctx] (native/room-msgs-conn room-id))]
+                messages (binding [ec/*execution-context* room-ctx] (native/room-msgs-conn room-id))
+                source-proof (when (:source request)
+                               (let [workspace (native/default-workspace room-id)]
+                                 (assoc (github/source-metadata! (:conn workspace) request)
+                                        :registry-system (:registry-system workspace))))]
             (when-not (and messages (= scope (native/room-msgs-store-id room-id)))
               (refuse! :messages-unavailable))
             ;; No membership/content-scope yet; avoid publishing a UI watch
             ;; against a half-installed or not-yet-registered live Room.
             (binding [ec/*execution-context* room-ctx] (store/ensure! messages scope))
             (current!)
+            (when request (creation/authorize! @conn creator request))
             (live/register-prepared-room! room-id)
             (current!)
-            (d/transact conn [[:db.fn/call publish-tx expected creator members scope requested-type request]])
+            (d/transact conn [[:db.fn/call publish-tx expected creator members scope requested-type request source-proof]])
             (rooms/get-room room-id))
           (catch Throwable error
             (throw (ex-info "Knowledge Room prepared but Simmis activation failed"

@@ -8,7 +8,7 @@
   [value]
   (let [text (when (and (string? value) (<= 1 (count value) 256)) value)
         path (when text
-               (or (second (re-matches #"https://github\.com/([^?#]+?)/?" text))
+               (or (second (re-matches #"^https://github\.com/([^?#]+?)/?$" text))
                    (when-not (str/includes? text ":") text)))
         path (some-> path str/lower-case (str/replace #"\.git$" ""))
         parts (when path (str/split path #"/" -1))
