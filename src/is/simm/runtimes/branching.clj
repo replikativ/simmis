@@ -538,6 +538,29 @@
   (when-let [sys (get-repo-system scope)]
     (yp/conflicts sys a-branch b-branch)))
 
+(defn- delete-reviewed-ref-tx [db ref head]
+  (let [row (d/entity db [:geschichte.ref/name ref])
+        current (some-> (:geschichte.ref/target row) :geschichte.commit/id)]
+    ;; Atomic cleanup must not delete a concurrently advanced review branch.
+    (when (and (= current head)
+               (not= ref (:geschichte.repo/head (first (d/q '[:find [(pull ?r [:geschichte.repo/head]) ...]
+                                                              :where [?r :geschichte.repo/id]] db)))))
+      [[:db/retractEntity (:db/id row)]])))
+
+(defn land-frozen-repo!
+  "Land the exact reviewed commit, not a mutable branch read after validation.
+   Cleanup conditionally removes only the branch still naming that commit."
+  [scope branch head]
+  (let [sys (or (get-repo-system scope) (throw (ex-info "Proposal repository unavailable" {})))
+        target (repo-trunk scope)
+        on-target (if (= (yp/current-branch sys) target) sys (yp/checkout sys target))
+        id (parse-uuid head)]
+    (yp/merge! on-target id)
+    (d/transact (:conn sys) [[:db.fn/call delete-reviewed-ref-tx
+                              (str "refs/heads/" (name branch)) id]])
+    (bcast/emit-event! {:type :branch/merged :db-scope scope :branch target :source branch})
+    :ok))
+
 (defn merge-repo!
   "Merge `source-branch` into `target-branch` of a repo. Returns `:ok`,
    `:not-registered`, or throws with geschichte's reason (unresolved conflicts,
@@ -777,7 +800,9 @@
 ;; ============================================================================
 
 (defn open-repo-fork!
-  "Fork the execution context of the room owning repo `scope`.
+  "Fork only repo `scope` from its owning room, with no interpreter components.
+   This is a file workspace, not an execution world. Excluding unrelated
+   systems and live SCI heaps permits checks/Memory edits during evaluation.
 
    Returns `{:handle … :child-ctx … :scope …}`, or nil when the repo does not
    resolve. The caller MUST eventually `close-repo-fork!` — a ForkHandle is an
@@ -787,7 +812,9 @@
   ([scope branch-kw]
    (when-let [path (repo-scope-path scope)]
      (when-let [room-ctx (room-ctx-owning-repo path)]
-       (let [fh (binding [rtc/*execution-context* room-ctx] (ygg/fork!))
+       (let [fh (binding [rtc/*execution-context* room-ctx]
+                  (ygg/fork! {:systems #{(repo-system-id path)}
+                              :forkable-components #{}}))
              fork {:handle fh :child-ctx (:child-ctx fh) :scope scope}]
          ;; Start the workspace ON the fork's branch.
          ;;
@@ -838,6 +865,37 @@
           workspace {:conn conn
                      :repository {:conn conn :config (:config @conn)}}]
       {:workspace workspace :filesystem (gsub workspace)})))
+
+(defn freeze-repo-fork!
+  "Commit the complete private worktree before handing it to review. The caller
+   serializes the owning proposal's writers. No checkout or canonical edit."
+  [fork message]
+  (let [conn (or (repo-fork-conn fork)
+                 (throw (ex-info "Proposal workspace is unavailable" {:type ::missing-workspace})))]
+    (when-not (:clean? (grepo/status conn))
+      (grepo/stage-all! conn)
+      ;; Staging can itself reveal that index-only edits were undone in the
+      ;; worktree. In that case HEAD already represents the requested files.
+      (when (seq (:staged (grepo/status conn)))
+        (grepo/commit! conn {:message message :author "Simmis proposal"})))
+    (or (some-> (grepo/head-commit conn) :geschichte.commit/id str)
+        (throw (ex-info "Proposal workspace has no frozen commit" {})))))
+
+(defn retain-repo-head!
+  "Keep a filed logical commit reachable independently of its mutable branch.
+   Simmis storage GC retains full physical history (orphan-only policy)."
+  [scope head]
+  (let [conn (:conn (or (get-repo-system scope)
+                        (throw (ex-info "Proposal repository is unavailable" {}))))
+        id (parse-uuid (str head)) ref (str "refs/proposals/" id)
+        commit (when id (grepo/commit-by-id conn id))]
+    (when-not (:geschichte.commit/snapshot commit)
+      (throw (ex-info "Filed proposal commit is unavailable" {:head head})))
+    (locking conn
+      (if-let [existing (get (grepo/refs conn) ref)]
+        (when-not (= existing id) (throw (ex-info "Proposal evidence ref changed" {})))
+        (grepo/create-ref! conn ref commit)))
+    (str id)))
 
 (defn publish-repo-fork!
   "Hand a fork's work over as the canonical branch `branch-kw`. Returns the

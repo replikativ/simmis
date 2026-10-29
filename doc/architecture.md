@@ -643,12 +643,17 @@ default `data`), and `user/shadow-config` applies the ports to shadow.
 boot — system DB, mail sync, room hydration, kabel + auth + sync, telegram,
 then the HTTP routes.
 
-Private room apps use `runtimes.room-apps` over Dvergr's native static handler.
-The HTTP route authenticates, then the native callback authorizes the exact
-room resolved for serving under an App operation. The synchronous read remains
-owned until permission and host identity are rechecked. Response CSP sandboxes
-scripts with an opaque origin and Referrer-Policy suppresses referrers. No
-capability/iframe or public-publishing endpoint is installed by this adapter.
+Room websites at `/apps/<slug>/...` publish only `app/` files from the canonical
+Room default repository's committed `main` tree. Anonymous reads never consult
+the mutable worktree, current checkout, another attached repository or a fork.
+App and physical Room operations own materialization, and the default mapping
+is rechecked before returning detached bytes. Authenticated worktree previews
+remain at `/apps-preview/<slug>/...` with current room-read ReBAC.
+
+Both paths sandbox scripts into an opaque browser origin and suppress referrers.
+Public assets allow anonymous CORS so those scripts can fetch public JSON/modules;
+no credentialed CORS or Room API access is granted. Accepting a code proposal
+changes the published site when its frozen files land on `main`.
 
 Two boot steps are switches. **Storage GC** (`runtimes/storage_gc.clj`, which
 drives dvergr's `gc-stores!` at boot and every 6h) is OFF unless

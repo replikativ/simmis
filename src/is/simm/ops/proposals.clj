@@ -39,14 +39,15 @@
 
 (defn- fork-filing-value
   [{:keys [scope authority-scope branch base-commit system-type
-           world-system-id settlement-id settlement-state descriptor file-output]
+           world-system-id settlement-id settlement-state descriptor file-output head-commit checks]
     fork-author :author}]
   ;; A positional value gives pr-str a stable order independent of map
   ;; implementation. Descriptor is already persisted through pr-str below.
   (cond-> [scope authority-scope (name branch) (some-> base-commit str) system-type
            (some-> world-system-id str) settlement-id settlement-state
            (some-> descriptor pr-str) fork-author]
-    file-output (conj (:file-output/id file-output))))
+    file-output (conj (:file-output/id file-output))
+    (or head-commit checks) (conj [head-commit checks])))
 
 (defn- filing-hash
   [{:keys [title summary author room run adoption forks intent attrs comments]}]
@@ -119,6 +120,11 @@
                              (every? #(uuid? (:file-output.entry/body-ref %)) entries)
                              (= file-output (file-manifests/entity manifest refs)))
                 (throw (ex-info "Retained file component has invalid room, identity or body bindings" {})))))
+        _ (doseq [{:keys [system-type base-commit head-commit checks]} forks :when head-commit]
+            (when-not (and (= :repo system-type) (parse-uuid (str head-commit))
+                           (parse-uuid (str base-commit))
+                           (or (nil? checks) (= (str head-commit) (:head checks))))
+              (throw (ex-info "Proposal evidence and checks must name the same frozen commit" {}))))
         id (or id (random-uuid))
         ;; A proposal's canonical chat identity is reserved in the SAME
         ;; transaction as the proposal. Publication may crash and retry, but it
@@ -136,13 +142,18 @@
                  :proposal/created-at (java.util.Date.)
                  :proposal/filing-hash filing-hash
                  :proposal/forks (mapv (fn [{:keys [scope authority-scope branch
-                                                    base-commit system-type
+                                                    base-commit system-type head-commit checks
                                                     world-system-id settlement-id
                                                     settlement-state descriptor file-output]
                                              fork-author :author}]
                                          (cond-> {:proposal.fork/scope scope
                                                   :proposal.fork/branch (name branch)}
                                            base-commit (assoc :proposal.fork/base-commit (str base-commit))
+                                           head-commit (assoc :proposal.fork/head-commit (str head-commit))
+                                           checks (assoc :proposal.fork/checks
+                                                         (into {:proposal.check/checked-at (java.util.Date.)}
+                                                               (map (fn [[k v]] [(keyword "proposal.check" (name k)) v]))
+                                                               (select-keys checks [:status :head :tests :passed :failed :errors :output])))
                                            authority-scope (assoc :proposal.fork/authority-scope
                                                                   authority-scope)
                                            system-type (assoc :proposal.fork/system-type system-type)
@@ -193,6 +204,10 @@
     ;; snapshot. Concurrent/ambiguous retries cannot append anonymous component
     ;; refs or reset lifecycle fields; a conflicting reuse of the UUID fails.
     (d/transact connection [[:db.fn/call filing-tx-data entity]])
+    ;; Only a durable Proposal creates an evidence root. Before this handoff,
+    ;; the open review branch/private workspace remains its sole retry owner.
+    (doseq [fork (:proposal/forks entity) :when (:proposal.fork/head-commit fork)]
+      (branching/retain-repo-head! (:proposal.fork/scope fork) (:proposal.fork/head-commit fork)))
     (log/log! {:level :info :id ::filed :data {:proposal id :title (:proposal/title entity)
                                                :forks (count (:proposal/forks entity))}})
     ;; Resolve lazily to keep the proposal store independent of live discourse
@@ -228,7 +243,7 @@
   (when-let [e (when (some? id)
                  (d/q '[:find ?e . :in $ ?id :where [?e :proposal/id ?id]]
                       @(conn) id))]
-    (d/pull @(conn) '[* {:proposal/forks [*]}] e)))
+    (d/pull @(conn) '[* {:proposal/forks [* {:proposal.fork/checks [*]}]}] e)))
 
 (defn list-proposals
   "Proposals, newest first. `status` filters (nil = all)."
@@ -402,6 +417,11 @@
   "Retained file evidence is review-only until guarded publication is wired.
    Check the WHOLE selection before any dispatch or landing side effect."
   [forks]
+  (doseq [fork forks :when (and (fork-open? fork) (= :repo (fork-type fork)) (:proposal.fork/head-commit fork))]
+    (when-not (= (:proposal.fork/head-commit fork)
+                 (branching/repo-head-id (:proposal.fork/scope fork) (fork-branch-kw fork)))
+      (throw (ex-info "Proposal branch changed since filing; file the updated work before accepting"
+                      {:error :proposal-version-changed}))))
   (when (some #(= :file-output (fork-type %)) forks)
     (throw (ex-info "Retained file proposals are review-only; adoption is not available"
                     {:error :settlement-unavailable :system-type :file-output}))))
@@ -470,7 +490,7 @@
   [p diffs]
   ;; Retained file inspection must not introduce an unfunded model call.
   ;; Its filing rationale and exact per-file evidence already render directly.
-  (when-not (some #(= :file-output (fork-type %)) (:proposal/forks p))
+  (when-not (some #(or (= :file-output (fork-type %)) (:proposal.fork/head-commit %)) (:proposal/forks p))
     (ctx/with-server-context
       (let [heads (mapv (fn [f] (fork-head-id f (fork-branch-kw f))) (open-forks p))
             k [(:proposal/id p) heads]]
@@ -671,11 +691,13 @@
     ;; just lands: geschichte reconciles those while planning the merge, so
     ;; nothing has to be resolved here first. simmis used to do that pass
     ;; itself, before the content merge went upstream (geschichte 0.1.14).
-    (branching/land! scope t b)
+    (if (and (= :repo t) (:proposal.fork/head-commit fork))
+      (branching/land-frozen-repo! scope b (:proposal.fork/head-commit fork))
+      (branching/land! scope t b))
     ;; Ordinary backends merge and then delete a reusable branch name. A world
     ;; component is an affine settlement capability: :merge itself consumes it,
     ;; so a subsequent :discard would be a second terminal operation.
-    (when-not (= :world t)
+    (when-not (or (= :world t) (and (= :repo t) (:proposal.fork/head-commit fork)))
       (branching/drop-branch! scope t b))))
 
 (defn- authorize-forks!

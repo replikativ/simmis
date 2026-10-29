@@ -453,6 +453,39 @@
     :db/valueType :db.type/string
     :db/cardinality :db.cardinality/one
     :db/doc "Trunk head snapshot-id at fork time"}
+   {:db/ident :proposal.fork/head-commit
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "Exact filed Geschichte commit; retained independently of its review branch"}
+   {:db/ident :proposal.fork/checks
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/isComponent true
+    :db/doc "Checks performed against the exact filed commit"}
+   {:db/ident :proposal.check/status
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal.check/head
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal.check/tests
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal.check/passed
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal.check/failed
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal.check/errors
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal.check/output
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal.check/checked-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
    {:db/ident :proposal.fork/system-type
     :db/valueType :db.type/keyword
     :db/cardinality :db.cardinality/one
