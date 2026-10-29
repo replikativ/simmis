@@ -233,3 +233,23 @@
           (is (= :ready (:status typed-result)))
           (is (= #{page-a page-b} (set (map :id (:rows typed-result)))))
           (is (= #{page-a page-b page-c} (set (map :id (:rows untyped-result))))))))))
+
+(deftest optional-display-titles-never-change-page-identity-or-path
+  (with-fixture
+    (fn [{:keys [conn descriptor company-data]}]
+      (let [descriptor (assoc-in descriptor [:source :roots] ["companies"])]
+        (doseq [label [nil "" "   " 17 ["Title"] (apply str (repeat 257 "x")) "Title\nInjected"]]
+          (write! conn "companies/alpha.md" page-a (assoc company-data "title" label) "# Alpha\n")
+          (let [row (first (filter #(= page-a (:id %)) (:rows (views/prepare @conn descriptor))))]
+            (is (= "alpha" (:title row)) (pr-str label))
+            (is (= "companies/alpha.md" (:path row)))))
+        (write! conn "companies/alpha.md" page-a (assoc company-data "title" "  Shared title  ") "# Alpha\n")
+        (write! conn "companies/Beta.md" page-b (assoc company-data "title" "Shared title") "# Beta\n")
+        (let [before (:max-tx @conn)
+              result (views/prepare @conn descriptor)
+              rows (filter #(#{page-a page-b} (:id %)) (:rows result))
+              projected (projection/prepare @conn {:roots ["companies"] :schema-revision spec/profile :entity-profile space/profile})]
+          (is (= [page-a page-b] (mapv :id rows)) "Equal labels sort by stable page identity")
+          (is (= ["Shared title" "Shared title"] (mapv :title rows)))
+          (is (= "companies/alpha.md" (:S.Page/title (d/entity (:db projected) [:entity/uuid page-a]))))
+          (is (= before (:max-tx @conn)) "Display names do not write canonical page titles"))))))

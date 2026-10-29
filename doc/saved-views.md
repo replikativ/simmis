@@ -24,11 +24,16 @@ A form uses `:presentation :form`, `:limit 1` and `:page #uuid "..."` within
 `:source`. Its page must belong to the selected folders and types. A missing
 page produces an unavailable result rather than an apparently successful empty
 form. Ordering currently supports the title in ascending or descending order,
-with page UUID as a deterministic tie breaker.
+with page UUID as a deterministic tie breaker. A plain frontmatter `title`
+provides an optional display label (1–256 characters, no control characters).
+Invalid or absent labels fall back to the filename. This label does not change
+the page UUID, path, or path-owned canonical page title.
 
 ## Reading and editing
 
-The associated panel is outside the document's editable surface. A table's Edit
+A valid view opens with its document by default. Hide view keeps it collapsed
+until explicitly reopened in that editor; unavailable reads are not retried on
+every render. The panel is an embedded host view, separate from editable text. A table's Edit
 button loads the selected page's ordinary property form. Each field save uses
 the existing revision-checked Markdown property writer, preserving document and
 block identities. There is no multi-file transaction implied by editing several
@@ -270,3 +275,22 @@ bridge adds no data cache, query or subscription. Every native mount has an
 isolated context/fork/owner/occurrence address. Callback refreshes are coalesced
 and fenced to the original editor generation. Removal cycles ref callbacks,
 retires committed addresses, clears the discharge registry and removes DOM.
+
+## Report source plans
+
+`is.simm.documents.benchmark-reports/prepare` formats a complete, already
+authorized native Scorecard into two ordinary Markdown source plans:
+`reports/benchmarks/<scorecard-id>.md` and `reports/index.md`. The report
+contains the fixed Scorecard view and frozen experiment, dataset and available
+workflow provenance; the index is a page view rooted at `reports/benchmarks`.
+Numbers are read from the native receipt when the view opens, rather than
+copied into a second result authority. Save Markdown snapshot remains the
+portable export when another instance does not hold that receipt.
+
+The formatter is pure and does not publish files or select a Memory. Its caller
+must authorize the native read and retain the original Room/store identity. A
+future product publisher must also capture its owned Memory target, use the
+ordinary expected-revision writer, preserve authored files, and reconcile exact
+prepared bytes after a lost acknowledgement. Generating or opening a report
+does not run a model, enable a schedule, or accept a proposal. The current
+formatter is groundwork; no automatic report publication is installed here.

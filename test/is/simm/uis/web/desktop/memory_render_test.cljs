@@ -473,7 +473,7 @@
                           (reset! committed next))))]
         (is (= 1 (.-length (.querySelectorAll container ".memory-saved-view"))))
         (is (nil? (.querySelector container "section[aria-label='Views from saved version']")))
-        (.click (first (filter #(= "Open view" (.-textContent %))
+        (.click (first (filter #(= "Hide view" (.-textContent %))
                               (array-seq (.querySelectorAll container "button")))))
         (is (= [[path view-id]] @calls))
         (let [opened (assoc-in state [:page-view-open [path view-id]] true)

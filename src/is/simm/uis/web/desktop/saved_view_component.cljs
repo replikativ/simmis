@@ -66,7 +66,7 @@
                             (properties/fields-view row-path target fields model state a editable?)))))))
 
 (defn entry-view [path entry state a write?]
-  (let [id (:view entry) key [path id] opened? (get-in state [:page-view-open key])
+  (let [id (:view entry) key [path id] opened? (views/opened? state path id)
               reply (views/visible state path id) loading? (get-in state [:loading [:saved-view path id]])
               error (get-in state [:errors [:saved-view path id]])
               pages? (views/pages? state path id)

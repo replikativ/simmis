@@ -18,6 +18,15 @@
 (def state {:connection :connection :target-stamp stamp :target-verified? true :target-epoch 1 :read-epoch 1
             :drafts {path {:source file :text "saved" :generation 0}}})
 
+(deftest bounded-read-only-views-open-by-default-and-respect-an-explicit-hide
+  (is (true? (views/opened? state path view-id)))
+  (is (some? (views/request state path view-id)))
+  (is (false? (views/opened? (assoc-in state [:page-view-open [path view-id]] false) path view-id)))
+  (is (true? (views/opened? (assoc-in state [:page-view-open [path view-id]] true) path view-id)))
+  (is (nil? (views/request (assoc-in state [:drafts path :text] "Unsaved fence") path view-id))
+      "Default visibility cannot query a dirty declaration")
+  (is (nil? (views/request (assoc state :target-verified? false) path view-id))))
+
 (defn- reply [state]
   (merge (select-keys (views/request state path view-id) [:path :expected :revision :from :to :view])
          {:profile contract/profile :descriptor descriptor :target-stamp stamp :status :ready
