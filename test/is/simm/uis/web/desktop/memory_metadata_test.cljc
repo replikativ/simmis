@@ -8,6 +8,13 @@
 
 (defn- request [paths] {:folders ["" "wiki"] :paths (vec paths)})
 
+(deftest repository-root-is-a-folder-demand-not-an-empty-file
+  (doseq [selected [nil ""]]
+    (let [demand (view/request {:selected selected :root-expanded? true})]
+      (is (= [""] (:folders demand)))
+      (is (= [] (:paths demand)))))
+  (is (= ["README.md"] (:paths (view/request {:selected "README.md"})))))
+
 (deftest metadata-observations-retire-stale-page-view-requests-without-dropping-prior-display
   (let [stamp (random-uuid) id (random-uuid) slot [:saved-view "views/report.md" id] token (random-uuid)
         state {:target-stamp stamp :loading {slot true} :requests {slot token}

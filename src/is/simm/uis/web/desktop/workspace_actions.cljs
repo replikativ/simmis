@@ -118,7 +118,7 @@
                           (let [memory? (= :memory (:landing data))]
                             (sig/open-tab! (if memory? :memory :chat)
                                            (cond-> {:room-id (str (:room/id room)) :room-name (:room/name room)}
-                                             memory? (assoc :path (if (= :github (:source-kind data)) "" "wiki/Welcome.md"))
+                                             (and memory? (not= :github (:source-kind data))) (assoc :path "wiki/Welcome.md")
                                              (not memory?) (assoc :db-scope (str (:room/content-db-scope room))))
                                            {:col-id column :new-tab? true
                                             :title (if (and memory? (not= :github (:source-kind data)))

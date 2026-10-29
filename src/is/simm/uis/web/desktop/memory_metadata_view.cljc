@@ -9,7 +9,7 @@
     {:folders (:folders base)
      :paths (vec (sort (set (concat (:paths base) (keys (:file-intents state))
                                     (keys (:create-intents state))
-                                    (when-let [path (:selected state)] [path])))))}))
+                                    (when-let [path (not-empty (:selected state))] [path])))))}))
 
 (defn request [state]
   (let [base (file-request state) path (:selected state)

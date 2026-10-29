@@ -48,6 +48,11 @@ edits or divergent history refuse publication; there is no reset, push,
 automatic merge or second fetch. Unsaved editor drafts retain the usual Memory
 conflict behavior. Native commit hints refresh the existing Memory observation.
 
+Editor autosaves create local Geschichte commits. These currently lack the Git
+identity needed by this import-only path, so even restoring the previous file
+bytes does not make that history eligible for sync again. Sync refuses rather
+than resetting those commits; local commit projection and merge are follow-ups.
+
 An ambiguous Apply ACK is never resent. **Check this sync** only observes the
 same journal. **Verify current outcome** may report `satisfied-observed` when
 the current exact target and complete visible state match the retained review;
