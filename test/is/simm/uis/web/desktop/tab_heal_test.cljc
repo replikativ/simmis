@@ -29,7 +29,7 @@
 (defn- thread-tab [data] {:id "t2" :type :chat-thread :title "Thread" :data data})
 
 (deftest restored-workflow-and-result-tabs-resolve-their-room-replica
-  (doseq [kind [:workflows :run-inspector]]
+  (doseq [kind [:workflows :run-inspector :attempt-board :leaderboard]]
     (let [tab {:id "restored" :type kind :title "Saved title"
                :data {:room-id (str room-id) :room-name "Existing room label" :run-id "job"}}
           healed (tab-heal/heal-chat-tab tab rooms personal)]
@@ -179,3 +179,17 @@
     (is (= {:type :home :data {}} (get-in healed [0 :tabs 1]))
         "every column and every tab, and only the chat ones changed")
     (is (get-in healed [1 :tabs 0 :data :room-missing?]))))
+
+(deftest result-tabs-follow-the-roster-in-either-arrival-order
+  (doseq [kind [:attempt-board :leaderboard]]
+    (let [tab {:id "results" :type kind :title "Benchmark results"
+               :data {:room-id (str room-id)}}
+          roster {:rooms rooms}
+          first-tab (tab-heal/reconcile-tab tab nil)
+          after-roster (-> (tab-heal/reconcile-layout [{:tabs [first-tab]}] roster) first :tabs first)
+          after-tab (tab-heal/reconcile-tab tab roster)]
+      (is (= tab first-tab))
+      (is (= after-tab after-roster))
+      (is (= (str scope-id) (get-in after-tab [:data :db-scope])))
+      (is (= kind (:type after-tab)))
+      (is (true? (get-in (tab-heal/reconcile-tab tab {:rooms []}) [:data :room-missing?]))))))

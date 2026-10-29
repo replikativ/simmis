@@ -34,9 +34,9 @@
    `:chat` tab does without this. Its `:thread-root-id` is NOT a room id and is
    never read or written here — thread identity does not collapse into room
    identity, and a thread tab is never rewritten into a chat tab. Workflow
-   and Run inspector tabs also need the room replica; restored tabs resolve
+   and results tabs also need the room replica; restored tabs resolve
    its scope from the same roster rather than waiting on an unrequested DB."
-  #{:chat :chat-thread :workflows :run-inspector})
+  #{:chat :chat-thread :workflows :run-inspector :attempt-board :leaderboard})
 
 (defn- roster-title
   "The label a tab adopts from the roster. A thread tab says which room the
