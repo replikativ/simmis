@@ -923,32 +923,40 @@
                                               [:drafts path :rich-base :document-selection]
                                               [:drafts path :selection]) selection))))))
        :ensure-path (fn []
-                      (if-let [intent (not-empty (select-keys (:reference data) [:repository-id :block-id]))]
-                        (let [c (connected!) s (state) marker (references/marker s intent)]
-                          (when (and (verified? s c)
-                                     (not (references/completed? s intent))
-                                     (not= marker (get-in s [:block-reference :request-marker])))
-                            (update! assoc :block-reference {:intent intent :request-marker marker :id (random-uuid)})
-                            (request! :reference #(reference-remote/resolve-memory-block! web/server-id room
-                                                                                        (assoc intent :expected-target-stamp (:target-stamp s)))
-                                      #(assoc-in %1 [:block-reference :reply] %2)
-                                      (fn [reply]
-                                        (if (= :resolved (:status reply))
-                                          (do (select! (:path reply) true) (open! (:path reply) true nil true))
-                                            (update! assoc-in [:errors :reference]
-                                                     (if (= :ambiguous (:status reply))
-                                                       "This block identity appears more than once. Resolve the duplicate in Markdown before opening its link."
-                                                       "This block is not in the current workspace."))))
-                                      {:stamp (:target-stamp s) :read? true
-                                       :accept? (fn [current _] (= marker (get-in current [:block-reference :request-marker])))
-                                       :error-current? (fn [current] (= marker (get-in current [:block-reference :request-marker])))})))
-                        (when (and (:path data) (not= (:path data) (:opened-path (state))))
-                        (update! assoc :opened-path (:path data))
-                        (if (and (:create-origin-stamp data)
-                                 (not= (:create-intent-id data) (:created-intent (state))))
-                          (do (update! assoc :created-intent (:create-intent-id data))
-                              (create! (:path data) (:create-origin-stamp data)))
-                          (open! (:path data) false)))))
+                       ;; A previous incremental frame can resume after this tab
+                       ;; navigates. Its captured path must not rewind the live
+                       ;; address and start a feedback loop with the new frame.
+                       (let [data (if (some? (:tab-id data))
+                                    (binding [ec/*execution-context* ctx]
+                                      (get-in (owner/current-tab @sig/layout-columns room (:tab-id data)) [:tab :data]))
+                                    data)]
+                         (when data
+                           (if-let [intent (not-empty (select-keys (:reference data) [:repository-id :block-id]))]
+                             (let [c (connected!) s (state) marker (references/marker s intent)]
+                               (when (and (verified? s c)
+                                          (not (references/completed? s intent))
+                                          (not= marker (get-in s [:block-reference :request-marker])))
+                                 (update! assoc :block-reference {:intent intent :request-marker marker :id (random-uuid)})
+                                 (request! :reference #(reference-remote/resolve-memory-block! web/server-id room
+                                                                                               (assoc intent :expected-target-stamp (:target-stamp s)))
+                                           #(assoc-in %1 [:block-reference :reply] %2)
+                                           (fn [reply]
+                                             (if (= :resolved (:status reply))
+                                               (do (select! (:path reply) true) (open! (:path reply) true nil true))
+                                               (update! assoc-in [:errors :reference]
+                                                        (if (= :ambiguous (:status reply))
+                                                          "This block identity appears more than once. Resolve the duplicate in Markdown before opening its link."
+                                                          "This block is not in the current workspace."))))
+                                           {:stamp (:target-stamp s) :read? true
+                                            :accept? (fn [current _] (= marker (get-in current [:block-reference :request-marker])))
+                                            :error-current? (fn [current] (= marker (get-in current [:block-reference :request-marker])))})))
+                             (when (and (:path data) (not= (:path data) (:opened-path (state))))
+                               (update! assoc :opened-path (:path data))
+                               (if (and (:create-origin-stamp data)
+                                        (not= (:create-intent-id data) (:created-intent (state))))
+                                 (do (update! assoc :created-intent (:create-intent-id data))
+                                     (create! (:path data) (:create-origin-stamp data)))
+                                 (open! (:path data) false)))))))
        :observe-navigation
        (fn [stamp]
          (when (and (uuid? stamp) (not= stamp (:target-stamp (state))))

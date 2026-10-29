@@ -453,6 +453,48 @@
         (f (assoc fixture :a a :data data :state state :room room :path path
                           :repository repository :response response))))))
 
+(deftest a-resumed-render-cannot-rewind-the-current-file-address
+  (with-client
+    (fn [{:keys [data states state seed!]}]
+      (seed!)
+      (let [old (actions/controller (assoc data :path "x.clj"))]
+        ((:ensure-path old))
+        ((:open old) "reports/result.md")
+        (let [current (actions/controller (assoc data :path "reports/result.md"))]
+          ;; An earlier incremental frame can resume after the tab retargets.
+          ;; Both frames must observe the one current layout address.
+          (dotimes [_ 3]
+            ((:ensure-path old))
+            (is (= "reports/result.md" (:selected (state))))
+            ((:ensure-path current)))
+          (is (= "reports/result.md" (:selected (state))))
+          (is (= "reports/result.md" (:opened-path (state))))
+          (is (= "reports/result.md" (get-in (first @sig/layout-columns) [:tabs 0 :data :path])))
+          (let [before @states]
+            (swap! sig/layout-columns assoc-in [0 :tabs] [])
+            ((:ensure-path old))
+            (is (= before @states) "Closed frames cannot reopen their old path")))))))
+
+(deftest reference-resolution-cannot-reopen-a-destination-after-file-navigation
+  (with-client
+    (fn [{:keys [data state seed! stamp]}]
+      (seed!)
+      (let [intent {:repository-id (random-uuid) :block-id (random-uuid)}
+            data (assoc data :path "x.clj" :reference intent)
+            pending (atom nil)]
+        (swap! sig/layout-columns assoc-in [0 :tabs 0 :data] data)
+        (with-redefs [reference-remote/resolve-memory-block!
+                      (fn [& _] (fn [ok _] (reset! pending ok)))]
+          (let [old (actions/controller data)]
+            ((:ensure-path old))
+            (is (some? @pending))
+            ((:open old) "reports/result.md")
+            (reply! @pending (wire stamp {:status :resolved :path "wiki/Old.md" :entry {:content :old}}))
+            ((:ensure-path old))
+            (is (= "reports/result.md" (:selected (state))))
+            (is (= "reports/result.md" (get-in (first @sig/layout-columns) [:tabs 0 :data :path])))
+            (is (nil? (:block-reference (state))))))))))
+
 (deftest backlink-observations-reopen-locally-and-follow-metadata-without-a-refresh-button
   (with-backlink-client
     (fn [{:keys [a data states state calls last-call response]}]
