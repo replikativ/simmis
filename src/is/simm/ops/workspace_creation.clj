@@ -29,10 +29,6 @@
   (when-not (and (uuid? party) (#{:create :observe} operation))
     (throw (ex-info "Authentication required" {:type :authentication-required})))
   (let [request (intent/request! wire-request)
-        ;; Remains closed until the reviewed budget/progress-deadline artifact
-        ;; is published and pinned. Internal synthetic tests do not enable IO.
-        _ (when (:source request)
-            (throw (ex-info "GitHub import is not available yet" {:type ::unavailable})))
         invoke (application/capture-operation)]
     (fn []
       (safe

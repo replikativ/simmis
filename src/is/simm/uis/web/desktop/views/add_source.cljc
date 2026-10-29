@@ -30,8 +30,8 @@
      {:id :notion :verb :connect :icon "book-open" :label "Notion"
       :blurb "Pages replicated in as a wiki." :ready? false}
      {:id :github :verb :connect :icon "git-branch" :label "GitHub repository"
-      :blurb "Code as a geschichte repo — already the substrate agents work in."
-      :ready? false}]}
+      :blurb "Import public repository files and review updates before applying."
+      :ready? true}]}
 
    :team
    {:title "Add team"

@@ -7,8 +7,8 @@ workflow installation, local Git commit, agent registration or source-code
 execution. Ordinary Markdown needs no Simmis identity. Malformed explicitly
 authored Simmis metadata remains a source repair diagnostic.
 
-The public entry remains disabled until the complete import/sync integration is
-verified. Geschichte 0.1.37 supplies the reviewed finite import budget, native
+**Add Memory → GitHub repository** opens the fixed import form. Geschichte
+0.1.37 supplies the reviewed finite import budget, native
 HTTP deadlines and inspected-target checkpoint precondition.
 
 ## Import limits

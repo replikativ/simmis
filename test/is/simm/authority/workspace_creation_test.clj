@@ -51,7 +51,19 @@
              (is (= :unavailable
                     (get-in (wire/inbound! (principal agent) "create-workspace!" {:request wire-request})
                             [:result :status])))
-             (is (= 1 (count @native-calls))))))
+             (is (= 1 (count @native-calls))))
+           (let [github-request (assoc wire-request :source {:kind :github :repository "owner/repository"})]
+             (is (= :preparing
+                    (get-in (wire/inbound! (principal owner) "create-workspace!" {:request github-request})
+                            [:result :status])))
+             (is (= [owner github-request] (last @native-calls)))
+             (is (= :preparing
+                    (get-in (wire/inbound! (principal owner) "observe-workspace-creation!" {:request github-request})
+                            [:result :status])))
+             (is (= 2 (count @native-calls)) "Observation does not import again")
+             (is (:error (wire/inbound! (principal owner) "create-workspace!"
+                                       {:request (assoc-in github-request [:source :headers] {"Authorization" "forbidden"})})))
+             (is (= 2 (count @native-calls))))))
       (finally
         (if previous-default (distributed/register-context! :default previous-default)
             (distributed/unregister-context! :default))
