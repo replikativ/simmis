@@ -373,7 +373,7 @@
               ;; the snapshot only afterwards so the first reply can be current.
               (let [c (connected!) s (state) slot [:saved-view path view] marker (saved-views/marker s path view)
                     input (saved-views/request s path view)]
-                (when (and (get-in s [:page-view-open [path view]]) input
+                (when (and (saved-views/opened? s path view) input
                            (verified? s c) (not (get-in s [:loading slot]))
                            (not= marker (get-in s [:saved-view-attempts [path view]])))
                   (update! assoc-in [:saved-view-attempts [path view]] marker)
@@ -387,7 +387,7 @@
                                 (assoc-in [:page-view-edits [path view]] (select-keys (first (:rows reply)) [:id :path]))))
                             nil {:stamp (:target-stamp s) :read? true
                                  :accept? (fn [current reply]
-                                            (and (get-in current [:page-view-open [path view]])
+                                            (and (saved-views/opened? current path view)
                                                  (saved-views/reply-current? current path view marker reply)))
                                  :failure-state (fn [current _] (update current :saved-views dissoc [path view]))}))))
             (enroll-page-view-row! [path view row]
@@ -740,7 +740,7 @@
            (update! assoc :receipt-context context)))
        :toggle-saved-view
        (fn [path view]
-         (let [slot [:saved-view path view] opened? (get-in (state) [:page-view-open [path view]])]
+         (let [slot [:saved-view path view] opened? (saved-views/opened? (state) path view)]
            (update! #(cond-> (-> % (assoc-in [:page-view-open [path view]] (not opened?))
                                   (update :saved-view-attempts dissoc [path view]))
                        opened? (metadata-view/retire-reads #{slot})))
@@ -783,7 +783,7 @@
          (let [s (state) path (:selected s)]
            (doseq [entry (saved-views/entries s path)
                    :let [view (:view entry)]
-                   :when (and (= :ready (:status entry)) (get-in s [:page-view-open [path view]]))]
+                   :when (and (= :ready (:status entry)) (saved-views/opened? s path view))]
              (saved-view! path view)
              (when-let [row (when (saved-views/pages? (state) path view)
                              (get-in (state) [:page-view-edits [path view]]))]

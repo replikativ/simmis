@@ -14,6 +14,12 @@
 (defn entry [state path view]
   (first (filter #(and (= view (:view %)) (= :ready (:status %))) (entries state path))))
 
+(defn opened?
+  "Bounded read-only views display on opening a document. An explicit Hide is
+   retained; loading still requires the current saved source and owned target."
+  [state path view]
+  (true? (get-in state [:page-view-open [path view]] true)))
+
 (defn pages? [state path view]
   (= :pages (get-in (entry state path view) [:descriptor :source :kind])))
 
@@ -111,7 +117,7 @@
   [state]
   (let [active (into #{(:selected state)}
                      (keep (fn [[key row]] (when (and (= (:selected state) (first key))
-                                                      (get-in state [:page-view-open key])
+                                                      (opened? state (first key) (second key))
                                                       (pages? state (first key) (second key))) (:path row))))
                      (:page-view-edits state))
         pending? (fn [path] (some (fn [[slot value]] (and value (vector? slot) (= path (second slot)))) (:loading state)))

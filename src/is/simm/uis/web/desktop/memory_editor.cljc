@@ -285,7 +285,7 @@
      :paths (vec (sort (distinct (concat (keys (:drafts state))
                                          (keep (fn [[key row]]
                                                  (when (and (= (:selected state) (first key))
-                                                            (get-in state [:page-view-open key])) (:path row)))
+                                                            (true? (get-in state [:page-view-open key] true))) (:path row)))
                                                (:page-view-edits state))
                                          (map second (filter #(= :file (first %)) pending))))))}))
 

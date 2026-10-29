@@ -11,8 +11,12 @@
             [is.simm.documents.space :as space]
             [is.simm.documents.view :as view]))
 
-(defn- title [path]
-  (str/replace (last (str/split path #"/")) #"(?i)\.(md|markdown)$" ""))
+(defn- title [{:keys [path frontmatter]}]
+  (let [label (get-in frontmatter [:properties "title"])]
+    (if (and (string? label) (<= 1 (count label) 256)
+             (not (str/blank? label)) (not (re-find #"[\p{Cntrl}]" label)))
+      (str/trim label)
+      (str/replace (last (str/split path #"/")) #"(?i)\.(md|markdown)$" ""))))
 
 (def max-cell-characters 1024)
 (def max-display-characters 65536)
@@ -170,17 +174,17 @@
       (let [projected (:db prepared)
             canonical-docs (filter #(= :explicit (:identity-status %)) (:documents prepared))
             bindings (column-bindings source (:columns descriptor))
-            known-pages (into {} (map (fn [{:keys [id path]}] [id {:label (title path) :path path}]))
+            known-pages (into {} (map (fn [{:keys [id path] :as document}] [id {:label (title document) :path path}]))
                               canonical-docs)
             wanted-types (set (get-in descriptor [:source :types]))
             wanted-page (get-in descriptor [:source :page])
             selected
-            (vec (keep (fn [{:keys [id path revision]}]
+            (vec (keep (fn [{:keys [id path revision] :as document}]
                          (let [entity (d/entity projected [:entity/uuid id])
                                types (set (keep :entity/uuid (:instance/of-role entity)))]
                            (when (and (or (nil? wanted-page) (= id wanted-page))
                                       (every? types wanted-types))
-                             {:id id :path path :title (title path) :revision revision
+                             {:id id :path path :title (title document) :revision revision
                               :entry (get-in prepared [:selection :files path])})))
                        canonical-docs))
             direction (get-in descriptor [:order 0 :direction])
