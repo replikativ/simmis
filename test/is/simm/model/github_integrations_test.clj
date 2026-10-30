@@ -82,3 +82,37 @@
                                                    (random-uuid) oid (random-uuid) (random-uuid)))))
         (is (nil? (integrations/current-in @conn room)))
         (is (= before @conn))))))
+
+(deftest sync-advancement-compares-the-whole-cursor-and-retains-the-import-anchor
+  (with-store
+    (fn [conn]
+      (let [room (random-uuid) base (random-uuid) head (random-uuid)
+            base-oid (apply str (repeat 40 "a")) oid (apply str (repeat 40 "b"))
+            sync-id (random-uuid) proof (random-uuid) proof-id (random-uuid)]
+        (d/transact conn [[:db.fn/call integrations/initialize-tx room (random-uuid) (random-uuid)
+                          base base-oid (random-uuid) (random-uuid)]])
+        (let [expected (integrations/current-in @conn room)
+              advance #(integrations/advance-sync-tx @conn expected sync-id base base-oid head oid proof proof-id)]
+          (is (= [] (integrations/advance-sync-tx @conn expected sync-id base base-oid base base-oid proof proof-id)))
+          (doseq [[wrong-head wrong-oid] [[(random-uuid) base-oid] [base oid]]]
+            (is (thrown? clojure.lang.ExceptionInfo
+                         (integrations/validate-sync-base! @conn expected wrong-head wrong-oid))))
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (integrations/advance-sync-tx @conn expected sync-id base base-oid base oid proof proof-id)))
+          (is (= expected (integrations/current-in @conn room)))
+          (d/transact conn (advance))
+          (let [actual (integrations/current-in @conn room)]
+            (is (= head (:github.integration/head actual)))
+            (is (= oid (:github.integration/oid actual)))
+            (is (= proof (:github.integration/proof actual)))
+            (is (= proof-id (:github.integration/proof-id actual)))
+            (is (= sync-id (:github.integration/sync actual)))
+            (is (uuid? (:github.integration/previous actual)))
+            (is (= (select-keys expected [:github.integration/import-head :github.integration/import-oid
+                                         :github.integration/import-proof :github.integration/import-proof-id
+                                         :github.integration/connection :github.integration/connection-id])
+                   (select-keys actual [:github.integration/import-head :github.integration/import-oid
+                                       :github.integration/import-proof :github.integration/import-proof-id
+                                       :github.integration/connection :github.integration/connection-id])))
+            (is (thrown? clojure.lang.ExceptionInfo (advance)))
+            (is (= actual (integrations/current-in @conn room)))))))))

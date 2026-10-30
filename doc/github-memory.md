@@ -8,9 +8,11 @@ execution. Ordinary Markdown needs no Simmis identity. Malformed explicitly
 authored Simmis metadata remains a source repair diagnostic.
 
 **Add Memory → GitHub repository** opens the fixed import form. Geschichte
-0.1.40 includes the reviewed finite import budget, native HTTP deadlines and
+0.1.41 includes the reviewed finite import budget, native HTTP deadlines and
 inspected-target checkpoint precondition, plus fixes for whitespace-only text,
 invalid UTF-8 and overlapping content-merge regions.
+Its bounded merge planner is a prerequisite for the forthcoming Proposal path;
+the current public sync still uses fast-forward-only native publication.
 
 New imports publish their exact source Git OID, native head, physical connection
 identity and retained creation receipt in the same control transaction as
@@ -19,6 +21,21 @@ nor an integration row; an uncertain acknowledgment is observed using the same
 creation request, never by cloning again. Existing Memories are not assigned
 inferred upstream metadata. This metadata does not itself pin native snapshots
 against GC or enable merging local edits, pushing, or automatic sync.
+
+A positively acknowledged fast-forward whose reviewed base matches the
+observed integration record advances that record in the
+same control transaction as its `:applied` sync outcome, retaining the initial
+import anchor and linking the new head/OID to that exact outcome receipt. The
+writer compares the whole observed integration record and checks its base
+against the reviewed upstream head before native publication. Unchanged heads
+leave the record unchanged. A lost native ACK followed by observation of the
+desired files does **not** advance it: that observation proves no historical
+integration. Previously stale metadata remains unchanged rather than being repaired from file
+equality or ancestry. Memories with absent or already stale metadata keep their
+existing checkpoint-guarded fast-forward behavior, leaving that metadata
+untouched. This path does not invent an integration base for them; future
+three-way integration must reconcile positive receipts or explicitly establish
+a new base before using such metadata.
 
 ## Import limits
 

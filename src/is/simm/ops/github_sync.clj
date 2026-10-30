@@ -10,6 +10,7 @@
             [geschichte.git.transport :as transport]
             [geschichte.workspace :as workspace]
             [is.simm.model.github-sync :as journal]
+            [is.simm.model.github-integrations :as integrations]
             [is.simm.model.access :as access]
             [is.simm.ops.file-output-adoption :as adoption]
             [is.simm.ops.github-import :as import]
@@ -59,7 +60,16 @@
   (writer-current! context db)
   (when-not (or (:cleanup? context) (= (:party (:resolved context)) (:github.sync/by row)))
     (facts/refuse! :different-owner))
-  (journal/transition-tx db row state ref id))
+  (let [transition (journal/transition-tx db row state ref id)
+        expected (:integration context)
+        {:keys [before after]} (:integration-change context)]
+    (when (and expected (#{:applying :applied} state))
+      (integrations/validate-sync-base! db expected (get-in before [:visible :head]) (:git-oid before)))
+    (into transition
+          (when (and expected (= :applied state))
+            (integrations/advance-sync-tx db expected (:github.sync/id row)
+                                          (get-in before [:visible :head]) (:git-oid before)
+                                          (get-in after [:visible :head]) (:git-oid after) ref id)))))
 
 (defn- row! [{:keys [conn resolved cleanup?]} id]
   (let [row (journal/sync-in @conn id)]
@@ -86,7 +96,10 @@
         write! (fn [ref]
                  (vreset! published ref)
                  (current! context)
-                 (d/transact (:conn context) [[:db.fn/call transition-tx context row state ref id]]))
+                 ;; Runtime handles are opaque closure captures, not transaction
+                 ;; argument data: error logging must never print the live App,
+                 ;; connection, queue and context graph on a guarded refusal.
+                 (d/transact (:conn context) [[:db.fn/call #(transition-tx % context row state ref id)]]))
         failure (try
                   (if slot (artifact/publish-value! (artifact/datahike-store (:conn context)) body write!) (write! nil))
                   nil
@@ -160,7 +173,7 @@
            (fn [ref]
              (vreset! published ref)
              (current! context)
-             (d/transact conn [[:db.fn/call prepare-tx context binding ref body-id]])))
+             (d/transact conn [[:db.fn/call #(prepare-tx % context binding ref body-id)]])))
           (let [row (row! context id)]
             (when-not (and (= :creating (:github.sync/state row))
                            (= (:claim binding) (:github.sync/claim row))
@@ -242,7 +255,16 @@
     (case operation
       (:prepare :observe) row
       :apply
-      (let [[prepared ready] (ready! context row)]
+      (let [[prepared ready] (ready! context row)
+            cursor (:integration context)
+            eligible? (and cursor
+                           (= (:github.integration/head cursor) (get-in ready [:before :visible :head]))
+                           (= (:github.integration/oid cursor) (get-in ready [:before :git-oid])))
+            ;; Existing FF safety comes from its exact native checkpoint, not
+            ;; optional cursor metadata. Never infer/repair an already stale or
+            ;; absent cursor. Once eligible, retain whole-row CAS throughout.
+            context (cond-> (assoc context :integration-change (select-keys ready [:before :after]))
+                      (not eligible?) (dissoc :integration))]
         (when-not (and (= :ready (:github.sync/state row)) (= (:ready-id request) (:github.sync/ready-id row)))
           (facts/refuse! :not-ready))
         (let [row (transition! context row :applying nil)]
@@ -357,6 +379,7 @@
                        context {:host host :principal principal :handle handle :resolved resolved :lease lease
                                 :ticket lifetime/*ticket* :conn (:control-conn (::reads/owner host)) :cleanup? (= :retire operation)
                                 :bound bound :origin (origin-in! control room-id)
+                                :integration (integrations/current-in control room-id)
                                 :revision (owned/control-revision control room-id (get-in bound [:target :registry-system]))}]
                    (current! context)
                    (let [id (or (:sync-id request) (journal/request-id party room-id (:client-id request)))]

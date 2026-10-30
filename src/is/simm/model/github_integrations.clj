@@ -1,7 +1,7 @@
 (ns is.simm.model.github-integrations
-  "Initial Git upstream metadata published atomically with Memory membership.
+  "Git upstream metadata published atomically with Memory membership/outcomes.
    References and hashes confer neither authority nor native GC retention.
-   This module does not integrate, merge or advance an existing connection."
+   Pure fragments do not certify or perform native publication."
   (:require [datahike.api :as d]
             [hasch.core :as hasch]
             [is.simm.model.github-connections :as connections]))
@@ -20,7 +20,9 @@
          [:github.integration/head :db.type/uuid]
          [:github.integration/oid :db.type/string]
          [:github.integration/proof :db.type/store-ref]
-         [:github.integration/proof-id :db.type/uuid]]))
+         [:github.integration/proof-id :db.type/uuid]
+         [:github.integration/sync :db.type/uuid]
+         [:github.integration/previous :db.type/uuid]]))
 
 (defn- refuse! [reason]
   (throw (ex-info "Git integration cursor refused" {:type ::refused :reason reason})))
@@ -74,3 +76,33 @@
       (do (when-not (= immutable (select-keys row (keys immutable))) (refuse! :connection-changed)) [])
       [(merge immutable {:github.integration/head head :github.integration/oid oid
                          :github.integration/proof proof-ref :github.integration/proof-id proof-id})])))
+
+(defn validate-sync-base!
+  "Check the exact observed cursor and upstream base in the writer's DB.
+   A stale initial cursor is not repaired by guessing from HEAD or ancestry."
+  [db expected head oid]
+  (when-not (and (map? expected) (uuid? head) (oid? oid))
+    (refuse! :invalid-sync))
+  (when-not (= expected (current-in db (:github.integration/room expected)))
+    (refuse! :cursor-changed))
+  (when-not (and (= head (:github.integration/head expected))
+                 (= oid (:github.integration/oid expected)))
+    (refuse! :unverified-base))
+  expected)
+
+(defn advance-sync-tx
+  "Compose with a POSITIVE native sync outcome in the same control writer.
+   An observed desired state after an unknown ACK is not such an outcome.
+   Unchanged upstream heads leave the cursor and its proof unchanged."
+  [db expected sync-id before-head before-oid head oid proof-ref proof-id]
+  (when-not (and (every? uuid? [sync-id head proof-ref proof-id]) (oid? oid))
+    (refuse! :invalid-sync))
+  (validate-sync-base! db expected before-head before-oid)
+  (if (= head before-head)
+    (do (when-not (= oid before-oid) (refuse! :inconsistent-head)) [])
+    [{:db/id (:db/id expected)
+      :github.integration/head head :github.integration/oid oid
+      :github.integration/proof proof-ref :github.integration/proof-id proof-id
+      :github.integration/sync sync-id
+      :github.integration/previous
+      (hasch/uuid [:simmis/github-integration-cursor-v1 (dissoc expected :db/id)])}]))
