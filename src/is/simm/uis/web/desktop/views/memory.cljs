@@ -737,7 +737,9 @@
                           (el/button {:on-click (fn [_] ((:retry-reference a)))} "File changed · locate block again")))))
             (when-not verified?
               (el/p {:class "memory-note" :role "status"}
-                    "Workspace is not verified. Your drafts are retained; Refresh checks the currently authorized workspace without relying on live updates."))
+                    (if (or draft (get-in state [:errors :metadata]))
+                      "Workspace is not verified. Your drafts are retained; Refresh checks the currently authorized workspace without relying on live updates."
+                      "Opening workspace…")))
             (when (:target-stale? draft)
               (el/div {:class "memory-conflict" :role "status"}
                       (el/p {} "Workspace changed. This draft is from the previous workspace and will not be saved into the new one.")
@@ -752,7 +754,12 @@
             (el/div {:class "memory-layout"}
                     (el/div {:class "memory-detail"}
                             (if-not draft
-                              (el/p {:class "memory-note"} "Choose a file under Memory in the left navigation. Markdown is knowledge wherever you put it; wiki/ is just a convenient folder.")
+                              (el/p {:class "memory-note" :role "status"}
+                                    (cond
+                                      (or (get-in state [:errors :metadata]) (get-in state [:errors [:file path]]))
+                                      "The file could not be opened. See the error above."
+                                      (seq path) (str "Opening " path "…")
+                                      :else "Choose a file under Memory in the left navigation. Markdown is knowledge wherever you put it; wiki/ is just a convenient folder."))
                               (el/div {}
                                       (when (and coherent? (= (:target-stamp state) (get-in state [:download :target-stamp]))
                                                  (= path (get-in state [:download :path])))
