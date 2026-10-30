@@ -10,6 +10,10 @@
 
 (defn- uuid-string? [s] (and (string? s) (= s (some-> s parse-uuid str))))
 
+(defn action-basis [git-basis state]
+  {:action git-basis :scope (:credential-observed state)
+   :credential (select-keys (:credential-reply state) [:connection-id :revision])})
+
 (defn controller [actions memory-state]
   (let [ctx (or ec/*execution-context* runtime) session (web/current-session)
         room (second (:owner actions)) key (:owner actions) state (:state actions)
@@ -21,8 +25,7 @@
                  [(connection/snapshot) (:target-stamp (memory-state))
                   (select-keys (:github-source (memory-state)) [:repository :ref])])
         basis #(binding [ec/*execution-context* ctx]
-                 {:action ((:basis actions)) :scope (:credential-observed (state))
-                  :credential (select-keys (:credential-reply (state)) [:connection-id :revision])})
+                 (action-basis ((:basis actions)) (state)))
         update! (fn [f & args]
                   (binding [ec/*execution-context* ctx]
                     (when (current?) (apply swap! sig/github-sync-state update key f args))))]

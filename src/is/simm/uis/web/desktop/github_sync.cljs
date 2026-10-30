@@ -36,6 +36,7 @@
   (let [ctx (or ec/*execution-context* runtime) session (web/current-session)
         room (str (:room-id data)) push? (= :push (:github-direction data))
         key (cond-> [(:id session) room] push? (conj :push))
+        direction-key [(:id session) room :last-direction]
         current? #(and (:id session) (web/current-session? session))
         state #(binding [ec/*execution-context* ctx] (get @sig/github-sync-state key))
         update! (fn [f & args] (binding [ec/*execution-context* ctx]
@@ -91,6 +92,7 @@
                                      (catch :default error (failed error))))))]
                     (update! assoc :token token :operation operation :loading? true :error nil
                              :request-on epoch :observed-on [epoch stamp (get-in (state) [:intent :client-id])])
+                    (swap! sig/github-sync-state assoc direction-key (if push? :push :incoming))
                     (try
                       (binding [ec/*spin-id* nil]
                         ((case operation
@@ -132,7 +134,7 @@
               (when (and (owner-call?) (= offer (basis)))
                 (when-let [client (get-in (state) [:intent :client-id])]
                   (invoke! operation {:client-id client}))))]
-      {:owner key :direction (if push? :push :incoming) :state state :basis basis :ensure ensure! :sync prepare! :check #(intent-action! % :observe) :apply apply!
+      {:owner key :direction-key direction-key :direction (if push? :push :incoming) :state state :basis basis :ensure ensure! :sync prepare! :check #(intent-action! % :observe) :apply apply!
        :recover #(intent-action! % :recover) :discard #(intent-action! % :discard)
        :retire (fn [offer] (when (and (owner-call?) (= offer (basis)))
                              (when-let [id (:sync-id offer)]

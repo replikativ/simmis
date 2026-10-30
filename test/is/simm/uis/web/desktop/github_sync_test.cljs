@@ -98,7 +98,7 @@
       (let [container (.createElement js/document "div") stop (atom nil)]
         (.appendChild (.-body js/document) container)
         (try
-          (reset! stop (browser/mount! container (view/view @memory a (state))))
+          (reset! stop (browser/mount! container (view/review-pull @memory a (state))))
           (is (.includes (.-textContent container) "<script>alert(1)</script>.md"))
           (is (nil? (.querySelector container "script")))
           (let [button (some #(when (= "Apply reviewed update" (.-textContent %)) %) (array-seq (.querySelectorAll container "button")))]
@@ -118,7 +118,7 @@
       (let [container (.createElement js/document "div") stop (atom nil)]
         (.appendChild (.-body js/document) container)
         (try
-          (reset! stop (browser/mount! container (view/view @memory a (state))))
+          (reset! stop (browser/mount! container (view/review-pull @memory a (state))))
           (is (.includes (.-textContent container) "Your edits are saved in this Memory."))
           (is (.includes (.-textContent container) "nothing was pushed"))
           (is (not (.includes (.-textContent container) "This sync needs inspection")))
@@ -140,7 +140,7 @@
       (let [container (.createElement js/document "div") stop (atom nil)]
         (.appendChild (.-body js/document) container)
         (try
-          (reset! stop (browser/mount! container (view/view @memory a (state))))
+          (reset! stop (browser/mount! container (view/review-pull @memory a (state))))
           (let [buttons (array-seq (.querySelectorAll container "button"))
                 apply-button (some #(when (= "Apply reviewed update" (.-textContent %)) %) buttons)
                 discard-button (some #(when (= "Discard private preparation" (.-textContent %)) %) buttons)]
@@ -161,7 +161,7 @@
       (let [container (.createElement js/document "div") stop (atom nil)]
         (.appendChild (.-body js/document) container)
         (try
-          (reset! stop (browser/mount! container (view/view @memory a (state))))
+          (reset! stop (browser/mount! container (view/retirement-control @memory a (state))))
           (let [button (some #(when (= "Close previous owner's Git preparation" (.-textContent %)) %)
                              (array-seq (.querySelectorAll container "button")))]
             (is (some? button))
@@ -321,3 +321,88 @@
             (is (= [:status :status] (mapv :operation @calls)))
             ((:revoke c) ((:basis c)))
             (is (= :revoke (:operation (last @calls))))))))))
+
+(deftest page-toolbar-is-remote-neutral-and-access-setup-opens-settings
+  (with-client
+    (fn [{:keys [a state room memory calls]}]
+      (let [push (sync/controller {:room-id room :github-direction :push} #(deref memory))
+            container (.createElement js/document "div") stop (atom nil) settings (atom 0)]
+        (.appendChild (.-body js/document) container)
+        (try
+          (reset! stop (browser/mount! container
+                                       (view/toolbar (assoc-in @memory [:github-source :last-sync]
+                                                               {:at "2026-10-30T18:00:00Z" :git-oid (apply str (repeat 40 "a"))})
+                                                     a (state) push ((:state push)) nil #(swap! settings inc))))
+          (is (= ["Pull" "Push"] (mapv #(.-textContent %) (array-seq (.querySelectorAll container "button")))))
+          (is (.includes (.-textContent container) "Last sync"))
+          (is (nil? (.querySelector container "input")))
+          (is (not (.includes (.-textContent container) "GitHub")))
+          (.click (aget (.querySelectorAll container "button") 1))
+          (is (= 1 @settings))
+          (is (empty? @calls))
+          (finally (when @stop (browser/unmount! @stop)) (.remove container)))))))
+
+(deftest provider-access-is-contained-in-the-memory-settings-dialog
+  (with-client
+    (fn [{:keys [a state memory]}]
+      (let [container (.createElement js/document "div") stop (atom nil) closed (atom false)
+            credentials {:basis (constantly {}) :reload (fn [_]) :save (fn [& _]) :revoke (fn [_])}]
+        (.appendChild (.-body js/document) container)
+        (try
+          (reset! stop (browser/mount! container
+                                       (view/settings-view {:room-name "Test Memory"} (assoc @memory :settings-open? true)
+                                                           {:settings-open #(reset! closed (not %))}
+                                                           a (state) {:credential-reply {:configured? false}} credentials)))
+          (is (some? (.querySelector container "[role=dialog][aria-label='Memory settings']")))
+          (is (some? (.querySelector container "input[type=password]")))
+          (is (.includes (.-textContent container) "Your GitHub access"))
+          (.click (.querySelector container "button[aria-label='Close Memory settings']"))
+          (is @closed)
+          (finally (when @stop (browser/unmount! @stop)) (.remove container)))))))
+
+(deftest an-old-render-snapshot-cannot-borrow-a-new-review-token
+  (doseq [direction [:incoming :push]]
+    (with-client
+      (fn [{:keys [a room memory calls ready]}]
+        (let [a (if (= :push direction) (sync/controller {:room-id room :github-direction :push} #(deref memory)) a)]
+          (act! a :sync) ((:ok (last @calls)) ready)
+          (let [old-state ((:state a)) old-memory @memory]
+            (act! a :discard) ((:ok (last @calls)) {:status :closed})
+            (act! a :sync) ((:ok (last @calls)) (assoc ready :ready-id (str (random-uuid))))
+            (let [container (.createElement js/document "div") stop (atom nil) before (count @calls)]
+              (.appendChild (.-body js/document) container)
+              (try
+                (reset! stop (browser/mount! container ((if (= :push direction) view/review-push view/review-pull) old-memory a old-state)))
+                (let [label (if (= :push direction) "Push reviewed changes" "Apply reviewed update")
+                      button (some #(when (= label (.-textContent %)) %) (array-seq (.querySelectorAll container "button")))]
+                  (is (some? button))
+                  (.click button)
+                  (is (= before (count @calls))))
+                (finally (when @stop (browser/unmount! @stop)) (.remove container))))))))))
+
+(deftest an-old-credential-render-cannot-borrow-the-current-revision
+  (with-client
+    (fn [{:keys [room memory]}]
+      (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))
+            c (credentials/controller a #(deref memory)) calls (atom [])
+            reply {:configured? true :revision (str (random-uuid)) :connection-id (str (random-uuid))
+                   :target-stamp (str (:target-stamp @memory)) :repository "owner/repository" :ref "refs/heads/main"}]
+        (with-redefs [remote/github-credential-operation!
+                      (fn [_ _ operation request]
+                        (fn [ok error] (swap! calls conj {:operation operation :request request :ok ok :error error})))]
+          ((:ensure c)) ((:ok (last @calls)) reply)
+          (let [old-state ((:state a)) container (.createElement js/document "div") stop (atom nil)]
+            ((:reload c) ((:basis c)))
+            ((:ok (last @calls)) (assoc reply :revision (str (random-uuid))))
+            (.appendChild (.-body js/document) container)
+            (try
+              (reset! stop (browser/mount! container (view/credential-view @memory old-state c)))
+              (let [disconnect (some #(when (= "Disconnect" (.-textContent %)) %) (array-seq (.querySelectorAll container "button")))
+                    input (.querySelector container "input[type=password]")]
+                (is (some? disconnect))
+                (.click disconnect)
+                (set! (.-value input) (apply str (repeat 24 "x")))
+                (.dispatchEvent (.querySelector container "form") (js/Event. "submit" #js {:bubbles true :cancelable true}))
+                (is (= [:status :status] (mapv :operation @calls)))
+                (is (= "" (.-value input))))
+              (finally (when @stop (browser/unmount! @stop)) (.remove container)))))))))

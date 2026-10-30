@@ -673,6 +673,10 @@
             (el/details {:class "memory-file-menu"}
                         (el/summary {:aria-label "File and workspace actions" :title "File and workspace actions"} "⋯")
                         (el/div {:class "memory-file-menu-content"}
+                                (el/button {:on-click (fn [event]
+                                                        (when-let [menu (.closest (.-currentTarget event) "details")]
+                                                          (set! (.-open menu) false))
+                                                        ((:settings-open a) true))} "Memory settings")
                                 (when markdown?
                                   (el/button {:on-click (fn [_] ((:open-properties a) path {:kind :page}))} "Properties"))
                                 (when draft
@@ -724,8 +728,11 @@
             (file-header data state a draft workspace-write? write? coherent? syntax-pref)
             (when verified?
               (el/div {}
-                      (github-view/view state github-action github-state)
-                      (github-view/push-view state push-action push-state credentials)))
+                      (github-view/toolbar state github-action github-state push-action push-state
+                                           (:last-git-direction data) #((:settings-open a) true))
+                      (github-view/review-pull state github-action github-state)
+                      (github-view/review-push state push-action push-state)))
+            (github-view/settings-view data state a github-action github-state push-state credentials)
             (when (get-in state [:loading :reference])
               (el/p {:class "memory-note" :role "status"} "Locating block in the current workspace…"))
             (when-let [error (get-in state [:errors :reference])]
@@ -863,7 +870,7 @@
      ((:ensure github-action))
      ((:ensure push-action))
      ((:ensure credentials))
-     (view (assoc data :room-name room-name) state a syntax-pref github-action (get git-states (:owner github-action))
+     (view (assoc data :room-name room-name :last-git-direction (get git-states (:direction-key github-action))) state a syntax-pref github-action (get git-states (:owner github-action))
            push-action (get git-states (:owner push-action)) credentials))))
 
 (defn- backlinks-view [a]

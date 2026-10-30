@@ -15,9 +15,9 @@ request, never by cloning again. Existing Memories are not assigned inferred
 upstream metadata.
 
 The file browser and editor use this ordinary Memory. Editor autosaves create
-local Geschichte commits. **Sync from GitHub** now integrates incoming changes
+local Geschichte commits. **Pull** integrates incoming changes
 with that saved history through a frozen Proposal; review and acceptance are
-separate from fetching. **Review push** prepares outbound publication separately;
+separate from fetching. **Push** prepares outbound publication separately;
 it requires this human's GitHub access and an explicit reviewed send. Automatic
 fetching is not enabled by linking a repository.
 
@@ -46,7 +46,7 @@ uncertain creation request never fetches or creates again.
 
 ## Incoming changes and Proposals
 
-**Sync from GitHub** captures the original authorized Room, source and physical
+**Pull** captures the original authorized Room, source and physical
 checkpoint, then creates a private exact-checkpoint workspace. A bounded full
 fetch and three-way merge combine the retained upstream base, saved local
 history and fetched upstream revision. The same finite operation covers fetch,
@@ -153,7 +153,15 @@ holds for reconciliation. None of these paths resends. A Room administrator can
 close known unsent or terminal attempts while preserving original authorship;
 an unknown Sending attempt cannot be discarded or administratively retired.
 
-**GitHub access** stores a credential for this human and this exact physical Git
+**Memory settings**, available in the file/workspace actions menu, contains the
+remote identity, tracked branch and this human's provider access. The page shows
+only Pull, Push and sync status; review details open in separate dialogs.
+Last-sync time comes from the durable integration cursor transaction, not a
+timer or local refresh. The interface describes a linked remote; GitHub is the
+currently supported transport/authentication adapter. Arbitrary Git hosts and
+direct Geschichte remotes are not enabled by this UI consolidation.
+
+**Your GitHub access** stores a credential for this human and this exact physical Git
 connection. Room membership never shares a token. Replacement and disconnect
 require the inspected connection and credential revision. A stale settings form
 cannot overwrite rotated access or retarget its token to another connection.
