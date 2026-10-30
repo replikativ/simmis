@@ -31,6 +31,10 @@
                       :geschichte.git.budget/cancelled :cancelled
                       :geschichte.git.client/unsupported-local-projection :local-history
                       :is.simm.ops.owned-reads/refused :access-unverified
+                      :dvergr.runtime.preparation/capacity-exhausted :busy
+                      :is.simm.ops.github-credentials/refused
+                      (when (#{:credential-required :credential-changed :credential-unavailable :request-failed :destination-refused} reason) reason)
+                      :is.simm.model.github-credentials/refused :credential-changed
                       :is.simm.model.github-integrations/refused
                       (when (#{:cursor-changed :unverified-base} reason) :integration-unverified)
                       nil)

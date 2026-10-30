@@ -9,10 +9,10 @@
             [is.simm.uis.web.desktop.github-remote :as remote]
             [is.simm.runtimes.web :as web]))
 
-(def terminal #{:applied :satisfied-observed :closed :filed :not-started})
+(def terminal #{:applied :satisfied-observed :closed :filed :not-started :unchanged})
 
 (defn- reply! [reply]
-  (when-not (and (map? reply) (#{:not-observed :preparing :ready :unconfirmed :held :applied :satisfied-observed :closed :filed :not-started} (:status reply))
+  (when-not (and (map? reply) (#{:not-observed :preparing :ready :unconfirmed :held :applied :satisfied-observed :closed :filed :not-started :unchanged :pushed :rejected} (:status reply))
                  (or (not= :filed (:status reply))
                      (and (string? (:proposal-id reply))
                           (= (:proposal-id reply) (some-> (:proposal-id reply) parse-uuid str))))
@@ -34,7 +34,8 @@
 
 (defn controller [data memory-state]
   (let [ctx (or ec/*execution-context* runtime) session (web/current-session)
-        room (str (:room-id data)) key [(:id session) room]
+        room (str (:room-id data)) push? (= :push (:github-direction data))
+        key (cond-> [(:id session) room] push? (conj :push))
         current? #(and (:id session) (web/current-session? session))
         state #(binding [ec/*execution-context* ctx] (get @sig/github-sync-state key))
         update! (fn [f & args] (binding [ec/*execution-context* ctx]
@@ -82,7 +83,11 @@
                                                      (dissoc :error)))
                                        (when (and (= :prepare-incoming operation) (= :filed (:status reply))
                                                   (= epoch (connection/snapshot)) (= stamp (:target-stamp (memory-state))))
-                                         (refs/open! {:kind :proposal :id (:proposal-id reply)})))
+                                         (refs/open! {:kind :proposal :id (:proposal-id reply)}))
+                                       (when (and push? (#{:pushed :rejected} (:status reply)))
+                                         ;; Known terminal cleanup cannot resend. If its
+                                         ;; reply is lost, observation finds this same row.
+                                         (invoke! :recover {:client-id (get-in (state) [:intent :client-id])})))
                                      (catch :default error (failed error))))))]
                     (update! assoc :token token :operation operation :loading? true :error nil
                              :request-on epoch :observed-on [epoch stamp (get-in (state) [:intent :client-id])])
@@ -99,7 +104,8 @@
                 (binding [ec/*execution-context* ctx]
                   (when (and (:loading? (state)) (not= (:request-on (state)) (connection/snapshot)))
                     (update! assoc :loading? false :verified-on nil :reply {:status :unconfirmed}))
-                  (when (and (valid?) (nil? (:intent (state))))
+                  (when (and (valid?) (= push? (= :push (get-in (memory-state) [:github-source :sync-kind])))
+                             (nil? (:intent (state))))
                     (when-let [client (get-in (memory-state) [:github-source :sync-client-id])]
                       (update! assoc :intent {:client-id client} :open? true)))
                   (when (and (valid?) (:intent (state)) (not (:loading? (state)))
@@ -115,7 +121,7 @@
                              (or (nil? (:intent (state))) (terminal (get-in (state) [:reply :status]))))
                     (let [request {:client-id (str (random-uuid)) :expected-target-stamp (str (:target-stamp (memory-state)))}]
                       (update! assoc :intent request :open? true :reply nil :verified-on nil)
-                      (invoke! :prepare-incoming request))))))
+                      (invoke! (if push? :prepare-push :prepare-incoming) request))))))
             (apply! [offer]
               (when (and (owner-call?) (= offer (basis)))
                 (binding [ec/*execution-context* ctx]
@@ -126,7 +132,7 @@
               (when (and (owner-call?) (= offer (basis)))
                 (when-let [client (get-in (state) [:intent :client-id])]
                   (invoke! operation {:client-id client}))))]
-      {:owner key :state state :basis basis :ensure ensure! :sync prepare! :check #(intent-action! % :observe) :apply apply!
+      {:owner key :direction (if push? :push :incoming) :state state :basis basis :ensure ensure! :sync prepare! :check #(intent-action! % :observe) :apply apply!
        :recover #(intent-action! % :recover) :discard #(intent-action! % :discard)
        :retire (fn [offer] (when (and (owner-call?) (= offer (basis)))
                              (when-let [id (:sync-id offer)]

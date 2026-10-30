@@ -18,19 +18,29 @@
 
 (defn- key-file [] (java.io.File. ^String (instance/home-path "mail-credential-key")))
 
+(defn- persistent-key [^java.io.File f]
+  (let [path (.toPath (.getAbsoluteFile f))
+        permissions (java.nio.file.attribute.PosixFilePermissions/fromString "rw-------")]
+    (java.nio.file.Files/createDirectories (.getParent path) (make-array java.nio.file.attribute.FileAttribute 0))
+    (try
+      ;; CREATE_NEW chooses one owner and never overwrites another process's
+      ;; key. An incomplete failed write remains an invalid file, not permission
+      ;; to silently rotate a key protecting existing encrypted credentials.
+      (java.nio.file.Files/createFile path (into-array java.nio.file.attribute.FileAttribute
+                                                       [(java.nio.file.attribute.PosixFilePermissions/asFileAttribute permissions)]))
+      (spit f (codec/bytes->b64url (geheimnis/random-bytes key-size)))
+      (log/log! {:level :warn :id ::dev-credential-key-created
+                 :msg "Generated a local credential key; set SIMMIS_CREDENTIAL_KEY in production"})
+      (catch java.nio.file.FileAlreadyExistsException _ nil))
+    (when (or (java.nio.file.Files/isSymbolicLink path)
+              (not (java.nio.file.Files/isRegularFile path (into-array java.nio.file.LinkOption [java.nio.file.LinkOption/NOFOLLOW_LINKS]))))
+      (throw (ex-info "Credential key must be a private regular file" {})))
+    (java.nio.file.Files/setPosixFilePermissions path permissions)
+    (str/trim (slurp f))))
+
 (defn- load-key []
   (let [encoded (or (some-> (System/getenv "SIMMIS_CREDENTIAL_KEY") str/trim not-empty)
-                    (let [f (key-file)]
-                      (if (.exists f)
-                        (str/trim (slurp f))
-                        (let [value (codec/bytes->b64url
-                                     (geheimnis/random-bytes key-size))]
-                          (.mkdirs (.getParentFile (.getAbsoluteFile f)))
-                          (spit f value)
-                          (log/log! {:level :warn
-                                     :id ::dev-credential-key-created
-                                     :msg "Generated a local mail credential key; set SIMMIS_CREDENTIAL_KEY in production"})
-                          value))))
+                    (persistent-key (key-file)))
         key (codec/b64url->bytes encoded)]
     (when-not (= key-size (alength key))
       (throw (ex-info "SIMMIS_CREDENTIAL_KEY must decode to exactly 32 bytes"

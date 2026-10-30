@@ -9,7 +9,6 @@
             [geschichte.git.http :as http]
             [geschichte.repo :as repo]
             [hasch.core :as hasch]
-            [is.simm.model.github-connections :as connections]
             [is.simm.model.github-integrations :as integrations]
             [is.simm.model.github-proposals :as provenance]
             [is.simm.model.github-sync :as journal]
@@ -72,19 +71,6 @@
                      (= state (:github.sync/state observed)))
         (refuse! :transition-unconfirmed))
       observed))))
-
-(defn- connection! [context]
-  (let [cursor (or (integrations/current-in @(:conn context) (get-in context [:resolved :room-id]))
-                   (refuse! :integration-unverified))
-        connection (:value (artifact/get-bounded-value (artifact/datahike-store (:conn context))
-                                                       (:github.integration/connection cursor) 16384))]
-    (connections/connection! connection)
-    (when-not (and (= (connections/connection-id connection) (:github.integration/connection-id cursor))
-                   (= (:target connection) (get-in context [:bound :target]))
-                   (= (:target-stamp connection) (get-in context [:bound :target-stamp]))
-                   (= (:room connection) (get-in context [:resolved :room-id])))
-      (refuse! :source-settings-changed))
-    {:cursor cursor :connection connection}))
 
 (defn- current-cursor! [context db expected]
   (integrations/validate-sync-base! db expected (:github.integration/head expected) (:github.integration/oid expected)))
@@ -152,7 +138,7 @@
       (do
         (when-not (= (:expected-target-stamp request) (get-in context [:bound :target-stamp])) (refuse! :target-changed))
         (let [source (:db (host/current! context))
-              {:keys [cursor connection]} (connection! context)
+              {:keys [cursor connection]} (host/connection! context)
               base (bases/retain-base! control source connection (get-in context [:resolved :party])
                                        #(host/current! context) #(host/writer-current! context %))
               before (facts/capture source (:origin context))

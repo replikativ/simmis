@@ -17,7 +17,9 @@ upstream metadata.
 The file browser and editor use this ordinary Memory. Editor autosaves create
 local Geschichte commits. **Sync from GitHub** now integrates incoming changes
 with that saved history through a frozen Proposal; review and acceptance are
-separate from fetching. Pushing and automatic fetching are separate follow-ups.
+separate from fetching. **Review push** prepares outbound publication separately;
+it requires this human's GitHub access and an explicit reviewed send. Automatic
+fetching is not enabled by linking a repository.
 
 ## Import limits
 
@@ -34,6 +36,8 @@ metadata must also fit 256 KiB, so a later retained review fits its artifact
 bound. Symlinks and
 submodules are refused before publication. Files are not rewritten to fit the
 limits. One HOST Git operation is admitted at a time without a waiting queue.
+The same operation also bounds pack visits, pack metadata parts and cumulative
+index reads; object-size limits alone do not bound catalog discovery.
 
 The pending native Room has no Simmis membership, content scope, roster entry or
 registered agent access until import, foundation checks and the final current
@@ -115,3 +119,56 @@ metadata is never repaired by guessing from file equality.
 Selective native advancement transfers committed files and Git identities, not
 the complete imported pack store. Fetch therefore currently uses empty `haves`;
 this feature does not enable thin negotiation, force push or automatic sync.
+
+## Outbound publication
+
+`is.simm.ops.github-push` implements outbound preparation and settlement inside
+an already admitted original HOST operation. Browser RPCs derive the human from
+the authenticated connection; no agent or MCP push API is installed. It uses a
+separate typed journal protocol sharing the Room's
+pending Git slot. The retained connection must match both the physical target
+and current source repository/ref; changing repository configuration does not
+retarget an existing connection or its cursor.
+
+Preparation verifies the exact remote head, projects a finite incremental pack,
+and records generated Git identities under the originally inspected native
+checkpoint. Concurrent edits refuse preparation rather than being incorporated
+implicitly. The sent commit snapshot and post-mapping source checkpoint have
+separate retained roots. Binary packs use typed content-addressed store refs,
+with size and identity verified before dispatch; they are not EDN strings or
+byte arrays embedded in artifact metadata.
+
+Only the original positive Ready-to-Sending transaction acknowledgement permits
+one remote compare-and-swap update. A positive result records the outcome and
+upstream cursor atomically. Already admitted completion facts remain recordable
+if permissions are revoked or the App is fenced while the remote call returns;
+the original operation still owns its physical ticket. This completion path
+cannot admit another send.
+
+An uncertain send stays fenced. Explicit recovery can observe the exact tracked
+remote ref and record a **new upstream observation**, while preserving that the
+historical send outcome is unknown. Observing the prepared new OID can advance
+the cursor; observing the old OID leaves it unchanged. A different remote OID
+holds for reconciliation. None of these paths resends. A Room administrator can
+close known unsent or terminal attempts while preserving original authorship;
+an unknown Sending attempt cannot be discarded or administratively retired.
+
+**GitHub access** stores a credential for this human and this exact physical Git
+connection. Room membership never shares a token. Replacement and disconnect
+require the inspected connection and credential revision. A stale settings form
+cannot overwrite rotated access or retarget its token to another connection.
+The encrypted envelope uses the existing server credential key, with a
+domain-separated identity and authenticated human/connection body. Only access
+status and identity/revision metadata return to the browser; neither ciphertext
+nor token enters Room files, push artifacts or receipts. The password input is
+uncontrolled and clears on submission; tokens are never stored in UI signals.
+
+Authenticated transport permits only the canonical repository's four Git
+advertisement/RPC destinations, without redirects. Current credential revisions
+are checked before requests and in the Sending admission writer. A rotated or
+revoked credential invalidates an older push review. Provider exceptions are
+sanitized before they leave the transport; cancellation retains interruption.
+Configured access is used for explicit unknown-send reconciliation. Because
+imports currently support public sources only, a human without configured
+access can still observe public refs; a selected credential failure never
+retries anonymously. Closing a known terminal attempt requires no token.

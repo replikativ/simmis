@@ -832,6 +832,7 @@
      "load-github-memory-sync!" {:action R :resource (room :room-id-str)}
      "sync-github-memory!"      {:action M :resource (room :room-id-str)}
      "github-proposal-operation!" {:action M :resource (room :room-id-str)}
+     "github-credential-operation!" {:action M :resource (room :room-id-str)}
      "retire-github-memory-sync!" {:action A :resource (room :room-id-str)}
      "load-rooms!"             {:action R :resource (self :party-id-str)}
      ;; --- drives (create) ---

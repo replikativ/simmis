@@ -5,6 +5,7 @@
             [datahike.api :as d]
             [geschichte.git.budget :as budget]
             [geschichte.git.transport :as transport]
+            [geschichte.git.store :as git-store]
             [geschichte.repo :as repo]
             [is.simm.documents.github-source :as github]
             [is.simm.documents.profile :as profile]
@@ -20,12 +21,13 @@
 (defonce ^:private admission (Semaphore. 1 true))
 
 (def limits
-  {:response-bytes (* 32 1024 1024) :pack-bytes (* 16 1024 1024)
-   :objects 50000 :index-bytes (* 4 1024 1024)
-   :object-bytes (* 4 1024 1024) :inflated-bytes (* 128 1024 1024)
-   :delta-result-bytes (* 4 1024 1024) :reconstructed-bytes (* 128 1024 1024)
-   :delta-depth 32 :commit-visits 4096 :tree-entries 5000 :tree-depth 32
-   :checkout-files 1024 :checkout-bytes (* 32 1024 1024)})
+  (merge-with min (:limits (git-store/metadata-budget-policy))
+              {:response-bytes (* 32 1024 1024) :pack-bytes (* 16 1024 1024)
+               :objects 50000 :index-bytes (* 4 1024 1024)
+               :object-bytes (* 4 1024 1024) :inflated-bytes (* 128 1024 1024)
+               :delta-result-bytes (* 4 1024 1024) :reconstructed-bytes (* 128 1024 1024)
+               :delta-depth 32 :commit-visits 4096 :tree-entries 5000 :tree-depth 32
+               :checkout-files 1024 :checkout-bytes (* 32 1024 1024)}))
 
 (defn- refuse! [reason]
   (throw (ex-info "GitHub import could not complete" {:type ::held :reason reason})))
@@ -40,8 +42,8 @@
 
 (defn reference? [ref]
   (and (string? ref) (<= 12 (count ref) 512)
-                 (str/starts-with? ref "refs/heads/")
-                 (not (re-find #"[\\\p{Cntrl}]" ref))))
+       (str/starts-with? ref "refs/heads/")
+       (not (re-find #"[\\\p{Cntrl}]" ref))))
 
 (defn- reference! [ref]
   (when-not (reference? ref)
@@ -117,8 +119,8 @@
           (manifests/inventory @conn)
           (let [pending (d/entity @control-conn [:room/slug (intent/slug creator request)])]
             (sync-data/capture @conn {:repository (:repository source) :ref ref
-                                     :import-head (:geschichte.commit/id head)
-                                     :registry-system (:system/id (:room/default-repository pending))}))
+                                      :import-head (:geschichte.commit/id head)
+                                      :registry-system (:system/id (:room/default-repository pending))}))
           (profile/prepare-open! conn options)
           (budget/check! operation)
           (current!)

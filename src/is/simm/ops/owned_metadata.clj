@@ -28,8 +28,10 @@
       (cond-> {:kind :github :repository repository :ref ref :import-head import-head
                :available? (and (= registry-system (get-in bound [:target :registry-system]))
                                 (= ref (query/current-ref (:db bound))))}
-        active (assoc :sync-active? true)
-        (and active (access/can? control (:party bound) :admin {:room (:room-id bound)}))
+        active (assoc :sync-active? true :sync-kind (github-sync/kind active))
+        (and active (or (not= :push (github-sync/kind active))
+                        (#{:creating :retaining :ready :pushed :rejected :observed} (:github.sync/state active)))
+             (access/can? control (:party bound) :admin {:room (:room-id bound)}))
         (assoc :sync-id (str (:github.sync/id active)) :can-retire? true)
         (= (:party bound) (:github.sync/by active))
         (assoc :sync-client-id (str (:github.sync/client-id active)))))))

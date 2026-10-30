@@ -6,6 +6,8 @@
             [dvergr.runtime.preparation :as preparation]
             [is.simm.model.access :as access]
             [is.simm.model.github-integrations :as integrations]
+            [is.simm.model.github-connections :as connections]
+            [dvergr.artifact :as artifact]
             [is.simm.ops.github-import :as import]
             [is.simm.ops.github-sync-data :as facts]
             [is.simm.ops.owned-reads :as reads]
@@ -43,6 +45,32 @@
   (cleanup-authority! context db)
   (owned/validate-control-in! db principal (:room-id resolved) bound revision)
   (when-not (= origin (origin-in! db (:room-id resolved))) (facts/refuse! :source-settings-changed)))
+
+(defn connection!
+  "Resolve the exact persisted connection and upstream cursor in the retained
+   HOST. Authored repository configuration cannot replace this identity."
+  [context]
+  (current! context)
+  (let [cursor (or (integrations/current-in @(:conn context) (get-in context [:resolved :room-id]))
+                   (facts/refuse! :integration-unverified))
+        connection (:value (artifact/get-bounded-value (artifact/datahike-store (:conn context))
+                                                       (:github.integration/connection cursor) 16384))]
+    (connections/connection! connection)
+    (when-not (and (= (connections/connection-id connection) (:github.integration/connection-id cursor))
+                   (= (:target connection) (get-in context [:bound :target]))
+                   (= (:target-stamp connection) (get-in context [:bound :target-stamp]))
+                   (= (:room connection) (get-in context [:resolved :room-id]))
+                   (= (:source connection) {:kind :github :repository (get-in context [:origin :repository])})
+                   (= (:ref connection) (get-in context [:origin :ref])))
+      (facts/refuse! :source-settings-changed))
+    {:cursor cursor :connection connection}))
+
+(defn retained-fact!
+  "Completion of an already admitted native effect only. Retain the original
+   operation's physical ownership without making changed permissions a reason
+   to lose its outcome. NEVER use this check to admit a new effect."
+  [context]
+  (when-not (lifetime/retained? (:ticket context)) (facts/refuse! :application-retired)))
 
 (defn- arguments! [party room-id operation body]
   (when-not (and (uuid? party) (uuid? room-id)) (facts/refuse! :authentication-required))
@@ -93,5 +121,17 @@
    Observe is bounded/read-only and does not acquire the effect permit."
   [party room-id operation body]
   (arguments! party room-id operation body)
-  (let [invoke (application/capture-operation)]
-    (fn [] (invoke #(in! % party room-id operation body)))))
+  (let [invoke (try (application/capture-operation)
+                    (catch Exception error
+                      (throw (ex-info "Git body was not admitted" {:type ::not-started} error))))]
+    (fn []
+      (let [entered? (volatile! false)]
+        (try
+          (invoke #(in! % party room-id operation
+                        (fn [context] (vreset! entered? true) (body context))))
+          (catch Exception error
+            ;; The captured original operation is synchronous. Failure before
+            ;; this callback began proves that no Git body remains queued.
+            ;; Failure after it began never grants retry permission.
+            (if @entered? (throw error)
+                (throw (ex-info "Git body was not admitted" {:type ::not-started} error)))))))))

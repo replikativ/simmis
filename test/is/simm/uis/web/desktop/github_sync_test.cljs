@@ -8,6 +8,7 @@
             [is.simm.uis.web.desktop.connection-epoch :as connection]
             [is.simm.uis.web.desktop.memory-actions :as memory]
             [is.simm.uis.web.desktop.github-sync :as sync]
+            [is.simm.uis.web.desktop.github-credentials :as credentials]
             [is.simm.uis.web.desktop.github-remote :as remote]
             [is.simm.uis.web.desktop.refs :as refs]
             [is.simm.uis.web.desktop.views.github-sync :as view]
@@ -161,7 +162,7 @@
         (.appendChild (.-body js/document) container)
         (try
           (reset! stop (browser/mount! container (view/view @memory a (state))))
-          (let [button (some #(when (= "Discard previous owner's prepared sync" (.-textContent %)) %)
+          (let [button (some #(when (= "Close previous owner's Git preparation" (.-textContent %)) %)
                              (array-seq (.querySelectorAll container "button")))]
             (is (some? button))
             (swap! memory assoc-in [:github-source :sync-id] (str (random-uuid)))
@@ -185,7 +186,7 @@
 
 (deftest filed-replies-require-a-proposal-id-before-navigation
   (doseq [reply [{:status :filed} {:status :filed :proposal-id nil}
-                {:status :filed :proposal-id "invalid"}]]
+                 {:status :filed :proposal-id "invalid"}]]
     (with-client
       (fn [{:keys [a state calls]}]
         (let [opened (atom [])]
@@ -213,3 +214,110 @@
           (is (= before (count @calls)))
           (is (= intent (:intent (state))))
           (is (= :ready (get-in (state) [:reply :status]))))))))
+
+(deftest outbound-review-is-separate-and-known-completion-only-closes-the-same-attempt
+  (with-client
+    (fn [{:keys [room memory calls ready state]}]
+      (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))]
+        (act! a :sync)
+        (is (= [:prepare-push] (mapv :operation @calls)))
+        (is (nil? (:intent (state))) "Incoming controller has no outbound intent")
+        ((:ok (last @calls)) (assoc ready :operation-kind :push))
+        (act! a :apply)
+        (is (= [:prepare-push :apply] (mapv :operation @calls)))
+        ((:error (last @calls)) (js/Error. "Lost send response"))
+        (act! a :apply)
+        (is (= 2 (count @calls)))
+        (act! a :check)
+        ((:ok (last @calls)) {:status :pushed :operation-kind :push})
+        (is (= [:prepare-push :apply :observe :recover] (mapv :operation @calls)))
+        ((:ok (last @calls)) {:status :closed :operation-kind :push :outcome :pushed})
+        (is (= :closed (get-in ((:state a)) [:reply :status])))))))
+
+(deftest pending-outbound-intent-is-adopted-only-by-the-outbound-controller
+  (with-client
+    (fn [{:keys [a room memory calls state]}]
+      (let [client (str (random-uuid))
+            push (sync/controller {:room-id room :github-direction :push} #(deref memory))]
+        (swap! memory update :github-source assoc :sync-kind :push :sync-active? true
+               :sync-client-id client :sync-id (str (random-uuid)))
+        ((:ensure a))
+        (is (nil? (:intent (state))))
+        ((:ensure push))
+        (is (= client (get-in ((:state push)) [:intent :client-id])))
+        (is (= [:observe] (mapv :operation @calls)))))))
+
+(deftest credential-controller-retains-metadata-but-never-the-token
+  (with-client
+    (fn [{:keys [room memory]}]
+      (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))
+            c (credentials/controller a #(deref memory)) calls (atom [])
+            token (apply str (repeat 24 "x")) connection-id (str (random-uuid))]
+        (with-redefs [remote/github-credential-operation!
+                      (fn [_ _ operation request]
+                        (fn [ok error] (swap! calls conj {:operation operation :request request :ok ok :error error})))]
+          ((:ensure c))
+          (is (= [:status] (mapv :operation @calls)))
+          ((:ok (last @calls)) {:configured? false :revision nil :connection-id connection-id
+                                :target-stamp (str (:target-stamp @memory))
+                                :repository "owner/repository" :ref "refs/heads/main"})
+          ((:save c) ((:basis c)) token)
+          (is (= [:status :save] (mapv :operation @calls)))
+          (is (= token (get-in (last @calls) [:request :token])))
+          (is (not (.includes (pr-str @sig/github-sync-state) token)))
+          ((:error (last @calls)) (js/Error. "Do not forward provider text"))
+          ((:ensure c))
+          (is (= 2 (count @calls)) "A failed save is not retried by rendering")
+          (is (not (.includes (pr-str @sig/github-sync-state) "provider text"))))))))
+
+(deftest reconnect-and-source-changes-retire-credential-writes-and-only-reload-status
+  (with-client
+    (fn [{:keys [room memory]}]
+      (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))
+            c (credentials/controller a #(deref memory)) calls (atom [])
+            response (fn [] {:configured? false :revision nil :connection-id (str (random-uuid))
+                             :target-stamp (str (:target-stamp @memory))
+                             :repository (get-in @memory [:github-source :repository]) :ref "refs/heads/main"})]
+        (with-redefs [remote/github-credential-operation!
+                      (fn [_ _ operation request]
+                        (fn [ok error] (swap! calls conj {:operation operation :request request :ok ok :error error})))]
+          ((:ensure c))
+          (let [old (first @calls)]
+            (reset! sig/memory-connection {:epoch (random-uuid)})
+            ((:ensure c))
+            (is (= [:status :status] (mapv :operation @calls)))
+            ((:ok old) (response))
+            (is (:credential-loading? ((:state a))))
+            ((:ok (last @calls)) (response)))
+          ((:save c) ((:basis c)) (apply str (repeat 24 "x")))
+          (let [save (last @calls)]
+            (swap! memory assoc-in [:github-source :repository] "owner/another")
+            ((:ensure c))
+            (is (= [:status :status :save :status] (mapv :operation @calls)))
+            (is (= #{:expected-target-stamp} (set (keys (:request (last @calls))))))
+            ((:error save) (js/Error. "Lost old save"))
+            (is (:credential-loading? ((:state a))))
+            ((:ok (last @calls)) (response))
+            (is (false? (:credential-loading? ((:state a)))))))))))
+
+(deftest stale-credential-controls-cannot-borrow-a-newly-observed-revision
+  (with-client
+    (fn [{:keys [room memory]}]
+      (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))
+            c (credentials/controller a #(deref memory)) calls (atom [])
+            response {:configured? true :revision (str (random-uuid)) :connection-id (str (random-uuid))
+                      :target-stamp (str (:target-stamp @memory))
+                      :repository "owner/repository" :ref "refs/heads/main"}]
+        (with-redefs [remote/github-credential-operation!
+                      (fn [_ _ operation request]
+                        (fn [ok error] (swap! calls conj {:operation operation :request request :ok ok :error error})))]
+          ((:ensure c))
+          ((:ok (last @calls)) response)
+          (let [old-offer ((:basis c))]
+            ((:reload c) old-offer)
+            ((:ok (last @calls)) (assoc response :revision (str (random-uuid))))
+            ((:revoke c) old-offer)
+            ((:save c) old-offer (apply str (repeat 24 "x")))
+            (is (= [:status :status] (mapv :operation @calls)))
+            ((:revoke c) ((:basis c)))
+            (is (= :revoke (:operation (last @calls))))))))))
