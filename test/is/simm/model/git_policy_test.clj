@@ -87,6 +87,11 @@
        (d/transact conn (policy/checked-tx @conn room connection revision (java.util.Date. 2000) :busy))
        (is (zero? (:git.policy/failures (policy/effective @conn room connection))))
        (configure! conn room connection by defaults (java.util.Date. 3000))
+       (is (nil? (:git.policy/next-check (policy/effective @conn room connection))))
+       (is (empty? (d/datoms @conn :avet :git.policy/next-check)))
+       (is (empty? (policy/checked-tx @conn room connection
+                                    (:git.policy/revision (policy/effective @conn room connection))
+                                    (java.util.Date. 4000) :synced)))
        (is (empty? (policy/checked-tx @conn room connection revision (java.util.Date. 4000) :synced)))
        (is (false? (boolean (policy/due? (policy/effective @conn room connection) (java.util.Date. 999999)))))))))
 
@@ -94,6 +99,7 @@
   (fixture
    (fn [conn room connection by]
      (doseq [settings [(assoc defaults :interval-seconds 0) (assoc defaults :interval-seconds 59)
+                       (assoc defaults :interval-seconds 61) (assoc defaults :interval-seconds 90)
                        (assoc defaults :interval-seconds 86401) (assoc defaults :enabled? :yes)
                        (assoc defaults :review-mode :merge-everything) (assoc defaults :extra true)]]
        (is (thrown? clojure.lang.ExceptionInfo (configure! conn room connection by settings (java.util.Date. 0)))))

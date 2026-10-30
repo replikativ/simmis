@@ -7,6 +7,7 @@
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.ops.github-service :as service])
             #?(:clj [is.simm.ops.personal-connections :as personal])
+            #?(:clj [is.simm.ops.github-policy :as git-policy])
             #?(:clj [is.simm.ops.github-decisions :as decisions])
             #?(:clj [is.simm.ops.github-sync-data :as facts])
             #?(:clj [is.simm.ops.file-output-adoption :as adoption])
@@ -25,7 +26,7 @@
                 (let [correlation (str (random-uuid))]
                   (log/log! {:level :error :id ::unconfirmed :msg "GitHub Memory outcome is unconfirmed"
                              :data {:correlation-id correlation} :error error})
-                  {:status (if (and (#{:prepare :prepare-incoming :prepare-push} operation)
+                  {:status (if (and (#{:prepare :prepare-incoming :prepare-policy :prepare-push} operation)
                                     (= :is.simm.ops.github-host/not-started (:type (ex-data error))))
                              :not-started :unconfirmed)
                    :reason (facts/error-reason error) :correlation-id correlation})))))))
@@ -40,7 +41,7 @@
   [server-id room-id-str operation request]
   (spin-remote server-id [room-id-str operation request]
                #?(:clj (do
-                         (when-not (#{:prepare :prepare-incoming :prepare-push :apply :recover :discard} operation)
+                         (when-not (#{:prepare :prepare-incoming :prepare-policy :prepare-push :apply :recover :discard} operation)
                            (throw (ex-info "Invalid Git operation" {:type :validation-error})))
                          (let [body (prepare-action (access/authenticated-party-id) room-id-str operation request)]
                            (await (blocking/blocking body)))) :cljs nil)))
@@ -74,3 +75,12 @@
   (spin-remote server-id [operation request]
                #?(:clj (let [body (personal/prepare (access/authenticated-party-id) operation request)]
                          (await (blocking/blocking body))) :cljs nil)))
+
+(defn-spin-remote git-policy-operation!
+  [server-id room-id-str operation request]
+  (spin-remote server-id [room-id-str operation request]
+               #?(:clj (do
+                         (when-not (and (string? room-id-str) (= room-id-str (some-> room-id-str parse-uuid str)))
+                           (throw (ex-info "Invalid Memory identity" {:type :validation-error})))
+                         (let [body (git-policy/prepare (access/authenticated-party-id) (parse-uuid room-id-str) operation request)]
+                           (await (blocking/blocking body)))) :cljs nil)))

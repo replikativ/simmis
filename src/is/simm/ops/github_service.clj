@@ -11,7 +11,7 @@
             [is.simm.ops.file-output-adoption :as adoption]))
 
 (defn- request! [operation wire-request]
-  (let [action (if (#{:prepare-incoming :prepare-push} operation) :prepare operation)
+  (let [action (if (#{:prepare-incoming :prepare-policy :prepare-push} operation) :prepare operation)
         request (legacy/request! action wire-request)]
     {:action action :request request}))
 
@@ -19,7 +19,10 @@
   (let [party (get-in context [:resolved :party]) room (get-in context [:resolved :room-id])
         id (or (:sync-id request) (journal/request-id party room (:client-id request)))
         row (journal/sync-in @(:conn context) id)
-        incoming? (or (= :prepare-incoming operation) (= :incoming (journal/kind row)))]
+        incoming-kind (if row
+                        (when (#{:incoming :incoming-policy} (journal/kind row)) (journal/kind row))
+                        (case operation :prepare-incoming :incoming :prepare-policy :incoming-policy nil))
+        incoming? (some? incoming-kind)]
     (cond
       (or (= :prepare-push operation) (= :push (journal/kind row)))
       (try (if (or (#{:prepare :apply} action)
@@ -37,25 +40,29 @@
                 :reason (facts/error-reason error)}
                (throw error))))
       incoming?
-      (try (let [prepared (incoming/in! context action request)]
-                  ;; One human Sync request prepares and files a clean proposal.
-                  ;; Acceptance remains separate. Filing has its OWN fresh,
-                  ;; positively acknowledged admission before native publication.
-             (if (and (= :prepare-incoming operation) (= :ready (:status prepared)))
-               (incoming/in! context :apply {:client-id (:client-id request) :ready-id (parse-uuid (:ready-id prepared))})
-               prepared))
-           (catch Exception error
-             (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)) (throw error))
-                  ;; No preparation exists: report that explicitly rather than
-                  ;; trapping the UI in unconfirmed -> not-observed forever.
-             (let [observed (journal/sync-in @(:conn context) id)]
-               (cond
-                 (and (= :prepare action) (nil? observed))
-                 {:status :not-started :operation-kind :incoming :client-id (str (:client-id request))
-                  :reason (facts/error-reason error)}
-                 (= :held (:github.sync/state observed))
-                 (incoming/in! context :observe {:client-id (:client-id request)})
-                 :else (throw error)))))
+      (let [context (if (= :incoming-policy incoming-kind)
+                      (incoming/admitted-context (assoc context :incoming-kind incoming-kind)) context)]
+        (try
+          (if-let [pending (when (and (= :incoming-policy incoming-kind) (= :prepare action) (nil? row))
+                             (incoming/pending-proposal! context))]
+            {:status :filed :operation-kind :incoming-policy :proposal-id (str pending)}
+            (let [prepared (incoming/in! context action request)]
+              ;; A single admitted operation prepares and either advances a
+              ;; verified FF or files a normal proposal, according to its
+              ;; immutable journal kind/disposition. No second admission.
+              (if (and (#{:prepare-incoming :prepare-policy} operation) (= :ready (:status prepared)))
+                (incoming/in! context :apply {:client-id (:client-id request) :ready-id (parse-uuid (:ready-id prepared))})
+                prepared)))
+          (catch Exception error
+            (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)) (throw error))
+            (let [observed (journal/sync-in @(:conn context) id)]
+              (cond
+                (and (= :prepare action) (nil? observed))
+                {:status :not-started :operation-kind incoming-kind :client-id (str (:client-id request))
+                 :reason (facts/error-reason error)}
+                (= :held (:github.sync/state observed))
+                (incoming/in! context :observe {:client-id (:client-id request)})
+                :else (throw error))))))
       :else (legacy/in! context action request))))
 
 (defn prepare-credential
@@ -95,6 +102,14 @@
   [original-host party room operation wire-request]
   (let [request (request! operation wire-request)]
     (host/in! original-host party room (:action request) #(dispatch! % operation request))))
+
+(defn poll-in!
+  "Fixed scheduler entry in ONE already admitted original Git context. Never
+   recapture an App or nest its native lease/semaphore; never dispatch push."
+  [context frozen-policy]
+  (dispatch! (assoc context :poll-policy frozen-policy) :prepare-policy
+             {:action :prepare :request {:client-id (random-uuid)
+                                        :expected-target-stamp (get-in context [:bound :target-stamp])}}))
 
 (defn prepare
   "Capture the original App once before queuing an authenticated UI operation."

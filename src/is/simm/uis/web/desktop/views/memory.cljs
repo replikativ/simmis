@@ -20,6 +20,7 @@
             [is.simm.uis.web.desktop.github-sync :as github]
             [is.simm.uis.web.desktop.views.github-sync :as github-view]
             [is.simm.uis.web.desktop.github-credentials :as github-credentials]
+            [is.simm.uis.web.desktop.git-policy :as git-policy]
             [is.simm.uis.web.desktop.memory-editor :as editor]
             [is.simm.uis.web.desktop.memory-charts :as chart-state]
             [is.simm.uis.web.desktop.memory-cells :as cells]
@@ -712,7 +713,7 @@
                                   (el/details {:class "memory-properties"}
                                               (el/summary {} "Saved file revision") (el/code {} (str content)))))))))
 
-(defn- view [data state a syntax-pref github-action github-state push-action push-state credentials]
+(defn- view [data state a syntax-pref github-action github-state push-action push-state credentials policy-actions]
   (let [path (:selected state) draft (get-in state [:drafts path])
         verified? (actions/verified? state @sig/memory-connection)
         workspace-write? (and verified? (true? (get-in state [:permissions :write?])))
@@ -732,7 +733,7 @@
                                            (:last-git-direction data) #((:settings-open a) true))
                       (github-view/review-pull state github-action github-state)
                       (github-view/review-push state push-action push-state)))
-            (github-view/settings-view data state a github-action github-state push-state credentials)
+            (github-view/settings-view data state a github-action github-state push-state credentials policy-actions)
             (when (get-in state [:loading :reference])
               (el/p {:class "memory-note" :role "status"} "Locating block in the current workspace…"))
             (when-let [error (get-in state [:errors :reference])]
@@ -861,7 +862,8 @@
          a (actions/controller data) state (get states (:owner a))
          github-action (github/controller data (:state a))
          push-action (github/controller (assoc data :github-direction :push) (:state a))
-         credentials (github-credentials/controller push-action (:state a))]
+         credentials (github-credentials/controller push-action (:state a))
+         policy-actions (git-policy/controller github-action (:state a))]
      ((:ensure-path a))
      ((:observe-receipt-context a) (saved-view-state/receipt-context (:room-id data) rooms))
      ((:ensure-sync a) connection)
@@ -871,8 +873,9 @@
      ((:ensure github-action))
      ((:ensure push-action))
      ((:ensure credentials))
+     ((:ensure policy-actions))
      (view (assoc data :room-name room-name :last-git-direction (get git-states (:direction-key github-action))) state a syntax-pref github-action (get git-states (:owner github-action))
-           push-action (get git-states (:owner push-action)) credentials))))
+           push-action (get git-states (:owner push-action)) credentials policy-actions))))
 
 (defn- backlinks-view [a]
   (let [{:keys [open? reply error loading?]} ((:backlinks a))]

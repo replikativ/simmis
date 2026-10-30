@@ -118,6 +118,10 @@
     (if @installation
       (host!)
       (do
+        ;; Fail before admitting the App if its fixed incoming-sync handler
+        ;; cannot load. Delayed namespace loading breaks the HOST/App cycle;
+        ;; neither this symbol nor the scheduler callback is source-selected.
+        (requiring-resolve 'is.simm.ops.git-polling/tick-owned!)
         ;; The application is the sole lifecycle coordinator. This observation
         ;; is not a reservation against arbitrary direct runtime/start! calls;
         ;; that runtime also enforces its own mode and owner checks.

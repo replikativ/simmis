@@ -8,6 +8,7 @@
 (def schema
   (mapv (fn [[ident type]]
           (cond-> {:db/ident ident :db/valueType type :db/cardinality :db.cardinality/one}
+            (= :git.policy/next-check ident) (assoc :db/index true)
             (= :git.policy/room ident) (assoc :db/unique :db.unique/value)))
         [[:git.policy/room :db.type/uuid] [:git.policy/connection-id :db.type/uuid]
          [:git.policy/by :db.type/uuid] [:git.policy/revision :db.type/uuid]
@@ -28,6 +29,7 @@
 (defn- settings! [{:keys [enabled? interval-seconds review-mode] :as settings}]
   (when-not (and (= #{:enabled? :interval-seconds :review-mode} (set (keys settings)))
                  (boolean? enabled?) (integer? interval-seconds) (<= 60 interval-seconds 86400)
+                 (zero? (mod interval-seconds 60))
                  (#{:fast-forward :review-all} review-mode))
     (refuse! :invalid-settings))
   settings)
@@ -70,14 +72,17 @@
     (when-not (and (every? uuid? [expected-revision revision by]) (inst? now)
                    (= expected-revision (:git.policy/revision current)) (not= revision expected-revision))
       (refuse! :policy-changed))
-    [(cond-> {:git.policy/room room :git.policy/connection-id connection-id :git.policy/by by
-              :git.policy/revision revision
-              :git.policy/review-revision (if (= (:review-mode settings) (:git.policy/review-mode current))
-                                            (:git.policy/review-revision current) revision)
-              :git.policy/review-mode (:review-mode settings) :git.policy/enabled? (:enabled? settings)
-              :git.policy/interval-seconds (long (:interval-seconds settings))
-              :git.policy/next-check now :git.policy/failures 0 :git.policy/status :idle}
-       (:db/id current) (assoc :db/id (:db/id current)))]))
+    (cond-> [(cond-> {:git.policy/room room :git.policy/connection-id connection-id :git.policy/by by
+                      :git.policy/revision revision
+                      :git.policy/review-revision (if (= (:review-mode settings) (:git.policy/review-mode current))
+                                                    (:git.policy/review-revision current) revision)
+                      :git.policy/review-mode (:review-mode settings) :git.policy/enabled? (:enabled? settings)
+                      :git.policy/interval-seconds (long (:interval-seconds settings))
+                      :git.policy/failures 0 :git.policy/status :idle}
+               (:enabled? settings) (assoc :git.policy/next-check now)
+               (:db/id current) (assoc :db/id (:db/id current)))]
+      (and (not (:enabled? settings)) (:git.policy/next-check current))
+      (conj [:db/retract (:db/id current) :git.policy/next-check (:git.policy/next-check current)]))))
 
 (defn pending-proposal
   "A single bounded hint into ordinary Proposal state. Missing/mismatched
@@ -102,9 +107,9 @@
     (when-not (and (every? uuid? [by proposal-id]) (or (nil? pending) (= proposal-id pending)))
       (refuse! :incoming-proposal-pending))
     [(cond-> (merge (select-keys current [:git.policy/room :git.policy/connection-id :git.policy/revision
-                                        :git.policy/review-revision :git.policy/review-mode :git.policy/enabled?
-                                        :git.policy/interval-seconds])
-                   {:git.policy/pending-proposal proposal-id})
+                                          :git.policy/review-revision :git.policy/review-mode :git.policy/enabled?
+                                          :git.policy/interval-seconds])
+                    {:git.policy/pending-proposal proposal-id})
        (:db/id current) (assoc :db/id (:db/id current))
        (not (:db/id current)) (assoc :git.policy/by by :git.policy/status :idle :git.policy/failures 0))]))
 
@@ -120,12 +125,15 @@
   [db room connection-id revision now status]
   (when-not (and (uuid? revision) (inst? now) (#{:unchanged :synced :proposal :busy :held :failed} status))
     (refuse! :invalid-observation))
-  (let [current (effective db room connection-id)
+  (let [current (current-in db room)
         previous (:git.policy/last-check current)]
     (if (or (not= revision (:git.policy/revision current)) (not (:db/id current))
+            (not= connection-id (:git.policy/connection-id current))
+            (not (true? (:git.policy/enabled? current)))
             (and (inst? previous) (<= (.getTime ^java.util.Date now) (.getTime ^java.util.Date previous))))
       []
-      (let [interval (:git.policy/interval-seconds current)
+      (let [_ (effective db room connection-id)
+            interval (:git.policy/interval-seconds current)
             failures (if (#{:held :failed} status) (min 6 (inc (or (:git.policy/failures current) 0))) 0)
             delay-seconds (max interval (min 3600 (* interval (bit-shift-left 1 failures))))]
         [{:db/id (:db/id current) :git.policy/last-check now :git.policy/status status

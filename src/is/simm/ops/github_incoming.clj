@@ -12,6 +12,7 @@
             [is.simm.model.github-integrations :as integrations]
             [is.simm.model.github-proposals :as provenance]
             [is.simm.model.github-sync :as journal]
+            [is.simm.model.git-policy :as policy]
             [is.simm.ops.file-output-adoption :as adoption]
             [is.simm.ops.github-candidate-roots :as roots]
             [is.simm.ops.github-host :as host]
@@ -34,9 +35,41 @@
     (budget/create (assoc (merge/operation-policy) :timeout-ms 120000
                          :cancelled? #(or (.isInterrupted worker) (not (lifetime/ready? owner)))))))
 
+(defn admitted-context
+  "HOST-only native budget shared by discovery, preparation and publication.
+   Never persist this handle or put it in forkable application state."
+  [context]
+  (if (:git-operation context) context (assoc context :git-operation (operation))))
+
+(defn- policy-kind? [context] (= :incoming-policy (:incoming-kind context)))
+
+(defn- policy-current! [context db token]
+  (policy/review-current! db token)
+  (when-let [expected (:poll-policy context)]
+    (let [current (policy/effective db (:git.policy/room expected) (:git.policy/connection-id expected))]
+      (when-not (and (= (:git.policy/revision expected) (:git.policy/revision current))
+                     (true? (:git.policy/enabled? current))
+                     (= (:git.policy/by current) (get-in context [:resolved :party])))
+        (refuse! :poll-policy-changed)))))
+
+(defn pending-proposal!
+  "Read the one policy pointer under the already admitted original Room."
+  [context]
+  (let [{:keys [connection cursor]} (host/connection! context)]
+    (policy/pending-proposal @(:conn context)
+                             (policy/effective @(:conn context) (:room connection) (:github.integration/connection-id cursor)))))
+
+(defn- publication-current! [context prepared]
+  (if-not (policy-kind? context) (host/current! context)
+    (try (host/current! context)
+         (policy-current! context @(:conn context) (:review-policy prepared))
+         (catch Exception error
+           (throw (ex-info "Publication admission changed before native effect"
+                           {:type ::publication-admission-refused} error))))))
+
 (defn- row! [context id]
   (let [row (journal/sync-in @(:conn context) id)]
-    (when-not (and row (= :incoming (journal/kind row))
+    (when-not (and row (= (or (:incoming-kind context) :incoming) (journal/kind row))
                    (= (get-in context [:resolved :room-id]) (:github.sync/room row))
                    (or (:cleanup? context) (= (get-in context [:resolved :party]) (:github.sync/by row))))
       (refuse! :different-intent))
@@ -62,7 +95,9 @@
                  (vreset! report (d/transact (:conn context)
                              [[:db.fn/call (fn [db]
                                              (host/writer-current! context db)
-                                             (into (journal/transition-tx db row state ref (when slot (facts/body-id slot body)))
+                                             (into (journal/transition-tx db row state ref (when slot (facts/body-id slot body))
+                                                                          (when (and (policy-kind? context) (= :ready state))
+                                                                            (select-keys body [:disposition :review-revision])))
                                                    (extra-tx db)))]])))]
     (if slot (artifact/publish-value! (artifact/datahike-store (:conn context)) body write!) (write! nil))
     (let [observed (row! context (:github.sync/id row))]
@@ -144,10 +179,13 @@
               before (facts/capture source (:origin context))
               binding {:id id :claim (random-uuid) :by (get-in context [:resolved :party])
                        :room (get-in context [:resolved :room-id]) :client-id (:client-id request)}
-              prepared {:version 1 :binding binding :connection connection :cursor cursor
+              review-policy (when (policy-kind? context)
+                              (policy/review-token (policy/effective @control (:room connection) (:github.integration/connection-id cursor))))
+              prepared (cond-> {:version 1 :binding binding :connection connection :cursor cursor
                         :target (get-in context [:bound :target]) :target-stamp (get-in context [:bound :target-stamp])
                         :revision (:revision context) :origin (:origin context) :before before
                         :branch (facts/branch id (:claim binding))}
+                         review-policy (assoc :review-policy review-policy))
               report (volatile! nil)]
           (artifact/publish-value!
            (artifact/datahike-store control) prepared
@@ -156,9 +194,11 @@
              (vreset! report (d/transact control [[:db.fn/call
                                                   (fn [db] (host/writer-current! context db)
                                                     (current-cursor! context db cursor)
-                                                    (journal/prepare-tx db binding ref (facts/body-id :preparation prepared) :incoming))]]))))
+                                                    (when review-policy (policy-current! context db review-policy))
+                                                    (journal/prepare-tx db binding ref (facts/body-id :preparation prepared)
+                                                                        (or (:incoming-kind context) :incoming)))]]))))
           (when-not (and @report (nil? (journal/sync-in (:db-before @report) id))) (refuse! :creation-unconfirmed))
-          (let [creating (row! context id) allocated (volatile! nil) operation (operation)
+          (let [creating (row! context id) allocated (volatile! nil) operation (or (:git-operation context) (operation))
                 result (try
                          (private/with-connection!
                            parent (:lease context) (:branch prepared) (:checkpoint before) true
@@ -170,21 +210,25 @@
                                                         (get-in before [:visible :configuration "remote.origin.url"])
                                                         {:prefixes [(:ref connection)] :haves []
                                                          :import-budget operation :http-body-idle-timeout-ms 15000})
-                                   planned (merge/plan-fetched! child fetched
+                                   planned ((if review-policy merge/plan-policy-fetched! merge/plan-fetched!) child fetched
                                                                 {:ref (:ref connection) :preparation-id (:github.sync/preparation-id creating)
-                                                                 :upstream-base (:github.integration/head cursor) :operation operation})]
-                               (if (= (:upstream-head planned) (:github.integration/head cursor))
+                                                                 :upstream-base (:github.integration/head cursor)
+                                                                 :upstream-base-git-oid (:github.integration/oid cursor) :operation operation})]
+                               (if (if review-policy (= :unchanged (:relation planned))
+                                       (= (:upstream-head planned) (:github.integration/head cursor)))
                                  {:unchanged? true :checkpoint (d/commit-id @child)}
                                  (do
-                                   (when-not (get-in planned [:plan :clean?]) (refuse! :conflicts))
-                                   (repo/prepare-merge! child (:plan planned))
-                                   (repo/commit! child {:message (str "Merge incoming " (get-in connection [:source :repository]))})
+                                   (if review-policy
+                                     (merge/materialize-policy! child planned before operation)
+                                     (do (when-not (get-in planned [:plan :clean?]) (refuse! :conflicts))
+                                         (repo/prepare-merge! child (:plan planned))
+                                         (repo/commit! child {:message (str "Merge incoming " (get-in connection [:source :repository]))})))
                                    (let [body (blueprint context @allocated prepared child planned base)
                                          existing (existing-proposal @control (:key body))
                                          canonical (:db (host/current! context))
                                          inspected (when-not existing (review/inspect canonical
                                                                    (d/commit-as-db canonical (get-in body [:roots :local :basis :commit]))
-                                                                   @child body))]
+                                                                   @child body (when review-policy operation)))]
                                      (if existing
                                        {:existing-proposal existing :checkpoint (d/commit-id @child)}
                                        (do
@@ -192,8 +236,13 @@
                                      (current-cursor! context @control cursor)
                                      (roots/retain! control canonical @allocated body
                                                     #(host/current! context) #(host/writer-current! context %))
-                                     {:checkpoint (d/commit-id @child) :proposal (get-in body [:proposal :id])
-                                      :changes (:changes inspected)}))))))))
+                                     (cond-> {:checkpoint (d/commit-id @child) :proposal (get-in body [:proposal :id])
+                                              :changes (:changes inspected)}
+                                       review-policy (assoc :review-policy review-policy
+                                                            :review-revision (:git.policy/review-revision review-policy)
+                                                            :disposition (if (and (= :fast-forward (:relation planned))
+                                                                                  (= :fast-forward (:git.policy/review-mode review-policy)))
+                                                                           :fast-forward :proposal)))))))))))
                          (catch Exception error
                            (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)) (throw error))
                            (when (and @allocated (= ::private/body-failed (:type (ex-data error)))
@@ -207,7 +256,8 @@
                            (throw error)))]
             (if (or (:unchanged? result) (:existing-proposal result))
               (let [closed (cleanup! context (row! context id) prepared (:checkpoint result)
-                                     (when-let [existing (:existing-proposal result)] {:kind :existing-proposal :proposal existing}))]
+                                     (if-let [existing (:existing-proposal result)] {:kind :existing-proposal :proposal existing}
+                                             (when review-policy {:kind :unchanged})))]
                 (when-let [existing (:existing-proposal result)]
                   (publication/publish-original! existing (:resolved context)))
                 closed)
@@ -228,6 +278,95 @@
                :branch (subs (get-in body [:proposal :review-ref]) 11) :system-type :repo :author (:github.sync/by row)
                :base-commit (str (get-in body [:proposal :base])) :head-commit (str (get-in body [:proposal :head]))}]})))
 
+(defn- policy-ready! [row prepared ready disposition]
+  (when-not (and (= :incoming-policy (journal/kind row))
+                 (= disposition (:disposition ready) (:github.sync/disposition row))
+                 (= (:review-policy prepared) (:review-policy ready))
+                 (= (get-in prepared [:review-policy :git.policy/review-revision])
+                    (:review-revision ready) (:github.sync/review-revision row)))
+    (refuse! :review-policy-changed)))
+
+(defn- record-fact! [context row state body extra]
+  ;; Completion only: no fresh ACL/policy admission after a native result.
+  (host/retained-fact! context)
+  (let [control (:conn context) digest (facts/body-id :outcome body) report (volatile! nil)]
+    (artifact/publish-value!
+     (artifact/datahike-store control) body
+     (fn [ref]
+       (vreset! report
+                (d/transact control
+                            [[:db.fn/call (fn [db]
+                                            (host/retained-fact! context)
+                                            (into (journal/transition-tx db row state ref digest)
+                                                  (extra db ref digest)))]]))))
+    (when-not (and @report (= row (journal/sync-in (:db-before @report) (:github.sync/id row))))
+      (refuse! :outcome-unconfirmed))
+    (journal/sync-in (:db-after @report) (:github.sync/id row))))
+
+(defn- advance-in! [context request]
+  (let [control (:conn context)
+        id (or (:sync-id request) (journal/request-id (get-in context [:resolved :party])
+                                                     (get-in context [:resolved :room-id]) (:client-id request)))
+        row (row! context id) prepared (preparation! context row) ready (body! context row :ready)
+        body (body! context row :retention) parent (get-in context [:bound :conn])
+        canonical (:db (host/current! context))
+        candidate (d/commit-as-db canonical (get-in body [:roots :candidate :basis :commit]))
+        local (d/commit-as-db canonical (get-in body [:roots :local :basis :commit]))
+        operation (or (:git-operation context) (operation))]
+    (policy-ready! row prepared ready :fast-forward)
+    (when-not (and (= :ready (:github.sync/state row)) (= (:ready-id request) (:github.sync/ready-id row))
+                   (= (get-in prepared [:before :checkpoint]) (d/commit-id canonical)))
+      (refuse! :target-changed))
+    (policy-current! context @control (:review-policy prepared))
+    (current-cursor! context @control (:cursor prepared))
+    (roots/verify! control canonical row body #(host/current! context))
+    (let [inspected (review/inspect canonical local candidate body operation)
+          checkpoint (get-in inspected [:basis :canonical :commit])]
+      (when-not (and (= :ready (:status inspected)) (= checkpoint (get-in prepared [:before :checkpoint])))
+        (refuse! :review-changed))
+      (let [applying (transition! context row :applying nil
+                                  (fn [db]
+                                    (policy-current! context db (:review-policy prepared))
+                                    (current-cursor! context db (:cursor prepared)) []))
+            result (try
+                     (native/advance! (reify clojure.lang.IDeref (deref [_] candidate)) parent
+                                      (get-in body [:identity :connection :ref]) checkpoint operation
+                                      #(publication-current! context prepared))
+                     (catch Exception error
+                       (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)))
+                       ;; These typed failures originate before the native
+                       ;; advance publishes. Unknown native failures stay fenced.
+                       (when (#{:geschichte.workspace/stale-advance :is.simm.ops.github-native/held
+                                 :geschichte.git.budget/exceeded :geschichte.git.budget/deadline-exceeded
+                                 :geschichte.git.budget/cancelled :geschichte.budget/exceeded
+                                 :geschichte.budget/deadline-exceeded :geschichte.budget/cancelled
+                                 :is.simm.model.git-policy/refused ::publication-admission-refused}
+                               (:type (ex-data error)))
+                         (let [incident {:version 1 :kind :automatic-refused :released? true
+                                         :checkpoint (:checkpoint ready) :reason :target-changed}
+                               digest (facts/body-id :incident incident)]
+                           (artifact/publish-value!
+                            (artifact/datahike-store control) incident
+                            (fn [ref]
+                              (d/transact control [[:db.fn/call
+                                                    (fn [db]
+                                                      (host/retained-fact! context)
+                                                      (journal/transition-tx db applying :held ref digest))]])))))
+                       (throw error)))]
+        (when-not (and (= (get-in body [:proposal :base]) (:old result))
+                       (= (get-in body [:proposal :head]) (:new result))
+                       (= (get-in body [:roots :candidate :basis :commit]) (:canonical-commit result)))
+          (refuse! :outcome-unconfirmed))
+        (let [outcome {:version 1 :kind :applied :native result :ready-id (:github.sync/ready-id row)}
+              applied (record-fact!
+                       context applying :applied outcome
+                       (fn [db ref digest]
+                         (let [cursor (:cursor prepared)]
+                           (integrations/advance-sync-tx db cursor id (:github.integration/head cursor) (:github.integration/oid cursor)
+                                                         (get-in body [:identity :incoming :head])
+                                                         (get-in body [:identity :incoming :git-oid]) ref digest))))]
+          (cleanup! context applied prepared (:checkpoint ready)))))))
+
 (defn- file-in! [context request]
   (let [id (or (:sync-id request)
                (journal/request-id (get-in context [:resolved :party]) (get-in context [:resolved :room-id]) (:client-id request)))
@@ -235,6 +374,9 @@
         body (body! context row :retention) control (:conn context) parent (get-in context [:bound :conn])]
     (when-not (and (= :ready (:github.sync/state row)) (= (:ready-id request) (:github.sync/ready-id row)))
       (refuse! :not-ready))
+    (when (policy-kind? context)
+      (policy-ready! row prepared ready :proposal)
+      (policy-current! context @control (:review-policy prepared)))
     (current-cursor! context @control (:cursor prepared))
     (roots/verify! control (:db (host/current! context)) row body #(host/current! context))
     (let [reservation (provenance/reservation @control (:key body))
@@ -243,7 +385,9 @@
           _ (provenance/validate-proposal! body entity)
           intent {:version 1 :proposal entity :provenance-id (provenance/provenance-id body)}
           filing (transition! context row :filing intent
-                              #(provenance/reserve-tx % (:key body) (:proposal/id entity) id reservation))
+                              (fn [db]
+                                (when (policy-kind? context) (policy-current! context db (:review-policy prepared)))
+                                (provenance/reserve-tx db (:key body) (:proposal/id entity) id reservation)))
           reserved (provenance/reservation @control (:key body))
           _ (when-not (and (= id (:github.incoming/sync reserved))
                             (= (:proposal/id entity) (:github.incoming/proposal reserved)))
@@ -252,11 +396,13 @@
                    parent (:lease context) (:branch prepared) (:checkpoint ready) false
                    (fn [child]
                      (native/publish! parent child (get-in body [:proposal :review-ref])
-                                      (get-in body [:proposal :head]) (operation) #(host/current! context))))
+                                      (get-in body [:proposal :head]) (or (:git-operation context) (operation))
+                                      #(publication-current! context prepared))))
                       (catch Exception error
                         (let [cause (some #(when (#{:geschichte.workspace/stale-publication :geschichte.workspace/publication-ref-exists
                                                    :is.simm.ops.github-native/held :geschichte.git.budget/exceeded
-                                                   :geschichte.git.budget/deadline-exceeded :geschichte.git.budget/cancelled}
+                                                   :geschichte.git.budget/deadline-exceeded :geschichte.git.budget/cancelled
+                                                   ::publication-admission-refused}
                                                  (:type (ex-data %))) %) (take 16 (take-while some? (iterate ex-cause error))))]
                           (when (and cause (= ::private/body-failed (:type (ex-data error)))
                                      (true? (:released? (ex-data error))) (= (:checkpoint ready) (:checkpoint (ex-data error))))
@@ -296,6 +442,10 @@
                                               (current-cursor! context db (:cursor prepared))
                                               (into (journal/transition-tx db filing :filed ref (facts/body-id :outcome outcome))
                                                     (concat (proposals/filing-tx-data db entity)
+                                                            (when (policy-kind? context)
+                                                              (policy/pending-tx db (get-in context [:resolved :room-id])
+                                                                                 (get-in prepared [:cursor :github.integration/connection-id])
+                                                                                 (get-in context [:resolved :party]) (:proposal/id entity)))
                                                             [{:db/id (:db/id reserved) :github.incoming/state :filed}])))]]))))
       (when-not @report (refuse! :filing-unconfirmed))
       (let [filed (row! context id)]
@@ -312,7 +462,8 @@
     (when-not (or (#{:ready :allocated} (:github.sync/state row))
                   (and (= :held (:github.sync/state row))
                        (or (#{:allocated :retaining} (:github.sync/held-from row))
-                           (and (= :filing (:github.sync/held-from row)) (= :filing-refused (:kind incident))))
+                           (and (= :filing (:github.sync/held-from row)) (= :filing-refused (:kind incident)))
+                           (and (= :applying (:github.sync/held-from row)) (= :automatic-refused (:kind incident))))
                        (true? (:released? incident))))
       (refuse! :cleanup-unconfirmed))
     (cleanup! context row prepared (or (:checkpoint ready) (:checkpoint incident)
@@ -325,20 +476,24 @@
         outcome (or (when (:github.sync/outcome row) (body! context row :outcome))
                     (when (:github.sync/closure row)
                       (let [closure (body! context row :closure)]
-                        (when (= :existing-proposal (:kind closure)) closure))))
+                        (when (#{:existing-proposal :unchanged} (:kind closure)) closure))))
         state (:github.sync/state row)]
-    (cond-> {:operation-kind :incoming :client-id (str (:github.sync/client-id row)) :sync-id (str (:github.sync/id row))
+    (cond-> {:operation-kind (journal/kind row) :client-id (str (:github.sync/client-id row)) :sync-id (str (:github.sync/id row))
+             :cleanup-pending? (boolean (and (:github.sync/outcome row) (#{:filed :applied :closing} state)))
              :status (case state :creating :preparing :allocated :held :retaining :held :filing :unconfirmed
-                           :closed (if outcome :filed :closed) state)
+                           :applying :unconfirmed
+                           :closing (case (:kind outcome) :applied :applied :filed :filed :unconfirmed)
+                           :closed (case (:kind outcome) :applied :applied :unchanged :unchanged
+                                         (:filed :existing-proposal) :filed :closed) state)
              :can-discard? (or (= :ready state) (and (= :held state) (true? (:released? incident))))}
       ready (assoc :ready-id (str (:github.sync/ready-id row)) :changes (:changes ready) :total (count (:changes ready)))
       incident (assoc :reason (:reason incident))
-      outcome (assoc :proposal-id (str (:proposal outcome))))))
+      (:proposal outcome) (assoc :proposal-id (str (:proposal outcome))))))
 
 (defn- recover-in! [context row]
   (let [closed (case (:github.sync/state row)
                  :closed row
-                 (:filed :closing)
+                 (:filed :applied :closing)
                  (do
                    (when-not (:github.sync/outcome row) (refuse! :recovery-held))
                    (cleanup! context row (preparation! context row) (:checkpoint (body! context row :ready))))
@@ -360,7 +515,8 @@
       (dto context
            (case action
              :prepare (prepare-in! context request)
-             :apply (file-in! context request)
+             :apply (if (and (policy-kind? context) (= :fast-forward (:github.sync/disposition current)))
+                      (advance-in! context request) (file-in! context request))
              :observe (row! context id)
              :recover (recover-in! context (row! context id))
              :retire (let [row (row! context id)]
