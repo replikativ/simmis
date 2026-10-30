@@ -1,0 +1,78 @@
+(ns is.simm.ci-metrics
+  "CI artifacts built from Kaocha's profiling measurements. Namespace residual
+   includes :once fixtures and runner overhead, not just application work."
+  (:require [clojure.java.io :as io]
+            [kaocha.plugin :refer [defplugin]]
+            [kaocha.plugin.profiling :as profiling]
+            [kaocha.testable :as testable])
+  (:import (java.lang.management ManagementFactory)))
+
+(defn resources []
+  (let [os (ManagementFactory/getOperatingSystemMXBean)
+        heap (.getHeapMemoryUsage (ManagementFactory/getMemoryMXBean))]
+    {:at-ms (System/currentTimeMillis)
+     :uptime-ms (.getUptime (ManagementFactory/getRuntimeMXBean))
+     :process-cpu-ns (when (instance? com.sun.management.OperatingSystemMXBean os)
+                       (.getProcessCpuTime ^com.sun.management.OperatingSystemMXBean os))
+     :processors (.getAvailableProcessors os)
+     :load-average (.getSystemLoadAverage os)
+     :heap-used-bytes (.getUsed heap)
+     :heap-committed-bytes (.getCommitted heap)
+     :heap-max-bytes (.getMax heap)
+     :threads (.getThreadCount (ManagementFactory/getThreadMXBean))
+     :gc (mapv (fn [gc] {:name (.getName gc) :count (.getCollectionCount gc)
+                         :elapsed-ms (.getCollectionTime gc)})
+               (ManagementFactory/getGarbageCollectorMXBeans))}))
+
+(defn measurement [node]
+  (let [elapsed (::profiling/duration node)
+        children (:kaocha.result/tests node)
+        child-elapsed (keep ::profiling/duration children)]
+    (cond-> {:id (:kaocha.testable/id node)
+             :type (:kaocha.testable/type node)
+             :elapsed-ns elapsed
+             :counts (select-keys node [:kaocha.result/pass :kaocha.result/fail
+                                        :kaocha.result/error :kaocha.result/pending])}
+      (seq child-elapsed)
+      (assoc :children-elapsed-ns (reduce + child-elapsed)
+             ;; Includes once-fixture setup/cleanup and Kaocha/report overhead.
+             ;; Each-fixtures stay in the individual test duration.
+             :outside-children-ns (- elapsed (reduce + child-elapsed))))))
+
+(defn- output-file [suffix]
+  (io/file "target/ci-timings" (str "node-" (or (System/getenv "CIRCLE_NODE_INDEX") "0") suffix)))
+
+(defn- write! [suffix value append?]
+  (let [file (output-file suffix)]
+    (io/make-parents file)
+    (spit file (str (pr-str value) "\n") :append append?)))
+
+(defplugin is.simm.ci-metrics/metrics
+  (pre-load [config]
+    (let [start (resources)]
+      (write! "-progress.edn" {:phase :start :resources start} false)
+      (assoc config ::start start)))
+  (post-load [plan]
+    (let [loaded (resources)]
+      (write! "-progress.edn" {:phase :loaded :resources loaded} true)
+      (assoc plan ::loaded loaded)))
+  (pre-test [node _]
+    (cond-> node
+      (= :kaocha.type/ns (:kaocha.testable/type node))
+      (assoc ::resources-before (resources))))
+  (post-test [node _]
+    (when (= :kaocha.type/ns (:kaocha.testable/type node))
+      ;; Flush each completed namespace so a timeout still leaves useful data.
+      (write! "-progress.edn"
+              {:phase :namespace :measurement (measurement node)
+               :before (::resources-before node) :after (resources)} true))
+    node)
+  (post-summary [result]
+    (write! ".edn"
+            {:format-version 1
+             :revision (or (System/getenv "CIRCLE_SHA1") (System/getenv "GITHUB_SHA"))
+             :start (::start result) :loaded (::loaded result) :end (resources)
+             :elapsed-ns (::profiling/duration result)
+             :measurements (mapv measurement
+                                 (filter ::profiling/duration (testable/test-seq result)))} false)
+    result))

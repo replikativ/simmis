@@ -39,8 +39,11 @@ jobs:
           no_output_timeout: 15m
       - run:
           name: Run JVM tests (Maven baseline)
-          command: clojure -X:test is.simm.ci-runner/run! :reporter kaocha.report/documentation
+          command: clojure -X:test is.simm.ci-runner/run! :reporter kaocha.report/documentation :plugins '[:kaocha.plugin/profiling :is.simm.ci-metrics/metrics]' :kaocha.plugin.profiling/count 20
           no_output_timeout: 15m
+      - store_artifacts:
+          path: target/ci-timings
+          destination: test-timings
       - store_artifacts:
           path: target/ci-partitions
           destination: test-partitions
