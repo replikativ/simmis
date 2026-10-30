@@ -141,6 +141,9 @@
                                (when (seq (:query state))
                                  (el/button {:aria-label "Clear file search" :on-click (fn [_] ((:set-query a) ""))} "×")))
                        (when (get-in state [:loading :search]) (el/p {:class "memory-note"} "Searching filenames…"))
+                       (when (and (not (contains? (:folders state) folder))
+                                  (not (get-in state [:errors :metadata])))
+                         (el/p {:class "memory-note" :role "status"} "Loading files…"))
                        (when (seq folder)
                          (el/div {:class "memory-focus-path"}
                                  (el/button {:on-click (fn [_] ((:focus-folder a) "")) :title "Show room root"} "/")
