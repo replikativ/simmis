@@ -81,3 +81,16 @@ unrecognized top-level `:focus` shorthand. Run local native checks under a
 bounded transient systemd unit with `MemoryMax`, `MemorySwapMax=0` and
 `KillMode=control-group`; verify `MainPID=0` after stopping it. Shell interruption
 alone is not evidence that a Java child has physically exited.
+
+The two typed-property flows and four scheduled-occurrence flows use one adverse
+attachment-first order instead of repeating the whole scenario in both orders.
+Both orders remain explicit in the central owned-workspace, file-projection
+and transport contracts. Historical versus live inputs, both K1/K2 occurrences,
+actual adapter execution, races and file-once checks remain in the service tests.
+
+Kaocha's suite `:elapsed-ns` excludes namespace loading and JVM startup. For the
+aggregate acceptance target, use backend command wall times (and report startup
+and loading separately using the resource uptime snapshots). Do not claim that
+summing only leaf tests or completed namespace durations measures the complete
+backend command. Namespace durations are appropriate for partition weights,
+since each isolated shard pays its own startup/loading cost.

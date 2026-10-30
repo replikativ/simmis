@@ -91,6 +91,9 @@
                            :client-id (:request-id input) :kind (:request-kind prepared)
                            :intent (:basis prepared) :limits (update (:limits input) :settlement keyword)})))
 
+;; Registration-order permutations belong to owned-workspace-test and the
+;; shared file-projection/transport contracts. These complete service flows use
+;; the adverse attachment-first order with the attachment selected throughout.
 (deftest fixtures-match-real-definition-and-closed-local-schemas
   (doseq [source [saved/source saved/knowledge-source]]
     (is (m/validate catalog/Definition (edn/read-string (get source "workflow.edn")))))
@@ -98,7 +101,7 @@
                   (-> (saved/input) (dissoc :request-id) (assoc :expected-owned-source (random-uuid))))))
 
 (deftest offline-historical-code-needs-no-current-default-or-source
-  (doseq [order [true false]]
+  (let [order false]
     (with-occurrence order saved/source
       (fn [{:keys [conn w host owned attached row due]}]
         (text! owned "workflows/echo/helpers/data.txt" "Parent B")
@@ -120,7 +123,7 @@
           (is (= before (state owned))) (is (= other (state attached))))))))
 
 (deftest offline-benchmark-uses-actual-prepare-and-adapter-without-current-default
-  (doseq [order [true false]]
+  (let [order false]
     (@#'fixture/with-fixture
      order
      (fn [{:keys [conn w host owned attached room]}]
@@ -287,7 +290,7 @@
           (is (zero? @calls)))))))
 
 (deftest live-capture-is-durable-before-prepare-and-source-and-knowledge-epochs-differ
-  (doseq [order [true false]]
+  (let [order false]
     (with-occurrence order saved/knowledge-source
       (fn [{:keys [conn host owned row due]}]
         (text! owned "workflows/echo/helpers/data.txt" "Parent code B")
@@ -538,7 +541,7 @@
                    (is (= (set (keys @observed)) @joined)))))))))))
 
 (deftest real-scheduled-jobs-use-code-A-with-K1-then-K2-and-file-once-per-occurrence
-  (doseq [order [true false]]
+  (let [order false]
     (with-occurrence order saved/knowledge-source
       (fn [{:keys [conn host owned attached room row due]}]
         (text! owned "workflows/echo/helpers/data.txt" "Parent B must remain B")
