@@ -105,6 +105,7 @@
                      ;; stringify uuids for the wire; keep forks compact
                                 (mapv (fn [p]
                                         {:id (str (:proposal/id p))
+                                         :git? (git-proposals/marked? p)
                                          :title (:proposal/title p)
                                          :summary (:proposal/summary p)
                                          :status (:proposal/status p)
@@ -340,7 +341,7 @@
                #?(:clj (ctx/with-server-context
                          (when-let [p (props/get-proposal (java.util.UUID/fromString proposal-id-str))]
                            (vec (keep (fn [f]
-                                        (when (= :repo (:proposal.fork/system-type f))
+                                        (when (and (not (git-proposals/marked? p)) (= :repo (:proposal.fork/system-type f)))
                                           (let [stored (:proposal.fork/checks f)
                                                 result (if stored
                                                          (into {} (map (fn [[k v]] [(keyword (name k)) v]))

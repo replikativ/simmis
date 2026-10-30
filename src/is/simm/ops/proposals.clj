@@ -352,7 +352,9 @@
             (update p :proposal/forks
                     (fn [forks]
                       (mapv (fn [f]
-                              (case (:proposal.fork/system-type f)
+                              (if (github-proposals/marked? p)
+                                (assoc f :proposal.fork/settlement-supported? false)
+                                (case (:proposal.fork/system-type f)
                                 :file-output (assoc f :proposal.fork/settlement-supported? false)
                                 :world (assoc f :proposal.fork/capability-live?
                                               (live? (:proposal.fork/scope f)))
@@ -361,7 +363,7 @@
                                 ;; can merge it
                                 :review-world (assoc f :proposal.fork/capability-live?
                                                      (review-live? (:proposal.fork/scope f)))
-                                f))
+                                f)))
                             forks))))
           proposals)))
 

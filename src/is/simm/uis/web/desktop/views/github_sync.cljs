@@ -44,15 +44,19 @@
                   (when finished?
                     (el/p {:class "memory-note" :role "status"}
                           (case status :applied "Updated from the reviewed GitHub changes."
+                                :filed "Incoming changes were filed as a proposal. Open it to review the change set and its decision."
+                                :not-started "Sync could not start. The source or its retained base needs attention; your saved files were kept."
                                 :satisfied-observed "The current Memory matches the prepared update. This observation does not identify who applied it."
                                 "Update attempt closed. Your saved files were kept.")))
+                  (when (:proposal-id reply)
+                    (el/button {:class "btn btn-secondary btn-sm" :on-click (click (:open-proposal a))} "Open proposal"))
                   (when (:open? state)
                     (el/div {:class "memory-properties" :aria-label "Review GitHub changes"}
                             (el/h3 {} (if (and local-history? stopped?) "GitHub update stopped" "Review GitHub changes"))
                             (when loading?
                               (el/p {:role "status"}
                                     (case (:operation state)
-                                      :apply "Applying the reviewed update…"
+                                      :apply (if (= :incoming (:operation-kind reply)) "Creating the review proposal…" "Applying the reviewed update…")
                                       (:discard :retire) "Closing this update attempt. Your saved files will be kept…"
                                       (:observe :recover) "Checking this update attempt…"
                                       "Checking GitHub for updates in a private copy…")))
@@ -60,6 +64,10 @@
                             (when-let [reason (:reason reply)]
                               (el/p {:class "memory-note" :role "status"}
                                     (case reason
+                                      :conflicts "The incoming changes overlap your saved edits. Nothing was overwritten. Close this attempt before preparing a resolved replacement."
+                                      :document-validation "The merged documents do not satisfy the Memory's current types or properties. Nothing was applied."
+                                      :markdown-removal-requires-review "This update removes or moves Markdown documents. Automatic integration is held to preserve their identities."
+                                      :incoming-reserved "This incoming revision already has a pending review. Check that proposal before preparing another."
                                       :dirty "The saved worktree or index has local changes. Keep them and resolve them before syncing."
                                       :diverged "The histories diverged. Sync will not reset or merge your Memory."
                                       :target-changed "Memory changed after review. The prepared update was not reapplied."
@@ -76,7 +84,10 @@
                                       "The outcome needs inspection before another action.")))
                             (when (= :ready status)
                               (el/div {}
-                                      (el/p {} (str (:total reply) " changed files. Apply advances only this tracked branch. No push or automatic merge is performed."))
+                                      (el/p {} (str (:total reply) " changed " (if (= 1 (:total reply)) "file. " "files. ")
+                                                    (if (= :incoming (:operation-kind reply))
+                                                      "The prepared integration preserves your saved edits. Creating a proposal does not change Memory."
+                                                      "Apply advances only this tracked branch. No push is performed.")))
                                       (when-let [url (compare-url (:repository origin) (:before-git-oid reply) (:git-oid reply))]
                                         (el/a {:href url :target "_blank" :rel "noopener noreferrer"} "View upstream diff on GitHub"))
                                       (el/table {}
@@ -84,8 +95,9 @@
                                                 (el/tbody {}
                                                           (for [{:keys [path kind]} (:changes reply)]
                                                             (el/tr {:key path} (el/td {} (name kind)) (el/td {} path)))))
-                                      (el/button {:disabled (or loading? (not ((:can-apply? a))))
-                                                  :on-click (click #((:apply a) offer))} "Apply reviewed update")))
+                                      (el/button {:class "btn btn-affirm btn-sm" :disabled (or loading? (not ((:can-apply? a))))
+                                                  :on-click (click #((:apply a) offer))}
+                                                 (if (= :incoming (:operation-kind reply)) "Create review proposal" "Apply reviewed update"))))
                             (when stopped?
                               (el/p {:class "memory-note"}
                                     "Close this attempt to release its private copy. This keeps your saved edits and leaves GitHub unchanged."))

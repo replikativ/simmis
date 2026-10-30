@@ -35,8 +35,12 @@
                       (when (#{:cursor-changed :unverified-base} reason) :integration-unverified)
                       nil)
                     (case (:pull/status data) :diverged :diverged :local-changes :dirty :missing-branch :source-changed nil)
-                    (when (#{::held :is.simm.ops.github-import/held :is.simm.ops.owned-workspace/refused} type)
+                    (when (#{::held :is.simm.ops.github-import/held :is.simm.ops.owned-workspace/refused
+                             :is.simm.ops.github-incoming/held :is.simm.ops.github-roots/held
+                             :is.simm.ops.github-native/held} type)
                       (case reason
+                        (:conflicts :document-validation :markdown-removal-requires-review :incoming-reserved
+                         :integration-unverified :retention-unavailable :unsupported-native-runtime) reason
                         (:dirty :pending-merge) :dirty
                         :busy :busy
                         (:metadata-limit :proof-too-large) :limit

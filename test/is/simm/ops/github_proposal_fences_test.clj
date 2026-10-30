@@ -14,7 +14,7 @@
         (d/transact conn sdb/schema)
         (let [filing (proposals/prepare-filing
                       {:id id :title "Incoming Git changes" :author by :room room
-                       :attrs (when marker {marker (random-uuid)})
+                       :attrs (when marker {marker (if (= :proposal/github-decision-state marker) :applying (random-uuid))})
                        :forks [{:scope scope :authority-scope room :branch "github-review-local"
                                 :system-type :repo :author by :base-commit (str (random-uuid))
                                 :head-commit (str (random-uuid))}]})]

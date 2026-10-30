@@ -8,7 +8,9 @@
             [is.simm.model.knowledge-streams :as streams]
             [malli.core :as m]))
 
-(def markers [:proposal/github-key :proposal/github-provenance :proposal/github-provenance-id])
+(def markers [:proposal/github-key :proposal/github-provenance :proposal/github-provenance-id
+              :proposal/github-decision :proposal/github-decision-id :proposal/github-decision-state
+              :proposal/github-outcome :proposal/github-outcome-id :proposal/github-replaces])
 
 (def schema
   [{:db/ident :proposal/github-key :db/valueType :db.type/uuid
@@ -16,7 +18,53 @@
    {:db/ident :proposal/github-provenance :db/valueType :db.type/store-ref
     :db/cardinality :db.cardinality/one}
    {:db/ident :proposal/github-provenance-id :db/valueType :db.type/uuid
-    :db/cardinality :db.cardinality/one}])
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal/github-decision :db/valueType :db.type/store-ref :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal/github-decision-id :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal/github-decision-state :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal/github-outcome :db/valueType :db.type/store-ref :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal/github-outcome-id :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}
+   {:db/ident :proposal/github-replaces :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}
+   {:db/ident :github.incoming/key :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
+   {:db/ident :github.incoming/proposal :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}
+   {:db/ident :github.incoming/state :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+   {:db/ident :github.incoming/sync :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}])
+
+(defn reservation [db key]
+  (when-let [eid (:db/id (d/entity db [:github.incoming/key key]))]
+    (d/pull db '[*] eid)))
+
+(defn reserve-tx
+  "Serialize deduplication before native review-ref publication. Replacement
+   requires a terminal old Proposal or an explicitly released reservation with
+   no Proposal. Unknown applying decisions and unresolved reservations never
+   grant another publication."
+  [db key proposal sync expected]
+  (when-not (every? uuid? [key proposal sync])
+    (throw (ex-info "Invalid incoming reservation identity" {:reason :invalid-identity})))
+  (let [current (reservation db key)]
+    (when-not (= current expected)
+      (throw (ex-info "Incoming Git reservation changed" {:reason :incoming-reserved})))
+    (when current
+      (when-not (every? uuid? [(:github.incoming/proposal current) (:github.incoming/sync current)])
+        (throw (ex-info "Invalid incoming reservation" {:reason :incoming-reserved})))
+      (let [old (d/entity db [:proposal/id (:github.incoming/proposal current)])]
+        (when-not (or (and (= :released (:github.incoming/state current)) (nil? (:db/id old)))
+                      (and (#{:dismissed :accepted} (:proposal/status old))
+                           (not= :applying (:proposal/github-decision-state old))))
+          (throw (ex-info "Incoming Git revision is already reserved" {:reason :incoming-reserved})))))
+    [(cond-> {:github.incoming/key key :github.incoming/proposal proposal :github.incoming/sync sync :github.incoming/state :reserved}
+       current (assoc :db/id (:db/id current)))]))
+
+(defn release-reservation-tx
+  "Record ONLY an original publisher's positively known pre-effect refusal.
+   Unknown publication/ACK outcomes cannot release a reserved incoming key."
+  [db key expected]
+  (when-not (and (= expected (reservation db key)) (= :reserved (:github.incoming/state expected))
+                 (uuid? (:github.incoming/proposal expected))
+                 (nil? (:db/id (d/entity db [:proposal/id (:github.incoming/proposal expected)]))))
+    (throw (ex-info "Incoming publication outcome is not releasable" {:reason :incoming-reserved})))
+  [{:db/id (:db/id expected) :github.incoming/state :released}])
 
 (defn marked? [proposal]
   (boolean (some #(contains? proposal %) markers)))

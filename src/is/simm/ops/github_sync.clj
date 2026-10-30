@@ -356,3 +356,13 @@
          (if (and (= :observe operation) (nil? (journal/sync-in (:control-db (:resolved context)) id)))
            {:status :not-observed :client-id (str (:client-id request))}
            (dto context (act! context operation request))))))))
+
+(defn in!
+  "Fixed internal dispatch when a caller already holds the original HOST.
+   Wire callers must use the captured authenticated entrypoint."
+  [context operation request]
+  (let [id (or (:sync-id request)
+               (journal/request-id (get-in context [:resolved :party]) (get-in context [:resolved :room-id]) (:client-id request)))]
+    (if (and (= :observe operation) (nil? (journal/sync-in @(:conn context) id)))
+      {:status :not-observed :client-id (str (:client-id request))}
+      (dto context (act! context operation request)))))
