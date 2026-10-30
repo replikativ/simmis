@@ -16,16 +16,16 @@ jobs:
   backend-tests:
     name: backend-tests (${{ matrix.partition }})
     runs-on: ubuntu-latest
-    # The serial suite exceeded 45m while tests were still progressing.
-    # Reuse CircleCI's exhaustive namespace partitioner and preserve all tests.
+    # Two shards still reached 45m while progressing. Match CircleCI's four
+    # isolated JVMs using its exhaustive namespace partitioner; omit no tests.
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        partition: ["0", "1"]
+        partition: ["0", "1", "2", "3"]
     env:
       CIRCLE_NODE_INDEX: ${{ matrix.partition }}
-      CIRCLE_NODE_TOTAL: "2"
+      CIRCLE_NODE_TOTAL: "4"
 
     steps:
       - uses: actions/checkout@v6
