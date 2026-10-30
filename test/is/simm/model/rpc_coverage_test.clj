@@ -19,6 +19,9 @@
    object, so there is no single construction point to hang it on; a test is
    the available equivalent."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.java.io :as io]
+            [clojure.set :as set]
+            [clojure.string :as str]
             [is.simm.model.access :as access]
             [is.simm.distributed-scope :as ds]))
 
@@ -38,6 +41,7 @@
     is.simm.uis.web.desktop.memory-remote
     is.simm.uis.web.desktop.workspace-remote
     is.simm.uis.web.desktop.chart-remote
+    is.simm.uis.web.desktop.benchmark-report-remote
     is.simm.uis.web.desktop.saved-view-remote
     is.simm.uis.web.desktop.memory-reference-remote
     is.simm.uis.web.desktop.conversation-capture-remote
@@ -49,6 +53,21 @@
     is.simm.uis.web.desktop.workflows-remote])
 
 (defn- load-all! [] (doseq [n registering-namespaces] (require n)))
+
+(deftest coverage-loads-the-handlers-required-by-server-boot
+  ;; Check the static ns form as data, without booting an App. This makes new
+  ;; handlers visible to coverage even when no other test loaded them first.
+  (with-open [reader (java.io.PushbackReader. (io/reader (io/resource "is/simm/runtimes/web.clj")))]
+    (let [form (binding [*read-eval* false] (read reader))
+          boot (into #{}
+                     (comp (filter #(and (seq? %) (= :require (first %))))
+                           (mapcat rest)
+                           (map #(if (vector? %) (first %) %))
+                           (filter #(and (symbol? %) (str/starts-with? (str %) "is.simm.uis.web.desktop.")
+                                         (str/ends-with? (str %) "-remote")))) form)]
+      (is (seq boot))
+      (is (empty? (set/difference boot (set registering-namespaces)))
+          "RPC coverage must explicitly load every remote handler required by server boot"))))
 
 (deftest every-registered-rpc-has-a-policy
   (load-all!)
