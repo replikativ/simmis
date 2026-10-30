@@ -735,6 +735,9 @@
   "Start the web server. Idempotent - does nothing if already started."
   []
   (when-not (:started? @server-state)
+    ;; Install before hydration, native construction or public admission.
+    ;; This boot policy survives server stop/start in the same JVM.
+    ((requiring-resolve 'is.simm.runtimes.storage-gc/install-git-retention-profile!))
     (warm-up-deferred-namespaces!)
     ;; Ensure server execution context is registered (may have been lost on restart)
     (require '[org.replikativ.spindel.distributed.core :as dist])

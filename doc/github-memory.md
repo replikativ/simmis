@@ -85,6 +85,28 @@ the current exact target and complete visible state match the retained review;
 that is not a historical claim about who applied it. Later changes, unavailable
 history or mismatched physical identity hold for inspection.
 
+While preparing an update, Simmis attempts to retain a verified integration
+cursor's upstream base on its original physical store. A durable control intent precedes the
+native root write; only its positively acknowledged fresh winner creates the
+root. Retries verify the original registry entry and complete immutable root
+record. An uncertain acknowledgement never authorizes recreating a missing or
+partial root. This is storage retention, not proof that changes were reviewed
+or accepted, and it does not advance the integration cursor. Preparation records
+whether retention succeeded, is unavailable, or is held. Retention failures do
+not block the existing independent fast-forward protocol; future three-way
+Proposal integration must require a verified native root.
+
+Simmis installs a permanent managed-GC prohibition in a fresh JVM before server
+admission. A configuration enabling storage GC fails startup. Direct operator
+collectors or a separately collecting process sharing these stores are outside
+this alpha operating profile. Durable roots remain necessary; default-off GC
+alone does not retain a base. These Git roots are kept permanently for now, so
+their count grows with distinct retained bases. Coordinated GC and root
+retirement remain follow-ups to the upstream lifetime/GC work.
+
+Imports without verified integration metadata retain their existing
+fast-forward behavior. They do not acquire an invented three-way merge base.
+
 Discard removes only the positively owned private branch after physical exit.
 Its exact checkpoint, or bounded native ancestry from the acknowledged origin,
 must match. A new Room owner can explicitly retire a previous owner's known

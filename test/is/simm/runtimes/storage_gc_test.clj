@@ -16,6 +16,17 @@
 
 (def ^:private test-home "/tmp/simmis-storage-gc-test-home")
 
+(deftest git-retention-installs-the-host-policy-and-refuses-incompatible-configuration
+  (let [reasons (atom [])]
+    (with-redefs [gc/enabled? (constantly false)
+                  srooms/prohibit-storage-gc! #(do (swap! reasons conj %) true)]
+      (is (true? (gc/install-git-retention-profile!)))
+      (is (= [:is.simm.runtimes.storage-gc/git-retained-bases] @reasons)))
+    (with-redefs [gc/enabled? (constantly true)
+                  srooms/prohibit-storage-gc! #(throw (AssertionError. "Must refuse before installing"))]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"requires storage GC to remain disabled"
+                            (gc/install-git-retention-profile!))))))
+
 (deftest off-unless-asked
   (testing "no env, no config key: off"
     (is (false? (gc/enabled? nil {})))
