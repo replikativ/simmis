@@ -5,13 +5,17 @@
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.connection-epoch :as connection]
             [is.simm.uis.web.desktop.memory-actions :as memory]
+            [is.simm.uis.web.desktop.refs :as refs]
             [is.simm.uis.web.desktop.github-remote :as remote]
             [is.simm.runtimes.web :as web]))
 
-(def terminal #{:applied :satisfied-observed :closed})
+(def terminal #{:applied :satisfied-observed :closed :filed :not-started})
 
 (defn- reply! [reply]
-  (when-not (and (map? reply) (#{:not-observed :preparing :ready :unconfirmed :held :applied :satisfied-observed :closed} (:status reply))
+  (when-not (and (map? reply) (#{:not-observed :preparing :ready :unconfirmed :held :applied :satisfied-observed :closed :filed :not-started} (:status reply))
+                 (or (not= :filed (:status reply))
+                     (and (string? (:proposal-id reply))
+                          (= (:proposal-id reply) (some-> (:proposal-id reply) parse-uuid str))))
                  (or (nil? (:changes reply))
                      (and (vector? (:changes reply)) (<= (count (:changes reply)) 2048)
                           (every? #(and (string? (:path %)) (<= 1 (count (:path %)) 512)
@@ -75,7 +79,10 @@
                                                        (assoc :retired-sync-id (:sync-id request)))
                                                      (cond-> (and (terminal (:status reply)) (:sync-id reply))
                                                        (assoc :retired-sync-id (:sync-id reply)))
-                                                     (dissoc :error))))
+                                                     (dissoc :error)))
+                                       (when (and (= :prepare-incoming operation) (= :filed (:status reply))
+                                                  (= epoch (connection/snapshot)) (= stamp (:target-stamp (memory-state))))
+                                         (refs/open! {:kind :proposal :id (:proposal-id reply)})))
                                      (catch :default error (failed error))))))]
                     (update! assoc :token token :operation operation :loading? true :error nil
                              :request-on epoch :observed-on [epoch stamp (get-in (state) [:intent :client-id])])
@@ -108,7 +115,7 @@
                              (or (nil? (:intent (state))) (terminal (get-in (state) [:reply :status]))))
                     (let [request {:client-id (str (random-uuid)) :expected-target-stamp (str (:target-stamp (memory-state)))}]
                       (update! assoc :intent request :open? true :reply nil :verified-on nil)
-                      (invoke! :prepare request))))))
+                      (invoke! :prepare-incoming request))))))
             (apply! [offer]
               (when (and (owner-call?) (= offer (basis)))
                 (binding [ec/*execution-context* ctx]
@@ -127,6 +134,9 @@
                                           (or (nil? (:intent (state))) (terminal (get-in (state) [:reply :status]))))
                                  (invoke! :retire {:sync-id id})))))
        :open #(when (owner-call?) (update! assoc :open? %))
+       :open-proposal (fn [] (when (and (owner-call?) (current?))
+                               (when-let [id (get-in (state) [:reply :proposal-id])]
+                                 (refs/open! {:kind :proposal :id id}))))
        :can-apply? #(and (valid?) (= :ready (get-in (state) [:reply :status]))
                          (= (:verified-on (state)) [(connection/snapshot) (:target-stamp (memory-state))]))
        :enabled? valid?})))

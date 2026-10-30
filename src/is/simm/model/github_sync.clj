@@ -14,9 +14,12 @@
          [:github.sync/by :db.type/uuid] [:github.sync/room :db.type/uuid]
          [:github.sync/claim :db.type/uuid] [:github.sync/active-room :db.type/uuid]
          [:github.sync/state :db.type/keyword] [:github.sync/held-from :db.type/keyword]
+         [:github.sync/kind :db.type/keyword]
          [:github.sync/preparation :db.type/store-ref] [:github.sync/preparation-id :db.type/uuid]
          [:github.sync/workspace :db.type/store-ref] [:github.sync/workspace-id :db.type/uuid]
          [:github.sync/ready :db.type/store-ref] [:github.sync/ready-id :db.type/uuid]
+         [:github.sync/retention :db.type/store-ref] [:github.sync/retention-id :db.type/uuid]
+         [:github.sync/filing :db.type/store-ref] [:github.sync/filing-id :db.type/uuid]
          [:github.sync/outcome :db.type/store-ref] [:github.sync/outcome-id :db.type/uuid]
          [:github.sync/closure :db.type/store-ref] [:github.sync/closure-id :db.type/uuid]
          [:github.sync/incident :db.type/store-ref] [:github.sync/incident-id :db.type/uuid]]))
@@ -43,25 +46,36 @@
   {:github.sync/id id :github.sync/by by :github.sync/room room
    :github.sync/client-id client-id :github.sync/claim claim})
 
+(defn kind [row] (or (:github.sync/kind row) :fast-forward))
+
 (defn prepare-tx
   "Reserve one intent and the Room's exclusive pending-sync slot. Exact replay
-   is a no-op, NEVER permission to fork again. Only an original fresh physical
-   attempt may interpret positive claim readback as its construction ownership."
-  [db binding preparation-ref preparation-id]
-  (let [identity (binding! binding)
-        immutable (assoc (dissoc identity :github.sync/claim)
-                         :github.sync/preparation preparation-ref :github.sync/preparation-id preparation-id)]
-    (when-not (every? uuid? [preparation-ref preparation-id]) (refuse! :invalid-preparation))
-    (if-let [row (sync-in db (:id binding))]
-      (do (when-not (= immutable (select-keys row (keys immutable))) (refuse! :different-intent)) [])
-      (do (when (active-in db (:room binding)) (refuse! :room-busy))
-          [(merge {:db/id -1 :github.sync/state :creating :github.sync/active-room (:room binding)}
-                  identity immutable)]))))
+   is a no-op, NEVER permission to fork again. Kind is immutable; incoming
+   preparation cannot be dispatched through the legacy fast-forward protocol."
+  ([db binding preparation-ref preparation-id]
+   (prepare-tx db binding preparation-ref preparation-id :fast-forward))
+  ([db binding preparation-ref preparation-id operation-kind]
+   (when-not (#{:fast-forward :incoming} operation-kind) (refuse! :invalid-kind))
+   (let [identity (binding! binding)
+         immutable (assoc (dissoc identity :github.sync/claim)
+                          :github.sync/preparation preparation-ref :github.sync/preparation-id preparation-id)]
+     (when-not (every? uuid? [preparation-ref preparation-id]) (refuse! :invalid-preparation))
+     (if-let [row (sync-in db (:id binding))]
+       (do (when-not (and (= operation-kind (kind row))
+                          (= immutable (select-keys row (keys immutable))))
+             (refuse! :different-intent)) [])
+       (do (when (active-in db (:room binding)) (refuse! :room-busy))
+           [(cond-> (merge {:db/id -1 :github.sync/state :creating :github.sync/active-room (:room binding)}
+                           identity immutable)
+              (= :incoming operation-kind) (assoc :github.sync/kind :incoming))])))))
 
 (def ^:private next-states
   {:creating #{:allocated :held}
-   :allocated #{:ready :held :closing}
-   :ready #{:applying :closing :held}
+   :allocated #{:ready :retaining :held :closing}
+   :retaining #{:ready :held}
+   :ready #{:applying :filing :closing :held}
+   :filing #{:filed :held}
+   :filed #{:closing :held}
    :applying #{:applied :satisfied-observed :held}
    :applied #{:closing :held}
    :satisfied-observed #{:closing :held}
@@ -70,7 +84,8 @@
    :closed #{}})
 
 (def ^:private receipt-slot
-  {:allocated :workspace :ready :ready :applied :outcome :satisfied-observed :outcome
+  {:allocated :workspace :retaining :retention :ready :ready :filing :filing
+   :filed :outcome :applied :outcome :satisfied-observed :outcome
    :closed :closure :held :incident})
 
 (defn transition-tx
@@ -86,11 +101,22 @@
         id-key (when slot (keyword "github.sync" (str (name slot) "-id")))
         receipt (if slot {ref-key ref id-key receipt-id} {})]
     (when-not (and row (= expected row)) (refuse! :stale-observation))
+    (when (or (and (= :incoming (kind row)) (#{:applying :applied :satisfied-observed} to-state))
+              (and (not= :incoming (kind row)) (#{:retaining :filing :filed} to-state)))
+      (refuse! :wrong-kind))
     (when-not (if slot (every? uuid? [ref receipt-id]) (and (nil? ref) (nil? receipt-id)))
       (refuse! :invalid-receipt))
     (when-not (or (= from to-state) (contains? (next-states from) to-state)) (refuse! :invalid-transition))
+    (when (and (= :incoming (kind row)) (= :ready to-state)
+               (not (and (every? uuid? [(:github.sync/retention row) (:github.sync/retention-id row)])
+                         (or (#{:retaining :ready} from)
+                             (and (= :held from) (#{:retaining :ready} (:github.sync/held-from row)))))))
+      ;; Ordered durable intent is necessary, never sufficient: the HOST must
+      ;; still verify all native roots before acknowledging READY.
+      (refuse! :retention-required))
     (when (and (= :held from) (= :ready to-state)
-               (not (#{:allocated :ready} (:github.sync/held-from row))))
+               (not (or (#{:allocated :ready} (:github.sync/held-from row))
+                        (and (= :incoming (kind row)) (= :retaining (:github.sync/held-from row))))))
       (refuse! :uncertain-apply))
     (when (and slot (not= :incident slot) (contains? row ref-key)
                (not= receipt (select-keys row (keys receipt))))

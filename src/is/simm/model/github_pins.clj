@@ -23,6 +23,10 @@
   (when-let [eid (:db/id (d/entity db [:github.pin/key key]))]
     (d/pull db '[*] eid)))
 
+(defn by-id [db id]
+  (when-let [eid (:db/id (d/entity db [:github.pin/id id]))]
+    (d/pull db '[*] eid)))
+
 (defn body-id [body]
   (when-not (and (map? body)
                  (= #{:version :purpose :connection :cursor :selection :root :claim :by} (set (keys body)))

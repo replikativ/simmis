@@ -7,35 +7,17 @@ workflow installation, local Git commit, agent registration or source-code
 execution. Ordinary Markdown needs no Simmis identity. Malformed explicitly
 authored Simmis metadata remains a source repair diagnostic.
 
-**Add Memory → GitHub repository** opens the fixed import form. Geschichte
-0.1.41 includes the reviewed finite import budget, native HTTP deadlines and
-inspected-target checkpoint precondition, plus fixes for whitespace-only text,
-invalid UTF-8 and overlapping content-merge regions.
-Its bounded merge planner is a prerequisite for the forthcoming Proposal path;
-the current public sync still uses fast-forward-only native publication.
+**Add Memory → GitHub repository** opens the fixed import form. New imports
+publish their exact source Git OID, native head, physical connection identity
+and retained creation receipt in the same control transaction as Memory
+membership. An uncertain acknowledgment is observed using the same creation
+request, never by cloning again. Existing Memories are not assigned inferred
+upstream metadata.
 
-New imports publish their exact source Git OID, native head, physical connection
-identity and retained creation receipt in the same control transaction as
-Memory membership. Failure before that transaction publishes neither membership
-nor an integration row; an uncertain acknowledgment is observed using the same
-creation request, never by cloning again. Existing Memories are not assigned
-inferred upstream metadata. This metadata does not itself pin native snapshots
-against GC or enable merging local edits, pushing, or automatic sync.
-
-A positively acknowledged fast-forward whose reviewed base matches the
-observed integration record advances that record in the
-same control transaction as its `:applied` sync outcome, retaining the initial
-import anchor and linking the new head/OID to that exact outcome receipt. The
-writer compares the whole observed integration record and checks its base
-against the reviewed upstream head before native publication. Unchanged heads
-leave the record unchanged. A lost native ACK followed by observation of the
-desired files does **not** advance it: that observation proves no historical
-integration. Previously stale metadata remains unchanged rather than being repaired from file
-equality or ancestry. Memories with absent or already stale metadata keep their
-existing checkpoint-guarded fast-forward behavior, leaving that metadata
-untouched. This path does not invent an integration base for them; future
-three-way integration must reconcile positive receipts or explicitly establish
-a new base before using such metadata.
+The file browser and editor use this ordinary Memory. Editor autosaves create
+local Geschichte commits. **Sync from GitHub** now integrates incoming changes
+with that saved history through a frozen Proposal; review and acceptance are
+separate from fetching. Pushing and automatic fetching are separate follow-ups.
 
 ## Import limits
 
@@ -58,67 +40,78 @@ registered agent access until import, foundation checks and the final current
 human authorization pass. Unknown native cleanup remains owned; observing an
 uncertain creation request never fetches or creates again.
 
-## Review and apply
+## Incoming changes and Proposals
 
-**Sync from GitHub** makes a private exact-checkpoint workspace, then performs a
-bounded full fetch and fast-forward-only pull there. It records the original
-target, branch, source checkpoint and native allocation ACK before fetching.
-The review is ready only after the private connection has positively released.
-The retained branch keeps the prepared snapshot available between user actions.
+**Sync from GitHub** captures the original authorized Room, source and physical
+checkpoint, then creates a private exact-checkpoint workspace. A bounded full
+fetch and three-way merge combine the retained upstream base, saved local
+history and fetched upstream revision. The same finite operation covers fetch,
+content decoding and merge planning. Historical content is read from its own
+immutable commit snapshot, including when its representation is absent from the
+current mutable catalog.
 
-The review lists changed paths and links to the exact upstream Git comparison.
-**Apply reviewed update** uses the existing native `workspace/advance!` with the
-reviewed physical destination checkpoint. Its serialized writer checks the same
-destination worktree, staging index, configuration and refs. Local canonical
-edits or divergent history refuse publication; there is no reset, push,
-automatic merge or second fetch. Unsaved editor drafts retain the usual Memory
-conflict behavior. Native commit hints refresh the existing Memory observation.
+A clean integration files an ordinary frozen Proposal and opens its change set.
+Filing does not change the live Memory or its integrated-upstream cursor.
+Base, local, incoming and candidate snapshots have durable retention evidence;
+the private native connection must positively release before review is ready.
+Imported code is not executed and imported type definitions do not grant
+validation authority. The candidate must satisfy the Memory's current document
+types and properties.
 
-Editor autosaves create local Geschichte commits. These currently lack the Git
-identity needed by this import-only path, so even restoring the previous file
-bytes does not make that history eligible for sync again. Sync refuses rather
-than resetting those commits; local commit projection and merge are follow-ups.
+**Accept Git changes** obtains a fresh semantic review bound to the exact
+physical target checkpoint. Native advancement refuses intervening target
+changes; recheck before accepting a changed Memory. A positively returned
+advance records Proposal acceptance and the fetched upstream cursor together in
+the control writer. The cursor names the upstream commit, not the merged local
+candidate. Existing Memory observation refreshes files reactively.
 
-An ambiguous Apply ACK is never resent. **Check this sync** only observes the
-same journal. **Verify current outcome** may report `satisfied-observed` when
-the current exact target and complete visible state match the retained review;
-that is not a historical claim about who applied it. Later changes, unavailable
-history or mismatched physical identity hold for inspection.
+A lost acceptance acknowledgment is never inferred from matching file bytes or
+resent. An unresolved publication reservation also never permits a duplicate
+Proposal. Only a positively known pre-effect refusal can release that
+reservation. Repeated requests for an open incoming revision return its existing
+Proposal. After acceptance, it remains available as a closed audit.
 
-While preparing an update, Simmis attempts to retain a verified integration
-cursor's upstream base on its original physical store. A durable control intent precedes the
-native root write; only its positively acknowledged fresh winner creates the
-root. Retries verify the original registry entry and complete immutable root
-record. An uncertain acknowledgement never authorizes recreating a missing or
-partial root. This is storage retention, not proof that changes were reviewed
-or accepted, and it does not advance the integration cursor. Preparation records
-whether retention succeeded, is unavailable, or is held. Retention failures do
-not block the existing independent fast-forward protocol; future three-way
-Proposal integration must require a verified native root.
+Conflicting changes are held without overwriting saved files. The current alpha
+also holds Markdown deletions and moves to preserve document identity. Unsupported
+history rewrites, missing ancestry, invalid documents and resource limits are
+reported as held attempts. Close a positively released preparation before making
+another attempt; unknown native outcomes require reconciliation.
+
+## Retention and operation ownership
+
+Simmis retains a verified integration cursor's upstream base on its original
+physical store before three-way preparation. A durable control intent precedes
+the native root write; only its positively acknowledged fresh winner creates
+that root. Recovery verifies the same original root rather than recreating an
+absent or partial result. The candidate's additional roots follow the same
+intent-before-creation discipline. Retention is not review, acceptance or a
+permission grant.
 
 Simmis installs a permanent managed-GC prohibition in a fresh JVM before server
 admission. A configuration enabling storage GC fails startup. Direct operator
 collectors or a separately collecting process sharing these stores are outside
 this alpha operating profile. Durable roots remain necessary; default-off GC
-alone does not retain a base. These Git roots are kept permanently for now, so
-their count grows with distinct retained bases. Coordinated GC and root
-retirement remain follow-ups to the upstream lifetime/GC work.
-
-Imports without verified integration metadata retain their existing
-fast-forward behavior. They do not acquire an invented three-way merge base.
+alone does not retain a base. Git roots are kept permanently for now. Coordinated
+GC and root retirement remain follow-ups to the upstream lifetime/GC work.
 
 Discard removes only the positively owned private branch after physical exit.
 Its exact checkpoint, or bounded native ancestry from the acknowledged origin,
 must match. A new Room owner can explicitly retire a previous owner's known
 preparation without impersonating them or publishing their changes. Unknown
-allocation, control handoff, connect or release outcomes retain the original
-native cleanup owner.
-Those uncertain native phases require operator reconciliation; normal owner
-retirement cannot bypass their retained exclusive physical slot.
-A moved default repository or unavailable original store requires operator
-reconciliation; it never authorizes cleanup of a replacement repository.
+allocation, handoff, connection or release outcomes retain their original native
+cleanup owner and exclusive physical slot. A moved repository or unavailable
+original store never authorizes cleanup of a replacement.
+
+## Earlier fast-forward attempts
+
+Previously created fast-forward preparations retain their original protocol;
+they are not reinterpreted as incoming Proposals. Their reviewed update advances
+only the tracked branch under its captured destination checkpoint. A positively
+acknowledged update advances verified upstream metadata in the same outcome
+transaction. A later observation of matching files is only `satisfied-observed`
+and does not establish who performed the update. Missing or stale integration
+metadata is never repaired by guessing from file equality.
 
 Selective native advancement transfers committed files and Git identities, not
-the complete imported pack store. Later sync therefore uses a full fetch with
-empty `haves`; thin negotiation and push are not supported. Rewritten upstream
-history or missing ancestry may refuse rather than prove divergence.
+the complete imported pack store. Fetch therefore currently uses empty `haves`;
+this feature does not enable thin negotiation, force push or automatic sync.

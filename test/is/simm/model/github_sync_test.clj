@@ -116,9 +116,99 @@
   (fixture
    (fn [conn]
      (let [row (-> (prepare! conn (binding-for) {:source "repo"}) (#(transition! conn % :allocated))
-                    (#(transition! conn % :ready)))
+                   (#(transition! conn % :ready)))
            before @conn]
        (is (empty? (sync/transition-tx @conn row :ready (:github.sync/ready row) (:github.sync/ready-id row))))
        (is (thrown? clojure.lang.ExceptionInfo
                     (sync/transition-tx @conn row :ready (random-uuid) (random-uuid))))
        (is (= before @conn))))))
+
+(defn- prepare-incoming! [conn binding]
+  (let [body {:kind :incoming :source "owner/repository"}]
+    (artifact/publish-value! (artifact/datahike-store conn) body
+                             #(d/transact conn [[:db.fn/call sync/prepare-tx binding % (hasch/uuid body) :incoming]]))
+    (sync/sync-in @conn (:id binding))))
+
+(deftest incoming-kind-is-immutable-and-shares-the-existing-exclusive-room-slot
+  (fixture
+   (fn [conn]
+     (let [binding (binding-for) row (prepare-incoming! conn binding)]
+       (is (= :incoming (sync/kind row)))
+       (is (= row (prepare-incoming! conn (assoc binding :claim (random-uuid)))))
+       (is (thrown? clojure.lang.ExceptionInfo (prepare! conn binding {:kind :incoming :source "owner/repository"})))
+       (is (thrown? clojure.lang.ExceptionInfo (prepare! conn (binding-for (:room binding)) {:source "owner/repository"})))
+       (is (= row (sync/active-in @conn (:room binding))))))))
+
+(deftest incoming-preparation-filing-and-native-cleanup-are-distinct-receipts
+  (fixture
+   (fn [conn]
+     (let [binding (binding-for)
+           allocated (transition! conn (prepare-incoming! conn binding) :allocated)
+           retaining (transition! conn allocated :retaining)
+           ready (transition! conn retaining :ready)]
+       (is (:github.sync/retention ready))
+       (doseq [old-state [:applying :applied :satisfied-observed]]
+         (is (= :wrong-kind
+                (try (sync/transition-tx @conn ready old-state (random-uuid) (random-uuid)) nil
+                     (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))))
+       (let [filing (transition! conn ready :filing)
+             filed (transition! conn filing :filed)]
+         (is (:github.sync/filing filed))
+         (is (:github.sync/outcome filed))
+         (is (= filed (sync/active-in @conn (:room binding))) "Filing does not release the physical cleanup obligation")
+         (is (thrown? clojure.lang.ExceptionInfo (transition! conn filed :closed)))
+         (let [closed (-> filed (#(transition! conn % :closing)) (#(transition! conn % :closed)))]
+           (is (= :closed (:github.sync/state closed)))
+           (is (nil? (sync/active-in @conn (:room binding))))))))))
+
+(deftest incoming-ready-cannot-skip-the-durable-retention-blueprint
+  (fixture
+   (fn [conn]
+     (let [allocated (transition! conn (prepare-incoming! conn (binding-for)) :allocated)]
+       (is (= :retention-required
+              (try (sync/transition-tx @conn allocated :ready (random-uuid) (random-uuid))
+                   nil (catch clojure.lang.ExceptionInfo e (:reason (ex-data e))))))
+       (is (= allocated (sync/sync-in @conn (:github.sync/id allocated))))
+       (let [held (transition! conn allocated :held)]
+         (is (= :retention-required
+                (try (sync/transition-tx @conn held :ready (random-uuid) (random-uuid))
+                     nil (catch clojure.lang.ExceptionInfo e (:reason (ex-data e))))))
+         (is (= held (sync/sync-in @conn (:github.sync/id held)))))))))
+
+(deftest incoming-retention-recovery-must-preserve-the-original-evidence
+  (fixture
+   (fn [conn]
+     (let [retaining (-> (prepare-incoming! conn (binding-for))
+                         (#(transition! conn % :allocated)) (#(transition! conn % :retaining)))
+           held (transition! conn retaining :held)
+           ready (transition! conn held :ready)]
+       (is (= :ready (:github.sync/state ready)))
+       (is (= (select-keys retaining [:github.sync/retention :github.sync/retention-id])
+              (select-keys ready [:github.sync/retention :github.sync/retention-id])))))))
+
+(deftest unknown-filing-outcomes-cannot-reenter-native-publication
+  (fixture
+   (fn [conn]
+     (let [binding (binding-for)
+           held (-> (prepare-incoming! conn binding)
+                    (#(transition! conn % :allocated)) (#(transition! conn % :retaining))
+                    (#(transition! conn % :ready)) (#(transition! conn % :filing))
+                    (#(transition! conn % :held)))]
+       (is (= :filing (:github.sync/held-from held)))
+       (is (thrown? clojure.lang.ExceptionInfo (transition! conn held :ready)))
+       (is (thrown? clojure.lang.ExceptionInfo (transition! conn held :filing)))
+       (is (= held (sync/active-in @conn (:room binding))))))))
+
+(deftest fast-forward-rows-cannot-enter-incoming-publication-phases
+  (fixture
+   (fn [conn]
+     (let [binding (binding-for)
+           allocated (transition! conn (prepare! conn binding {:source "repo"}) :allocated)
+           ready (transition! conn allocated :ready)]
+       (is (= :fast-forward (sync/kind ready)))
+       (doseq [[row state] [[ready :retaining] [ready :filing] [ready :filed]]]
+         (is (= :wrong-kind
+                (try (sync/transition-tx @conn row state (random-uuid) (random-uuid)) nil
+                     (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))))
+       (is (thrown? clojure.lang.ExceptionInfo (prepare-incoming! conn binding)))
+       (is (= ready (sync/sync-in @conn (:id binding))))))))

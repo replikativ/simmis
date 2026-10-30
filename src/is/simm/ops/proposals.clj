@@ -12,6 +12,7 @@
             [is.simm.model.access :as access]
             [is.simm.model.forkset :as fs]
             [is.simm.model.file-outputs :as file-manifests]
+            [is.simm.model.github-proposals :as github-proposals]
             [is.simm.model.knowledge-processing :as processing]
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [is.simm.ops.file-output-plan :as file-plans]
@@ -351,7 +352,9 @@
             (update p :proposal/forks
                     (fn [forks]
                       (mapv (fn [f]
-                              (case (:proposal.fork/system-type f)
+                              (if (github-proposals/marked? p)
+                                (assoc f :proposal.fork/settlement-supported? false)
+                                (case (:proposal.fork/system-type f)
                                 :file-output (assoc f :proposal.fork/settlement-supported? false)
                                 :world (assoc f :proposal.fork/capability-live?
                                               (live? (:proposal.fork/scope f)))
@@ -360,7 +363,7 @@
                                 ;; can merge it
                                 :review-world (assoc f :proposal.fork/capability-live?
                                                      (review-live? (:proposal.fork/scope f)))
-                                f))
+                                f)))
                             forks))))
           proposals)))
 
@@ -408,7 +411,13 @@
                   :where [?p :proposal/id ?id] [?p :proposal/forks ?f]
                   [?f :proposal.fork/system-type :file-output]] db id)))
 
+(defn- refuse-git-decision! [db id]
+  (when (github-proposals/marked-in? db id)
+    (throw (ex-info "Git proposals require their exact retained review and decision boundary"
+                    {:error :git-settlement-unavailable :proposal id}))))
+
 (defn- refuse-retained-status! [db id]
+  (refuse-git-decision! db id)
   (when (retained-proposal? db id)
     (throw (ex-info "Retained file status requires its dedicated decision boundary"
                     {:error :settlement-unavailable :system-type :file-output}))))
@@ -490,7 +499,8 @@
   [p diffs]
   ;; Retained file inspection must not introduce an unfunded model call.
   ;; Its filing rationale and exact per-file evidence already render directly.
-  (when-not (some #(or (= :file-output (fork-type %)) (:proposal.fork/head-commit %)) (:proposal/forks p))
+  (when-not (or (github-proposals/marked? p)
+                (some #(or (= :file-output (fork-type %)) (:proposal.fork/head-commit %)) (:proposal/forks p)))
     (ctx/with-server-context
       (let [heads (mapv (fn [f] (fork-head-id f (fork-branch-kw f))) (open-forks p))
             k [(:proposal/id p) heads]]
@@ -539,13 +549,18 @@
    conflicts here means the reviewer sees a conflict BEFORE pressing Accept,
    instead of discovering it in the response."
   [p]
-  (ctx/with-server-context
-    (let [k [(:proposal/id p) (fork-heads p)]]
-      (if (contains? @review-cache k)
-        (get @review-cache k)
-        (let [v (compute-proposal-review p)]
-          (swap! review-cache assoc k v)
-          v)))))
+  (if (github-proposals/marked? p)
+    ;; Generic branch/trunk tiers cannot certify an exact frozen Git candidate.
+    ;; The dedicated review service supplies its current basis and decision.
+    {:tier :review-only :conflicts [] :settlement-supported? false
+     :target-compatibility :not-checked :backend :git}
+    (ctx/with-server-context
+      (let [k [(:proposal/id p) (fork-heads p)]]
+        (if (contains? @review-cache k)
+          (get @review-cache k)
+          (let [v (compute-proposal-review p)]
+            (swap! review-cache assoc k v)
+            v))))))
 
 (defn- resolution-facts
   "The `who`/`why` half of a resolution, omitted when not supplied. Recorded
@@ -886,6 +901,7 @@
    longer holds an overlay for — and that is not a failure. The comment is the
    durable part; reopening is a convenience for a live agent."
   [id {:keys [body by fork-branch]}]
+  (refuse-git-decision! @(conn) id)
   (if (retained-proposal? @(conn) id)
     (file-decision! (conn) id by (cond-> {:verb :request-changes} fork-branch (assoc :branch fork-branch)) {:body body})
     (let [p (open-proposal! id)
@@ -941,6 +957,7 @@
 
    `:note` / `:by` record who decided and why (both optional)."
   [id & {:keys [force? note by]}]
+  (refuse-git-decision! @(conn) id)
   (let [p (open-proposal! id)
         forks (open-forks p)]
     (ensure-supported-landing! (:proposal/forks p))
@@ -1022,6 +1039,7 @@
    `:proposal/resolved-at`, rewriting the record of a merge that had already
    landed on trunk."
   [id & {:keys [note by]}]
+  (refuse-git-decision! @(conn) id)
   (if (retained-proposal? @(conn) id)
     (file-decision! (conn) id by {:verb :dismiss-proposal} {:note note})
     (let [p (open-proposal! id)]
@@ -1067,6 +1085,7 @@
    Returns {:status :dismissed :proposal <status-or-nil>}, the second being what
    the proposal became if this was the last open fork."
   [id scope branch & {:keys [note by]}]
+  (refuse-git-decision! @(conn) id)
   (if (retained-proposal? @(conn) id)
     (file-decision! (conn) id by {:verb :dismiss-fork :scope scope :branch branch} {:note note})
     (let [p (open-proposal! id)
@@ -1092,6 +1111,7 @@
 
    Returns {:status :accepted :proposal <status-or-nil>} or {:warnings …}."
   [id scope branch & {:keys [force? note by]}]
+  (refuse-git-decision! @(conn) id)
   (let [p (open-proposal! id)
         f (open-fork! p scope branch)]
     ;; Escalated reviews decide their entire proposal even when entered from
@@ -1141,6 +1161,7 @@
   [connection id by action options]
   (when-not (and (identical? connection (conn)) (every? uuid? [id by]))
     (throw (ex-info "Proposal decision has no original App connection" {:error :decision-unavailable})))
+  (refuse-git-decision! @connection id)
   (if (retained-proposal? @connection id)
     (file-decision! connection id by action options)
     (case (:verb action)

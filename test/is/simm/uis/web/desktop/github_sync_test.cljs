@@ -9,6 +9,7 @@
             [is.simm.uis.web.desktop.memory-actions :as memory]
             [is.simm.uis.web.desktop.github-sync :as sync]
             [is.simm.uis.web.desktop.github-remote :as remote]
+            [is.simm.uis.web.desktop.refs :as refs]
             [is.simm.uis.web.desktop.views.github-sync :as view]
             [is.simm.runtimes.web :as web])
   (:require-macros [org.replikativ.spindel.signal :refer [signal]]))
@@ -42,12 +43,12 @@
   (with-client
     (fn [{:keys [a state calls ready]}]
       (act! a :sync) (act! a :sync)
-      (is (= [:prepare] (mapv :operation @calls)))
+      (is (= [:prepare-incoming] (mapv :operation @calls)))
       (let [intent (:request (first @calls))]
         ((:ok (first @calls)) ready)
         (is ((:can-apply? a)))
         (act! a :apply) (act! a :apply)
-        (is (= [:prepare :apply] (mapv :operation @calls)))
+        (is (= [:prepare-incoming :apply] (mapv :operation @calls)))
         (is (= {:client-id (:client-id intent) :ready-id (:ready-id ready)} (:request (second @calls))))
         ((:error (second @calls)) (js/Error. "Lost ACK"))
         (act! a :apply) (act! a :sync)
@@ -124,7 +125,7 @@
                             (array-seq (.querySelectorAll container "button")))]
             (is (some? close))
             (.click close)
-            (is (= [:prepare :discard] (mapv :operation @calls)))
+            (is (= [:prepare-incoming :discard] (mapv :operation @calls)))
             (is (= (get-in (first @calls) [:request :client-id])
                    (get-in (second @calls) [:request :client-id]))))
           (finally
@@ -181,6 +182,21 @@
         ((:ok (last @calls)) (assoc ready :changes (mapv #(hash-map :path (str % ".md") :kind :modified) (range 2048)) :total 2048))
         (is (= :ready (get-in (state) [:reply :status])))
         (is (false? (:loading? (state))))))))
+
+(deftest filed-replies-require-a-proposal-id-before-navigation
+  (doseq [reply [{:status :filed} {:status :filed :proposal-id nil}
+                {:status :filed :proposal-id "invalid"}]]
+    (with-client
+      (fn [{:keys [a state calls]}]
+        (let [opened (atom [])]
+          (with-redefs [refs/open! #(swap! opened conj %)]
+            (act! a :sync)
+            (let [intent (:intent (state))]
+              ((:ok (first @calls)) reply)
+              (is (false? (:loading? (state))))
+              (is (= :unconfirmed (get-in (state) [:reply :status])))
+              (is (= intent (:intent (state))))
+              (is (empty? @opened)))))))))
 
 (deftest retired-old-metadata-cannot-overwrite-a-new-own-review
   (with-client

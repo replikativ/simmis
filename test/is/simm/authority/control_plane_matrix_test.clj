@@ -235,6 +235,7 @@
    "create-workspace!"       [(c :none AUTH)]
    "observe-workspace-creation!" [(c :none AUTH)]
    "load-github-memory-sync!" [(c :room MEMBERS)]
+   "github-proposal-operation!" [(c :room OWNER)]
    "sync-github-memory!"      [(c :room OWNER)]
    "retire-github-memory-sync!" [(c :room OWNER)]
    "load-rooms!"             [(c :owner-self OWNER)]

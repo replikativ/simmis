@@ -56,6 +56,24 @@
    :connection-id (connections/connection-id (:connection body))
    :body-id (pins/body-id body)})
 
+(defn verify-base!
+  "Read-only retention evidence on the original physical store. Historical
+   evidence is independent of whether the current upstream cursor still names
+   this base. The caller separately checks current cursor/decision eligibility.
+   check! retains and validates the original live HOST source authority."
+  [control source connection id check!]
+  (when-not (fn? check!) (refuse! :missing-host-boundary))
+  (check!)
+  (let [row (or (pins/by-id @control id) (refuse! :missing-intent))
+        body (retained-body! control row)]
+    (when-not (= connection (:connection body)) (refuse! :connection-changed))
+    (let [{:keys [selection snapshot]} (selection! source connection (:cursor body))]
+      (when-not (= selection (:selection body)) (refuse! :selection-changed))
+      (physical/verify! snapshot (:basis selection) id (owner body))
+      (check!)
+      (when-not (= row (pins/by-id @control id)) (refuse! :intent-changed))
+      {:root id :selection selection :db snapshot :cursor (:cursor body)})))
+
 (defn retain-base!
   "Retain a verified cursor's published base before preparing Git changes.
    A positively acknowledged fresh intent creates once. Every later attempt
