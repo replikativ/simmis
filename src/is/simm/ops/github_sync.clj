@@ -11,9 +11,11 @@
             [geschichte.workspace :as workspace]
             [is.simm.model.github-sync :as journal]
             [is.simm.model.github-integrations :as integrations]
+            [is.simm.model.github-connections :as connections]
             [is.simm.model.access :as access]
             [is.simm.ops.file-output-adoption :as adoption]
             [is.simm.ops.github-import :as import]
+            [is.simm.ops.github-roots :as roots]
             [is.simm.ops.github-sync-data :as facts]
             [is.simm.ops.github-sync-workspace :as private]
             [is.simm.ops.owned-reads :as reads]
@@ -149,6 +151,30 @@
     (facts/validate-desired! (:before ready) (:after ready))
     [prepared ready]))
 
+(defn- base-retention! [{:keys [conn resolved bound] :as context} source]
+  ;; Retention is a prerequisite for future THREE-WAY integration, never a
+  ;; new prerequisite for the existing independent FF protocol. Keep optional
+  ;; metadata failures inside this boundary and record a portable outcome.
+  (try
+    (if-let [cursor (integrations/current-in @conn (:room-id resolved))]
+      (let [connection (:value (artifact/get-bounded-value (artifact/datahike-store conn)
+                                                          (:github.integration/connection cursor) 16384))]
+        (when-not (and (= (:target bound) (:target connection))
+                       (= (:target-stamp bound) (:target-stamp connection))
+                       (= (connections/connection-id connection) (:github.integration/connection-id cursor)))
+          (facts/refuse! :source-settings-changed))
+        (assoc (select-keys (roots/retain-base! conn source connection (:party resolved)
+                                               #(current! context) #(writer-current! context %))
+                            [:root :selection])
+               :status :retained))
+      {:status :unavailable :reason :integration-unverified})
+    (catch Exception error
+      (when (adoption/causal-interruption? error)
+        (.interrupt (Thread/currentThread))
+        (throw error))
+      ;; Deliberately no exception message, runtime object or arbitrary data.
+      {:status :held :reason :retention-unavailable})))
+
 (defn- prepare! [{:keys [conn resolved bound origin] :as context} request]
   (let [id (journal/request-id (:party resolved) (:room-id resolved) (:client-id request))]
     (if-let [existing (journal/sync-in @conn id)]
@@ -160,11 +186,15 @@
         (when-not (= (:expected-target-stamp request) (:target-stamp bound)) (facts/refuse! :target-changed))
         (when-not (= (:registry-system origin) (get-in bound [:target :registry-system]))
           (facts/refuse! :source-settings-changed))
-        (let [before (facts/capture (:db (current! context)) origin)
+        (let [source (:db (current! context))
+              retention (base-retention! context source)
+              _ (current! context)
+              before (facts/capture source origin)
               binding {:id id :by (:party resolved) :room (:room-id resolved)
                        :client-id (:client-id request) :claim (random-uuid)}
               body (merge binding {:version 1 :origin origin :target (:target bound) :target-stamp (:target-stamp bound)
-                                   :revision (:revision context) :branch (facts/branch id (:claim binding)) :before before})
+                                   :revision (:revision context) :branch (facts/branch id (:claim binding))
+                                   :base-retention retention :before before})
               body-id (facts/body-id :preparation body)
               published (volatile! nil)]
           ;; Ambiguous preparation ACK never grants native creation rights.
@@ -324,6 +354,7 @@
 
 (defn- dto [context row]
   (let [state (:github.sync/state row)
+        retained (:base-retention (preparation! context row))
         outcome (when (:github.sync/outcome row) (read-body! context row :outcome))
         ready (when (:github.sync/ready row) (second (ready! context row)))
         incident (when (:github.sync/incident row) (read-body! context row :incident))]
@@ -334,6 +365,7 @@
              :source (assoc (select-keys (:origin context) [:repository :ref :import-head]) :kind :github)
              :can-discard? (or (#{:ready :allocated} state) (and (= :held state) (= :allocated (:github.sync/held-from row)))
                                (refused-publication? row incident ready))}
+      retained (assoc :base-retention (select-keys retained [:status :reason]))
       incident (assoc :reason (:reason incident))
       ready (assoc :ready-id (str (:github.sync/ready-id row)) :changes (:changes ready) :total (count (:changes ready))
                    :before-git-oid (get-in ready [:before :git-oid]) :git-oid (get-in ready [:after :git-oid])

@@ -1,6 +1,7 @@
 (ns is.simm.ops.github-sync-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [clojure.test :refer [deftest is use-fixtures]]
             [datahike.api :as d]
+            [datahike.gc-roots :as gc-roots]
             [datahike.versioning :as versioning]
             [dvergr.discourse :as discourse]
             [dvergr.room.registry :as registry]
@@ -13,6 +14,7 @@
             [geschichte.workspace :as workspace]
             [is.simm.model.github-sync :as journal]
             [is.simm.model.github-integrations :as integrations]
+            [is.simm.model.github-pins :as pins]
             [is.simm.model.knowledge-rooms :as rooms]
             [is.simm.ops.github-import-test :as upstream]
             [is.simm.ops.github-import :as import]
@@ -25,7 +27,16 @@
             [is.simm.ops.owned-workspace :as owned]
             [is.simm.runtimes.application-ops :as application]
             [is.simm.runtimes.memory-changes :as changes]
-            [is.simm.runtimes.operation-lifetime :as lifetime]))
+            [is.simm.runtimes.operation-lifetime :as lifetime]
+            [is.simm.uis.web.desktop.github-remote :as remote]))
+
+;; Each fixture represents a fresh HOST. Production has no policy reset.
+(use-fixtures :each
+  (fn [f]
+    (with-redefs-fn
+      {#'native/storage-gc-homes (atom #{})
+       #'native/storage-gc-admission (atom {:ever-admitted? false :prohibited-by nil})}
+      f)))
 
 (defn- with-imported [f]
   (#'fixture/with-private-host
@@ -58,6 +69,8 @@
                               (fn [] (fn [body] (lifetime/with-operation! owner #(body host))))]
                   (f (assoc environment :upstream upstream :graph graph :owner owner :creator creator
                             :room-id room-id :native-room room :parent (:conn bound) :stamp (:target-stamp bound)
+                            :remote-call (fn [operation request]
+                                           ((remote/prepare-action creator (str room-id) operation request)))
                             :call-as (fn [party operation request] ((sync/prepare party room-id operation request)))
                             :call (fn [operation request] ((sync/prepare creator room-id operation request))))))))
             (finally
@@ -350,3 +363,99 @@
           (is (= :closed (:status (call-as (:owner w) :retire {:sync-id (str id)}))))
           (is (nil? (journal/active-in @conn room-id)))
           (is (nil? (repo/read parent "reports/new.md"))))))))
+
+
+(defn- pin-rows [db]
+  (mapv #(d/pull db '[*] (:e %)) (d/datoms db :avet :github.pin/id)))
+
+(deftest sync-preparation-durably-retains-the-exact-upstream-base
+  (with-imported
+    (fn [{:keys [call conn parent stamp] :as environment}]
+      (c2! environment)
+      (let [client (str (random-uuid)) wire {:client-id client :expected-target-stamp (str stamp)}
+            ready (call :prepare wire) row (first (pin-rows @conn))]
+        (is (= :ready (:status ready)))
+        (is (= 1 (count (pin-rows @conn))))
+        (is (= :retained (:github.pin/state row)))
+        (is (= :retained (get-in ready [:base-retention :status])))
+        (is (contains? (gc-roots/roots (:store @parent) {:sync? true}) (:github.pin/id row)))
+        (is (= :ready (:status (call :prepare wire)))))
+      (is (thrown? clojure.lang.ExceptionInfo (native/gc-room! :unused {:dry-run? true}))))))
+
+(deftest a-lost-pin-ack-recovers-by-verification-without-creating-another-root
+  (with-imported
+    (fn [{:keys [conn stamp] call :remote-call :as environment}]
+      (c2! environment)
+      (let [wire {:client-id (str (random-uuid)) :expected-target-stamp (str stamp)}
+            pin! gc-roots/pin! calls (atom 0)]
+        (with-redefs [gc-roots/pin! (fn [& args]
+                                    (swap! calls inc) (apply pin! args)
+                                    (throw (ex-info "Lost native pin ACK" {})))]
+          (let [ready (call :prepare wire)]
+            (is (= :ready (:status ready)))
+            (is (= :held (get-in ready [:base-retention :status])))
+            (is (= :ready (:status (call :observe (select-keys wire [:client-id])))))
+            (call :discard (select-keys wire [:client-id]))))
+        (is (= :creating (:github.pin/state (first (pin-rows @conn)))))
+        (with-redefs [gc-roots/pin! (fn [& _] (throw (AssertionError. "Recovery cannot recreate")))]
+          (let [ready (call :prepare (assoc wire :client-id (str (random-uuid))))]
+            (is (= :ready (:status ready)))
+            (is (= :retained (get-in ready [:base-retention :status])))))
+        (is (= 1 @calls))
+        (is (= 1 (count (pin-rows @conn))))
+        (is (= :retained (:github.pin/state (first (pin-rows @conn)))))))))
+
+(deftest lost-control-ack-before-root-creation-holds-without-replaying-native-creation
+  (with-imported
+    (fn [{:keys [conn stamp] call :remote-call :as environment}]
+      (c2! environment)
+      (let [wire {:client-id (str (random-uuid)) :expected-target-stamp (str stamp)}
+            transact d/transact]
+        (with-redefs [d/transact
+                      (fn [c tx]
+                        (let [report (transact c tx)]
+                          (when (and (identical? c conn)
+                                     (empty? (pin-rows (:db-before report)))
+                                     (seq (pin-rows (:db-after report))))
+                            (throw (ex-info "Lost control pin ACK" {})))
+                          report))]
+          (let [ready (call :prepare wire)]
+            (is (= :ready (:status ready)))
+            (is (= :held (get-in ready [:base-retention :status])))
+            (is (= :ready (:status (call :observe (select-keys wire [:client-id])))))
+            (call :discard (select-keys wire [:client-id]))))
+        (is (= 1 (count (pin-rows @conn))))
+        (with-redefs [gc-roots/pin! (fn [& _] (throw (AssertionError. "Uncertain winner cannot create")))]
+          (let [ready (call :prepare (assoc wire :client-id (str (random-uuid))))]
+            (is (= :ready (:status ready)))
+            (is (= :held (get-in ready [:base-retention :status])))))
+        (is (= :creating (:github.pin/state (first (pin-rows @conn)))))))))
+
+(deftest optional-corrupt-cursor-metadata-cannot-strand-the-existing-sync-flow
+  (with-imported
+    (fn [{:keys [conn room-id stamp] call :remote-call :as environment}]
+      (let [cursor (integrations/current-in @conn room-id)]
+        (d/transact conn [{:db/id (:db/id cursor) :github.integration/connection (random-uuid)}]))
+      (c2! environment)
+      (let [client (str (random-uuid))
+            ready (call :prepare {:client-id client :expected-target-stamp (str stamp)})]
+        (is (= :ready (:status ready)))
+        (is (= {:status :held :reason :retention-unavailable} (:base-retention ready)))
+        (is (= :ready (:status (call :observe {:client-id client}))))
+        (is (= :applied (:status (call :apply {:client-id client :ready-id (:ready-id ready)}))))))))
+
+(deftest a-missing-native-root-is-held-despite-a-retained-control-label
+  (with-imported
+    (fn [{:keys [call conn parent stamp] :as environment}]
+      (c2! environment)
+      (let [client (str (random-uuid))
+            prepared (call :prepare {:client-id client :expected-target-stamp (str stamp)})
+            row (first (pin-rows @conn))]
+        (is (= :retained (get-in prepared [:base-retention :status])))
+        (call :discard {:client-id client})
+        (gc-roots/release! @parent (:github.pin/id row) {:sync? true})
+        (with-redefs [gc-roots/pin! (fn [& _] (throw (AssertionError. "Must not recreate a missing root")))]
+          (let [ready (call :prepare {:client-id (str (random-uuid)) :expected-target-stamp (str stamp)})]
+            (is (= :ready (:status ready)))
+            (is (= :held (get-in ready [:base-retention :status])))))
+        (is (= 1 (count (pin-rows @conn))))))))

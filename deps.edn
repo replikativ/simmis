@@ -326,10 +326,12 @@
         ;; 0.1.377 retains failed construction cleanup for retry, scopes SCI
         ;; allocation metering to the actual evaluator, and bounds model
         ;; response opening. Allocation checkpoints avoid reflection overhead.
+        ;; 0.1.378 adds the immutable HOST boot prohibition on managed GC
+        ;; used while retaining exact Git integration bases.
         ;; It aligns SCI .8 and Spindel .150 with this UI.
         ;; Change dependencies only in a fresh runtime. Alpha stores require
         ;; classified wallets; no legacy wallet migration is implied.
-        org.replikativ/dvergr {:mvn/version "0.1.377"
+        org.replikativ/dvergr {:mvn/version "0.1.378"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.

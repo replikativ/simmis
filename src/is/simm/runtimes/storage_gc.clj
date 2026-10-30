@@ -1,6 +1,11 @@
 (ns is.simm.runtimes.storage-gc
   "Periodic storage GC across every persistent store.
 
+   The web HOST now installs a permanent managed-GC prohibition before public
+   admission for Git-base retention. It fails startup if this optional loop is
+   configured on. The loop below remains available to embeddings that do not
+   install that profile; it cannot override the native HOST prohibition.
+
    Datahike's index is immutable: every transaction writes new index-node blobs
    and leaves the superseded ones orphaned, reclaimed ONLY by an explicit,
    offline GC that never runs automatically. Without this the stores grow
@@ -113,6 +118,17 @@
                            "Without that fix an Error in the mark can make the sweep delete live data.")
                  :data {:datahike-version v
                         :required datahike-fail-closed-gc-version}}))))
+
+(defn install-git-retention-profile!
+  "Install in a fresh JVM before exposing the server. Git base retention uses
+   durable roots AND excludes all managed collection until coordinated GC is
+   supported. Direct/operator and other-process collectors are outside this
+   profile. A conflicting enabled configuration fails startup, not silently."
+  []
+  (when (enabled?)
+    (throw (ex-info "Git base retention requires storage GC to remain disabled"
+                    {:type ::incompatible-gc-profile})))
+  (srooms/prohibit-storage-gc! ::git-retained-bases))
 
 ;; ---------------------------------------------------------------------------
 ;; One sweep
