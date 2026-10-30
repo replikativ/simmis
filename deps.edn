@@ -255,7 +255,7 @@
         ;; reviewed sync binds advance! to the exact displayed checkpoint.
         ;; 0.1.40 preserves whitespace and refuses invalid UTF-8 in content
         ;; merges, and fixes overlapping diff3 regions (#34–36).
-        org.replikativ/geschichte {:mvn/version "0.1.41"}
+        org.replikativ/geschichte {:mvn/version "0.1.42"}
         ;; Datahike's bundled secondary-index adapter uses
         ;; scriptum.core/warm!, introduced before this release.
         org.replikativ/scriptum {:mvn/version "0.1.32"}

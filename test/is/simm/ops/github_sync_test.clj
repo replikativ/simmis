@@ -3,6 +3,7 @@
             [datahike.api :as d]
             [datahike.gc-roots :as gc-roots]
             [datahike.versioning :as versioning]
+            [dvergr.artifact :as artifact]
             [dvergr.discourse :as discourse]
             [dvergr.room.registry :as registry]
             [dvergr.system.rooms :as native]
@@ -217,16 +218,16 @@
             transact @#'d/transact advance @#'workspace/advance!
             lost? (atom false) advances (atom 0)
             result (with-redefs [d/transact
-                                (fn [target tx & args]
-                                  (let [result (apply transact target tx args)]
-                                    (when (and (identical? conn target)
-                                               (= :applied (:github.sync/state
-                                                            (journal/sync-in @conn (journal/request-id creator room-id client))))
-                                               (compare-and-set! lost? false true))
-                                      (throw (ex-info "Lost control outcome ACK" {})))
-                                    result))
-                                workspace/advance!
-                                (fn [& args] (swap! advances inc) (apply advance args))]
+                                 (fn [target tx & args]
+                                   (let [result (apply transact target tx args)]
+                                     (when (and (identical? conn target)
+                                                (= :applied (:github.sync/state
+                                                             (journal/sync-in @conn (journal/request-id creator room-id client))))
+                                                (compare-and-set! lost? false true))
+                                       (throw (ex-info "Lost control outcome ACK" {})))
+                                     result))
+                                 workspace/advance!
+                                 (fn [& args] (swap! advances inc) (apply advance args))]
                      (call :apply {:client-id (str client) :ready-id (:ready-id ready)}))
             row (journal/sync-in @conn (journal/request-id creator room-id client))
             cursor (integrations/current-in @conn room-id)]
@@ -364,7 +365,6 @@
           (is (nil? (journal/active-in @conn room-id)))
           (is (nil? (repo/read parent "reports/new.md"))))))))
 
-
 (defn- pin-rows [db]
   (mapv #(d/pull db '[*] (:e %)) (d/datoms db :avet :github.pin/id)))
 
@@ -389,8 +389,8 @@
       (let [wire {:client-id (str (random-uuid)) :expected-target-stamp (str stamp)}
             pin! gc-roots/pin! calls (atom 0)]
         (with-redefs [gc-roots/pin! (fn [& args]
-                                    (swap! calls inc) (apply pin! args)
-                                    (throw (ex-info "Lost native pin ACK" {})))]
+                                      (swap! calls inc) (apply pin! args)
+                                      (throw (ex-info "Lost native pin ACK" {})))]
           (let [ready (call :prepare wire)]
             (is (= :ready (:status ready)))
             (is (= :held (get-in ready [:base-retention :status])))
@@ -459,3 +459,24 @@
             (is (= :ready (:status ready)))
             (is (= :held (get-in ready [:base-retention :status])))))
         (is (= 1 (count (pin-rows @conn))))))))
+
+(deftest every-legacy-fast-forward-entrypoint-refuses-an-incoming-preparation
+  (with-imported
+    (fn [{:keys [call conn creator room-id stamp]}]
+      (let [client (random-uuid) id (journal/request-id creator room-id client)
+            binding {:id id :by creator :room room-id :client-id client :claim (random-uuid)}
+            ref (artifact/publish-value! (artifact/datahike-store conn) {:kind :incoming} identity)]
+        (d/transact conn [[:db.fn/call journal/prepare-tx binding ref (random-uuid) :incoming]])
+        (let [before (journal/sync-in @conn id)]
+          (doseq [[operation request]
+                  [[:prepare {:client-id (str client) :expected-target-stamp (str stamp)}]
+                   [:observe {:client-id (str client)}]
+                   [:recover {:client-id (str client)}]
+                   [:discard {:client-id (str client)}]
+                   [:apply {:client-id (str client) :ready-id (str (random-uuid))}]
+                   [:retire {:sync-id (str id)}]]]
+            (is (= :different-operation
+                   (try (call operation request) nil
+                        (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))
+                (str operation)))
+          (is (= before (journal/sync-in @conn id))))))))

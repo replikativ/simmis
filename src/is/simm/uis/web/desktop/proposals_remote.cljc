@@ -12,6 +12,7 @@
             [is.simm.model.forkset :as fs]
             #?(:clj [org.replikativ.spindel.blocking :as blocking])
             #?(:clj [is.simm.ops.proposals :as props])
+            #?(:clj [is.simm.model.github-proposals :as git-proposals])
             #?(:clj [is.simm.ops.owned-reads :as owned-reads])
             #?(:clj [org.replikativ.spindel.engine.core :as ec])
             #?(:clj [is.simm.ops.semantic-diff :as sdiff])
@@ -190,7 +191,8 @@
                      ;; leaving refuse as the only informed move.
                                 :conflicts (vec (mapcat
                                                  (fn [f]
-                                                   (when (and (= :repo (:proposal.fork/system-type f))
+                                                   (when (and (not (git-proposals/marked? p))
+                                                              (= :repo (:proposal.fork/system-type f))
                                                               (nil? (:proposal.fork/status f)))
                                                      (map #(assoc % :branch (:proposal.fork/branch f)
                                                                   :scope (str (:proposal.fork/scope f)))
@@ -392,7 +394,7 @@
               (binding [ec/*execution-context* (:execution-ctx host)]
                 (owned-reads/current-host-control-db! host)
                 (props/decide-in! (get-in host [:is.simm.ops.owned-reads/owner :control-conn])
-                                 id party action {:note note :body body})))))))))
+                                  id party action {:note note :body body})))))))))
 
 (defn-spin-remote request-changes!
   [server-id proposal-id-str body fork-branch]
