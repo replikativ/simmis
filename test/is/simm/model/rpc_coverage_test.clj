@@ -66,8 +66,13 @@
                            (filter #(and (symbol? %) (str/starts-with? (str %) "is.simm.uis.web.desktop.")
                                          (str/ends-with? (str %) "-remote")))) form)]
       (is (seq boot))
-      (is (empty? (set/difference boot (set registering-namespaces)))
-          "RPC coverage must explicitly load every remote handler required by server boot"))))
+      ;; Both directions matter: a handler loaded only by tests must not hide
+      ;; a missing production startup edge. One complete contract replaces the
+      ;; repeated per-feature static require tests.
+      (is (= boot (set registering-namespaces))
+          (str "Boot and RPC coverage must name the same handlers; missing from boot: "
+               (set/difference (set registering-namespaces) boot)
+               "; missing from coverage: " (set/difference boot (set registering-namespaces)))))))
 
 (deftest every-registered-rpc-has-a-policy
   (load-all!)

@@ -1,5 +1,5 @@
 (ns is.simm.authority.page-view-test
-  (:require [clojure.java.io :as io]
+  (:require
             [clojure.test :refer [deftest is]]
             [is.simm.authority.world :as world]
             [is.simm.ops.owned-saved-views :as views]
@@ -7,13 +7,6 @@
             [is.simm.runtimes.application-ops :as application]
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [is.simm.uis.web.desktop.saved-view-remote :as remote]))
-
-(deftest production-entry-registers-the-fixed-page-view-read
-  (let [form (binding [*read-eval* false]
-               (with-open [reader (java.io.PushbackReader. (io/reader (io/resource "is/simm/runtimes/web.clj")))]
-                 (read reader)))
-        requires (some #(when (and (seq? %) (= :require (first %))) (rest %)) (drop 2 form))]
-    (is (some #(= 'is.simm.uis.web.desktop.saved-view-remote (if (vector? %) (first %) %)) requires))))
 
 (deftest inbound-page-views-use-current-read-authority-and-original-app
   (@#'fixture/with-fixture

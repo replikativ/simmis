@@ -8,6 +8,7 @@
             [geschichte.query :as query]
             [geschichte.repo :as repo]
             [is.simm.documents.space :as space]
+            [is.simm.fixtures.accounting :as accounting-fixture]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.owned-mcp-test :as fixture]
             [is.simm.ops.owned-reads :as reads]
@@ -34,7 +35,7 @@
     (let [conn (d/connect cfg)]
       ;; Retain the acquisition before either fallible initialization step.
       (swap! opened conj conn)
-      (space/provision! conn)
+      (accounting-fixture/with-schema-only #(space/provision! conn))
       (binding [ec/*execution-context* (:ctx room)]
         (ygg/register! (gy/create conn {:system-name (str "canonical-install-" (random-uuid))})))
       conn)))

@@ -10,6 +10,7 @@
             [is.simm.documents.files :as files]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.space :as space]
+            [is.simm.fixtures.accounting :as accounting-fixture]
             [is.simm.documents.view :as view]
             [is.simm.agents.room-agents :as rooms]
             [is.simm.authority.world :as world]
@@ -36,7 +37,7 @@
                           (swap! configs conj cfg)
                           (d/create-database cfg)
                           (let [conn (d/connect cfg)]
-                            (space/provision! conn)
+                            (accounting-fixture/with-schema-only #(space/provision! conn))
                             (binding [ec/*execution-context* (:ctx room)]
                               (ygg/register! (gy/create conn {:system-name (str "canonical-fixture-" (random-uuid))})))
                             conn))

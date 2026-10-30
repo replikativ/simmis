@@ -10,6 +10,7 @@
             [is.simm.documents.files :as files]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.space :as space]
+            [is.simm.fixtures.accounting :as accounting-fixture]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.owned-charts :as charts]
             [is.simm.ops.owned-mcp-test :as fixture]
@@ -28,7 +29,7 @@
                       (let [cfg (assoc workspace/repository-options :store {:backend :memory :id (random-uuid)})]
                         (d/create-database cfg)
                         (let [conn (d/connect cfg)]
-                          (space/provision! conn)
+                          (accounting-fixture/with-schema-only #(space/provision! conn))
                           (binding [ec/*execution-context* (:ctx room)]
                             (ygg/register! (gy/create conn {:system-name (str "chart-fixture-" (random-uuid))})))
                           conn))

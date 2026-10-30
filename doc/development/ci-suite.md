@@ -43,3 +43,26 @@ The duplicated GitHub Actions CI workflow is retired. When landing this change,
 replace legacy required checks such as `test-and-build` with the four Circle
 contexts and update any merge watcher that names the old checks. Do not create
 an unconditional-success compatibility job or bypass the primary checks.
+
+## Fixture boundaries
+
+`is.simm.fixtures.accounting/with-schema-only` is a deliberately synthetic
+business-book setup for document and Git service tests. It installs the real
+mandatory Kontor schema and fresh connection governors, while omitting the
+business-accounting starter book and category-S ledger projections. It does
+not replace the native conserved-resource kernel, wallets, Room creation,
+repository ownership, Git transport protocol or operation under test. The
+substitution ends when synchronous fixture construction returns.
+
+Document projection, chart, page-table, typed-property and workflow-source
+cases use this smaller setup where no business posting is exercised. Git
+sync/push/policy cases also retain fresh native/control owners. The positive
+push case explicitly opts into full accounting, while canonical provisioning,
+profile validation, business-accounting, resource-kernel and reflected-morphism
+tests retain the complete production installers. Synthetic tests do not claim
+to establish the complete accounting defaults or ledger category projection.
+
+Repeated per-feature source checks for cold RPC registration are consolidated
+into the central boot/registry contract. It checks both directions, so a
+handler loaded by another test cannot conceal its absence from production
+startup. Actual inbound authority, captured-owner and wire-error tests remain.

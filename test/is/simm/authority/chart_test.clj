@@ -1,5 +1,5 @@
 (ns is.simm.authority.chart-test
-  (:require [clojure.java.io :as io]
+  (:require
             [clojure.test :refer [deftest is]]
             [is.simm.authority.world :as world]
             [is.simm.ops.owned-charts :as charts]
@@ -7,13 +7,6 @@
             [is.simm.runtimes.application-ops :as application]
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [is.simm.uis.web.desktop.chart-remote :as remote]))
-
-(deftest cold-server-startup-registers-the-fixed-chart-read
-  (let [form (binding [*read-eval* false]
-               (with-open [reader (java.io.PushbackReader. (io/reader (io/resource "is/simm/runtimes/web.clj")))]
-                 (read reader)))
-        requires (some #(when (and (seq? %) (= :require (first %))) (rest %)) (drop 2 form))]
-    (is (some #(= 'is.simm.uis.web.desktop.chart-remote (if (vector? %) (first %) %)) requires))))
 
 (deftest actual-inbound-is-read-only-and-uses-captured-human-and-owner
   (@#'fixture/with-fixture

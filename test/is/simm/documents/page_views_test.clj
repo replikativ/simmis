@@ -7,6 +7,7 @@
             [is.simm.documents.page-views :as views]
             [is.simm.documents.saved-view-spec :as spec]
             [is.simm.documents.space :as space]
+            [is.simm.fixtures.accounting :as accounting-fixture]
             [is.simm.documents.view :as projection]
             [is.simm.model.crud :as crud]))
 
@@ -25,7 +26,7 @@
     (d/create-database cfg)
     (let [conn (d/connect cfg)]
       (try
-        (space/provision! conn)
+        (accounting-fixture/with-schema-only #(space/provision! conn))
         (let [company (crud/create-type! conn {:name "ViewCompany"})
               research (crud/create-type! conn {:name "ViewResearch"})
               revenue (crud/create-morphism! conn {:name "S/ViewCompany/revenue"
