@@ -27,6 +27,19 @@ numbers predate detailed instrumentation and do not establish the source of
 Circle's slower execution compared with GitHub. Namespace count currently
 controls partitioning, which explains part of the critical-path imbalance.
 
-The cleanup acceptance target is approximately 20 minutes of aggregate backend
-suite work and no more than 10 minutes for a shard. Report aggregate work and
-longest shard separately; do not treat four-way wall time as serial suite cost.
+The cleanup acceptance target is approximately 20 minutes of aggregate test
+execution work across backend shards, frontend, worker and Python jobs, and no
+more than 10 minutes for a backend shard. Report each component, their sum, and
+the longest shard separately; do not treat parallel wall time as serial cost.
+
+## Required checks
+
+Circle's `test`, `helpers`, `frontend` and `worker-package` jobs are the routine
+PR gates. `worker-package` builds and cold-starts the credential-free worker jar;
+the ordinary helper suite skips these checks without the explicit jar setting.
+Main's uberjar build waits for all four gates. No job deploys the application.
+
+The duplicated GitHub Actions CI workflow is retired. When landing this change,
+replace legacy required checks such as `test-and-build` with the four Circle
+contexts and update any merge watcher that names the old checks. Do not create
+an unconditional-success compatibility job or bypass the primary checks.

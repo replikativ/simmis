@@ -62,6 +62,33 @@ jobs:
           name: Test private MCP and worker helpers
           command: python3 -m unittest discover -s test/scripts
 
+  worker-package:
+    docker:
+      - image: cimg/clojure:1.12.1-openjdk-21.0-node
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - deps-v1-{{ checksum "deps.edn" }}
+            - deps-v1-
+      - run:
+          name: Prepare worker dependencies and build the dedicated runtime
+          command: |
+            clojure -J-Xmx1g -X:deps prep
+            clojure -J-Xmx1g -T:build worker
+          no_output_timeout: 15m
+      - run:
+          name: Select the configured JDK for the fixed local bootstrap
+          command: |
+            configured_java="$(realpath "$(command -v java)")"
+            sudo update-alternatives --install /usr/bin/java java "$configured_java" 100
+            sudo update-alternatives --set java "$configured_java"
+            /usr/bin/java -version
+      - run:
+          name: Cold credential-free packaged runtime preflight
+          command: SIMMIS_WORKER_JAR="$(realpath target/simmis-*-worker.jar)" python3 -m unittest discover -s test/scripts -p test_worker_runtime_smoke.py
+          no_output_timeout: 5m
+
   frontend:
     docker:
       - image: cimg/clojure:1.12.1-openjdk-21.0-node
@@ -126,11 +153,13 @@ workflows:
     jobs:
       - test
       - helpers
+      - worker-package
       - frontend
       - uberjar:
           requires:
             - test
             - helpers
+            - worker-package
             - frontend
           filters:
             branches:
