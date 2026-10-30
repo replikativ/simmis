@@ -734,6 +734,7 @@
               (when-let [c (connection)]
                 (ensure-sync! c)))]
       {:owner key :room-id room :state state :change change! :edit edited! :folder folder! :open #(open! % false) :reload #(open! % true)
+       :settings-open #(update! assoc :settings-open? (boolean %))
        :observe-receipt-context
        (fn [context]
          (when (not= context (:receipt-context (state)))

@@ -236,6 +236,7 @@
    "observe-workspace-creation!" [(c :none AUTH)]
    "load-github-memory-sync!" [(c :room MEMBERS)]
    "github-proposal-operation!" [(c :room OWNER)]
+   "github-credential-operation!" [(c :room OWNER)]
    "sync-github-memory!"      [(c :room OWNER)]
    "retire-github-memory-sync!" [(c :room OWNER)]
    "load-rooms!"             [(c :owner-self OWNER)]
@@ -283,6 +284,7 @@
    "load-feed!"              [(c :none AUTH)]
    "set-task-status!"        [(c :kb-scope MEMBERS)]
    ;; --- settings (own) -------------------------------------------------------
+   "personal-connection-operation!" [(c :none AUTH)]
    "load-settings!"          [(c :owner-self OWNER)]
    "save-env-var!"           [(c :owner-self OWNER)]
    "delete-env-var!"         [(c :owner-self OWNER)]

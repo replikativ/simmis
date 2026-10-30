@@ -90,10 +90,7 @@
     (refuse! :unverified-base))
   expected)
 
-(defn advance-sync-tx
-  "Compose with a POSITIVE native sync outcome in the same control writer.
-   An observed desired state after an unknown ACK is not such an outcome.
-   Unchanged upstream heads leave the cursor and its proof unchanged."
+(defn- advance-cursor-tx
   [db expected sync-id before-head before-oid head oid proof-ref proof-id]
   (when-not (and (every? uuid? [sync-id head proof-ref proof-id]) (oid? oid))
     (refuse! :invalid-sync))
@@ -106,3 +103,19 @@
       :github.integration/sync sync-id
       :github.integration/previous
       (hasch/uuid [:simmis/github-integration-cursor-v1 (dissoc expected :db/id)])}]))
+
+(defn advance-sync-tx
+  "Compose with a POSITIVE native sync outcome in the same control writer.
+   An observed desired state after an unknown ACK is not such an outcome.
+   Unchanged upstream heads leave the cursor and its proof unchanged."
+  [db expected sync-id before-head before-oid head oid proof-ref proof-id]
+  (advance-cursor-tx db expected sync-id before-head before-oid head oid proof-ref proof-id))
+
+(defn observe-upstream-tx
+  "Compose with a NEW positively verified remote-ref observation and its
+   retained local Git identity, never an inference from matching local files.
+   The HOST authenticates that observation; this does not certify the result
+   of a historical send whose acknowledgement was lost."
+  [db expected sync-id head oid observation-ref observation-id]
+  (advance-cursor-tx db expected sync-id (:github.integration/head expected)
+                     (:github.integration/oid expected) head oid observation-ref observation-id))

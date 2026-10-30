@@ -8,6 +8,7 @@
             [is.simm.documents.github-source :as github]
             [is.simm.model.access :as access]
             [is.simm.model.github-sync :as github-sync]
+            [is.simm.model.github-integrations :as integrations]
             [is.simm.ops.owned-files :as owned-files]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-workspace :as owned]
@@ -20,7 +21,10 @@
         ref (:room/github-ref row)
         import-head (:room/github-import-head row)
         registry-system (:system/id (:room/github-repository row))
-        active (when repository (github-sync/active-in control (:room-id bound)))]
+        active (when repository (github-sync/active-in control (:room-id bound)))
+        cursor (when repository (integrations/current-in control (:room-id bound)))
+        proof (when cursor (first (d/datoms control :eavt (:db/id cursor) :github.integration/proof)))
+        at (when proof (:db/txInstant (d/entity control (:tx proof))))]
     (when (and repository
                (= repository (try (github/repository! repository) (catch Exception _ nil)))
                (string? ref) (<= 12 (count ref) 512)
@@ -28,8 +32,12 @@
       (cond-> {:kind :github :repository repository :ref ref :import-head import-head
                :available? (and (= registry-system (get-in bound [:target :registry-system]))
                                 (= ref (query/current-ref (:db bound))))}
-        active (assoc :sync-active? true)
-        (and active (access/can? control (:party bound) :admin {:room (:room-id bound)}))
+        (and (inst? at) (:github.integration/oid cursor))
+        (assoc :last-sync {:at (str (.toInstant ^java.util.Date at)) :git-oid (:github.integration/oid cursor)})
+        active (assoc :sync-active? true :sync-kind (github-sync/kind active))
+        (and active (or (not= :push (github-sync/kind active))
+                        (#{:creating :retaining :ready :pushed :rejected :observed} (:github.sync/state active)))
+             (access/can? control (:party bound) :admin {:room (:room-id bound)}))
         (assoc :sync-id (str (:github.sync/id active)) :can-retire? true)
         (= (:party bound) (:github.sync/by active))
         (assoc :sync-client-id (str (:github.sync/client-id active)))))))

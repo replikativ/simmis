@@ -12,6 +12,7 @@
             [is.simm.uis.web.desktop.views.model-picker :as model-picker]
             [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [is.simm.uis.web.desktop.settings-remote :as sr])
+            #?(:cljs [is.simm.uis.web.desktop.views.personal-connections :as personal-connections])
             #?(:cljs [is.simm.uis.web.desktop.mail-remote :as mail-remote])
             #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.uis.web.desktop.message-notify-sync :as mns])
@@ -82,6 +83,8 @@
             (el/label {} "Role")
             (el/div {:class "settings-value settings-role-badge"}
               (if (= (:party/role profile) :admin) "Admin" "User"))))
+
+        #?(:cljs (personal-connections/view (:personal-connections-state data)) :clj nil)
 
         ;; --- Mail knowledge sources ---
         (el/div {:class "settings-section"}

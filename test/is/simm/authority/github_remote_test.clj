@@ -11,18 +11,21 @@
           capture (fn [party room operation supplied]
                     (swap! calls conj [party room operation supplied])
                     (fn [] {:status :not-observed}))]
-      (with-redefs [service/prepare capture decisions/prepare capture]
+      (with-redefs [service/prepare capture service/prepare-credential capture decisions/prepare capture]
         (doseq [[method operation allowed] [["load-github-memory-sync!" :observe #{:owner :member}]
                                             ["sync-github-memory!" :prepare #{:owner}]
                                             ["sync-github-memory!" :prepare-incoming #{:owner}]
                                             ["github-proposal-operation!" :review #{:owner}]
                                             ["github-proposal-operation!" :accept #{:owner}]
                                             ["github-proposal-operation!" :dismiss #{:owner}]
+                                            ["github-credential-operation!" :status #{:owner}]
+                                            ["github-credential-operation!" :save #{:owner}]
+                                            ["github-credential-operation!" :revoke #{:owner}]
                                             ["retire-github-memory-sync!" :retire #{:owner}]]]
           (doseq [kind [:owner :member :non-member :admin :anon]]
             (reset! calls [])
             (let [args (cond-> {:room-id-str (str (:room w)) :request request}
-                         (#{"sync-github-memory!" "github-proposal-operation!"} method) (assoc :operation operation))
+                         (#{"sync-github-memory!" "github-proposal-operation!" "github-credential-operation!"} method) (assoc :operation operation))
                   reply (world/inbound! (world/principal w kind) method args)]
               (if (allowed kind)
                 (do (is (= :not-observed (get-in reply [:result :status])))

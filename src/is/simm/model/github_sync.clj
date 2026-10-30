@@ -55,7 +55,7 @@
   ([db binding preparation-ref preparation-id]
    (prepare-tx db binding preparation-ref preparation-id :fast-forward))
   ([db binding preparation-ref preparation-id operation-kind]
-   (when-not (#{:fast-forward :incoming} operation-kind) (refuse! :invalid-kind))
+   (when-not (#{:fast-forward :incoming :push} operation-kind) (refuse! :invalid-kind))
    (let [identity (binding! binding)
          immutable (assoc (dissoc identity :github.sync/claim)
                           :github.sync/preparation preparation-ref :github.sync/preparation-id preparation-id)]
@@ -67,7 +67,7 @@
        (do (when (active-in db (:room binding)) (refuse! :room-busy))
            [(cond-> (merge {:db/id -1 :github.sync/state :creating :github.sync/active-room (:room binding)}
                            identity immutable)
-              (= :incoming operation-kind) (assoc :github.sync/kind :incoming))])))))
+              (not= :fast-forward operation-kind) (assoc :github.sync/kind operation-kind))])))))
 
 (def ^:private next-states
   {:creating #{:allocated :held}
@@ -101,6 +101,9 @@
         id-key (when slot (keyword "github.sync" (str (name slot) "-id")))
         receipt (if slot {ref-key ref id-key receipt-id} {})]
     (when-not (and row (= expected row)) (refuse! :stale-observation))
+    ;; Push shares identity and the exclusive pending-room slot, but its
+    ;; separate model owns its transition graph and publication receipts.
+    (when (= :push (kind row)) (refuse! :wrong-kind))
     (when (or (and (= :incoming (kind row)) (#{:applying :applied :satisfied-observed} to-state))
               (and (not= :incoming (kind row)) (#{:retaining :filing :filed} to-state)))
       (refuse! :wrong-kind))
