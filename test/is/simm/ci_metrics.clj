@@ -1,7 +1,8 @@
 (ns is.simm.ci-metrics
   "CI artifacts built from Kaocha's profiling measurements. Namespace residual
    includes :once fixtures and runner overhead, not just application work."
-  (:require [clojure.java.io :as io]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [kaocha.plugin :refer [defplugin]]
             [kaocha.plugin.profiling :as profiling]
             [kaocha.testable :as testable])
@@ -56,6 +57,19 @@
     (let [loaded (resources)]
       (write! "-progress.edn" {:phase :loaded :resources loaded} true)
       (assoc plan ::loaded loaded)))
+  (pre-run [plan]
+    (let [selected (->> (testable/test-seq plan)
+                        (filter #(= :kaocha.type/var (:kaocha.testable/type %)))
+                        (map :kaocha.testable/id) sort vec)]
+      (write! "-selection.edn" {:tests selected} false)
+      ;; Local focused probes can require an exact manifest before executing
+      ;; anything, guarding against misspelled/ignored Kaocha filter options.
+      (when-let [path (System/getenv "SIMMIS_CI_EXPECTED_TESTS")]
+        (let [expected (vec (sort (edn/read-string (slurp path))))]
+          (when-not (= expected selected)
+            (throw (ex-info "Focused test selection differs from the expected manifest"
+                            {:expected expected :selected selected}))))))
+    plan)
   (pre-test [node _]
     (cond-> node
       (= :kaocha.type/ns (:kaocha.testable/type node))

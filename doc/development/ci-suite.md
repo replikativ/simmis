@@ -66,3 +66,18 @@ Repeated per-feature source checks for cold RPC registration are consolidated
 into the central boot/registry contract. It checks both directions, so a
 handler loaded by another test cannot conceal its absence from production
 startup. Actual inbound authority, captured-owner and wire-error tests remain.
+
+The actual inbound chart, page-table, block-reference and backlink endpoints
+share one read-only authority fixture. Each endpoint still exercises its real
+wire dispatch, denial matrix, result and queued closure. The owner is fenced
+only after all four positive paths; every old closure must refuse without
+calling its adapter under a replacement App. Endpoint error sanitization tests
+remain separate and cheap.
+
+Focused probes can set `SIMMIS_CI_EXPECTED_TESTS` to an EDN file of exact
+qualified test keywords. The metrics plugin writes the resolved selection and
+refuses a mismatch before executing tests. Use `:kaocha.filter/focus`, not the
+unrecognized top-level `:focus` shorthand. Run local native checks under a
+bounded transient systemd unit with `MemoryMax`, `MemorySwapMax=0` and
+`KillMode=control-group`; verify `MainPID=0` after stopping it. Shell interruption
+alone is not evidence that a Java child has physically exited.

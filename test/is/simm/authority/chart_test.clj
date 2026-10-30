@@ -1,37 +1,8 @@
 (ns is.simm.authority.chart-test
-  (:require
-            [clojure.test :refer [deftest is]]
-            [is.simm.authority.world :as world]
+  (:require [clojure.test :refer [deftest is]]
             [is.simm.ops.owned-charts :as charts]
-            [is.simm.ops.owned-charts-test :as fixture]
             [is.simm.runtimes.application-ops :as application]
-            [is.simm.runtimes.operation-lifetime :as lifetime]
             [is.simm.uis.web.desktop.chart-remote :as remote]))
-
-(deftest actual-inbound-is-read-only-and-uses-captured-human-and-owner
-  (@#'fixture/with-fixture
-   (fn [{:keys [host owner w] :as data}]
-     (let [request (@#'fixture/request data)]
-       (with-redefs-fn {#'application/installation (atom {:host host :owner owner})}
-         #(do
-            (doseq [kind [:non-member :anon :admin]]
-              (is (world/refused? (world/inbound! (world/principal w kind) "load-memory-chart!"
-                                                 {:room-id-str (str (:room w)) :request request}))))
-            (let [result (:result (world/inbound! (world/principal w :member) "load-memory-chart!"
-                                                 {:room-id-str (str (:room w)) :request request}))]
-              (is (= :ready (:status result)))
-              (is (= (:expected-target-stamp request) (:target-stamp result))))
-            (let [queued (remote/prepare-operation (:member w) (str (:room w)) request)
-                  replacement (lifetime/create) calls (atom 0)]
-              (lifetime/open! replacement)
-              (try
-                (lifetime/fence! owner)
-                (with-redefs-fn {#'application/installation (atom {:host host :owner replacement})
-                                #'charts/read! (fn [& _] (swap! calls inc))}
-                  (fn []
-                    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"This saved chart is unavailable" (queued)))
-                    (is (zero? @calls))))
-                (finally (lifetime/fence! replacement) (lifetime/join! replacement 5000))))))))))
 
 (defn- safe-error [f]
   (try (f) nil (catch clojure.lang.ExceptionInfo e
