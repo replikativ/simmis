@@ -6,8 +6,9 @@ capture their original App before queueing, then enter its lifetime on the actua
 worker with normal human authorization. The existing App-owned scheduler shares
 the same discovery stream; no second scheduler or discovery service is installed.
 
-The version-4 wiki starter explicitly declares batching in its ordinary source;
-versions 1–3 retain their frozen whole-selection inputs. Installing or upgrading
+The version-4 wiki starter introduced batching in its ordinary source; version 5
+keeps it and reads wiki context from a retained native checkpoint. Versions 1–3
+retain their frozen whole-selection inputs. Installing or upgrading
 that source creates no streams,
 allowances or enabled schedules. Discovery itself performs no model dispatch,
 checker evaluation, source processing, or wiki publication. Recovery and retirement

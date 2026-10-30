@@ -45,6 +45,13 @@ inputs can be skipped by existing admission before submitting a funded Run.
 Chat messages are not collected directly; they need an explicit evidence-file
 ingestion step. An overview is ordinary Markdown, not a new schema entity.
 
+Use **Save to Memory** on a human message to inspect and save an exact evidence
+snapshot under `inbox/conversations/`. The saved confirmation links to **Review
+knowledge update**, the existing room-scoped maintainer setup. Opening it starts
+no Run, grants no allowance and enables no schedule. The workflow must exist and
+its current setup still needs explicit confirmation. Imported Git repositories
+are not silently modified to install a starter.
+
 Capture inputs are the Markdown observation notes. Their relative image and
 recording links and exact asset identities remain in the source, while binary
 media stays outside the frozen model inputs. A visual description is sampled
@@ -109,6 +116,16 @@ enabled by the starter. A completed Run is not a claim of factual correctness.
 
 ## Benchmarks are explicit
 
+`examples/workflows/wiki-maintenance-checkpoint-eval-v5/` is a separate reusable
+evaluation bundle. Its six live program files match the installed version 5
+starter exactly. Synthetic cases cover mixed imported notes, human conversation
+and capture observations, capture uncertainty, and already incorporated evidence.
+Gold and calibration are evaluator-held; the bundle grants no execution resources.
+Calibration and native preparation are checked by the existing checkpoint test.
+These are mechanical checks, not fresh model-quality results. Use this bundle
+for a finite native subscription benchmark, then deploy the ordinary live starter
+after reviewing its output. Never install synthetic fixtures into a real wiki.
+
 `checker.clj` is a benchmark-only mechanical regression checker. Ordinary manual
 and scheduled saved-workflow execution uses host completion and exact capture;
 it does **not** execute the authored checker. Do not label every scheduled
@@ -134,6 +151,14 @@ requires an explicit new check; it is never silently retried. The version-2
 adoption journal retains the accepted review revision as immutable intent data.
 This digest is audit attribution, not a replayable historical snapshot or proof
 of factual correctness. Mixed-component Proposals remain review-only.
+
+Retained output inspection also extracts bounded Markdown citations. **Inspect
+cited sources** explicitly reads the original frozen manifest; only exact listed
+paths acquire links beside the proposed text. Code, comments and unused link
+definitions are excluded. Missing/unavailable sources never fall back to today's
+Memory. Citation parsing failures are visible without hiding the full output.
+This does not establish historical citation provenance for arbitrary manually
+authored or already adopted wiki pages.
 
 An uncertain completion offers **Check recorded completion**, a separately
 authorized historical receipt reconciliation. It does not publish again or

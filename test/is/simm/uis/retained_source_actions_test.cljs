@@ -4,6 +4,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.dom.browser :as browser]
             [org.replikativ.spindel.dom.render :as render]
+            [is.simm.documents.links :as links]
             [is.simm.uis.retained-sources-test :as fixture]
             [is.simm.uis.web.desktop.connection-epoch :as connection]
             [is.simm.uis.web.desktop.runtime :as runtime]
@@ -12,6 +13,34 @@
             [is.simm.uis.web.desktop.proposals-remote :as rpc]
             [is.simm.uis.web.desktop.views.proposals :as proposals])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]))
+
+(deftest proposed-citations-link-only-to-manifest-listed-frozen-sources
+  (let [ctx (context/create-execution-context) container (.createElement js/document "div")
+        pid "1cce4d07-3c56-4678-b348-1af7eb2d49ed" scope "71ae5b64-4173-48d5-a3ad-17b3021cadc3"
+        path "/in/knowledge/sources/inbox/note.md" missing "/in/knowledge/sources/inbox/missing.md"
+        citations {:status :parsed :paths [path missing] :truncated? false}
+        calls (atom [])]
+    (try
+      (binding [ec/*execution-context* ctx]
+        (with-redefs [proposals/load-proposal-sources! (fn [p s] (swap! calls conj [p s]))]
+          (let [release (browser/mount! container (@#'proposals/cited-sources-view pid scope citations nil))]
+            (try
+              (is (empty? @calls) "Rendering never loads a manifest automatically")
+              (is (nil? (.querySelector container "a")))
+              (.click (.querySelector container "button"))
+              (is (= [[pid scope]] @calls))
+              (finally (browser/unmount! release))))
+          (let [release (browser/mount! container
+                          (@#'proposals/cited-sources-view pid scope citations
+                           {:status :ready :listing {:files [{:path path}]}}))]
+            (try
+              (is (= 1 (.-length (.querySelectorAll container "a"))))
+              (is (= (links/source-route {:proposal pid :component scope :path path})
+                     (.getAttribute (.querySelector container "a") "href")))
+              (is (.includes (.-textContent container) "not in the frozen source list"))
+              (is (= [[pid scope]] @calls))
+              (finally (browser/unmount! release))))))
+      (finally (context/stop-context! ctx)))))
 
 (defn with-state [resolved? f]
   (let [ctx (context/fork-context runtime/runtime) calls (atom [])

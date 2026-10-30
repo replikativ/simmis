@@ -958,7 +958,39 @@
                                         :unavailable "Review unavailable: check permissions, proposal state, and target compatibility.")))
                             (button "Check current workspace" :preview nil))))))
 
-(defn- retained-file-view [pid scope {:keys [path status]} state]
+(defn- frozen-source-link [pid scope path label]
+  (let [ctx #?(:cljs rtc/*execution-context* :clj nil)]
+    (el/a {:class "btn btn-secondary btn-sm"
+           :href (memory-links/source-route {:proposal pid :component scope :path path})
+           :title "Open the exact frozen source, not today's Memory"
+           :on-click #?(:cljs (fn [event]
+                                (when-not (or (.-ctrlKey event) (.-metaKey event) (.-shiftKey event) (.-altKey event))
+                                  (.preventDefault event)
+                                  (binding [rtc/*execution-context* ctx]
+                                    (refs/open! {:kind :proposal-source :proposal pid :component scope :path path}
+                                                {:new-tab? true}))))
+                        :clj nil)} label)))
+
+(defn- cited-sources-view [pid scope citations sources]
+  (when (and (= :parsed (:status citations)) (seq (:paths citations)))
+    (el/div {:class "proposal-cited-sources"}
+      (el/div {:class "proposal-note-line"} "Cited evidence — exact frozen sources")
+      (if (= :ready (:status sources))
+        (let [listed (set (map :path (get-in sources [:listing :files])))]
+          (for [path (:paths citations)]
+            (el/div {:key path}
+              (if (contains? listed path)
+                (frozen-source-link pid scope path (subs path (count "/in/knowledge/sources/")))
+                (el/span {:class "proposal-note-line"} (str path " · not in the frozen source list"))))))
+        (el/button {:class "btn btn-secondary btn-sm"
+                    :disabled (= :loading (:status sources))
+                    :on-click #?(:cljs (fn [_] (load-proposal-sources! pid scope)) :clj nil)}
+                   (case (:status sources) :loading "Checking frozen sources…"
+                                          :unavailable "Retry cited sources" "Inspect cited sources")))
+      (when (:truncated? citations)
+        (el/p {:class "proposal-note-line"} "Showing the first 64 distinct citations. Inspect the full output and frozen source list for more.")))))
+
+(defn- retained-file-view [pid scope {:keys [path status]} state sources]
   (el/div {:class "proposal-retained-file"}
           (el/div {:class "proposal-file"} (str (name status) " " path))
           (case (:status state)
@@ -968,6 +1000,10 @@
                            (el/pre {:class "proposal-retained-source"} (or (get-in state [:body :before]) "(file did not exist)"))
                            (el/div {:class "proposal-note-line"} "After — retained workflow output")
                            (el/pre {:class "proposal-retained-source"} (get-in state [:body :after]))
+                           (when (= :unavailable (get-in state [:body :source-citations :status]))
+                             (el/p {:class "proposal-note-line"}
+                                   "Citation links unavailable; inspect the full output and frozen source list."))
+                           (cited-sources-view pid scope (get-in state [:body :source-citations]) sources)
                            (el/button {:class "btn btn-ghost btn-sm"
                                        :on-click #?(:cljs (fn [_] (hide-retained-file! pid scope path)) :clj nil)}
                                       "Hide comparison"))
@@ -1096,7 +1132,8 @@
                        (retained-sources-view pid scope (get retained-sources scope))
                        (for [file files]
                          (el/div {:key (:path file)}
-                                 (retained-file-view pid scope file (get file-bodies [scope (:path file)])))))
+                                 (retained-file-view pid scope file (get file-bodies [scope (:path file)])
+                                                     (get retained-sources scope)))))
                (= :kb system-type) (for [[i pg] (map-indexed vector pages)]
                                      (el/div {:key (str i)} (page-diff-view pg)))
                (= :fs system-type) (for [[i f] (map-indexed vector files)]

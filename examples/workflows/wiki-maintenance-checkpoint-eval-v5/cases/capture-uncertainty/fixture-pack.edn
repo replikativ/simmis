@@ -1,0 +1,9 @@
+{:kind :dvergr/fixture-pack,
+ :version 1,
+ :files
+ {"/in/knowledge/manifest.edn"
+  "{:version 1, :repository #uuid \"89435992-078e-4620-bca3-89a239c96369\", :policy {:version 1, :trigger-roots [\"captures\" \"inbox\" \"transcripts\"], :context-roots [\"wiki\"], :exclude-prefixes []}, :trigger-id #uuid \"2b5a5734-25e4-515c-a4bf-0487cac6b4fa\", :execution-id #uuid \"110a9b18-5dc6-5dd4-8f14-3ff75fe4cf56\", :files [{:path \"captures/2026-10-30/observation.md\", :input \"/in/knowledge/sources/captures/2026-10-30/observation.md\", :role :trigger, :content #uuid \"36d344f1-61d0-5381-a96b-47c6b1f3572d\", :size 440, :mode 33188}]}",
+  "/in/knowledge/sources/captures/2026-10-30/observation.md"
+  "---\nsimmis-id: 42200cc9-3560-4de9-8421-10945556b351\nobservation-kind: sampled-model-description\nrecording-position-estimated: true\n---\n# Sampled screen observation\n\nThe screen appears to show a draft comparison table with a EUR29 price. This is unverified sampled visual evidence, not a confirmed pricing decision. Recording position is estimated. The original screenshot is not included in model inputs.\n\n[Original screenshot](screen.png)\n",
+  "/wiki/Company.md"
+  "---\nsimmis-id: c9c344b7-83c7-41d8-b3d1-f2e684ae50e6\nrevenue: 0\nactive: false\ncustom:\n  owner-note: preserve me\n---\n<!-- simmis:block 2a54e1a1-146e-44c8-b6b9-5c185149e6eb -->\n\n# Bright Harbor Labs\n\nBright Harbor Labs is developing LedgerNest, an invoicing product for small businesses.\n\n<!-- /simmis:block -->\n"}}

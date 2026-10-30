@@ -50,9 +50,25 @@
           (is (= :not-checked (:target-compatibility summary)))))
       (let [get-value artifact/get-value calls (atom 0)]
         (with-redefs [artifact/get-value (fn [& args] (swap! calls inc) (apply get-value args))]
-          (is (= {:path "wiki/old.md" :before "Before\r\n" :after "After"}
+          (is (= {:path "wiki/old.md" :before "Before\r\n" :after "After"
+                  :source-citations {:status :parsed :paths [] :truncated? false}}
                  (review/read-file party proposal scope "wiki/old.md"))))
         (is (= 1 @calls))))))
+
+(deftest cited-sources-come-from-markdown-links-not-code-or-prose
+  (let [path "/in/knowledge/sources/inbox/note.md"
+        other "/in/knowledge/sources/captures/observation.md"]
+    (is (= {:status :parsed :paths [path other] :truncated? false}
+           (review/source-citations
+            (str "[Note](" path ") [Again](" path ") [Screen][s]\n\n"
+                 "[s]: " other "\n\n"
+                 "`[Code](/in/knowledge/sources/inbox/code.md)`\n\n"
+                 "<!-- [Comment](/in/knowledge/sources/inbox/comment.md) -->\n\n"
+                 "[unused]: /in/knowledge/sources/inbox/unused.md\n\n"
+                 "[Current file](/inbox/note.md) [External](https://example.org)\n"))))
+    (let [result (review/source-citations (apply str (for [i (range 70)] (str "[" i "](" path i ")\n"))))]
+      (is (= 64 (count (:paths result))))
+      (is (true? (:truncated? result))))))
 
 (deftest resolved-proposals-retain-an-authorized-metadata-audit
   (with-review

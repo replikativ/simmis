@@ -44,11 +44,23 @@
         ;; not a user task parameter. Exclude it before stripping namespaces.
         (dissoc (get-in source [:definition :params]) :simmis/checker-profile)))
 
+(defn checkpoint? [source]
+  (contains? (:files source) "execution-origin.edn"))
+
+(defn execution-backends
+  "Presentation choices from the saved source; admission remains authoritative."
+  [source operator?]
+  (cond-> [{:id "hosted" :label "This Simmis server"}]
+    (and operator? (not (checkpoint? source)))
+    (conj {:id "cli" :label "This server · Claude Code text benchmark"})
+    (not (checkpoint? source))
+    (conj {:id "local" :label "My enrolled local SCI worker"})))
+
 (defn draft [source]
   {:source source :files (:files source) :path (or (when (contains? (:files source) "workflow.edn") "workflow.edn")
                                                    (first (sort (keys (:files source)))))
    :form (cond-> (assoc defaults :params (parameters source))
-           (contains? (:files source) "execution-origin.edn") (assoc :settlement "discard"))})
+           (checkpoint? source) (assoc :settlement "discard"))})
 
 (defn dirty? [draft] (not= (:files draft) (get-in draft [:source :files])))
 
@@ -322,6 +334,8 @@
         model (str/trim (:model form))
         models (if benchmark? (benchmark-models form) [model])]
     (when-not (:ok inspection) (invalid! "Repair this workflow before running"))
+    (when (and (checkpoint? source) (not= "hosted" (:backend form "hosted")))
+      (invalid! "This checkpoint workflow requires this Simmis server"))
     (when (and benchmark? (false? (:benchmark-ready? inspection)))
       (invalid! "Prepare executable benchmark cases and a checker before benchmarking"))
     (when-not (and (string? (:revision source))

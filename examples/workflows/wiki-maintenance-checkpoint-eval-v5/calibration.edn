@@ -1,0 +1,36 @@
+{:version 2,
+ :references
+ {:mixed
+  {:case "mixed-evidence",
+   :files
+   {"/out/wiki/Company.md"
+    "---\nsimmis-id: c9c344b7-83c7-41d8-b3d1-f2e684ae50e6\nrevenue: 0\nactive: false\ncustom:\n  owner-note: preserve me\n---\n<!-- simmis:block 2a54e1a1-146e-44c8-b6b9-5c185149e6eb -->\n\n# Bright Harbor Labs\n\nBright Harbor Labs is developing LedgerNest, an invoicing product for small businesses.\n\n<!-- /simmis:block -->\n\n## Pricing hypothesis\n\nMira proposes USD19 per workspace per month; this is an unvalidated hypothesis. No customer has committed to buy, and revenue remains zero. [Founder note](/in/knowledge/sources/inbox/imports/founder-note.md)\n\n## Planned research\n\nThree customer interviews are planned for Thursday, not completed. Willingness to pay is unknown. [Planning conversation](/in/knowledge/sources/inbox/conversations/planning.md)\n\n## Unverified screen observation\n\nA sampled screen observation appears to show a draft EUR29 price. This is unverified, and does not supersede the attributed USD19 proposal. Recording position is estimated; the screenshot was not inspected. [Observation](/in/knowledge/sources/captures/2026-10-30/observation.md)\n"}},
+  :capture
+  {:case "capture-uncertainty",
+   :files
+   {"/out/wiki/Company.md"
+    "---\nsimmis-id: c9c344b7-83c7-41d8-b3d1-f2e684ae50e6\nrevenue: 0\nactive: false\ncustom:\n  owner-note: preserve me\n---\n<!-- simmis:block 2a54e1a1-146e-44c8-b6b9-5c185149e6eb -->\n\n# Bright Harbor Labs\n\nBright Harbor Labs is developing LedgerNest, an invoicing product for small businesses.\n\n<!-- /simmis:block -->\n\n## Unverified screen observation\n\nA sampled screen observation appears to show a draft EUR29 price. This is unverified and is not a confirmed pricing decision. Recording position is estimated; the screenshot was not inspected. [Observation](/in/knowledge/sources/captures/2026-10-30/observation.md)\n"}},
+  :no-op {:case "no-change", :files {}}},
+ :damaged
+ {:missing
+  {:case "mixed-evidence",
+   :files {},
+   :loses [:expected-change? :required-content? :citations?]},
+  :metadata
+  {:case "mixed-evidence",
+   :files
+   {"/out/wiki/Company.md"
+    "---\nsimmis-id: c9c344b7-83c7-41d8-b3d1-f2e684ae50e6\nrevenue: 0\nactive: true\ncustom:\n  owner-note: preserve me\n---\n<!-- simmis:block 2a54e1a1-146e-44c8-b6b9-5c185149e6eb -->\n\n# Bright Harbor Labs\n\nBright Harbor Labs is developing LedgerNest, an invoicing product for small businesses.\n\n<!-- /simmis:block -->\n\n## Pricing hypothesis\n\nMira proposes USD19 per workspace per month; this is an unvalidated hypothesis. No customer has committed to buy, and revenue remains zero. [Founder note](/in/knowledge/sources/inbox/imports/founder-note.md)\n\n## Planned research\n\nThree customer interviews are planned for Thursday, not completed. Willingness to pay is unknown. [Planning conversation](/in/knowledge/sources/inbox/conversations/planning.md)\n\n## Unverified screen observation\n\nA sampled screen observation appears to show a draft EUR29 price. This is unverified, and does not supersede the attributed USD19 proposal. Recording position is estimated; the screenshot was not inspected. [Observation](/in/knowledge/sources/captures/2026-10-30/observation.md)\n"},
+   :loses [:preserved-structure?]},
+  :uncited
+  {:case "mixed-evidence",
+   :files
+   {"/out/wiki/Company.md"
+    "---\nsimmis-id: c9c344b7-83c7-41d8-b3d1-f2e684ae50e6\nrevenue: 0\nactive: false\ncustom:\n  owner-note: preserve me\n---\n<!-- simmis:block 2a54e1a1-146e-44c8-b6b9-5c185149e6eb -->\n\n# Bright Harbor Labs\n\nBright Harbor Labs is developing LedgerNest, an invoicing product for small businesses.\n\n<!-- /simmis:block -->\n\n## Pricing hypothesis\n\nMira proposes USD19 per workspace per month; this is an unvalidated hypothesis. No customer has committed to buy, and revenue remains zero. [Founder note](/in/knowledge/sources/inbox/missing.md)\n\n## Planned research\n\nThree customer interviews are planned for Thursday, not completed. Willingness to pay is unknown. [Planning conversation](/in/knowledge/sources/inbox/conversations/planning.md)\n\n## Unverified screen observation\n\nA sampled screen observation appears to show a draft EUR29 price. This is unverified, and does not supersede the attributed USD19 proposal. Recording position is estimated; the screenshot was not inspected. [Observation](/in/knowledge/sources/captures/2026-10-30/observation.md)\n"},
+   :loses [:citations?]},
+  :fabricated
+  {:case "mixed-evidence",
+   :files
+   {"/out/wiki/Company.md"
+    "---\nsimmis-id: c9c344b7-83c7-41d8-b3d1-f2e684ae50e6\nrevenue: 0\nactive: false\ncustom:\n  owner-note: preserve me\n---\n<!-- simmis:block 2a54e1a1-146e-44c8-b6b9-5c185149e6eb -->\n\n# Bright Harbor Labs\n\nBright Harbor Labs is developing LedgerNest, an invoicing product for small businesses.\n\n<!-- /simmis:block -->\n\n## Pricing hypothesis\n\nMira proposes USD19 per workspace per month; this is an unvalidated hypothesis. No customer has committed to buy, and revenue remains zero. [Founder note](/in/knowledge/sources/inbox/imports/founder-note.md)\n\n## Planned research\n\nThree customer interviews are planned for Thursday, not completed. Willingness to pay is unknown. [Planning conversation](/in/knowledge/sources/inbox/conversations/planning.md)\n\n## Unverified screen observation\n\nA sampled screen observation appears to show a draft EUR29 price. This is unverified, and does not supersede the attributed USD19 proposal. Recording position is estimated; the screenshot was not inspected. [Observation](/in/knowledge/sources/captures/2026-10-30/observation.md)\n\nWe have five paying customers.\n"},
+   :loses [:forbidden-content?]}}}

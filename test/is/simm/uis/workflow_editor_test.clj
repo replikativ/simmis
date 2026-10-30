@@ -19,6 +19,18 @@
     (is (false? (editor/dirty? checkpoint)))
     (is (= ordinary (editor/draft source)))))
 
+(deftest checkpoint-workflows-offer-and-submit-only-the-supported-backend
+  (let [saved (assoc source :files (starter/source))
+        draft (assoc-in (editor/draft saved) [:form :model] "codex-subscription-luna-6")]
+    (is (= ["hosted"] (mapv :id (editor/execution-backends saved true))))
+    (is (= ["hosted"] (mapv :id (editor/execution-backends saved false))))
+    (is (= ["hosted" "local"] (mapv :id (editor/execution-backends source false))))
+    (is (= ["hosted" "cli" "local"] (mapv :id (editor/execution-backends source true))))
+    (doseq [backend ["local" "cli"]]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"requires this Simmis server"
+                           (editor/submission (assoc-in draft [:form :backend] backend) "request"))))
+    (is (= "codex-subscription-luna-6" (:model (editor/submission draft "request"))))))
+
 (deftest schedule-observations-distinguish-unknown-empty-paused-and-held
   (let [paused {:id "one" :room-id "room" :name "maintain-wiki" :enabled? false}
         held (assoc paused :id "two" :reason :budget-exhausted)

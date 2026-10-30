@@ -80,9 +80,18 @@ special-purpose versions for every result, document or business object.
 Default maintenance remains an ordinary workflow installed in a new canonical
 personal Room. The existing bootstrap already does this for the current alpha
 account lifecycle; do not create another maintenance agent or scheduler.
-Version 4 declares incremental batching in ordinary source. Explicit upgrades
+Version 5 declares incremental batching and native retained-checkpoint execution
+in ordinary source; wiki context is read on demand from the checkpoint. Explicit upgrades
 use an inspected revision and whole-subtree comparison. Preserve customized and older pinned
 source; old whole-selection fingerprints do not become incremental cursors.
+
+The next practical validation uses the separate version-5 checkpoint evaluation
+example: mixed imported notes, saved human chat and capture observations, followed
+by an unchanged-input case. Keep task/checker bytes identical to the live starter,
+record exact bundle/model/limits with measured results, then configure the same
+live workflow through the existing schedule controls. Calibration is a mechanical
+gate, not a model-quality measurement. Saving chat evidence links to this existing
+setup; neither that link nor benchmark inspection starts unattended work.
 
 Schedule deployment must distinguish a configured paused activation from an
 enabled one. Creation now supports an initially paused activation in the same write;

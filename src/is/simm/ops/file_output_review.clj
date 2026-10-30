@@ -7,6 +7,7 @@
             [is.simm.model.system-db :as system-db]
             [is.simm.ops.file-output-storage :as storage]
             [is.simm.ops.knowledge-outputs :as outputs]
+            [is.simm.documents.links :as links]
             [is.simm.documents.markdown :as markdown]))
 
 (defn- unavailable! []
@@ -76,6 +77,17 @@
                                          :branch (:proposal.fork/branch f)
                                          :status (:proposal.fork/status f)))) forks)}))))))))
 
+(defn source-citations
+  "Bounded Markdown syntax only, not a source manifest or authority. Code,
+   comments and unused reference definitions never become citations."
+  [text]
+  (try
+    (let [paths (->> (markdown/link-references (markdown/parse text))
+                     (filter #(and (= :link (:kind %)) (links/source-path? (:target %))))
+                     (map :target) distinct (take 65) vec)]
+      {:status :parsed :paths (vec (take 64 paths)) :truncated? (> (count paths) 64)})
+    (catch clojure.lang.ExceptionInfo _ {:status :unavailable})))
+
 (defn read-file
   "One authorized exact before/after pair. External callers address BOTH the
    Proposal and component, never an unscoped store reference or artifact UUID.
@@ -85,7 +97,8 @@
   (when-not (uuid? proposal) (unavailable!))
   (let [conn (system-db/get-conn)
         _ (retained! conn party scope proposal)
-        pair (storage/read-file conn scope path)]
+        pair (storage/read-file conn scope path)
+        after (markdown/decode (outputs/bytes! (:after pair)))]
     {:path path
      :before (some-> (:before pair) outputs/bytes! markdown/decode)
-     :after (markdown/decode (outputs/bytes! (:after pair)))}))
+     :after after :source-citations (source-citations after)}))
