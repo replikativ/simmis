@@ -15,6 +15,7 @@
          [:github.sync/claim :db.type/uuid] [:github.sync/active-room :db.type/uuid]
          [:github.sync/state :db.type/keyword] [:github.sync/held-from :db.type/keyword]
          [:github.sync/kind :db.type/keyword]
+         [:github.sync/disposition :db.type/keyword] [:github.sync/review-revision :db.type/uuid]
          [:github.sync/preparation :db.type/store-ref] [:github.sync/preparation-id :db.type/uuid]
          [:github.sync/workspace :db.type/store-ref] [:github.sync/workspace-id :db.type/uuid]
          [:github.sync/ready :db.type/store-ref] [:github.sync/ready-id :db.type/uuid]
@@ -55,7 +56,7 @@
   ([db binding preparation-ref preparation-id]
    (prepare-tx db binding preparation-ref preparation-id :fast-forward))
   ([db binding preparation-ref preparation-id operation-kind]
-   (when-not (#{:fast-forward :incoming :push} operation-kind) (refuse! :invalid-kind))
+   (when-not (#{:fast-forward :incoming :incoming-policy :push} operation-kind) (refuse! :invalid-kind))
    (let [identity (binding! binding)
          immutable (assoc (dissoc identity :github.sync/claim)
                           :github.sync/preparation preparation-ref :github.sync/preparation-id preparation-id)]
@@ -93,9 +94,15 @@
    separately attest native exit/ownership before cleanup and verify each
    immutable artifact. :satisfied-observed attests CURRENT desired state, never
    who performed a historical advance. Only positive closure frees the slot."
-  [db expected to-state ref receipt-id]
+  ([db expected to-state ref receipt-id]
+   (transition-tx db expected to-state ref receipt-id nil))
+  ([db expected to-state ref receipt-id policy]
   (let [row (sync-in db (:github.sync/id expected))
         from (:github.sync/state row)
+        incoming? (#{:incoming :incoming-policy} (kind row))
+        policy? (= :incoming-policy (kind row))
+        policy-fields (when policy {:github.sync/disposition (:disposition policy)
+                                    :github.sync/review-revision (:review-revision policy)})
         slot (receipt-slot to-state)
         ref-key (when slot (keyword "github.sync" (name slot)))
         id-key (when slot (keyword "github.sync" (str (name slot) "-id")))
@@ -104,13 +111,25 @@
     ;; Push shares identity and the exclusive pending-room slot, but its
     ;; separate model owns its transition graph and publication receipts.
     (when (= :push (kind row)) (refuse! :wrong-kind))
+    (when-not (if (and policy? (= :ready to-state))
+                (and (= #{:disposition :review-revision} (set (keys policy)))
+                     (#{:fast-forward :proposal} (:disposition policy)) (uuid? (:review-revision policy))
+                     (or (nil? (:github.sync/disposition row))
+                         (= policy-fields (select-keys row (keys policy-fields)))))
+                (nil? policy))
+      (refuse! :invalid-disposition))
+    (when (and policy?
+               (or (and (#{:applying :applied :satisfied-observed} to-state)
+                        (not= :fast-forward (:github.sync/disposition row)))
+                   (and (#{:filing :filed} to-state) (not= :proposal (:github.sync/disposition row)))))
+      (refuse! :wrong-disposition))
     (when (or (and (= :incoming (kind row)) (#{:applying :applied :satisfied-observed} to-state))
-              (and (not= :incoming (kind row)) (#{:retaining :filing :filed} to-state)))
+              (and (not incoming?) (#{:retaining :filing :filed} to-state)))
       (refuse! :wrong-kind))
     (when-not (if slot (every? uuid? [ref receipt-id]) (and (nil? ref) (nil? receipt-id)))
       (refuse! :invalid-receipt))
     (when-not (or (= from to-state) (contains? (next-states from) to-state)) (refuse! :invalid-transition))
-    (when (and (= :incoming (kind row)) (= :ready to-state)
+    (when (and incoming? (= :ready to-state)
                (not (and (every? uuid? [(:github.sync/retention row) (:github.sync/retention-id row)])
                          (or (#{:retaining :ready} from)
                              (and (= :held from) (#{:retaining :ready} (:github.sync/held-from row)))))))
@@ -119,7 +138,7 @@
       (refuse! :retention-required))
     (when (and (= :held from) (= :ready to-state)
                (not (or (#{:allocated :ready} (:github.sync/held-from row))
-                        (and (= :incoming (kind row)) (= :retaining (:github.sync/held-from row))))))
+                        (and incoming? (= :retaining (:github.sync/held-from row))))))
       (refuse! :uncertain-apply))
     (when (and slot (not= :incident slot) (contains? row ref-key)
                (not= receipt (select-keys row (keys receipt))))
@@ -128,10 +147,10 @@
         (do
           (when-not (= (:github.sync/room row) (:github.sync/active-room row))
             (refuse! :inactive-intent))
-          (cond-> [(merge {:db/id (:db/id row) :github.sync/state to-state} receipt
+          (cond-> [(merge {:db/id (:db/id row) :github.sync/state to-state} receipt policy-fields
                           (when (= :held to-state)
                             {:github.sync/held-from (if (= :held from) (:github.sync/held-from row) from)}))]
             (and (not= :held to-state) (:github.sync/held-from row))
             (conj [:db/retract (:db/id row) :github.sync/held-from (:github.sync/held-from row)])
             (= :closed to-state)
-            (conj [:db/retract (:db/id row) :github.sync/active-room (:github.sync/active-room row)]))))))
+            (conj [:db/retract (:db/id row) :github.sync/active-room (:github.sync/active-room row)])))))))

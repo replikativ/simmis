@@ -11,7 +11,8 @@
             [geschichte.repo :as repo]
             [is.simm.documents.files :as files]
             [is.simm.ops.benchmark-case-manifest :as manifests]
-            [is.simm.ops.github-import :as import]))
+            [is.simm.ops.github-import :as import]
+            [is.simm.ops.git-history :as history]))
 
 (defn- refuse! [reason]
   (throw (ex-info "Private Git integration is held" {:type ::held :reason reason})))
@@ -104,7 +105,7 @@
        total)) 0 tree)
   (repo/validate-worktree! @conn tree))
 
-(defn plan-fetched!
+(defn- fetched-tip!
   "One bounded imported tip vs saved local history. Any exception AFTER native
    materialization begins requires the caller to retain/quarantine its private
    owner; do not promise restoration or replay. Never canonical publication."
@@ -125,14 +126,69 @@
       (inspect-source! conn operation)
       (repo/checkout! conn (:ref before))
       (when-not (= before (inspect-source! conn operation)) (refuse! :source-changed))
-      (let [plan (merge/plan conn (:head before) (:commit imported) {:merge-budget operation})]
-        ;; Strict alpha rule: no separate unbounded ancestry probe or guessed
-        ;; base after a rewritten remote/history gap.
-        (when-not (= upstream-base (:base plan)) (refuse! :upstream-history-changed))
-        (when-not (= oid (:geschichte.commit/git-oid (query/commit @conn (:commit imported))))
-          (refuse! :source-changed))
-        (result-tree! conn (:tree plan) operation)
+      (when-not (= oid (:geschichte.commit/git-oid (query/commit @conn (:commit imported))))
+        (refuse! :source-changed))
+      (budget/check! operation)
+      {:version 1 :local-ref ref :local-head (:head before)
+       :upstream-ref ref :upstream-base upstream-base :upstream-head (:commit imported)
+       :upstream-git-oid oid :incoming-ref incoming-ref})))
+
+(defn plan-fetched!
+  "Existing incoming protocol: preserve its strict retained-base semantics."
+  [conn fetched {:keys [upstream-base operation] :as options}]
+  (let [tip (fetched-tip! conn fetched options)
+        plan (merge/plan conn (:local-head tip) (:upstream-head tip) {:merge-budget operation})]
+    (when-not (= upstream-base (:base plan)) (refuse! :upstream-history-changed))
+    (result-tree! conn (:tree plan) operation)
+    (assoc tip :plan plan)))
+
+(defn plan-policy-fetched!
+  "Policy-aware relation over hash-verified raw history and ONE shared finite
+   budget. A genuine fast-forward does not invoke merge-base heuristics or
+   fabricate a merge commit. Divergent candidates still require review."
+  [conn fetched {:keys [upstream-base-git-oid operation] :as options}]
+  (let [source-db @conn
+        before (inspect-source! conn operation)
+        local-oid (:geschichte.commit/git-oid (query/commit source-db (:head before)))
+        tip (fetched-tip! conn fetched options)
+        incoming (:upstream-head tip) local (:local-head tip)
+        incoming-oid (:upstream-git-oid tip)]
+    ;; The caller supplies the durable CONTROL cursor OID. Never reconstruct
+    ;; this authority from mutable native UUID metadata or matching files.
+    (when-not (history/proven-ancestor? @conn upstream-base-git-oid incoming-oid operation)
+      (refuse! :upstream-history-changed))
+    (cond
+      (= upstream-base-git-oid incoming-oid) (assoc tip :relation :unchanged)
+      (and local-oid (history/proven-ancestor? @conn local-oid incoming-oid operation))
+      (do (history/assert-local-tree! @conn source-db (:manifest before) local-oid operation)
+          (assoc tip :relation :fast-forward))
+      :else (let [plan (merge/plan conn local incoming {:merge-budget operation})]
+              (result-tree! conn (:tree plan) operation)
+              (assoc tip :relation :diverged :plan plan)))))
+
+(defn materialize-policy!
+  "Materialize a verified relation in the caller's exclusively owned PRIVATE
+   branch. A fast-forward selects the imported commit itself. Restore the
+   original auxiliary logical refs so fetch scratch names cannot be published.
+   Caller performs native catalog preflight and subsequent semantic review."
+  [conn planned before operation]
+  (let [ref (get-in before [:visible :ref]) old-refs (get-in before [:visible :refs])]
+    (when-not (and (= ref (:local-ref planned)) (map? old-refs) (<= (count old-refs) 65)
+                   (= (:local-head planned) (:head (inspect-source! conn operation))))
+      (refuse! :source-changed))
+    (case (:relation planned)
+      :fast-forward (repo/reset! conn (:upstream-head planned) {:mode :hard})
+      :diverged (do
+                  (when-not (get-in planned [:plan :clean?]) (refuse! :conflicts))
+                  (repo/prepare-merge! conn (:plan planned))
+                  (repo/commit! conn {:message "Merge incoming remote changes"}))
+      (refuse! :invalid-relation))
+    (let [current (query/refs @conn)]
+      (doseq [[name id] current :when (not= name ref)]
         (budget/check! operation)
-        {:version 1 :local-ref ref :local-head (:head before)
-         :upstream-ref ref :upstream-base upstream-base :upstream-head (:commit imported)
-         :upstream-git-oid oid :incoming-ref incoming-ref :plan plan}))))
+        (if-let [old (get old-refs name)]
+          (when-not (= id old) (repo/set-ref! conn name old))
+          (repo/delete-branch! conn name {:force? true})))
+      (when-not (= (query/refs @conn) (assoc old-refs ref (:geschichte.commit/id (repo/head-commit conn))))
+        (refuse! :source-changed)))
+    (inspect-source! conn operation)))
