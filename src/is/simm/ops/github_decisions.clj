@@ -188,4 +188,18 @@
     (when-not (and (#{:review :accept :dismiss} action) (= fields (set (keys request)))
                    (every? #(and (string? %) (= % (some-> % parse-uuid str))) (vals request)))
       (refuse! :invalid-request))
-    (host/capture party room action #(in! % action (update-vals request parse-uuid)))))
+    (let [invoke (host/capture party room action #(in! % action (update-vals request parse-uuid)))]
+      (fn []
+        (try (invoke)
+             (catch Exception error
+               ;; Read-only inspection can report admission backpressure as
+               ;; ordinary UI state. Never reinterpret a settlement failure or
+               ;; cancellation, and never resend any operation here.
+               (if (and (= :review action) (not (adoption/causal-interruption? error))
+                        (some (fn [cause]
+                                (let [{:keys [type reason]} (ex-data cause)]
+                                  (or (= :dvergr.runtime.preparation/capacity-exhausted type)
+                                      (and (= :is.simm.ops.github-import/held type) (= :busy reason)))))
+                              (take 16 (take-while some? (iterate ex-cause error)))))
+                 {:status :busy}
+                 (throw error))))))))

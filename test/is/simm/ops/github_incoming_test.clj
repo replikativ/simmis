@@ -31,6 +31,22 @@
   ((host/capture (:creator environment) (:room-id environment) action
                   #(decisions/in! % action request))))
 
+(deftest review-admission-pressure-is-not-an-unknown-settlement-outcome
+  (let [party (random-uuid) room (random-uuid) request {:proposal-id (str (random-uuid))}]
+    (doseq [error [(ex-info "HOST operation capacity exhausted" {:type :dvergr.runtime.preparation/capacity-exhausted})
+                  (ex-info "Git permit busy" {:type :is.simm.ops.github-import/held :reason :busy})]]
+      (let [calls (atom 0)]
+        (with-redefs [host/capture (fn [& _] (fn [] (swap! calls inc) (throw error)))]
+          (is (= {:status :busy} ((decisions/prepare party room :review request))))
+          (is (= 1 @calls) "Read-only admission was not retried")
+          (is (thrown? clojure.lang.ExceptionInfo
+                       ((decisions/prepare party room :accept (assoc request :review-id (str (random-uuid)))))))
+          (is (thrown? clojure.lang.ExceptionInfo ((decisions/prepare party room :dismiss request)))))))
+    (doseq [error [(ex-info "Interrupted admission" {:type :dvergr.runtime.preparation/capacity-exhausted} (InterruptedException.))
+                  (ex-info "Other failure" {:type :unrelated})]]
+      (with-redefs [host/capture (fn [& _] (fn [] (throw error)))]
+        (is (thrown? clojure.lang.ExceptionInfo ((decisions/prepare party room :review request))))))))
+
 (deftest local-and-incoming-edits-file-one-frozen-proposal-without-advancing-the-cursor
   (#'fixtures/with-imported
     (fn [{:keys [parent conn room-id stamp creator] :as environment}]

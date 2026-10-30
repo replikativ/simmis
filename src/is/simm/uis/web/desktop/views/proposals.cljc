@@ -32,7 +32,7 @@
 
 #?(:cljs (defonce ^:private gate (agg/gate)))
 #?(:cljs (defn refresh-loaded! [] (agg/refresh! gate)))
-#?(:cljs (declare git-action!))
+#?(:cljs (declare git-action! comment!))
 
 #?(:cljs
    (defn- update-proposal!
@@ -390,14 +390,22 @@
      (let [pid (:id proposal) epoch (connection-epoch/snapshot) token (random-uuid)
            current #(binding [rtc/*execution-context* runtime]
                       (some (fn [p] (when (= pid (:id p)) p)) (:proposals @sig/proposals-data)))
+           live (current)
            request (cond-> {:proposal-id pid}
-                     (= :accept action) (assoc :review-id (str (get-in proposal [:git-review :review-id]))))]
-       (when (and (:git? proposal) (:room proposal) (not (:busy? proposal))
+                     (= :accept action) (assoc :review-id (str (get-in live [:git-review :review-id]))))]
+       (when (and (:git? live) (:room live) (= :open (:status live))
+                  (= (:room live) (:room proposal))
+                  (or (not (:busy? live))
+                      (and (= :review action) (not= epoch (:git-request-on live))))
+                  (or (not= :accept action)
+                      (and (get-in live [:git-review :review-id])
+                           (= (:git-review live) (:git-review proposal))))
                   (or (nil? rtc/*execution-context*)
                       (identical? (rtc/home-context rtc/*execution-context*) (rtc/home-context runtime))))
-         (update-proposal! pid #(-> % (assoc :busy? true :git-token token) (dissoc :action-error)))
+         (update-proposal! pid #(-> % (assoc :busy? true :git-token token :git-request-on epoch :git-operation action)
+                                    (dissoc :action-error)))
          (rem/spin!
-          #(github-remote/github-proposal-operation! web/server-id (:room proposal) action request)
+          #(github-remote/github-proposal-operation! web/server-id (:room live) action request)
           (fn [result error]
             (when (and (connection-epoch/current? epoch) (= token (:git-token (current))))
               (cond
@@ -409,6 +417,28 @@
                                                                             (refresh-loaded!))
                 :else (update-proposal! pid #(-> % (dissoc :busy? :git-review)
                                                  (assoc :action-error "This Git decision needs inspection; it was not retried.")))))))))))
+
+(defn git-actions-view
+  "Git decision controls shared by Proposal projections. Only a read-only
+   recheck can replace an unfinished request from an obsolete connection."
+  [{:keys [busy? git-review id] :as proposal}]
+  #?(:cljs
+     (el/div {:class "proposal-actions"}
+             (el/p {:class "proposal-note-line"}
+                   (case (:status git-review)
+                     :ready "This frozen change set matches the current Memory and its document types."
+                     :held "Integration is held by the current document constraints. Your saved files are unchanged."
+                     :busy "Another Git operation is finishing. Recheck integration shortly."
+                     "Checking the current Memory before integration."))
+             (el/button {:class "btn btn-affirm" :disabled (boolean (or busy? (not= :ready (:status git-review))))
+                         :on-click (fn [_] (git-action! proposal :accept))} (if busy? "Working…" "Accept Git changes"))
+             (el/button {:class "btn btn-secondary"
+                         :disabled (boolean (and busy? (connection-epoch/current? (:git-request-on proposal))))
+                         :on-click (fn [_] (git-action! proposal :review))} "Recheck integration")
+             (el/button {:class "btn btn-secondary" :disabled (boolean busy?)
+                         :on-click (fn [_] (git-action! proposal :dismiss))} "Dismiss")
+             (el/button {:class "btn btn-secondary" :disabled (boolean busy?)
+                         :on-click (fn [_] (comment! id))} "Comment"))))
 
 #?(:cljs
    (defn accept!
@@ -1415,20 +1445,7 @@
          ;; revise it.
                (cond
                  git?
-                 (el/div {:class "proposal-actions"}
-                         (el/p {:class "proposal-note-line"}
-                               (case (:status git-review)
-                                 :ready "This frozen change set matches the current Memory and its document types."
-                                 :held "Integration is held by the current document constraints. Your saved files are unchanged."
-                                 "Checking the current Memory before integration."))
-                         (el/button {:class "btn btn-affirm" :disabled (boolean (or busy? (not= :ready (:status git-review))))
-                                     :on-click (fn [_] (git-action! proposal :accept))} (if busy? "Working…" "Accept Git changes"))
-                         (el/button {:class "btn btn-secondary" :disabled (boolean busy?)
-                                     :on-click (fn [_] (git-action! proposal :review))} "Recheck integration")
-                         (el/button {:class "btn btn-secondary" :disabled (boolean busy?)
-                                     :on-click (fn [_] (git-action! proposal :dismiss))} "Dismiss")
-                         (el/button {:class "btn btn-secondary" :disabled (boolean busy?)
-                                     :on-click (fn [_] (comment! id))} "Comment"))
+                 (git-actions-view proposal)
                  review
                  (let [decider? (and (seq forks) (every? :may-merge? (filter (comp nil? :status) forks)))
                        unavailable? (seq (unavailable-open-forks forks))]

@@ -20,9 +20,15 @@
   [previous proposals]
   (let [by-id (into {} (map (juxt :id identity)) previous)]
     (mapv (fn [p]
-            (if-let [error (:action-error (get by-id (:id p)))]
-              (assoc p :action-error error)
-              p)) proposals)))
+            (let [old (get by-id (:id p))]
+              (cond-> p
+                (:action-error old) (assoc :action-error (:action-error old))
+                ;; A canonical refresh must not erase an outstanding Git
+                ;; request and admit a second one before its callback settles.
+                (and (:git? p) (:git? old) (:busy? old)
+                     (= (select-keys p [:id :room :created-at])
+                        (select-keys old [:id :room :created-at])))
+                (merge (select-keys old [:busy? :git-token :git-request-on :git-operation :git-review]))))) proposals)))
 
 (defn verification-outcome
   "Stable result of one visibility-safe proposal status request."

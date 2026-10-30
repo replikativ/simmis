@@ -2,10 +2,12 @@
   (:require [cljs.test :refer-macros [deftest is]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.dom.browser :as browser]
             [is.simm.uis.web.desktop.runtime :as runtime]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.remote :as remote]
             [is.simm.uis.web.desktop.connection-epoch :as epoch]
+            [is.simm.uis.web.desktop.proposal-card :as card]
             [is.simm.uis.web.desktop.views.proposals :as proposals]))
 
 (defn reply [response]
@@ -13,6 +15,63 @@
   (fn
     ([_ callback] (callback response nil))
     ([_ callback _] (callback response nil))))
+
+(deftest canonical-refresh-and-stale-views-cannot-duplicate-a-git-review
+  (let [ctx (context/fork-context runtime/runtime)
+        callbacks (atom [])
+        p {:id (str (random-uuid)) :room (str (random-uuid)) :status :open :git? true :created-at 1}
+        deferred (fn ([_ callback] (swap! callbacks conj callback))
+                   ([_ callback _] (swap! callbacks conj callback)))]
+    (try
+      (with-redefs [runtime/runtime ctx remote/spin! deferred
+                    epoch/snapshot (constantly :fixture) epoch/current? (constantly true)]
+        (binding [ec/*execution-context* ctx]
+          (reset! sig/proposals-data {:proposals [p]})
+          (proposals/git-action! p :review)
+          (proposals/git-action! p :review)
+          (is (= 1 (count @callbacks)))
+          (swap! sig/proposals-data update :proposals #(card/retain-action-feedback % [p]))
+          (proposals/git-action! p :review)
+          (is (= 1 (count @callbacks)))
+          ((first @callbacks) {:status :ready :review-id "reviewed"} nil)
+          (is (= :ready (get-in (first (:proposals @sig/proposals-data)) [:git-review :status])))
+          (is (not (:busy? (first (:proposals @sig/proposals-data)))))
+          ;; A retained Accept button cannot borrow a newer review token.
+          (proposals/git-action! (assoc p :git-review {:status :ready :review-id "older"}) :accept)
+          (is (= 1 (count @callbacks)))))
+      (finally (context/close-context! ctx)))))
+
+(deftest reconnect-keeps-read-only-recheck-available-without-a-successful-diff
+  (let [ctx (context/fork-context runtime/runtime) callbacks (atom []) connection (atom :old)
+        container (.createElement js/document "div") stop (atom nil)
+        p {:id (str (random-uuid)) :room (str (random-uuid)) :status :open :git? true :created-at 1}
+        deferred (fn ([_ callback] (swap! callbacks conj callback))
+                   ([_ callback _] (swap! callbacks conj callback)))]
+    (try
+      (.appendChild (.-body js/document) container)
+      (with-redefs [runtime/runtime ctx remote/spin! deferred
+                    epoch/snapshot #(deref connection) epoch/current? #(= % @connection)]
+        (binding [ec/*execution-context* ctx]
+          (reset! sig/proposals-data {:proposals [p]})
+          (proposals/git-action! p :review)
+          (reset! connection :new)
+          (swap! sig/proposals-data update :proposals #(card/retain-action-feedback % [p]))
+          ;; No successful diff callback is available to start recovery.
+          (reset! stop (browser/mount! container (proposals/git-actions-view (first (:proposals @sig/proposals-data)))))
+          (let [button (some #(when (= "Recheck integration" (.-textContent %)) %)
+                             (array-seq (.querySelectorAll container "button")))]
+            (is (some? button))
+            (is (false? (.-disabled button)))
+            (.click button))
+          (is (= 2 (count @callbacks)))
+          ((first @callbacks) {:status :ready :review-id "obsolete"} nil)
+          (is (:busy? (first (:proposals @sig/proposals-data))))
+          ((second @callbacks) {:status :ready :review-id "fresh"} nil)
+          (is (= "fresh" (get-in (first (:proposals @sig/proposals-data)) [:git-review :review-id])))))
+      (finally
+        (when @stop (browser/unmount! @stop))
+        (.remove container)
+        (context/close-context! ctx)))))
 
 (deftest retained-file-inspection-is-reactive-and-fences-hidden-or-older-replies
   (let [ctx (context/fork-context runtime/runtime)
