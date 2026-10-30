@@ -177,13 +177,31 @@ if permissions are revoked or the App is fenced while the remote call returns;
 the original operation still owns its physical ticket. This completion path
 cannot admit another send.
 
-An uncertain send stays fenced. Explicit recovery can observe the exact tracked
+An uncertain send stays fenced. Recovery can observe the exact tracked
 remote ref and record a **new upstream observation**, while preserving that the
 historical send outcome is unknown. Observing the prepared new OID can advance
 the cursor; observing the old OID leaves it unchanged. A different remote OID
 holds for reconciliation. None of these paths resends. A Room administrator can
 close known unsent or terminal attempts while preserving original authorship;
 an unknown Sending attempt cannot be discarded or administratively retired.
+
+In the UI, **Push** prepares a frozen change list; **Publish changes** sends that
+version and **Cancel** closes an unsent preparation while keeping saved edits.
+The × dismisses the panel without cancelling the attempt. Further edits after
+a completed publication can be pushed directly; a pull is not a prerequisite.
+
+After an uncertain publication response, the original UI context makes one
+same-intent journal read. Only a correlated push journal showing Sending permits
+one automatic remote-head verification. A transport error alone cannot authorize
+it. Failed verification stops without a timer, render retry or another send.
+**Check push status** permits one fresh read/verification cycle. Technical local
+journal inspection and closing known unsent preparation are under **Details**.
+
+The toolbar distinguishes **Published**, **Published · verified** (the reviewed
+commit is present now, while its historical send acknowledgment remains unknown),
+and **Remote unchanged · edits kept locally**. An observation of the old remote
+OID never claims that the historical send failed. Session, connection, target,
+source or execution-context changes cannot continue an old automatic chain.
 
 **Memory settings**, available in the file/workspace actions menu, contains the
 remote identity, tracked branch and this human's provider access. The page shows

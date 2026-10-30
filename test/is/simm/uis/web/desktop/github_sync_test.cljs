@@ -218,7 +218,7 @@
           (is (= intent (:intent (state))))
           (is (= :ready (get-in (state) [:reply :status]))))))))
 
-(deftest outbound-review-is-separate-and-known-completion-only-closes-the-same-attempt
+(deftest outbound-review-is-separate-and-an-uncertain-send-is-observed-without-resending
   (with-client
     (fn [{:keys [room memory calls ready state]}]
       (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))]
@@ -227,15 +227,77 @@
         (is (nil? (:intent (state))) "Incoming controller has no outbound intent")
         ((:ok (last @calls)) (assoc ready :operation-kind :push))
         (act! a :apply)
-        (is (= [:prepare-push :apply] (mapv :operation @calls)))
         ((:error (last @calls)) (js/Error. "Lost send response"))
-        (act! a :apply)
-        (is (= 2 (count @calls)))
-        (act! a :check)
+        (is (= [:prepare-push :apply :observe] (mapv :operation @calls)))
+        (act! a :apply) (act! a :sync)
+        (is (= 3 (count @calls)))
         ((:ok (last @calls)) {:status :pushed :operation-kind :push})
         (is (= [:prepare-push :apply :observe :recover] (mapv :operation @calls)))
         ((:ok (last @calls)) {:status :closed :operation-kind :push :outcome :pushed})
-        (is (= :closed (get-in ((:state a)) [:reply :status])))))))
+        (is (= :closed (get-in ((:state a)) [:reply :status])))
+        (act! a :sync)
+        (is (= :prepare-push (:operation (last @calls))) "A completed publish permits a new edit/push cycle")))))
+
+(deftest automatic-push-verification-requires-a-same-journal-observation-and-stops-on-failure
+  (with-client
+    (fn [{:keys [room memory calls ready]}]
+      (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))
+            id (str (random-uuid))]
+        (act! a :sync)
+        (let [client (get-in (first @calls) [:request :client-id])
+              sending {:status :unconfirmed :operation-kind :push :client-id client :sync-id id}]
+          ((:ok (last @calls)) (assoc ready :operation-kind :push :client-id client :sync-id id))
+          (act! a :apply)
+          ((:error (last @calls)) (js/Error. "Lost ACK"))
+          ((:ok (last @calls)) {:status :unconfirmed :operation-kind :push})
+          (is (= [:prepare-push :apply :observe] (mapv :operation @calls)) "Generic uncertainty cannot authorize remote verification")
+          (act! a :check-status)
+          ((:ok (last @calls)) sending)
+          (is (= :recover (:operation (last @calls))))
+          (is (= {:client-id client} (:request (last @calls))))
+          ((:error (last @calls)) (js/Error. "Verification unavailable"))
+          (let [count-before (count @calls)]
+            ((:ensure a)) ((:ensure a))
+            (is (= count-before (count @calls)) "Renders cannot retry failed recovery"))
+          (act! a :check-status)
+          ((:ok (last @calls)) sending)
+          (is (= :recover (:operation (last @calls))) "An explicit click may request one new verification")
+          ((:ok (last @calls)) {:status :closed :operation-kind :push :client-id client :sync-id id :outcome :upstream-observed})
+          (is (false? (:open? ((:state a)))))
+          (is (= 1 (count (filter #(= :apply (:operation %)) @calls)))))))))
+
+(deftest automatic-recovery-is-never-authorized-by-a-different-journal
+  (with-client
+    (fn [{:keys [room memory calls ready]}]
+      (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory)) id (str (random-uuid))]
+        (act! a :sync)
+        (let [client (get-in (first @calls) [:request :client-id])]
+          ((:ok (last @calls)) (assoc ready :operation-kind :push :client-id client :sync-id id))
+          (act! a :apply)
+          ((:error (last @calls)) (js/Error. "Lost ACK"))
+          ((:ok (last @calls)) {:status :unconfirmed :operation-kind :push :client-id client :sync-id (str (random-uuid))})
+          (is (= [:prepare-push :apply :observe] (mapv :operation @calls)))
+          (is (= :unconfirmed (get-in ((:state a)) [:reply :status]))))))))
+
+(deftest copied-or-stale-callbacks-cannot-start-automatic-push-verification
+  (doseq [change [:epoch :target :source :fork]]
+    (with-client
+      (fn [{:keys [room memory calls ready]}]
+        (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))]
+          (act! a :sync) ((:ok (last @calls)) (assoc ready :operation-kind :push))
+          (act! a :apply)
+          (let [failed (:error (last @calls))]
+            (case change
+              :epoch (reset! sig/memory-connection {:epoch (random-uuid)})
+              :target (swap! memory assoc :target-stamp (random-uuid))
+              :source (swap! memory assoc-in [:github-source :ref] "refs/heads/other")
+              :fork nil)
+            (if (= :fork change)
+              (let [child (context/fork-context runtime)]
+                (try (binding [ec/*execution-context* child] (failed (js/Error. "Copied callback")))
+                     (finally (context/close-context! child))))
+              (failed (js/Error. "Stale callback")))
+            (is (= 2 (count @calls)) (str change " cannot start a new read chain"))))))))
 
 (deftest pending-outbound-intent-is-adopted-only-by-the-outbound-controller
   (with-client
@@ -417,7 +479,7 @@
               (.appendChild (.-body js/document) container)
               (try
                 (reset! stop (browser/mount! container ((if (= :push direction) view/review-push view/review-pull) old-memory a old-state)))
-                (let [label (if (= :push direction) "Push reviewed changes" "Apply reviewed update")
+                (let [label (if (= :push direction) "Publish changes" "Apply reviewed update")
                       button (some #(when (= label (.-textContent %)) %) (array-seq (.querySelectorAll container "button")))]
                   (is (some? button))
                   (.click button)
@@ -488,7 +550,7 @@
             reply {:connection-id (str (random-uuid)) :target-stamp (str (:target-stamp @memory)) :revision (str (random-uuid))
                    :review-mode :fast-forward :enabled? false :interval-seconds 60 :status nil :last-check nil :next-check nil}]
         (with-redefs [remote/git-policy-operation! (fn [_ _ operation request]
-                                                   (fn [ok error] (swap! calls conj {:operation operation :request request :ok ok :error error})))]
+                                                     (fn [ok error] (swap! calls conj {:operation operation :request request :ok ok :error error})))]
           ((:ensure p)) ((:ok (last @calls)) reply)
           (let [old (policy/action-basis @memory (state))]
             ((:reload p) old) ((:ok (last @calls)) (assoc reply :revision (str (random-uuid))))
@@ -534,3 +596,102 @@
       (act! a :sync)
       ((:ok (last @calls)) {:status :unconfirmed})
       (is (= 3 (count @calls)) "Unknown Applying never triggers cleanup or another integration"))))
+
+(deftest publish-review-has-two-clear-actions-and-dismissal-sends-nothing
+  (with-client
+    (fn [{:keys [room memory calls ready]}]
+      (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))
+            container (.createElement js/document "div") stop (atom nil)]
+        (act! a :sync) ((:ok (last @calls)) (assoc ready :operation-kind :push))
+        (.appendChild (.-body js/document) container)
+        (try
+          (reset! stop (browser/mount! container (view/review-push @memory a ((:state a)))))
+          (is (= ["×" "Publish changes" "Cancel"]
+                 (mapv #(.-textContent %) (array-seq (.querySelectorAll container "button")))))
+          (let [intent (:intent ((:state a)))]
+            (.click (.querySelector container "[aria-label='Dismiss push review']"))
+            (is (= 1 (count @calls)))
+            (is (= intent (:intent ((:state a)))))
+            (is (false? (:open? ((:state a))))))
+          (finally (when @stop (browser/unmount! @stop)) (.remove container)))))))
+
+(deftest uncertain-publish-offers-one-status-action-with-technical-controls-under-details
+  (with-client
+    (fn [{:keys [room memory calls ready]}]
+      (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))
+            container (.createElement js/document "div") stop (atom nil)]
+        (act! a :sync) ((:ok (last @calls)) (assoc ready :operation-kind :push))
+        (act! a :apply) ((:error (last @calls)) (js/Error. "Lost ACK"))
+        ((:error (last @calls)) (js/Error. "Status unavailable"))
+        (.appendChild (.-body js/document) container)
+        (try
+          (reset! stop (browser/mount! container (view/review-push @memory a ((:state a)))))
+          (let [buttons (array-seq (.querySelectorAll container "button"))
+                check (some #(when (= "Check push status" (.-textContent %)) %) buttons)
+                inspect (some #(when (= "Inspect local attempt" (.-textContent %)) %) buttons)]
+            (is (some? check))
+            (is (nil? (.closest check "details")))
+            (is (some? (.closest inspect "details")))
+            (is (nil? (some #(when (= "Verify remote head" (.-textContent %)) %) buttons)))
+            (.click check)
+            (is (= :observe (:operation (last @calls))))
+            (is (= 1 (count (filter #(= :apply (:operation %)) @calls)))))
+          (finally (when @stop (browser/unmount! @stop)) (.remove container)))))))
+
+(deftest remote-presence-and-an-unchanged-remote-have-distinct-publication-labels
+  (with-client
+    (fn [{:keys [a room memory]}]
+      (let [push (sync/controller {:room-id room :github-direction :push} #(deref memory))]
+        (doseq [[outcome label] [[:pushed "Published"] [:upstream-observed "Published · verified"]
+                                 [:upstream-unchanged "Remote unchanged · edits kept locally"]]]
+          (let [container (.createElement js/document "div") stop (atom nil)]
+            (.appendChild (.-body js/document) container)
+            (try
+              (reset! stop (browser/mount! container (view/toolbar @memory a ((:state a)) push
+                                                                   {:reply {:status :closed :outcome outcome}} :push (fn []))))
+              (is (.includes (.-textContent container) label))
+              (finally (when @stop (browser/unmount! @stop)) (.remove container)))))))))
+
+(deftest lost-publication-ack-is-verified-once-automatically-and-the-next-push-is-independent
+  (with-client
+    (fn [{:keys [room memory calls ready]}]
+      (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))]
+        (dotimes [_ 2]
+          (act! a :sync)
+          (let [client (get-in (last @calls) [:request :client-id]) id (str (random-uuid))
+                before (count @calls)]
+            ((:ok (last @calls)) (assoc ready :operation-kind :push :client-id client :sync-id id))
+            (act! a :apply)
+            ((:error (last @calls)) (js/Error. "Lost publication acknowledgment"))
+            (is (= :observe (:operation (last @calls))))
+            ((:ok (last @calls)) {:status :unconfirmed :operation-kind :push :client-id client :sync-id id})
+            (is (= :recover (:operation (last @calls))))
+            ((:ok (last @calls)) {:status :closed :operation-kind :push :client-id client :sync-id id :outcome :upstream-observed})
+            (is (= :closed (get-in ((:state a)) [:reply :status])))
+            (is (= (+ before 3) (count @calls)))
+            ((:ensure a))
+            (is (= (+ before 3) (count @calls)))))
+        (is (= 2 (count (filter #(= :apply (:operation %)) @calls))))))))
+
+(deftest reconnect-and-local-inspection-cannot-authorize-remote-push-verification
+  (with-client
+    (fn [{:keys [room memory calls ready]}]
+      (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory)) id (str (random-uuid))]
+        (act! a :sync)
+        (let [client (get-in (last @calls) [:request :client-id])
+              sending {:status :unconfirmed :operation-kind :push :client-id client :sync-id id}]
+          ((:ok (last @calls)) (assoc ready :operation-kind :push :client-id client :sync-id id))
+          (act! a :apply)
+          ((:error (last @calls)) (js/Error. "Lost ACK"))
+          (reset! sig/memory-connection {:epoch (random-uuid)})
+          ((:ok (last @calls)) sending)
+          (is (= 3 (count @calls)) "A response from the previous epoch cannot verify remotely")
+          ((:ensure a))
+          ((:ok (last @calls)) sending)
+          (is (= 4 (count @calls)) "Lifecycle observation stays local")
+          (act! a :check)
+          ((:ok (last @calls)) sending)
+          (is (= 5 (count @calls)) "Details inspection stays local")
+          (act! a :check-status)
+          ((:ok (last @calls)) sending)
+          (is (= :recover (:operation (last @calls))) "An explicit status check grants one new scoped verification"))))))

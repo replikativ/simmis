@@ -106,29 +106,40 @@
       (el/section {:class "memory-local-source memory-remote-review" :role "dialog" :aria-label "Review outbound changes"
                    :on-keydown (fn [event] (when (= "Escape" (.-key event)) (.stopPropagation event) ((:open a) false)))}
                   (el/div {:class "memory-local-source-heading"}
-                          (el/h3 {} "Push to remote")
-                          (el/button {:class "btn btn-sm" :aria-label "Close push review" :on-click (click #((:open a) false))} "Close"))
-                  (when loading? (el/p {:class "memory-note" :role "status"} "Preparing or checking this push…"))
+                          (el/h3 {} "Publish changes")
+                          (el/button {:class "btn btn-sm" :aria-label "Dismiss push review" :on-click (click #((:open a) false))} "×"))
+                  (when loading?
+                    (el/p {:class "memory-note" :role "status"}
+                          (case (:operation state)
+                            :apply "Publishing reviewed changes…"
+                            (:observe :recover) "Checking push status…"
+                            :discard "Cancelling this preparation. Your edits will be kept…"
+                            "Preparing the change list…")))
                   (when-let [error (:error state)] (el/p {:class "proposal-error" :role "status"} error))
                   (when (= :ready status)
                     (el/div {}
                             (el/p {:class "memory-note"} (str (:total reply) " changed " (if (= 1 (:total reply)) "file" "files")
-                                                              ". Push publishes the reviewed commit; it does not merge remote changes."))
+                                                              ". Publish sends this saved version to the linked repository."))
                             (el/table {}
                                       (el/thead {} (el/tr {} (el/th {} "Change") (el/th {} "File")))
                                       (el/tbody {} (for [{:keys [path kind]} (:changes reply)]
                                                      (el/tr {:key path} (el/td {} (name kind)) (el/td {} path)))))
                             (el/button {:class "btn btn-affirm btn-sm" :disabled (or loading? (not ((:can-apply? a))))
-                                        :on-click (click #((:apply a) offer))} "Push reviewed changes")))
-                  (when (#{:unconfirmed :preparing :held :not-observed} status)
+                                        :on-click (click #((:apply a) offer))} "Publish changes")
+                            (when (:can-discard? reply)
+                              (el/button {:class "btn btn-sm" :disabled loading?
+                                          :on-click (click #((:discard a) offer))} "Cancel"))))
+                  (when (and (not loading?) (#{:unconfirmed :preparing :held :not-observed} status))
                     (el/div {}
-                            (el/p {:class "memory-note"} "Inspect this same attempt before starting another. Verification never sends again.")
-                            (el/button {:class "btn btn-sm" :disabled loading? :on-click (click #((:check a) offer))} "Check attempt")
-                            (when (= :unconfirmed status)
-                              (el/button {:class "btn btn-sm" :disabled loading? :on-click (click #((:recover a) offer))} "Verify remote head"))))
-                  (when (:can-discard? reply)
-                    (el/button {:class "btn btn-sm" :disabled loading? :on-click (click #((:discard a) offer))}
-                               (if (= :ready status) "Cancel prepared push" "Close attempt")))))))
+                            (el/p {:class "memory-note"} "Publication is not confirmed. Your edits are saved locally; checking will not send them again.")
+                            (el/button {:class "btn btn-sm" :on-click (click #((:check-status a) offer))} "Check push status")))
+                  (when (and (not loading?) (not= :ready status))
+                    (el/details {}
+                                (el/summary {} "Details")
+                                (el/p {:class "memory-note"} "Status checks read this attempt and, when needed, the remote branch. They never publish again. A verified remote commit does not reconstruct a lost send acknowledgment.")
+                                (el/button {:class "btn btn-sm" :on-click (click #((:check a) offer))} "Inspect local attempt")
+                                (when (:can-discard? reply)
+                                  (el/button {:class "btn btn-sm" :on-click (click #((:discard a) offer))} "Close preparation (keep edits)"))))))))
 
 (defn credential-view [memory state credentials]
   (let [credential (:credential-reply state) loading? (:credential-loading? state)
@@ -191,9 +202,9 @@
                                      (when (.. event -currentTarget -isConnected)
                                        (let [elements (.. event -currentTarget -elements)]
                                          ((:save actions) offer
-                                          {:review-mode (keyword (.-value (.namedItem elements "review-mode")))
-                                           :enabled? (.-checked (.namedItem elements "enabled"))
-                                           :interval-seconds (* 60 (js/Number (.-value (.namedItem elements "interval"))))}))))}
+                                                          {:review-mode (keyword (.-value (.namedItem elements "review-mode")))
+                                                           :enabled? (.-checked (.namedItem elements "enabled"))
+                                                           :interval-seconds (* 60 (js/Number (.-value (.namedItem elements "interval"))))}))))}
                        (el/label {} "Integrate updates"
                                  (el/select {:name "review-mode" :aria-label "Incoming review policy" :value (name (:review-mode reply))}
                                             (el/option {:value "fast-forward"} "Apply fast-forwards; propose merges")
@@ -233,9 +244,10 @@
                         (= :filed status) "Incoming proposal"
                         (= :applied status) "Updated from remote"
                         (= :unchanged status) (if (= :push direction) "No outgoing changes" "Up to date")
-                        (= :pushed (:outcome reply)) "Pushed"
+                        (= :pushed (:outcome reply)) "Published"
                         (= :rejected (:outcome reply)) "Push rejected"
-                        (#{:upstream-observed :upstream-unchanged} (:outcome reply)) "Remote head verified"
+                        (= :upstream-observed (:outcome reply)) "Published · verified"
+                        (= :upstream-unchanged (:outcome reply)) "Remote unchanged · edits kept locally"
                         :else nil)
           last-sync (:last-sync origin)]
       (el/div {:class "memory-toolbar memory-remote-toolbar" :aria-label "Git synchronization"}
