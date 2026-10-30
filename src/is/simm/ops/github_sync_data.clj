@@ -31,6 +31,8 @@
                       :geschichte.git.budget/cancelled :cancelled
                       :geschichte.git.client/unsupported-local-projection :local-history
                       :is.simm.ops.owned-reads/refused :access-unverified
+                      :is.simm.model.github-integrations/refused
+                      (when (#{:cursor-changed :unverified-base} reason) :integration-unverified)
                       nil)
                     (case (:pull/status data) :diverged :diverged :local-changes :dirty :missing-branch :source-changed nil)
                     (when (#{::held :is.simm.ops.github-import/held :is.simm.ops.owned-workspace/refused} type)

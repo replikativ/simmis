@@ -72,6 +72,7 @@
                                       :cancelled "The Git operation was cancelled."
                                       :busy "Another native Git operation is active."
                                       :access-unverified "Current room access could not be verified."
+                                      :integration-unverified "The last integrated GitHub revision needs verification. No new update will be applied by guessing from the current files."
                                       "The outcome needs inspection before another action.")))
                             (when (= :ready status)
                               (el/div {}

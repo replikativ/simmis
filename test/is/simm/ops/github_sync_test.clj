@@ -12,6 +12,7 @@
             [geschichte.repo :as repo]
             [geschichte.workspace :as workspace]
             [is.simm.model.github-sync :as journal]
+            [is.simm.model.github-integrations :as integrations]
             [is.simm.model.knowledge-rooms :as rooms]
             [is.simm.ops.github-import-test :as upstream]
             [is.simm.ops.github-import :as import]
@@ -75,7 +76,8 @@
   (with-imported
     (fn [{:keys [call conn creator room-id parent stamp root native-room] :as environment}]
       (let [client (random-uuid) wire {:client-id (str client) :expected-target-stamp (str stamp)}
-            initial (repo/read parent "README.md")]
+            initial (repo/read parent "README.md")
+            initial-cursor (integrations/current-in @conn room-id)]
         (c2! environment)
         (let [ready (call :prepare wire)
               id (journal/request-id creator room-id client)
@@ -108,6 +110,14 @@
                            (call :apply {:client-id (str client) :ready-id (:ready-id ready)}))
                          (finally ((:close! notifier))))]
             (is (= :applied (:status result)))
+            (let [cursor (integrations/current-in @conn room-id)
+                  outcome (journal/sync-in @conn id)]
+              (is (= (:head ready) (:github.integration/head cursor)))
+              (is (= (:git-oid ready) (:github.integration/oid cursor)))
+              (is (= id (:github.integration/sync cursor)))
+              (is (= (:github.sync/outcome outcome) (:github.integration/proof cursor)))
+              (is (= (:github.sync/outcome-id outcome) (:github.integration/proof-id cursor)))
+              (is (= (:github.integration/import-head initial-cursor) (:github.integration/import-head cursor))))
             (is (= "New upstream report\n" (String. ^bytes (repo/read parent "reports/new.md") "UTF-8")))
             (is (= (vec initial) (vec (repo/read parent "README.md"))))
             (is (nil? (journal/active-in @conn room-id)))
@@ -139,10 +149,11 @@
 
 (deftest lost-native-ack-never-resends-and-recovery-is-explicitly-observational
   (with-imported
-    (fn [{:keys [call conn creator room-id parent stamp] :as environment}]
+    (fn [{:keys [call conn creator room-id parent stamp upstream graph] :as environment}]
       (c2! environment)
       (let [client (random-uuid) ready (call :prepare {:client-id (str client) :expected-target-stamp (str stamp)})
-            advance @#'workspace/advance! calls (atom 0)]
+            advance @#'workspace/advance! calls (atom 0)
+            cursor (integrations/current-in @conn room-id)]
         (with-redefs [workspace/advance! (fn [& args] (swap! calls inc) (apply advance args)
                                            (throw (ex-info "Lost native publication ACK" {})))]
           (is (thrown? clojure.lang.ExceptionInfo
@@ -151,10 +162,118 @@
           (is (thrown? clojure.lang.ExceptionInfo
                        (call :apply {:client-id (str client) :ready-id (:ready-id ready)})))
           (is (= :satisfied-observed (:status (call :recover {:client-id (str client)}))))
+          (is (= cursor (integrations/current-in @conn room-id))
+              "Observing the desired files is not proof of an accepted upstream integration")
           (is (= 1 @calls)))
         (is (= "New upstream report\n" (String. ^bytes (repo/read parent "reports/new.md") "UTF-8")))
         (is (= :closed (:github.sync/state (journal/sync-in @conn (journal/request-id creator room-id client)))))
-        (is (nil? (journal/active-in @conn room-id)))))))
+        (is (nil? (journal/active-in @conn room-id)))
+        ;; Optional metadata must not turn observational recovery into a
+        ;; permanent regression of the existing checkpoint-guarded FF path.
+        (repo/write! upstream "README.md" (object/utf8 "# Upstream after recovery\n"))
+        (repo/stage-all! upstream)
+        (let [commit (repo/commit! upstream {:message "After observational recovery"})]
+          (reset! graph (project/project upstream (:geschichte.commit/id commit))))
+        (let [next-client (str (random-uuid))
+              next-ready (call :prepare {:client-id next-client :expected-target-stamp (str stamp)})]
+          (is (= :ready (:status next-ready)))
+          (is (= :applied (:status (call :apply {:client-id next-client :ready-id (:ready-id next-ready)}))))
+          (is (= "# Upstream after recovery\n" (String. ^bytes (repo/read parent "README.md") "UTF-8")))
+          (is (= cursor (integrations/current-in @conn room-id))
+              "Later FF success must not invent proof for the earlier unknown publication"))))))
+
+(deftest fast-forward-without-integration-metadata-does-not-invent-a-base
+  (with-imported
+    (fn [{:keys [call conn room-id parent stamp] :as environment}]
+      (let [cursor (integrations/current-in @conn room-id)]
+        (d/transact conn [[:db/retractEntity (:db/id cursor)]]))
+      (c2! environment)
+      (let [client (str (random-uuid))
+            ready (call :prepare {:client-id client :expected-target-stamp (str stamp)})]
+        (is (= :ready (:status ready)))
+        (is (= :applied (:status (call :apply {:client-id client :ready-id (:ready-id ready)}))))
+        (is (= "New upstream report\n" (String. ^bytes (repo/read parent "reports/new.md") "UTF-8")))
+        (is (nil? (integrations/current-in @conn room-id)))))))
+
+(deftest lost-control-ack-observes-the-atomic-cursor-and-outcome-without-republication
+  (with-imported
+    (fn [{:keys [call conn creator room-id stamp] :as environment}]
+      (c2! environment)
+      (let [client (random-uuid)
+            ready (call :prepare {:client-id (str client) :expected-target-stamp (str stamp)})
+            transact @#'d/transact advance @#'workspace/advance!
+            lost? (atom false) advances (atom 0)
+            result (with-redefs [d/transact
+                                (fn [target tx & args]
+                                  (let [result (apply transact target tx args)]
+                                    (when (and (identical? conn target)
+                                               (= :applied (:github.sync/state
+                                                            (journal/sync-in @conn (journal/request-id creator room-id client))))
+                                               (compare-and-set! lost? false true))
+                                      (throw (ex-info "Lost control outcome ACK" {})))
+                                    result))
+                                workspace/advance!
+                                (fn [& args] (swap! advances inc) (apply advance args))]
+                     (call :apply {:client-id (str client) :ready-id (:ready-id ready)}))
+            row (journal/sync-in @conn (journal/request-id creator room-id client))
+            cursor (integrations/current-in @conn room-id)]
+        (is (true? @lost?))
+        (is (= 1 @advances))
+        (is (= :applied (:status result)))
+        (is (= :closed (:github.sync/state row)))
+        (is (= (:head ready) (:github.integration/head cursor)))
+        (is (= (:github.sync/outcome row) (:github.integration/proof cursor)))))))
+
+(deftest a-cursor-change-after-native-publication-cannot-commit-a-partial-control-outcome
+  (with-imported
+    (fn [{:keys [call conn creator room-id parent stamp] :as environment}]
+      (c2! environment)
+      (let [client (random-uuid)
+            ready (call :prepare {:client-id (str client) :expected-target-stamp (str stamp)})
+            before (integrations/current-in @conn room-id)
+            changed-proof (random-uuid)
+            advance @#'workspace/advance!]
+        (with-redefs [workspace/advance!
+                      (fn [& args]
+                        (let [result (apply advance args)]
+                          (d/transact conn [{:db/id (:db/id before) :github.integration/proof changed-proof}])
+                          result))]
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (call :apply {:client-id (str client) :ready-id (:ready-id ready)}))))
+        (let [row (journal/sync-in @conn (journal/request-id creator room-id client))
+              cursor (integrations/current-in @conn room-id)]
+          (is (= :applying (:github.sync/state row)))
+          (is (nil? (:github.sync/outcome row)))
+          (is (= (:github.integration/head before) (:github.integration/head cursor)))
+          (is (= changed-proof (:github.integration/proof cursor)))
+          (is (= "New upstream report\n" (String. ^bytes (repo/read parent "reports/new.md") "UTF-8")))
+          (is (= :satisfied-observed (:status (call :recover {:client-id (str client)}))))
+          (is (= cursor (integrations/current-in @conn room-id))))))))
+
+(deftest successive-syncs-use-the-last-positive-upstream-and-preserve-no-op-proofs
+  (with-imported
+    (fn [{:keys [call conn room-id stamp upstream graph] :as environment}]
+      (let [initial (integrations/current-in @conn room-id)
+            apply-next! (fn []
+                          (let [client (str (random-uuid))
+                                ready (call :prepare {:client-id client :expected-target-stamp (str stamp)})]
+                            (is (= :ready (:status ready)))
+                            (is (= :applied (:status (call :apply {:client-id client :ready-id (:ready-id ready)}))))
+                            ready))]
+        (c2! environment)
+        (let [first-update (apply-next!) first-cursor (integrations/current-in @conn room-id)]
+          (repo/write! upstream "README.md" (object/utf8 "# Revision three\n"))
+          (repo/stage-all! upstream)
+          (let [commit (repo/commit! upstream {:message "C3"})]
+            (reset! graph (project/project upstream (:geschichte.commit/id commit))))
+          (let [second-update (apply-next!) second-cursor (integrations/current-in @conn room-id)]
+            (is (= (:head first-update) (:base-head second-update)))
+            (is (= (:head second-update) (:github.integration/head second-cursor)))
+            (is (not= (:github.integration/proof first-cursor) (:github.integration/proof second-cursor)))
+            (is (= (:github.integration/import-head initial) (:github.integration/import-head second-cursor)))
+            (is (= 0 (:total (apply-next!))))
+            (is (= second-cursor (integrations/current-in @conn room-id)))
+            (is (nil? (journal/active-in @conn room-id)))))))))
 
 (deftest another-native-git-owner-refuses-before-journal-or-fork
   (with-imported
