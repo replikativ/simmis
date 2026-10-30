@@ -6,6 +6,7 @@
             [is.simm.documents.github-source :as github]
             [is.simm.model.github-connections :as connections]
             [is.simm.model.github-credentials :as credentials]
+            [is.simm.model.personal-connections :as accounts]
             [is.simm.model.github-integrations :as integrations]
             [is.simm.model.mail-credentials :as envelope]
             [is.simm.ops.file-output-adoption :as adoption]
@@ -21,15 +22,45 @@
     {:by (get-in context [:resolved :party]) :connection-id (connections/connection-id connection)
      :connection connection :cursor cursor}))
 
+(defn- status-in [context db by connection-id connection row]
+  {:configured? (boolean (credentials/binding-in db row)) :connection-id (str connection-id)
+   :repository (get-in connection [:source :repository]) :ref (:ref connection)
+   :target-stamp (str (get-in context [:bound :target-stamp]))
+   :revision (some-> (:github.credential/revision row) str)})
+
 (defn status!
   "Only this human's configured/revision status, never the encrypted envelope."
   [context]
   (let [{:keys [by connection-id connection]} (identity! context)
-        row (credentials/current-in @(:conn context) by connection-id)]
-    {:configured? (boolean (credentials/binding-of row)) :connection-id (str connection-id)
-     :repository (get-in connection [:source :repository]) :ref (:ref connection)
-     :target-stamp (str (get-in context [:bound :target-stamp]))
-     :revision (some-> (:github.credential/revision row) str)}))
+        db @(:conn context) row (credentials/current-in db by connection-id)]
+    (status-in context db by connection-id connection row)))
+
+(defn selection! [context]
+  (let [{:keys [by connection-id connection]} (identity! context)
+        db @(:conn context) row (credentials/current-in db by connection-id)]
+    (assoc (status-in context db by connection-id connection row)
+           :configured? (boolean (and (:github.credential/account-id row) (credentials/binding-in db row)))
+           :account-id (when (credentials/binding-of row) (some-> (:github.credential/account-id row) str))
+           :accounts (accounts/list-in db by))))
+
+(defn selected? [context]
+  (let [{:keys [by connection-id]} (identity! context)]
+    (boolean (credentials/binding-of (credentials/current-in @(:conn context) by connection-id)))))
+
+(declare expected!)
+
+(defn bind! [context expected-connection revision account-id account-revision]
+  (let [{:keys [by connection-id cursor]} (identity! context)
+        _ (when-not (= expected-connection connection-id) (refuse! :connection-changed))
+        row (credentials/current-in @(:conn context) by connection-id)
+        _ (expected! row revision) next-revision (random-uuid)]
+    (d/transact (:conn context)
+                [[:db.fn/call (fn [db]
+                                (host/writer-current! context db)
+                                (when-not (= cursor (integrations/current-in db (:github.integration/room cursor)))
+                                  (refuse! :connection-changed))
+                                (credentials/bind-tx db by connection-id row next-revision account-id account-revision))]])
+    (selection! context)))
 
 (defn- expected! [row revision]
   (when-not (= revision (:github.credential/revision row)) (refuse! :credential-changed)))
@@ -81,13 +112,21 @@
    original operation. No request-selected transport, token or actor."
   [context body]
   (let [{:keys [by connection-id connection]} (identity! context)
-        row (credentials/current-in @(:conn context) by connection-id)
-        expected (or (credentials/binding-of row) (refuse! :credential-required))
-        secret (try (envelope/decrypt (credentials/id by connection-id)
-                                      (:github.credential/nonce row) (:github.credential/ciphertext row))
+        db @(:conn context) row (credentials/current-in db by connection-id)
+        account-id (:github.credential/account-id row)
+        _ (when (and (:require-personal-credential? context) (nil? account-id)) (refuse! :credential-required))
+        expected (or (credentials/binding-in db row) (refuse! :credential-required))
+        account (when account-id (accounts/current-in db by account-id))
+        secret (try (if account-id
+                      (envelope/decrypt account-id (:integration.account/nonce account) (:integration.account/ciphertext account))
+                      (envelope/decrypt (credentials/id by connection-id)
+                                        (:github.credential/nonce row) (:github.credential/ciphertext row)))
                     (catch Exception _ (refuse! :credential-unavailable)))
-        _ (when-not (and (= (select-keys secret [:version :kind :by :connection-id])
-                            {:version 1 :kind :github :by by :connection-id connection-id})
+        _ (when-not (and (if account-id
+                           (= (select-keys secret [:version :kind :by :account-id])
+                              {:version 1 :kind :github-account :by by :account-id account-id})
+                           (= (select-keys secret [:version :kind :by :connection-id])
+                              {:version 1 :kind :github :by by :connection-id connection-id}))
                          (string? (:token secret)) (re-matches #"[A-Za-z0-9_]{20,512}" (:token secret)))
             (refuse! :credential-unavailable))
         base (github/public-url (:source connection))

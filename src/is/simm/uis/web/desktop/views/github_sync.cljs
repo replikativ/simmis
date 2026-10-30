@@ -3,7 +3,8 @@
             [is.simm.documents.github-source :as source]
             [is.simm.uis.web.desktop.connection-epoch :as connection]
             [is.simm.uis.web.desktop.github-sync :as sync]
-            [is.simm.uis.web.desktop.github-credentials :as credential-state]))
+            [is.simm.uis.web.desktop.github-credentials :as credential-state]
+            [is.simm.uis.web.desktop.signals :as sig]))
 
 (defn- click [action]
   (fn [event] (when (.. event -currentTarget -isConnected) (action))))
@@ -129,32 +130,39 @@
                                (if (= :ready status) "Cancel prepared push" "Close attempt")))))))
 
 (defn credential-view [memory state credentials]
-  (let [credential (:credential-reply state) credential-loading? (:credential-loading? state)
-        credential-offer (credential-state/action-basis (sync/action-basis state memory (connection/snapshot)) state)]
+  (let [credential (:credential-reply state) loading? (:credential-loading? state)
+        offer (credential-state/action-basis (sync/action-basis state memory (connection/snapshot)) state)
+        accounts (filterv :configured? (:accounts credential))]
     (el/div {:class "memory-properties"}
             (el/p {:class "memory-note"}
-                  "Use a fine-grained GitHub token for this repository with Contents read and write. Access belongs to your account; it is not shared with the room.")
-            (cond
-              credential-loading? (el/p {:class "memory-note"} "Checking GitHub access…")
-              (:credential-error state) (el/div {:class "proposal-error" :role "status"}
-                                                (:credential-error state)
-                                                (el/button {:class "btn btn-sm" :on-click (click #((:reload credentials) credential-offer))} "Reload settings"))
-              credential
+                  "Choose your personal GitHub connection and authorize it for this repository. Room membership does not share your token.")
+            (when loading? (el/p {:class "memory-note"} "Checking repository access…"))
+            (when-let [error (:credential-error state)] (el/p {:class "proposal-error" :role "status"} error))
+            (when (and credential (seq accounts))
               (el/form {:on-submit (fn [event]
                                      (.preventDefault event)
                                      (when (.. event -currentTarget -isConnected)
-                                       (let [input (.namedItem (.. event -currentTarget -elements) "github-token")
-                                             token (.-value input)]
-                                         (set! (.-value input) "")
-                                         ((:save credentials) credential-offer token))))}
-                       (el/label {} (if (:configured? credential) "Replace your token" "Repository token")
-                                 (el/input {:type "password" :name "github-token" :autocomplete "off"
-                                            :minlength 20 :maxlength 512 :required true
-                                            :placeholder "Token is stored encrypted on this server"}))
-                       (el/button {:class "btn btn-sm" :type "submit" :disabled credential-loading?} "Save access")
-                       (when (:configured? credential)
-                         (el/button {:class "btn btn-sm" :type "button" :disabled credential-loading?
-                                     :on-click (click #((:revoke credentials) credential-offer))} "Disconnect")))))))
+                                       (let [id (.-value (.namedItem (.. event -currentTarget -elements) "personal-connection"))
+                                             selected (some #(when (= id (:id %)) %) accounts)]
+                                         (when selected ((:bind credentials) offer selected)))))}
+                       (el/label {} "Your connection"
+                                 (el/select {:name "personal-connection" :value (or (some #(when (= (:id %) (:account-id credential)) (:id %)) accounts)
+                                                                                    (:id (first accounts)))
+                                             :aria-label "Personal GitHub connection"}
+                                            (for [account accounts]
+                                              (el/option {:key (:id account) :value (:id account)} (:name account)))))
+                       (el/button {:class "btn btn-sm" :type "submit" :disabled loading?} "Authorize this Memory")))
+            (when (and credential (empty? accounts))
+              (el/p {:class "memory-note"} "Connect GitHub in your personal settings first."))
+            (when (:configured? credential)
+              (el/p {:class "memory-note"} "Your selected connection is authorized for this repository."))
+            (when (:account-id credential)
+              (el/button {:class "btn btn-sm" :disabled loading?
+                          :on-click (click #((:revoke credentials) offer))} "Unlink this Memory"))
+            (el/button {:class "btn btn-sm" :disabled loading?
+                        :on-click (click #((:reload credentials) offer))} "Reload access")
+            (el/button {:class "btn btn-sm"
+                        :on-click (click #(sig/open-or-activate-tab! :settings nil {:title "Settings"}))} "Manage personal connections"))))
 
 (defn- active? [state]
   (and (:intent state) (not (sync/terminal (get-in state [:reply :status])))))
@@ -235,6 +243,6 @@
                             (retirement-control memory pull pull-state)
                             (when ((:enabled? pull))
                               (el/div {}
-                                      (el/h4 {} "Your GitHub access")
+                                      (el/h4 {} "Repository access")
                                       (credential-view memory push-state credentials))))
                     (el/p {:class "memory-note"} "This Memory has no linked remote."))))))

@@ -161,15 +161,32 @@ timer or local refresh. The interface describes a linked remote; GitHub is the
 currently supported transport/authentication adapter. Arbitrary Git hosts and
 direct Geschichte remotes are not enabled by this UI consolidation.
 
-**Your GitHub access** stores a credential for this human and this exact physical Git
-connection. Room membership never shares a token. Replacement and disconnect
-require the inspected connection and credential revision. A stale settings form
-cannot overwrite rotated access or retarget its token to another connection.
-The encrypted envelope uses the existing server credential key, with a
-domain-separated identity and authenticated human/connection body. Only access
-status and identity/revision metadata return to the browser; neither ciphertext
-nor token enters Room files, push artifacts or receipts. The password input is
-uncontrolled and clears on submission; tokens are never stored in UI signals.
+**Settings → Connections** stores named personal GitHub connections. Each token
+is encrypted on this server and belongs to its human owner. A connection can be
+reused across Memories; creating or joining a Memory never grants it access to
+another human's token. This first adapter uses fine-grained GitHub tokens rather
+than OAuth. Imported repositories are still public-only.
+
+**Memory settings → Repository access** selects one of your active personal
+connections and explicitly authorizes it for the exact physical repository/ref
+connection. Unlinking one Memory leaves the personal connection and other Memory
+grants intact. Disconnecting a personal connection stops its use everywhere.
+These grants do not delegate publication to room members or agents.
+
+The Memory grant selects a stable personal connection ID. Every push preparation
+freezes both the grant revision and the current token revision. Replacing a token
+invalidates old reviews; fresh reviews can use the replacement without manually
+relinking every Memory. Selection checks the inspected personal revision and
+Memory grant together in the control writer. A stale settings form cannot
+silently replace a newer selection. Existing admitted preparations retain their
+original credential binding; new preparations require a personal connection.
+
+Only public metadata returns to the browser. Neither tokens nor encrypted
+envelopes enter Room files, push artifacts or receipts. Password fields clear
+before submission, and tokens are never stored in UI signals. If saving has an
+uncertain outcome, reloading connections observes the saved state without
+resending the token. The vault and its RPCs belong to the original App lifetime;
+speculative UI contexts cannot perform real credential operations.
 
 Authenticated transport permits only the canonical repository's four Git
 advertisement/RPC destinations, without redirects. Current credential revisions

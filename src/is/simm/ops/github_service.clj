@@ -24,8 +24,8 @@
       (or (= :prepare-push operation) (= :push (journal/kind row)))
       (try (if (or (#{:prepare :apply} action)
                    (and (= :recover action) (= :sending (:github.sync/state row))
-                        (:configured? (credentials/status! context))))
-             (credentials/with-transport! context #(push/in! % action request))
+                        (credentials/selected? context)))
+             (credentials/with-transport! (assoc context :require-personal-credential? (and (= :prepare action) (nil? row))) #(push/in! % action request))
         ;; Sources currently must be public. Without a configured credential,
         ;; explicit recovery can still read public refs. A selected credential
         ;; failure never retries anonymously. Terminal cleanup needs no token.
@@ -63,24 +63,30 @@
    returned; the observed revision is required for replacement/revocation."
   [party room operation request]
   (let [fields (case operation :status #{:expected-target-stamp}
-                     :save #{:connection-id :revision :token} :revoke #{:connection-id :revision} nil)
+                     :select #{:expected-target-stamp}
+                     :bind #{:connection-id :revision :account-id :account-revision} :revoke #{:connection-id :revision} nil)
         revision (:revision request)]
     (when-not (and fields (map? request) (= fields (set (keys request)))
                    (or (nil? revision)
                        (and (string? revision) (= revision (some-> revision parse-uuid str))))
-                   (let [id (if (= :status operation) (:expected-target-stamp request) (:connection-id request))]
+                   (let [id (if (#{:status :select} operation) (:expected-target-stamp request) (:connection-id request))]
                      (and (string? id) (= id (some-> id parse-uuid str))))
-                   (or (not= :save operation)
-                       (and (string? (:token request)) (<= 20 (count (:token request)) 512))))
+                   (or (not= :bind operation)
+                       (every? #(and (string? %) (= % (some-> % parse-uuid str))) [(:account-id request) (:account-revision request)])))
       (facts/refuse! :invalid-request))
-    (host/capture party room (if (= :status operation) :observe :review)
+    (host/capture party room (if (#{:status :select} operation) :observe :review)
                   (fn [context]
                     (case operation
                       :status (do (when-not (= (parse-uuid (:expected-target-stamp request)) (get-in context [:bound :target-stamp]))
                                     (facts/refuse! :target-changed))
                                   (credentials/status! context))
-                      :save (credentials/save! context (parse-uuid (:connection-id request)) (some-> revision parse-uuid) (:token request))
-                      :revoke (credentials/revoke! context (parse-uuid (:connection-id request)) (some-> revision parse-uuid)))))))
+                      :select (do (when-not (= (parse-uuid (:expected-target-stamp request)) (get-in context [:bound :target-stamp]))
+                                    (facts/refuse! :target-changed))
+                                  (credentials/selection! context))
+                      :bind (credentials/bind! context (parse-uuid (:connection-id request)) (some-> revision parse-uuid)
+                                               (parse-uuid (:account-id request)) (parse-uuid (:account-revision request)))
+                      :revoke (do (credentials/revoke! context (parse-uuid (:connection-id request)) (some-> revision parse-uuid))
+                                  (credentials/selection! context)))))))
 
 (defn in!
   "Synchronous fixed entry inside an original retained App operation. Scheduled

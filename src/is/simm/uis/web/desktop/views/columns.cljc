@@ -908,6 +908,8 @@
              ;; from the parent can leave a retained child holding its initial
              ;; nil snapshot after the room handshake completes.
              room-states (iv/get-new (track db-sig/room-states))
+             personal-connections (iv/get-new (track sig/personal-connections-state))
+             _personal-epoch (iv/get-new (track sig/memory-connection))
              room-roster (iv/get-new (track sig/user-rooms))
              ;; The owning column and tab travel WITH the tab data: a room
              ;; header action rendered in an inactive column must act on that
@@ -1021,7 +1023,7 @@
                                                               :benchmark-reports benchmark-reports
                                                               :capture-connection capture-connection)
                                                  (#{:memory :proposal-source :new-room :new-kb :add-memory :add-team :workflows} (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
-                                               local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
+                                               local-db chat-windows (cond-> settings-data settings-data (assoc :personal-connections-state personal-connections)) admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")

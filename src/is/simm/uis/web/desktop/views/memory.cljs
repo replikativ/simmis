@@ -856,6 +856,7 @@
                        (str "Memory · " (:room-id data)))
          states (iv/get-new (track sig/memory-editor-state))
          git-states (iv/get-new (track sig/github-sync-state))
+         _personal-connections (iv/get-new (track sig/personal-connections-state))
          syntax-pref (iv/get-new (track sig/syntax-pref))
          a (actions/controller data) state (get states (:owner a))
          github-action (github/controller data (:state a))

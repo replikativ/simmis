@@ -284,6 +284,7 @@
    "load-feed!"              [(c :none AUTH)]
    "set-task-status!"        [(c :kb-scope MEMBERS)]
    ;; --- settings (own) -------------------------------------------------------
+   "personal-connection-operation!" [(c :none AUTH)]
    "load-settings!"          [(c :owner-self OWNER)]
    "save-env-var!"           [(c :owner-self OWNER)]
    "delete-env-var!"         [(c :owner-self OWNER)]

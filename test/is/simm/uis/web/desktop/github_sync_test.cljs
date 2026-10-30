@@ -9,6 +9,7 @@
             [is.simm.uis.web.desktop.memory-actions :as memory]
             [is.simm.uis.web.desktop.github-sync :as sync]
             [is.simm.uis.web.desktop.github-credentials :as credentials]
+            [is.simm.uis.web.desktop.personal-connections :as personal]
             [is.simm.uis.web.desktop.github-remote :as remote]
             [is.simm.uis.web.desktop.refs :as refs]
             [is.simm.uis.web.desktop.views.github-sync :as view]
@@ -30,6 +31,7 @@
                  :total 1 :changes [{:path "<script>alert(1)</script>.md" :kind :added}]}]
       (with-redefs [web/current-session (constantly session) web/current-session? #(= session %)
                     sig/github-sync-state (signal runtime {})
+                    sig/personal-connections-state (signal runtime {})
                     sig/user-rooms (signal runtime {:rooms [{:room/id room}]})
                     sig/memory-connection (signal runtime {:epoch (random-uuid)})
                     connection/snapshot #(binding [ec/*execution-context* runtime] @sig/memory-connection)
@@ -252,19 +254,19 @@
     (fn [{:keys [room memory]}]
       (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))
             c (credentials/controller a #(deref memory)) calls (atom [])
-            token (apply str (repeat 24 "x")) connection-id (str (random-uuid))]
+            token {:id (str (random-uuid)) :revision (str (random-uuid))} connection-id (str (random-uuid))]
         (with-redefs [remote/github-credential-operation!
                       (fn [_ _ operation request]
                         (fn [ok error] (swap! calls conj {:operation operation :request request :ok ok :error error})))]
           ((:ensure c))
-          (is (= [:status] (mapv :operation @calls)))
-          ((:ok (last @calls)) {:configured? false :revision nil :connection-id connection-id
+          (is (= [:select] (mapv :operation @calls)))
+          ((:ok (last @calls)) {:account-id nil :accounts [] :configured? false :revision nil :connection-id connection-id
                                 :target-stamp (str (:target-stamp @memory))
                                 :repository "owner/repository" :ref "refs/heads/main"})
-          ((:save c) ((:basis c)) token)
-          (is (= [:status :save] (mapv :operation @calls)))
-          (is (= token (get-in (last @calls) [:request :token])))
-          (is (not (.includes (pr-str @sig/github-sync-state) token)))
+          ((:bind c) ((:basis c)) token)
+          (is (= [:select :bind] (mapv :operation @calls)))
+          (is (= (:id token) (get-in (last @calls) [:request :account-id])))
+          (is (not (contains? (:request (last @calls)) :token)))
           ((:error (last @calls)) (js/Error. "Do not forward provider text"))
           ((:ensure c))
           (is (= 2 (count @calls)) "A failed save is not retried by rendering")
@@ -275,7 +277,7 @@
     (fn [{:keys [room memory]}]
       (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))
             c (credentials/controller a #(deref memory)) calls (atom [])
-            response (fn [] {:configured? false :revision nil :connection-id (str (random-uuid))
+            response (fn [] {:account-id nil :accounts [] :configured? false :revision nil :connection-id (str (random-uuid))
                              :target-stamp (str (:target-stamp @memory))
                              :repository (get-in @memory [:github-source :repository]) :ref "refs/heads/main"})]
         (with-redefs [remote/github-credential-operation!
@@ -285,15 +287,15 @@
           (let [old (first @calls)]
             (reset! sig/memory-connection {:epoch (random-uuid)})
             ((:ensure c))
-            (is (= [:status :status] (mapv :operation @calls)))
+            (is (= [:select :select] (mapv :operation @calls)))
             ((:ok old) (response))
             (is (:credential-loading? ((:state a))))
             ((:ok (last @calls)) (response)))
-          ((:save c) ((:basis c)) (apply str (repeat 24 "x")))
+          ((:bind c) ((:basis c)) {:id (str (random-uuid)) :revision (str (random-uuid))})
           (let [save (last @calls)]
             (swap! memory assoc-in [:github-source :repository] "owner/another")
             ((:ensure c))
-            (is (= [:status :status :save :status] (mapv :operation @calls)))
+            (is (= [:select :select :bind :select] (mapv :operation @calls)))
             (is (= #{:expected-target-stamp} (set (keys (:request (last @calls))))))
             ((:error save) (js/Error. "Lost old save"))
             (is (:credential-loading? ((:state a))))
@@ -305,7 +307,7 @@
     (fn [{:keys [room memory]}]
       (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))
             c (credentials/controller a #(deref memory)) calls (atom [])
-            response {:configured? true :revision (str (random-uuid)) :connection-id (str (random-uuid))
+            response {:account-id (str (random-uuid)) :accounts [] :configured? true :revision (str (random-uuid)) :connection-id (str (random-uuid))
                       :target-stamp (str (:target-stamp @memory))
                       :repository "owner/repository" :ref "refs/heads/main"}]
         (with-redefs [remote/github-credential-operation!
@@ -317,8 +319,8 @@
             ((:reload c) old-offer)
             ((:ok (last @calls)) (assoc response :revision (str (random-uuid))))
             ((:revoke c) old-offer)
-            ((:save c) old-offer (apply str (repeat 24 "x")))
-            (is (= [:status :status] (mapv :operation @calls)))
+            ((:bind c) old-offer {:id (str (random-uuid)) :revision (str (random-uuid))})
+            (is (= [:select :select] (mapv :operation @calls)))
             ((:revoke c) ((:basis c)))
             (is (= :revoke (:operation (last @calls))))))))))
 
@@ -346,7 +348,7 @@
   (with-client
     (fn [{:keys [a state memory]}]
       (let [container (.createElement js/document "div") stop (atom nil) closed (atom false)
-            credentials {:basis (constantly {}) :reload (fn [_]) :save (fn [& _]) :revoke (fn [_])}]
+            credentials {:basis (constantly {}) :reload (fn [_]) :bind (fn [& _]) :revoke (fn [_])}]
         (.appendChild (.-body js/document) container)
         (try
           (reset! stop (browser/mount! container
@@ -354,8 +356,8 @@
                                                            {:settings-open #(reset! closed (not %))}
                                                            a (state) {:credential-reply {:configured? false}} credentials)))
           (is (some? (.querySelector container "[role=dialog][aria-label='Memory settings']")))
-          (is (some? (.querySelector container "input[type=password]")))
-          (is (.includes (.-textContent container) "Your GitHub access"))
+          (is (nil? (.querySelector container "input[type=password]")))
+          (is (.includes (.-textContent container) "Repository access"))
           (.click (.querySelector container "button[aria-label='Close Memory settings']"))
           (is @closed)
           (finally (when @stop (browser/unmount! @stop)) (.remove container)))))))
@@ -385,7 +387,8 @@
     (fn [{:keys [room memory]}]
       (let [a (sync/controller {:room-id room :github-direction :push} #(deref memory))
             c (credentials/controller a #(deref memory)) calls (atom [])
-            reply {:configured? true :revision (str (random-uuid)) :connection-id (str (random-uuid))
+            reply {:account-id (str (random-uuid)) :accounts []
+                   :configured? true :revision (str (random-uuid)) :connection-id (str (random-uuid))
                    :target-stamp (str (:target-stamp @memory)) :repository "owner/repository" :ref "refs/heads/main"}]
         (with-redefs [remote/github-credential-operation!
                       (fn [_ _ operation request]
@@ -397,12 +400,41 @@
             (.appendChild (.-body js/document) container)
             (try
               (reset! stop (browser/mount! container (view/credential-view @memory old-state c)))
-              (let [disconnect (some #(when (= "Disconnect" (.-textContent %)) %) (array-seq (.querySelectorAll container "button")))
-                    input (.querySelector container "input[type=password]")]
-                (is (some? disconnect))
-                (.click disconnect)
-                (set! (.-value input) (apply str (repeat 24 "x")))
-                (.dispatchEvent (.querySelector container "form") (js/Event. "submit" #js {:bubbles true :cancelable true}))
-                (is (= [:status :status] (mapv :operation @calls)))
-                (is (= "" (.-value input))))
+              (let [unlink (some #(when (= "Unlink this Memory" (.-textContent %)) %) (array-seq (.querySelectorAll container "button")))]
+                (is (some? unlink)) (.click unlink)
+                (is (= [:select :select] (mapv :operation @calls)))
+                (is (nil? (.querySelector container "input[type=password]"))))
               (finally (when @stop (browser/unmount! @stop)) (.remove container)))))))))
+
+(deftest personal-vault-writes-are-never-admitted-from-copied-contexts
+  (with-client
+    (fn [_]
+      (let [calls (atom []) parent (personal/controller) offer ((:basis parent))
+            child (context/fork-context runtime) id (str (random-uuid)) rev (str (random-uuid))]
+        (try
+          (with-redefs [remote/personal-connection-operation! (fn [& args] (swap! calls conj args) (fn [& _]))]
+            (binding [ec/*execution-context* child]
+              ((:ensure parent)) ((:save parent) offer id nil "GitHub" "transient") ((:revoke parent) offer id rev))
+            (let [forked (binding [ec/*execution-context* child] (personal/controller))]
+              ((:ensure forked)) ((:save forked) ((:basis forked)) id nil "GitHub" "transient")
+              ((:revoke forked) ((:basis forked)) id rev))
+            (is (empty? @calls)))
+          (finally (context/close-context! child)))))))
+
+(deftest lost-personal-save-ack-only-allows-metadata-observation
+  (with-client
+    (fn [_]
+      (let [calls (atom []) a (personal/controller) token "transient_secret_not_signal"]
+        (with-redefs [remote/personal-connection-operation!
+                      (fn [_ operation request]
+                        (fn [ok error] (swap! calls conj {:operation operation :request request :ok ok :error error})))]
+          ((:ensure a)) ((:ok (last @calls)) [])
+          ((:save a) ((:basis a)) (str (random-uuid)) nil "GitHub" token)
+          (is (= token (get-in (last @calls) [:request :token])))
+          (is (not (.includes (pr-str @sig/personal-connections-state) token)))
+          ((:error (last @calls)) (js/Error. "Lost ACK"))
+          ((:ensure a))
+          (is (= [:list :save] (mapv :operation @calls)))
+          ((:reload a) ((:basis a)))
+          (is (= [:list :save :list] (mapv :operation @calls)))
+          (is (= {} (:request (last @calls)))))))))

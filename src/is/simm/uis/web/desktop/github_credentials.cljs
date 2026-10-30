@@ -6,6 +6,7 @@
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.uis.web.desktop.connection-epoch :as connection]
             [is.simm.uis.web.desktop.github-remote :as remote]
+            [is.simm.uis.web.desktop.personal-connections :as personal]
             [is.simm.runtimes.web :as web]))
 
 (defn- uuid-string? [s] (and (string? s) (= s (some-> s parse-uuid str))))
@@ -23,7 +24,8 @@
                               (identical? (ec/home-context ec/*execution-context*) (ec/home-context ctx))))
         scope #(binding [ec/*execution-context* ctx]
                  [(connection/snapshot) (:target-stamp (memory-state))
-                  (select-keys (:github-source (memory-state)) [:repository :ref])])
+                  (select-keys (:github-source (memory-state)) [:repository :ref])
+                  (:rows @sig/personal-connections-state)])
         basis #(binding [ec/*execution-context* ctx]
                  (action-basis ((:basis actions)) (state)))
         update! (fn [f & args]
@@ -37,8 +39,9 @@
                         valid-save? (and (= observed (:credential-observed (state)))
                                          (uuid-string? (:connection-id reply)))
                         request (case operation
-                                  :status {:expected-target-stamp (str stamp)}
-                                  :save {:connection-id (:connection-id reply) :revision (:revision reply) :token token}
+                                  :select {:expected-target-stamp (str stamp)}
+                                  :bind {:connection-id (:connection-id reply) :revision (:revision reply)
+                                         :account-id (:id token) :account-revision (:revision token)}
                                   :revoke {:connection-id (:connection-id reply) :revision (:revision reply)})
                         owns? #(and (current?) (= ticket (:credential-ticket (state)))
                                     (not= ticket (:credential-finished (state))))
@@ -51,15 +54,16 @@
                                (binding [ec/*execution-context* ctx]
                                  (when (owns?)
                                    (if (and (= observed (scope))
-                                            (= #{:configured? :revision :connection-id :target-stamp :repository :ref} (set (keys result)))
-                                            (boolean? (:configured? result)) (uuid-string? (:connection-id result))
+                                            (= #{:configured? :revision :connection-id :target-stamp :repository :ref :account-id :accounts} (set (keys result)))
+                                            (boolean? (:configured? result)) (personal/metadata? (:accounts result))
+                                            (or (nil? (:account-id result)) (uuid-string? (:account-id result))) (uuid-string? (:connection-id result))
                                             (or (nil? (:revision result)) (uuid-string? (:revision result)))
                                             (= (str stamp) (:target-stamp result))
                                             (= source (select-keys result [:repository :ref])))
                                      (update! assoc :credential-loading? false :credential-finished ticket :credential-error nil
                                               :credential-observed observed :credential-reply result)
                                      (fail nil)))))]
-                    (when (or (= :status operation) valid-save?)
+                    (when (or (= :select operation) valid-save?)
                       (update! assoc :credential-ticket ticket :credential-loading? true :credential-error nil
                                :credential-requested observed)
                       (try
@@ -74,9 +78,9 @@
                   (update! assoc :credential-ticket (random-uuid) :credential-loading? false
                            :credential-reply nil :credential-observed nil :credential-error nil))
                 (when (and (not (:credential-loading? (state))) (not= (scope) (:credential-observed (state))))
-                  (request! (basis) :status nil))))]
+                  (request! (basis) :select nil))))]
       {:ensure ensure! :basis basis
        :open (fn [open?] (when (owner-call?) (update! assoc :credential-open? open?)))
-       :reload #(request! % :status nil)
-       :save #(request! %1 :save %2)
+       :reload #(request! % :select nil)
+       :bind #(request! %1 :bind %2)
        :revoke #(request! % :revoke nil)})))

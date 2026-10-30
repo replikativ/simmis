@@ -8,6 +8,7 @@
             [geschichte.repo :as repo]
             [is.simm.model.github-integrations :as integrations]
             [is.simm.model.github-credentials :as credentials]
+            [is.simm.model.personal-connections :as accounts]
             [is.simm.model.mail-credentials :as envelope]
             [is.simm.model.github-sync :as journal]
             [is.simm.ops.github-host :as host]
@@ -189,28 +190,29 @@
 (deftest credential-rotation-or-revocation-after-ready-cannot-send
   (#'fixture/with-imported
    (fn [{:keys [parent conn room-id creator stamp]}]
-     (d/transact conn credentials/schema)
+     (d/transact conn (concat credentials/schema accounts/schema))
      (repo/write! parent "local.md" (object/utf8 "Saved outbound work\n"))
      (repo/stage-all! parent)
      (repo/commit! parent {:message "Saved outbound work"})
      (let [connection-id (:github.integration/connection-id (integrations/current-in @conn room-id))
-           encrypted {:nonce "nonce" :ciphertext "ciphertext"} sends (atom 0)
+           encrypted {:nonce "nonce" :ciphertext "ciphertext"} account-id (random-uuid) account-revision (random-uuid) sends (atom 0)
            client (str (random-uuid))
            invoke (fn [action request] ((service/prepare creator room-id action request)))]
-       (d/transact conn (credentials/replace-tx @conn creator connection-id nil (random-uuid) encrypted))
-       (with-redefs [envelope/decrypt (fn [& _] {:version 1 :kind :github :by creator :connection-id connection-id
+       (d/transact conn (accounts/replace-tx @conn creator account-id nil account-revision "GitHub" encrypted))
+       (d/transact conn (credentials/bind-tx @conn creator connection-id nil (random-uuid) account-id account-revision))
+       (with-redefs [envelope/decrypt (fn [& _] {:version 1 :kind :github-account :by creator :account-id account-id
                                                  :token (apply str (repeat 24 "x"))})
                      git/prepare-http! (fn [_ _ _ head options]
                                          (assoc (git/prepare parent head options) :capabilities ["report-status"]))
                      git/send-http! (fn [& _] (swap! sends inc) (throw (AssertionError. "Changed credential sent")))]
          (let [ready (invoke :prepare-push {:client-id client :expected-target-stamp (str stamp)})
                request {:client-id client :ready-id (:ready-id ready)}
-               row (credentials/current-in @conn creator connection-id)]
+               row (accounts/current-in @conn creator account-id)]
            (is (= :ready (:status ready)))
-           (d/transact conn (credentials/replace-tx @conn creator connection-id row (random-uuid) encrypted))
+           (d/transact conn (accounts/replace-tx @conn creator account-id row (random-uuid) "GitHub" encrypted))
            (is (thrown? clojure.lang.ExceptionInfo (invoke :apply request)))
-           (let [row (credentials/current-in @conn creator connection-id)]
-             (d/transact conn (credentials/revoke-tx @conn creator connection-id row (random-uuid))))
+           (let [row (accounts/current-in @conn creator account-id)]
+             (d/transact conn (accounts/revoke-tx @conn creator account-id row (random-uuid))))
            (is (thrown? clojure.lang.ExceptionInfo (invoke :apply request)))
            (is (zero? @sends))
            (is (= :ready (:status (invoke :observe {:client-id client}))))

@@ -6,6 +6,7 @@
             #?(:clj [org.replikativ.spindel.blocking :as blocking])
             #?(:clj [is.simm.model.access :as access])
             #?(:clj [is.simm.ops.github-service :as service])
+            #?(:clj [is.simm.ops.personal-connections :as personal])
             #?(:clj [is.simm.ops.github-decisions :as decisions])
             #?(:clj [is.simm.ops.github-sync-data :as facts])
             #?(:clj [is.simm.ops.file-output-adoption :as adoption])
@@ -67,3 +68,9 @@
                            (throw (ex-info "Invalid room identity" {:type :validation-error})))
                          (let [body (service/prepare-credential (access/authenticated-party-id) (parse-uuid room-id-str) operation request)]
                            (await (blocking/blocking body)))) :cljs nil)))
+
+(defn-spin-remote personal-connection-operation!
+  [server-id operation request]
+  (spin-remote server-id [operation request]
+               #?(:clj (let [body (personal/prepare (access/authenticated-party-id) operation request)]
+                         (await (blocking/blocking body))) :cljs nil)))

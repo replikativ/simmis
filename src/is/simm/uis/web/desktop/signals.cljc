@@ -59,6 +59,10 @@
             Shape: {:profile {...} :env-vars [...] :budget {...} :ui-prefs {:ui-pref/syntax :clojure}} or nil."
            (signal runtime nil)))
 
+#?(:cljs (def personal-connections-state
+           "Context-owned metadata only; provider secrets never enter this signal."
+           (signal runtime {})))
+
 #?(:cljs (def syntax-pref
            "Signal for preferred code syntax view: :clojure or :superficie.
             Initialised from :ui-prefs in settings-data after login.
@@ -1385,7 +1389,7 @@
                 drive-data files-upload-status unread-counts notify-prefs
                 block-conflicts orphaned-blocks room-app-status leaderboards
                 books book-ledgers book-ui workflow-editor-state workflow-output-reviews memory-editor-state retained-source-state conversation-captures
-                memory-navigation-state memory-room-metadata workspace-creation-state github-sync-state run-server-facts chat-scroll-windows
+                memory-navigation-state memory-room-metadata workspace-creation-state github-sync-state personal-connections-state run-server-facts chat-scroll-windows
                 chat-reply-targets active-kb-branch kb-branches projected-branch-dbs]]
        (reset! s {}))
      (reset! global-ref :now)

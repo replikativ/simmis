@@ -33,7 +33,7 @@
       (with-redefs [host/capture (fn [& _] (throw (AssertionError. "Recaptured App")))
                     host/in! (fn [host _ _ _ body] (is (identical? original host)) (body context))
                     journal/sync-in (fn [& _] row)
-                    credentials/status! (fn [_] {:configured? configured?})
+                    credentials/selected? (fn [_] configured?)
                     credentials/with-transport! (fn [ctx body] (swap! auth-calls inc) (body (assoc ctx :authenticated? true)))
                     push/in! (fn [ctx operation request]
                                (is (= :recover operation))

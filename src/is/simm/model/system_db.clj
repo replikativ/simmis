@@ -30,6 +30,7 @@
             [is.simm.model.github-sync :as github-sync]
             [is.simm.model.github-push :as github-push]
             [is.simm.model.github-credentials :as github-credentials]
+            [is.simm.model.personal-connections :as personal-connections]
             [is.simm.model.github-integrations :as github-integrations]
             [is.simm.model.github-pins :as github-pins]
             [is.simm.model.github-proposals :as github-proposals]
@@ -795,7 +796,7 @@
 
 (def schema
   "Simmis control-plane extension attributes, including host work admission."
-  (merge-schemas core-schema work-requests/schema work-request-checkpoints/schema benchmark-resolutions/schema github-sync/schema github-push/schema github-credentials/schema github-integrations/schema github-pins/schema github-proposals/schema workers/schema workflow-schedules/schema
+  (merge-schemas core-schema work-requests/schema work-request-checkpoints/schema benchmark-resolutions/schema github-sync/schema github-push/schema github-credentials/schema personal-connections/schema github-integrations/schema github-pins/schema github-proposals/schema workers/schema workflow-schedules/schema
                  file-outputs/schema file-adoptions/schema knowledge-dispositions/schema
                  knowledge-streams/schema knowledge-pins/schema knowledge-batches/schema
                  knowledge-processing/schema knowledge-batch-recovery/schema
