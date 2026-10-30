@@ -9,6 +9,7 @@
             [is.simm.model.access :as access]
             [is.simm.model.github-sync :as github-sync]
             [is.simm.model.github-integrations :as integrations]
+            [is.simm.model.git-policy :as git-policy]
             [is.simm.ops.owned-files :as owned-files]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-workspace :as owned]
@@ -23,6 +24,7 @@
         registry-system (:system/id (:room/github-repository row))
         active (when repository (github-sync/active-in control (:room-id bound)))
         cursor (when repository (integrations/current-in control (:room-id bound)))
+        policy (when repository (git-policy/current-in control (:room-id bound)))
         proof (when cursor (first (d/datoms control :eavt (:db/id cursor) :github.integration/proof)))
         at (when proof (:db/txInstant (d/entity control (:tx proof))))]
     (when (and repository
@@ -34,9 +36,18 @@
                                 (= ref (query/current-ref (:db bound))))}
         (and (inst? at) (:github.integration/oid cursor))
         (assoc :last-sync {:at (str (.toInstant ^java.util.Date at)) :git-oid (:github.integration/oid cursor)})
+        (and policy (= (:git.policy/connection-id policy) (:github.integration/connection-id cursor)))
+        (assoc :git-policy {:revision (str (:git.policy/revision policy)) :enabled? (:git.policy/enabled? policy)
+                            :interval-seconds (:git.policy/interval-seconds policy) :review-mode (:git.policy/review-mode policy)
+                            :status (:git.policy/status policy)
+                            :last-check (some-> ^java.util.Date (:git.policy/last-check policy) .toInstant str)
+                            :next-check (some-> ^java.util.Date (:git.policy/next-check policy) .toInstant str)})
         active (assoc :sync-active? true :sync-kind (github-sync/kind active))
-        (and active (or (not= :push (github-sync/kind active))
-                        (#{:creating :retaining :ready :pushed :rejected :observed} (:github.sync/state active)))
+        (and active (case (github-sync/kind active)
+                      :push (#{:creating :retaining :ready :pushed :rejected :observed} (:github.sync/state active))
+                      :incoming-policy (not (or (= :applying (:github.sync/state active))
+                                                (and (= :held (:github.sync/state active)) (= :applying (:github.sync/held-from active)))))
+                      true)
              (access/can? control (:party bound) :admin {:room (:room-id bound)}))
         (assoc :sync-id (str (:github.sync/id active)) :can-retire? true)
         (= (:party bound) (:github.sync/by active))

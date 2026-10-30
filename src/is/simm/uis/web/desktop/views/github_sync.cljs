@@ -4,6 +4,7 @@
             [is.simm.uis.web.desktop.connection-epoch :as connection]
             [is.simm.uis.web.desktop.github-sync :as sync]
             [is.simm.uis.web.desktop.github-credentials :as credential-state]
+            [is.simm.uis.web.desktop.git-policy :as policy-state]
             [is.simm.uis.web.desktop.signals :as sig]))
 
 (defn- click [action]
@@ -167,6 +168,51 @@
 (defn- active? [state]
   (and (:intent state) (not (sync/terminal (get-in state [:reply :status])))))
 
+(defn latest-policy-observation [metadata reply]
+  (cond
+    (nil? reply) metadata
+    (and (:last-check metadata)
+         (or (nil? (:last-check reply))
+             (> (js/Date.parse (:last-check metadata)) (js/Date.parse (:last-check reply))))) metadata
+    :else reply))
+
+(defn policy-view [memory state actions]
+  (let [reply (:policy-reply state) loading? (:policy-loading? state)
+        offer (policy-state/action-basis memory state)
+        observed (latest-policy-observation (get-in memory [:github-source :git-policy]) reply)
+        checked (:last-check observed)]
+    (el/div {:class "memory-properties"}
+            (el/h4 {} "Incoming changes")
+            (when loading? (el/p {:class "memory-note"} "Updating sync settings…"))
+            (when-let [error (:policy-error state)] (el/p {:class "proposal-error" :role "status"} error))
+            (when reply
+              (el/form {:on-submit (fn [event]
+                                     (.preventDefault event)
+                                     (when (.. event -currentTarget -isConnected)
+                                       (let [elements (.. event -currentTarget -elements)]
+                                         ((:save actions) offer
+                                          {:review-mode (keyword (.-value (.namedItem elements "review-mode")))
+                                           :enabled? (.-checked (.namedItem elements "enabled"))
+                                           :interval-seconds (* 60 (js/Number (.-value (.namedItem elements "interval"))))}))))}
+                       (el/label {} "Integrate updates"
+                                 (el/select {:name "review-mode" :aria-label "Incoming review policy" :value (name (:review-mode reply))}
+                                            (el/option {:value "fast-forward"} "Apply fast-forwards; propose merges")
+                                            (el/option {:value "review-all"} "Review every update")))
+                       (el/label {}
+                                 (el/input {:type "checkbox" :name "enabled" :checked (:enabled? reply)})
+                                 "Check automatically")
+                       (el/label {} "Minimum interval (minutes)"
+                                 (el/input {:type "number" :name "interval" :min 1 :max 1440 :step 1 :required true
+                                            :value (/ (:interval-seconds reply) 60)}))
+                       (el/p {:class "memory-note"} "Checks run on the next available minute tick. Automatic checking never pushes or accepts merge proposals.")
+                       (el/button {:class "btn btn-sm" :type "submit" :disabled loading?} "Save sync settings")))
+            (when checked (el/p {:class "memory-note"} (str "Last checked " (.toLocaleString (js/Date. checked)))))
+            (when-let [status (:status observed)]
+              (el/p {:class "memory-note"}
+                    (case status :unchanged "Up to date" :synced "Remote update integrated" :proposal "Incoming proposal awaiting review"
+                          :busy "Another sync is active" :held "Sync needs attention" :failed "Check failed" "Not checked yet")))
+            (el/button {:class "btn btn-sm" :disabled loading? :on-click (click #((:reload actions) offer))} "Reload sync settings"))))
+
 (defn- pending-for-another? [origin state]
   (and (:sync-active? origin)
        (not= (:sync-id origin) (:retired-sync-id state))
@@ -185,6 +231,7 @@
                         (#{:unconfirmed :held :preparing :not-observed} status) "Sync needs attention"
                         (= :not-started status) "Sync did not start"
                         (= :filed status) "Incoming proposal"
+                        (= :applied status) "Updated from remote"
                         (= :unchanged status) (if (= :push direction) "No outgoing changes" "Up to date")
                         (= :pushed (:outcome reply)) "Pushed"
                         (= :rejected (:outcome reply)) "Push rejected"
@@ -212,7 +259,7 @@
                 (el/span {:class "memory-note" :title (str at " · Integrated remote commit " (:git-oid last-sync))}
                          (str "Last sync " (.toLocaleString (js/Date. at)))))))))
 
-(defn settings-view [data memory memory-actions pull pull-state push-state credentials]
+(defn settings-view [data memory memory-actions pull pull-state push-state credentials & [policy-actions]]
   (when (:settings-open? memory)
     (let [origin (:github-source memory) close! #((:settings-open memory-actions) false)
           recent (if (= :push (:last-git-direction data)) push-state pull-state)]
@@ -243,6 +290,7 @@
                             (retirement-control memory pull pull-state)
                             (when ((:enabled? pull))
                               (el/div {}
+                                      (when policy-actions (policy-view memory pull-state policy-actions))
                                       (el/h4 {} "Repository access")
                                       (credential-view memory push-state credentials))))
                     (el/p {:class "memory-note"} "This Memory has no linked remote."))))))

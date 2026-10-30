@@ -40,7 +40,7 @@
                      (el/h2 {} (cond github? "Import GitHub repository" memory? "New knowledge workspace" :else "New team")))
              (el/p {:class "settings-section-desc"}
                    (if github?
-                     "Import a public repository into Memory. Files stay unchanged; imported code is not executed. Updating from GitHub requires a separate review and confirmation."
+                     "Import a public repository into Memory. Files stay unchanged; imported code is not executed. Pull applies proven fast-forwards; merges are proposed for review. Memory settings can require review of every update."
                      "A shared place for chat, Markdown knowledge, files and workflow source. Wiki maintenance is included; nothing is scheduled automatically."))
              (when github?
                (el/div {:class "settings-section"}

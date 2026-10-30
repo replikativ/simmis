@@ -10,6 +10,7 @@
             [is.simm.uis.web.desktop.github-sync :as sync]
             [is.simm.uis.web.desktop.github-credentials :as credentials]
             [is.simm.uis.web.desktop.personal-connections :as personal]
+            [is.simm.uis.web.desktop.git-policy :as policy]
             [is.simm.uis.web.desktop.github-remote :as remote]
             [is.simm.uis.web.desktop.refs :as refs]
             [is.simm.uis.web.desktop.views.github-sync :as view]
@@ -46,12 +47,12 @@
   (with-client
     (fn [{:keys [a state calls ready]}]
       (act! a :sync) (act! a :sync)
-      (is (= [:prepare-incoming] (mapv :operation @calls)))
+      (is (= [:prepare-policy] (mapv :operation @calls)))
       (let [intent (:request (first @calls))]
         ((:ok (first @calls)) ready)
         (is ((:can-apply? a)))
         (act! a :apply) (act! a :apply)
-        (is (= [:prepare-incoming :apply] (mapv :operation @calls)))
+        (is (= [:prepare-policy :apply] (mapv :operation @calls)))
         (is (= {:client-id (:client-id intent) :ready-id (:ready-id ready)} (:request (second @calls))))
         ((:error (second @calls)) (js/Error. "Lost ACK"))
         (act! a :apply) (act! a :sync)
@@ -128,7 +129,7 @@
                             (array-seq (.querySelectorAll container "button")))]
             (is (some? close))
             (.click close)
-            (is (= [:prepare-incoming :discard] (mapv :operation @calls)))
+            (is (= [:prepare-policy :discard] (mapv :operation @calls)))
             (is (= (get-in (first @calls) [:request :client-id])
                    (get-in (second @calls) [:request :client-id]))))
           (finally
@@ -248,6 +249,47 @@
         ((:ensure push))
         (is (= client (get-in ((:state push)) [:intent :client-id])))
         (is (= [:observe] (mapv :operation @calls)))))))
+
+(deftest replicated-background-completion-reobserves-the-same-journal-without-replaying
+  (with-client
+    (fn [{:keys [a memory calls state]}]
+      (let [client (str (random-uuid))]
+        (swap! memory update :github-source assoc :sync-kind :incoming-policy :sync-active? true :sync-client-id client)
+        ((:ensure a))
+        ((:ok (last @calls)) {:status :held})
+        ((:ensure a))
+        (is (= 1 (count @calls)) "An unchanged render cannot retry")
+        (swap! memory update :github-source dissoc :sync-active? :sync-kind :sync-client-id)
+        ((:ensure a))
+        (is (= [:observe :observe] (mapv :operation @calls)))
+        (is (= {:client-id client} (:request (last @calls))))
+        (is (= :held (get-in (state) [:reply :status])) "Metadata cannot establish success")
+        ((:ok (last @calls)) {:status :applied :cleanup-pending? false})
+        ((:ensure a))
+        (is (= :applied (get-in (state) [:reply :status])))
+        (is (= 2 (count @calls)))))))
+
+(deftest completed-intents-yield-to-new-background-intents-but-unknown-intents-do-not
+  (with-client
+    (fn [{:keys [a memory calls state]}]
+      (act! a :sync)
+      ((:ok (last @calls)) {:status :applied :cleanup-pending? false})
+      (doseq [client [(str (random-uuid)) (str (random-uuid))]]
+        (swap! memory update :github-source assoc :sync-kind :incoming-policy :sync-active? true :sync-client-id client)
+        ((:ensure a))
+        (is (= :observe (:operation (last @calls))))
+        (is (= {:client-id client} (:request (last @calls))))
+        (is (nil? (:reply (state))))
+        ((:ok (last @calls)) {:status :applied :cleanup-pending? false}))
+      (swap! memory update :github-source dissoc :sync-active? :sync-kind :sync-client-id)
+      (act! a :sync)
+      ((:error (last @calls)) (js/Error. "Unknown outcome"))
+      (let [original (get-in (state) [:intent :client-id])]
+        (swap! memory update :github-source assoc :sync-client-id (str (random-uuid)))
+        ((:ensure a))
+        (is (= {:client-id original} (:request (last @calls))) "Unknown work retains its own journal")
+        ((:ok (last @calls)) {:status :unconfirmed})
+        (is (= original (get-in (state) [:intent :client-id])))))))
 
 (deftest credential-controller-retains-metadata-but-never-the-token
   (with-client
@@ -438,3 +480,57 @@
           ((:reload a) ((:basis a)))
           (is (= [:list :save :list] (mapv :operation @calls)))
           (is (= {} (:request (last @calls)))))))))
+
+(deftest sync-policy-controls-freeze-revisions-and-never-resend-a-lost-save
+  (with-client
+    (fn [{:keys [a state memory]}]
+      (let [p (policy/controller a #(deref memory)) calls (atom [])
+            reply {:connection-id (str (random-uuid)) :target-stamp (str (:target-stamp @memory)) :revision (str (random-uuid))
+                   :review-mode :fast-forward :enabled? false :interval-seconds 60 :status nil :last-check nil :next-check nil}]
+        (with-redefs [remote/git-policy-operation! (fn [_ _ operation request]
+                                                   (fn [ok error] (swap! calls conj {:operation operation :request request :ok ok :error error})))]
+          ((:ensure p)) ((:ok (last @calls)) reply)
+          (let [old (policy/action-basis @memory (state))]
+            ((:reload p) old) ((:ok (last @calls)) (assoc reply :revision (str (random-uuid))))
+            ((:save p) old {:review-mode :review-all :enabled? false :interval-seconds 60})
+            (is (= [:status :status] (mapv :operation @calls)))
+            ((:save p) (policy/action-basis @memory (state)) {:review-mode :review-all :enabled? false :interval-seconds 60})
+            ((:error (last @calls)) (js/Error. "Lost ACK"))
+            ((:ensure p))
+            (is (= [:status :status :save] (mapv :operation @calls)))
+            ((:save p) (policy/action-basis @memory (state)) {:review-mode :review-all :enabled? false :interval-seconds 61})
+            (is (= 3 (count @calls)) "Invalid minute intervals do not issue an RPC")))))))
+
+(deftest sync-policy-controls-do-not-admit-fork-created-or-copied-actions
+  (with-client
+    (fn [{:keys [a memory room]}]
+      (let [p (policy/controller a #(deref memory)) child (context/fork-context runtime) calls (atom [])]
+        (try
+          (with-redefs [remote/git-policy-operation! (fn [& args] (swap! calls conj args) (fn [& _]))]
+            (binding [ec/*execution-context* child]
+              ((:ensure p)) ((:reload p) (policy/action-basis @memory ((:state a)))))
+            (let [forked (binding [ec/*execution-context* child]
+                           (policy/controller (sync/controller {:room-id room} #(deref memory)) #(deref memory)))]
+              ((:ensure forked)))
+            (is (empty? @calls)))
+          (finally (context/close-context! child)))))))
+
+(deftest refreshed-sync-telemetry-is-not-masked-by-an-older-memory-projection
+  (let [old {:status :idle :last-check "2026-10-30T10:00:00Z"}
+        fresh {:status :synced :last-check "2026-10-30T10:01:00Z"}]
+    (is (= fresh (view/latest-policy-observation old fresh)))
+    (is (= fresh (view/latest-policy-observation fresh old)))
+    (is (= old (view/latest-policy-observation old nil)))))
+
+(deftest known-incoming-outcomes-finish-cleanup-once-without-repeating-integration
+  (with-client
+    (fn [{:keys [a calls]}]
+      (act! a :sync)
+      ((:ok (first @calls)) {:status :applied :cleanup-pending? true})
+      (is (= [:prepare-policy :recover] (mapv :operation @calls)))
+      ;; Even a surprising pending response cannot form an automatic loop.
+      ((:ok (last @calls)) {:status :applied :cleanup-pending? true})
+      (is (= 2 (count @calls)))
+      (act! a :sync)
+      ((:ok (last @calls)) {:status :unconfirmed})
+      (is (= 3 (count @calls)) "Unknown Applying never triggers cleanup or another integration"))))

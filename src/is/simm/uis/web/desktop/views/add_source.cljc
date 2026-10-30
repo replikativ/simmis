@@ -30,7 +30,7 @@
      {:id :notion :verb :connect :icon "book-open" :label "Notion"
       :blurb "Pages replicated in as a wiki." :ready? false}
      {:id :github :verb :connect :icon "git-branch" :label "GitHub repository"
-      :blurb "Import public repository files and review updates before applying."
+      :blurb "Import public repository files and keep a linked Git history."
       :ready? true}]}
 
    :team

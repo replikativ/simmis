@@ -49,13 +49,14 @@
    held until prospective-set validation supports them. Non-Markdown bytes
    remain inert files. Every acceptance must recompute this exact basis and
    publish with the returned canonical checkpoint guard."
-  [canonical local candidate body]
+  ([canonical local candidate body] (inspect canonical local candidate body nil))
+  ([canonical local candidate body provided-operation]
   (provenance/validate-provenance! body)
   (snapshot! local (get-in body [:roots :local :basis]))
   (snapshot! candidate (get-in body [:roots :candidate :basis]))
   (let [canonical-basis (changes/basis canonical)
         target (get-in body [:identity :connection :target])
-        operation (budget/create (assoc (merge/operation-policy) :timeout-ms 30000))]
+        operation (or provided-operation (budget/create (assoc (merge/operation-policy) :timeout-ms 30000)))]
     (when-not (and (= (select-keys target [:repository :store :backend :branch :ref])
                       (select-keys canonical-basis [:repository :store :backend :branch :ref]))
                    (= space/profile (:document.repository/profile (query/repository canonical))))
@@ -102,4 +103,4 @@
             (budget/check! operation)
             (when (> (alength (.getBytes ^String (pr-str result) "UTF-8")) facts/max-artifact-bytes)
               (refuse! :review-limit))
-            result))))))
+            result)))))))

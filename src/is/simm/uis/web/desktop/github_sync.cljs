@@ -11,8 +11,15 @@
 
 (def terminal #{:applied :satisfied-observed :closed :filed :not-started :unchanged})
 
+(defn- observation-basis [epoch memory client]
+  ;; Replicated progress only requests a fresh read of the same journal. It
+  ;; never establishes an outcome or authorizes another write.
+  [epoch (:target-stamp memory) client
+   (select-keys (:github-source memory) [:sync-active? :sync-client-id :last-sync])])
+
 (defn- reply! [reply]
   (when-not (and (map? reply) (#{:not-observed :preparing :ready :unconfirmed :held :applied :satisfied-observed :closed :filed :not-started :unchanged :pushed :rejected} (:status reply))
+                 (or (not (contains? reply :cleanup-pending?)) (boolean? (:cleanup-pending? reply)))
                  (or (not= :filed (:status reply))
                      (and (string? (:proposal-id reply))
                           (= (:proposal-id reply) (some-> (:proposal-id reply) parse-uuid str))))
@@ -82,16 +89,22 @@
                                                      (cond-> (and (terminal (:status reply)) (:sync-id reply))
                                                        (assoc :retired-sync-id (:sync-id reply)))
                                                      (dissoc :error)))
-                                       (when (and (= :prepare-incoming operation) (= :filed (:status reply))
+                                       (when (and (#{:prepare-incoming :prepare-policy} operation) (= :filed (:status reply))
                                                   (= epoch (connection/snapshot)) (= stamp (:target-stamp (memory-state))))
                                          (refs/open! {:kind :proposal :id (:proposal-id reply)}))
                                        (when (and push? (#{:pushed :rejected} (:status reply)))
                                          ;; Known terminal cleanup cannot resend. If its
                                          ;; reply is lost, observation finds this same row.
+                                         (invoke! :recover {:client-id (get-in (state) [:intent :client-id])}))
+                                       (when (and (not push?) (not= :recover operation)
+                                                  (true? (:cleanup-pending? reply)) (#{:filed :applied} (:status reply)))
+                                         ;; Only positively recorded outcomes,
+                                         ;; never unknown Applying or a replay
+                                         ;; of fetch/integration. One attempt.
                                          (invoke! :recover {:client-id (get-in (state) [:intent :client-id])})))
                                      (catch :default error (failed error))))))]
                     (update! assoc :token token :operation operation :loading? true :error nil
-                             :request-on epoch :observed-on [epoch stamp (get-in (state) [:intent :client-id])])
+                             :request-on epoch :observed-on (observation-basis epoch (memory-state) (get-in (state) [:intent :client-id])))
                     (swap! sig/github-sync-state assoc direction-key (if push? :push :incoming))
                     (try
                       (binding [ec/*spin-id* nil]
@@ -107,12 +120,16 @@
                   (when (and (:loading? (state)) (not= (:request-on (state)) (connection/snapshot)))
                     (update! assoc :loading? false :verified-on nil :reply {:status :unconfirmed}))
                   (when (and (valid?) (= push? (= :push (get-in (memory-state) [:github-source :sync-kind])))
-                             (nil? (:intent (state))))
+                             (not (:loading? (state)))
+                             (or (nil? (:intent (state)))
+                                 (and (terminal (get-in (state) [:reply :status]))
+                                      (not (get-in (state) [:reply :cleanup-pending?])))))
                     (when-let [client (get-in (memory-state) [:github-source :sync-client-id])]
-                      (update! assoc :intent {:client-id client} :open? true)))
+                      (when (not= client (get-in (state) [:intent :client-id]))
+                        (update! assoc :intent {:client-id client} :open? true :reply nil :verified-on nil))))
                   (when (and (valid?) (:intent (state)) (not (:loading? (state)))
-                             (not= (:observed-on (state)) [(connection/snapshot) (:target-stamp (memory-state))
-                                                           (get-in (state) [:intent :client-id])]))
+                             (not= (:observed-on (state)) (observation-basis (connection/snapshot) (memory-state)
+                                                                                  (get-in (state) [:intent :client-id]))))
                     (check!)))))
             (prepare! [offer]
               (when (and (owner-call?) (= offer (basis)))
@@ -123,7 +140,7 @@
                              (or (nil? (:intent (state))) (terminal (get-in (state) [:reply :status]))))
                     (let [request {:client-id (str (random-uuid)) :expected-target-stamp (str (:target-stamp (memory-state)))}]
                       (update! assoc :intent request :open? true :reply nil :verified-on nil)
-                      (invoke! (if push? :prepare-push :prepare-incoming) request))))))
+                      (invoke! (if push? :prepare-push :prepare-policy) request))))))
             (apply! [offer]
               (when (and (owner-call?) (= offer (basis)))
                 (binding [ec/*execution-context* ctx]

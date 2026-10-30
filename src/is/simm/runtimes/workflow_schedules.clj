@@ -56,7 +56,10 @@
   (original-operation!
    host #(case operation
            :recover (schedules/recover-owned! host)
-           :tick (schedules/tick-owned! host now))))
+           :tick (do (schedules/tick-owned! host now)
+                     ;; Literal fixed handler, resolved after App namespaces
+                     ;; load to avoid the Git HOST -> App namespace cycle.
+                     ((requiring-resolve 'is.simm.ops.git-polling/tick-owned!) host now)))))
 
 (defn- start-service!
   "Start after canonical orphan/resource recovery. Recovery runs once on the

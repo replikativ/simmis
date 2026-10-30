@@ -9169,6 +9169,16 @@ body.tab-dragging .column-drop-zone {
 .memory-local-source-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .memory-local-source .cm-editor { max-height: 45vh; overflow: auto; margin-bottom: 12px; }
 .memory-local-source .memory-toolbar { margin-bottom: 0; }
+.memory-settings-dialog h4 { margin-top: 12px; font-weight: 600; }
+.memory-settings-dialog .memory-properties { opacity: 1; }
+.memory-settings-dialog .memory-properties p { margin: 4px 0; }
+.memory-settings-dialog form { display: grid; gap: 8px; margin: 8px 0; }
+.memory-settings-dialog label { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.memory-settings-dialog select, .memory-settings-dialog input:not([type="checkbox"]) { max-width: 100%; min-height: 30px; padding: 5px 8px; border: 1px solid var(--mono-border); border-radius: var(--radius-sm); background: var(--mono-bg-overlay); color: var(--mono-text-primary); font: inherit; }
+.memory-settings-dialog input[type="number"] { width: 90px; }
+.memory-settings-dialog .btn { padding: 5px 8px; border: 1px solid var(--mono-border); border-radius: var(--radius-sm); background: transparent; color: var(--mono-text-primary); }
+.memory-settings-dialog .btn:hover { background: var(--mono-bg-overlay); }
+.memory-settings-dialog form > .btn { justify-self: start; }
 @media (max-width: 700px) { .memory-save-state { display: none; } .memory-file-header .memory-breadcrumbs > button { display: none; } }
 .memory-layout { display: block; }
 .memory-tree { border-right: 1px solid var(--border-color, #465063); min-width: 0; }

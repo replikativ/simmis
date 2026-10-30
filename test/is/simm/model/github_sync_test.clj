@@ -212,3 +212,38 @@
                      (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))))
        (is (thrown? clojure.lang.ExceptionInfo (prepare-incoming! conn binding)))
        (is (= ready (sync/sync-in @conn (:id binding))))))))
+
+(deftest policy-ready-freezes-one-disposition-and-does-not-reinterpret-old-protocols
+  (doseq [disposition [:fast-forward :proposal]]
+    (fixture
+     (fn [conn]
+       (let [binding (binding-for) artifact-store (artifact/datahike-store conn)
+             body {:kind :incoming-policy} revision (random-uuid)
+             policy {:disposition disposition :review-revision revision}]
+         (artifact/publish-value! artifact-store body
+                                  #(d/transact conn [[:db.fn/call sync/prepare-tx binding % (hasch/uuid body) :incoming-policy]]))
+         (let [created (sync/sync-in @conn (:id binding))
+               allocated (transition! conn created :allocated)]
+           (is (thrown? clojure.lang.ExceptionInfo
+                        (sync/transition-tx @conn allocated :ready (random-uuid) (random-uuid) policy)))
+           (let [retaining (transition! conn allocated :retaining)]
+             (is (thrown? clojure.lang.ExceptionInfo
+                          (sync/transition-tx @conn retaining :ready (random-uuid) (random-uuid))))
+             (artifact/publish-value! artifact-store policy
+                                      #(d/transact conn [[:db.fn/call sync/transition-tx retaining :ready % (hasch/uuid policy) policy]]))
+             (let [ready (sync/sync-in @conn (:id binding))]
+               (is (= disposition (:github.sync/disposition ready)))
+               (is (= revision (:github.sync/review-revision ready)))
+               (is (empty? (sync/transition-tx @conn ready :ready (:github.sync/ready ready) (:github.sync/ready-id ready) policy)))
+               (is (thrown? clojure.lang.ExceptionInfo
+                            (sync/transition-tx @conn ready :ready (:github.sync/ready ready) (:github.sync/ready-id ready)
+                                                (assoc policy :review-revision (random-uuid)))))
+               (is (thrown? clojure.lang.ExceptionInfo
+                            (sync/prepare-tx @conn binding (:github.sync/preparation ready) (:github.sync/preparation-id ready) :incoming)))
+               (if (= :fast-forward disposition)
+                 (do
+                   (is (seq (sync/transition-tx @conn ready :applying nil nil)))
+                   (is (thrown? clojure.lang.ExceptionInfo (sync/transition-tx @conn ready :filing (random-uuid) (random-uuid)))))
+                 (do
+                   (is (seq (sync/transition-tx @conn ready :filing (random-uuid) (random-uuid))))
+                   (is (thrown? clojure.lang.ExceptionInfo (sync/transition-tx @conn ready :applying nil nil)))))))))))))

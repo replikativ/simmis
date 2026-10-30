@@ -15,9 +15,9 @@ request, never by cloning again. Existing Memories are not assigned inferred
 upstream metadata.
 
 The file browser and editor use this ordinary Memory. Editor autosaves create
-local Geschichte commits. **Pull** integrates incoming changes
-with that saved history through a frozen Proposal; review and acceptance are
-separate from fetching. **Push** prepares outbound publication separately;
+local Geschichte commits. **Pull** applies a proven fast-forward directly by
+default; other clean integrations become frozen Proposals. Memory settings can
+instead require review of every incoming update. **Push** prepares outbound publication separately;
 it requires this human's GitHub access and an explicit reviewed send. Automatic
 fetching is not enabled by linking a repository.
 
@@ -54,8 +54,15 @@ content decoding and merge planning. Historical content is read from its own
 immutable commit snapshot, including when its representation is absent from the
 current mutable catalog.
 
-A clean integration files an ordinary frozen Proposal and opens its change set.
-Filing does not change the live Memory or its integrated-upstream cursor.
+The default policy applies only a proven fast-forward. Raw, hash-verified Git
+ancestry must establish the relation, and the saved local filesystem must match
+its claimed Git tree. Matching file contents alone never establish ancestry.
+The exact imported head advances under the captured native checkpoint, after
+fresh semantic validation; the positive result records its upstream cursor.
+
+Other clean integrations, or all updates under **Review every update**, file an
+ordinary frozen Proposal and open its change set. Filing does not change the
+live Memory or its integrated-upstream cursor.
 Base, local, incoming and candidate snapshots have durable retention evidence;
 the private native connection must positively release before review is ready.
 Imported code is not executed and imported type definitions do not grant
@@ -80,6 +87,31 @@ also holds Markdown deletions and moves to preserve document identity. Unsupport
 history rewrites, missing ancestry, invalid documents and resource limits are
 reported as held attempts. Close a positively released preparation before making
 another attempt; unknown native outcomes require reconciliation.
+
+## Automatic incoming checks
+
+**Memory settings → Incoming changes** contains the review policy and optional
+automatic checking. Checking is off by default. The minimum interval is a whole
+number of minutes from 1 to 1,440. The existing App-owned minute scheduler checks
+due Memories; no separate timer or agent loop is created. A one-minute minimum
+therefore runs at the next available minute tick after the interval expires,
+rather than promising an exact 60-second cadence.
+
+Each check uses the current permissions of the human who enabled it and the
+exact linked repository connection. It first reads the tracked remote ref;
+an unchanged OID avoids fetching. A pass inspects at most four due Memories and
+attempts at most one changed repository. Failures back off, up to the larger of
+one hour and the configured interval. Busy operations and an existing incoming
+Proposal suppress duplicate preparation. Automatic checking never pushes,
+accepts a merge Proposal or retries an unknown native effect.
+
+Settings changes use the inspected configuration revision. Disabling checking
+or changing its configuration prevents an old check from publishing a new
+effect; changing the incoming review mode also invalidates older prepared
+reviews. A positively completed effect remains recordable by its original
+operation even if permission is revoked while it returns. Replicated progress
+can trigger a same-intent journal read in the UI, but never serves as proof of
+success or permission to repeat a write.
 
 ## Retention and operation ownership
 
@@ -118,7 +150,7 @@ metadata is never repaired by guessing from file equality.
 
 Selective native advancement transfers committed files and Git identities, not
 the complete imported pack store. Fetch therefore currently uses empty `haves`;
-this feature does not enable thin negotiation, force push or automatic sync.
+this feature does not enable thin negotiation or force push.
 
 ## Outbound publication
 

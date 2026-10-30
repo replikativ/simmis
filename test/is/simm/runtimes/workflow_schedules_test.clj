@@ -5,6 +5,7 @@
             [is.simm.ops.workflow-schedules :as schedules]
             [is.simm.runtimes.context :as context]
             [is.simm.runtimes.workflow-schedules :as runtime]
+            [is.simm.ops.git-polling :as git-polling]
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.engine.context :as execution]
@@ -19,7 +20,8 @@
   (fn [f]
     ;; A diagnostic test must never touch the live demo's worker or clock.
     (let [ctx (execution/create-execution-context) owners (atom [])]
-      (with-redefs-fn {#'runtime/service (atom nil) #'context/server-context ctx}
+      (with-redefs-fn {#'runtime/service (atom nil) #'context/server-context ctx
+                      #'git-polling/tick-owned! (fn [& _])}
         #(binding [ec/*execution-context* ctx *owners* owners]
            (try (f)
                 (finally
@@ -46,7 +48,7 @@
   (let [ctx context/server-context host (owned-host ctx)
         signal (sig/signal (java.util.Date. 0))
         entered (promise) release (promise) second-tick (promise)
-        recovered? (atom false) checks (atom 0) calls (atom [])
+        recovered? (atom false) checks (atom 0) calls (atom []) git-calls (atom [])
         forbidden (fn [& _] (throw (AssertionError. "Owned service used legacy dispatcher")))]
     (with-redefs [clock/clock-signal (constantly signal)
                   clock/minute-now (constantly (java.util.Date. 60000))
@@ -58,6 +60,14 @@
                                              (is (identical? (Thread/currentThread) (:thread lifetime/*ticket*)))
                                              (is (lifetime/retained? lifetime/*ticket*))
                                              (reset! recovered? true))
+                  git-polling/tick-owned! (fn [h now]
+                                            (is (identical? host h))
+                                            (is (identical? (::app-owner host) (:owner lifetime/*ticket*)))
+                                            (is (identical? (Thread/currentThread) (:thread lifetime/*ticket*)))
+                                            (is (lifetime/retained? lifetime/*ticket*))
+                                            (is (identical? ctx ec/*execution-context*))
+                                            (is (not (simple/on-drain-thread?)))
+                                            (swap! git-calls conj now))
                   schedules/tick-owned! (fn [h now]
                                           (is (identical? host h)) (is @recovered?)
                                           (is (identical? (::app-owner host) (:owner lifetime/*ticket*)))
@@ -83,6 +93,7 @@
         (is (= (java.util.Date. 180000) (await-event second-tick)))
         (is (= :stopped (runtime/stop!)))
         (is (= [(java.util.Date. 60000) (java.util.Date. 180000)] @calls))
+        (is (= @calls @git-calls) "Git checks share the original owned worker and coalesced clock ticks")
         (is (not (runtime/running?)))
         (finally (deliver release true) (runtime/stop!))))))
 

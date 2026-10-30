@@ -60,7 +60,7 @@
 
 (defn- correspondence! [row body]
   (provenance/validate-provenance! body)
-  (when-not (and (= :incoming (journal/kind row))
+  (when-not (and (#{:incoming :incoming-policy} (journal/kind row))
                  (= (get-in body [:producer :sync-id]) (:github.sync/id row))
                  (= (get-in body [:producer :claim]) (:github.sync/claim row))
                  (= (get-in body [:producer :by]) (:github.sync/by row))
