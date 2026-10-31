@@ -265,7 +265,7 @@
         (with-redefs-fn
           {#'capture/room-source
            (fn [source-binding]
-             (let [snapshot (source source-binding)]
+             (let [snapshot (source source-binding nil)]
                (when (= 1 (swap! calls inc))
                  (binding [ec/*execution-context* (:ctx room)]
                    (d/transact (:conn (:store room))
