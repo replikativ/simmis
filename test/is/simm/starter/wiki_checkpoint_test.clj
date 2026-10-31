@@ -11,7 +11,7 @@
 
 (defn- derived-source []
   (let [root (io/file "examples/workflows/wiki-maintenance-checkpoint-eval-v5")
-        paths (concat (keys (starter/source))
+        paths (concat (keys (starter/source 5))
                       ["benchmark.edn" "calibration.edn"]
                       (for [case ["mixed-evidence" "capture-uncertainty" "no-change"]
                             file ["fixture-pack.edn" "gold.edn"]]
@@ -20,13 +20,13 @@
 
 (deftest packaged-v5-benchmark-keeps-its-task-and-calibrates-selected-wiki-cases
   (let [source (derived-source) bundle (catalog/bundle starter/name source)
-        live (catalog/bundle starter/name (starter/source))
-        policy (inputs/declaration (starter/source))
+        live (catalog/bundle starter/name (starter/source 5))
+        policy (inputs/declaration (starter/source 5))
         input {:request-id (random-uuid) :name starter/name :expected-bundle (:id bundle)
                :models ["codex-subscription-luna-6"] :repetitions 1 :split "development"
                :limits {:budget-microdollars 10000 :max-dispatches 4 :max-model-steps 4
                         :timeout-ms 30000 :settlement "discard"}}]
-    (is (= (starter/source) (select-keys source (keys (starter/source)))))
+    (is (= (starter/source 5) (select-keys source (keys (starter/source 5)))))
     (is (not= (:id live) (:id bundle)))
     (is (= (:definition live) (:definition bundle)))
     (is (= (:checker live) (:checker bundle)))
