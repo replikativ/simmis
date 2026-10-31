@@ -122,7 +122,7 @@
                                            :seeded)}))
                             :ordinary
                             (@#'workflow-runs/setup "role-test" {:id (random-uuid)}
-                                                    {"workflow.edn" "{}"} {"/in/knowledge/input.txt" "Evidence"} true))]
+                                                    {"workflow.edn" "{}"} {"/in/knowledge/input.txt" "Evidence"} true nil))]
                 (is (= execution/profile (get-in (evaluation/world-setup-ref setup) [:setup/basis :source-role])))
                 ((:prepare setup) {:room world})
                 (is (= ["in/knowledge" "out/wiki"] (:exclude-prefixes (selected-options))))))

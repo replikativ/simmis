@@ -820,7 +820,7 @@
      "preview-room-digest!" {:action R :resource (room :room-id-str)}
      "read-room-digest!" {:action R :resource (room :room-id-str)}
      "publish-room-digest!" {:action W :resource (room :room-id-str)}
-     "install-room-digest!" {:action W :resource (room :room-id-str)}
+     "install-room-digest!" {:action :admin :resource (room :room-id-str)}
      "launch-room-digest!" {:action M :resource (room :room-id-str)}
      "preview-room-evidence!" {:action W :resource (room :room-id-str)}
      "publish-room-evidence!" {:action W :resource (room :room-id-str)}

@@ -150,6 +150,18 @@
    "transcribe-drive-file!"  [(c :room MEMBERS)]
    "put-drive-file!"         [(c :room MEMBERS)]
    "dispatch-message!"       [(c :room MEMBERS)]
+   ;; Digest inspection/publication and explicit original-evidence capture use
+   ;; ordinary room read/write authority. Installing source requires :admin;
+   ;; starting inference requires :merge, as with other workflow execution.
+   "preview-room-digest!"    [(c :room MEMBERS)]
+   "read-room-digest!"       [(c :room MEMBERS)]
+   "publish-room-digest!"    [(c :room MEMBERS)]
+   "install-room-digest!"    [(c :room OWNER)]
+   "launch-room-digest!"     [(c :room OWNER)]
+   "preview-room-evidence!"  [(c :room MEMBERS)]
+   "publish-room-evidence!"  [(c :room MEMBERS)]
+   "list-request-sources!"   [(c :room MEMBERS)]
+   "read-request-source!"    [(c :room MEMBERS)]
    "ensure-room!"            [(c :room MEMBERS)]
    "run-world-live!"         [(c :room MEMBERS)]
    "load-attempt-files!"     [(c :room MEMBERS)]
