@@ -35,7 +35,9 @@
            row (when id (schedules/activation-in db id))
            target (when row (schedules/managed-target control-conn row))
            _ (when (and id (not= (:room-id original) (:schedule.activation/room row))) (refuse! :activation-changed))
-           result {:activation id :enabled? (true? (:schedule.activation/enabled? row))
+           model-options (readiness/read-on-host! host principal handle)
+           result {:models (:models model-options) :default-model (:default-model model-options)
+                   :activation id :enabled? (true? (:schedule.activation/enabled? row))
                    :at (or (get-in target [:cadence :at]) "02:00")
                    :timezone (or (get-in target [:cadence :tz]) "UTC")
                    :save-transcript? (= "true" (get-in target [:execution :params "save-transcript"]))
@@ -52,9 +54,9 @@
     (operation/with-current!
      host principal handle original
      (fn []
-       (let [binding (reads/resolve-host-install! host principal handle)
+       (let [binding (reads/resolve-host-write! host principal handle)
              snapshot (workflows/snapshot-in (:db binding) starter/name)]
-         (reads/validate-host-install! host principal handle binding)
+         (reads/validate-host-write! host principal handle binding)
          (assoc binding :snapshot snapshot))))))
 
 (defn- ensure-source! [host principal handle]
@@ -62,10 +64,14 @@
         snapshot (:snapshot binding)]
     (if (seq (:manifest snapshot))
       (do (when-not (inputs/declaration (:files snapshot)) (refuse! :custom-source-policy)) binding)
-      (do (authoring/install! host principal handle
-                             {:name starter/name
-                              :expected-revision (str (sources/source-id binding starter/name (:manifest snapshot)))
-                              :files (starter/source)})
+      (do (let [original (reads/resolve-host-room! host principal handle)]
+            (when-not (identical? (:room binding) (:room original)) (refuse! :room-changed))
+            (operation/with-current!
+             host principal handle original
+             #(authoring/write! host principal handle
+                                {:name starter/name
+                                 :expected-revision (str (sources/source-id binding starter/name (:manifest snapshot)))
+                                 :files (starter/source)})))
           (let [current (inspect-source! host principal handle)]
             (when-not (inputs/declaration (get-in current [:snapshot :files])) (refuse! :source-changed))
             current)))))
@@ -75,12 +81,12 @@
     (operation/with-current!
      host principal handle original
      (fn []
-       (let [bound (reads/resolve-host-install! host principal handle)]
+       (let [bound (reads/resolve-host-write! host principal handle)]
          (when-not (files/entry (:db bound) documents/index-path)
            (files/save-file-to! (:room bound) (:system bound)
                                 {:path documents/index-path :expected nil
                                  :text (documents/index-markdown (get-in bound [:target :repository]))}
-                                {:authorize! #(do (reads/validate-host-install! host principal handle bound) true)})))))))
+                                {:authorize! #(do (reads/validate-host-write! host principal handle bound) true)})))))))
 
 (defn configure! [host principal handle request]
   (when-not (and (= #{:expected-activation :request-id :enabled? :at :timezone :save-transcript? :model}
