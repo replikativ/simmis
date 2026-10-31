@@ -300,6 +300,30 @@ coverage, citation accuracy, atom/overview usefulness, false assertions, latency
 and actual provider/resource usage. Distinguish deterministic checks from live
 model quality. A disposition map is not itself evidence that coverage is good.
 
+## Implementation verification
+
+The default test suite makes no provider calls. The native regression in
+`is.simm.ops.shipped-wiki-v6-daily-test` scripts only provider transport; it uses
+real collection receipts, Request checkpoints, candidate execution, coverage,
+review and adoption. Its next due occurrence must skip unchanged evidence with
+no further dispatch, Job or resource movement. It also releases a real Request
+retention root and verifies that current file bytes cannot replace the missing
+historical snapshot.
+
+`is.simm.ops.owned-room-evidence-test` covers source edits, unrelated appends,
+claim and schedule races, uncertain recovery and a transcript backlog larger
+than the retained-intent bound. `is.simm.ops.conversation-capture-test` keeps
+public human, agent and tool-result originals distinct from private Run traffic,
+activity visuals and native derived announcements.
+
+The digest model, input, reader and notification tests check exact frozen bytes,
+closed result structure, retained execution identity and non-replaying chat
+publication. Browser lifecycle tests run through `npm run test:browser`.
+Occasional separately admitted, finite subscription trials assess model behavior;
+their success is not inferred from scripted-provider or deterministic checker
+results. Reading, installing source and running the ordinary test suite never
+enable schedules or mint execution allowance.
+
 ## Research references
 
 - [Slack summaries](https://slack.com/intl/en-gb/help/articles/25076892548883-Guide-to-AI-features-in-Slack):
