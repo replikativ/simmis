@@ -110,6 +110,9 @@
        ;; discard the ref and open the Tasks tab the row was already on — a
        ;; dead end in the one view whose docstring promises navigation. Falls
        ;; through to nil without an id, so `open!` warns rather than pretending.
+       :request-source (when (memory-links/request-source-route _ref)
+                         [:request-source {:room-id (:room _ref) :request-id (:request _ref) :path path}
+                          (or title (last (str/split path #"/")))])
        :proposal-source (when (memory-links/source-route _ref)
                           [:proposal-source {:proposal-id (:proposal _ref) :component-id (:component _ref) :path path}
                            (or title (last (str/split path #"/")))])
@@ -154,6 +157,6 @@
             (sig/open-tab! tab-type tab-data
                            (cond-> {:title (or title tab-title)
                                     :new-column? (boolean new-column?)}
-                             (or new-tab? (#{:memory-file :memory-block :proposal-source} (:kind ref))) (assoc :new-tab? true)
+                             (or new-tab? (#{:memory-file :memory-block :proposal-source :request-source} (:kind ref))) (assoc :new-tab? true)
                              col-id (assoc :col-id col-id)))
             (js/console.warn "[refs] cannot open reference:" (pr-str ref))))))))

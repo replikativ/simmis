@@ -1,7 +1,8 @@
 (ns is.simm.model.file-outputs
   "Typed Proposal-owned file manifests. Exact bodies live behind store refs."
   (:require [datahike.api :as d]
-            [is.simm.model.knowledge-publication :as publication]))
+            [is.simm.model.knowledge-publication :as publication]
+            [is.simm.model.knowledge-scope :as scope]))
 
 (defn owner
   "Unique canonical Proposal/component owner, or nil. Metadata identity only,
@@ -29,7 +30,7 @@
 (def present-schema
   (conj content-schema [:state [:= :present]]))
 
-(def manifest-schema
+(def v1-manifest-schema
   [:map {:closed true} [:id :uuid] [:version [:= 1]]
    [:request :uuid] [:room :uuid] [:attempt :uuid] [:environment :uuid]
    [:workflow :uuid] [:basis :uuid] [:output :uuid]
@@ -39,12 +40,19 @@
                [:before [:or [:map {:closed true} [:state [:= :absent]]] present-schema]]
                [:after content-schema]]]]])
 
+(def manifest-schema
+  [:or v1-manifest-schema
+   (into [:map {:closed true} [:scope scope/schema]]
+         (map #(if (= :version (first %)) [:version [:= 2]] %)
+              (drop 2 v1-manifest-schema)))])
+
 (def schema
   (into
    (mapv (fn [[attr type]]
            (cond-> {:db/ident attr :db/valueType type :db/cardinality :db.cardinality/one}
              (= attr :file-output/id) (assoc :db/unique :db.unique/value)))
-         [[:file-output/id :db.type/uuid] [:file-output/version :db.type/long]
+         [[:file-output/output-root :db.type/string] [:file-output/destination-root :db.type/string]
+          [:file-output/id :db.type/uuid] [:file-output/version :db.type/long]
           [:file-output/request :db.type/uuid] [:file-output/room :db.type/uuid]
           [:file-output/attempt :db.type/uuid] [:file-output/environment :db.type/uuid]
           [:file-output/workflow :db.type/uuid] [:file-output/basis :db.type/uuid]
@@ -57,7 +65,9 @@
           [:file-output.entry/before-mode :db.type/long] [:file-output.entry/after-content :db.type/uuid]
           [:file-output.entry/after-bytes :db.type/long] [:file-output.entry/after-mode :db.type/long]
           [:file-output.entry/body-ref :db.type/store-ref]])
-   [{:db/ident :proposal.fork/file-output :db/valueType :db.type/ref
+   [{:db/ident :file-output/exclude-prefixes :db/valueType :db.type/string
+     :db/cardinality :db.cardinality/many}
+    {:db/ident :proposal.fork/file-output :db/valueType :db.type/ref
      :db/cardinality :db.cardinality/one :db/isComponent true}
     {:db/ident :file-output/entries :db/valueType :db.type/ref
      :db/cardinality :db.cardinality/many :db/isComponent true}]))
@@ -67,6 +77,10 @@
    Caller validates and publishes the references under the store's GC guard."
   [manifest refs]
   (merge
+   (when (= 2 (:version manifest))
+     {:file-output/output-root (get-in manifest [:scope :output-root])
+      :file-output/destination-root (get-in manifest [:scope :destination-root])
+      :file-output/exclude-prefixes (get-in manifest [:scope :exclude-prefixes])})
    (into {} (for [k [:id :version :request :room :attempt :environment :workflow :basis :output]]
               [(keyword "file-output" (name k)) (get manifest k)]))
    (into {} (map (fn [[k v]] [(keyword "file-output" (name k)) v])) (:target manifest))
@@ -83,6 +97,10 @@
   "Reconstruct portable metadata from typed rows, never from a cached JSON/EDN string."
   [row]
   (merge
+   (when (= 2 (:file-output/version row))
+     {:scope {:version 2 :output-root (:file-output/output-root row)
+              :destination-root (:file-output/destination-root row)
+              :exclude-prefixes (vec (sort (:file-output/exclude-prefixes row)))}})
    (into {} (for [k [:id :version :request :room :attempt :environment :workflow :basis :output]]
               [k (get row (keyword "file-output" (name k)))]))
    {:target (into {} (for [k [:repository :store :backend :branch :ref :registry-system :runtime-system]

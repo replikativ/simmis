@@ -70,3 +70,23 @@
         (with-redefs-fn {#'application/installation (atom {:host host :owner replacement})
                         #'capture/publish! (fn [& _] (swap! calls inc))}
           #(do (is (= {:status :inspection-required} (body))) (is (zero? @calls))))))))
+
+(deftest room-evidence-inbound-uses-current-room-writer-and-retains-each-original
+  (with-capture
+    (fn [{:keys [w room owned attached inbound]}]
+      (let [id (@#'fixture/message! room (:owner w) "Original room evidence" {:role :user})
+            other @attached]
+        (doseq [kind [:non-member :admin :anon]
+                op ["preview-room-evidence!" "publish-room-evidence!"]]
+          (is (world/refused? (inbound kind op {}))))
+        (let [p (:result (inbound :member "preview-room-evidence!" {}))
+              request {:capture-id (:capture-id p) :expected-target-stamp (:target-stamp p)}
+              saved (:result (inbound :member "publish-room-evidence!" request))]
+          (is (protocol/room-preview? p))
+          (is (= [id] (mapv :message-id (:artifacts p))))
+          (is (protocol/room-saved? saved p))
+          (doseq [a (:artifacts p)]
+            (is (= (:text a) (:text (files/read-file-in @owned (:path a))))))
+          (is (= {:status :inspection-required}
+                 (:result (inbound :member "publish-room-evidence!" request)))))
+        (is (= other @attached))))))

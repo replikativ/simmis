@@ -60,6 +60,8 @@
             #?(:cljs [is.simm.uis.web.desktop.result-actions :as result-actions])
             [is.simm.uis.web.desktop.proposal-card :as proposal-card]
             [is.simm.uis.web.desktop.conversation-capture :as capture-model]
+            [is.simm.uis.web.desktop.room-digest :as digest-model]
+            #?(:cljs [is.simm.uis.web.desktop.room-digest-actions :as digest-actions])
             #?(:cljs [is.simm.uis.web.desktop.conversation-capture-actions :as capture-actions])
             [is.simm.uis.web.desktop.signals :as sig]
             [clojure.string :as str]
@@ -627,6 +629,7 @@
     :schedules "workflow"
     :proposals "git-pull-request"
     :proposal-source "file-search"
+    :request-source "file-search"
     :tasks "circle-check"
     :timelines "git-branch"
     :accounting "wallet"
@@ -1022,7 +1025,7 @@
                                                               :conversation-captures conversation-captures
                                                               :benchmark-reports benchmark-reports
                                                               :capture-connection capture-connection)
-                                                 (#{:memory :proposal-source :new-room :new-kb :add-memory :add-team :workflows} (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
+                                                 (#{:memory :proposal-source :request-source :new-room :new-kb :add-memory :add-team :workflows} (:type active-tab-data)) (assoc :tab-id (:id active-tab-data)))
                                                local-db chat-windows (cond-> settings-data settings-data (assoc :personal-connections-state personal-connections)) admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets run-facts proposal-data id notify-prefs captured-results workflow-state)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
@@ -1632,6 +1635,21 @@
                                   (get (:conversation-captures data)
                                        (capture-actions/state-key (:id @sig/current-user) room-id (:entity/uuid item)))
                                   (:capture-connection data))
+                                 ::room-evidence-state
+                                 (capture-model/reconcile
+                                  (get (:conversation-captures data)
+                                       (capture-actions/state-key (:id @sig/current-user) room-id :room-evidence))
+                                  (:capture-connection data))
+                                 ::room-digest-state
+                                 (digest-model/reconcile
+                                  (get (:conversation-captures data)
+                                       (digest-actions/state-key (:id @sig/current-user) room-id))
+                                  (:capture-connection data))
+                                 ::digest-notification-state
+                                 (digest-model/reconcile
+                                  (get (:conversation-captures data)
+                                       (digest-actions/state-key (:id @sig/current-user) room-id (:entity/uuid item)))
+                                  (:capture-connection data))
                                  ::capture-frame {:account (:id @sig/current-user)
                                                   :session (:id (web/current-session))
                                                   :connection (:capture-connection data)})]
@@ -2081,6 +2099,12 @@
                        :run-id (:message/run-id item)
                        :activities (:message/activities item)
                        :object (get-in item [:message/metadata :object])
+                       :digest-notification
+                       (when (= :conversation-digest (get-in item [:message/metadata :object :kind]))
+                         {:room-id room-id :message-id (:entity/uuid item) :col-id col-id :tab-id tab-id
+                          :thread-root-id (when thread-view? thread-root-id)
+                          :digest-state (::digest-notification-state item) :frame (::capture-frame item)
+                          :notification (digest-model/notification-reference (:message/metadata item))})
                        :capture (when (and (not time-travel?) (not (:S.Message/is-ai item))
                                            (= :user (get-in item [:message/metadata :role]))
                                            (uuid? (:entity/uuid item)) (:S.Message/author-uuid item)
@@ -2090,7 +2114,10 @@
                                   {:room-id room-id :room-name room-name
                                    :message-id (:entity/uuid item) :col-id col-id :tab-id tab-id
                                    :thread-root-id (when thread-view? thread-root-id)
-                                   :state (::capture-state item) :frame (::capture-frame item)})
+                                   :state (::capture-state item)
+                                   :room-state (::room-evidence-state item)
+                                   :digest-state (::room-digest-state item)
+                                   :frame (::capture-frame item)})
                        :proposal-state (get item proposal-card/proposal-state-key)
                        :on-open-run open-run!
                        :on-open-proposal
@@ -2478,7 +2505,7 @@
     :files
     (files-view/files-view data)
 
-    :proposal-source
+    (:proposal-source :request-source)
     #?(:cljs (retained-source/view data) :clj (el/p {} "Frozen source"))
 
     :memory

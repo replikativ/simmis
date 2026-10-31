@@ -11,6 +11,7 @@
             [geschichte.query :as query]
             [is.simm.documents.execution-view :as execution-view]
             [is.simm.model.knowledge-publication :as publication]
+            [is.simm.model.knowledge-scope :as scope]
             [is.simm.model.work-request-checkpoints :as checkpoints]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec]
@@ -98,6 +99,12 @@
 (def cleanup-policy
   {:version 2 :roots ["in/knowledge" "out/wiki"] :max-paths files/max-batch-files})
 
+(defn cleanup-policy-for [output-scope]
+  (if output-scope
+    (do (scope/normalize! output-scope)
+        (assoc cleanup-policy :version 3 :roots ["in/knowledge" "out/wiki" "out/knowledge"]))
+    cleanup-policy))
+
 (defn validate-inputs!
   "Knowledge inputs cannot masquerade as newly generated deliverables."
   [inputs]
@@ -105,12 +112,13 @@
     (when-not (and (string? path)
                    (try (= path (files/workspace-path path)) (catch Exception _ false)))
       (throw (ex-info "Knowledge inputs require canonical workspace paths" {}))))
-  (when (some #(or (= % "/out") (= % "/out/wiki") (str/starts-with? % "/out/wiki/"))
+  (when (some #(or (= % "/out") (= % "/out/wiki") (str/starts-with? % "/out/wiki/")
+                  (= % "/out/knowledge") (str/starts-with? % "/out/knowledge/"))
               (keys inputs))
     (throw (ex-info "Knowledge inputs occupy the reserved output namespace" {})))
   inputs)
 
-(defn- owned-rows [db attr root]
+(defn- owned-rows [db attr root cleanup-policy]
   (concat (d/datoms db :avet attr root)
           ;; Filter only the exact inclusive outside endpoint AFTER bounding
           ;; this prefix; cleanup-state still bounds meaningful rows globally
@@ -119,13 +127,13 @@
                   (take (inc (:max-paths cleanup-policy))
                         (d/index-range db {:attrid attr :start (str root "/") :end (str root "0")})))))
 
-(defn- cleanup-state [world]
+(defn- cleanup-state [world cleanup-policy]
   (binding [ec/*execution-context* (:ctx world)]
     (let [conn (:conn (workspace/current-workspace))
           _ (when-not conn (throw (ex-info "Knowledge staging has no workspace" {})))
           db @conn
           paths (fn [attr] (vec (take (inc (:max-paths cleanup-policy))
-                                      (map :v (mapcat #(owned-rows db attr %) (:roots cleanup-policy))))))
+                                      (map :v (mapcat #(owned-rows db attr % cleanup-policy) (:roots cleanup-policy))))))
           file-paths (paths :geschichte.work/path)
           dirs (paths :geschichte.work-dir/path)]
       (when (or (> (count file-paths) (:max-paths cleanup-policy))
@@ -139,8 +147,10 @@
   "Clear only disposable knowledge-world staging/output. Empty directories
    without files cannot be removed by the canonical writer: refuse them before
    editing. Re-scan after writing so skipped effects cannot certify stale output."
-  [world]
-  (let [{:keys [files dirs]} (cleanup-state world)]
+  ([world] (clear-owned! world nil))
+  ([world output-scope]
+  (let [cleanup-policy (cleanup-policy-for output-scope)
+        {:keys [files dirs]} (cleanup-state world cleanup-policy)]
     (doseq [dir dirs]
       (when-not (some #(str/starts-with? % (str dir "/")) files)
         (throw (ex-info "Inherited knowledge staging contains an unsupported empty directory"
@@ -148,24 +158,25 @@
     (when (seq files)
       (files/write! world (into {} (map #(vector (str "/" %) nil)) files)
                     {:message "Reset isolated knowledge staging and outputs"}))
-    (let [remaining (cleanup-state world)]
+    (let [remaining (cleanup-state world cleanup-policy)]
       (when (or (seq (:files remaining)) (seq (:dirs remaining)))
         (throw (ex-info "Knowledge staging cleanup did not empty its owned subtrees" {}))))
-    true))
+    true)))
 
 (defn with-frozen-staging
   "Wrap fixture setup so every benchmark backend clears stale owned inputs
    before seeding its verified case. No global cache or new world authority."
-  [base]
+  ([base] (with-frozen-staging base nil))
+  ([base output-scope]
   (evaluation/make-world-setup
-   {:id :simmis/knowledge-fixtures :version 3
+   {:id :simmis/knowledge-fixtures :version (if output-scope 4 3)
     :checkpoints (:checkpoints base)
-    :basis {:base (evaluation/world-setup-ref base) :cleanup cleanup-policy
+    :basis {:base (evaluation/world-setup-ref base) :cleanup (cleanup-policy-for output-scope)
             :source-role execution-view/profile}
     :prepare (fn [{world :room :as context}]
                (room-workspace/ensure-workspace! world)
-               (clear-owned! world)
+               (clear-owned! world output-scope)
                (let [result ((:prepare base) context)]
                  (binding [ec/*execution-context* (:ctx world)]
                    (execution-view/install! world))
-                 result))}))
+                 result))})))

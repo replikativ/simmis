@@ -7,6 +7,33 @@
             [is.simm.uis.web.desktop.workflow-editor :as editor]
             [is.simm.uis.web.desktop.views.workflows :as workflows]))
 
+(deftest checkpoint-backend-select-preserves-an-unsupported-choice-without-offering-it
+  (let [ctx (context/create-execution-context)
+        source {:name "maintain-wiki" :revision "c1d56a1b-63f9-414c-a6ad-feb35d5e709d"
+                :files {"workflow.edn" "{}" "execution-origin.edn" "{}"} :definition {:params {}}
+                :inspection {:ok true :bundle "bundle" :cases []}}]
+    (try
+      (binding [ec/*execution-context* ctx]
+        (doseq [backend ["hosted" "local" "cli"]]
+          (let [container (.createElement js/document "div")
+                draft (-> (editor/draft source) (assoc :path nil :execution-open? true)
+                          (assoc-in [:form :backend] backend))
+                release (browser/mount! container
+                          (workflows/view "Lab" {:selected "maintain-wiki" :drafts {"maintain-wiki" draft}
+                                                 :permissions {:merge? true :operator? true}}
+                            {:room-id "room" :change (fn [& _])}))]
+            (try
+              (let [select (some #(when (= "Execution backend" (.-textContent (.querySelector % "span")))
+                                   (.querySelector % "select"))
+                                 (array-seq (.querySelectorAll container "label.workflow-field")))
+                    options (array-seq (.-options select))]
+                (is (= ["hosted"] (mapv #(.-value %) (remove #(.-disabled %) options))))
+                (is (= backend (.-value select)))
+                (when (not= "hosted" backend)
+                  (is (.-disabled (first (filter #(= backend (.-value %)) options))))))
+              (finally (browser/unmount! release))))))
+      (finally (context/stop-context! ctx)))))
+
 (deftest benchmark-deployment-preview-renders-exact-model-and-trial-ceilings
   (let [ctx (context/create-execution-context)
         container (.createElement js/document "div")

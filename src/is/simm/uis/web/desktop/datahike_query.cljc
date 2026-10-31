@@ -536,6 +536,18 @@
   [m]
   (contains? covered-message-kinds (:message/metadata-kind m)))
 
+(defn chat-message-visible?
+  "Room/thread presentation boundary only. Native :_runs is private Run
+   input/output retained for inspectors; public messages and :_activity visuals
+   remain eligible regardless of role, actor or Run ID."
+  [message]
+  (not= :_runs (or (:message/to message) (:to message))))
+
+(defn visible-chat-items
+  "Filter before thread parent previews, reply counts and scroll windowing."
+  [items]
+  (filterv chat-message-visible? items))
+
 (defn canonical-message-entity->timeline-item
   "Classify one canonical message for the Simmis timeline."
   [m]
@@ -718,9 +730,19 @@
                                db attempt-board/job-kinds)
                           (d/q {:find '[[?m ...]] :where room-message} db))]
        (->> (d/pull-many db pull-pattern message-eids)
+            (filter chat-message-visible?)
             (remove covered-by-another-item?)
             (map canonical-message-entity->timeline-item)
             vec))))
+
+#?(:cljs
+   (defn- private-run-message-ids [db]
+     ;; The legacy projector may already have mirrored a private native task.
+     ;; Suppress that compatibility copy too, even without Run ancestry links.
+     (if (schema-has? db :message/to)
+       (into #{} (d/q '[:find [?id ...]
+                         :where [?m :message/to :_runs] [?m :message/id ?id]] db))
+       #{})))
 
 #?(:cljs
    (defn- query-room-message-projections [db room-eid]
@@ -728,7 +750,7 @@
            legacy (if room-eid (legacy-room-messages db room-eid users) [])
            legacy-by-id (into {} (map (juxt :entity/uuid identity)) legacy)
            canonical (canonical-room-messages db)
-           canonical-ids (into #{} (map #(or (:id %) (:entity/uuid %))) canonical)
+           canonical-ids (into (private-run-message-ids db) (map #(or (:id %) (:entity/uuid %))) canonical)
            canonical-items (map (fn [item]
                                   (if (= :activity (:timeline/type item))
                                     item
@@ -740,6 +762,7 @@
                     ;; not have traversed the dvergr bus. Keep them visible until
                     ;; the projector is retired with an explicit migration.
                     (remove #(contains? canonical-ids (:entity/uuid %)) legacy))
+            (filter chat-message-visible?)
             (sort-by :timeline/ts)
             vec))))
 
@@ -902,7 +925,8 @@
    - `:thread/parent` (bounded direct-parent preview when available)
    - `:thread/reply-count` (all known descendants, on their known root row)"
   [items]
-  (let [messages (filterv #(= :message (:timeline/type %)) items)
+  (let [items (visible-chat-items items)
+        messages (filterv #(= :message (:timeline/type %)) items)
         by-id (into {} (map (juxt :entity/uuid identity)) messages)
         resolve-thread
         (fn [message]
@@ -967,7 +991,8 @@
    participate only through Dvergr's persisted thread root; exact S.EvalEntry
    rows remain room-level because they do not yet carry that causal identity."
   [items root-id]
-  (let [root (some #(when (and (= :message (:timeline/type %))
+  (let [items (visible-chat-items items)
+        root (some #(when (and (= :message (:timeline/type %))
                                (= root-id (:entity/uuid %)))
                       %)
                    items)
@@ -988,9 +1013,10 @@
    the canonical activity row instead, since it is the row with the durable
    Run/thread identity."
   [annotated-items thread-root-id]
-  (if thread-root-id
-    (:items (select-message-thread annotated-items thread-root-id))
-    (filterv #(not= :activity (:timeline/type %)) annotated-items)))
+  (let [items (visible-chat-items annotated-items)]
+    (if thread-root-id
+      (:items (select-message-thread items thread-root-id))
+      (filterv #(not= :activity (:timeline/type %)) items))))
 
 #?(:cljs
    (defn room-timeline-window-with-deltas

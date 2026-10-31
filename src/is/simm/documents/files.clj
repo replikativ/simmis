@@ -399,6 +399,35 @@
     (refuse! ::unavailable "An exact explicit workspace writer is required"))
   (save-file-through! room system request options))
 
+(defn save-files-to!
+  "One bounded explicit-target native CAS. Used for original room evidence;
+   callers must retain the original Room and supply current authorization."
+  [room system requests {:keys [authorize!]}]
+  (when-not (and system (vector? requests) (<= 1 (count requests) 20)
+                 (every? room-files/write-capabilities
+                         [:explicit-workspace :expected-worktree :applied-receipt :file-modes]))
+    (refuse! ::unavailable "Bounded explicit workspace CAS is required"))
+  (let [prepared (mapv prepare-file-write requests)
+        _ (when-not (= (count prepared) (count (set (map :path prepared))))
+            (refuse! ::invalid "Duplicate batch destination"))
+        _ (when (> (reduce + 0 (map #(alength ^bytes (:bytes %)) prepared)) 524288)
+            (refuse! ::limit "Collection exceeds the bounded batch size"))
+        batch (into {} (map (fn [{:keys [path bytes]}]
+                              [(str "/" path) {:base64 (.encodeToString (Base64/getEncoder) bytes)}]) prepared))
+        expected (into {} (map (fn [{:keys [path expected]}] [(str "/" path) expected]) prepared))
+        result (room-files/write-to! room system batch
+                                    {:expected-worktree expected
+                                     :file-modes (zipmap (keys batch) (repeat 33188))
+                                     :boundary (publication-boundary room authorize!)
+                                     :message "Collect original room evidence"})
+        actual (into {} (map (juxt :path :entry)) (:written result))]
+    (when-not (and (:applied? result) (= (set (keys batch)) (set (keys actual)))
+                   (every? (fn [{:keys [path bytes]}]
+                             (let [entry (get actual (str "/" path))]
+                               (and (= 33188 (:mode entry)) (= (blob/blob-id bytes) (:content entry))))) prepared))
+      (refuse! ::receipt "Native collection acknowledgement is incomplete"))
+    result))
+
 (defn- move-file-through! [room system path target expected {:keys [authorize!]}]
   (when-not (every? room-files/write-capabilities [:expected-worktree :applied-receipt :file-modes])
     (refuse! ::unavailable "The file writer must support opened-revision preconditions"))

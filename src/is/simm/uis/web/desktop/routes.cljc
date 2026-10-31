@@ -58,6 +58,7 @@
     (:memory-file :memory-block) (memory-links/route ref)
     :proposal (when id (str "/proposal/" id))
     :proposal-source (memory-links/source-route ref)
+    :request-source (memory-links/request-source-route ref)
     nil))
 
 (defn route->ref
@@ -76,6 +77,8 @@
       (cond
         (and (= 3 (count segs)) (= "room" (first segs)) (= "files" (segs 2)))
         (memory-links/parse-query (segs 1) query)
+        (and (= 5 (count segs)) (= "room" (first segs)) (= "request" (segs 2)) (= "source" (segs 4)))
+        (memory-links/parse-request-source-query (segs 1) (segs 3) query)
         (and (= 4 (count segs)) (= "proposal" (first segs)) (= "source" (segs 2)))
         (memory-links/parse-source-query (segs 1) (segs 3) query)
         :else nil)
@@ -109,8 +112,9 @@
    one focused proposal). A nil ref means the URL simply does not change."
   [{:keys [type data]}]
   (let [{:keys [page-uuid db-scope room-id anchor-message thread-root-id
-                proposal-id path reference component-id]} data]
+                proposal-id path reference component-id request-id]} data]
     (case type
+      :request-source {:kind :request-source :room room-id :request request-id :path path}
       :proposal-source {:kind :proposal-source :proposal proposal-id :component component-id :path path}
       :wiki (when (and page-uuid db-scope)
               {:kind :page :scope (str db-scope) :page (str page-uuid)})

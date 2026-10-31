@@ -308,9 +308,8 @@
     (is (str/includes? (get current "fixtures/workflow-context/wiki-maintenance.txt") "separate supported host operations"))))
 
 (deftest v5-uses-retained-wiki-context-without-activating-work
-  (let [source (starter/source)
+  (let [source (starter/source 5)
         policy (:policy (batch-inputs/declaration source))]
-    (is (= 5 starter/version))
     (is (= source (starter/source 5)))
     (is (= execution-origin/policy (execution-origin/declaration source)))
     (is (= {:context-paths [] :max-context-files 0 :max-context-bytes 0}

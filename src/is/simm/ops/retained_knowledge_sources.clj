@@ -1,5 +1,5 @@
 (ns is.simm.ops.retained-knowledge-sources
-  "Read frozen workflow citations through their canonical Proposal component.
+  "Read frozen workflow citations through their canonical Request or Proposal.
    Never resolves a current workspace, hydrates a Run, executes or adopts."
   (:require [datahike.api :as d]
             [datahike.blob :as blob]
@@ -61,27 +61,29 @@
     (when (> (reduce + 0 (map :size manifest)) workflows/max-bundle-bytes)
       (unavailable!))))
 
-(defn- verified! [room proposal owner manifest row retained]
-  (let [binding (dispositions/request-binding row)
-        disposition (dispositions/disposition row)
-        input (:input retained)
+(defn verify-request!
+  "Pure integrity verification of one frozen request. Does not authorize.
+   Internal result includes the verifier environment for Proposal integrity
+   checks. Wire readers project only manifest-selected original sources."
+  [room request row retained]
+  (let [input (:input retained)
         basis (publication/validate! (:knowledge/publication-basis input))
         target (:target basis)]
     (when-not (and (= #{:kind :limits :input} (set (keys retained)))
                    (map? (:limits retained)) (map? input)
                    (= :workflow (:kind retained) (:work.request/kind row))
                    (= (:work.request/intent-id row) (hasch/uuid retained))
-                   (= room (:work.request/room row) (:room manifest))
-                   (= (:work.request/id row) (:request manifest) (:request disposition))
-                   (= :proposed (:kind disposition))
-                   (= proposal (:proposal disposition) (:proposal/id owner))
-                   (= (:id manifest) (:manifest disposition))
-                   (= (:work.request/by binding) (:proposal/author owner))
-                   (= (:candidate disposition) (:attempt manifest) (:proposal/run owner))
-                   (= (:output disposition) (:output manifest))
-                   (= (:id basis) (:basis disposition) (:basis manifest)
-                      (:work.request/publication-basis-id row))
-                   (= target (:target manifest)) (publication/host-target? target)
+                   (= room (:work.request/room row))
+                   (= request (:work.request/id row))
+                   (or (not (contains? input :knowledge/source-citations))
+                       (= {:version 1 :room room :request request} (:knowledge/source-citations input)))
+                   (= (:id basis) (:work.request/publication-basis-id row))
+                   (or (not (contains? input :knowledge/source-citations))
+                       (let [citation (:knowledge/source-citations input)]
+                         (and (= #{:version :room :request} (set (keys citation)))
+                              (= 1 (:version citation))
+                              (= room (:room citation)) (= request (:request citation)))))
+                   (publication/host-target? target)
                    (map? (:inputs input))
                    (<= (count (:inputs input)) (:max-input-files policy/policy))
                    (every? (fn [[path text]]
@@ -92,12 +94,29 @@
                        (:max-input-bytes policy/policy)))
       (unavailable!))
     (source-origin! room input target)
-    (let [{:keys [environment workflow-bundle captured]} (filing/verify-frozen-workflow! input)
-          selection (get-in input [:workflow :input-selection])]
-      (when-not (and (= (hasch/uuid environment) (:environment manifest))
-                     (= workflow-bundle (:workflow manifest)))
-        (unavailable!))
-      {:request (:work.request/id row) :selection selection :captured captured})))
+    (let [{:keys [environment workflow-bundle captured]} (filing/verify-frozen-workflow! input)]
+      {:request request :selection (get-in input [:workflow :input-selection])
+       :captured captured :basis basis :environment environment :workflow-bundle workflow-bundle})))
+
+(defn- verified! [room proposal owner manifest row retained]
+  (let [{:keys [basis environment workflow-bundle] :as verified}
+        (verify-request! room (:work.request/id row) row retained)
+        binding (dispositions/request-binding row)
+        disposition (dispositions/disposition row)]
+    (when-not (and (= room (:room manifest))
+                   (= (:work.request/id row) (:request manifest) (:request disposition))
+                   (= :proposed (:kind disposition))
+                   (= proposal (:proposal disposition) (:proposal/id owner))
+                   (= (:id manifest) (:manifest disposition))
+                   (= (:work.request/by binding) (:proposal/author owner))
+                   (= (:candidate disposition) (:attempt manifest) (:proposal/run owner))
+                   (= (:output disposition) (:output manifest))
+                   (= (:id basis) (:basis disposition) (:basis manifest))
+                   (= (:target basis) (:target manifest))
+                   (= (hasch/uuid environment) (:environment manifest))
+                   (= workflow-bundle (:workflow manifest)))
+      (unavailable!))
+    (select-keys verified [:request :selection :captured])))
 
 (defn- with-sources! [host party proposal component f]
   (when-not (every? uuid? [party proposal component]) (unavailable!))
@@ -185,3 +204,79 @@
    (safely #(application/with-operation! (fn [host] (chunk host party proposal component opts)))))
   ([host party proposal component opts]
    (safely #(chunk host party proposal component opts))))
+
+
+(defn- with-request-sources! [host party room request f]
+  (when-not (every? uuid? [party room request]) (unavailable!))
+  (let [{conn :control-conn execution-ctx :execution-ctx} (::reads/owner host)
+        principal {:principal/kind :human :principal/id (str "party/" party)}]
+    (binding [ec/*execution-context* execution-ctx]
+      (let [db (reads/current-host-control-db! host)]
+        ;; Authority and exact room binding precede ALL retained artifact I/O.
+        (reads/authorize-read! db principal (str room))
+        (let [row (d/pull db '[*] [:work.request/id request])
+              binding (select-keys row [:work.request/id :work.request/room :work.request/kind
+                                        :work.request/by :work.request/intent-id :work.request/payload-ref
+                                        :work.request/publication-basis-id])]
+          (when-not (= room (:work.request/room row)) (unavailable!))
+          (let [retained (:value (artifact/get-bounded-value
+                                  (artifact/datahike-store conn) (:work.request/payload-ref row)
+                                  max-payload-bytes))
+                verified (verify-request! room request row retained)
+                result (f verified)
+                current (reads/current-host-control-db! host)]
+            ;; Recheck the original owner and authority at the captured App's
+            ;; operation boundary. Status/disposition changes do not change the
+            ;; immutable request identity or invalidate an adopted citation.
+            (reads/authorize-read! current principal (str room))
+            (when-not (= binding (select-keys (d/pull current '[*] [:work.request/id request])
+                                              (keys binding)))
+              (unavailable!))
+            result))))))
+
+(defn- request-identity-fields [room {:keys [request selection]}]
+  {:room (str room) :request (str request)
+   :selection (into {} (map (fn [key] [key (str (get selection key))]))
+                    [:trigger-id :execution-id :manifest-id])})
+
+(defn- request-listing [host party room request]
+  (with-request-sources! host party room request
+    (fn [{:keys [captured] :as verified}]
+      (assoc (request-identity-fields room verified)
+             :files (mapv (fn [{:keys [input path role size content]}]
+                            {:path input :source-path path :role role :size size :content-id (str content)})
+                          (get-in captured [:manifest :files]))))))
+
+(defn- request-chunk [host party room request opts]
+  (when-not (m/validate results/file-options-schema opts) (unavailable!))
+  (with-request-sources! host party room request
+    (fn [{:keys [captured] :as verified}]
+      (let [{:keys [path offset length] :or {offset 0 length results/max-chunk-bytes}} opts
+            entry (first (filter #(= path (:input %)) (get-in captured [:manifest :files])))
+            _ (when-not entry (unavailable!))
+            bytes (markdown/source-bytes (get-in captured [:inputs path]))
+            size (alength bytes)]
+        (when (> offset size) (unavailable!))
+        (let [end (+ offset (min length (- size offset)))]
+          (cond-> (merge (request-identity-fields room verified)
+                        {:path path :content-id (str (:content entry)) :size size :offset offset
+                         :length (- end offset) :encoding "base64" :media-type "text/plain; charset=utf-8"
+                         :eof? (= end size)
+                         :base64 (.encodeToString (Base64/getEncoder)
+                                                  (Arrays/copyOfRange ^bytes bytes (int offset) (int end)))})
+            (< end size) (assoc :next-offset end)))))))
+
+(defn request-list!
+  "Current Room reader's manifest-listed originals, independent of output or
+   Proposal lifecycle. HOST arity needs the captured App operation owner."
+  ([party room request]
+   (safely #(application/with-operation! (fn [host] (request-listing host party room request)))))
+  ([host party room request]
+   (safely #(request-listing host party room request))))
+
+(defn request-read!
+  "One frozen original chunk; never substitutes today's Memory for missing evidence."
+  ([party room request opts]
+   (safely #(application/with-operation! (fn [host] (request-chunk host party room request opts)))))
+  ([host party room request opts]
+   (safely #(request-chunk host party room request opts))))

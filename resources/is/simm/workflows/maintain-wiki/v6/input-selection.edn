@@ -1,0 +1,7 @@
+{:kind :knowledge
+ :policy {:version 2
+          :trigger-roots ["captures" "inbox" "transcripts"]
+          :context-roots ["wiki"]
+          :exclude-prefixes [".obsidian"]
+          :output-scope {:version 2 :output-root "out/knowledge"
+                         :destination-root "wiki" :exclude-prefixes [".obsidian"]}}}

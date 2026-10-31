@@ -160,3 +160,11 @@
     (is (= ref (routes/route->ref (routes/ref->route ref))))
     (is (= ref (routes/tab->ref tab)))
     (is (nil? (routes/route->ref (str (routes/ref->route ref) "&other=1"))))))
+
+(deftest request-source-citations-roundtrip-without-an-output-identity
+  (let [ref {:kind :request-source :room room :request prop :path "/in/knowledge/sources/inbox/Original 🦋.md"}
+        tab {:type :request-source :data {:room-id room :request-id prop :path (:path ref)}}]
+    (is (= ref (routes/route->ref (routes/ref->route ref))))
+    (is (= (routes/ref->route ref) (routes/tab->route tab)))
+    (is (= ref (routes/tab->ref tab)))
+    (is (nil? (routes/route->ref (str "/room/" room "/request/wrong/source?path=%2Fin%2Fknowledge%2Fsources%2FA.md"))))))

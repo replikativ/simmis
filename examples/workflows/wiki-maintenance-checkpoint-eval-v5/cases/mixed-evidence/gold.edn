@@ -1,0 +1,26 @@
+{:version 2,
+ :no-change? false,
+ :preserved
+ {"wiki/Company.md"
+  ["# Bright Harbor Labs"
+   "an invoicing product for small businesses."]},
+ :forbidden
+ ["five paying customers"
+  "validated demand"
+  "three completed interviews"],
+ :quotes [],
+ :required
+ ["19"
+  "workspace"
+  "hypothesis"
+  "Thursday"
+  "planned"
+  "unknown"
+  "29"
+  "sampled"
+  "unverified"
+  "estimated"],
+ :citations
+ ["/in/knowledge/sources/captures/2026-10-30/observation.md"
+  "/in/knowledge/sources/inbox/conversations/planning.md"
+  "/in/knowledge/sources/inbox/imports/founder-note.md"]}

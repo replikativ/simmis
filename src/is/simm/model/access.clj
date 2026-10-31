@@ -817,6 +817,13 @@
      "save-memory-file!"       {:action W :resource (room :room-id-str)}
      "preview-conversation-capture!" {:action W :resource (room :room-id-str)}
      "publish-conversation-capture!" {:action W :resource (room :room-id-str)}
+     "preview-room-digest!" {:action R :resource (room :room-id-str)}
+     "read-room-digest!" {:action R :resource (room :room-id-str)}
+     "publish-room-digest!" {:action W :resource (room :room-id-str)}
+     "install-room-digest!" {:action :admin :resource (room :room-id-str)}
+     "launch-room-digest!" {:action M :resource (room :room-id-str)}
+     "preview-room-evidence!" {:action W :resource (room :room-id-str)}
+     "publish-room-evidence!" {:action W :resource (room :room-id-str)}
      "save-memory-rich-file!"  {:action W :resource (room :room-id-str)}
      "move-memory-file!"       {:action W :resource (room :room-id-str)}
      "load-memory-office-part!" {:action R :resource (room :room-id-str)}
@@ -886,6 +893,8 @@
      "proposal-file!"          {:action R :resource (proposal :proposal-id-str)}
      "list-proposal-sources!"  {:action R :resource (proposal :proposal-id-str)}
      "read-proposal-source!"   {:action R :resource (proposal :proposal-id-str)}
+     "list-request-sources!"   {:action R :resource (room :room-id-str)}
+     "read-request-source!"    {:action R :resource (room :room-id-str)}
      "proposal-retained-audit!" {:action R :resource (always :authenticated)}
      ;; Fixed service additionally requires current human read+merge, proposal
      ;; write, exact retained single-component shape, and original Room target.

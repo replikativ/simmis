@@ -39,6 +39,7 @@
             [is.simm.model.knowledge-streams :as knowledge-streams]
             [is.simm.model.knowledge-pins :as knowledge-pins]
             [is.simm.model.knowledge-batches :as knowledge-batches]
+            [is.simm.model.room-evidence-collections :as room-evidence-collections]
             [is.simm.model.knowledge-processing :as knowledge-processing]
             [is.simm.model.knowledge-batch-recovery :as knowledge-batch-recovery]
             [is.simm.model.knowledge-schedule-batches :as knowledge-schedule-batches]
@@ -801,7 +802,7 @@
                  file-outputs/schema file-adoptions/schema knowledge-dispositions/schema
                  knowledge-streams/schema knowledge-pins/schema knowledge-batches/schema
                  knowledge-processing/schema knowledge-batch-recovery/schema
-                 knowledge-schedule-batches/schema knowledge-stream-retirement/schema))
+                 knowledge-schedule-batches/schema knowledge-stream-retirement/schema room-evidence-collections/schema))
 
 ;; =============================================================================
 ;; Migration: lift legacy :party/* rows onto the dvergr actor core

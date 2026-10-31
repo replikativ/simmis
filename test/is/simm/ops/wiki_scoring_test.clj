@@ -149,14 +149,13 @@
                             :loses [:forbidden-content?]}
                     :missing {:case "supported" :files {} :loses [:expected-change? :required-content? :citations?]}}}))
 
-(deftest shipped-default-is-v5-with-checkpoint-profile-and-unchanged-v1-source
-  (let [current (starter/source)
+(deftest historical-v5-retains-checkpoint-profile-and-unchanged-v1-source
+  (let [historical (starter/source 5)
         old (starter/source 1)]
-    (is (= 5 starter/version))
-    (is (= (conj (set (keys old)) "input-batching.edn" "execution-origin.edn") (set (keys current))))
-    (is (= :wiki-checkpoint-structure-v1 (get-in (catalog/bundle starter/name current) [:definition :params :simmis/checker-profile])))
+    (is (= (conj (set (keys old)) "input-batching.edn" "execution-origin.edn") (set (keys historical))))
+    (is (= :wiki-checkpoint-structure-v1 (get-in (catalog/bundle starter/name historical) [:definition :params :simmis/checker-profile])))
     (is (nil? (get-in (catalog/bundle starter/name old) [:definition :params :simmis/checker-profile])))
-    (is (not= (:id (catalog/bundle starter/name current)) (:id (catalog/bundle starter/name old))))))
+    (is (not= (:id (catalog/bundle starter/name historical)) (:id (catalog/bundle starter/name old))))))
 
 (deftest ordinary-v2-workflows-do-not-execute-checkers-or-template-the-profile
   (let [program-source (starter/source 2)

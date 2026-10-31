@@ -4,6 +4,7 @@
   (:require [dvergr.resource :as resource]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.owned-room-operation :as room-operation]
+            [is.simm.ops.owned-room-evidence :as room-evidence]
             [is.simm.ops.knowledge-batch-inputs :as batch-inputs]
             [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
@@ -115,10 +116,17 @@
   (when-not original-room (unavailable!))
   (batch-readiness! host principal handle original original-room input)
   (let [{:keys [control-conn execution-ctx]} (::reads/owner host)
-        ready (storage! #(discovery/prepare-batch!
+        collection (storage! #(room-evidence/prepare!
+                              host principal handle original-room snapshot input
+                              {:client-id (:request-id input)}
+                              (requests/request-id (:party original) (:room-id original) (:request-id input))
+                              (:epoch declaration)))
+        ready (if (= :held (:status collection))
+                collection
+                (storage! #(discovery/prepare-batch!
                           host principal handle
                           {:name (:name input) :expected-source (:expected-owned-source input)
-                           :expected-bundle (:expected-bundle input) :epoch (:epoch declaration)}))]
+                           :expected-bundle (:expected-bundle input) :epoch (:epoch declaration)})))]
     (if (not= :ready (:status ready))
       ready
       (let [_ (when-not (= snapshot (:snapshot ready)) (unavailable!))
@@ -136,7 +144,8 @@
             prepared (storage! #(workflows-run/prepare-frozen-batch
                                  snapshot input proof (:control-revision ready)
                                  {:host host :original original-room :handle handle :ticket lifetime/*ticket*}))
-            prepared (assoc prepared :submission-channel (if (:principal/mcp? principal) :mcp :host))]
+            prepared (cond-> (assoc prepared :submission-channel (if (:principal/mcp? principal) :mcp :host))
+                       collection (assoc-in [:basis :knowledge/collection] collection))]
         (current! host principal handle original binding original-room)
         (storage! #(work/submit-prepared! control-conn execution-ctx principal
                                           (:room-id original) (:room original-room) input prepared))))))

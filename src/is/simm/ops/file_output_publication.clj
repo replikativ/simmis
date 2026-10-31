@@ -19,7 +19,7 @@
   (adoptions/validate! operation)
   (plans/validate-manifest! manifest)
   (when-not (and (seq (:entries manifest))
-                 (= (:proposal operation) (hasch/uuid [:simmis/knowledge-file-proposal-v1 (:id manifest)]))
+                 (= (:proposal operation) (hasch/uuid [(plans/proposal-tag (:version manifest)) (:id manifest)]))
                  (= (:component operation) (:manifest operation) (:id manifest))
                  (= (:room operation) (:room manifest))
                  (= (:target operation) (:target manifest)))

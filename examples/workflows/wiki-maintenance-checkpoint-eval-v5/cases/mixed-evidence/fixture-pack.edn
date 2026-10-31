@@ -1,0 +1,13 @@
+{:kind :dvergr/fixture-pack,
+ :version 1,
+ :files
+ {"/in/knowledge/manifest.edn"
+  "{:version 1, :repository #uuid \"89435992-078e-4620-bca3-89a239c96369\", :policy {:version 1, :trigger-roots [\"captures\" \"inbox\" \"transcripts\"], :context-roots [\"wiki\"], :exclude-prefixes []}, :trigger-id #uuid \"1421953e-a455-52dc-b960-c3474bac09ed\", :execution-id #uuid \"2310d2ef-a949-58c9-ac0f-19f84f0abb44\", :files [{:path \"captures/2026-10-30/observation.md\", :input \"/in/knowledge/sources/captures/2026-10-30/observation.md\", :role :trigger, :content #uuid \"36d344f1-61d0-5381-a96b-47c6b1f3572d\", :size 440, :mode 33188} {:path \"inbox/conversations/planning.md\", :input \"/in/knowledge/sources/inbox/conversations/planning.md\", :role :trigger, :content #uuid \"089aa306-5dee-53d3-809c-83473de8ccca\", :size 169, :mode 33188} {:path \"inbox/imports/founder-note.md\", :input \"/in/knowledge/sources/inbox/imports/founder-note.md\", :role :trigger, :content #uuid \"0c4f06e4-db03-591a-a6fa-b29e033f9c8e\", :size 192, :mode 33188}]}",
+  "/in/knowledge/sources/captures/2026-10-30/observation.md"
+  "---\nsimmis-id: 42200cc9-3560-4de9-8421-10945556b351\nobservation-kind: sampled-model-description\nrecording-position-estimated: true\n---\n# Sampled screen observation\n\nThe screen appears to show a draft comparison table with a EUR29 price. This is unverified sampled visual evidence, not a confirmed pricing decision. Recording position is estimated. The original screenshot is not included in model inputs.\n\n[Original screenshot](screen.png)\n",
+  "/in/knowledge/sources/inbox/conversations/planning.md"
+  "Synthetic explicit human-message capture. Mira says: We plan three customer interviews on Thursday. They are planned, not completed; willingness to pay remains unknown.\n",
+  "/in/knowledge/sources/inbox/imports/founder-note.md"
+  "Synthetic imported founder note. Mira proposes USD19 per workspace per month for LedgerNest. The price is an unvalidated hypothesis. No customer has committed to buy, and there is no revenue.\n",
+  "/wiki/Company.md"
+  "---\nsimmis-id: c9c344b7-83c7-41d8-b3d1-f2e684ae50e6\nrevenue: 0\nactive: false\ncustom:\n  owner-note: preserve me\n---\n<!-- simmis:block 2a54e1a1-146e-44c8-b6b9-5c185149e6eb -->\n\n# Bright Harbor Labs\n\nBright Harbor Labs is developing LedgerNest, an invoicing product for small businesses.\n\n<!-- /simmis:block -->\n"}}

@@ -337,6 +337,14 @@ by guarded property saves; the folder is navigation, not a semantic boundary.
 Reopening validates the actual mandatory schema shapes and repository singleton
 with its matching profile, then reattaches accounting and Attempt governance.
 It performs no seed/schema/source transaction and starts no asynchronous worker.
+The mandatory foundation is the repository, document, space, Simmis model and
+accounting schema, including the page-title uniqueness constraint. Dvergr chat
+attributes are installed on new repositories for convenience; their presence is
+not part of this canonical Memory profile. Known chat attributes are checked for
+compatible shapes when present. The separate runtime messages store owns chat
+schema installation, so an additive Dvergr attribute does not require a Memory
+write or invalidate an older repository. Canonical foundation definitions take
+precedence where schema vocabularies share an ident.
 An invalid authored Markdown file withholds the derived canonical query view,
 not the whole Room: raw source remains repairable. An invalid mandatory schema
 or missing/mismatched profile instead refuses repository preparation.

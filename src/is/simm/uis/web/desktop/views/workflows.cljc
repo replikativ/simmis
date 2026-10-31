@@ -359,17 +359,19 @@
                                                 (el/p {:class "workflow-note"} "Configure an explicit execution of the saved code. Opening this section never starts work.")
                                                 (when (and benchmark? (not (:operator? permissions)))
                                                   (el/p {:role "status"} "Benchmark execution currently requires installation operator access and room merge permission."))
-                                                (when (contains? (:files source) "execution-origin.edn")
+                                                (when (editor/checkpoint? source)
                                                   (el/p {:class "workflow-note"}
                                                         "This workflow reads a retained repository checkpoint on This Simmis server. Capture output and discard work retains wiki proposals for review. CLI and local-worker execution are unsupported."))
                                                 (el/label {:class "workflow-field"}
                                                           (el/span {} "Execution backend")
                                                           (el/select {:value (get form :backend "hosted")
                                                                       :on-change (fn [e] (set-form :backend #?(:cljs (.. e -target -value) :clj "hosted")))}
-                                                                     (el/option {:value "hosted"} "This Simmis server")
-                                                                     (when (:operator? permissions)
-                                                                       (el/option {:value "cli"} "This server · Claude Code text benchmark"))
-                                                                     (el/option {:value "local"} "My enrolled local SCI worker")))
+                                                                     (when-not (some #(= (:id %) (:backend form "hosted"))
+                                                                                     (editor/execution-backends source (:operator? permissions)))
+                                                                       (el/option {:value (:backend form) :disabled true}
+                                                                                  "Previous choice · unsupported by this workflow"))
+                                                                     (for [{:keys [id label]} (editor/execution-backends source (:operator? permissions))]
+                                                                       (el/option {:key id :value id} label))))
                                                 (when-not local?
                                                   (el/p {:class "workflow-note"}
                                                         "Runs on this Simmis instance, including when it runs on your computer. Model inference uses its configured provider."))

@@ -9,6 +9,7 @@
             [dvergr.rooms.files :as room-files]
             [dvergr.sandbox :as sandbox]
             [is.simm.ops.knowledge-workspace :as knowledge-workspace]
+            [is.simm.ops.knowledge-inputs :as knowledge-inputs]
             [is.simm.ops.wiki-scoring :as wiki-scoring]
             [sci.core :as sci])
   (:import [java.util.concurrent.atomic AtomicBoolean]))
@@ -235,7 +236,7 @@
        (knowledge-workspace/validate-inputs! (:fixtures case))))
    (let [profile (wiki-scoring/selected-profile bundle)
          base (cond-> (catalog/world-setup bundle)
-                selection-policy knowledge-workspace/with-frozen-staging)]
+                selection-policy (knowledge-workspace/with-frozen-staging (knowledge-inputs/output-scope selection-policy)))]
      (if-not (or (:calibration bundle) profile)
        base
        (evaluation/make-world-setup

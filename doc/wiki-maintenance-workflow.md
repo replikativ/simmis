@@ -1,6 +1,13 @@
 # Wiki maintenance as an ordinary workflow
 
-The version-5 starter is source data returned by
+The broader design is specified in
+[Conversation digests and evidence-grounded knowledge maintenance](conversation-digests-and-knowledge.md).
+Version 6 adds explicit original-evidence coverage and a versioned destination
+scope. The default still publishes to `wiki/` in the default canonical Memory;
+a separately inspected edited policy can select a root-level vault. Digests do
+not decide whether an original source is eligible for maintenance.
+
+The version-6 starter is source data returned by
 `is.simm.starter.wiki-maintenance/source`. It contains the files for
 `/workflows/maintain-wiki/`, not a second agent, scheduler or resource ledger.
 Loading it does not install anything, choose a model, allocate money or enable
@@ -32,7 +39,7 @@ wiki/ ────────────────────────�
                     │                        │               (selected-case
                     └──────── isolated Run ──┘                checkpoint)
                                   │
-                            /out/wiki/*.md
+                    /out/knowledge/*.md + /out/coverage.edn
                                   │
                       retained proposal → review → adoption
 ```
@@ -45,6 +52,13 @@ inputs can be skipped by existing admission before submitting a funded Run.
 Chat messages are not collected directly; they need an explicit evidence-file
 ingestion step. An overview is ordinary Markdown, not a new schema entity.
 
+Use **Save to Memory** on a human message to inspect and save an exact evidence
+snapshot under `inbox/conversations/`. The saved confirmation links to **Review
+knowledge update**, the existing room-scoped maintainer setup. Opening it starts
+no Run, grants no allowance and enables no schedule. The workflow must exist and
+its current setup still needs explicit confirmation. Imported Git repositories
+are not silently modified to install a starter.
+
 Capture inputs are the Markdown observation notes. Their relative image and
 recording links and exact asset identities remain in the source, while binary
 media stays outside the frozen model inputs. A visual description is sampled
@@ -53,7 +67,7 @@ captured. Server receipt timestamps and estimated recording positions retain
 their qualifications. An agent must verify an asset's recorded identity before
 treating a retrieved current file as the original.
 
-Version 5 opts into incremental batching and native retained-checkpoint execution
+Versions 5 and 6 opt into incremental batching and native retained-checkpoint execution
 through `input-batching.edn` and `execution-origin.edn`. Each invocation receives
 one frozen pending prefix, with at most 32 trigger files and 1 MiB of trigger
 bytes. Wiki context remains under `/wiki/` in the exact retained repository;
@@ -63,12 +77,12 @@ resource limits. The execution envelope still bounds each copied file at
 512 KiB and the total at 2 MiB, including manifest and instruction fixtures.
 Oversized head evidence holds admission without truncation or silent skipping.
 
-Native server execution requires discard settlement: `/out/wiki` files become
+Native server execution requires discard settlement: v6 `/out/knowledge` files become
 reviewable proposals rather than merging an entire historical Run world. Manual
 and scheduled workflow invocations share the same retained-batch path. Native
-benchmarks construct clean independent case checkpoints with the same structural
-scoring profile; scheduled checkpoint benchmarks remain unsupported. CLI and
-local-worker execution refuse version 5 before creating work. Use an explicitly
+benchmarks construct clean independent case checkpoints; v5 keeps its structural
+scoring profile and v6 uses a separate mechanical checker plus host publication gates; scheduled checkpoint benchmarks remain unsupported. CLI and
+local-worker execution refuse versions 5 and 6 before creating work. Use an explicitly
 chosen historical/custom copied-context program for those executors; no backend
 or program is silently substituted.
 
@@ -109,6 +123,16 @@ enabled by the starter. A completed Run is not a claim of factual correctness.
 
 ## Benchmarks are explicit
 
+`examples/workflows/wiki-maintenance-checkpoint-eval-v5/` is a separate reusable
+evaluation bundle. Its six live program files match the installed version 5
+starter exactly. Synthetic cases cover mixed imported notes, human conversation
+and capture observations, capture uncertainty, and already incorporated evidence.
+Gold and calibration are evaluator-held; the bundle grants no execution resources.
+Calibration and native preparation are checked by the existing checkpoint test.
+These are mechanical checks, not fresh model-quality results. Use this bundle
+for a finite native subscription benchmark, then deploy the ordinary live starter
+after reviewing its output. Never install synthetic fixtures into a real wiki.
+
 `checker.clj` is a benchmark-only mechanical regression checker. Ordinary manual
 and scheduled saved-workflow execution uses host completion and exact capture;
 it does **not** execute the authored checker. Do not label every scheduled
@@ -134,6 +158,14 @@ requires an explicit new check; it is never silently retried. The version-2
 adoption journal retains the accepted review revision as immutable intent data.
 This digest is audit attribution, not a replayable historical snapshot or proof
 of factual correctness. Mixed-component Proposals remain review-only.
+
+Retained output inspection also extracts bounded Markdown citations. **Inspect
+cited sources** explicitly reads the original frozen manifest; only exact listed
+paths acquire links beside the proposed text. Code, comments and unused link
+definitions are excluded. Missing/unavailable sources never fall back to today's
+Memory. Citation parsing failures are visible without hiding the full output.
+This does not establish historical citation provenance for arbitrary manually
+authored or already adopted wiki pages.
 
 An uncertain completion offers **Check recorded completion**, a separately
 authorized historical receipt reconciliation. It does not publish again or
@@ -299,3 +331,43 @@ manifest; copied context is also excluded. This profile observes
 retained fixture data, not a live Room. It does not itself provide checkpoint
 admission. The owned native benchmark facade supplies checkpoint admission;
 CLI and local-worker entry points continue refusing this policy.
+
+## Version 6 coverage and scoped output
+
+Only version 6 includes `coverage-policy.edn`. Every selected original trigger
+must appear once in `/out/coverage.edn`, using its exact frozen input path and
+content UUID and the manifest trigger UUID. `:incorporated` names actual proposed
+repository-relative targets; `:already-represented` names existing pages;
+`:no-change` explains why no substantive update is supported; `:deferred` holds
+the whole batch. An omitted digest entry, single saved human message or brief
+company capture remains eligible original evidence. Coverage claims do not prove
+understanding, factual truth or adoption.
+
+The default v2 input policy uses captures/inbox/transcripts as triggers and wiki
+as retained context. Its fixed disposable output root is `/out/knowledge/` and
+its destination is `wiki/`, so `/out/knowledge/People/Sam.md` proposes
+`wiki/People/Sam.md`. Root-vault policies use an explicit empty destination root
+and bounded exclusions, including source folders and vault metadata as needed.
+Root context gives triggers precedence and excludes reserved workflow/staging
+namespaces. Complete retained occupancy includes excluded and non-Markdown files;
+missing selected input never proves that a destination is absent. Historical v1
+wiki receipts keep their original path and digest meaning.
+
+The v6 task asks for coherent subject notes and affected overview links, while
+preserving page/block identities, unknown metadata and unaffected content. Its
+reader is text-only unless a separately admitted tool returns explicit vision
+proof for the exact asset. A screenshot description mentioning a company does
+not establish a client relationship.
+
+`examples/workflows/wiki-maintenance-originals-eval-v6/` is a separate public
+synthetic development benchmark. Native-generated v2 frozen manifests cover a
+single message omitted from a navigation digest, a short uncertain company
+capture, coherent Sam/overview updates, and an explicit no-change report. Its
+checker tests paths, preserved fragments, citations, coverage fragments and
+specific fabrication regressions. The host independently checks exact coverage
+membership and canonical publication. These checks are not a semantic quality
+score. The unchanged v5 example remains available for historical comparison.
+
+Fresh repositories receive v6. Existing pristine older source is an explicit
+upgrade offer; customized source is preserved. Upgrading source does not migrate
+processing streams, change a model, fund work, enable a schedule or adopt outputs.

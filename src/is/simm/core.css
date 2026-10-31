@@ -2444,6 +2444,19 @@ body {
   background: var(--mono-bg-surface);
   font-size: 12px;
 }
+.conversation-capture-panel button, .room-digest-result button {
+  font: inherit;
+  padding: 5px 9px;
+  border: 1px solid var(--mono-border);
+  border-radius: var(--radius-sm);
+  background: var(--mono-bg-overlay);
+  color: var(--mono-text-primary);
+  cursor: pointer;
+}
+.conversation-capture-panel button:disabled, .room-digest-result button:disabled { opacity: .5; cursor: default; }
+.room-digest-result { max-width: 100%; overflow-wrap: anywhere; }
+.room-digest-result details, .room-digest-result p { margin: 6px 0; }
+.room-digest-result summary { cursor: pointer; }
 .conversation-capture-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .conversation-capture-heading button { background: transparent; color: inherit; border: 0; cursor: pointer; }
 .conversation-capture-panel p { margin: 6px 0; }

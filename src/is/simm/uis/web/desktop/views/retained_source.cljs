@@ -59,9 +59,14 @@
            (observe!
             :source generation
             #(case (:kind step)
-               :list (remote/list-proposal-sources! web/server-id (:proposal-id identity) (:component-id identity))
-               :chunk (remote/read-proposal-source! web/server-id (:proposal-id identity) (:component-id identity)
-                                                    {:path (:path identity) :offset (:offset step) :length 16384}))
+               :list (if (:request-id identity)
+                       (remote/list-request-sources! web/server-id (:room-id identity) (:request-id identity))
+                       (remote/list-proposal-sources! web/server-id (:proposal-id identity) (:component-id identity)))
+               :chunk (if (:request-id identity)
+                        (remote/read-request-source! web/server-id (:room-id identity) (:request-id identity)
+                                                     {:path (:path identity) :offset (:offset step) :length 16384})
+                        (remote/read-proposal-source! web/server-id (:proposal-id identity) (:component-id identity)
+                                                     {:path (:path identity) :offset (:offset step) :length 16384})))
             (fn [s result]
               (let [next (case (:kind step)
                            :list (source/accept-list identity s result)
@@ -81,8 +86,11 @@
      (el/section {:class "memory-panel" :aria-label "Frozen workflow source"}
                  (el/div {:class "memory-file-header"}
                          (el/strong {} (:path data))
-                         (el/button {:on-click (fn [_] ((:open-proposal actions)))} "Open proposal"))
+                         (when (:proposal-id data)
+                           (el/button {:on-click (fn [_] ((:open-proposal actions)))} "Open proposal")))
                  (el/p {:class "memory-note"} "Frozen evidence used by this workflow. Read only; independent of today's Memory.")
+                 (when (:request-id data)
+                   (el/p {:class "memory-note"} (str "Request " (:request-id data))))
                  (case (:status state)
                    :ready (el/div {}
                                   (el/p {:class "memory-note"}

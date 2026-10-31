@@ -72,7 +72,7 @@
                                  [(:owner w) {:role :assistant}]
                                  [(:owner w) {:role :user :kind :call-transcript}]
                                  [(:owner w) {:role :user :run-id (random-uuid)}]
-                                 [(:owner w) {:role :user :kind :workflow-completed}]]]
+                                 [(:owner w) {:role :user :kind :workflow/completed}]]]
         (let [id (message! room author "Not an ordinary human message" metadata)]
           (is (= :not-human-conversation (reason #(preview data [id])))))))))
 
@@ -196,3 +196,110 @@
                (reason #(preview (update data :host update :config dissoc :host-lifecycle) [id]))))
         (lifetime/fence! capture-owner)
         (is (thrown? clojure.lang.ExceptionInfo (preview data [id])))))))
+
+(defn- room-preview [{:keys [host w]}]
+  (capture/preview-room! host (ops/party-principal (:owner w)) (str (:room w)) {}))
+
+(defn- room-publish [{:keys [host w]} p]
+  (capture/publish-room! host (ops/party-principal (:owner w)) (str (:room w))
+                         {:capture-id (:capture-id p) :expected-target-stamp (:target-stamp p)}))
+
+(deftest room-evidence-retains-original-human-and-agent-revisions-before-knowledge-selection
+  (with-fixture
+    (fn [{:keys [room w owned] :as data}]
+      (let [human (message! room (:owner w) "same text" {:role :user})
+            agent (message! room (:team-agent w) "same text" {:role :assistant})
+            public-tool (message! room (:team-agent w) "Exact publicly archived tool result."
+                                  {:role :tool-result :run-id (random-uuid)})
+            private-ids (binding [ec/*execution-context* (:ctx room)]
+                ;; Native program/start! persists the human-owned task at its
+                ;; private Run sink; the private result may have no room-party
+                ;; identity. Neither is public conversation evidence.
+                (mapv (fn [private-message]
+                        (is (= :inserted (store/-store-message! (:store room) (:id room) private-message)))
+                        (:id private-message))
+                      [(discourse/message (keyword "party" (str (:owner w))) :_runs
+                                          "Private workflow task; not an original chat message." nil {:role :user})
+                       (discourse/message :candidate :_runs "Private Run result." nil
+                                          {:role :assistant :run-id (random-uuid)})
+                       (discourse/message :workflow/codex-subscription-sol-0 :_activity
+                                          "Tool visual play-by-play; not the exact tool result." nil
+                                          {:role :tool :run-id (random-uuid)})]))
+            p (room-preview data)]
+        (is (= :not-human-conversation (reason #(preview data [(first private-ids)])))
+            "Explicit human-message capture also refuses the human-owned private Run task")
+        (is (= [human] (:message-ids (preview data [human]))))
+        (is (= #{human agent public-tool} (set (map :message-id (:artifacts p)))))
+        (is (= :ready (:state p)))
+        (is (= 3 (count (:writes (room-publish data p)))))
+        (doseq [a (:artifacts p)]
+          (is (= (:text a) (:text (files/read-file-in @owned (:path a))))))
+        ;; Use the exact canonical generated envelope from proposal publication.
+        ;; It must not turn the next intake into :held/:unsupported-message,
+        ;; while public human, agent and exact tool-result originals remain kept.
+        (binding [ec/*execution-context* (:ctx room)]
+          (let [notice (discourse/message :simmis/proposals :_room-log "Proposal ready: generated navigation"
+                                          nil {:role :system :kind :proposal/filed
+                                               :object {:kind :proposal :id (random-uuid)}})]
+            (is (= :inserted (store/-store-message! (:store room) (:id room) notice)))))
+        (let [next-preview (room-preview data)]
+          (is (= :ready (:state next-preview)))
+          (is (= 3 (:retained-count next-preview)))
+          (is (empty? (:artifacts next-preview))))
+        (binding [ec/*execution-context* (:ctx room)]
+          (d/transact (:conn (:store room)) [{:message/id human :message/content "old message corrected"}]))
+        (let [next (room-preview data)]
+          (is (= [human] (mapv :message-id (:artifacts next))))
+          (is (= :selection-changed (reason #(room-publish data p))))
+          (is (= 1 (count (:writes (room-publish data next))))))))))
+
+(deftest room-evidence-plan-and-native-gate-bind-the-same-source-snapshot
+  (with-fixture
+    (fn [{:keys [room w owned] :as data}]
+      (let [id (message! room (:owner w) "original" {:role :user})
+            p (room-preview data) before @owned
+            source @#'capture/room-source calls (atom 0)]
+        ;; Change immediately after the source read used to construct the plan.
+        ;; A second independent read must not become a newer authorization basis
+        ;; for bytes taken from the first one.
+        (with-redefs-fn
+          {#'capture/room-source
+           (fn [source-binding]
+             (let [snapshot (source source-binding)]
+               (when (= 1 (swap! calls inc))
+                 (binding [ec/*execution-context* (:ctx room)]
+                   (d/transact (:conn (:store room))
+                               [{:message/id id :message/content "corrected between reads"}])))
+               snapshot))}
+          #(is (= :selection-changed (reason (fn [] (room-publish data p))))))
+        (is (= before @owned))))))
+
+(deftest room-evidence-native-gate-rechecks-source-authority-and-no-uncertain-replay
+  (with-fixture
+    (fn [{:keys [room w owned] :as data}]
+      (message! room (:owner w) "original" {:role :user})
+      (let [p (room-preview data) before @owned write native/write-to!]
+        (with-redefs [native/write-to! (fn [& args]
+                                       (binding [ec/*execution-context* (:ctx room)]
+                                         (d/transact (:conn (:store room))
+                                                     [{:message/id (get-in p [:artifacts 0 :message-id])
+                                                       :message/content "concurrent correction"}]))
+                                       (apply write args))]
+          (is (= :selection-changed (reason #(room-publish data p)))))
+        (is (= before @owned)))
+      (let [p (room-preview data) write native/write-to!]
+        (with-redefs [native/write-to! (fn [& args]
+                                       (apply write args)
+                                       (throw (ex-info "Synthetic lost ack" {})))]
+          (is (thrown? clojure.lang.ExceptionInfo (room-publish data p))))
+        (is (= :selection-changed (reason #(room-publish data p))))))))
+
+(deftest room-evidence-scan-limit-and-unsupported-oldest-are-explicit-holds
+  (with-fixture
+    (fn [{:keys [room w] :as data}]
+      (message! room (:owner w) "eligible" {:role :user})
+      (with-redefs [is.simm.ops.room-evidence/max-scan-messages 0]
+        (is (= :source-scan-limit (get-in (room-preview data) [:held :reason])))
+        (is (= :evidence-held (reason #(room-publish data (room-preview data))))))
+      (message! room (random-uuid) "unknown author" {:role :assistant})
+      (is (= :unsupported-message (get-in (room-preview data) [:held :reason]))))))

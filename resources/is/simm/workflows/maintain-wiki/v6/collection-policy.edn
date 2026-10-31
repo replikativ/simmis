@@ -1,0 +1,5 @@
+{:version 1
+ :sources [:current-room-conversation :archived-capture-files]
+ :max-messages 20
+ :max-bytes 524288
+ :max-scan-messages 1000}

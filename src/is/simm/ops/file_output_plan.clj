@@ -6,6 +6,7 @@
             [hasch.core :as hasch]
             [is.simm.documents.markdown :as markdown]
             [is.simm.model.knowledge-publication :as publication]
+            [is.simm.model.knowledge-scope :as scope]
             [is.simm.model.file-outputs :as manifests]
             [is.simm.ops.knowledge-inputs :as inputs]
             [is.simm.ops.knowledge-outputs :as outputs]
@@ -15,19 +16,27 @@
 (defn- refuse! [reason]
   (throw (ex-info "File proposal cannot be planned" {:type ::refused :reason reason})))
 
+(defn manifest-tag [version]
+  (case version 1 :simmis/knowledge-file-manifest-v1 2 :simmis/knowledge-file-manifest-v2))
+
+(defn proposal-tag [version]
+  (case version 1 :simmis/knowledge-file-proposal-v1 2 :simmis/knowledge-file-proposal-v2))
+
 (defn validate-manifest!
   "Metadata preflight, before any retained file bodies are loaded."
   [manifest]
   (when-not (and (m/validate manifests/manifest-schema manifest)
                  (not (str/blank? (get-in manifest [:target :ref]))))
     (refuse! :invalid-manifest))
-  (doseq [path (keys (:entries manifest))] (outputs/target-path! path))
+  (when (= 2 (:version manifest)) (scope/normalize! (:scope manifest)))
+  (doseq [path (keys (:entries manifest))]
+    (if (= 2 (:version manifest)) (scope/target-path! (:scope manifest) path) (outputs/target-path! path)))
   (doseq [side [:before :after]]
     (when (> (reduce + 0 (keep #(get-in % [side :bytes]) (vals (:entries manifest))))
              (:max-total-bytes outputs/policy))
       (refuse! :manifest-too-large)))
   (when-not (= (:id manifest)
-               (hasch/uuid [:simmis/knowledge-file-manifest-v1 (dissoc manifest :id)]))
+               (hasch/uuid [(manifest-tag (:version manifest)) (dissoc manifest :id)]))
     (refuse! :manifest-mismatch))
   manifest)
 
@@ -52,7 +61,7 @@
   (validate-manifest! manifest)
   (when-not (and (= #{:manifest :proposal :bodies} (set (keys plan))) (map? bodies)
                  (= (set (keys (:entries manifest))) (set (keys bodies)))
-                 (= proposal (hasch/uuid [:simmis/knowledge-file-proposal-v1 (:id manifest)])))
+                 (= proposal (hasch/uuid [(proposal-tag (:version manifest)) (:id manifest)])))
     (refuse! :invalid-plan))
   (doseq [[path entry] (:entries manifest)]
     (validate-pair! entry (get bodies path)))
@@ -87,6 +96,9 @@
     (refuse! :invalid-provenance))
   (publication/validate! publication-basis)
   (outputs/validate! output)
+  (when-not (and (= (:version publication-basis) (:version output))
+                 (= (:scope publication-basis) (:scope output)))
+    (refuse! :output-scope-mismatch))
   (let [before-states (into (sorted-map)
                             (map (fn [path] [path (inputs/publication-before publication-basis path)]))
                             (keys (:files output)))
@@ -108,12 +120,13 @@
                                               (assoc (select-keys before [:content :bytes :mode]) :state :present)
                                               {:state :absent})
                                     :after (select-keys after [:content :bytes :mode])}])) bodies)
-        manifest {:version 1 :request request :room room :attempt attempt
+        manifest (cond-> {:version (:version output) :request request :room room :attempt attempt
                   :environment (hasch/uuid environment) :workflow workflow-bundle
                   :basis (:id publication-basis) :target (:target publication-basis)
                   :output (:id output) :entries entries}
-        id (hasch/uuid [:simmis/knowledge-file-manifest-v1 manifest])]
+                   (= 2 (:version output)) (assoc :scope (:scope output)))
+        id (hasch/uuid [(manifest-tag (:version manifest)) manifest])]
     (validate-plan!
      {:manifest (assoc manifest :id id)
-      :proposal (hasch/uuid [:simmis/knowledge-file-proposal-v1 id])
+      :proposal (hasch/uuid [(proposal-tag (:version manifest)) id])
       :bodies bodies})))

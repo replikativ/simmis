@@ -14,6 +14,7 @@
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.view :as view]
             [is.simm.model.knowledge-publication :as publication]
+            [is.simm.model.knowledge-scope :as scope]
             [is.simm.ops.workflow-policy :as workflow-policy]
             [is.simm.ops.workflows :as workflows]
             [malli.core :as m])
@@ -23,17 +24,29 @@
   {:version 1 :trigger-roots ["inbox" "transcripts"]
    :context-roots ["wiki"] :exclude-prefixes []})
 
-(def policy-schema
+(def v1-policy-schema
   [:map {:closed true} [:version [:= 1]]
    [:trigger-roots [:vector {:min 1 :max 16} [:string {:min 1 :max 512}]]]
    [:context-roots [:vector {:max 16} [:string {:min 1 :max 512}]]]
    [:exclude-prefixes [:vector {:max 16} [:string {:min 1 :max 512}]]]])
 
+(def v2-policy-schema
+  [:map {:closed true} [:version [:= 2]]
+   [:trigger-roots [:vector {:min 1 :max 16} [:string {:min 1 :max 512}]]]
+   [:context-roots [:vector {:max 16} [:string {:max 512}]]]
+   [:exclude-prefixes [:vector {:min 1 :max 16} [:string {:min 1 :max 512}]]]
+   [:output-scope scope/schema]])
+
+(def policy-schema [:or v1-policy-schema v2-policy-schema])
+
+(defn output-scope [policy]
+  (when (= 2 (:version policy)) (scope/normalize! (:output-scope policy))))
+
 (defn- refuse! [reason]
   (throw (ex-info "Knowledge inputs cannot be captured" {:type ::refused :reason reason})))
 
 (defn- prefixes! [roots]
-  (->> roots (map #(str (files/path! %) "/")) distinct sort vec))
+  (->> roots (map #(if (= "" %) "" (str (files/path! %) "/"))) distinct sort vec))
 
 (defn- overlap? [a b]
   (or (str/starts-with? a b) (str/starts-with? b a)))
@@ -47,15 +60,26 @@
   (let [triggers (prefixes! (:trigger-roots policy))
         context (prefixes! (:context-roots policy))
         excluded (prefixes! (:exclude-prefixes policy))]
-    (when (some true? (for [a triggers b context] (overlap? a b)))
+    (when (and (= 1 (:version policy)) (some true? (for [a triggers b context] (overlap? a b))))
       (refuse! :overlapping-input-roles))
-    (when (some true? (for [a (concat triggers context) b ["workflows/" "in/" "out/"]]
+    (when (some true? (for [a (concat triggers (remove #(= "" %) context)) b ["workflows/" "in/" "out/"]]
                         (overlap? a b)))
       (refuse! :workflow-staging-is-not-knowledge-input))
-    {:version 1
+    (when (= 2 (:version policy))
+      (let [destination (get-in policy [:output-scope :destination-root])
+            exclusions (concat scope/reserved (get-in policy [:output-scope :exclude-prefixes]))]
+        (output-scope policy)
+        (doseq [protected (concat (:trigger-roots policy) (:exclude-prefixes policy))]
+          (when (and (or (scope/contains-path? destination protected)
+                         (scope/contains-path? protected destination))
+                     (not-any? #(scope/contains-path? % protected) exclusions))
+            (refuse! :unprotected-source-output-overlap))))
+      (when (some #(= "" %) triggers) (refuse! :root-trigger-forbidden)))
+    (cond-> {:version (:version policy)
      :trigger-roots (mapv #(subs % 0 (dec (count %))) triggers)
-     :context-roots (mapv #(subs % 0 (dec (count %))) context)
-     :exclude-prefixes (mapv #(subs % 0 (dec (count %))) excluded)}))
+     :context-roots (mapv #(if (= "" %) "" (subs % 0 (dec (count %)))) context)
+     :exclude-prefixes (mapv #(subs % 0 (dec (count %))) excluded)}
+      (= 2 (:version policy)) (assoc :output-scope (output-scope policy)))))
 
 (defn- byte-count [^String text] (alength (.getBytes text "UTF-8")))
 
@@ -72,24 +96,27 @@
    confers no authority by itself. Capture from the SAME authorized immutable DB
    as knowledge inputs; never reconstruct it from a model-authored manifest."
   ([db] (publication-basis db nil))
-  ([db identity]
+  ([db identity] (publication-basis db identity nil))
+  ([db identity output-scope]
+   (when output-scope (scope/normalize! output-scope))
    (when (and (some? identity)
               (not (and (= #{:registry-system :runtime-system} (set (keys identity)))
                         (publication/host-target? identity))))
      (refuse! :invalid-default-target))
-   (let [target (merge {:repository (:geschichte.repo/id (query/repository db))
+   (let [root (if output-scope (:destination-root output-scope) "wiki")
+         target (merge {:repository (:geschichte.repo/id (query/repository db))
                         :store (get-in db [:config :store :id])
                         :backend (get-in db [:config :store :backend])
                         :branch (get-in db [:config :branch])
                         :ref (query/current-ref db)} identity)
          rows (fn [attr]
-                (concat (d/datoms db :avet attr "wiki")
-                        ;; Bound EACH native prefix before dropping its exact
-                        ;; inclusive outside endpoint. The outer bound counts
-                        ;; meaningful file/dir occupancy across BOTH streams.
-                        (remove #(= "wiki0" (:v %))
-                                (take (inc files/max-index-entries)
-                                      (d/index-range db {:attrid attr :start "wiki/" :end "wiki0"})))))
+                (if (= "" root)
+                  (take (inc files/max-index-entries) (d/datoms db :avet attr))
+                  (concat (when output-scope (mapcat #(d/datoms db :avet attr %) (path-parents root)))
+                          (d/datoms db :avet attr root)
+                          (remove #(= (str root "0") (:v %))
+                                  (take (inc files/max-index-entries)
+                                        (d/index-range db {:attrid attr :start (str root "/") :end (str root "0")}))))))
          occupancy (vec (take (inc files/max-index-entries)
                               (concat (rows :geschichte.work/path)
                                       (rows :geschichte.work-dir/path))))]
@@ -120,13 +147,16 @@
                          (refuse! :too-many-publication-entries))
                        dirs))
                    (sorted-set)
-                   (concat explicit-dirs (mapcat path-parents (concat (keys entries) explicit-dirs))))
-           basis {:version 1 :root "wiki" :target target
-                  :files entries :directories (vec directories)}]
+                   (filter #(or (scope/contains-path? root %)
+                                      (and output-scope (scope/contains-path? % root)))
+                           (concat explicit-dirs (mapcat path-parents (concat (keys entries) explicit-dirs)))))
+           basis (cond-> {:version (if output-scope 2 1) :root root :target target
+                  :files entries :directories (vec directories)}
+                   output-scope (assoc :scope output-scope))]
        (when (> (byte-count (pr-str basis)) max-publication-basis-bytes)
          (refuse! :publication-basis-too-large))
        (publication/validate!
-        (assoc basis :id (hasch/uuid [:simmis/knowledge-publication-basis-v1 basis])))))))
+        (assoc basis :id (hasch/uuid [(publication/digest-tag (:version basis)) basis])))))))
 
 (defn publication-before
   "Expected state for one exact repository-relative output target, from the
@@ -135,10 +165,11 @@
    are refused, never silently overwritten or followed."
   [basis path]
   (files/path! path)
-  (when-not (and (= 1 (:version basis)) (= "wiki" (:root basis))
-                 (str/starts-with? path "wiki/")
-                 (re-find #"(?i)\.(md|markdown)$" path))
-    (refuse! :invalid-publication-path))
+  (if (= 2 (:version basis))
+    (scope/target-path! (:scope basis) path)
+    (when-not (and (= 1 (:version basis)) (= "wiki" (:root basis))
+                   (str/starts-with? path "wiki/") (re-find #"(?i)\.(md|markdown)$" path))
+      (refuse! :invalid-publication-path)))
   (when (or (contains? (set (:directories basis)) path)
             (some #(contains? (:files basis) %) (path-parents path)))
     (refuse! :publication-path-collision))
@@ -170,6 +201,18 @@
         (refuse! :invalid-declaration))
       (normalize-policy (:policy value)))))
 
+(defn- excluded-roots [policy]
+  (cond-> (:exclude-prefixes policy)
+    (= 2 (:version policy)) (into scope/reserved)))
+
+(defn role-path? [policy role path]
+  (let [within? (fn [roots]
+                  (some #(str/starts-with? path (if (= "" %) "" (str % "/"))) roots))]
+    (and (within? (get policy (if (= role :trigger) :trigger-roots :context-roots)))
+         (not (within? (excluded-roots policy)))
+         (or (= :trigger role) (= 1 (:version policy))
+             (not (within? (:trigger-roots policy)))))))
+
 (defn selection
   "Metadata-only plan from ONE authorized immutable DB. Trigger identity excludes wiki
    context, so adopting an output cannot cause another scheduled model call.
@@ -179,11 +222,15 @@
   [db policy]
   (let [policy (normalize-policy policy)
         select (fn [roots]
-                 (view/selection db {:roots roots :exclude-prefixes (:exclude-prefixes policy)
-                                     :schema-revision :knowledge-inputs-v1}))
-        trigger (select (:trigger-roots policy))
-        context (select (:context-roots policy))
-        trigger-id (hasch/uuid {:version 1 :repository (:repository-id trigger)
+                 (view/selection db {:roots roots :exclude-prefixes (if (= 2 (:version policy))
+                                                                       (vec (remove #{".git" ".geschichte"} (excluded-roots policy)))
+                                                                       (:exclude-prefixes policy))
+                                     :schema-revision (if (= 2 (:version policy)) :knowledge-inputs-v2 :knowledge-inputs-v1)}))
+        trigger (cond-> (select (:trigger-roots policy))
+                  (= 2 (:version policy)) (update :files #(into (sorted-map) (filter (fn [[path _]] (role-path? policy :trigger path))) %)))
+        context (cond-> (select (:context-roots policy))
+                  (= 2 (:version policy)) (update :files #(into (sorted-map) (filter (fn [[path _]] (role-path? policy :context path))) %)))
+        trigger-id (hasch/uuid {:version (:version policy) :repository (:repository-id trigger)
                                 :policy policy :files (:files trigger)})
         execution-id (hasch/uuid {:trigger trigger-id :context (:files context)})
         entries (->> (concat (map (fn [[path metadata]] [path :trigger metadata]) (:files trigger))
@@ -201,7 +248,7 @@
     ;; after serialization. The view already verifies regular mode/metadata.
     (when (> (reduce + 0 (map #(get-in % [2 :size]) entries)) max-bytes)
       (refuse! :too-many-input-bytes))
-    (let [manifest {:version 1 :repository (:repository-id trigger) :policy policy
+    (let [manifest {:version (:version policy) :repository (:repository-id trigger) :policy policy
                     :trigger-id trigger-id :execution-id execution-id
                     :files (mapv (fn [[path role metadata]]
                                    (merge metadata {:path path :role role
@@ -233,9 +280,7 @@
             (when-not (and (re-find #"(?i)\.(md|markdown)$" path)
                            (= (select-keys entry [:content :size :mode]) (files/entry db path))
                            (= size (:geschichte.content/size (d/entity db [:geschichte.content/id content])))
-                           (some #(str/starts-with? path %)
-                                 (prefixes! (get policy (if (= role :trigger) :trigger-roots :context-roots))))
-                           (not-any? #(str/starts-with? path %) (prefixes! (:exclude-prefixes policy)))
+                           (role-path? policy role path)
                            (<= (count (str "/in/knowledge/sources/" path)) 512))
               (refuse! :explicit-source-mismatch)))
         by-role (fn [role]
@@ -245,9 +290,9 @@
         trigger (by-role :trigger) context (by-role :context)
         repository (:geschichte.repo/id (query/repository db))
         _ (when-not (uuid? repository) (refuse! :invalid-repository))
-        trigger-id (hasch/uuid {:version 1 :repository repository :policy policy :files trigger})
+        trigger-id (hasch/uuid {:version (:version policy) :repository repository :policy policy :files trigger})
         execution-id (hasch/uuid {:trigger trigger-id :context context})
-        manifest {:version 1 :repository repository :policy policy
+        manifest {:version (:version policy) :repository repository :policy policy
                   :trigger-id trigger-id :execution-id execution-id
                   :files (mapv #(assoc % :input (str "/in/knowledge/sources/" (:path %))) entries)}
         text (pr-str manifest) size (byte-count text)
@@ -294,10 +339,11 @@
                       [:path [:string {:min 1 :max 512}]] [:input [:string {:min 1 :max 512}]]
                       [:role [:enum :trigger :context]] [:content :uuid]
                       [:size [:int {:min 0 :max workflows/max-file-bytes}]] [:mode [:= repo/default-mode]]]
-        manifest-schema [:map {:closed true} [:version [:= 1]] [:repository :uuid]
+        manifest-schema [:map {:closed true} [:version [:enum 1 2]] [:repository :uuid]
                          [:policy policy-schema] [:trigger-id :uuid] [:execution-id :uuid]
                          [:files [:vector {:max 99} entry-schema]]]]
-    (when-not (and (m/validate manifest-schema manifest) (= policy (:policy manifest)))
+    (when-not (and (m/validate manifest-schema manifest) (= (:version policy) (:version manifest))
+                   (= policy (:policy manifest)))
       (refuse! :invalid-frozen-inputs))
     (let [entries (:files manifest)
           by-role (fn [role]
@@ -306,7 +352,7 @@
                                   (when (= role (:role entry))
                                     [path (select-keys entry [:content :size :mode])]))) entries))
           trigger (by-role :trigger) context (by-role :context)
-          expected-trigger (hasch/uuid {:version 1 :repository (:repository manifest)
+          expected-trigger (hasch/uuid {:version (:version policy) :repository (:repository manifest)
                                         :policy policy :files trigger})]
       (when-not (and (= (count entries) (count (set (map :path entries))))
                      (= (count entries) (count (set (map :input entries))))
@@ -318,8 +364,7 @@
         (let [prefixes (prefixes! (get policy (if (= role :trigger) :trigger-roots :context-roots)))
               excluded (prefixes! (:exclude-prefixes policy))]
           (when-not (and (= input (str "/in/knowledge/sources/" path))
-                         (some #(str/starts-with? path %) prefixes)
-                         (not-any? #(str/starts-with? path %) excluded))
+                         (role-path? policy role path))
             (refuse! :invalid-frozen-source))))
       manifest)))
 

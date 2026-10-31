@@ -147,3 +147,17 @@
   (when (and (uuid-text? (str room)) (path? path) (uuid? content) (uuid? target))
     (str "/blobs/workspaces/" room "?path=" (encode path)
          "&content=" content "&target=" target)))
+
+(defn request-source-route
+  "Native citation into one manifest-listed frozen request source. Identity is
+   data; current Room read authority is required whenever it is opened."
+  [{:keys [room request path]}]
+  (let [room (str room) request (str request)]
+    (when (and (uuid-text? room) (uuid-text? request) (source-path? path))
+      (str "/room/" room "/request/" request "/source?path=" (encode path)))))
+
+(defn parse-request-source-query [room request query]
+  (let [fields (parameters query) path (get fields "path")]
+    (when (and (uuid-text? room) (uuid-text? request)
+               (= #{"path"} (set (keys fields))) (source-path? path))
+      {:kind :request-source :room room :request request :path path})))

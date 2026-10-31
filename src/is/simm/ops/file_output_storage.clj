@@ -30,7 +30,8 @@
     (let [entries (vec (take 101 (d/datoms db :eavt eid :file-output/entries)))]
       (when (> (count entries) 100)
         (throw (ex-info "Retained manifest exceeds its entry bound" {:type ::corrupt})))
-      (assoc (d/pull db '[:file-output/id :file-output/version :file-output/request :file-output/room
+      (assoc (d/pull db '[:file-output/output-root :file-output/destination-root :file-output/exclude-prefixes
+                          :file-output/id :file-output/version :file-output/request :file-output/room
                           :file-output/attempt :file-output/environment :file-output/workflow
                           :file-output/basis :file-output/output :file-output/repository :file-output/store
                           :file-output/backend :file-output/branch :file-output/ref

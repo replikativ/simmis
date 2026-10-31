@@ -152,3 +152,20 @@
          (is (nil? (.querySelector container "script")))
          (is (= (:text example/preview) (.-textContent (.querySelector container "pre"))))
          (finally (browser/unmount! release)))))))
+
+(deftest saved-evidence-offers-scoped-workflow-navigation-without-starting-work
+  (fixture
+   (fn [{:keys [data calls]}]
+     (let [container (.createElement js/document "div")
+           release (browser/mount! container
+                     (view/panel (assoc data :state {:phase :saved :visible? true :saved example/saved})))]
+       (try
+         (let [link (.querySelector container "a") event (js/MouseEvent. "click" #js {:cancelable true :bubbles true})]
+           (is (= (str "/room/" example/id "/workflows/maintain-wiki/run") (.getAttribute link "href")))
+           (is (= "Review knowledge update" (.-textContent link)))
+           ;; Suppress browser navigation; no preview/publication RPC should be
+           ;; attached to this navigation link.
+           (.addEventListener link "click" #(.preventDefault %))
+           (.dispatchEvent link event)
+           (is (empty? @calls)))
+         (finally (browser/unmount! release)))))))
