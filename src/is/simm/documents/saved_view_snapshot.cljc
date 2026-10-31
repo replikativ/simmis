@@ -67,7 +67,7 @@
     (refuse!)))
 
 (defn- row-provenance [row]
-  (assoc (select-keys row [:id :path :candidate :scorecard])
+  (assoc (select-keys row [:id :path :candidate :scorecard :summary])
          :media (vec (mapcat (fn [[index value]]
                               (for [cell (tree-seq #(= :list (:kind %)) :items value)
                                     :when (= :media (:kind cell))]
@@ -91,7 +91,8 @@
     (refuse!))
   (let [kind (get-in reply [:descriptor :source :kind])
         title (case kind :pages "Page collection snapshot" :scorecard "Benchmark results snapshot"
-                         :archived-captures "Screen observations snapshot" (refuse!))
+                         :archived-captures "Screen observations snapshot"
+                         :room-summaries "Conversation summaries snapshot" (refuse!))
         metadata {"simmis-id" id
                   "simmis-snapshot" (merge {:version 1 :created-at created-at :room room :target target}
                                            (select-keys reply [:view :basis :path :expected :revision :from :to :descriptor

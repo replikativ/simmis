@@ -158,6 +158,7 @@
   [state path]
   (let [d (get-in state [:drafts path])]
     (and (true? (get-in state [:autosave path]))
+         (not (get-in d [:source :generated :read-only?]))
          (not (get-in state [:autosave-holds path]))
          (string? (:text d)) (not= (:text d) (get-in d [:source :text]))
          (not (:office d)) (not (:earlier-save-receipt d))

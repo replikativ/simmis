@@ -1,6 +1,7 @@
 (ns is.simm.uis.web.desktop.room-digest-test
   (:require [clojure.test :refer [deftest is]]
-            [is.simm.uis.web.desktop.room-digest :as digest]))
+            [is.simm.uis.web.desktop.room-digest :as digest]
+            [is.simm.model.room-summaries-test :as fixture]))
 
 (deftest stale-replies-and-uncertain-launches-never-replay
   (let [connection [:socket 1] token (random-uuid)
@@ -50,3 +51,18 @@
                                                        :digest-id digest-id :message (random-uuid)})]
       (is (= :published (:phase ack)))
       (is (false? (:publication-pending? ack))))))
+
+(deftest daily-summary-pointer-loads-frozen-coverage-and-context
+  (let [request (random-uuid) revision (random-uuid)
+        metadata {:kind :room-summary :object {:kind :room-summary :id revision}
+                  :source :simmis/room-summary :notification/type :task-complete :notification/task request}
+        selection (fixture/selection 1)
+        reply {:status :verified :kind :room-summary :request request :digest-id revision
+               :selection selection :digest (fixture/report selection)
+               :originals (mapv #(assoc % :text "Exact frozen original") (:coverage selection))}
+        state (-> {:request request :expected-digest-id revision}
+                  (digest/begin :socket :read :result :message))]
+    (is (= {:request request :digest-id revision} (digest/notification-reference metadata)))
+    (is (= :verified (:phase (digest/receive state :socket :read reply))))
+    (is (= :unavailable (:phase (digest/receive state :socket :read (assoc reply :digest-id (random-uuid))))))
+    (is (= :unavailable (:phase (digest/receive state :socket :read (assoc reply :originals [])))))))

@@ -16,6 +16,7 @@
             [is.simm.ops.knowledge-coverage :as coverage]
             [is.simm.ops.knowledge-citations :as citations]
             [is.simm.ops.digest-inputs :as digest-inputs]
+            [is.simm.ops.summary-inputs :as summary-inputs]
             [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.ops.knowledge-admission :as knowledge-admission]
@@ -199,7 +200,8 @@
       (when (knowledge-inputs/declaration (:files snapshot))
         (knowledge-workspace/validate-inputs! entries))
       {:bundle bundle :task task :inputs entries :source (:files snapshot)
-       :selection-policy (knowledge-inputs/declaration (:files snapshot)) :workflow provenance})))
+       :selection-policy (knowledge-inputs/declaration (:files snapshot))
+       :summary-policy (summary-inputs/declaration (:files snapshot)) :workflow provenance})))
 
 (defn prepare-source
   "Prepare one immutable source revision, never a live selector. Host callers
@@ -218,6 +220,7 @@
             (invalid! "Workflow does not declare a knowledge input selection"))
         entries (if resolved
                   (input-files (str "/workflows/" (:name input) "/") inputs (:inputs resolved)) inputs)
+        _ (summary-inputs/validate-inputs! source entries)
         provenance (when resolved
                      {:kind :knowledge :policy selection-policy
                       :trigger-id (:trigger-id resolved) :execution-id (:execution-id resolved)

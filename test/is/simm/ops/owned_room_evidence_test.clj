@@ -77,7 +77,7 @@
                                   :text (apply str (repeat 200000 "x"))}) (range 24))]
        (is (> (reduce + (map #(count (:text %)) backlog)) collection/max-intent-bytes))
        (with-redefs [capture/room-source (fn [binding]
-                                         (update (original-source binding) :rows into backlog))]
+                                         (update (original-source binding nil) :rows into backlog))]
          (is (= :available (:status (collect data request))))
          (let [row (receipts/receipt @conn (:request request))
                intent (:value (artifact/get-bounded-value (artifact/datahike-store conn)

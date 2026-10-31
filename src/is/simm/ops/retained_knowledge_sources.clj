@@ -9,6 +9,8 @@
             [is.simm.model.file-outputs :as manifests]
             [is.simm.model.knowledge-dispositions :as dispositions]
             [is.simm.model.knowledge-publication :as publication]
+            [is.simm.model.work-requests :as requests]
+            [is.simm.ops.summary-reader :as summary-reader]
             [is.simm.ops.file-output-adoption :as adoption]
             [is.simm.ops.file-output-storage :as storage]
             [is.simm.ops.knowledge-filing :as filing]
@@ -206,7 +208,7 @@
    (safely #(chunk host party proposal component opts))))
 
 
-(defn- with-request-sources! [host party room request f]
+(defn- with-knowledge-request-sources! [host party room request f]
   (when-not (every? uuid? [party room request]) (unavailable!))
   (let [{conn :control-conn execution-ctx :execution-ctx} (::reads/owner host)
         principal {:principal/kind :human :principal/id (str "party/" party)}]
@@ -234,10 +236,30 @@
               (unavailable!))
             result))))))
 
-(defn- request-identity-fields [room {:keys [request selection]}]
-  {:room (str room) :request (str request)
-   :selection (into {} (map (fn [key] [key (str (get selection key))]))
-                    [:trigger-id :execution-id :manifest-id])})
+(defn- with-request-sources! [host party room request f]
+  (when-not (every? uuid? [party room request]) (unavailable!))
+  (let [principal {:principal/kind :human :principal/id (str "party/" party)}
+        db (reads/current-host-control-db! host)
+        _ (reads/authorize-read! db principal (str room))
+        row (requests/request-in db request)
+        _ (when (and row (not= room (:work.request/room row))) (unavailable!))]
+    (if (or (nil? row) (:work.request/summary-revision row))
+      ;; An independently retained native summary survives Request retirement.
+      ;; The pointer only selects the reader; it is never source authority.
+      (summary-reader/with-request!
+       host principal room request
+       (fn [verified]
+         (when (and row (not= (:work.request/summary-revision row) (:revision verified)))
+           (unavailable!))
+         (f verified)))
+      (with-knowledge-request-sources! host party room request f))))
+
+(defn- request-identity-fields [room {:keys [request selection kind revision]}]
+  (cond-> {:room (str room) :request (str request)
+           :selection (into {} (map (fn [key] [key (str (get selection key))]))
+                            (if (= :room-summary kind) [:coverage-id :context-id :manifest-id]
+                                [:trigger-id :execution-id :manifest-id]))}
+    (= :room-summary kind) (assoc :kind kind :revision (str revision))))
 
 (defn- request-listing [host party room request]
   (with-request-sources! host party room request

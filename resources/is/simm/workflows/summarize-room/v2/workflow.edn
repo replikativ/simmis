@@ -1,0 +1,5 @@
+{:title "Daily room summary"
+ :doc "Summarize exact daily originals with bounded prior context. Summary coverage is independent of wiki incorporation."
+ :task "Read the instructions and frozen manifest together using (mapv slurp [\"/workflow-context/daily-summary.txt\" \"/in/summary/manifest.edn\"]). Batch-read the exact coverage and context :path values with (slurp (str \"/\" (:path source))). HOST has verified each frozen file-content identity; do not discover shell or unsupported hashing APIs. Write /out/summary.edn in the instructed version-2 format, with exact original coverage and source-revision citations. Preserve attribution, uncertainty, corrections and the distinction between prior context and new activity. This is generated navigation, not an adopted wiki update."
+ :params {:save-transcript "false"}
+ :capture ["/out"]}

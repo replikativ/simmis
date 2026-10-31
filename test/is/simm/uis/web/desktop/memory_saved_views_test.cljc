@@ -171,3 +171,19 @@
                   (assoc state :selected path) (range 80))]
       (is (every? #(<= (count (:paths (editor/metadata-request %))) 2) states))
       (is (= 1 (count (:page-view-enrolled (last states))))))))
+
+(deftest summaries-require-current-native-context-and-immutable-row-identities
+  (let [context {:room (random-uuid) :store (random-uuid)} revision (random-uuid)
+        d {:version 1 :id view-id :source {:kind :room-summaries :room :current}
+           :presentation :table :columns [{:kind :summary}] :limit 32}
+        s (-> state (assoc :receipt-context context)
+              (assoc-in [:drafts path :source :analysis :saved-views 0 :descriptor] d))
+        sent (views/marker s path view-id)
+        r (assoc (reply s) :descriptor d :source (assoc context :kind :room-summaries)
+                 :rows [{:id revision :summary revision :cells []}])]
+    (is (views/reply-current? s path view-id sent r))
+    (is (nil? (views/request (dissoc s :receipt-context) path view-id)))
+    (doseq [bad [(assoc-in r [:source :store] (random-uuid))
+                 (assoc-in r [:rows 0 :id] (random-uuid))
+                 (assoc-in r [:rows 0 :edit] {})]]
+      (is (not (views/reply-current? s path view-id sent bad))))))

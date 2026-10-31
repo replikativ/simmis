@@ -5,6 +5,7 @@
             [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [is.simm.uis.web.desktop.room-details :as room-details])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as cr])
+            #?(:cljs [is.simm.uis.web.desktop.room-digest-remote :as summary-remote])
             #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.uis.web.desktop.message-notify-sync :as mns])
             #?(:cljs [is.simm.uis.web.desktop.user-rooms-sync :as urs])
@@ -52,6 +53,67 @@
                  (btn :mentions "Mentions only")
                  (btn :none "None"))))
            :clj nil)
+
+        ;; Daily summaries are an ordinary pinned workflow schedule. The form
+        ;; only collects a configuration intent; the server owns every guard.
+        (let [summary (:summary-settings data)]
+          (el/section {:class "settings-section"}
+            (el/h3 {:class "settings-section-title"} "Conversation summaries")
+            (el/p {:class "settings-section-desc"}
+              "Off by default. Summarize the previous local day only when it has new original messages. Uses this room’s existing allowance; no automatic funding.")
+            (if-not (boolean? (:enabled? summary))
+              (el/p {:class "settings-empty"} "Summary settings are unavailable. Reopen Room settings to inspect them.")
+              (el/form {:class "settings-env-list"
+                        :on-submit
+                        (fn [event]
+                          (.preventDefault event)
+                          #?(:cljs
+                             (let [form (.-currentTarget event)
+                                   field #(.namedItem (.-elements form) %)
+                                   request {:expected-activation (:activation summary) :request-id (random-uuid)
+                                            :enabled? (.-checked (field "enabled"))
+                                            :at (.-value (field "at")) :timezone (.-value (field "timezone"))
+                                            :save-transcript? (.-checked (field "transcript"))
+                                            :model (not-empty (.-value (field "model")))}]
+                               ((summary-remote/configure-room-summary! web/server-id room-id request)
+                                (fn [reply]
+                                  (if (boolean? (:enabled? reply))
+                                    (room-details/load! room-id {:force? true})
+                                    (js/alert "Settings were not confirmed. Reopen Room settings to inspect the current activation before trying again.")))
+                                (fn [_] (js/alert "Settings could not be confirmed. Reopen Room settings to inspect the outcome."))))
+                             :clj nil))}
+                (el/label {:class "settings-env-row"}
+                  (el/span {:class "settings-env-key"} "Daily summary")
+                  (el/input {:name "enabled" :type "checkbox" :checked (:enabled? summary)
+                             :disabled (not (:can-manage? summary))}))
+                (el/label {:class "settings-env-row"}
+                  (el/span {:class "settings-env-key"} "Run after")
+                  (el/input {:name "at" :type "time" :class "settings-input" :value (:at summary)
+                             :disabled (not (:can-manage? summary))}))
+                (el/label {:class "settings-env-row"}
+                  (el/span {:class "settings-env-key"} "Timezone")
+                  (el/input {:name "timezone" :class "settings-input" :value (:timezone summary)
+                             :placeholder "Europe/Berlin" :disabled (not (:can-manage? summary))}))
+                (el/label {:class "settings-env-row"}
+                  (el/span {:class "settings-env-key"} "Save original chat as Markdown too")
+                  (el/input {:name "transcript" :type "checkbox" :checked (:save-transcript? summary)
+                             :disabled (not (:can-manage? summary))}))
+                (el/p {:class "settings-section-desc"}
+                  "Generated files follow this Memory’s sharing and Git settings. Original-source links still require Room access.")
+                (el/details {}
+                  (el/summary {} "Execution details")
+                  (el/p {:class "settings-section-desc"}
+                    "Maximum 8 model dispatches, 12 model steps and 180 seconds per active day; 25,000 microdollars of existing allowance. Up to 64 originals and 512 KiB per day; larger days are held for inspection. Reading summaries runs no model.")
+                  (el/label {:class "settings-env-row"}
+                    (el/span {:class "settings-env-key"} "Model")
+                    (el/input {:name "model" :class "settings-input" :value (or (:model summary) "")
+                               :placeholder "Use my configured model" :disabled (not (:can-manage? summary))})))
+                (when (:active? summary)
+                  (el/p {:role "status"} "A summary is already active. Turning this off stops future admissions; the current work continues."))
+                (when-let [reason (:reason summary)]
+                  (el/p {:role "status"} (str "Held: " (name reason) ". Inspect the activation in Workflows.")))
+                (when (:can-manage? summary)
+                  (el/button {:type "submit" :class "settings-btn settings-btn--primary"} "Save summary settings"))))))
 
         ;; --- Review decisions (labels) ---
         ;; What people decided on work a review handed them

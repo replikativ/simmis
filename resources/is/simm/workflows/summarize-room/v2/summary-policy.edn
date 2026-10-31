@@ -1,0 +1,1 @@
+{:version 2 :period :day :input "/in/summary/manifest.edn" :output "/out/summary.edn"}

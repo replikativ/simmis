@@ -24,6 +24,7 @@
      (:require [is.simm.uis.web.desktop.signals :as sig]
                [clojure.core.async :refer [go <! put! promise-chan] :include-macros true]
                [is.simm.uis.web.desktop.chat-remote :as chat-remote]
+               [is.simm.uis.web.desktop.room-digest-remote :as summary-remote]
                [org.replikativ.spindel.engine.core :as rtc]
                [is.simm.uis.web.desktop.runtime :refer [runtime]]
                [is.simm.runtimes.web :as web])))
@@ -82,6 +83,13 @@
              (s (fn [result] (put! ch {:ok result}))
                 (fn [err] (put! ch {:err err})))))
          (let [{:keys [ok err]} (<! ch)
+               summary-ch (promise-chan)
+               _ (if err (put! summary-ch {:status :unavailable})
+                   (binding [rtc/*execution-context* runtime]
+                     ((summary-remote/read-room-summary-settings! web/server-id room-id)
+                      #(put! summary-ch %) (fn [_] (put! summary-ch {:status :unavailable})))))
+               summaries (<! summary-ch)
+               ok (when ok (assoc ok :summary-settings summaries))
                ;; JavaScript is single-threaded here, so read-compute-write on
                ;; the bookkeeping atom needs no retry loop.
                [state' action] (finish @loads room-id)]

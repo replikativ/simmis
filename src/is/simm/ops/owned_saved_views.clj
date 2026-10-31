@@ -11,6 +11,9 @@
             [is.simm.documents.saved-view-contract :as contract]
             [is.simm.documents.saved-view-reader :as reader]
             [is.simm.documents.scorecard-views :as scorecard-views]
+            [is.simm.documents.summary-views :as summary-views]
+            [is.simm.documents.summary-documents :as summary-documents]
+            [is.simm.model.summary-records :as summary-records]
             [is.simm.documents.view :as source-view]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-room-operation :as operation]
@@ -39,6 +42,36 @@
     (case (get-in resolved [:descriptor :source :kind])
       :pages (reader/prepare-pages-in (:db bound) resolved)
       :archived-captures (merge resolved (capture-views/prepare (:db bound) (:descriptor resolved)))
+      :room-summaries
+      (let [room (:room bound) context (receipt-context room (:room-id bound))
+            _ (validate-receipt-context! (reads/current-host-control-db! host) context)
+            conn (:conn (:store room))
+            listing (binding [ec/*execution-context* (:ctx room)]
+                      (summary-records/heads-in @conn (:room-id bound) 128))
+            target (summary-records/target-id (:target bound))
+            matching (filterv #(= target (:room.summary/target %)) (:rows listing))
+            entries (mapv (fn [record]
+                            (let [payload (binding [ec/*execution-context* (:ctx room)]
+                                            (summary-records/payload! conn record))
+                                  path (summary-documents/path (:selection payload))
+                                  owner (binding [ec/*execution-context* (:ctx room)]
+                                          (summary-records/path-in @conn (summary-records/path-id (:room-id bound) target path)))
+                                  projection (when owner
+                                               (binding [ec/*execution-context* (:ctx room)]
+                                                 (summary-records/projection-in @conn (:summary.path/owner owner))))
+                                  entry (files/entry (:db bound) path)]
+                              {:record record :payload payload :path (when entry path)
+                               :publication (cond
+                                              (or (nil? owner)
+                                                  (not= (:room.summary/revision record)
+                                                        (:summary.projection/revision projection))) :pending
+                                              (not= :published (:summary.path/state owner)) :inspection-required
+                                              (not= (:summary.path/content owner) (:content entry)) :diverged
+                                              :else :published)}))
+                          (take (get-in resolved [:descriptor :limit]) matching))]
+        (merge resolved (summary-views/prepare (:descriptor resolved) context
+                                              {:rows entries :total (count matching)
+                                               :complete? (:complete? listing)})))
       :scorecard
       (let [room (:room bound) context (receipt-context room (:room-id bound))
             control-db (reads/current-host-control-db! host)
@@ -75,7 +108,7 @@
                                (= expected-target-stamp (:target-stamp bound)))
                   (refuse! :target-changed))
                 (let [result (inspect-in host principal handle resolved lease bound query)
-                      receipt? (= :scorecard (get-in result [:source :kind]))]
+                      receipt? (contains? #{:scorecard :room-summaries} (get-in result [:source :kind]))]
                   (preparation/with-host-current! lease (constantly true))
                   (reads/validate-host-read-room! host principal handle resolved)
                   (let [current (owned/validate! (reads/current-host-control-db! host) principal :read

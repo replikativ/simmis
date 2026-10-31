@@ -165,7 +165,9 @@
            :write receipt})))))
 
 
-(defn room-source [binding]
+(defn room-source
+  ([binding] (room-source binding nil))
+  ([binding period]
   (let [room (:room binding) store (:store room)]
     (when-not (instance? dvergr.room.store.datahike.DatahikeStore store)
       (refuse! :source-unavailable))
@@ -175,7 +177,25 @@
             _ (when-not (= 1 (count chats)) (refuse! :missing-source-room))
             ;; Reference attributes are AVET indexed; bound before loading bodies.
             refs (vec (take (inc evidence/max-scan-messages)
-                            (d/datoms db :avet :message/chat (first chats))))
+                            (if period
+                              ;; Date metadata query needs no new index/backfill.
+                              ;; Restrict the period and private/derived traffic
+                              ;; before loading any original bodies.
+                              (map (fn [eid] {:e eid})
+                                   (d/q '[:find [?e ...] :in $ ?chat ?from ?until
+                                          :where [?e :message/chat ?chat]
+                                          [?e :message/created-at ?at]
+                                          [(compare ?at ?from) ?lower] [(>= ?lower 0)]
+                                          [(compare ?at ?until) ?upper] [(< ?upper 0)]
+                                          (not [?e :message/to :_runs])
+                                          (not [?e :message/to :_activity])
+                                          (not [?e :message/notification-type _])
+                                          (not [?e :message/metadata-kind :workflow/completed])
+                                          (not [?e :message/metadata-kind :conversation-digest])
+                                          (not [?e :message/metadata-kind :room-summary])
+                                          (not [?e :message/metadata-kind :proposal/filed])]
+                                        db (first chats) (:from period) (:until period)))
+                              (d/datoms db :avet :message/chat (first chats)))))
             source-store (get-in db [:config :store :id])
             ;; Only public content and causal attribution belong to evidence.
             ;; Do not recursively copy reasoning/tool payload components merely
@@ -189,7 +209,7 @@
         (when-not (uuid? source-store) (refuse! :invalid-source))
         (if (> (count refs) evidence/max-scan-messages)
           {:source-store source-store :rows [] :scan-held? true}
-          {:source-store source-store
+          {:source-store source-store :source-basis (:max-tx db)
            :rows
            (into []
                  (keep
@@ -219,7 +239,7 @@
                                     (#{:human :agent} kind)
                                     (#{:user :assistant :tool-result} (:message/role m))
                                     (instance? Date timestamp) (string? text)))
-                          (assoc :held :unsupported-message)))))) refs)})))))
+                          (assoc :held :unsupported-message)))))) refs)}))))))
 
 (defn room-plan
   ([binding] (room-plan binding (room-source binding)))

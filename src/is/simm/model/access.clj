@@ -818,6 +818,8 @@
      "preview-conversation-capture!" {:action W :resource (room :room-id-str)}
      "publish-conversation-capture!" {:action W :resource (room :room-id-str)}
      "preview-room-digest!" {:action R :resource (room :room-id-str)}
+     "read-room-summary-settings!" {:action R :resource (room :room-id-str)}
+     "configure-room-summary!" {:action G :resource (room :room-id-str)}
      "read-room-digest!" {:action R :resource (room :room-id-str)}
      "publish-room-digest!" {:action W :resource (room :room-id-str)}
      "install-room-digest!" {:action :admin :resource (room :room-id-str)}

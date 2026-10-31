@@ -31,6 +31,7 @@
          [:work.request/result-message :db.type/store-ref]
          [:work.request/result-store :db.type/uuid]
          [:work.request/result-scorecard :db.type/uuid]
+         [:work.request/summary-revision :db.type/uuid]
          [:work.request/result-status :db.type/keyword]
          [:work.request/result-at :db.type/instant]
          [:work.request/result-published? :db.type/boolean]
@@ -64,6 +65,20 @@
     (d/pull db '[*] eid)))
 
 (defn get-request [conn id] (request-in @conn id))
+
+(defn- attach-summary-tx [db expected revision]
+  (let [row (request-in db (:work.request/id expected))
+        fields [:work.request/id :work.request/room :work.request/by :work.request/intent-id
+                :work.request/payload-ref :work.request/job :work.request/state :work.request/return-pending?]]
+    (when-not (and (= (select-keys expected fields) (select-keys row fields))
+                   (= :submitted (:work.request/state row)) (false? (:work.request/return-pending? row))
+                   (or (nil? (:work.request/summary-revision row)) (= revision (:work.request/summary-revision row))))
+      (throw (ex-info "Summary Request linkage changed" {:type ::conflict})))
+    [{:db/id (:db/id row) :work.request/summary-revision revision}]))
+
+(defn attach-summary! [conn expected revision]
+  (when-not (uuid? revision) (throw (ex-info "Invalid summary revision" {})))
+  (d/transact conn [[:db.fn/call attach-summary-tx expected revision]]))
 
 (defn- same-intent! [row intent-id]
   (when-not (= intent-id (:work.request/intent-id row))

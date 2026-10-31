@@ -4,7 +4,8 @@
             [is.simm.documents.workflow-links :as workflow-links]
             [is.simm.ops.workflows :as workflows]
             [is.simm.starter.wiki-maintenance :as wiki]
-            [is.simm.starter.conversation-digest :as digest]))
+            [is.simm.starter.conversation-digest :as digest]
+            [is.simm.starter.daily-room-summary :as daily]))
 
 (defn starter
   "Read a shipped editable program as data. Does not read a Room, install files,
@@ -13,7 +14,8 @@
   (case name
     "maintain-wiki" {:name name :version wiki/version :files (wiki/source)}
     "summarize-room" {:name name :version 1 :files (digest/source)}
-    (throw (ex-info "Choose maintain-wiki or summarize-room" {:type ::unknown-starter}))))
+    "summarize-room-daily" {:name name :version daily/version :files (daily/source)}
+    (throw (ex-info "Choose maintain-wiki, summarize-room or summarize-room-daily" {:type ::unknown-starter}))))
 
 (defn inspect-files
   "Inspect the supplied relative file/text map only. Does not read a Room,

@@ -3,12 +3,7 @@
    publication, knowledge acknowledgement, live-result fallback or cached authority."
   (:require [clojure.string :as str]
             [datahike.blob :as blob]
-            [dvergr.agent.attempt :as attempt]
-            [dvergr.agent.episode :as episode]
-            [dvergr.agent.evaluation :as evaluation]
-            [dvergr.agent.run :as run]
             [dvergr.artifact :as artifact]
-            [dvergr.room.store :as store]
             [dvergr.runtime.preparation :as preparation]
             [hasch.core :as hasch]
             [is.simm.documents.files :as files]
@@ -25,7 +20,8 @@
             [is.simm.ops.workflow-readiness :as readiness]
             [is.simm.ops.owned-workspace :as owned]
             [is.simm.ops.worker-files :as worker-files]
-            [is.simm.ops.work :as work]
+            [is.simm.ops.workflow-result :as workflow-result]
+            [is.simm.ops.summary-reader :as summary-reader]
             [is.simm.ops.workflow-runs :as workflows-run]
             [is.simm.ops.workflows :as workflows]
             [is.simm.starter.conversation-digest :as starter]
@@ -202,49 +198,10 @@
                       (:sources selection))}))
 
 (defn- completed-attempt! [room row input]
-  (binding [ec/*execution-context* (:ctx room)]
-    (let [job-id (:work.request/job row) job (run/run room job-id)
-          runs (vec (take 101 (run/runs room {:root-run-id job-id :limit 101})))
-          direct (filterv #(= job-id (:run/parent %)) runs)
-          candidate (when (= 1 (count direct)) (run/run room (:run/id (first direct))))
-          certified (when candidate (episode/attempt room (:run/id candidate)))
-          _ (when certified (attempt/validate-attempt certified))
-          agent (:candidate input) agent-hash (hasch/uuid agent)
-          receipt (:attempt/receipt certified) metrics (:attempt/metrics receipt)
-          trace (vec (take 101 (get-in certified [:attempt/evidence :trace :runs])))
-          trace-candidates (filterv #(= (:run/id candidate) (:run/id %)) trace)]
-      (when-not (and (<= (count runs) 100) (= :workflow (:run/kind job))
-                     (= job-id (:run/id job)) (nil? (:run/parent job))
-                     (= (store/conversation-id room) (:run/room job) (:run/room candidate))
-                     (= (:work.request/by row) (access/actor->party-uuid (:run/actor job)))
-                     (= :completed (:run/status job) (:run/status candidate))
-                     (inst? (:run/ended-at job)) (inst? (:run/ended-at candidate))
-                     (= :agent-task (:run/kind candidate)) (= job-id (:run/parent candidate))
-                     (= (:run/id (first direct)) (:run/id candidate))
-                     (= (:run/id candidate) (:attempt/run-id certified))
-                     (= (:environment input) (:attempt/environment certified))
-                     (= (:agent/id agent) (:run/actor candidate))
-                     (= agent (:attempt/agent certified))
-                     (= agent-hash (:run/agent-def-hash candidate) (:attempt/agent-def-hash certified)
-                        (:agent-def-hash metrics))
-                     (= (:agent/version agent) (:run/agent-version candidate))
-                     (= (get-in agent [:agent/program :kind]) (:run/program-kind candidate))
-                     (pos-int? (:run/interpreter-version candidate))
-                     (= (:run/interpreter-version candidate) (:interpreter-version metrics))
-                     (= (:work.request/by row) (:requester-party metrics))
-                     (= (:work.request/id row) (:request-id metrics))
-                     (= :saved-workflow (:execution-kind metrics))
-                     (= (evaluation/evaluator-tier work/completion) (:verifier-trust metrics))
-                     (= :completed (:attempt/status receipt))
-                     (= {:completed? true} (:attempt/checks receipt))
-                     (= 1.0 (:attempt/reward receipt))
-                     (<= (count trace) 100) (= 1 (count trace-candidates))
-                     (= (select-keys candidate [:run/id :run/parent :run/actor :run/status :run/agent-def-hash])
-                        (select-keys (first trace-candidates) [:run/id :run/parent :run/actor :run/status :run/agent-def-hash])))
-        (refuse! :not-certified-completion))
-      certified)))
+  (or (workflow-result/completed-attempt room row input)
+      (refuse! :not-certified-completion)))
 
-(defn result!
+(defn- manual-result!
   "Read a completed generic digest from its certified Attempt and exact retained
    Request originals. Current default files are never a fallback for citations."
   [host principal handle {:keys [request-id] :as request}]
@@ -274,3 +231,15 @@
           {:status :verified :room (:room-id binding) :request request-id
            :digest-id (digest/digest-id (:selection verified) report) :digest report
            :selection (:selection verified) :originals (:originals verified)})))))
+
+(defn result!
+  "Read either retained manual digest or native daily summary through the same
+   authenticated Room read. No current files substitute for frozen originals."
+  [host principal handle {:keys [request-id] :as request}]
+  (when-not (and (= #{:request-id} (set (keys request))) (uuid? request-id))
+    (refuse! :invalid-request))
+  (let [original (reads/preflight-host-read! host principal handle)
+        row (requests/request-in (reads/current-host-control-db! host) request-id)]
+    (if (or (nil? row) (:work.request/summary-revision row))
+      (summary-reader/result! host principal (:room-id original) request-id)
+      (manual-result! host principal handle request))))

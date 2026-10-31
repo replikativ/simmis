@@ -14,20 +14,20 @@
 (defn- refuse! [reason]
   (throw (ex-info "Invalid conversation digest" {:type ::invalid :reason reason})))
 
-(defn- path? [path]
+(defn source-path? [path]
   (and (string? path) (<= 1 (count path) 512)
        (not (re-find #"[\\\u0000-\u001f\u007f]" path))
        (every? #(and (not (str/blank? %)) (not (#{"." ".." ".git" ".geschichte"} %)))
                (str/split path #"/" -1))))
 
-(defn- text? [text]
+(defn plain-text? [text]
   (and (string? text) (<= 1 (count text) 4000) (not (str/blank? text))
        ;; Output is plain text plus structured source references, never HTML.
        (not (re-find #"<(?:/?[a-z][a-z0-9-]*(?:\s|/?>)|!doctype|!--)" (str/lower-case text)))))
 
 (def source-schema
   [:map {:closed true} [:source-id :uuid] [:source-revision :uuid]
-   [:path [:fn path?]] [:authority [:enum :human :assistant :tool :capture :unknown]]
+   [:path [:fn source-path?]] [:authority [:enum :human :assistant :tool :capture :unknown]]
    [:source-kind [:enum :conversation :capture :document]]
    [:message-id {:optional true} :uuid]
    [:content-id {:optional true} :uuid] [:file-content {:optional true} :uuid]])
@@ -73,7 +73,7 @@
     (validate-selection! (assoc body :id (hasch/uuid [:simmis/conversation-digest-selection-v1 body])))))
 
 (def item-schema
-  [:map {:closed true} [:text [:fn text?]]
+  [:map {:closed true} [:text [:fn plain-text?]]
    [:sources [:vector {:max max-sources} :uuid]]])
 
 (def digest-schema
@@ -81,12 +81,12 @@
    [:summary item-schema]
    [:coverage [:vector {:min 1 :max max-sources}
                [:map {:closed true} [:source-revision :uuid]
-                [:status [:enum :selected :omitted :deferred]] [:note [:fn text?]]]]]
+                [:status [:enum :selected :omitted :deferred]] [:note [:fn plain-text?]]]]]
    [:sections
     (into [:map {:closed true}]
           (map (fn [key] [key [:vector {:max 20} item-schema]]) section-keys))]])
 
-(defn- byte-count [text]
+(defn utf8-size [text]
   #?(:clj (alength (.getBytes ^String text "UTF-8"))
      :cljs (.-length (.encode (js/TextEncoder.) text))))
 
@@ -98,7 +98,7 @@
   (validate-selection! selection)
   (when-not (and (m/validate digest-schema digest)
                  (= (:id selection) (:selection-id digest))
-                 (<= (byte-count (pr-str digest)) max-digest-bytes))
+                 (<= (utf8-size (pr-str digest)) max-digest-bytes))
     (refuse! :invalid-digest))
   (let [expected (set (map :source-revision (:sources selection)))
         coverage (:coverage digest)

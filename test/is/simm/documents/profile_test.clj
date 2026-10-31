@@ -11,6 +11,7 @@
             [is.simm.documents.view :as view]
             [is.simm.starter.wiki-maintenance :as wiki]
             [is.simm.starter.conversation-digest :as digest]
+            [is.simm.starter.daily-room-summary :as daily]
             [kontor.book :as book]
             [kontor.governance :as governance]))
 
@@ -68,10 +69,11 @@
       (is (identical? conn (profile/initialize! conn options (starter/read-packaged!))))
       (let [before @conn prepared (view/prepare before profile/selection-options)]
         (is (= :ready (:status prepared)) (pr-str (:diagnostics prepared)))
-        (is (= (into #{"wiki/Welcome.md" "wiki/People/Founder.md" "wiki/Company.md" "code/welcome.clj" "code/starter-provenance.edn"}
+        (is (= (into #{"wiki/Welcome.md" "wiki/People/Founder.md" "wiki/Company.md" "code/welcome.clj" "code/starter-provenance.edn" "summaries/index.md"}
                      (concat (keys (:files (starter/read-packaged!)))
                              (map #(str "workflows/" wiki/name "/" %) (keys (wiki/source)))
-                             (map #(str "workflows/" digest/name "/" %) (keys (digest/source)))))
+                             (map #(str "workflows/" digest/name "/" %) (keys (digest/source)))
+                             (map #(str "workflows/" daily/name "/" %) (keys (daily/source)))))
                (set (keys (repo/worktree conn)))))
         (is (= 0 (d/q '[:find ?value . :where [_ :S.Company/revenue ?value]] (:db prepared))))
         (is (= false (d/q '[:find ?value . :where [_ :S.Research/active ?value]] (:db prepared))))
