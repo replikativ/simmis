@@ -80,8 +80,12 @@ def verify(descriptor):
         if (not stat.S_ISREG(info.st_mode) or info.st_uid not in {0, os.getuid()}
                 or info.st_mode & 0o022 or not 0 < info.st_size <= POLICY["max-jar-bytes"]):
             raise ValueError("Runtime is not a bounded trusted local regular file")
-        digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        if digest != descriptor["sha256"]:
+        # Hash the entire trusted descriptor with bounded memory using APIs
+        # available on system Python 3.10 as well as newer interpreters.
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+        if digest.hexdigest() != descriptor["sha256"]:
             raise ValueError("Local SCI runtime digest differs")
         stream.seek(0)
         with zipfile.ZipFile(stream) as jar:
