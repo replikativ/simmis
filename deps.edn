@@ -332,9 +332,11 @@
         ;; 0.1.379 retains exact original-message coverage during compaction,
         ;; protects connected tool-call/result groups, and preserves that
         ;; coverage across native conversation serialization (Dvergr #421).
+        ;; 0.1.380 adds trusted legacy profile admission during both native
+        ;; cold hydration and explicit Room registration (Dvergr #422).
         ;; Change dependencies only in a fresh runtime. Alpha stores require
         ;; classified wallets; no legacy wallet migration is implied.
-        org.replikativ/dvergr {:mvn/version "0.1.379"
+        org.replikativ/dvergr {:mvn/version "0.1.380"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.
