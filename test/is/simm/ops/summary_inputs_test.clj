@@ -6,6 +6,7 @@
             [is.simm.model.room-summaries-test :as fixtures]
             [is.simm.ops.conversation-capture :as capture]
             [is.simm.ops.summary-inputs :as inputs]
+            [is.simm.ops.workflow-schedules :as schedules]
             [is.simm.starter.daily-room-summary :as starter]))
 
 (deftest local-calendar-boundaries-respect-daylight-saving
@@ -99,3 +100,15 @@
     (is (.contains text "````text\nLater: ```simmis-ui\n(run!)\n```\n````"))
     (is (= text (inputs/transcript inventory)))
     (is (.contains text (str (:coverage-id inventory))))))
+
+(deftest daily-source-holds-survive-storage-sanitization-without-private-exception-data
+  (let [prepare! @#'schedules/prepare-owned-summary!]
+    (doseq [reason [:period-capacity :period-byte-limit :source-scan-limit :unsupported-original]]
+      (let [error (try (prepare! #(throw (ex-info "private body" {:type :is.simm.ops.summary-inputs/held
+                                                                 :reason reason :private "source bytes"})))
+                       (catch clojure.lang.ExceptionInfo e e))]
+        (is (= {:type :is.simm.ops.summary-inputs/held :reason reason} (ex-data error)))
+        (is (not (.contains (ex-message error) "private body")))))
+    (let [error (try (prepare! #(throw (ex-info "private body" {:type :unexpected :private "source bytes"})))
+                     (catch clojure.lang.ExceptionInfo e e))]
+      (is (= {:type :is.simm.ops.workflow-schedules/owned-unavailable} (ex-data error))))))

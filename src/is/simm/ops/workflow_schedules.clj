@@ -961,12 +961,28 @@
                             :collection collection})))
         :else (owned-unavailable!)))))
 
+(defn- prepare-owned-summary! [prepare!]
+  ;; Preserve only known data-only collection holds before the storage boundary
+  ;; sanitizes exceptions. Never carry arbitrary helper ex-data or source bytes.
+  (let [result (owned-storage!
+                #(try (prepare!)
+                      (catch clojure.lang.ExceptionInfo error
+                        (let [{:keys [type reason]} (ex-data error)]
+                          (if (and (= :is.simm.ops.summary-inputs/held type)
+                                   (contains? #{:period-capacity :period-byte-limit :source-scan-limit :unsupported-original} reason))
+                            {:status :held :reason reason}
+                            (throw error))))))]
+    (when (= :held (:status result))
+      (throw (ex-info "Daily summary source selection is held"
+                      {:type :is.simm.ops.summary-inputs/held :reason (:reason result)})))
+    result))
+
 (defn- dispatch-owned-summary! [host conn row o claim target context room-binding]
   (let [execution (:execution target)
         _ (when (or (:case execution) (seq (:inputs execution)))
             (throw (ex-info "Daily summaries select their own exact originals" {:type ::invalid})))
         period (summary-inputs/closed-day (:schedule.occurrence/intended-at o) (get-in target [:cadence :tz]))
-        prepared (owned-storage! #(room-summary/prepare! host (:principal context) (:handle context)
+        prepared (prepare-owned-summary! #(room-summary/prepare! host (:principal context) (:handle context)
                                                         room-binding period (java.util.Date.)))]
     (if (= :skip (:status prepared))
       (schedules/skip-batch! conn row (:schedule.occurrence/id o) claim (:reason prepared))

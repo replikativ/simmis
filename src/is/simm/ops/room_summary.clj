@@ -5,6 +5,7 @@
             [dvergr.artifact :as artifact]
             [hasch.core :as hasch]
             [is.simm.documents.summary-documents :as documents]
+            [is.simm.documents.markdown :as markdown]
             [is.simm.model.room-summaries :as summaries]
             [is.simm.model.summary-envelope :as envelope]
             [is.simm.model.summary-records :as records]
@@ -128,7 +129,7 @@
            value (get-in certified [:attempt/evidence :files summaries/output-path])
            bytes (if (string? value) (envelope/text-bytes value) (worker-files/file-bytes! value))
            _ (when (> (alength ^bytes bytes) (* 64 1024)) (refuse! :oversized-result))
-           report (summaries/validate-report! selection (envelope/read-value (String. ^bytes bytes "UTF-8") 65536))
+           report (summaries/validate-report! selection (envelope/read-value (markdown/decode bytes) 65536))
            conn (native-connection (:room original))
            payload {:selection selection :report report
                     :inputs (envelope/extract selection (:inputs input))
