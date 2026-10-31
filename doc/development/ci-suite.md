@@ -117,3 +117,27 @@ kernel stays. Unrelated fixture descendants and authority/provisioning defaults
 retain the full schema. New feature-journal tests must install their actual
 schemas or choose the full fixture, rather than accept an earlier storage error
 as a successful authority refusal.
+
+Seven workflow/benchmark/schedule/worker admission tests also remove only the
+registration-order cross product: 24 native fixture executions become 12.
+Both native/CLI/worker kinds and actual execution, capture, provenance and
+physical-capacity retirement assertions remain; their shared selection contracts
+continue to exercise both orders.
+
+Control-only admission cases now use fresh real control databases, the actual
+core/actor/request schemas, real EACL facts, and a genuine opened/fenced/joined
+App lifetime. Their opaque execution token cannot run native effects: these
+cases deliberately stop before hydration, source reads, provider preparation,
+Jobs or resources. A positive production owner preflight guards against
+vacuous negative results. Enrollment/revocation tests additionally install the
+actual worker schema. Full public native execution/lifetime cases remain.
+
+Seven feature-level admission registration-order repetitions use the adverse
+attachment-first order; central owner/transport contracts retain both orders.
+No lifetime, authority, retry, interruption or forged-helper assertions were
+removed by these reductions.
+
+The profiling plugin ignores nested `api/test-plan` calls made from an executing
+test. They are introspection, not another suite; resetting the artifact there
+would truncate the parent progress journal. Final measurements and exit counts
+remain the original runner's values.

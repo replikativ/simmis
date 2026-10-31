@@ -2,7 +2,8 @@
   "Layer A uses real source/enrollment/claim facts without Jobs. Layer B uses
    the real kernel/protocol with an in-process authenticated worker transport,
    not an OS process, provider, containment or deployed provisioning proof."
-  (:require [clojure.test :refer [deftest is]]
+  (:require [is.simm.support.control :as control]
+            [clojure.test :refer [deftest is]]
             [datahike.api :as d]
             [dvergr.catalog.room :as catalog]
             [dvergr.catalog.workspace :as catalog-workspace]
@@ -59,6 +60,12 @@
            :expected-owned-source (parse-uuid (get-in (sources/details! host (principal w) (str (:room w)) {:name "echo"}) [:data :revision]))
            :limits {:timeout-ms 30000 :settlement "discard"}}
     (= kind :local-worker-benchmark) (assoc :repetitions 1)))
+(defn- control-input []
+  ;; Valid closed DTO; the tests below must stop before inspecting source.
+  {:request-id (random-uuid) :worker (random-uuid) :name "echo"
+   :expected-bundle (:id (catalog/bundle "echo" source)) :expected-owned-source (random-uuid)
+   :limits {:timeout-ms 30000 :settlement "discard"}})
+
 (defn- claim-only [seen]
   (fn [conn ctx p room-id _ admitted prepared]
     (reset! seen {:prepared prepared :kernel admitted})
@@ -78,8 +85,11 @@
            (let [id (random-uuid) enrolled (service/enroll! conn (principal w) (:room w) "owned-worker-fixture" id file-fixture/config)]
              (f (assoc fixture :worker id :enrolled enrolled :request #(input % host w id)))))))
 
-(deftest both-fixed-kinds-freeze-owned-source-and-original-intent-in-both-orders
-  (doseq [kind [:local-worker-workflow :local-worker-benchmark] order [true false]]
+;; Both registration orders are exercised by the shared owned-workspace,
+;; file-projection and transport contracts. Each kind still runs here with the
+;; foreign attachment registered first and selected throughout.
+(deftest both-fixed-kinds-freeze-owned-source-and-original-intent-with-adverse-attachment-order
+  (doseq [kind [:local-worker-workflow :local-worker-benchmark] :let [order false]]
     (with-worker order
       (fn [{:keys [w host owned attached request]}]
         (let [input (request kind) seen (atom nil) before (state owned) other (state attached)
@@ -167,15 +177,19 @@
           (is (zero? @calls)))))))
 
 (deftest malformed-dto-and-worker-identity-never-become-human-admission
-  (with-worker true
-    (fn [{:keys [w host request enrolled hydrations]}]
-      (let [input (request :local-worker-workflow) p (principal w)]
-        (reset! hydrations [])
-        (doseq [bad [(dissoc input :expected-owned-source) (assoc input :name "echo\n") (assoc input :by (:owner w))]]
-          (is (= ::owned/invalid (:type (ex-data (failure #(owned/submit-workflow! host p (str (:room w)) bad)))))))
-        (let [worker (credentials/authenticate (:control-conn (::reads/owner host)) {:bearer (:credential enrolled)})]
-          (is (= ::owned/unavailable (:type (ex-data (failure #(owned/submit-workflow! host worker (str (:room w)) input)))))))
-        (is (empty? @hydrations))))))
+  (control/with-control
+   workers/schema
+   (fn [{:keys [conn w host handle]}]
+     (let [input (control-input) p (principal w)
+           enrolled (service/enroll! conn p (:room w) "owned-control-worker" (:worker input) file-fixture/config)
+           calls (atom 0) forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "Invalid identity reached source")))]
+       (with-redefs [reads/resolve-host-read! forbidden local/enrollment! forbidden work/submit-prepared! forbidden]
+         (doseq [bad [(dissoc input :expected-owned-source) (assoc input :name "echo\n") (assoc input :by (:owner w))]]
+           (is (= ::owned/invalid (:type (ex-data (failure #(owned/submit-workflow! nil p handle bad)))))))
+         (let [worker (credentials/authenticate conn {:bearer (:credential enrolled)})]
+           (is (= :worker (:principal/kind worker)) "Authentication must not degrade to anonymous denial")
+           (is (= ::owned/unavailable (:type (ex-data (failure #(owned/submit-workflow! host worker handle input)))))))
+         (is (zero? @calls)))))))
 
 (deftest final-enrollment-and-merge-revocation-refuse-canonical-claim
   (doseq [revoke [:worker :merge]]
@@ -195,18 +209,21 @@
             (is (zero? @calls))))))))
 
 (deftest current-enrollment-comparison-is-complete-and-uses-only-supplied-snapshot
-  (with-worker true
-    (fn [{:keys [conn worker]}]
-      (let [pinned (workers/enrollment conn worker) before @conn]
-        (is (true? (local/current-enrollment-in? before pinned)))
-        (doseq [field [:simmis.worker/id :simmis.worker/by :simmis.worker/room :simmis.worker/generation :simmis.worker/config-id]]
-          (is (false? (local/current-enrollment-in? before (dissoc pinned field)))))
-        (workers/revoke! conn worker)
-        (with-redefs [workers/enrollment (fn [& _] (throw (AssertionError. "Pure comparison reread connection")))]
-          (is (true? (local/current-enrollment-in? before pinned)))
-          (is (false? (local/current-enrollment-in? @conn pinned))))
-        (with-redefs [credentials/permitted? (constantly :truthy)]
-          (is (false? (local/current-enrollment-in? before pinned))))))))
+  (control/with-control
+   workers/schema
+   (fn [{:keys [conn w]}]
+     (let [worker (random-uuid)
+           _ (service/enroll! conn (principal w) (:room w) "owned-control-worker" worker file-fixture/config)
+           pinned (workers/enrollment conn worker) before @conn]
+       (is (true? (local/current-enrollment-in? before pinned)))
+       (doseq [field [:simmis.worker/id :simmis.worker/by :simmis.worker/room :simmis.worker/generation :simmis.worker/config-id]]
+         (is (false? (local/current-enrollment-in? before (dissoc pinned field)))))
+       (workers/revoke! conn worker)
+       (with-redefs [workers/enrollment (fn [& _] (throw (AssertionError. "Pure comparison reread connection")))]
+         (is (true? (local/current-enrollment-in? before pinned)))
+         (is (false? (local/current-enrollment-in? @conn pinned))))
+       (with-redefs [credentials/permitted? (constantly :truthy)]
+         (is (false? (local/current-enrollment-in? before pinned))))))))
 
 (deftest offline-benchmark-does-not-acquire-workflow-live-knowledge
   (with-worker true
@@ -273,32 +290,40 @@
           (is (zero? @calls)))))))
 
 (deftest benchmark-requires-operator-and-room-authority-not-worker-identity
-  (with-worker true
-    (fn [{:keys [conn w host request hydrations]}]
-      (let [input (request :local-worker-benchmark)]
-        (d/transact conn [[:db/retract [:party/id (:owner w)] :party/role :admin]])
-        (reset! hydrations [])
-        (doseq [p [(principal w) (ops/party-principal (:admin w)) (ops/party-principal (:member w))]]
-          (is (= ::owned/unavailable (:type (ex-data (failure #(owned/submit-benchmark! host p (str (:room w)) input)))))))
-        (is (empty? @hydrations))))))
+  (control/with-control
+   (fn [{:keys [w host handle]}]
+     (let [input (assoc (control-input) :repetitions 1) calls (atom 0)
+           forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "Denied benchmark acquired source")))]
+       (with-redefs [reads/resolve-host-read! forbidden workflows/manifest-in forbidden local/enrollment! forbidden]
+         (doseq [p [(principal w) (ops/party-principal (:admin w)) (ops/party-principal (:member w))]]
+           (is (= ::owned/unavailable (:type (ex-data (failure #(owned/submit-benchmark! host p handle input)))))))
+         (is (zero? @calls)))))))
 
 (deftest helper-failure-data-cannot-forge-a-normal-conflict-and-interruption-is-preserved
-  (with-worker true
-    (fn [{:keys [w host request]}]
-      (let [input (request :local-worker-workflow) calls (atom 0)]
-        (doseq [retry [(constantly nil) (constantly {:status :retry :id (random-uuid)})
-                       (fn [& _] (throw (ex-info "SECRET" {:type ::owned/conflict :status 409})))]]
-          (with-redefs [local/retry-request retry reads/resolve-host-read! (fn [& _] (swap! calls inc))]
-            (let [error (failure #(owned/submit-workflow! host (principal w) (str (:room w)) input))]
-              (is (= ::owned/unavailable (:type (ex-data error))))
-              (is (not (re-find #"SECRET" (pr-str error)))))))
-        (is (zero? @calls))
-        (try
-          (with-redefs [local/retry-request (fn [& _] (throw (ex-info "SECRET" {} (InterruptedException. "cancel"))))]
-            (let [error (failure #(owned/submit-workflow! host (principal w) (str (:room w)) input))
-                  interrupted (.isInterrupted (Thread/currentThread))]
-              (is interrupted) (is (= ::owned/unavailable (:type (ex-data error))))))
-          (finally (Thread/interrupted)))))))
+  (control/with-control
+   (fn [{:keys [w host handle]}]
+     (let [input (control-input) fresh (atom 0) retries (atom 0)
+           forbidden (fn [& _] (swap! fresh inc) (throw (AssertionError. "Retry failure reached source")))]
+       (doseq [retry [(constantly nil) (constantly {:status :retry :id (random-uuid)})
+                      (fn [& _] (throw (ex-info "SECRET" {:type ::owned/conflict :status 409})))]]
+         (reset! retries 0)
+         (with-redefs [local/retry-request (fn [& args] (swap! retries inc) (apply retry args))
+                       reads/resolve-host-read! forbidden local/enrollment! forbidden work/submit-prepared! forbidden]
+           (let [error (failure #(owned/submit-workflow! host (principal w) handle input))]
+             (is (= 1 @retries))
+             (is (= ::owned/unavailable (:type (ex-data error))))
+             (is (not (re-find #"SECRET" (pr-str error)))))))
+       (is (zero? @fresh))
+       (try
+         (reset! retries 0)
+         (with-redefs [local/retry-request (fn [& _] (swap! retries inc)
+                                           (throw (ex-info "SECRET" {} (InterruptedException. "cancel"))))
+                       reads/resolve-host-read! forbidden local/enrollment! forbidden work/submit-prepared! forbidden]
+           (let [error (failure #(owned/submit-workflow! host (principal w) handle input))
+                 interrupted (.isInterrupted (Thread/currentThread))]
+             (is interrupted) (is (= 1 @retries)) (is (zero? @fresh))
+             (is (= ::owned/unavailable (:type (ex-data error))))))
+         (finally (Thread/interrupted)))))))
 
 (deftest malformed-normal-admission-amount-cannot-escape-or-reach-kernel
   (with-worker true
@@ -316,7 +341,7 @@
     (credentials/authenticate conn {:bearer (credentials/lease-token id (:lease claimed) proof)})))
 
 (deftest actual-kernel-worker-protocol-imports-owned-output-and-retires-each-physical-owner
-  (doseq [kind [:local-worker-workflow :local-worker-benchmark] order [true false]]
+  (doseq [kind [:local-worker-workflow :local-worker-benchmark] :let [order false]]
     (with-worker order
       (fn [{:keys [conn w host room owned attached enrolled request]}]
         (let [input (request kind) p (principal w) before (state owned) other (state attached)

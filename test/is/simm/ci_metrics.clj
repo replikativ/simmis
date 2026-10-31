@@ -63,43 +63,51 @@
 
 (defplugin is.simm.ci-metrics/metrics
   (pre-load [config]
-    (let [start (resources)]
-      (write! "-progress.edn" {:phase :start :resources start} false)
-      (assoc config ::start start)))
+    ;; Runner tests may construct a nested plan while another test is active.
+    ;; That inspection must not truncate the outer run's progress artifact.
+    (if testable/*current-testable*
+      (dissoc config ::start ::loaded)
+      (let [start (resources)]
+        (write! "-progress.edn" {:phase :start :resources start} false)
+        (assoc config ::start start))))
   (post-load [plan]
-    (let [loaded (resources)]
-      (write! "-progress.edn" {:phase :loaded :resources loaded} true)
-      (assoc plan ::loaded loaded)))
+    (if (::start plan)
+      (let [loaded (resources)]
+        (write! "-progress.edn" {:phase :loaded :resources loaded} true)
+        (assoc plan ::loaded loaded))
+      plan))
   (pre-run [plan]
-    (let [selected (->> (testable/test-seq plan)
-                        (filter #(= :kaocha.type/var (:kaocha.testable/type %)))
-                        (map :kaocha.testable/id) sort vec)]
-      (write! "-selection.edn" {:tests selected} false)
-      ;; Local focused probes can require an exact manifest before executing
-      ;; anything, guarding against misspelled/ignored Kaocha filter options.
-      (when-let [path (System/getenv "SIMMIS_CI_EXPECTED_TESTS")]
-        (let [expected (vec (sort (edn/read-string (slurp path))))]
-          (when-not (= expected selected)
-            (throw (ex-info "Focused test selection differs from the expected manifest"
-                            {:expected expected :selected selected}))))))
+    (when (::start plan)
+      (let [selected (->> (testable/test-seq plan)
+                          (filter #(= :kaocha.type/var (:kaocha.testable/type %)))
+                          (map :kaocha.testable/id) sort vec)]
+        (write! "-selection.edn" {:tests selected} false)
+        ;; Local focused probes can require an exact manifest before executing
+        ;; anything, guarding against misspelled/ignored Kaocha filter options.
+        (when-let [path (System/getenv "SIMMIS_CI_EXPECTED_TESTS")]
+          (let [expected (vec (sort (edn/read-string (slurp path))))]
+            (when-not (= expected selected)
+              (throw (ex-info "Focused test selection differs from the expected manifest"
+                              {:expected expected :selected selected})))))))
     plan)
-  (pre-test [node _]
+  (pre-test [node plan]
     (cond-> node
-      (= :kaocha.type/ns (:kaocha.testable/type node))
+      (and (::start plan) (= :kaocha.type/ns (:kaocha.testable/type node)))
       (assoc ::resources-before (resources))))
-  (post-test [node _]
-    (when (= :kaocha.type/ns (:kaocha.testable/type node))
+  (post-test [node plan]
+    (when (and (::start plan) (= :kaocha.type/ns (:kaocha.testable/type node)))
       ;; Flush each completed namespace so a timeout still leaves useful data.
       (write! "-progress.edn"
               {:phase :namespace :measurement (measurement node)
                :before (::resources-before node) :after (resources)} true))
     node)
   (post-summary [result]
-    (write! ".edn"
-            {:format-version 1
-             :revision (or (System/getenv "CIRCLE_SHA1") (System/getenv "GITHUB_SHA"))
-             :start (::start result) :loaded (::loaded result) :end (resources)
-             :elapsed-ns (::profiling/duration result)
-             :measurements (mapv measurement
-                                 (filter ::profiling/duration (testable/test-seq result)))} false)
+    (when (::start result)
+      (write! ".edn"
+              {:format-version 1
+               :revision (or (System/getenv "CIRCLE_SHA1") (System/getenv "GITHUB_SHA"))
+               :start (::start result) :loaded (::loaded result) :end (resources)
+               :elapsed-ns (::profiling/duration result)
+               :measurements (mapv measurement
+                                   (filter ::profiling/duration (testable/test-seq result)))} false))
     result))

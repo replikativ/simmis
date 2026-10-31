@@ -2,7 +2,8 @@
   "Layer A retains real canonical intent without a Job. Layer B uses the real
    kernel/experiment/checker with fixed transports and isolated fixture Rooms;
    it proves neither deployed provisioning nor an actual CLI process/login."
-  (:require [clojure.test :refer [deftest is]]
+  (:require [is.simm.support.control :as control]
+            [clojure.test :refer [deftest is]]
             [datahike.api :as d]
             [dvergr.agent.experiment :as experiment]
             [dvergr.agent.experiment.runner :as runner]
@@ -79,8 +80,11 @@
                  runner/runtime-identity (constantly {:libraries {}})]
      ~@body))
 
+;; Both registration orders are exercised by the shared owned-workspace,
+;; file-projection and transport contracts. Each kind still runs here with the
+;; foreign attachment registered first and selected throughout.
 (deftest both-fixed-kinds-pin-one-owned-db-and-retain-original-intent-not-selected-source
-  (doseq [kind [:benchmark :cli-benchmark] order [true false]]
+  (doseq [kind [:benchmark :cli-benchmark] :let [order false]]
     (@#'fixture/with-fixture order
                              (fn [{:keys [conn w host owned attached]}]
                                (promote! conn w)
@@ -164,20 +168,23 @@
                                  (is (= 1 (count (requests/requests conn)))))))))
 
 (deftest local-dtos-and-admin-plus-room-authority-refuse-before-hydration
-  (@#'fixture/with-fixture false
-                           (fn [{:keys [conn w host owned hydrations]}]
-                             (seed! owned files)
-                             (let [request (input :benchmark host w files)]
-                               (reset! hydrations [])
-                               (doseq [p [(principal w) (ops/party-principal (:admin w)) (ops/party-principal (:member w))
-                                          (assoc (principal w) :principal/kind :worker)]]
-                                 (is (= ::owned/unavailable (:type (ex-data (failure #(owned/submit-native! host p (str (:room w)) request)))))))
-                               (promote! conn w)
-                               (doseq [bad [(dissoc request :expected-owned-source) (assoc request :name "echo\n")
-                                            (assoc request :room (str (:room w))) (assoc request :expected-owned-source "not-a-uuid")]]
-                                 (is (= ::owned/invalid (:type (ex-data (failure #(owned/submit-native! host (principal w) (str (:room w)) bad)))))))
-                               (is (= ::owned/invalid (:type (ex-data (failure #(owned/submit-cli! host (principal w) (str (:room w)) request))))))
-                               (is (empty? @hydrations))))))
+  (control/with-control
+   (fn [{:keys [conn w host handle]}]
+     (let [request (-> (benchmark-fixture/input files)
+                       (assoc :models ["codex-subscription-sol"] :expected-owned-source (random-uuid))
+                       (assoc-in [:limits :timeout-ms] 30000))
+           calls (atom 0) forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "Denied benchmark acquired source")))]
+       (with-redefs [reads/resolve-host-read! forbidden workflows/manifest-in forbidden
+                     benchmarks/prepare forbidden benchmarks/prepare-cli forbidden]
+         (doseq [p [(principal w) (ops/party-principal (:admin w)) (ops/party-principal (:member w))
+                    (assoc (principal w) :principal/kind :worker)]]
+           (is (= ::owned/unavailable (:type (ex-data (failure #(owned/submit-native! host p handle request)))))))
+         (promote! conn w)
+         (doseq [bad [(dissoc request :expected-owned-source) (assoc request :name "echo\n")
+                      (assoc request :room handle) (assoc request :expected-owned-source "not-a-uuid")]]
+           (is (= ::owned/invalid (:type (ex-data (failure #(owned/submit-native! nil (principal w) handle bad)))))))
+         (is (= ::owned/invalid (:type (ex-data (failure #(owned/submit-cli! nil (principal w) handle request))))))
+         (is (zero? @calls)))))))
 
 (deftest same-bytes-default-replacement-conflicts-before-body-or-cli-policy-probes
   (doseq [kind [:benchmark :cli-benchmark]]
@@ -301,7 +308,7 @@
                         (.getBytes (apply str (map #(str "data: " (json/write-value-as-string %) "\n\n") events)) "UTF-8"))}))
 
 (deftest real-native-and-cli-components-use-owned-offline-fixtures-and-retire-physical-capacity
-  (doseq [kind [:benchmark :cli-benchmark] order [true false]]
+  (doseq [kind [:benchmark :cli-benchmark] :let [order false]]
     (@#'fixture/with-fixture order
                              (fn [{:keys [conn w host room owned attached]}]
                                (promote! conn w) (seed! owned files)
