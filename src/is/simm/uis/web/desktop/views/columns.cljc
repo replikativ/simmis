@@ -2100,7 +2100,7 @@
                        :activities (:message/activities item)
                        :object (get-in item [:message/metadata :object])
                        :digest-notification
-                       (when (= :conversation-digest (get-in item [:message/metadata :object :kind]))
+                       (when (contains? #{:conversation-digest :room-summary} (get-in item [:message/metadata :object :kind]))
                          {:room-id room-id :message-id (:entity/uuid item) :col-id col-id :tab-id tab-id
                           :thread-root-id (when thread-view? thread-root-id)
                           :digest-state (::digest-notification-state item) :frame (::capture-frame item)

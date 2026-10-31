@@ -10,6 +10,7 @@
             [is.simm.documents.rich :as rich]
             [is.simm.model.system-db :as sdb]
             [is.simm.ops.owned-workspace :as owned]
+            [is.simm.ops.generated-summary-files :as generated]
             [org.replikativ.spindel.engine.impl.simple :as simple]))
 
 (defn- refuse! [reason]
@@ -75,12 +76,14 @@
            (throw error)))))
 
 (defn read! [conn principal room-id room request]
-  (project! conn principal room-id room request #{:path} (contains? request :expected-target-stamp)
-            (fn [db]
-              (let [file (files/read-file-in db (:path request))]
-                (cond-> file
-                  (= :markdown (:kind file))
-                  (assoc :page-properties (property-projection db (:path request) {:kind :page})))))))
+  (let [stamped? (contains? request :expected-target-stamp)
+        _ (closed! request #{:path} stamped?)
+        bound (binding! conn principal :read room-id room request stamped?)
+        file (files/read-file-in (:db bound) (:path request))
+        owner (generated/inspect room room-id (:target bound) (:path request) (:entry file))]
+    (cond-> (assoc file :target-stamp (:target-stamp bound))
+      (= :markdown (:kind file)) (assoc :page-properties (property-projection (:db bound) (:path request) {:kind :page}))
+      owner (assoc :generated owner))))
 
 (defn history! [conn principal room-id room request]
   (project! conn principal room-id room request #{:path} true
@@ -120,7 +123,9 @@
 
 (defn- save-bound! [conn principal room-id room binding request & [write-options]]
   (let [authorize! #(do (canonical-control! conn)
-                        (owned/validate! @conn principal :write room-id room binding) true)
+                        (owned/validate! @conn principal :write room-id room binding)
+                        (generated/editable! room room-id (:target binding) (:path request)
+                                             (files/entry (:db binding) (:path request))) true)
         result (files/save-file-to! room (:system binding) request (assoc (or write-options {}) :authorize! authorize!))]
     (assoc result :target-stamp (:target-stamp binding))))
 
@@ -211,7 +216,9 @@
   (closed! request #{:path :target :expected} true)
   (let [binding (binding! conn principal :write room-id room request true)
         authorize! #(do (canonical-control! conn)
-                        (owned/validate! @conn principal :write room-id room binding) true)
+                        (owned/validate! @conn principal :write room-id room binding)
+                        (doseq [path [(:path request) (:target request)]]
+                          (generated/editable! room room-id (:target binding) path (files/entry (:db binding) path))) true)
         result (files/move-file-to! room (:system binding) (:path request) (:target request)
                                     (:expected request) {:authorize! authorize!})]
     (assoc result :target-stamp (:target-stamp binding))))

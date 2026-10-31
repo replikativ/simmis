@@ -8,6 +8,7 @@
             #?(:clj [is.simm.model.work-requests :as requests])
             #?(:clj [is.simm.ops.dvergr :as ops])
             #?(:clj [is.simm.ops.room-digest :as digest])
+            #?(:clj [is.simm.ops.room-summary-settings :as summary-settings])
             #?(:clj [is.simm.ops.digest-notification :as notification])
             #?(:clj [is.simm.ops.file-output-adoption :as adoption])
             #?(:clj [is.simm.runtimes.application-ops :as application])))
@@ -15,7 +16,7 @@
 #?(:clj
    (defn prepare-operation [party room operation request]
      (when-not (and (uuid? party) (string? room) (= room (some-> (parse-uuid room) str))
-                    (#{:preview :install :launch :result :publish} operation))
+                    (#{:preview :install :launch :result :publish :summary-settings :configure-summary} operation))
        (throw (ex-info "Invalid digest request" {:type :validation-error})))
      (let [invoke (application/capture-operation)
            principal (ops/party-principal party)
@@ -25,6 +26,8 @@
          (try
            (invoke (fn [host]
                      (case operation
+                       :summary-settings (summary-settings/read! host principal room)
+                       :configure-summary (summary-settings/configure! host principal room request)
                        :preview (digest/preview! host principal room request)
                        :install (digest/install! host principal room request)
                        :launch (let [result (digest/launch! host principal room request)]
@@ -35,7 +38,7 @@
                        :publish (notification/publish! host principal room request))))
            (catch Throwable error
              (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)))
-             (cond-> {:status (if (#{:install :launch :publish} operation) :inspection-required :unavailable)}
+             (cond-> {:status (if (#{:install :launch :publish :configure-summary} operation) :inspection-required :unavailable)}
                request-id (assoc :request request-id))))))))
 
 (defn-spin-remote preview-room-digest! [server-id room-id-str request]
@@ -58,3 +61,11 @@
 (defn-spin-remote publish-room-digest! [server-id room-id-str request]
   (spin-remote server-id [room-id-str request]
                #?(:clj (await (blocking/blocking (prepare-operation (access/authenticated-party-id) room-id-str :publish request))) :cljs nil)))
+
+(defn-spin-remote read-room-summary-settings! [server-id room-id-str]
+  (spin-remote server-id [room-id-str]
+               #?(:clj (await (blocking/blocking (prepare-operation (access/authenticated-party-id) room-id-str :summary-settings nil))) :cljs nil)))
+
+(defn-spin-remote configure-room-summary! [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (await (blocking/blocking (prepare-operation (access/authenticated-party-id) room-id-str :configure-summary request))) :cljs nil)))

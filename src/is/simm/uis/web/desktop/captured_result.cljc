@@ -26,17 +26,19 @@
 (def source-identity-keys [:proposal :component :request :selection])
 (def max-source-bytes 524288)
 
-(defn- source-files-valid? [listing]
-  (let [files (:files listing) selection (:selection listing)]
+(defn- source-files-valid? [listing & [summary?]]
+  (let [files (:files listing) selection (:selection listing)
+        selection-keys (if summary? #{:coverage-id :context-id :manifest-id} #{:trigger-id :execution-id :manifest-id})
+        prefix (if summary? "/in/summary/sources/" "/in/knowledge/sources/")]
     (and (map? listing) (map? selection)
-         (= #{:trigger-id :execution-id :manifest-id} (set (keys selection)))
+         (= selection-keys (set (keys selection)))
          (every? uuid-text? (vals selection))
          (vector? files) (<= (count files) 100)
          (= (count files) (count (set (map :path files))))
          (every? (fn [{:keys [path source-path role size content-id]}]
                    (and (string? source-path) (<= 1 (count source-path) 512)
-                        (= path (str "/in/knowledge/sources/" source-path))
-                        (#{:trigger :context} role)
+                        (= path (str prefix source-path))
+                        ((if summary? #{:coverage :context} #{:trigger :context}) role)
                         (integer? size) (<= 0 size max-source-bytes)
                         (uuid-text? content-id))) files))))
 
@@ -46,12 +48,16 @@
        (source-files-valid? listing)))
 
 (defn request-source-list-valid? [room request listing]
-  (and (= #{:room :request :selection :files} (set (keys listing)))
+  (let [summary? (= :room-summary (:kind listing))]
+    (and (= (if summary? #{:kind :revision :room :request :selection :files} #{:room :request :selection :files})
+            (set (keys listing)))
+       (or (not summary?) (uuid-text? (:revision listing)))
        (= room (:room listing)) (= request (:request listing))
-       (every? uuid-text? [room request]) (source-files-valid? listing)))
+       (every? uuid-text? [room request]) (source-files-valid? listing summary?))))
 
 (defn request-source-chunk-valid? [listing entry offset chunk decoded-length]
   (and (map? listing) (map? chunk)
+       (= (select-keys listing [:kind :revision]) (select-keys chunk [:kind :revision]))
        (= (select-keys listing [:room :request :selection])
           (select-keys chunk [:room :request :selection]))
        (byte-chunk-valid? max-source-bytes entry offset chunk decoded-length)))

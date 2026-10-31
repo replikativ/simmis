@@ -139,6 +139,20 @@
     (when-not (and (integer? limit) (<= 1 limit contract/max-capture-rows)) (refuse! :invalid-limit))
     (assoc value :limit limit)))
 
+(defn- validate-summaries [value]
+  (closed! value #{:version :id :source :presentation :columns} #{:limit})
+  (let [limit (get value :limit contract/max-summary-rows)]
+    (when-not (and (= 1 (:version value)) (uuid? (:id value)) (= :table (:presentation value))
+                   (= {:kind :room-summaries :room :current} (:source value))
+                   (integer? limit) (<= 1 limit contract/max-summary-rows)
+                   (vector? (:columns value)) (<= 1 (count (:columns value)) max-columns))
+      (refuse! :invalid-summary-view))
+    (doseq [column (:columns value)]
+      (closed! column #{:kind} #{})
+      (when-not (contains? contract/summary-columns (:kind column)) (refuse! :unsupported-column)))
+    (when-not (= (count (:columns value)) (count (set (:columns value)))) (refuse! :duplicate-columns))
+    (assoc value :limit limit)))
+
 (defn validate
   "Validate inert declarations for a fixed source. Neither source IDs nor
    columns carry permission, executable queries or writable field bindings."
@@ -147,6 +161,7 @@
     :pages (validate-pages value)
     :scorecard (validate-scorecard value)
     :archived-captures (validate-captures value)
+    :room-summaries (validate-summaries value)
     (refuse! :unsupported-source)))
 
 (defn- bounded-source! [source]

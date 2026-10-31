@@ -123,6 +123,146 @@ new topics, corrections or workflow versions make it relevant.
 
 ## Digests and multilevel timeline presentation
 
+### Daily activation and planned temporal aggregation
+
+The original-evidence, optional manual digest and wiki-maintenance slice landed
+in Simmis PR #162. The subsequent daily slice adds `summarize-room-daily` as an
+ordinary editable workflow and a Room settings control. It is **off by default**;
+loading source or reading this document enables nothing. Calendar rollups beyond
+days remain planned; they are not provided by the daily workflow.
+
+Expose an off-by-default daily summary setting in Room configuration, backed by
+an ordinary saved-workflow activation and its existing creator authority,
+timezone, model and finite resource policy. A cheap deterministic source check
+must precede inference. No new eligible original revisions means no model call
+and no new card; prior summaries, routine notices and workflow status cannot
+make an otherwise idle room active.
+
+The daily implementation uses the previous closed local day, skips empty or
+unchanged originals before provider/resource preparation, and freezes up to two
+prior ready summary heads as optional context. Its current bound is **64 originals
+and 512 KiB of frozen input per day**, including context. Excess input holds the
+activation visibly; it is never truncated into a supposedly complete day.
+Batched completion of larger days remains follow-up work.
+
+Room settings choose the daily time, IANA timezone, existing model and an optional
+original-chat export. These controls point to the same ordinary activation shown
+in Workflows. Off withdraws pending work and stops future admissions; running
+work finishes normally. Configuration replacement is refused while the old run
+is admitting or linked. It grants no resources: each active day is capped at
+8 dispatches, 12 model steps, 180 seconds and 25,000 microdollars from the existing
+shared Room allowance.
+
+When enabled, original-chat export writes
+`conversations/<room>/<day>.md` **before** model admission. Exact messages are
+ordered by timestamp and kept in inert text fences. Its independently retained
+projection intent survives inference failure. Native source transaction basis
+orders replacements; an obsolete receipt cannot overwrite a newer transcript.
+This records current public revisions at collection, not a full edit/deletion log.
+It is an option on the daily activation, not an independent transcript daemon.
+
+The Memory index `summaries/index.md` is an editable `simmis-view` document using
+`{:kind :room-summaries :room :current}`. Its rows read native summary heads;
+generated day files remain readable without the application or database. Native
+publication attaches the Request pointer and schedule acknowledgments through the
+existing control DB, whose private Memory change stream invalidates open views.
+Readers recheck current Room access, source-store binding and full Memory target.
+Retired Request payloads are not needed to read the summary’s retained originals.
+
+The existing wiki workflow continues to select original evidence independently.
+Generated `summaries/` and `conversations/` paths are outside its default trigger
+roots. A customized wiki workflow can include selected summaries as context; the
+shipped v6 workflow is unchanged and does not automatically load an unbounded
+summary archive. Bounded native-summary context for wiki runs is follow-up work.
+
+Keep two explicit, separately identified input sets:
+
+- **Coverage:** the new original revisions or child-summary revisions whose
+  activity this result summarizes. Only these establish progress for this node.
+- **Context:** a bounded frozen selection of earlier summaries, open questions
+  and relevant room/wiki framing. These help interpret the activity without
+  becoming new evidence, independent corroboration or newly covered originals.
+
+For a daily node, start with the previous available daily summary and a bounded
+earlier overview when useful; sparse rooms need not have a summary yesterday.
+Record the exact versions actually read. A context statement that an interview
+is planned must not turn a new discussion into evidence that it happened.
+Repeated decisions, changed proposals, corrections and resolved open questions
+should be distinguishable in the output. Avoid a mandatory growing running
+summary or copying all historical context into every new invocation.
+
+All inputs are frozen before execution. Context must come from an earlier
+immutable revision: a daily result cannot depend on a current all-time overview
+that is itself waiting for that daily result. Future summaries may use the
+completed overview revision. Store these versioned dependencies as an acyclic
+graph; do not let a mutable filename define dependency identity.
+
+Build day, week, month, year and all-time views from bounded lower-level nodes,
+retaining transitive paths to exact originals. Calendar weeks straddle months,
+so weeks and months cannot be a strict nested partition of the same days.
+Use canonical daily coverage as the common basis for weekly and monthly views,
+then aggregate months into years and years into an all-time overview. The UI
+may offer either navigation grouping without counting overlapping coverage
+twice. Every node records its timezone, interval and actual membership.
+
+Higher-level summaries express themes, changes, outstanding questions and
+contradictions, rather than concatenating child text. They can inspect relevant
+originals through admitted source reads. A synthesized claim retains supporting
+child/original references; uncertain claims do not become confirmed through
+repeated aggregation. Historical snapshots remain immutable. An affected
+current projection may be marked stale and revised, but unrelated history
+should not be recomputed. Rebuild relevant ancestors under finite budgets,
+prefer closed periods initially, and do not invoke models merely on expansion.
+The all-time view must not rescan or regenerate the entire history each day.
+If the calendar history outgrows a bounded parent input, use balanced interval
+rollups beneath the presentation views rather than an unbounded list of years
+or a perpetually rewritten running summary. Exact coverage union/deduplication
+is deterministic; generated summary text is lossy and not associative. Record
+the grouping and program/model identity instead of treating different reduction
+orders as interchangeable computations.
+
+Busy days require bounded batches with explicit partial coverage and remaining
+work. The current eight-original manual digest contract is not a complete daily
+aggregation algorithm; scheduling it over the first eight files would be wrong.
+Deferred or unavailable originals cannot silently become a completed day.
+
+Retain one logical summary identity with a structured execution result and
+ordinary projections: a compact chat card and Markdown in the explicitly bound
+default Memory, for example
+`summaries/conversations/<room>/2026-10-30.md`. Native execution/publication
+receipts remain authoritative for execution and delivery. Markdown revisions
+are versioned documents, not another acknowledgement ledger. Summary folders
+are derived context, excluded from automatic original-evidence triggers.
+The wiki may use them to locate relevant topics, then inspect original evidence
+independently; digest coverage never acknowledges wiki incorporation.
+
+Use the existing saved-view abstraction for live summary indexes and tables,
+with a new permission-scoped summary source adapter; current page/scorecard/
+capture adapters do not already implement this source. Structured native
+summary revisions are authoritative. Materialize readable Markdown bodies as
+generated snapshots on successful publication, carrying the same summary and
+revision identities, source references and projection version. A query-only
+document is insufficient for Git and file-only workers. Indexes can be dynamic
+while individual exported summaries remain ordinary readable Markdown.
+
+Generated summary bodies are read-only in the normal editor. Users can copy
+them into authored notes, add separate annotations or request a revised summary.
+An external Git edit does not alter the certified native summary. Track the last
+generated content identity so regeneration detects a modified projection rather
+than silently overwriting it; surface that divergence for review. Authored
+frontmatter alone never establishes generated ownership, authority or provenance.
+Both native and document views identify the same logical summary so consumers
+can deduplicate them. Datalog access remains an explicitly admitted capability;
+file-only workers need no room-DB access. Original-source links retain the source Room's access checks. Generated Markdown
+follows the destination Memory's sharing and Git settings: enabling export is an
+authorized write into that explicit destination, not a new Room access grant.
+Push or public-site publication retains its separate authorization.
+
+Apply this hierarchy within each room first. A personal or organization-wide
+cross-room overview is a separate explicitly scoped workflow with a separate
+destination and current source permissions. Access to multiple rooms does not
+authorize publishing their combined summary into every participant's room.
+
 A digest is a versioned derived artifact over an exact source selection. It
 records program/model identity and includes topics/entities, decisions,
 proposals, observations, uncertainty, conflicts, open questions and supporting

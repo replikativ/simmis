@@ -2,7 +2,8 @@
   "Pure account/room/view-owned optional digest state. Writes and launches are
    explicit; uncertainty stays sticky and socket changes never replay effects."
   (:require [clojure.string :as str]
-            [is.simm.model.conversation-digest :as digest]))
+            [is.simm.model.conversation-digest :as digest]
+            [is.simm.model.room-summaries :as summaries]))
 
 (defn reconcile [state connection]
   (if (or (nil? (:connection state)) (= connection (:connection state))) state
@@ -37,14 +38,21 @@
     (catch #?(:clj Exception :cljs :default) _ false)))
 
 (defn- verified? [reply]
-  (try (and (= :verified (:status reply)) (uuid? (:request reply)) (uuid? (:digest-id reply))
-            (digest/validate! (:selection reply) (:digest reply))
-            (= (:digest-id reply) (digest/digest-id (:selection reply) (:digest reply)))
-            (vector? (:originals reply))
-            (= (get-in reply [:selection :sources]) (mapv #(dissoc % :text) (:originals reply)))
-            (every? #(and (string? (:text %)) (<= (count (:text %)) (* 256 1024))) (:originals reply))
-            (<= (reduce + 0 (map #(count (:text %)) (:originals reply))) (* 256 1024)))
-       (catch #?(:clj Exception :cljs :default) _ false)))
+  (try
+    (let [daily? (= :room-summary (:kind reply))
+          selection (:selection reply)
+          sources (if daily? (into (:coverage selection) (:context selection)) (:sources selection))]
+      (and (= :verified (:status reply)) (uuid? (:request reply)) (uuid? (:digest-id reply))
+           (if daily?
+             (summaries/validate-report! selection (:digest reply))
+             (and (digest/validate! selection (:digest reply))
+                  (= (:digest-id reply) (digest/digest-id selection (:digest reply)))))
+           (vector? (:originals reply))
+           (= sources (mapv #(dissoc % :text) (:originals reply)))
+           (every? #(and (string? (:text %)) (<= (count (:text %)) (* 512 1024))) (:originals reply))
+           (<= (reduce + 0 (map #(count (:text %)) (:originals reply)))
+               (if daily? summaries/max-input-bytes (* 256 1024)))))
+    (catch #?(:clj Exception :cljs :default) _ false)))
 
 (defn receive [state connection token reply]
   (if-not (current? state connection token) state
@@ -85,8 +93,10 @@
   "Persistent inert pointer, never a read capability or proof of provenance."
   [metadata]
   (let [object (:object metadata) digest-id (:id object) request (:notification/task metadata)]
-    (when (and (= :conversation-digest (:kind metadata) (:kind object))
+    (when (and (or (= :conversation-digest (:kind metadata) (:kind object))
+                   (= :room-summary (:kind metadata) (:kind object)))
                (= :task-complete (:notification/type metadata))
-               (= :simmis/conversation-digest (:source metadata))
+               (= (if (= :room-summary (:kind object)) :simmis/room-summary :simmis/conversation-digest)
+                  (:source metadata))
                (uuid? request) (uuid? digest-id))
       {:request request :digest-id digest-id})))

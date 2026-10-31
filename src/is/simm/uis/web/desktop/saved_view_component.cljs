@@ -71,11 +71,12 @@
               error (get-in state [:errors [:saved-view path id]])
               pages? (views/pages? state path id)
               receipt? (views/receipt? state path id)
+              summaries? (views/summaries? state path id)
               form? (and pages? (= :form (get-in entry [:descriptor :presentation])))]
     (el/section {:key (str (:from entry) ":" id) :class "memory-saved-view" :aria-label "Saved view"}
                 (el/div {:class "memory-saved-view-heading"}
                         (el/strong {} (cond pages? (if form? "Page form" "Page table")
-                                            receipt? "Benchmark results" :else "Screen observations"))
+                                            receipt? "Benchmark results" summaries? "Conversation summaries" :else "Screen observations"))
                         (when (= :ready (:status entry))
                           (el/span {:class "memory-note"}
                                    (str/join ", " (map #(if (= "" %) "Memory" %) (get-in entry [:descriptor :source :roots])))))
@@ -86,7 +87,7 @@
                           (el/span {:class "memory-note"} "Invalid declaration · edit its Markdown")))
                 (when opened?
                   (cond
-                    (and receipt? (nil? (:receipt-context state)))
+                    (and (or receipt? summaries?) (nil? (:receipt-context state)))
                     (el/p {:class "memory-note" :role "status"} "Waiting for current Room access and receipt store identity…")
                     (and (nil? reply) error)
                     (el/p {:class "memory-note" :role "status"}
@@ -100,6 +101,7 @@
                             (el/p {:class "memory-note" :role "status"}
                           (str (count (:rows reply)) " of " (:total reply)
                                (cond pages? " matching pages" receipt? " candidates · saved Scorecard"
+                                     summaries? " conversation summaries"
                                      :else " archived observation intervals")
                                        (when loading? " · Updating…")))
                             (when-not form?
@@ -116,7 +118,12 @@
                               (el/p {:class "memory-note"}
                                     "Model cost uses reported usage; it is not the wallet or grant total. A dash means unknown."
                                     (when (false? (:complete? reply)) " Only the declared candidate prefix is shown; matrix statistics are unchanged.")))
-                            (when (and (not pages?) (not receipt?))
+                            (when summaries?
+                              (el/p {:class "memory-note"}
+                                    "Generated navigation; original evidence remains available through each summary."
+                                    (when (false? (:complete? reply)) " Only a bounded selection is shown.")
+                                    (when (false? (get-in reply [:display :complete?])) " Some previews are shortened.")))
+                            (when (and (not pages?) (not receipt?) (not summaries?))
                               (el/p {:class "memory-note"}
                                     "Screenshots show matching files / referenced files. Recording alignment is estimated."
                                     (when (false? (:complete? reply)) " Only the declared interval prefix is shown.")))

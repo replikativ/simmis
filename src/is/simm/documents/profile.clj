@@ -9,6 +9,7 @@
             [geschichte.schema :as repository-schema]
             [is.simm.documents.chart-profile :as charts]
             [is.simm.documents.markdown :as markdown]
+            [is.simm.documents.summary-documents :as summary-documents]
             [is.simm.documents.repository :as documents]
             [is.simm.documents.space :as space]
             [is.simm.documents.starter-bundle :as starter]
@@ -19,6 +20,7 @@
             [is.simm.model.store :as store]
             [is.simm.starter.wiki-maintenance :as wiki]
             [is.simm.starter.conversation-digest :as digest]
+            [is.simm.starter.daily-room-summary :as daily-summary]
             [kontor.governance :as governance]
             [kontor.schema :as accounting-schema]))
 
@@ -119,10 +121,12 @@
   "Pristine exclusive connection only. Seed and validate the whole starter wiki
    before its owner can publish a Room. Failure belongs to that bootstrap owner,
    never to an implicit migration or a retry of a partially initialized store."
-  ([conn options bundle] (initialize! conn options bundle (wiki/source) (digest/source)))
+  ([conn options bundle] (initialize! conn options bundle (wiki/source) (digest/source) (daily-summary/source)))
   ([conn options bundle wiki-source]
    (initialize! conn options bundle wiki-source {}))
   ([conn options bundle wiki-source digest-source]
+   (initialize! conn options bundle wiki-source digest-source {}))
+  ([conn options bundle wiki-source digest-source daily-source]
    (profile! options)
    (starter/verify! bundle)
    (initialize-foundation! conn options)
@@ -132,12 +136,18 @@
      (doseq [[path text] files] (repo/write! conn path (markdown/source-bytes text)))
      (repo/write! conn "code/starter-provenance.edn" (markdown/source-bytes (str (pr-str provenance) "\n"))))
    (seed-files! conn)
+   (when (seq daily-source)
+     (repo/write! conn summary-documents/index-path
+                  (markdown/source-bytes
+                   (summary-documents/index-markdown (:geschichte.repo/id (query/repository @conn))))))
   ;; Exclusive NEW repository only. Reopening never reinstalls defaults or
   ;; overwrites customized/deleted workflow files.
    (doseq [[path text] wiki-source]
      (repo/write! conn (str "workflows/" wiki/name "/" path) (markdown/source-bytes text)))
    (doseq [[path text] digest-source]
      (repo/write! conn (str "workflows/" digest/name "/" path) (markdown/source-bytes text)))
+   (doseq [[path text] daily-source]
+     (repo/write! conn (str "workflows/" daily-summary/name "/" path) (markdown/source-bytes text)))
    (validate-foundation! @conn)
    (let [prepared (view/prepare @conn selection-options)]
      (when-not (= :ready (:status prepared)) (refuse! :invalid-starter-projection)))
@@ -153,8 +163,9 @@
   (let [bundle (starter/verify! bundle)
         ;; Acquire fixed bounded resources BEFORE durable Room intent.
         wiki-source (wiki/source)
-        digest-source (digest/source)]
-    {space/profile {:initialize! (fn [conn options] (initialize! conn options bundle wiki-source digest-source)) :prepare-open! prepare-open!
+        digest-source (digest/source)
+        daily-source (daily-summary/source)]
+    {space/profile {:initialize! (fn [conn options] (initialize! conn options bundle wiki-source digest-source daily-source)) :prepare-open! prepare-open!
                   ;; Exclusive unpublished initialization only; no async worker
                   ;; is started above. This synchronous detach is idempotent.
                     :abort-create! (fn [conn _] (governance/ungovern! conn))}}))

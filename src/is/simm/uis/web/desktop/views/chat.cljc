@@ -665,7 +665,7 @@
                    "Dismiss")]))))
         ;; Generic message content - markdown for AI, rich text for user
         #?(:cljs
-           (if (= :conversation-digest (:kind object))
+           (if (contains? #{:conversation-digest :room-summary} (:kind object))
              (digest-view/notification-card (assoc digest-notification :content content))
              (if (or is-ai? (= :benchmark-result (:kind object)))
            (foreign-node

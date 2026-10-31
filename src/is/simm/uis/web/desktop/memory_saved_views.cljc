@@ -26,6 +26,12 @@
 (defn receipt? [state path view]
   (= :scorecard (get-in (entry state path view) [:descriptor :source :kind])))
 
+(defn summaries? [state path view]
+  (= :room-summaries (get-in (entry state path view) [:descriptor :source :kind])))
+
+(defn- native? [state path view]
+  (or (receipt? state path view) (summaries? state path view)))
+
 (defn- as-uuid [value]
   (cond (uuid? value) value
         (string? value) (parse-uuid value)))
@@ -45,7 +51,7 @@
      (:read-epoch state) (:definition-basis state) (:stream-marker state)
      (get-in state [:drafts path :source :entry]) (get-in state [:drafts path :generation])
      (select-keys entry [:from :to :descriptor])
-     (when (= :scorecard (get-in entry [:descriptor :source :kind])) (:receipt-context state))]))
+     (when (native? state path view) (:receipt-context state))]))
 
 (defn owned? [state path]
   (let [draft (get-in state [:drafts path])]
@@ -56,7 +62,7 @@
 (defn request [state path view]
   (when-let [entry (when (owned? state path) (entry state path view))]
     (when (and (not (editor/dirty? (get-in state [:drafts path])))
-               (or (not (receipt? state path view)) (:receipt-context state)))
+               (or (not (native? state path view)) (:receipt-context state)))
       (merge (select-keys entry [:from :to :view])
              {:path path :expected (get-in state [:drafts path :source :entry])
               :revision (:revision (charts/saved-analysis (get-in state [:drafts path])))
@@ -78,6 +84,8 @@
            :archived-captures (and (= (get-in entry [:descriptor :source])
                                      (select-keys (:source reply) [:kind :roots]))
                                   (uuid? (get-in reply [:source :repository])))
+           :room-summaries (and (:receipt-context state)
+                                (= (assoc (:receipt-context state) :kind :room-summaries) (:source reply)))
            :scorecard (and (:receipt-context state)
                   (= (assoc (:receipt-context state) :kind :scorecard
                             :scorecard (get-in entry [:descriptor :source :scorecard]))
@@ -92,12 +100,17 @@
             (select-keys reply [:path :expected :revision :from :to :view]))
          (or (= :unavailable (:status reply))
              (and (uuid? (:basis reply)) (vector? (:rows reply))
-                  (<= (count (:rows reply)) (if (pages? state path view) contract/max-rows contract/max-scorecard-rows))
+                  (<= (count (:rows reply)) (cond (pages? state path view) contract/max-rows
+                             (summaries? state path view) contract/max-summary-rows
+                             :else contract/max-scorecard-rows))
                   (or (not (receipt? state path view))
                       (every? #(and (= (get-in reply [:source :scorecard]) (:scorecard %))
                                     (string? (:candidate %))
                                     (= [(:scorecard %) (:candidate %)] (:id %))
                                     (not (contains? % :path)) (not (contains? % :edit))) (:rows reply)))
+                  (or (not (summaries? state path view))
+                      (every? #(and (uuid? (:summary %)) (= (:summary %) (:id %))
+                                    (not (contains? % :edit))) (:rows reply)))
                   (vector? (:columns reply)) (<= (count (:columns reply)) contract/max-columns))))))
 
 (defn visible [state path view]

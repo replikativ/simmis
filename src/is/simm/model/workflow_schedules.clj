@@ -9,6 +9,8 @@
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.model.knowledge-scope :as scope]
             [is.simm.model.work-requests :as requests]
+            [is.simm.model.room-summaries :as summaries]
+            [is.simm.model.summary-envelope :as summary-envelope]
             [malli.core :as m])
   (:import [java.nio CharBuffer]
            [java.nio.charset CodingErrorAction StandardCharsets]))
@@ -19,7 +21,8 @@
             (#{:schedule.activation/id :schedule.occurrence/id} ident) (assoc :db/unique :db.unique/value)
             (#{:schedule.activation/room :schedule.activation/next-fire :schedule.occurrence/activation
                :schedule.occurrence/state} ident) (assoc :db/index true)))
-        [[:schedule.activation/id :db.type/uuid]
+        [[:room/summary-activation :db.type/uuid]
+         [:schedule.activation/id :db.type/uuid]
          [:schedule.activation/room :db.type/uuid]
          [:schedule.activation/by :db.type/uuid]
          [:schedule.activation/revision :db.type/uuid]
@@ -58,6 +61,12 @@
   (when (some? id)
     (when-let [eid (:e (first (d/datoms db :avet attr id)))]
       (d/pull db '[*] eid))))
+
+(defn activation-in [db id]
+  (pull-row db :schedule.activation/id id))
+
+(defn occurrence-in [db id]
+  (pull-row db :schedule.occurrence/id id))
 
 (defn activation [conn id]
   (pull-row @conn :schedule.activation/id id))
@@ -150,7 +159,9 @@
                            :schedule.activation/created-at now :schedule.activation/next-fire next-fire}]])))
     (activation conn id)))
 
-(defn- enabled-tx [db id enabled?]
+(defn enabled-tx
+  "Pure pause/resume transaction, also composed by Room summary configuration."
+  [db id enabled?]
   (let [row (pull-row db :schedule.activation/id id)
         oid (:schedule.activation/active-occurrence row)
         o (when oid (pull-row db :schedule.occurrence/id oid))]
@@ -281,7 +292,7 @@
    :schedule.activation/revision :schedule.activation/target-ref])
 
 (defn- skip-batch-tx [db expected oid claim reason]
-  (when-not (#{:stream-busy :no-inputs} reason)
+  (when-not (#{:stream-busy :no-inputs :unchanged} reason)
     (throw (ex-info "Invalid incremental schedule skip" {:type ::conflict})))
   (let [[o a] (claimed-occurrence! db oid claim)]
     (when-not (and (= expected (select-keys a batch-skip-identity))
@@ -413,7 +424,7 @@
                   (.onUnmappableCharacter CodingErrorAction/REPORT))]
     (.remaining (.encode encoder (CharBuffer/wrap ^String text)))))
 
-(defn- validate-owned-input! [value]
+(defn- validate-owned-knowledge-input! [value]
   ;; All collections/strings have finite structural bounds before encoding or
   ;; hashing. Fixed semantic policy/content verification remains an ops duty.
   (when-not (m/validate owned-input-schema value) (owned-input-invalid!))
@@ -446,6 +457,30 @@
           (owned-input-invalid!)))
       (publication/validate! publication-basis)))
   value)
+
+(def summary-origin-schema
+  [:map {:closed true} [:target publication/target-schema] [:target-stamp :uuid]
+   [:previous [:maybe :uuid]] [:generation [:int {:min 1}]]])
+
+(def owned-summary-input-schema
+  [:map {:closed true}
+   [:version [:= 3]] [:kind [:= :room-summary]]
+   [:occurrence-id :uuid] [:input-id :uuid] [:target-revision :uuid] [:coverage-id :uuid]
+   [:selection summaries/selection-schema]
+   [:inputs [:map-of {:max 70} owned-path-schema [:string {:max owned-input-text-limit}]]]
+   [:summary-origin summary-origin-schema]])
+
+(defn- validate-owned-input! [value]
+  (if (= 3 (:version value))
+    (do
+      (when-not (and (m/validate owned-summary-input-schema value)
+                     (= (:input-id value) (hasch/uuid [:simmis/scheduled-summary-input-v1
+                                                       (:target-revision value) (:coverage-id value)]))
+                     (publication/host-target? (get-in value [:summary-origin :target])))
+        (owned-input-invalid!))
+      (summary-envelope/validate! (:selection value) (:inputs value))
+      value)
+    (validate-owned-knowledge-input! value)))
 
 (defn- owned-input-row! [db oid claim value]
   (let [[o a] (claimed-occurrence! db oid claim)]
@@ -619,7 +654,8 @@
    terminalized occurrence, lost claim or newer deployment wins. Existing requests
    preserve admission; unsupported targets may only disable their own slot."
   [conn activation oid claim reason]
-  (when-not (#{:interrupted :restart :owned-dispatch-unavailable} reason)
+  (when-not (#{:interrupted :restart :owned-dispatch-unavailable
+                    :period-capacity :period-byte-limit :source-scan-limit :unsupported-original} reason)
     (throw (ex-info "Invalid owned interruption reason" {:type ::conflict})))
   (d/transact conn [[:db.fn/call interrupt-owned-tx (select-keys activation owned-admission-identity) oid claim reason]]))
 

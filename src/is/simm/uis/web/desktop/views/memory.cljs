@@ -719,7 +719,7 @@
         workspace-write? (and verified? (true? (get-in state [:permissions :write?])))
         coherent? (and verified? (not (:target-stale? draft))
                        (= (:target-stamp state) (get-in draft [:source :target-stamp])))
-        write? (and workspace-write? coherent?)
+        write? (and workspace-write? coherent? (not (get-in draft [:source :generated :read-only?])))
         markdown? (= :markdown (get-in draft [:source :kind]))
         text? (string? (:text draft))
         clojure? (and text? (re-find #"(?i)\.(clj|cljc|cljs|bb)$" (or path "")))
@@ -727,6 +727,11 @@
         office? (= :office (get-in draft [:source :kind]))]
     (el/div {:class "memory-panel"}
             (file-header data state a draft workspace-write? write? coherent? syntax-pref)
+            (when-let [generated (get-in draft [:source :generated])]
+              (el/p {:class "memory-note" :role "status"}
+                    (if (= :diverged (:status generated))
+                      "This generated file differs from its last published version. The native summary is unchanged; regeneration will preserve these edits for review."
+                      "Generated view · read only. Copy its text into a new note to edit; annotations and wiki updates remain separate.")))
             (when verified?
               (el/div {}
                       (github-view/toolbar state github-action github-state push-action push-state

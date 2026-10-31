@@ -19,7 +19,7 @@
   (let [report (:digest result) originals (:originals result)
         by-revision (into {} (map (juxt :source-revision identity)) originals)]
     (el/details {:open true :class "room-digest-result"}
-      (el/summary {} "Verified navigation digest")
+      (el/summary {} (if (= :room-summary (:kind result)) "Daily conversation summary" "Verified navigation digest"))
       (el/p {} (get-in report [:summary :text]))
       (el/p {} "Optional navigation. Original evidence remains eligible for knowledge maintenance; this does not publish a wiki update.")
       (for [section digest/section-keys
@@ -32,7 +32,7 @@
               (el/p {} (:text item))
               (for [revision (:sources item) :let [source (get by-revision revision)]]
                 (el/details {:key (str revision)}
-                  (el/summary {} (str "Frozen original · " (name (:authority source))))
+                  (el/summary {} (str (if (= :summary (:kind source)) "Prior context · " "Frozen original · ") (name (:authority source))))
                   (el/p {} (:path source))
                   (el/p {} (str "Recorded source revision: " revision))
                   (el/pre {:class "conversation-capture-source"} (:text source))
@@ -108,15 +108,19 @@
    on explicit read through the same certified retained-result endpoint."
   [{:keys [content room-id digest-state notification] :as data}]
   (let [a (actions/controller data) s digest-state]
-    (el/details {:class "room-digest-result"}
-      (el/summary {} (str "Generated digest · " content))
+    (el/details {:class "room-digest-result"
+                 :on-toggle (fn [event]
+                              (when (and (identical? (.-target event) (.-currentTarget event))
+                                         (.-open (.-currentTarget event)) notification
+                                         (not (contains? #{:result-loading :verified :unavailable} (:phase s))))
+                                ((:result a))))}
+      (el/summary {} (str "Summary · " content))
       (el/p {} "Generated summary. Original evidence is preserved; wiki updates are separate.")
       (if notification
         (el/div {}
           (el/details {}
             (el/summary {} "Run details")
             (el/p {} (str "Request " (:request notification) " · digest " (:digest-id notification))))
-          (el/button {:type "button" :on-click (fn [e] (.stopPropagation e) ((:result a)))} "Show summary and sources")
           (case (:phase s)
             :verified (result-card {:room-id room-id :result (:result s)})
             :result-loading (el/p {:role "status"} "Checking retained result and original revisions…")

@@ -155,6 +155,8 @@
    ;; starting inference requires :merge, as with other workflow execution.
    "preview-room-digest!"    [(c :room MEMBERS)]
    "read-room-digest!"       [(c :room MEMBERS)]
+   "read-room-summary-settings!" [(c :room MEMBERS)]
+   "configure-room-summary!" [(c :room OWNER)]
    "publish-room-digest!"    [(c :room MEMBERS)]
    "install-room-digest!"    [(c :room OWNER)]
    "launch-room-digest!"     [(c :room OWNER)]

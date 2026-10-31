@@ -153,11 +153,17 @@
    data; current Room read authority is required whenever it is opened."
   [{:keys [room request path]}]
   (let [room (str room) request (str request)]
-    (when (and (uuid-text? room) (uuid-text? request) (source-path? path))
+    (when (and (uuid-text? room) (uuid-text? request)
+               (or (source-path? path)
+                   (and (string? path) (str/starts-with? path "/in/summary/sources/")
+                        (path? (subs path (count "/in/summary/sources/"))))))
       (str "/room/" room "/request/" request "/source?path=" (encode path)))))
 
 (defn parse-request-source-query [room request query]
   (let [fields (parameters query) path (get fields "path")]
     (when (and (uuid-text? room) (uuid-text? request)
-               (= #{"path"} (set (keys fields))) (source-path? path))
+               (= #{"path"} (set (keys fields)))
+               (or (source-path? path)
+                   (and (string? path) (str/starts-with? path "/in/summary/sources/")
+                        (path? (subs path (count "/in/summary/sources/"))))))
       {:kind :request-source :room room :request request :path path})))

@@ -10,6 +10,10 @@
 (def max-scorecard-rows 32)
 (def max-candidate-characters 256)
 (def max-capture-rows 32)
+(def max-summary-rows 32)
+(def summary-columns
+  {:period "Day" :summary "Summary" :status "Coverage" :originals "Originals"
+   :model "Model" :publication "Markdown"})
 
 (def capture-columns
   {:started-at "Started (UTC)" :until "Until (UTC)" :duration "Duration (seconds)"
