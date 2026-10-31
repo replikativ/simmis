@@ -157,35 +157,49 @@
           (is (zero? @reads)))))))
 
 (deftest mixed-review-resolved-and-partial-filing-refuse-without-reading-bodies
-  (doseq [alter! [(fn [{:keys [conn proposal]}]
-                    (d/transact conn [{:db/id [:proposal/id proposal]
-                                       :proposal/forks [{:proposal.fork/scope (random-uuid)
-                                                         :proposal.fork/branch "other"
-                                                         :proposal.fork/system-type :kb}]}]))
-                  (fn [{:keys [conn proposal]}]
-                    (d/transact conn [[:db/add [:proposal/id proposal] :proposal/review (random-uuid)]]))
-                  (fn [{:keys [conn proposal]}]
-                    (d/transact conn [[:db/add [:proposal/id proposal] :proposal/status :dismissed]]))
-                  (fn [{:keys [conn request]}]
-                    (d/transact conn [[:db/retract [:work.request/id request] :knowledge.disposition/output]]))
-                  (fn [{:keys [conn proposal]}]
-                    (d/transact conn [[:db/add [:proposal/id proposal] :proposal/run (random-uuid)]]))]]
-    (with-filed
-      (fn [state]
-        (alter! state)
-        (with-redefs [storage/read-file-in (fn [& _] (throw (AssertionError. "Body read before refusal")))]
-          (is (thrown? Exception (prepare state))))))))
+  (with-filed
+    (fn [{:keys [conn party room-id proposal request] :as state}]
+      (let [original (adoption/snapshot @conn party room-id proposal)
+            request-row (d/pull @conn [:knowledge.disposition/output] [:work.request/id request])
+            p (:proposal original)]
+        ;; Scalar corruption cases all begin with the same genuine filing.
+        ;; The newly added component is last and never retracted for reuse.
+        (doseq [[corrupt restore]
+                [[[[:db/add [:proposal/id proposal] :proposal/review (random-uuid)]]
+                  [[:db/retract [:proposal/id proposal] :proposal/review]]]
+                 [[[:db/add [:proposal/id proposal] :proposal/status :dismissed]]
+                  [[:db/add [:proposal/id proposal] :proposal/status (:proposal/status p)]]]
+                 [[[:db/retract [:work.request/id request] :knowledge.disposition/output]]
+                  [[:db/add [:work.request/id request] :knowledge.disposition/output (:knowledge.disposition/output request-row)]]]
+                 [[[:db/add [:proposal/id proposal] :proposal/run (random-uuid)]]
+                  [[:db/add [:proposal/id proposal] :proposal/run (:proposal/run p)]]]
+                 [[{:db/id [:proposal/id proposal]
+                    :proposal/forks [{:proposal.fork/scope (random-uuid) :proposal.fork/branch "other"
+                                      :proposal.fork/system-type :kb}]}]
+                  nil]]]
+          (d/transact conn corrupt)
+          (try
+            (let [before @conn reads (atom 0)]
+              (with-redefs [storage/read-file-in (fn [& _] (swap! reads inc)
+                                                  (throw (AssertionError. "Body read before refusal")))]
+                (is (thrown? Exception (prepare state))))
+              (is (zero? @reads))
+              (is (= before @conn)))
+            (finally (when restore (d/transact conn restore))))
+          (when restore
+            (is (= original (adoption/snapshot @conn party room-id proposal)))))))))
 
 (deftest missing-or-corrupt-retained-bytes-fail-before-any-adoption
-  (doseq [value [nil {:before nil :after nil}]]
-    (with-filed
-      (fn [{:keys [conn proposal workspace] :as state}]
-        (let [before @conn target @workspace]
+  (with-filed
+    (fn [{:keys [conn proposal workspace] :as state}]
+      (let [before @conn target @workspace original (prepare state)]
+        (doseq [value [nil {:before nil :after nil}]]
           (with-redefs [artifact/get-value (constantly value)]
             (is (thrown? Exception (prepare state))))
           (is (= before @conn))
           (is (= target @workspace))
-          (is (= :open (:proposal/status (proposals/get-proposal proposal)))))))))
+          (is (= :open (:proposal/status (proposals/get-proposal proposal))))
+          (is (= (:proof original) (:proof (prepare state)))))))))
 
 (deftest exact-pair-reads-use-the-supplied-snapshot-not-a-later-body-reference
   (with-filed
@@ -240,28 +254,37 @@
           (is (= files-before @workspace)))))))
 
 (deftest writer-rechecks-frozen-proof-authority-and-target-without-body-reads
-  (doseq [alter! [(fn [state] (assoc-in state [:prepared :proof :proposal :proposal/run] (random-uuid)))
-                  (fn [{:keys [conn room-id] :as state}]
-                    (d/transact conn [[:db/retract [:room/id room-id] :room/owner]]) state)
-                  (fn [{:keys [conn] :as state}]
-                    ;; The bounded fork authority projection omits entries.
-                    (let [manifest-eid (:e (first (d/datoms @conn :avet :file-output/id (:manifest state))))
-                          eid (:v (first (d/datoms @conn :eavt manifest-eid :file-output/entries)))]
-                      (d/transact conn [[:db/add eid :file-output.entry/body-ref (random-uuid)]]))
-                    state)]]
-    (with-prepared-claim
-      (fn [{:keys [conn workspace] :as initial}]
-        (let [state (alter! initial) target @workspace reads (atom 0)]
-          (with-redefs [storage/read-file-in (fn [& _] (swap! reads inc) (throw (AssertionError. "Artifact IO in writer")))]
-            (is (thrown? Exception (claim! state))))
-          (is (zero? @reads))
-          (is (empty? (d/q '[:find ?e :where [?e :file.adoption/id _]] @conn)))
-          (is (= target @workspace))))))
   (with-prepared-claim
-    (fn [{:keys [conn basis] :as state}]
-      (with-redefs [filing/current-target (fn [& _] (assoc (:target basis) :store (random-uuid)))]
-        (is (thrown? Exception (claim! state))))
-      (is (empty? (d/q '[:find ?e :where [?e :file.adoption/id _]] @conn))))))
+    (fn [{:keys [conn workspace prepared party room-id proposal manifest basis] :as state}]
+      (let [target @workspace original (:proof prepared)
+            manifest-eid (:e (first (d/datoms @conn :avet :file-output/id manifest)))
+            entry-eid (:v (first (d/datoms @conn :eavt manifest-eid :file-output/entries)))
+            body-ref (:file-output.entry/body-ref (d/pull @conn [:file-output.entry/body-ref] entry-eid))
+            valid! #(is (= original (adoption/snapshot @conn party room-id proposal)))
+            refused! (fn [value]
+                       (let [before @conn reads (atom 0)]
+                         (with-redefs [storage/read-file-in (fn [& _] (swap! reads inc)
+                                                             (throw (AssertionError. "Artifact IO in writer")))]
+                           (is (thrown? Exception (claim! value))))
+                         (is (zero? @reads))
+                         (is (= before @conn))
+                         (is (empty? (d/q '[:find ?e :where [?e :file.adoption/id _]] @conn)))
+                         (is (= target @workspace))))]
+        (valid!)
+        (refused! (assoc-in state [:prepared :proof :proposal :proposal/run] (random-uuid)))
+        (valid!)
+        (with-redefs [filing/current-target (fn [& _] (assoc (:target basis) :store (random-uuid)))]
+          (refused! state))
+        (valid!)
+        ;; The bounded authority projection omits entries, so the serialized
+        ;; writer must independently catch this retained-body-reference race.
+        (d/transact conn [[:db/add entry-eid :file-output.entry/body-ref (random-uuid)]])
+        (try (refused! state)
+             (finally (d/transact conn [[:db/add entry-eid :file-output.entry/body-ref body-ref]])))
+        (valid!)
+        ;; Real revocation is last; no attempt to roll back authorization.
+        (d/transact conn [[:db/retract [:room/id room-id] :room/owner]])
+        (refused! state)))))
 
 (deftest lost-claim-ack-never-recovers-publisher-ownership-from-readback
   (with-prepared-claim

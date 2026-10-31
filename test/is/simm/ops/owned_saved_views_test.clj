@@ -100,6 +100,11 @@
 (deftest saved-scorecard-is-a-current-room-bounded-native-read-with-no-attempt-payloads
   (with-fixture
     (fn [{:keys [room conn w owned] :as context}]
+      ;; Missing and successful immutable reads share the genuine native owner.
+      ;; Build a fresh request after changing the source descriptor.
+      (let [sent (scorecard-request! context (random-uuid))]
+        (with-redefs [experiment/scorecard (fn [& _] (throw (AssertionError. "Unbounded fallback")))]
+          (is (= :scorecard-not-found (:reason (read! context sent))))))
       (let [id (seed-scorecard! room) sent (scorecard-request! context id)
             before @owned result
             (with-redefs [artifact/get-value (fn [& _] (throw (AssertionError. "Unbounded artifact read")))
@@ -117,13 +122,6 @@
         (with-redefs [experiment/scorecard-bounded
                       (fn [& _] (throw (AssertionError. "Mismatched store reached payload reader")))]
           (is (thrown? clojure.lang.ExceptionInfo (read! context sent))))))))
-
-(deftest missing-scorecard-never-searches-another-room-or-falls-back
-  (with-fixture
-    (fn [context]
-      (let [sent (scorecard-request! context (random-uuid))]
-        (with-redefs [experiment/scorecard (fn [& _] (throw (AssertionError. "Unbounded fallback")))]
-          (is (= :scorecard-not-found (:reason (read! context sent)))))))))
 
 (deftest changed-selected-capture-notes-cannot-return-an-earlier-archive-table
   (with-fixture

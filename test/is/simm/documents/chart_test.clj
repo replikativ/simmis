@@ -8,6 +8,7 @@
             [is.simm.documents.files :as files]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.space :as space]
+            [is.simm.fixtures.accounting :as accounting-fixture]
             [kontor.governance :as governance]))
 
 (def page-id #uuid "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -76,6 +77,6 @@
     (d/create-database cfg)
     (let [conn (d/connect cfg)]
       (try
-        (space/provision! conn)
+        (accounting-fixture/with-schema-only #(space/provision! conn))
         (checks conn)
         (finally (governance/ungovern! conn) (d/release conn) (d/delete-database cfg))))))

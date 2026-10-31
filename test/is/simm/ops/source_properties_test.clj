@@ -10,6 +10,7 @@
             [is.simm.documents.files :as files]
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.space :as space]
+            [is.simm.fixtures.accounting :as accounting-fixture]
             [is.simm.documents.view :as view]
             [is.simm.agents.room-agents :as rooms]
             [is.simm.authority.world :as world]
@@ -36,7 +37,7 @@
                           (swap! configs conj cfg)
                           (d/create-database cfg)
                           (let [conn (d/connect cfg)]
-                            (space/provision! conn)
+                            (accounting-fixture/with-schema-only #(space/provision! conn))
                             (binding [ec/*execution-context* (:ctx room)]
                               (ygg/register! (gy/create conn {:system-name (str "canonical-fixture-" (random-uuid))})))
                             conn))
@@ -64,8 +65,11 @@
 
 (declare model failure)
 
+;; Registration-order permutations belong to owned-workspace-test and the
+;; shared file-projection/transport contracts. These complete service flows use
+;; the adverse attachment-first order with the attachment selected throughout.
 (deftest actual-inbound-declaration-assignment-preserves-source-and-owned-target
-  (doseq [owned-first? [true false]]
+  (let [owned-first? false]
     (with-canonical-fixture owned-first?
       (fn [{:keys [conn w room owned attached]}]
         (let [{:keys [text type]} (seed-source! owned)
@@ -227,7 +231,7 @@
             (is (= other @attached))))))))
 
 (deftest property-saves-use-real-owned-target-and-fresh-atomic-validation
-  (doseq [owned-first? [true false]]
+  (let [owned-first? false]
     (with-canonical-fixture owned-first?
       (fn [{:keys [conn w room owned attached]}]
         (let [{:keys [text property]} (seed-source! owned)

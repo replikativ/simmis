@@ -159,8 +159,26 @@
   (#'fixtures/with-imported
    (fn [{:keys [conn room-id creator stamp parent upstream graph] :as environment}]
      (d/transact conn (concat policy/schema journal/schema))
-     (let [invoke (fn [] ((service/prepare creator room-id :prepare-policy
-                                           {:client-id (str (random-uuid)) :expected-target-stamp (str stamp)})))]
+     (let [plan merge/plan-policy-fetched! advance native/advance!
+           invoke (fn []
+                    (let [planned (atom []) advanced (atom [])
+                          result (with-redefs [merge/plan-policy-fetched!
+                                               (fn [conn fetched options]
+                                                 (swap! planned conj (:operation options))
+                                                 (plan conn fetched options))
+                                               native/advance!
+                                               (fn [& args]
+                                                 (swap! advanced conj (nth args 4))
+                                                 (apply advance args))]
+                                   ((service/prepare creator room-id :prepare-policy
+                                                     {:client-id (str (random-uuid))
+                                                      :expected-target-stamp (str stamp)})))]
+                      (if (= :applied (:status result))
+                        (do (is (= 1 (count @planned)))
+                            (is (= 1 (count @advanced)))
+                            (is (identical? (first @planned) (first @advanced))))
+                        (is (empty? @advanced) "Unchanged remote never advances"))
+                      result))]
        (#'fixtures/c2! environment)
        (is (= :applied (:status (invoke))))
        (repo/write! upstream "reports/third.md" (object/utf8 "Third report\n"))
@@ -193,20 +211,6 @@
          (is (zero? @advances))
          (is (nil? (repo/read parent "reports/new.md")))
          (is (= :closed (:status (call environment :discard {:client-id client})))))))))
-
-(deftest automatic-service-call-shares-its-budget-between-planning-and-native-advance
-  (#'fixtures/with-imported
-   (fn [{:keys [conn creator room-id stamp] :as environment}]
-     (d/transact conn (concat policy/schema journal/schema))
-     (#'fixtures/c2! environment)
-     (let [plan merge/plan-policy-fetched! advance native/advance! budgets (atom [])]
-       (with-redefs [merge/plan-policy-fetched! (fn [conn fetched options]
-                                                  (swap! budgets conj (:operation options)) (plan conn fetched options))
-                     native/advance! (fn [& args] (swap! budgets conj (nth args 4)) (apply advance args))]
-         (is (= :applied (:status ((service/prepare creator room-id :prepare-policy
-                                                    {:client-id (str (random-uuid)) :expected-target-stamp (str stamp)})))))
-         (is (= 2 (count @budgets)))
-         (is (identical? (first @budgets) (second @budgets))))))))
 
 (deftest changing-policy-after-filing-admission-refuses-native-publication-and-keeps-discard
   (#'fixtures/with-imported

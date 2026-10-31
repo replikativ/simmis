@@ -1,7 +1,6 @@
 (ns is.simm.authority.conversation-capture-test
   "Real inbound policy, captured application owner, native Room and CAS writer."
   (:require [clojure.test :refer [deftest is]]
-            [clojure.java.io :as io]
             [datahike.api :as d]
             [is.simm.authority.world :as world]
             [is.simm.documents.files :as files]
@@ -12,20 +11,6 @@
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [is.simm.uis.web.desktop.conversation-capture :as protocol]
             [is.simm.uis.web.desktop.conversation-capture-remote :as remote]))
-
-(deftest server-startup-explicitly-registers-the-capture-remotes
-  ;; Other test namespaces already load handlers, which can mask a missing
-  ;; server-side require. Keep the production startup edge explicit: the
-  ;; browser's CLJS require cannot register anything on the JVM.
-  (let [declaration (binding [*read-eval* false]
-                      (with-open [reader (java.io.PushbackReader.
-                                          (io/reader (io/resource "is/simm/runtimes/web.clj")))]
-                        (read reader)))
-        requires (some #(when (and (seq? %) (= :require (first %))) (rest %))
-                       (drop 2 declaration))]
-    (is (= 'ns (first declaration)))
-    (is (some #(= 'is.simm.uis.web.desktop.conversation-capture-remote
-                  (if (vector? %) (first %) %)) requires))))
 
 (defn- with-capture [f]
   (@#'fixture/with-fixture

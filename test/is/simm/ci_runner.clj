@@ -2,7 +2,8 @@
   "Exhaustive namespace partitioning for isolated CI JVMs. CI providers map
    their partition coordinates to the existing CIRCLE_NODE_INDEX/TOTAL inputs."
   (:refer-clojure :exclude [run!])
-  (:require [clojure.java.io :as io]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [kaocha.config :as config]
             [kaocha.load :as load]
             [kaocha.runner :as runner]
@@ -21,15 +22,44 @@
           (throw (ex-info "Invalid CI partition coordinates" {:index i :total n})))
         [i n]))))
 
-(defn partition-namespaces [names index total]
-  (let [names (vec (sort names))]
-    (when-not (and (seq names) (every? symbol? names)
-                   (= (count names) (count (set names)))
-                   (integer? total) (pos? total) (<= total (count names))
-                   (integer? index) (<= 0 index) (< index total))
-      (throw (ex-info "Namespace partition must be nonempty, unique and exhaustive"
-                      {:index index :total total :count (count names)})))
-    (->> names (keep-indexed #(when (= index (mod %1 total)) %2)) vec)))
+(defn partition-namespaces
+  ([names index total] (partition-namespaces names index total {}))
+  ([names index total costs]
+   (let [names (vec (sort names))]
+     (when-not (and (seq names) (every? symbol? names)
+                    (= (count names) (count (set names)))
+                    (integer? total) (pos? total) (<= total (count names))
+                    (integer? index) (<= 0 index) (< index total)
+                    (map? costs)
+                    (every? (fn [[name seconds]]
+                              (and (symbol? name) (number? seconds)
+                                   (Double/isFinite (double seconds)) (pos? seconds))) costs))
+       (throw (ex-info "Namespace partition must be nonempty, unique and exhaustive"
+                       {:index index :total total :count (count names)})))
+     ;; Longest-processing-time bins use measured inclusive namespace costs.
+     ;; New namespaces receive the median measured cost, never disappear. With
+     ;; no history equal weights reduce to the original round-robin assignment.
+     (let [measured (sort (keep costs names))
+           fallback (if (seq measured) (nth measured (quot (count measured) 2)) 1)
+           cost #(get costs % fallback)
+           ordered (sort-by (juxt (comp - cost) str) names)
+           bins (reduce (fn [bins name]
+                          (let [i (first (sort-by (fn [i] [(get-in bins [i :seconds])
+                                                          (count (get-in bins [i :names])) i])
+                                                 (range total)))]
+                            (-> bins (update-in [i :seconds] + (cost name))
+                                (update-in [i :names] conj name))))
+                        (vec (repeat total {:seconds 0 :names []})) ordered)]
+       (vec (sort (get-in bins [index :names])))))))
+
+(defn namespace-costs []
+  (let [file (io/file ".circleci/test-durations.edn")]
+    (if (.exists file)
+      (let [value (edn/read-string (slurp file))]
+        (when-not (= 1 (:format-version value))
+          (throw (ex-info "Unsupported CI duration history" {})))
+        (:namespace-seconds value))
+      {})))
 
 (defn partition-config [effective index total]
   (let [suites (:kaocha/tests effective) suite (first suites)]
@@ -45,7 +75,7 @@
                                         (mapv re-pattern (:kaocha/ns-patterns suite))))]
       (when (some find/reader-exception? found)
         (throw (ex-info "Cannot partition unreadable test namespaces" {})))
-      (let [selected (partition-namespaces found index total)
+      (let [selected (partition-namespaces found index total (namespace-costs))
             manifest {:index index :total total :all (vec (sort found)) :selected selected}
             patterns (mapv #(str "^" (Pattern/quote (str %)) "$") selected)]
         {:manifest manifest

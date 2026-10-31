@@ -34,7 +34,19 @@
 (deftest original-observed-receipt-finalizes-all-three-records-atomically
   (doseq [noop? [false true]]
     (with-applying noop?
-      (fn [{:keys [conn proposal party workspace applying] :as state}]
+      (fn [{:keys [conn proposal party workspace applying winning] :as state}]
+        (when-not noop?
+          (let [before @conn calls (atom 0)]
+            (with-redefs [d/transact (fn [& _] (swap! calls inc))]
+              (doseq [bad [(assoc winning :publication/actor (random-uuid))
+                           (assoc winning :publication/head (random-uuid))
+                           (assoc winning :publication/noop? true)
+                           (assoc-in winning [:publication/entries 0 :publication.entry/path] "/different.md")
+                           (assoc-in winning [:publication/entries 0 :publication.entry/content]
+                                     [:geschichte.content/id (random-uuid)])]]
+                (is (thrown? clojure.lang.ExceptionInfo (adoption/finalize! conn applying bad)))))
+            (is (zero? @calls))
+            (is (= before @conn))))
         (let [before @workspace
               result (with-redefs [storage/read-file-in (fn [& _] (throw (AssertionError. "Body IO")))
                                    filing/current-target (fn [& _] (throw (AssertionError. "Target IO")))]
@@ -67,42 +79,48 @@
           (is (= :accepted (:status (finish! state)))))
         (is (= before @workspace))))))
 
-(deftest invalid-receipts-refuse-before-any-control-transaction
-  (with-applying false
-    (fn [{:keys [conn applying winning]}]
-      (let [before @conn calls (atom 0)]
-        (with-redefs [d/transact (fn [& _] (swap! calls inc))]
-          (doseq [bad [(assoc winning :publication/actor (random-uuid))
-                       (assoc winning :publication/head (random-uuid))
-                       (assoc winning :publication/noop? true)
-                       (assoc-in winning [:publication/entries 0 :publication.entry/path] "/different.md")
-                       (assoc-in winning [:publication/entries 0 :publication.entry/content]
-                                 [:geschichte.content/id (random-uuid)])]]
-            (is (thrown? clojure.lang.ExceptionInfo (adoption/finalize! conn applying bad)))))
-        (is (zero? @calls))
-        (is (= before @conn))))))
-
 (deftest changed-filing-or-journal-never-becomes-an-abort-or-a-target-replay
-  (doseq [change [:filing :body-ref :latest-link :token :shared-owner]]
-    (with-applying false
-      (fn [{:keys [conn proposal workspace applying] :as state}]
-        (let [fork-eid (get-in applying [:proof :fork :db/id])
-              component (get-in applying [:operation :component])
-              op-id (get-in applying [:operation :id])]
-          (case change
-            :filing (d/transact conn [[:db/add [:proposal/id proposal] :proposal/filing-hash (apply str (repeat 64 "a"))]])
-            :body-ref (let [manifest-eid (:e (first (d/datoms @conn :avet :file-output/id component)))
-                            entry-eid (:v (first (d/datoms @conn :eavt manifest-eid :file-output/entries)))]
-                        (d/transact conn [[:db/add entry-eid :file-output.entry/body-ref (random-uuid)]]))
-            :latest-link (d/transact conn [[:db/retract fork-eid :proposal.fork/file-adoption]])
-            :token (d/transact conn [[:db/add [:file.adoption/id op-id] :file.adoption/token (random-uuid)]])
-            :shared-owner (d/transact conn [{:proposal/id (random-uuid) :proposal/room (get-in applying [:operation :room])
-                                             :proposal/forks [fork-eid]}]))
-          (let [before @conn target @workspace]
-            (is (thrown? Exception (finish! state)))
-            (is (= before @conn))
-            (is (= target @workspace))
-            (is (= :open (:proposal/status (proposals/get-proposal proposal))))))))))
+  (with-applying false
+    (fn [{:keys [conn proposal workspace applying] :as state}]
+      (let [operation (:operation applying)
+            fork-eid (get-in applying [:proof :fork :db/id])
+            manifest-eid (:e (first (d/datoms @conn :avet :file-output/id (:component operation))))
+            entry-eid (:v (first (d/datoms @conn :eavt manifest-eid :file-output/entries)))
+            body-ref (:file-output.entry/body-ref (d/pull @conn [:file-output.entry/body-ref] entry-eid))
+            valid! (fn []
+                     (is (= (:proof applying)
+                            (adoption/snapshot @conn (:actor operation) (:room operation) proposal)))
+                     (is (= operation (adoptions/linked-operation! @conn fork-eid operation))))]
+        (valid!)
+        ;; Only exact scalar values and a NON-component journal link are
+        ;; restored. No state transition is reversed to reuse this fixture.
+        (doseq [[corrupt restore]
+                [[[[:db/add [:proposal/id proposal] :proposal/filing-hash (apply str (repeat 64 "a"))]]
+                  [[:db/add [:proposal/id proposal] :proposal/filing-hash (:filing operation)]]]
+                 [[[:db/add entry-eid :file-output.entry/body-ref (random-uuid)]]
+                  [[:db/add entry-eid :file-output.entry/body-ref body-ref]]]
+                 [[[:db/retract fork-eid :proposal.fork/file-adoption]]
+                  [[:db/add fork-eid :proposal.fork/file-adoption [:file.adoption/id (:id operation)]]]]
+                 [[[:db/add [:file.adoption/id (:id operation)] :file.adoption/token (random-uuid)]]
+                  [[:db/add [:file.adoption/id (:id operation)] :file.adoption/token (:token operation)]]]]]
+          (d/transact conn corrupt)
+          (try
+            (let [before @conn target @workspace]
+              (is (thrown? Exception (finish! state)))
+              (is (= before @conn))
+              (is (= target @workspace))
+              (is (= :open (:proposal/status (proposals/get-proposal proposal)))))
+            (finally (d/transact conn restore)))
+          (valid!))
+        ;; proposal/forks is a component relation. Never retract the extra
+        ;; owner: doing so could cascade-delete the original fork. Last case.
+        (d/transact conn [{:proposal/id (random-uuid) :proposal/room (:room operation)
+                           :proposal/forks [fork-eid]}])
+        (let [before @conn target @workspace]
+          (is (thrown? Exception (finish! state)))
+          (is (= before @conn))
+          (is (= target @workspace))
+          (is (= :open (:proposal/status (proposals/get-proposal proposal)))))))))
 
 (deftest failed-control-composition-cannot-partially-accept
   (with-applying false

@@ -1,7 +1,8 @@
 (ns is.simm.ops.owned-schedule-admission-test
   "Activation-only control/storage proof. No Job, dispatcher owner, clock,
    occurrence execution, provider call or transport activation is installed."
-  (:require [clojure.edn :as edn]
+  (:require [is.simm.support.control :as control]
+            [clojure.edn :as edn]
             [clojure.test :refer [deftest is]]
             [datahike.api :as d]
             [dvergr.artifact :as artifact]
@@ -46,6 +47,13 @@
                        :limits limits}
                 (= :workflow kind) (assoc :model "codex-subscription-sol")
                 (= :benchmark kind) (assoc :models ["codex-subscription-sol"] :repetitions 1))})
+(defn- control-input [kind]
+  {:request-id (random-uuid) :kind (name kind) :cadence {:interval-ms 60000 :tz "UTC"}
+   :execution (cond-> {:name "echo" :expected-bundle (:id (catalog/bundle "echo" source))
+                       :expected-owned-source (random-uuid) :limits limits}
+                (= kind :workflow) (assoc :model "codex-subscription-sol")
+                (= kind :benchmark) (assoc :models ["codex-subscription-sol"] :repetitions 1))})
+
 (defn- with-fixture [order f]
   (@#'fixture/with-fixture
    order (fn [{:keys [conn w owned attached host] :as fixture}]
@@ -57,6 +65,9 @@
            (seed! attached (assoc source "helpers/code.clj" "OTHER helper"))
            (f (assoc fixture :input #(input % host w source))))))
 
+;; Both registration orders are exercised by the shared owned-workspace,
+;; file-projection and transport contracts. Each kind still runs here with the
+;; foreign attachment registered first and selected throughout.
 (deftest fixture-and-local-dtos-have-the-actual-required-definition-and-closed-shapes
   (is (m/validate catalog/Definition (edn/read-string (get source "workflow.edn"))))
   (is (empty? (catalog/check-files source)))
@@ -66,8 +77,8 @@
     (is (not (m/validate (var-get #'schedules/owned-workflow-schema) (assoc base :model "codex-subscription-sol" :request-id (random-uuid))))))
   (is (= (* 32 1024 1024) model/max-managed-target-bytes)))
 
-(deftest both-fixed-kinds-retain-one-owned-source-and-no-execution-in-both-orders
-  (doseq [kind [:workflow :benchmark] order [true false]]
+(deftest both-fixed-kinds-retain-one-owned-source-and-no-execution-with-adverse-attachment-order
+  (doseq [kind [:workflow :benchmark] :let [order false]]
     (with-fixture order
       (fn [{:keys [conn w host owned attached input]}]
         (let [request (input kind) before (state owned) other (state attached) selected (workspace/selected-system-id)
@@ -124,35 +135,40 @@
           (is (zero? @calls)))))))
 
 (deftest malformed-normal-activation-lookup-is-not-fresh-absence
-  (with-fixture true
-    (fn [{:keys [w host input]}]
-      (let [request (input :workflow) calls (atom 0)
-            forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "Malformed lookup reached fresh work")))]
-        (doseq [row [false [] "not-a-row" {} {:schedule.activation/id (random-uuid)}]]
-          (with-redefs [model/activation (constantly row) reads/resolve-host-read! forbidden
-                        workflows/manifest-in forbidden workflows/snapshot-in forbidden model/create! forbidden]
-            (is (= ::schedules/owned-unavailable
-                   (:type (ex-data (failure #(schedules/create-owned! host (principal w) (str (:room w)) request))))))))
-        (is (zero? @calls))))))
+  (control/with-control
+   model/schema
+   (fn [{:keys [w host handle]}]
+     (let [request (control-input :workflow) calls (atom 0) lookups (atom 0)
+           forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "Malformed lookup reached fresh work")))]
+       (doseq [row [false [] "not-a-row" {} {:schedule.activation/id (random-uuid)}]]
+         (reset! lookups 0)
+         (with-redefs [model/activation (fn [& _] (swap! lookups inc) row) reads/resolve-host-read! forbidden
+                       workflows/manifest-in forbidden workflows/snapshot-in forbidden model/create! forbidden]
+           (is (= ::schedules/owned-unavailable
+                  (:type (ex-data (failure #(schedules/create-owned! host (principal w) handle request))))))
+           (is (= 1 @lookups))))
+       (is (zero? @calls))))))
 
 (deftest invalid-human-dto-and-operator-only-never-hydrate
-  (with-fixture true
-    (fn [{:keys [conn w host input hydrations]}]
-      (let [request (input :workflow) p (principal w)]
-        (reset! hydrations [])
-        (doseq [bad [(update request :execution dissoc :expected-owned-source)
-                     (assoc-in request [:execution :request-id] (random-uuid))
-                     (assoc-in request [:execution :name] "echo\n") (assoc request :owner (:owner w))]]
-          (is (= ::schedules/invalid (:type (ex-data (failure #(schedules/create-owned! host p (str (:room w)) bad)))))))
-        (is (= ::schedules/owned-unavailable
-               (:type (ex-data (failure #(schedules/create-owned! host (assoc p :principal/kind :worker) (str (:room w)) request))))))
-        (let [benchmark (input :benchmark)]
-          (d/transact conn [[:db/retract [:party/id (:owner w)] :party/role :admin]])
-          (reset! hydrations [])
-          (doseq [actor [(:owner w) (:admin w)]]
-            (is (= ::schedules/owned-unavailable
-                   (:type (ex-data (failure #(schedules/create-owned! host (ops/party-principal actor) (str (:room w)) benchmark)))))))
-          (is (empty? @hydrations)))))))
+  (control/with-control
+   model/schema
+   (fn [{:keys [conn w host handle]}]
+     (let [request (control-input :workflow) p (principal w) calls (atom 0)
+           forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "Denied activation acquired source")))]
+       (d/transact conn [{:party/id (:owner w) :party/role :admin}])
+       (with-redefs [reads/resolve-host-read! forbidden workflows/manifest-in forbidden model/create! forbidden]
+         (doseq [bad [(update request :execution dissoc :expected-owned-source)
+                      (assoc-in request [:execution :request-id] (random-uuid))
+                      (assoc-in request [:execution :name] "echo\n") (assoc request :owner (:owner w))]]
+           (is (= ::schedules/invalid (:type (ex-data (failure #(schedules/create-owned! host p handle bad)))))))
+         (is (= ::schedules/owned-unavailable
+                (:type (ex-data (failure #(schedules/create-owned! host (assoc p :principal/kind :worker) handle request))))))
+         (let [benchmark (control-input :benchmark)]
+           (d/transact conn [[:db/retract [:party/id (:owner w)] :party/role :admin]])
+           (doseq [actor [(:owner w) (:admin w)]]
+             (is (= ::schedules/owned-unavailable
+                    (:type (ex-data (failure #(schedules/create-owned! host (ops/party-principal actor) handle benchmark)))))))
+           (is (zero? @calls))))))))
 
 (deftest current-default-and-action-fences-precede-preparation-and-publication
   (doseq [change [:default :merge] phase [:snapshot :policy]]

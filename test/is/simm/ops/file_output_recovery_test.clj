@@ -165,24 +165,31 @@
             (is (= target @workspace))))))))
 
 (deftest current-attempt-target-handles-and-config-are-rechecked-without-freezing-ref
-  (doseq [change [:default :config :system :conn :room]]
-    (with-recovery :applying
-      (fn [{:keys [workspace change-binding] :as state}]
-        (publish-synthetic! state)
-        (let [lookup scoped/recover target @workspace]
-          (with-redefs [scoped/recover
-                        (fn [& args]
-                          (let [value (apply lookup args)]
-                            (reset! change-binding
-                                    (case change
-                                      :default #(assoc-in % [:target :registry-system] (random-uuid))
-                                      :config #(assoc-in % [:workspace-config :config :fixture-revision] 2)
-                                      :system #(assoc % :system (Object.))
-                                      :conn #(assoc % :conn (atom @workspace))
-                                      :room #(assoc % :room {})))
-                            value))]
-            (is (thrown? clojure.lang.ExceptionInfo (recover! state))))
-          (is (= :applying (:state (journal state))))
+  (with-recovery :applying
+    (fn [{:keys [conn claimed workspace change-binding] :as state}]
+      (publish-synthetic! state)
+      (let [lookup scoped/recover target @workspace operation (:operation (:applying state))
+            fork (get-in claimed [:proof :fork :db/id])]
+        (is (= operation (adoptions/linked-operation! @conn fork operation)))
+        (doseq [change [:default :config :system :conn :room]]
+          (reset! change-binding identity)
+          (try
+            (let [before @conn]
+              (with-redefs [scoped/recover
+                            (fn [& args]
+                              (let [value (apply lookup args)]
+                                (reset! change-binding
+                                        (case change
+                                          :default #(assoc-in % [:target :registry-system] (random-uuid))
+                                          :config #(assoc-in % [:workspace-config :config :fixture-revision] 2)
+                                          :system #(assoc % :system (Object.))
+                                          :conn #(assoc % :conn (atom @workspace))
+                                          :room #(assoc % :room {})))
+                                value))]
+                (is (thrown? clojure.lang.ExceptionInfo (recover! state))))
+              (is (= before @conn)))
+            (finally (reset! change-binding identity)))
+          (is (= operation (adoptions/linked-operation! @conn fork operation)))
           (is (= target @workspace)))))))
 
 (deftest claimed-receipt-is-inconsistent-only-if-the-current-writer-is-still-claimed
@@ -204,29 +211,48 @@
           (is (= target @workspace)))))))
 
 (deftest changed-immutable-proof-or-token-refuses-after-positive-observation
-  (doseq [change [:body-ref :owner :token]]
-    (with-recovery :applying
-      (fn [{:keys [conn claimed workspace] :as state}]
-        (publish-synthetic! state)
-        (let [lookup scoped/recover target @workspace
-              scope (get-in claimed [:operation :component])
-              fork (get-in claimed [:proof :fork :db/id])]
-          (with-redefs [scoped/recover
-                        (fn [& args]
-                          (let [value (apply lookup args)]
-                            (case change
-                              :body-ref (let [eid (:e (first (d/datoms @conn :avet :file-output/id scope)))
-                                              entry (:v (first (d/datoms @conn :eavt eid :file-output/entries)))]
-                                          (d/transact conn [[:db/add entry :file-output.entry/body-ref (random-uuid)]]))
-                              :owner (d/transact conn [{:proposal/id (random-uuid)
-                                                        :proposal/room (get-in claimed [:operation :room])
-                                                        :proposal/forks [fork]}])
-                              :token (d/transact conn [[:db/add [:file.adoption/id (get-in claimed [:operation :id])]
-                                                        :file.adoption/token (random-uuid)]]))
-                            value))]
-            (is (thrown? clojure.lang.ExceptionInfo (recover! state))))
-          (is (= :open (:proposal/status (proposals/get-proposal (get-in claimed [:operation :proposal])))))
-          (is (= target @workspace)))))))
+  (with-recovery :applying
+    (fn [{:keys [conn claimed workspace] :as state}]
+      (publish-synthetic! state)
+      (let [lookup scoped/recover target @workspace
+            operation (:operation (:applying state))
+            scope (:component operation) fork (get-in claimed [:proof :fork :db/id])
+            manifest-eid (:e (first (d/datoms @conn :avet :file-output/id scope)))
+            entry (:v (first (d/datoms @conn :eavt manifest-eid :file-output/entries)))
+            body-ref (:file-output.entry/body-ref (d/pull @conn [:file-output.entry/body-ref] entry))
+            valid! (fn []
+                     (is (= (:proof claimed)
+                            (adoption/snapshot @conn (:actor operation) (:room operation) (:proposal operation))))
+                     (is (= operation (adoptions/linked-operation! @conn fork operation))))]
+        (valid!)
+        ;; Refusals leave the journal applying. Restore only scalar facts;
+        ;; the original publisher's transition is never reversed or replayed.
+        (doseq [[corrupt restore]
+                [[[[:db/add entry :file-output.entry/body-ref (random-uuid)]]
+                  [[:db/add entry :file-output.entry/body-ref body-ref]]]
+                 [[[:db/add [:file.adoption/id (:id operation)] :file.adoption/token (random-uuid)]]
+                  [[:db/add [:file.adoption/id (:id operation)] :file.adoption/token (:token operation)]]]
+                 [[{:proposal/id (random-uuid) :proposal/room (:room operation) :proposal/forks [fork]}]
+                  nil]]]
+          (let [observed (volatile! nil) lookups (atom 0)]
+            (try
+             (with-redefs [scoped/recover
+                           (fn [& args]
+                             (let [value (apply lookup args)]
+                               (swap! lookups inc)
+                               (d/transact conn corrupt)
+                               (vreset! observed @conn)
+                               value))]
+               (is (thrown? clojure.lang.ExceptionInfo (recover! state))))
+             (is (= 1 @lookups))
+             (is (= @observed @conn) "Refusal must not write beyond the injected corruption")
+             (is (= :applying (:file.adoption/state
+                               (d/pull @conn [:file.adoption/state] [:file.adoption/id (:id operation)]))))
+             (is (= :open (:proposal/status (proposals/get-proposal (:proposal operation)))))
+             (is (= target @workspace))
+             (finally (when restore (d/transact conn restore)))))
+          ;; Shared component ownership is deliberately last and not undone.
+          (when restore (valid!)))))))
 
 (deftest unknown-recovery-acks-never-read-back-original-ownership
   (doseq [mode [:missing-before :missing-after :stale :lost]]

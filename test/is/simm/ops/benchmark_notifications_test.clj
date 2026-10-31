@@ -10,29 +10,31 @@
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [org.replikativ.spindel.engine.core :as ec]))
 
+(defn- claim-result [{:keys [conn w room id owner principal card] :as context}]
+  (let [job (random-uuid)
+        {:keys [request]} (requests/claim! conn {:party (:member w) :room (:room w)
+                                                :client-id (random-uuid) :kind :benchmark
+                                                :intent {:experiment (:scorecard/experiment card)}})
+        request-id (:work.request/id request)]
+    (requests/record-job! conn request-id (:work.request/claim request) job)
+    (assoc context :request-id request-id :job job
+           :value {:experiment (:scorecard/experiment card) :scorecard card :execution {:cleanup-group job}}
+           :original (assoc request :work.request/job job)
+           :complete (fn [status value]
+                       (let [original (assoc request :work.request/job job)
+                             value (if (map? value)
+                                     (merge {:experiment (:scorecard/experiment card)
+                                             :execution {:cleanup-group job}} value) value)]
+                         (notifications/record-result! conn original room status value)
+                         (lifetime/with-operation!
+                          owner #(notifications/complete! conn principal (:room w) room original)))))))
+
 (defn- with-result [f]
   (@#'fixture/with-fixture
-   (fn [{:keys [conn w room id owner principal] :as context}]
+   (fn [{:keys [conn room id] :as context}]
      (d/transact conn requests/schema)
-     (let [card (binding [ec/*execution-context* (:ctx room)] (experiment/scorecard-bounded room id))
-           job (random-uuid)
-           {:keys [request]} (requests/claim! conn {:party (:member w) :room (:room w)
-                                                    :client-id (random-uuid) :kind :benchmark
-                                                    :intent {:experiment (:scorecard/experiment card)}})
-           request-id (:work.request/id request)]
-       (requests/record-job! conn request-id (:work.request/claim request) job)
-       (f (assoc context :request-id request-id :job job :card card
-                 :value {:experiment (:scorecard/experiment card) :scorecard card
-                         :execution {:cleanup-group job}}
-                 :original (assoc request :work.request/job job)
-                 :complete (fn [status value]
-                             (let [original (assoc request :work.request/job job)
-                                   value (if (map? value)
-                                           (merge {:experiment (:scorecard/experiment card)
-                                                   :execution {:cleanup-group job}} value) value)]
-                               (notifications/record-result! conn original room status value)
-                               (lifetime/with-operation!
-                                 owner #(notifications/complete! conn principal (:room w) room original))))))))))
+     (let [card (binding [ec/*execution-context* (:ctx room)] (experiment/scorecard-bounded room id))]
+       (f (claim-result (assoc context :card card)))))))
 
 (defn- messages [room]
   (binding [ec/*execution-context* (:ctx room)]
@@ -63,7 +65,9 @@
           (is (thrown? clojure.lang.ExceptionInfo (complete :completed value))))
         (let [before (first (messages room))]
           (is (false? (:work.request/result-published? (requests/get-request conn request-id))))
-          (is (= :published (:status (notifications/retry! host principal handle request-id))))
+          (with-redefs [result/content (fn [& _] (throw (AssertionError. "Retry reformatted")))
+                        experiment/scorecard-bounded (fn [& _] (throw (AssertionError. "Retry read Scorecard")))]
+            (is (= :published (:status (notifications/retry! host principal handle request-id)))))
           (is (= [before] (messages room)) "Same ID, timestamp, content and source after retry"))))))
 
 (deftest a-pending-envelope-survives-a-second-completion-observation
@@ -77,21 +81,36 @@
         (is (= 1 (count (messages room))))))))
 
 (deftest incomplete-and-failed-jobs-never-show-a-fake-zero-scorecard
-  (doseq [[status value expected] [[:completed {:scorecard {:incomplete {:cells 1}}} :incomplete]
-                                   [:failed (ex-info "Infrastructure" {}) :failed]
-                                   [:cancelled nil :cancelled]]]
-    (with-result
-      (fn [{:keys [conn room request-id complete]}]
-        (complete status value)
-        (let [row (requests/get-request conn request-id) [message] (messages room)]
-          (is (= expected (:work.request/result-status row)))
-          (is (nil? (:work.request/result-scorecard row)))
-          (is (nil? (get-in message [:metadata :object])))
-          (is (re-find #"not a zero score" (:content message))))))))
+  (with-result
+    (fn [first-context]
+      ;; Each terminal outcome owns a fresh real request/job/client identity.
+      ;; Only the read-only Scorecard and live host are shared.
+      (doseq [[index status value expected]
+              [[0 :completed {:scorecard {:incomplete {:cells 1}}} :incomplete]
+               [1 :failed (ex-info "Infrastructure" {}) :failed]
+               [2 :cancelled nil :cancelled]]]
+        (let [{:keys [conn room request-id job complete]}
+              (if (zero? index) first-context (claim-result first-context))
+              previous (count (messages room))]
+          (complete status value)
+          (let [row (requests/get-request conn request-id) message (last (messages room))]
+            (is (= (inc previous) (count (messages room))))
+            (is (= job (get-in message [:metadata :run-id])))
+            (is (= expected (:work.request/result-status row)))
+            (is (nil? (:work.request/result-scorecard row)))
+            (is (nil? (get-in message [:metadata :object])))
+            (is (re-find #"not a zero score" (:content message)))))))))
 
 (deftest foreign-result-permission-revocation-and-store-remap-refuse
   (with-result
     (fn [{:keys [conn w room value complete request-id host principal handle]}]
+      (let [before (requests/get-request conn request-id)]
+        (d/transact conn [[:db/add [:work.request/id request-id] :work.request/claim (random-uuid)]])
+        (try
+          (is (thrown? clojure.lang.ExceptionInfo (complete :completed value)))
+          (is (nil? (:work.request/result-at (requests/get-request conn request-id))))
+          (finally (d/transact conn [[:db/add [:work.request/id request-id] :work.request/claim (:work.request/claim before)]])))
+        (is (= before (requests/get-request conn request-id))))
       (testing "returned Experiment must be the exact retained one"
         (is (thrown? clojure.lang.ExceptionInfo
                      (complete :completed (assoc value :experiment {}))))
@@ -123,20 +142,3 @@
                            principal handle request-id))))
           (is (= 1 (count (messages room))))
           (finally (lifetime/fence! replacement) (lifetime/join! replacement 5000)))))))
-
-(deftest a-changed-request-claim-cannot-adopt-the-original-completion
-  (with-result
-    (fn [{:keys [conn request-id value complete]}]
-      (d/transact conn [[:db/add [:work.request/id request-id] :work.request/claim (random-uuid)]])
-      (is (thrown? clojure.lang.ExceptionInfo (complete :completed value)))
-      (is (nil? (:work.request/result-at (requests/get-request conn request-id)))))))
-
-(deftest retry-of-reserved-bytes-does-not-reformat-or-read-receipts
-  (with-result
-    (fn [{:keys [room value complete host principal handle request-id]}]
-      (with-redefs [discourse/post! (fn [& _] (throw (ex-info "Unavailable" {})))]
-        (is (thrown? clojure.lang.ExceptionInfo (complete :completed value))))
-      (with-redefs [result/content (fn [& _] (throw (AssertionError. "Retry reformatted")))
-                    experiment/scorecard-bounded (fn [& _] (throw (AssertionError. "Retry read Scorecard")))]
-        (is (= :published (:status (notifications/retry! host principal handle request-id)))))
-      (is (= 1 (count (messages room)))))))

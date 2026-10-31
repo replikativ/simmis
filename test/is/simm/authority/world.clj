@@ -54,17 +54,26 @@
 (defn fresh-system-conn
   "An in-memory system DB carrying the schema `system-db/init!` installs:
    dvergr's system/actor/assignment/pricing/task schema, its chat schema, and
-   simmis's extension schema on the same entities."
-  []
-  (let [cfg {:store {:backend :memory :id (random-uuid)}
+   simmis's extension schema on the same entities. An explicit :core selection
+   installs the actual core Simmis declarations for tests that do not use other
+   feature journals; the default remains the complete production schema."
+  ([] (fresh-system-conn {}))
+  ([options]
+  (when-not (and (map? options) (every? #{:system-schema} (keys options)))
+    (throw (ex-info "Unknown authority fixture schema options" {})))
+  (let [extension (case (get options :system-schema :full)
+                    :full system-db/schema
+                    :core @#'system-db/core-schema
+                    (throw (ex-info "Unknown authority fixture schema selection" {})))
+        cfg {:store {:backend :memory :id (random-uuid)}
              :schema-flexibility :write :keep-history? false}]
     (d/create-database cfg)
     (let [conn (d/connect cfg)]
       (d/transact conn (vec (concat dsdb/schema dsdb/actor-schema dsdb/assignment-schema
                                     dsdb/pricing-schema dsdb/task-schema)))
       (chat-schema/ensure-full-schema! conn)
-      (d/transact conn system-db/schema)
-      conn)))
+      (d/transact conn extension)
+      conn))))
 
 (defn- party-row [id display & {:as more}]
   (merge {:party/id id
@@ -172,14 +181,15 @@
 (defn with-world*
   "Call `(f conn w)` with a fresh seeded system DB installed as both simmis's
    and dvergr's system connection."
-  [f]
-  (let [conn (fresh-system-conn)
+  ([f] (with-world* {} f))
+  ([options f]
+  (let [conn (fresh-system-conn options)
         w (seed! conn)]
     (try
       (with-redefs [system-db/get-conn (constantly conn)
                     dsdb/get-conn (constantly conn)]
         (f conn w))
-      (finally (d/release conn)))))
+      (finally (d/release conn))))))
 
 (defmacro with-world
   "`(with-world [conn w] body…)` — see `with-world*`."

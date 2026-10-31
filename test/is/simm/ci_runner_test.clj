@@ -80,3 +80,13 @@
     (is (= 1 (count patterns)))
     (is (= ['is.simm.ci-runner-test] (vec namespaces)))
     (is (= (dissoc effective :kaocha/tests) (dissoc roundtrip :kaocha/tests)))))
+
+(deftest duration-bins-balance-work-without-dropping-new-or-renamed-namespaces
+  (let [names '[a-test b-test c-test d-test new-test]
+        costs {'a-test 100 'b-test 90 'c-test 10 'd-test 5 'retired-test 999}
+        parts (mapv #(ci/partition-namespaces names % 2 costs) (range 2))]
+    (is (= (frequencies names) (frequencies (mapcat identity parts))))
+    (is (= parts (mapv #(ci/partition-namespaces (reverse names) % 2 costs) (range 2))))
+    (is (not-any? #(and (some #{'a-test} %) (some #{'b-test} %)) parts))
+    (doseq [bad [{'a-test -1} {'a-test 0} {'a-test ##NaN} {'a-test ##Inf} {"a-test" 1}]]
+      (is (thrown? clojure.lang.ExceptionInfo (ci/partition-namespaces names 0 2 bad))))))

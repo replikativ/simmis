@@ -12,6 +12,7 @@
             [clojure.string :as str]
             [is.simm.ops.owned-files :as owned-files]
             [is.simm.documents.space :as space]
+            [is.simm.fixtures.accounting :as accounting-fixture]
             [is.simm.documents.view :as view]
             [is.simm.model.crud :as crud]
             [is.simm.model.seed :as seed]
@@ -40,7 +41,7 @@
     (d/create-database cfg)
     (let [conn (d/connect cfg)]
       (try
-        (space/provision! conn)
+        (accounting-fixture/with-schema-only #(space/provision! conn))
         (let [company (crud/create-type! conn {:name "ProjectionCompany"})
               research (crud/create-type! conn {:name "ProjectionResearch"})
               revenue (crud/create-morphism! conn {:name "S/ProjectionCompany/revenue"
@@ -390,7 +391,7 @@
     (d/create-database cfg)
     (let [conn (d/connect cfg)]
       (try
-        (space/provision! conn)
+        (accounting-fixture/with-schema-only #(space/provision! conn))
         (let [text (source {"simmis-id" (str page-a) "simmis" "invalid declaration"} "# Retained source\n")]
           (write! conn "wiki/a.md" text)
           (let [before @conn
@@ -409,7 +410,7 @@
     (d/create-database cfg)
     (let [conn (d/connect cfg)]
       (try
-        (space/provision! conn)
+        (accounting-fixture/with-schema-only #(space/provision! conn))
         (write! conn "README.md" plain)
         (let [before @conn only-plain (view/prepare before options)]
           (is (= :ready (:status only-plain)))

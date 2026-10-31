@@ -13,6 +13,7 @@
             [geschichte.git.transport :as transport]
             [geschichte.repo :as repo]
             [geschichte.workspace :as workspace]
+            [is.simm.fixtures.accounting :as accounting-fixture]
             [is.simm.model.github-sync :as journal]
             [is.simm.model.github-integrations :as integrations]
             [is.simm.model.github-pins :as pins]
@@ -39,7 +40,9 @@
        #'native/storage-gc-admission (atom {:ever-admitted? false :prohibited-by nil})}
       f)))
 
-(defn- with-imported [f]
+(defn- with-imported
+  ([f] (with-imported {} f))
+  ([{:keys [full-accounting?]} f]
   (#'fixture/with-private-host
    (fn [{:keys [conn root] :as environment}]
      (#'upstream/with-stores
@@ -55,17 +58,19 @@
             (with-redefs [http/send-http (#'transport-fixture/sender graph)]
               (let [request {:id (str (random-uuid)) :name "Git sync source" :members []
                              :source {:kind :github :repository "owner/repository"}}
-                    imported (lifetime/with-operation!
-                               owner #(rooms/create-for-intent! creator request
-                                                                (fn [] (lifetime/check-current!)
-                                                                  (reads/current-control-db! conn root))))
+                    imported ((if full-accounting? (fn [f] (f)) accounting-fixture/with-schema-only)
+                              #(lifetime/with-operation!
+                                owner (fn [] (rooms/create-for-intent! creator request
+                                                                      (fn [] (lifetime/check-current!)
+                                                                        (reads/current-control-db! conn root))))))
                     room-id (:room/id imported)
                     host (mcp/host conn root owner)
                     principal {:principal/kind :human :principal/id (str "party/" creator)}
                     room (:room (reads/resolve-host-room! host principal (str room-id)))
                     bound (owned/resolve! @conn principal :merge room-id room)]
-                ;; Only transport installation is stubbed. The original App
-                ;; owner, native Room and canonical authority are all real.
+                ;; Synthetic business-book setup is isolated above. Sync itself
+                ;; uses real schemas/governors, original App/native owners,
+                ;; canonical authority and scripted transport.
                 (with-redefs [application/capture-operation
                               (fn [] (fn [body] (lifetime/with-operation! owner #(body host))))]
                   (f (assoc environment :upstream upstream :graph graph :owner owner :creator creator
@@ -78,7 +83,7 @@
               (lifetime/fence! owner)
               (lifetime/join! owner 5000)
               (doseq [room (registry/list-rooms)] (discourse/close-room! room {:close-context? false}))
-              (native/release-room-stores!)))))))))
+              (native/release-room-stores!))))))))))
 
 (defn- c2! [{:keys [upstream graph]}]
   (repo/write! upstream "reports/new.md" (object/utf8 "New upstream report\n"))

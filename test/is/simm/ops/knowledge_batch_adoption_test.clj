@@ -16,6 +16,7 @@
             [is.simm.documents.markdown :as markdown]
             [is.simm.documents.files :as files]
             [is.simm.documents.space :as space]
+            [is.simm.fixtures.accounting :as accounting-fixture]
             [is.simm.model.file-adoptions :as adoptions]
             [is.simm.model.knowledge-batches :as batches]
             [is.simm.model.knowledge-streams :as streams]
@@ -37,7 +38,7 @@
              :store {:backend :memory :id (random-uuid)}}]
     (d/create-database cfg)
     (let [conn (d/connect cfg)]
-      (space/provision! conn)
+      (accounting-fixture/with-schema-only #(space/provision! conn))
       (binding [ec/*execution-context* (:ctx room)]
         (ygg/register! (gy/create conn {:system-name (str "room-canonical-test-" (random-uuid))})))
       conn)))

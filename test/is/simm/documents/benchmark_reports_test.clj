@@ -10,6 +10,7 @@
             [is.simm.documents.saved-view-fences :as fences]
             [is.simm.documents.scorecard-views-test :as fixture]
             [is.simm.documents.space :as space]
+            [is.simm.fixtures.accounting :as accounting-fixture]
             [is.simm.documents.view :as view]))
 
 (deftest report-source-is-deterministic-ordinary-markdown-with-native-provenance
@@ -59,7 +60,7 @@
     (d/create-database cfg)
     (let [conn (d/connect cfg)]
       (try
-        (space/provision! conn)
+        (accounting-fixture/with-schema-only #(space/provision! conn))
         (doseq [{:keys [path text]} [(:report plan) (:index plan)]]
           (repo/write! conn path (markdown/source-bytes text)))
         (repo/write! conn "README.md" (markdown/source-bytes "# Ordinary imported Markdown\n"))

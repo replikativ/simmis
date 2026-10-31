@@ -25,8 +25,10 @@
 (defn- call [environment action request]
   ((host/capture (:creator environment) (:room-id environment) action #(push/in! % action request))))
 
-(defn- with-ready [f]
-  (#'fixture/with-imported
+(defn- with-ready
+  ([f] (with-ready {} f))
+  ([options f]
+  (#'fixture/with-imported options
    (fn [{:keys [parent stamp] :as environment}]
      (repo/write! parent "local.md" (object/utf8 "Local authored content\n"))
      (repo/stage-all! parent)
@@ -38,7 +40,7 @@
        (let [client (random-uuid)
              ready (call environment :prepare {:client-id client :expected-target-stamp stamp})]
          (is (= :ready (:status ready)))
-         (f (assoc environment :client client :ready ready)))))))
+         (f (assoc environment :client client :ready ready))))))))
 
 (deftest preparation-does-not-send-and-positive-result-advances-cursor-atomically
   (let [sends (atom 0)]
@@ -46,7 +48,7 @@
                                    (swap! sends inc)
                                    (is (bytes? (:pack prepared)))
                                    {:status :pushed :ref (:ref prepared) :old (:old prepared) :new (:new prepared)})]
-      (with-ready
+      (with-ready {:full-accounting? true}
         (fn [{:keys [client ready conn room-id creator] :as environment}]
           (is (zero? @sends))
           (is (= ready (call environment :observe {:client-id client})))

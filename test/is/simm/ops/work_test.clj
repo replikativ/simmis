@@ -49,8 +49,13 @@
                                           :name "Model dispatches" :precision 0})
             (f room))
           (finally
+            ;; The Room borrows this fixture's connection. First obtain the
+            ;; physical drain/context-close acknowledgment; a failed close
+            ;; preserves the original governed connection and named store.
+            (discourse/close-room! room)
             (governance/ungovern! conn)
-            (discourse/close-room! room)))))))
+            (dh/release conn)
+            (dh/delete-database cfg)))))))
 
 (defn- fixture []
   (let [limits {:budget-microdollars 10000 :max-dispatches 2 :max-model-steps 2

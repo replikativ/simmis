@@ -198,6 +198,26 @@
 (defn- candidate-outcome [{:keys [conn principal room-id room request]}]
   (filing/candidate-outcome conn principal room-id room request))
 
+(defn- recertify
+  "Derive a broken-reader observation without forging content ids or writing
+   malformed Attempts past the real store's independent governance."
+  [certified options]
+  (let [definition (:attempt/environment certified)
+        receipt-options (into {} (map (fn [[k v]] [(keyword (name k)) v]))
+                              (select-keys (:attempt/receipt certified)
+                                           [:attempt/run-id :attempt/provider :attempt/model :attempt/status
+                                            :attempt/started-at :attempt/elapsed-ms :attempt/metrics
+                                            :attempt/checks :attempt/reward :attempt/result :attempt/trace
+                                            :attempt/resources]))
+        evidence ((get options :evidence-transform identity) (:attempt/evidence certified))
+        receipt (environment/make-attempt-receipt
+                 definition (-> (merge receipt-options (select-keys options [:checks :reward]))
+                                (assoc :status (get options :receipt-status (:status receipt-options))
+                                       :metrics (merge (:metrics receipt-options) (:metrics options))
+                                       :result (:result evidence) :trace (:trace evidence))))]
+    (attempt/make-attempt definition (:attempt/agent certified) receipt evidence
+                          (:attempt/settlement-intent certified))))
+
 (deftest failed-candidate-is-certified-for-hold-but-never-filing
   (with-fixture {:candidate-status :failed :evidence-transform #(dissoc % :knowledge-output)}
     (fn [{:keys [conn request candidate certified] :as fixture}]
@@ -212,10 +232,14 @@
 (deftest failed-outcome-requires-the-same-complete-provenance-as-success
   (with-fixture {:candidate-status :failed :persist? false}
     (fn [fixture] (is (thrown? clojure.lang.ExceptionInfo (candidate-outcome fixture)))))
-  ;; Writer governance already rejects some inconsistent combinations. A
-  ;; broken-store read must still fail this independent host boundary; do not
-  ;; deliberately dead-letter invalid writes just to construct those reads.
-  (doseq [options [{:receipt-status :completed :checks {:completed? true :knowledge-workspace? true}}
+  ;; Keep one genuine failed base. Each malformed read is derived through
+  ;; the actual receipt/Attempt constructors; none is persisted.
+  (with-fixture {:candidate-status :failed :persist? false}
+    (fn [{:keys [conn workspace certified] :as fixture}]
+      (let [before @conn files-before @workspace]
+        (with-redefs [episode/attempt (constantly certified)]
+          (is (= :failed (:outcome (candidate-outcome fixture)))))
+        (doseq [options [{:receipt-status :completed :checks {:completed? true :knowledge-workspace? true}}
                    {:checks {:completed? true :knowledge-workspace? true}}
                    {:checks {:completed? false :knowledge-workspace? false}}
                    {:checks {:completed? false :knowledge-workspace? true :unknown? true}}
@@ -226,10 +250,14 @@
                    {:evidence-transform #(dissoc % :knowledge-workspace)}
                    {:evidence-transform #(assoc-in % [:trace :runs 0 :run/status] :completed)}
                    {:evidence-transform #(update-in % [:trace :runs] (fn [rows] (conj rows (first rows))))}]]
-    (with-fixture (merge {:candidate-status :failed :persist? false} options)
-      (fn [{:keys [certified] :as fixture}]
+          (let [broken (recertify certified options) reads (atom 0)]
+            (is (= broken (attempt/validate-attempt broken)))
+            (with-redefs [episode/attempt (fn [& _] (swap! reads inc) broken)]
+              (is (thrown? clojure.lang.ExceptionInfo (candidate-outcome fixture)) (str options)))
+            (is (pos? @reads))))
         (with-redefs [episode/attempt (constantly certified)]
-          (is (thrown? clojure.lang.ExceptionInfo (candidate-outcome fixture)) (str options)))))))
+          (is (= :failed (:outcome (candidate-outcome fixture)))))
+        (is (= before @conn)) (is (= files-before @workspace))))))
 
 (deftest inconsistent-failed-durable-lineage-is-not-a-retry-permit
   (with-fixture {:candidate-status :failed}
@@ -331,46 +359,33 @@
             (is (thrown? clojure.lang.ExceptionInfo (prepare fixture)))))
         (is (seq (original-runs room {:root-run-id job :limit 1001})))))))
 
-(deftest canonical-certification-still-requires-requester-metrics-and-positive-checks
-  (doseq [options [{:checks {:other? true}} {:checks {:completed? false}}
-                   {:checks {:completed? true :other? false}}
-                   {:metrics {:requester-party (random-uuid)}}
-                   {:metrics {:request-id (random-uuid)}}
-                   {:metrics {:execution-kind :workflow-candidate}}
-                   {:metrics {:verifier-trust :untrusted}}]]
-    (with-fixture options
-      (fn [fixture] (is (thrown? clojure.lang.ExceptionInfo (prepare fixture)))))))
-
-(deftest an-empty-canonical-check-map-from-a-broken-store-is-not-vacuous-success
-  ;; The real Datahike Attempt governance already refuses an empty check map
-  ;; when persisting. Simulate a broken store read to exercise this additional
-  ;; host boundary without disabling that real writer's governance.
+(deftest certified-success-reader-matrix-keeps-provenance-and-never-becomes-a-no-op
+  ;; Real persisted baseline and immutable DBs are shared only across observers;
+  ;; no request, journal, authority, owner or lifecycle transition is reused.
   (with-fixture
-    (fn [{:keys [certified] :as fixture}]
-      (let [definition (:attempt/environment certified)
-            receipt-options (into {}
-                                  (map (fn [[k v]] [(keyword (name k)) v]))
-                                  (select-keys (:attempt/receipt certified)
-                                               [:attempt/run-id :attempt/provider :attempt/model :attempt/status
-                                                :attempt/started-at :attempt/elapsed-ms :attempt/metrics
-                                                :attempt/checks :attempt/reward :attempt/result :attempt/trace
-                                                :attempt/resources]))
-            receipt (environment/make-attempt-receipt definition (assoc receipt-options :checks {}))
-            broken (attempt/make-attempt definition (:attempt/agent certified) receipt
-                                         (:attempt/evidence certified) (:attempt/settlement-intent certified))]
-        (is (= broken (attempt/validate-attempt broken)))
-        (with-redefs [episode/attempt (constantly broken)]
-          (is (thrown? clojure.lang.ExceptionInfo (prepare fixture))))))))
-
-(deftest missing-or-malformed-certified-output-is-not-an-empty-no-op
-  (doseq [transform [#(dissoc % :knowledge-output)
-                     #(assoc-in % [:knowledge-output :id] (random-uuid))]]
-    (with-fixture {:evidence-transform transform}
-      (fn [fixture] (is (thrown? clojure.lang.ExceptionInfo (prepare fixture)))))))
-
-(deftest repeated-direct-candidate-in-certified-trace-is-ambiguous
-  (with-fixture {:evidence-transform #(update-in % [:trace :runs] (fn [rows] (conj rows (first rows))))}
-    (fn [fixture] (is (thrown? clojure.lang.ExceptionInfo (prepare fixture))))))
+    (fn [{:keys [conn workspace certified] :as fixture}]
+      (let [before @conn files-before @workspace baseline (prepare fixture)]
+        (doseq [options [{:checks {:other? true}} {:checks {:completed? false}}
+                         {:checks {:completed? true :other? false}}
+                         {:metrics {:requester-party (random-uuid)}}
+                         {:metrics {:request-id (random-uuid)}}
+                         {:metrics {:execution-kind :workflow-candidate}}
+                         {:metrics {:verifier-trust :untrusted}}
+                         {:checks {}}
+                         {:evidence-transform #(dissoc % :knowledge-output)}
+                         {:evidence-transform #(assoc-in % [:knowledge-output :id] (random-uuid))}
+                         {:evidence-transform #(update-in % [:trace :runs] (fn [rows] (conj rows (first rows))))}
+                         {:evidence-transform #(dissoc % :knowledge-workspace)}
+                         {:evidence-transform #(assoc-in % [:knowledge-workspace :actual :store] (random-uuid))}
+                         {:checks {:completed? true}}
+                         {:checks {:completed? true :knowledge-workspace? false}}]]
+          (let [broken (recertify certified options) reads (atom 0)]
+            (is (= broken (attempt/validate-attempt broken)))
+            (with-redefs [episode/attempt (fn [& _] (swap! reads inc) broken)]
+              (is (thrown? clojure.lang.ExceptionInfo (prepare fixture)) (str options)))
+            (is (pos? @reads))))
+        (is (= baseline (prepare fixture)))
+        (is (= before @conn)) (is (= files-before @workspace))))))
 
 (deftest frozen-source-and-input-selection-bindings-cannot-drift
   (doseq [transform [#(assoc-in % [:workflow :input-selection :execution-id] (random-uuid))
@@ -760,14 +775,6 @@
     (fn [{:keys [room candidate] :as fixture}]
       (is (some? (episode/attempt room candidate)))
       (is (thrown? clojure.lang.ExceptionInfo (prepare fixture))))))
-
-(deftest trusted-workspace-evidence-and-explicit-check-are-both-required
-  (doseq [options [{:evidence-transform #(dissoc % :knowledge-workspace)}
-                   {:evidence-transform #(assoc-in % [:knowledge-workspace :actual :store] (random-uuid))}
-                   {:checks {:completed? true}}
-                   {:checks {:completed? true :knowledge-workspace? false}}]]
-    (with-fixture options
-      (fn [fixture] (is (thrown? clojure.lang.ExceptionInfo (prepare fixture)))))))
 
 (deftest local-worker-filing-remains-explicitly-outside-native-certification
   (with-fixture {:environment-id :simmis/local-worker}

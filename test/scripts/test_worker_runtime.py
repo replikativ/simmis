@@ -23,7 +23,9 @@ class RuntimeTest(unittest.TestCase):
 
     def test_runtime_is_pinned_local_and_closed(self):
         with tempfile.TemporaryDirectory() as root:
-            descriptor = self.artifact(root)
+            # Cross the verifier's bounded read boundary; pin the complete
+            # archive, not merely its first chunk or entry inventory.
+            descriptor = self.artifact(root, {"large-payload.bin": b"fixture" * 400000})
             self.assertEqual(runtime.verify(descriptor), descriptor)
             for bad in [dict(descriptor, sha256="0" * 64), dict(descriptor, extra=True),
                         dict(descriptor, jar="worker.jar"), dict(descriptor, sha256=True)]:

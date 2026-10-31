@@ -22,8 +22,11 @@
   (repo/stage-all! conn)
   (repo/commit! conn {:message "Fixture source"}))
 
-(defn- with-fixture [owned-first? f]
-  (world/with-world [conn w]
+(defn- with-fixture
+  ([owned-first? f] (with-fixture owned-first? {} f))
+  ([owned-first? options f]
+  (world/with-world* options
+   (fn [conn w]
     (@#'work-test/with-room
      (fn [room]
        (let [opened (atom [])
@@ -65,11 +68,11 @@
                                   (throw (ex-info "No owned default" {})))))]
                (f {:conn conn :w w :room room :owned own :attached attached
                    :own-descriptor own-desc :attached-descriptor attached-desc})))
-           (finally (doseq [c @opened] (d/release c)))))))))
+           (finally (doseq [c @opened] (d/release c)))))))))))
 
 (deftest explicit-read-ignores-registration-order-and-selected-attachment
   (doseq [owned-first? [true false]]
-    (with-fixture owned-first?
+    (with-fixture owned-first? {:system-schema :core}
       (fn [{:keys [conn w room owned attached-descriptor]}]
         (let [before (workspace/selected-system-id)]
           (is (= before (:runtime-system attached-descriptor)))
@@ -87,7 +90,7 @@
             (is (= before (workspace/selected-system-id)))))))))
 
 (deftest snapshot-is-immutable-and-head-or-unrelated-control-edits-do-not-retarget
-  (with-fixture true
+  (with-fixture true {:system-schema :core}
     (fn [{:keys [conn w room owned]}]
       (let [binding (owned/resolve! @conn (:owner w) :read (:room w) room)]
         (seed! owned "# Later\n")
@@ -97,7 +100,7 @@
         (is (= (:target-stamp binding) (:target-stamp (owned/validate! @conn (:owner w) :read (:room w) room binding))))))))
 
 (deftest identical-bytes-default-replacement-and-aba-invalidate-the-opened-stamp
-  (with-fixture true
+  (with-fixture true {:system-schema :core}
     (fn [{:keys [conn w room attached attached-descriptor]}]
       (seed! attached "# Owned\n")
       (let [binding (owned/resolve! @conn (:owner w) :read (:room w) room)]
@@ -109,7 +112,7 @@
         (is (not= (:target-stamp binding) (:target-stamp (owned/resolve! @conn (:owner w) :read (:room w) room))))))))
 
 (deftest current-authority-and-canonical-room-are-required-without-merge-escalation
-  (with-fixture true
+  (with-fixture true {:system-schema :core}
     (fn [{:keys [conn w room]}]
       (is (= "# Owned\n" (:text (owned/read-file @conn (:member w) (:room w) room "wiki/file.md" nil))))
       (is (= :write (:action (owned/resolve! @conn (:member w) :write (:room w) room))))
@@ -122,7 +125,7 @@
         (is (thrown? clojure.lang.ExceptionInfo (owned/validate! @conn (:member w) :read (:room w) room binding)))))))
 
 (deftest malformed-or-substituted-host-descriptors-do-not-fall-back
-  (with-fixture true
+  (with-fixture true {:system-schema :core}
     (fn [{:keys [conn w room own-descriptor attached]}]
       (doseq [descriptor [(assoc own-descriptor :conn attached)
                           (assoc own-descriptor :runtime-system "missing-runtime")

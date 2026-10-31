@@ -1,7 +1,8 @@
 (ns is.simm.ops.owned-workflow-admission-test
   "Inactive source/admission composition. The trusted claim-only producer below
    writes REAL canonical intent, but starts NO Job/model and makes no Run proof."
-  (:require [clojure.string :as str]
+  (:require [is.simm.support.control :as control]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is]]
             [datahike.api :as d]
             [dvergr.jobs :as jobs]
@@ -58,8 +59,11 @@
                                                    :limits (update (:limits input) :settlement keyword)})]
       (work/status conn ctx p room-id (:work.request/id request)))))
 
+;; Both registration orders are exercised by the shared owned-workspace,
+;; file-projection and transport contracts. Each kind still runs here with the
+;; foreign attachment registered first and selected throughout.
 (deftest one-owned-db-pins-code-live-knowledge-and-publication-before-canonical-intent
-  (doseq [order [true false]]
+  (let [order false]
     (@#'fixture/with-fixture
      order
      (fn [{:keys [conn w host owned attached]}]
@@ -140,17 +144,19 @@
        (is (= input (get-in (requests/payload conn before) [:input :submission])))))))
 
 (deftest invalid-and-denied-inputs-refuse-before-hydration-or-source
-  (@#'fixture/with-fixture
-   false
-   (fn [{:keys [w host hydrations]}]
-     (let [input (assoc (saved/input) :expected-owned-source (random-uuid))]
-       (doseq [bad [(dissoc input :expected-owned-source) (assoc input :expected-owned-source "1-1-1-1-1")
-                    (assoc input :room (str (:room w))) (assoc input :name "echo\n")]]
-         (is (= ::owned/invalid (:type (ex-data (failure #(owned/submit! host (principal w) (str (:room w)) bad)))))))
-       (doseq [p [(ops/party-principal (:member w)) (ops/party-principal (:non-member w))
-                  (assoc (principal w) :principal/kind :worker)]]
-         (is (= ::owned/unavailable (:type (ex-data (failure #(owned/submit! host p (str (:room w)) input)))))))
-       (is (empty? @hydrations))))))
+  (control/with-control
+   (fn [{:keys [w host handle]}]
+     (let [input (assoc (saved/input) :expected-owned-source (random-uuid))
+           calls (atom 0) forbidden (fn [& _] (swap! calls inc) (throw (AssertionError. "Prebody refusal reached source")))]
+       (with-redefs [reads/resolve-host-read! forbidden workflows/manifest-in forbidden runs/prepare forbidden]
+         ;; A sentinel host proves DTO validation precedes even owner preflight.
+         (doseq [bad [(dissoc input :expected-owned-source) (assoc input :expected-owned-source "1-1-1-1-1")
+                      (assoc input :room handle) (assoc input :name "echo\n")]]
+           (is (= ::owned/invalid (:type (ex-data (failure #(owned/submit! nil (principal w) handle bad)))))))
+         (doseq [p [(ops/party-principal (:member w)) (ops/party-principal (:non-member w))
+                    (assoc (principal w) :principal/kind :worker)]]
+           (is (= ::owned/unavailable (:type (ex-data (failure #(owned/submit! host p handle input)))))))
+         (is (zero? @calls)))))))
 
 (deftest stale-owned-source-is-normal-conflict-before-bodies-or-preparation
   (@#'fixture/with-fixture
@@ -305,21 +311,19 @@
        (is (thrown? clojure.lang.ExceptionInfo (work/authorize-in! @conn (principal w) (:room w))))))))
 
 (deftest exact-retry-causal-interruption-is-preserved-before-reporting
-  (@#'fixture/with-fixture
-   true
-   (fn [{:keys [w host owned]}]
-     (seed! owned saved/source)
-     (let [input (opened-input host w saved/source) calls (atom 0)]
-       (with-redefs [work/submit-prepared! (claim-only (atom nil))]
-         (owned/submit! host (principal w) (str (:room w)) input))
+  (control/with-control
+   (fn [{:keys [w host handle]}]
+     (let [input (assoc (saved/input) :expected-owned-source (random-uuid))
+           calls (atom 0) fresh (atom 0)
+           forbidden (fn [& _] (swap! fresh inc) (throw (AssertionError. "Retry failure reached fresh work")))]
        (try
          (let [error (with-redefs [runs/retry-request
                                    (fn [& _] (swap! calls inc)
-                                     (throw (ex-info "SECRET/retry cancellation" {} (InterruptedException. "Cancelled"))))]
-                       (failure #(owned/submit! host (principal w) (str (:room w)) input)))
+                                     (throw (ex-info "SECRET/retry cancellation" {} (InterruptedException. "Cancelled"))))
+                                   reads/resolve-host-read! forbidden runs/prepare forbidden work/submit-prepared! forbidden]
+                       (failure #(owned/submit! host (principal w) handle input)))
                interrupted? (.isInterrupted (Thread/currentThread))]
-           (is interrupted?)
-           (is (= 1 @calls))
+           (is interrupted?) (is (= 1 @calls)) (is (zero? @fresh))
            (is (= ::owned/unavailable (:type (ex-data error))))
            (is (not (str/includes? (pr-str [(ex-message error) (ex-data error)]) "SECRET"))))
          (finally (Thread/interrupted)))))))
@@ -469,7 +473,7 @@
           (finally (when @interrupted? (.interrupt (Thread/currentThread)))))))))
 
 (deftest actual-existing-job-kernel-executes-owned-source-with-fixed-gateway-and-no-network
-  (doseq [order [true false]]
+  (let [order false]
     (@#'fixture/with-fixture
      order
      (fn [{:keys [conn w host room owned attached]}]

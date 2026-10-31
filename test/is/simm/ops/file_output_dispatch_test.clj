@@ -31,7 +31,16 @@
 
 (deftest dispatch-journal-transition-needs-its-own-ack-and-never-writes-target
   (with-claimed
-    (fn [{:keys [conn claimed workspace] :as state}]
+    (fn [{:keys [conn party room-id room claimed workspace] :as state}]
+      ;; Invalid candidates cannot submit a transition. Reuse this original
+      ;; acknowledged claim, then exercise its real positive transition below.
+      (let [before @conn calls (atom 0)]
+        (with-redefs [d/transact (fn [& _] (swap! calls inc))]
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (adoption/applying! conn party room-id room claimed
+                                           (assoc (candidate claimed) :publication/actor (random-uuid))))))
+        (is (zero? @calls))
+        (is (= before @conn)))
       (let [before @workspace result (with-redefs [storage/read-file-in
                                                    (fn [& _] (throw (AssertionError. "Body IO in journal transition")))]
                                        (applying! state))
@@ -44,25 +53,21 @@
         (is (= before @workspace))))))
 
 (deftest applying-rechecks-authority-and-target-at-the-serialized-boundary
-  (doseq [change [:authority :target]]
-    (with-claimed
-      (fn [{:keys [conn room-id claimed basis] :as state}]
-        (if (= :authority change)
-          (do (d/transact conn [[:db/retract [:room/id room-id] :room/owner]])
-              (is (thrown? Exception (applying! state))))
-          (with-redefs [filing/current-target (fn [& _] (assoc (:target basis) :store (random-uuid)))]
-            (is (thrown? Exception (applying! state)))))
-        (is (= :claimed (:state (adoptions/operation @conn (get-in claimed [:operation :id])))))))))
-
-(deftest wrong-candidate-refuses-before-submitting-a-journal-transition
   (with-claimed
-    (fn [{:keys [conn party room-id room claimed]}]
-      (let [before @conn]
-        (with-redefs [d/transact (fn [& _] (throw (AssertionError. "Submitted invalid candidate")))]
-          (is (thrown? clojure.lang.ExceptionInfo
-                       (adoption/applying! conn party room-id room claimed
-                                           (assoc (candidate claimed) :publication/actor (random-uuid))))))
-        (is (= before @conn))))))
+    (fn [{:keys [conn party room-id claimed basis] :as state}]
+      (let [original (:operation claimed) fork (get-in claimed [:proof :fork :db/id])]
+        (is (= original (adoptions/linked-operation! @conn fork original)))
+        (with-redefs [filing/current-target (fn [& _] (assoc (:target basis) :store (random-uuid)))]
+          (let [before @conn]
+            (is (thrown? Exception (applying! state)))
+            (is (= before @conn))))
+        (is (= original (adoptions/linked-operation! @conn fork original)))
+        ;; Real revocation is last; no later case borrows revoked authority.
+        (d/transact conn [[:db/retract [:room/id room-id] :room/owner]])
+        (let [before @conn]
+          (is (thrown? Exception (applying! state)))
+          (is (= before @conn)))
+        (is (= :claimed (:state (adoptions/operation @conn (:id original)))))))))
 
 (deftest missing-stale-and-lost-applying-acks-never-read-back-ownership
   (doseq [mode [:missing :stale :lost]]
