@@ -40,14 +40,23 @@
   ;; Read actual mandatory shapes, not an accounting sentinel or profile marker.
   ;; Extra user-defined schema is allowed. The Page title uniqueness override
   ;; is deliberately applied last, just as in the pristine store installer.
+  ;; Dvergr's messages store owns runtime chat schema evolution. Its vocabulary
+  ;; is installed here for new-store convenience, not as this repository's
+  ;; mandatory profile: an additive chat attribute must not invalidate an older
+  ;; canonical Memory. Known chat attributes still require their expected shape
+  ;; when present; the canonical foundation takes precedence on shared idents.
   (let [actual (d/schema db)
         required (into {} (map (juxt :db/ident identity))
                        (concat repository-schema/schema documents/schema space/schema
                                model-schema/full-schema accounting-schema/all
-                               chat-schema/full-schema store/page-title-unique-schema))]
-    (doseq [[ident expected] required]
+                               store/page-title-unique-schema))
+        chat (into {} (map (juxt :db/ident identity)) chat-schema/full-schema)
+        checked (merge (select-keys chat (keys actual)) required)]
+    (doseq [[ident expected] checked]
       (when-not (= (schema-shape expected) (schema-shape (get actual ident)))
-        (refuse! :incompatible-mandatory-schema)))
+        (refuse! (if (contains? required ident)
+                   :incompatible-mandatory-schema
+                   :incompatible-present-chat-schema))))
     (when-not (and (= 1 (count (take 2 (d/datoms db :aevt :geschichte.repo/id))))
                    (space/provisioned? db))
       (refuse! :invalid-repository-identity))))

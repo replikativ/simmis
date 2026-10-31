@@ -1,5 +1,5 @@
 (ns is.simm.documents.profile-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [clojure.test :refer [deftest is testing]]
             [datahike.api :as d]
             [geschichte.repo :as repo]
             [dvergr.catalog.room :as catalog]
@@ -109,7 +109,7 @@
         (is (nil? (:db prepared)) "No partially valid canonical query view")
         (is (identical? conn (profile/prepare-open! conn options)))
         (is (= before @conn))
-        (doseq [broken [(d/db-with before [[:db/retractEntity [:db/ident :chat/description]]])
+        (doseq [broken [(d/db-with before [[:db/retractEntity [:db/ident :document/source-content]]])
                         (d/db-with before [[:db/add (:e (first (d/datoms before :aevt :geschichte.repo/id)))
                                             :document.repository/profile :unknown/profile]])]]
           (is (thrown? clojure.lang.ExceptionInfo (profile/prepare-open! (atom broken) options))))
@@ -117,6 +117,45 @@
         (is (= before @conn)))
       (repo/write! conn "wiki/Broken.md" (markdown/source-bytes (str "---\nsimmis-id: '" (random-uuid) "'\n---\n# Repaired\n")))
       (is (= :ready (:status (view/prepare @conn profile/selection-options)))))))
+
+(deftest reopening-requires-the-canonical-foundation-not-the-current-chat-vocabulary
+  (with-store
+    (fn [conn]
+      (profile/initialize-foundation! conn options)
+      (repo/write! conn "wiki/Existing.md" (markdown/source-bytes "# Existing\n\nPreserve this source.\n"))
+      (let [before @conn before-files (repo/worktree conn)
+            without (fn [ident] (d/db-with before [[:db/retractEntity [:db/ident ident]]]))]
+        (doseq [ident [:message/compacted-message-ids :chat/description]]
+          (testing (str "Missing optional runtime chat attribute " ident)
+            (is (contains? (d/schema before) ident) "The new-store installer still supplies chat schema")
+            (let [snapshot (without ident) old-connection (atom snapshot)]
+              (is (not (contains? (d/schema snapshot) ident)))
+              (with-redefs [d/transact (fn [& _] (throw (AssertionError. "Reopening must not install schema or write files")))]
+                (is (identical? old-connection (profile/prepare-open! old-connection options))))
+              (is (= snapshot @old-connection))
+              (is (not (contains? (d/schema @old-connection) ident)))
+              (is (= before @conn))
+              (is (= before-files (repo/worktree conn))))))
+        (testing "Optional does not permit malformed present chat attributes"
+          (let [broken (d/db-with (without :chat/description)
+                                  [{:db/ident :chat/description :db/valueType :db.type/long
+                                    :db/cardinality :db.cardinality/one}])
+                old-connection (atom broken)]
+            (with-redefs [d/transact (fn [& _] (throw (AssertionError. "Reopening cannot repair incompatible schema")))]
+              (is (= :incompatible-present-chat-schema
+                     (try (profile/prepare-open! old-connection options) nil
+                          (catch clojure.lang.ExceptionInfo error (:reason (ex-data error)))))))
+            (is (= broken @old-connection))))
+        (testing "Actual document foundation remains mandatory"
+          (let [broken (without :document/source-content)
+                old-connection (atom broken)]
+            (with-redefs [d/transact (fn [& _] (throw (AssertionError. "Reopening cannot repair missing foundation")))]
+              (is (= :incompatible-mandatory-schema
+                     (try (profile/prepare-open! old-connection options) nil
+                          (catch clojure.lang.ExceptionInfo error (:reason (ex-data error)))))))
+            (is (= broken @old-connection))))
+        (is (= before @conn))
+        (is (= before-files (repo/worktree conn)))))))
 
 (deftest reopening-never-reinstalls-edited-or-deleted-default-workflow-files
   (with-store
