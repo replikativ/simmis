@@ -7,6 +7,7 @@
             [is.simm.agents.templates :as templates]
             [is.simm.documents.space :as space]
             [is.simm.model.knowledge-rooms :as knowledge]
+            [is.simm.model.memory-upgrades :as upgrades]
             [is.simm.model.parties :as parties]
             [is.simm.model.rooms :as rooms]
             [is.simm.model.system-db :as system-db]
@@ -29,13 +30,18 @@
       (let [row (d/pull db '[:room/id :room/created-by :room/content-db-scope
                              :room/provisioning-state :room/provisioning-version :room/archived-at
                              {:room/parties [:party/id]}
-                             {:room/default-repository [:system/repository-profile]}] [:room/id id])
+                             {:room/default-repository [:system/id :system/repository-profile]}] [:room/id id])
             state (:room/provisioning-state row)]
         (when-not (and (nil? (:room/archived-at row))
                        (uuid? (:room/content-db-scope row))
                        (some #(= owner (:party/id %)) (:room/parties row))
                        (or (and (nil? state) (nil? (:room/provisioning-version row))
                                 (nil? (get-in row [:room/default-repository :system/repository-profile])))
+                           ;; An explicit completed upgrade preserves this historical
+                           ;; Room's original provisioning metadata and creator.
+                           (and (nil? state) (nil? (:room/provisioning-version row))
+                                (= space/profile (get-in row [:room/default-repository :system/repository-profile]))
+                                (upgrades/published-for? db id (get-in row [:room/default-repository :system/id])))
                            (and (= :ready state) (= 1 (:room/provisioning-version row))
                                 (= owner (:room/created-by row))
                                 (= space/profile (get-in row [:room/default-repository :system/repository-profile])))))

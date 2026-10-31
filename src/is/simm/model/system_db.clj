@@ -25,6 +25,7 @@
             [dvergr.substrate.paths :as paths]
             [dvergr.system.db :as sdb]
             [is.simm.model.work-requests :as work-requests]
+            [is.simm.model.memory-upgrades :as memory-upgrades]
             [is.simm.model.work-request-checkpoints :as work-request-checkpoints]
             [is.simm.model.benchmark-resolutions :as benchmark-resolutions]
             [is.simm.model.github-sync :as github-sync]
@@ -798,7 +799,7 @@
 
 (def schema
   "Simmis control-plane extension attributes, including host work admission."
-  (merge-schemas core-schema work-requests/schema work-request-checkpoints/schema benchmark-resolutions/schema github-sync/schema github-push/schema github-credentials/schema personal-connections/schema git-policy/schema github-integrations/schema github-pins/schema github-proposals/schema workers/schema workflow-schedules/schema
+  (merge-schemas core-schema memory-upgrades/schema work-requests/schema work-request-checkpoints/schema benchmark-resolutions/schema github-sync/schema github-push/schema github-credentials/schema personal-connections/schema git-policy/schema github-integrations/schema github-pins/schema github-proposals/schema workers/schema workflow-schedules/schema
                  file-outputs/schema file-adoptions/schema knowledge-dispositions/schema
                  knowledge-streams/schema knowledge-pins/schema knowledge-batches/schema
                  knowledge-processing/schema knowledge-batch-recovery/schema
