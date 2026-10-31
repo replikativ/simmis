@@ -75,12 +75,17 @@
                                             :at (.-value (field "at")) :timezone (.-value (field "timezone"))
                                             :save-transcript? (.-checked (field "transcript"))
                                             :model (not-empty (.-value (field "model")))}]
-                               ((summary-remote/configure-room-summary! web/server-id room-id request)
-                                (fn [reply]
-                                  (if (boolean? (:enabled? reply))
-                                    (room-details/load! room-id {:force? true})
-                                    (js/alert "Settings were not confirmed. Reopen Room settings to inspect the current activation before trying again.")))
-                                (fn [_] (js/alert "Settings could not be confirmed. Reopen Room settings to inspect the outcome."))))
+                               (rem/spin!
+                                #(summary-remote/configure-room-summary! web/server-id room-id request)
+                                (fn [reply error]
+                                  (when-not (and (nil? error) (boolean? (:enabled? reply)))
+                                    (rem/report-error!
+                                     "Could not save summary settings."
+                                     (or error (ex-info "The saved state could not be confirmed."
+                                                       {:error (:error reply)}))))
+                                  ;; Inspect the actual saved state after every outcome. Never
+                                  ;; replay an uncertain write or make the user reload the app.
+                                  (room-details/load! room-id {:force? true}))))
                              :clj nil))}
                 (el/label {:class "settings-env-row"}
                   (el/span {:class "settings-env-key"} "Daily summary")
@@ -106,8 +111,19 @@
                     "Maximum 8 model dispatches, 12 model steps and 180 seconds per active day; 25,000 microdollars of existing allowance. Up to 64 originals and 512 KiB per day; larger days are held for inspection. Reading summaries runs no model.")
                   (el/label {:class "settings-env-row"}
                     (el/span {:class "settings-env-key"} "Model")
-                    (el/input {:name "model" :class "settings-input" :value (or (:model summary) "")
-                               :placeholder "Use my configured model" :disabled (not (:can-manage? summary))})))
+                    (el/select {:name "model" :class "settings-input" :value (or (:model summary) "")
+                                :disabled (not (:can-manage? summary))}
+                      (el/option {:value ""}
+                        (if-let [label (get-in summary [:default-model :label])]
+                          (str "Use my configured model · " label)
+                          "Configured model unavailable · choose a model"))
+                      (when (and (:model summary) (not-any? #(= (:model summary) (:id %)) (:models summary)))
+                        (el/option {:value (:model summary) :disabled true}
+                          (str (:model summary) " · saved choice; unavailable")))
+                      (for [{:keys [id label provider-label credential-status]} (:models summary)]
+                        (el/option {:key id :value id :disabled (not= :present credential-status)}
+                          (str label " · " provider-label
+                               (when (not= :present credential-status) " · login required")))))))
                 (when (:active? summary)
                   (el/p {:role "status"} "A summary is already active. Turning this off stops future admissions; the current work continues."))
                 (when-let [reason (:reason summary)]

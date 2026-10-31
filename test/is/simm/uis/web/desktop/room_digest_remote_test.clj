@@ -53,3 +53,14 @@
                   (fn [& _] (throw (ex-info "Lost ACK" {:status :retry})))]
       (is (= {:status :inspection-required}
              ((remote/prepare-operation party room :publish {:request-id (random-uuid) :digest-id (random-uuid)})))))))
+
+(deftest summary-configuration-reports-correlated-safe-error
+  (let [party (random-uuid) room (str (random-uuid))]
+    (with-redefs [application/capture-operation (fn [] (fn [f] (f {})))
+                  is.simm.ops.room-summary-settings/configure!
+                  (fn [& _] (throw (ex-info "Summary setup refused" {:private "never send this"})))]
+      (let [reply ((remote/prepare-operation party room :configure-summary {}))]
+        (is (= :inspection-required (:status reply)))
+        (is (= "Summary setup refused" (get-in reply [:error :error])))
+        (is (uuid? (parse-uuid (get-in reply [:error :correlation-id]))))
+        (is (not (contains? (:error reply) :private)))))))

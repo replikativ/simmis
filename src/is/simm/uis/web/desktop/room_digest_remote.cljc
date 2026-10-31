@@ -11,7 +11,8 @@
             #?(:clj [is.simm.ops.room-summary-settings :as summary-settings])
             #?(:clj [is.simm.ops.digest-notification :as notification])
             #?(:clj [is.simm.ops.file-output-adoption :as adoption])
-            #?(:clj [is.simm.runtimes.application-ops :as application])))
+            #?(:clj [is.simm.runtimes.application-ops :as application])
+            #?(:clj [is.simm.runtimes.rpc-errors :as rpc-errors])))
 
 #?(:clj
    (defn prepare-operation [party room operation request]
@@ -39,7 +40,9 @@
            (catch Throwable error
              (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)))
              (cond-> {:status (if (#{:install :launch :publish :configure-summary} operation) :inspection-required :unavailable)}
-               request-id (assoc :request request-id))))))))
+               request-id (assoc :request request-id)
+               (= :configure-summary operation)
+               (assoc :error (ex-data (rpc-errors/sanitize error "configure-room-summary"))))))))))
 
 (defn-spin-remote preview-room-digest! [server-id room-id-str request]
   (spin-remote server-id [room-id-str request]
