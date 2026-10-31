@@ -141,3 +141,19 @@ The profiling plugin ignores nested `api/test-plan` calls made from an executing
 test. They are introspection, not another suite; resetting the artifact there
 would truncate the parent progress journal. Final measurements and exit counts
 remain the original runner's values.
+
+Read-only filing observers share one genuine certified failed Attempt and one
+persisted successful Attempt. The malformed returned variants still go through
+`make-attempt-receipt`, `make-attempt` and `validate-attempt`; reader counters
+prove each intended seam is reached, and original DBs/baselines are checked
+before and after. This removes 24 repeated two-store setups. Missing durable
+Attempts, failed filing, historical/unbound/local-worker environments and actual
+publication remain independent integration cases.
+
+Nine file-output tests consolidate 31 fixture acquisitions into 10. Failed
+observations share a genuine filing/claim only when they do not advance a state
+machine. Scalar proof fields and the noncomponent journal link are restored
+exactly and revalidated. Shared component ownership is corrupted last and never
+rolled back by deleting a relation. Unknown acknowledgments, native dispatch,
+terminal journal transitions, interruption and physical ownership keep their
+own scenarios; no terminal transition is reversed for fixture reuse.
