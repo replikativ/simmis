@@ -958,6 +958,21 @@
      (tx! conn at [example-page-getting-started])
      (tx! conn at getting-started-blocks))))
 
+(defn definition-transactions
+  "Categorical vocabulary only, in dependency order. Contains no pages,
+   agents, chat rooms, example files or accounting accounts. Shared by ordinary
+   provisioning and the explicit preserving knowledge upgrade."
+  []
+  [(vec (concat morphism-attribute-schemas person-attribute-schemas task-attribute-schemas))
+   all-seed-data
+   (into [object-Person] person-morphisms)
+   (into [object-Task] task-morphisms)
+   [{:entity/uuid (:entity/uuid category-S)
+     :category/objects [[:entity/uuid (:entity/uuid object-Person)]
+                        [:entity/uuid (:entity/uuid object-Task)]]
+     :category/morphisms (mapv #(vector :entity/uuid (:entity/uuid %))
+                               (concat person-morphisms task-morphisms))}]])
+
 (defn ensure-seed-data!
   "Install the categorical seed into `conn`. Idempotent, and unconditionally so.
 
@@ -988,21 +1003,7 @@
                                   :where
                                   [?e :entity/uuid #uuid "00000000-0000-0000-0000-000000000001"]]
                                 @conn))]
-     ;; Attribute schemas for every morphism, including the S/Person and S/Task
-     ;; property sets, before any entity that uses them.
-     (tx! conn at (concat morphism-attribute-schemas
-                          person-attribute-schemas
-                          task-attribute-schemas))
-     ;; The objects, morphisms and category rows themselves.
-     (tx! conn at all-seed-data)
-     (tx! conn at (into [object-Person] person-morphisms))
-     (tx! conn at (into [object-Task] task-morphisms))
-     ;; Category S accumulates its objects and morphisms (card-many refs append).
-     (tx! conn at [{:entity/uuid (:entity/uuid category-S)
-                    :category/objects [[:entity/uuid (:entity/uuid object-Person)]
-                                       [:entity/uuid (:entity/uuid object-Task)]]
-                    :category/morphisms (mapv #(vector :entity/uuid (:entity/uuid %))
-                                              (concat person-morphisms task-morphisms))}])
+     (doseq [tx (definition-transactions)] (tx! conn at tx))
      seed-exists?)
    ;; Content, each guarded on its own existence — see
    ;; `seed-getting-started-page!` for why content must not ride the

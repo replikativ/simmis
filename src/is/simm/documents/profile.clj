@@ -38,7 +38,19 @@
   (assoc (select-keys attribute [:db/valueType :db/cardinality :db/unique])
          :db/isComponent (boolean (:db/isComponent attribute))))
 
-(defn- validate-foundation! [db]
+(defn foundation-schema
+  "Mandatory declarations shared by pristine provisioning and explicit upgrades.
+   This is data only: no schema installation or content seeding."
+  []
+  (->> (concat repository-schema/schema documents/schema space/schema
+               model-schema/full-schema accounting-schema/all
+               store/page-title-unique-schema)
+       (reduce (fn [out entry] (assoc out (:db/ident entry) entry)) (sorted-map))
+       vals vec))
+
+(defn validate-foundation!
+  "Validate the installed profile without installing schema or authored content."
+  [db]
   ;; Read actual mandatory shapes, not an accounting sentinel or profile marker.
   ;; Extra user-defined schema is allowed. The Page title uniqueness override
   ;; is deliberately applied last, just as in the pristine store installer.
@@ -48,10 +60,7 @@
   ;; canonical Memory. Known chat attributes still require their expected shape
   ;; when present; the canonical foundation takes precedence on shared idents.
   (let [actual (d/schema db)
-        required (into {} (map (juxt :db/ident identity))
-                       (concat repository-schema/schema documents/schema space/schema
-                               model-schema/full-schema accounting-schema/all
-                               store/page-title-unique-schema))
+        required (into {} (map (juxt :db/ident identity)) (foundation-schema))
         chat (into {} (map (juxt :db/ident identity)) chat-schema/full-schema)
         checked (merge (select-keys chat (keys actual)) required)]
     (doseq [[ident expected] checked]
