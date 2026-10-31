@@ -75,6 +75,7 @@
             [is.simm.uis.web.desktop.saved-view-remote]
             [is.simm.uis.web.desktop.memory-reference-remote]
             [is.simm.uis.web.desktop.conversation-capture-remote]
+            [is.simm.uis.web.desktop.room-digest-remote]
             [is.simm.uis.web.desktop.feed-remote]
             [org.replikativ.spindel.distributed.core :as dist])
   (:import [java.io File]
