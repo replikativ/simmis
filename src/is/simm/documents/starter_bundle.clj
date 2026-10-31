@@ -11,9 +11,9 @@
            [java.security MessageDigest]))
 
 (def upstream "https://github.com/replikativ/dvergr-sandbox")
-(def commit "6e5315f7f96146bfb9205bacd20c868ba1766ae4")
+(def commit "23cbd7daf89212b68e9f99bc80fc5c3e39760395")
 (def resource "is/simm/starter/dvergr-sandbox.edn")
-(def packaged-digest "577b757c7d94e0ac0af4b93c63ca9755565a77144760aa7c07954eaa87312506")
+(def packaged-digest "615fedaefc168083b82cb035d805f64fc31eb26470d2452f263b34ca807bc0cb")
 (def max-files 128)
 (def max-file-bytes (* 2 1024 1024))
 (def max-total-bytes (* 8 1024 1024))
