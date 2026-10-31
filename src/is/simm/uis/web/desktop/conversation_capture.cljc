@@ -69,3 +69,56 @@
   (cond-> (assoc s :visible? false :token nil)
     (= :publishing (:phase s)) (assoc :phase :inspection-required)
     (= :preview-loading (:phase s)) (assoc :phase :idle)))
+
+(defn room-artifact? [a room]
+  (and (map? a) (= #{:message-id :source-revision :content-id :path :text :source-bytes} (set (keys a)))
+       (uuid? (:content-id a)) (integer? (:source-bytes a)) (<= 0 (:source-bytes a) (* 256 1024))
+       (uuid? (:message-id a)) (uuid? (:source-revision a))
+       (= (:path a) (str "inbox/conversations/room-activity/" room "/" (:message-id a)
+                         "/" (:source-revision a) ".md"))
+       (string? (:text a)) (<= (count (:text a)) (* 512 1024))))
+
+(defn room-preview? [r]
+  (and (map? r) (= :room-preview (:status r))
+       (every? #{:status :capture-id :target-stamp :source-room :source-store :artifacts
+                 :state :complete? :limitations :scan-count :retained-count :held} (keys r))
+       (uuid? (:capture-id r)) (uuid? (:target-stamp r)) (uuid? (:source-room r))
+       (uuid? (:source-store r)) (#{:ready :bounded :held} (:state r))
+       (boolean? (:complete? r)) (vector? (:artifacts r)) (<= (count (:artifacts r)) 20)
+       (every? #(room-artifact? % (:source-room r)) (:artifacts r))))
+
+(defn receive-room-preview [s connection token reply]
+  (if-not (current-request? s connection token :preview-loading) s
+          (if (room-preview? reply)
+            (assoc s :phase :preview :preview reply :token nil)
+            (assoc s :phase :unavailable :token nil))))
+
+(defn begin-room-publish [s connection token]
+  (let [s (reconcile s connection) p (:preview s)]
+    (if (and (= :preview (:phase s)) (:visible? s) (room-preview? p)
+             (not= :held (:state p)) (seq (:artifacts p)))
+      (assoc s :phase :publishing :token token) s)))
+
+(defn room-saved? [r p]
+  (and (map? r) (= :room-saved (:status r))
+       (= #{:status :capture-id :target-stamp :writes :state :complete? :limitations} (set (keys r)))
+       (= (select-keys r [:capture-id :target-stamp]) (select-keys p [:capture-id :target-stamp]))
+       (vector? (:writes r)) (= (count (:writes r)) (count (:artifacts p)))
+       (every? true?
+               (map (fn [w a]
+                      (and (= #{:message-id :source-revision :path :saved? :commit} (set (keys w)))
+                           (= (select-keys w [:message-id :source-revision :path])
+                              (select-keys a [:message-id :source-revision :path]))
+                           (true? (:saved? w)) (uuid-text? (:commit w))))
+                    (:writes r) (:artifacts p)))))
+
+(defn receive-room-publish [s connection token reply]
+  (if-not (current-request? s connection token :publishing) s
+          (if (room-saved? reply (:preview s))
+            (assoc s :phase :saved :token nil :saved reply)
+            (assoc s :phase :inspection-required :token nil))))
+
+(defn begin-room-preview [s connection token ids]
+  (begin-preview (if (and (= :saved (:phase s)) (= connection (:connection s)))
+                   {:phase :idle} s)
+                 connection token ids))

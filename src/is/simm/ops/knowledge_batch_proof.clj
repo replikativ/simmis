@@ -18,6 +18,7 @@
             [is.simm.model.work-limits :as work-limits]
             [is.simm.ops.knowledge-batch-inputs :as inputs]
             [is.simm.ops.knowledge-inputs :as evidence]
+            [is.simm.ops.knowledge-citations :as citations]
             [is.simm.ops.owned-workflows :as sources]
             [is.simm.ops.owned-workflow-snapshot :as snapshot]
             [is.simm.ops.workflow-policy :as policy]
@@ -145,7 +146,7 @@
                     :bytes (reduce + 0 (map #(alength (.getBytes ^String % "UTF-8")) (vals auxiliary)))}
           program (hasch/uuid [:simmis/knowledge-program-v1
                               (select-keys workflow [:name :bundle :case :params])
-                              (:environment/task env) auxiliary])
+                              (citations/semantic-task input) auxiliary])
           bundle (catalog/bundle name source :program)
           declaration (inputs/declaration source)
           captured (:captured frozen)]

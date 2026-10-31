@@ -13,6 +13,9 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.work :as work]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
+            [is.simm.ops.knowledge-coverage :as coverage]
+            [is.simm.ops.knowledge-citations :as citations]
+            [is.simm.ops.digest-inputs :as digest-inputs]
             [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.ops.knowledge-admission :as knowledge-admission]
@@ -134,13 +137,13 @@
       (invalid! "Workflow input files exceed the total byte limit"))
     entries))
 
-(defn- setup [name bundle source entries collector?]
+(defn- setup [name bundle source entries collector? output-scope]
   (let [prefix (str "/workflows/" name "/")
         digest (str (hasch/uuid entries))]
     (evaluation/make-world-setup
-     {:id :simmis/workflow-inputs :version (if collector? 3 1)
+     {:id :simmis/workflow-inputs :version (if output-scope 4 (if collector? 3 1))
       :basis (cond-> {:name name :bundle (str (:id bundle)) :inputs digest :policy policy}
-               collector? (assoc :cleanup knowledge-workspace/cleanup-policy
+               collector? (assoc :cleanup (knowledge-workspace/cleanup-policy-for output-scope)
                                  :source-role execution-view/profile))
       :prepare
       (fn [{world :room}]
@@ -153,7 +156,7 @@
                            (into {} (map (fn [[p text]] [(str prefix p) {:text text}])) source))]
           (when (> (count edits) files/max-batch-files)
             (invalid! "Pinned workflow subtree exceeds the canonical writer batch limit"))
-          (when collector? (knowledge-workspace/clear-owned! world))
+          (when collector? (knowledge-workspace/clear-owned! world output-scope))
           (files/write! world edits {:message (str "Pin workflow " name " at " (:id bundle))}))
         (when (seq entries) (workspace/seed! world entries))
         (when collector?
@@ -191,6 +194,7 @@
           task (render (:task definition) params)
           prefix (str "/workflows/" name "/")
           entries (input-files prefix (merge (:fixtures bundle) (get-in bundle [:cases case :fixtures])) inputs)
+          _ (digest-inputs/validate-inputs! (:files snapshot) params entries)
           provenance {:name name :bundle (str expected-bundle) :case case :params params :policy policy}]
       (when (knowledge-inputs/declaration (:files snapshot))
         (knowledge-workspace/validate-inputs! entries))
@@ -218,7 +222,7 @@
                      {:kind :knowledge :policy selection-policy
                       :trigger-id (:trigger-id resolved) :execution-id (:execution-id resolved)
                       :manifest-id (hasch/uuid (:manifest resolved))})]
-    (cond-> (assoc planned :inputs entries :world-setup (setup (:name input) bundle source entries (some? resolved)))
+    (cond-> (assoc planned :inputs entries :world-setup (setup (:name input) bundle source entries (some? resolved) (knowledge-inputs/output-scope selection-policy)))
       provenance (assoc-in [:workflow :input-selection] provenance))))
 
 (defn- with-live-selection [db identity selection-policy publication? f]
@@ -226,7 +230,7 @@
     (f (dissoc selected :manifest-text)
        #(hash-map :captured (knowledge-inputs/capture db selection-policy)
                   :publication-basis (when publication?
-                                       (knowledge-inputs/publication-basis db identity))))))
+                                       (knowledge-inputs/publication-basis db identity (knowledge-inputs/output-scope selection-policy)))))))
 
 (defn resolve-admission-in
   "HOST fixed immutable-DB source resolution. Caller supplies the validated
@@ -283,6 +287,8 @@
   [room snapshot input]
   (with-source-selection room snapshot input (fn [_ capture] (capture))))
 
+(declare completion-evaluator)
+
 (defn bind-publication
   "Bind host-only target occupancy to the canonical request, never model inputs.
    This retains historical evidence, not permission to publish an output."
@@ -297,7 +303,12 @@
       (publication/validate! publication-basis)
       (let [target (:target publication-basis)
             setup (knowledge-workspace/with-publication-target (:world-setup prepared) target)
-            evaluator (knowledge-outputs/with-publication-target (:evaluator prepared) target)
+            base-evaluator (if (coverage/declaration (get-in prepared [:basis :source]))
+                             (completion-evaluator (get-in prepared [:basis :source])
+                                                   (get-in prepared [:basis :workflow])
+                                                   (get-in prepared [:basis :inputs]) publication-basis)
+                             (:evaluator prepared))
+            evaluator (knowledge-outputs/with-publication-target base-evaluator target)
             verifier (evaluation/evaluator-ref evaluator)
             old (environment/validate-environment (:environment prepared))
             env (environment/make-environment
@@ -313,6 +324,48 @@
             (assoc-in [:basis :knowledge/publication-basis] publication-basis))))
     prepared))
 
+(defn completion-evaluator
+  "One completion construction path for admission and retained certification.
+   A coverage opt-in binds original membership, never a summary's topic list."
+  [source workflow inputs & [publication-basis]]
+  (let [policy (get-in workflow [:input-selection :policy])
+        output-scope (knowledge-inputs/output-scope policy)
+        base (if (:input-selection workflow)
+               (knowledge-outputs/with-capture work/completion output-scope)
+               work/completion)]
+    (if (coverage/declaration source)
+      (do
+        (when-not (and policy output-scope)
+          (invalid! "Original coverage requires scoped knowledge inputs"))
+        (coverage/with-capture
+         base (coverage/with-existing-targets
+               (coverage/expected (:manifest (knowledge-inputs/from-inputs policy inputs)))
+               publication-basis output-scope)
+         output-scope))
+      base)))
+
+(defn citation-task
+  "Reproducible HOST citation routing, separate from semantic program identity.
+   No source body is promoted to instructions; links grant no read authority."
+  [task citation-context]
+  (citations/task task citation-context))
+
+(defn- bind-source-citations [prepared citation-context]
+  (if-not (coverage/declaration (get-in prepared [:basis :source])) prepared
+    (let [old (environment/validate-environment (:environment prepared))
+          verifier (:environment/verifier old)
+          env (environment/make-environment
+               {:id (:environment/id old) :version (:environment/version old)
+                :task (citation-task (:environment/task old) citation-context)
+                :limits (:environment/limits old)
+                :verifier {:id (:verifier/id verifier) :version (:verifier/version verifier)
+                           :basis (:verifier/basis verifier)}
+                :world (:environment/world old) :metadata (:environment/metadata old)})]
+      (-> prepared (assoc :environment env)
+          (assoc-in [:basis :environment] env)
+          (assoc-in [:basis :knowledge/source-task] (:environment/task old))
+          (assoc-in [:basis :knowledge/source-citations] citation-context)))))
+
 (defn prepare
   "Construct from ONE immutable source snapshot. The bundle is task data;
    provider, tool/effect surface, limits and evaluator remain host policy."
@@ -327,8 +380,7 @@
                       world-setup)
         prepared (work/prepare {:request-id (:request-id input) :task task :model model :limits limits})
         base (:environment prepared)
-        evaluator (cond-> (:evaluator prepared)
-                    (:input-selection workflow) knowledge-outputs/with-capture)
+        evaluator (completion-evaluator source workflow inputs)
         verifier (evaluation/evaluator-ref evaluator)
         env (environment/make-environment
              {:id :simmis/saved-workflow :task task
@@ -353,6 +405,11 @@
         prepared (bind-publication
                   (prepare snapshot (dissoc input :expected-owned-source) (:captured frozen) selected)
                   (select-keys frozen [:captured :publication-basis]))
+        prepared (bind-source-citations
+                  prepared {:version 1 :room (get-in owner [:original :room-id])
+                            :request (requests/request-id (get-in owner [:original :party])
+                                                          (get-in owner [:original :room-id])
+                                                          (:request-id input))})
         prepared (-> prepared
                      (assoc-in [:basis :submission] input)
                      (assoc-in [:basis :knowledge/batch] origin)

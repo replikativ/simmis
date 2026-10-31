@@ -27,7 +27,7 @@
 
 (def value-schema
   [:map {:closed true}
-   [:id :uuid] [:version [:= 1]] [:request :uuid] [:intent :uuid]
+   [:id :uuid] [:version [:enum 1 2]] [:request :uuid] [:intent :uuid]
    [:job :uuid] [:candidate :uuid] [:attempt-content :uuid]
    [:basis :uuid] [:output :uuid] [:kind [:enum :proposed :no-op]]
    [:manifest {:optional true} :uuid] [:proposal {:optional true} :uuid]
@@ -45,13 +45,13 @@
     :proposed
     (when-not (and (uuid? (:manifest value))
                    (= (:proposal value)
-                      (hasch/uuid [:simmis/knowledge-file-proposal-v1 (:manifest value)])))
+                      (hasch/uuid [(case (:version value) 1 :simmis/knowledge-file-proposal-v1 2 :simmis/knowledge-file-proposal-v2) (:manifest value)])))
       (refuse! :invalid-proposed-binding))
     :no-op
     (when (or (contains? value :manifest) (contains? value :proposal))
       (refuse! :invalid-no-op-binding)))
   (when-not (= (:id value)
-               (hasch/uuid [:simmis/knowledge-disposition-v1 (dissoc value :id)]))
+               (hasch/uuid [(case (:version value) 1 :simmis/knowledge-disposition-v1 2 :simmis/knowledge-disposition-v2) (dissoc value :id)]))
     (refuse! :content-mismatch))
   value)
 
@@ -59,12 +59,13 @@
   "Seal exact semantic fields; timestamps and execution status are not fields.
    An explicit verified empty/unchanged capture may be :no-op. Missing capture
    cannot produce a receipt, because :output is required."
-  [fields]
+  ([fields] (make fields 1))
+  ([fields version]
   (when-not (map? fields) (refuse! :invalid-shape))
   (when (contains? fields :id) (refuse! :caller-supplied-id))
   (when (contains? fields :version) (refuse! :caller-supplied-version))
-  (let [body (assoc fields :version 1)]
-    (validate! (assoc body :id (hasch/uuid [:simmis/knowledge-disposition-v1 body])))))
+  (let [body (assoc fields :version version)]
+    (validate! (assoc body :id (hasch/uuid [(case version 1 :simmis/knowledge-disposition-v1 2 :simmis/knowledge-disposition-v2) body]))))))
 
 (def ^:private binding-keys
   [:work.request/id :work.request/client-id :work.request/by :work.request/room

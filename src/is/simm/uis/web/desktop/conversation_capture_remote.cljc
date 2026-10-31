@@ -61,3 +61,43 @@
                                                     room-id-str :publish request)]
                          (await (blocking/blocking body)))
                   :cljs nil)))
+
+#?(:clj
+   (defn prepare-room-operation [party room-id operation request]
+     (when-not (and (uuid? party) (protocol/uuid-text? room-id) (#{:preview :publish} operation))
+       (throw (ex-info "Invalid room evidence request" {:type :validation-error})))
+     (let [invoke (application/capture-operation)
+           principal {:principal/kind :human :principal/id (str "party/" party)}]
+       (fn []
+         (try
+           (invoke
+            (fn [host]
+              (case operation
+                :preview (let [reply (assoc (capture/preview-room! host principal room-id request) :status :room-preview)]
+                           (when-not (protocol/room-preview? reply)
+                             (throw (ex-info "Invalid room evidence preview" {})))
+                           reply)
+                :publish (let [p (capture/publish-room! host principal room-id request)
+                               writes (mapv (fn [w]
+                                              (let [receipt (:write w)]
+                                                (when-not (true? (:saved? receipt))
+                                                  (throw (ex-info "Uncertain evidence publication" {})))
+                                                (-> (dissoc w :write)
+                                                    (assoc :saved? true :commit (some-> (:commit receipt) str)))))
+                                            (:writes p))]
+                           (assoc p :status :room-saved :writes writes)))))
+           (catch Throwable error
+             (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)))
+             {:status (if (= :publish operation) :inspection-required :unavailable)}))))))
+
+(defn-spin-remote preview-room-evidence!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (let [body (prepare-room-operation (access/authenticated-party-id) room-id-str :preview request)]
+                         (await (blocking/blocking body))) :cljs nil)))
+
+(defn-spin-remote publish-room-evidence!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (let [body (prepare-room-operation (access/authenticated-party-id) room-id-str :publish request)]
+                         (await (blocking/blocking body))) :cljs nil)))

@@ -1,0 +1,3 @@
+{:version 1
+ :workspace :retained-batch-checkpoint
+ :retention :request-evidence-v1}

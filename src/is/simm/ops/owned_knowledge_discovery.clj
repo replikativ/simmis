@@ -65,7 +65,7 @@
                     (check!)
                     (f resolved lease lifetime/*ticket* check!))))))))))))
 
-(defn- writer-current!
+(defn writer-current!
   "Short observations on a writer thread, never thread-entry admission or
    source IO. The original caller still owns and physically joins its lease."
   [host principal handle resolved lease ticket db]
@@ -219,7 +219,7 @@
       (refuse! :batching-not-enabled-for-this-epoch))
     declaration))
 
-(defn- active-batch-reply [db value expected]
+(defn active-batch-reply [db value expected]
   (when-let [id (:knowledge.stream/active-batch expected)]
     (let [row (batches/batch db id)]
       (when-not (and row (= (:by value) (:knowledge.batch/by row))
@@ -281,7 +281,8 @@
                     ;; Capture repeats this bounded metadata read on the SAME
                     ;; immutable snapshot when forming its retained envelope.
                     _ (inputs/publication-basis (:db pinned)
-                                               (select-keys (:target binding) [:registry-system :runtime-system]))]
+                                               (select-keys (:target binding) [:registry-system :runtime-system])
+                                               (inputs/output-scope policy))]
                 (check!)
                 (artifact/publish-value! (artifact/datahike-store control) selected
                   (fn [ref]

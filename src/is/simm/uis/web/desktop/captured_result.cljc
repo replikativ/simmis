@@ -26,11 +26,9 @@
 (def source-identity-keys [:proposal :component :request :selection])
 (def max-source-bytes 524288)
 
-(defn source-list-valid? [proposal component listing]
+(defn- source-files-valid? [listing]
   (let [files (:files listing) selection (:selection listing)]
     (and (map? listing) (map? selection)
-         (= proposal (:proposal listing)) (= component (:component listing))
-         (every? uuid-text? [proposal component (:request listing)])
          (= #{:trigger-id :execution-id :manifest-id} (set (keys selection)))
          (every? uuid-text? (vals selection))
          (vector? files) (<= (count files) 100)
@@ -41,6 +39,22 @@
                         (#{:trigger :context} role)
                         (integer? size) (<= 0 size max-source-bytes)
                         (uuid-text? content-id))) files))))
+
+(defn source-list-valid? [proposal component listing]
+  (and (= proposal (:proposal listing)) (= component (:component listing))
+       (every? uuid-text? [proposal component (:request listing)])
+       (source-files-valid? listing)))
+
+(defn request-source-list-valid? [room request listing]
+  (and (= #{:room :request :selection :files} (set (keys listing)))
+       (= room (:room listing)) (= request (:request listing))
+       (every? uuid-text? [room request]) (source-files-valid? listing)))
+
+(defn request-source-chunk-valid? [listing entry offset chunk decoded-length]
+  (and (map? listing) (map? chunk)
+       (= (select-keys listing [:room :request :selection])
+          (select-keys chunk [:room :request :selection]))
+       (byte-chunk-valid? max-source-bytes entry offset chunk decoded-length)))
 
 (defn source-chunk-valid? [listing entry offset chunk decoded-length]
   (and (map? listing) (map? chunk)

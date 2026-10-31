@@ -34,6 +34,7 @@
             [clojure.string :as str]
             #?(:cljs [is.simm.uis.web.desktop.markdown :as md])
             #?(:cljs [is.simm.uis.web.desktop.views.conversation-capture :as capture-view])
+            #?(:cljs [is.simm.uis.web.desktop.views.room-digest :as digest-view])
             #?(:cljs [is.simm.uis.web.desktop.views.mermaid :as mmd])
             #?(:cljs [is.simm.uis.web.desktop.views.workflow-setup :as workflow-setup])
             #?(:cljs [is.simm.uis.web.desktop.views.benchmark-result :as benchmark-result])
@@ -463,7 +464,7 @@
            in-reply-to reply-count on-jump-parent on-reply audience run-id
            activities mention-handles on-open-thread on-open-run on-open-proposal
            on-accept-proposal on-request-proposal-changes on-dismiss-proposal
-           on-retry-proposal proposal-state object capture]}]
+           on-retry-proposal proposal-state object capture digest-notification]}]
   (el/div {:key id
            :class (vc/class-names "chat-message" "message"
                                   (when is-own? "chat-message--own"))
@@ -529,7 +530,10 @@
                                   (.stopPropagation event)
                                   (on-reply))}
             "Reply"))
-        #?(:cljs (when capture (capture-view/control capture)) :clj nil))
+        #?(:cljs (when capture
+                   (el/span {:class "chat-message-memory-controls"}
+                     (capture-view/control capture)
+                     (digest-view/control capture))) :clj nil))
       ;; The visible @handle is presentation; this chip confirms that dispatch
       ;; resolved it to canonical actor identities before the message was
       ;; accepted. Keep the ids in the title for inspection without making the
@@ -586,7 +590,10 @@
                           (not (:read-only? workflow-context)))
                  (benchmark-result/actions report-owner (str (:id object)) report-state))
          :clj nil)
-      #?(:cljs (when capture (capture-view/panel capture)) :clj nil)
+      #?(:cljs (when capture
+                 (el/div {:class "chat-message-memory-panels"}
+                   (capture-view/panel capture)
+                   (digest-view/panel capture))) :clj nil)
         (when (and is-ai? room-id)
           (for [workflow (workflow-links/mentioned-workflows content)]
             #?(:cljs
@@ -658,7 +665,9 @@
                    "Dismiss")]))))
         ;; Generic message content - markdown for AI, rich text for user
         #?(:cljs
-           (if (or is-ai? (= :benchmark-result (:kind object)))
+           (if (= :conversation-digest (:kind object))
+             (digest-view/notification-card (assoc digest-notification :content content))
+             (if (or is-ai? (= :benchmark-result (:kind object)))
            (foreign-node
              {:key (str "md-" id "-" (name (or syntax-pref :clojure)))
               :class "chat-message-content message-text"
@@ -712,7 +721,7 @@
                                 (.replaceWith pre-el holder)
                                 (mmd/render-into! holder code)))))})
              (el/div {:class "chat-message-content message-text"}
-               (render-rich-content content)))
+               (render-rich-content content))))
            :clj
            (el/div {:class "chat-message-content message-text"}
              (render-rich-content content)))))))

@@ -32,6 +32,7 @@
             [is.simm.ops.owned-knowledge-discovery :as discovery]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-room-operation :as room-operation]
+            [is.simm.ops.owned-room-evidence :as room-evidence]
             [is.simm.ops.owned-workflows :as owned-sources]
             [is.simm.ops.owned-workflow-snapshot :as source-snapshot]
             [is.simm.ops.owned-workspace :as owned-workspace]
@@ -842,6 +843,8 @@
                                   :revision (:schedule.activation/revision row)
                                   :occurrence (:schedule.occurrence/id o)
                                   :creation-channel (:creation-channel target)})
+                       (cond-> (:collection resolution)
+                         (assoc-in [:basis :knowledge/collection] (:collection resolution)))
                        (cond-> (:knowledge-origin resolution)
                          (assoc-in [:basis :knowledge-origin] (:knowledge-origin resolution)))
                        (cond-> (:schedule-binding resolution)
@@ -892,7 +895,8 @@
                                        (:room-id room-binding) (:room room-binding) rich)
             {:captured (knowledge-inputs/capture (:db rich) policy)
              :publication-basis (knowledge-inputs/publication-basis
-                                 (:db rich) (select-keys (:target rich) [:registry-system :runtime-system]))}))))))
+                                 (:db rich) (select-keys (:target rich) [:registry-system :runtime-system])
+                                 (knowledge-inputs/output-scope policy))}))))))
 
 (defn- dispatch-owned-batch! [host conn row o claim target context room-binding declaration]
   (let [{:keys [principal handle original]} context
@@ -901,11 +905,19 @@
       (throw (ex-info "Incremental schedules currently use default inputs" {:type ::invalid})))
     (owned-claim! host row o claim)
     (owned-execution-ready! host target context room-binding)
-    (let [reply (owned-storage!
+    (let [collection (owned-storage!
+                      #(room-evidence/prepare! host principal handle room-binding (:snapshot target) execution
+                                               {:activation (:schedule.activation/id row)
+                                                :revision (:schedule.activation/revision row)
+                                                :occurrence (:schedule.occurrence/id o) :claim claim}
+                                               (request-id row o) (:epoch declaration)))
+          reply (if (= :held (:status collection))
+                  collection
+                  (owned-storage!
                  #(discovery/prepare-batch!
                    host principal handle
                    {:name (:name execution) :expected-source (:expected-owned-source execution)
-                    :expected-bundle (:expected-bundle execution) :epoch (:epoch declaration)}))]
+                    :expected-bundle (:expected-bundle execution) :epoch (:epoch declaration)})))]
       (cond
         (and (= #{:status :reason :stream :batch :batch-state} (set (keys reply)))
              (= :held (:status reply)) (= :active-batch (:reason reply))
@@ -934,7 +946,8 @@
                 retained (owned-storage! #(scheduled/retained conn ack))]
             (when-not (= value retained) (owned-unavailable!))
             (owned-submit! host conn row o claim target context room-binding nil
-                           {:batch-proof proof :control-revision (:control-revision reply) :schedule-binding value})))
+                           {:batch-proof proof :control-revision (:control-revision reply) :schedule-binding value
+                            :collection collection})))
         :else (owned-unavailable!)))))
 
 (defn- owned-dispatch! [host conn row o target]

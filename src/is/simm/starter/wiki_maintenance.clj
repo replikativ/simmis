@@ -6,7 +6,7 @@
             [is.simm.documents.markdown :as markdown]))
 
 (def name "maintain-wiki")
-(def version 5)
+(def version 6)
 (def policy {:max-file-bytes 524288 :max-bundle-bytes 2097152})
 
 (def ^:private paths
@@ -26,7 +26,7 @@
    initializer; never overwrite user edits implicitly."
   ([] (source version))
   ([version]
-   (when-not (#{1 2 3 4 5} version)
+   (when-not (#{1 2 3 4 5 6} version)
      (throw (ex-info "Unknown shipped wiki workflow version" {})))
    (:files
     (reduce (fn [{:keys [files size]} path]
@@ -42,4 +42,5 @@
                       (throw (ex-info "Shipped wiki-maintenance source exceeds byte limits" {:path path})))
                     {:files (assoc files path (markdown/decode bytes)) :size total}))))
             {:files (sorted-map) :size 0} (cond-> paths (<= 4 version) (conj "input-batching.edn")
-                                         (= 5 version) (conj "execution-origin.edn"))))))
+                                         (<= 5 version) (conj "execution-origin.edn")
+                                         (= 6 version) (conj "coverage-policy.edn" "collection-policy.edn"))))))

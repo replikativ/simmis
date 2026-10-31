@@ -159,7 +159,7 @@
   (assert-native-wiki-checkpoint nil))
 
 (deftest packaged-v5-reads-retained-context-beyond-the-copy-limit
-  (assert-native-wiki-checkpoint (starter/source)))
+  (assert-native-wiki-checkpoint (starter/source 5)))
 
 (defn- pin-failure-gate [fault]
   (checkpoint-fixture

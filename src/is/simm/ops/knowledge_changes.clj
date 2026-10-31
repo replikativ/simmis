@@ -78,10 +78,9 @@
     (assoc (source-identity db) :commit commit :max-tx (:max-tx db) :datoms (count db))))
 
 (defn- role [policy path]
-  (when (and (string? path) (re-find #"(?i)\.(md|markdown)$" path)
-             (not-any? #(str/starts-with? path (str % "/")) (:exclude-prefixes policy)))
-    (cond (some #(str/starts-with? path (str % "/")) (:trigger-roots policy)) :trigger
-          (some #(str/starts-with? path (str % "/")) (:context-roots policy)) :context)))
+  (when (and (string? path) (re-find #"(?i)\.(md|markdown)$" path))
+    (cond (inputs/role-path? policy :trigger path) :trigger
+          (inputs/role-path? policy :context path) :context)))
 
 (def ^:private metadata-pattern
   '[:geschichte.work/path :geschichte.work/size :geschichte.work/mode

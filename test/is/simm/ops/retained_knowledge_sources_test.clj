@@ -215,3 +215,95 @@
                                            [:db/retract [:room/id room-id] :room/parties [:party/id party]]])
                          result))]
          (is (= {:status :unavailable} (sources/list! party proposal component))))))))
+
+(deftest request-citations-are-output-independent-and-preserve-old-frozen-bytes
+  (with-sources
+    (fn [{:keys [conn workspace party room-id request proposal component]}]
+      (let [path "/in/knowledge/sources/inbox/evidence.md"
+            original (sources/request-list! party room-id request)
+            expected (:data original)]
+        (is (= :ok (:status original)))
+        (is (= #{:room :request :selection :files} (set (keys expected)))
+            "Only selected original metadata is disclosed, never model task or raw request payload")
+        (is (= (str room-id) (:room expected)))
+        (is (= (str request) (:request expected)))
+        (repo/write! workspace "inbox/evidence.md" (markdown/source-bytes "Changed after capture"))
+        ;; A completed adoption or dismissal may change Proposal state; the
+        ;; request citation has no component/disposition dependency at all.
+        (doseq [status [:accepted :dismissed]]
+          (d/transact conn [{:db/id [:proposal/id proposal] :proposal/status status}])
+          (is (= original (sources/request-list! party room-id request))))
+        (d/transact conn [[:db/retractEntity [:proposal/id proposal]]])
+        (is (= original (sources/request-list! party room-id request)))
+        (let [result (sources/request-read! party room-id request {:path path})
+              bytes (.decode (Base64/getDecoder) ^String (get-in result [:data :base64]))]
+          (is (= :ok (:status result)))
+          (is (= "A🦋 proposal\r\n" (markdown/decode bytes)))
+          (is (= (get-in result [:data :content-id])
+                 (:content-id (first (filter #(= path (:path %)) (:files expected)))))))))))
+
+(deftest request-citations-authorize-current-room-readers-before-artifact-io
+  (with-sources
+    (fn [{:keys [conn party room-id request]}]
+      (let [reader (random-uuid)]
+        (d/transact conn [{:party/id reader :actor/kind :human}
+                          {:db/id [:room/id room-id] :room/parties [[:party/id reader]]}])
+        (is (= :ok (:status (sources/request-list! reader room-id request)))
+            "Current room reader need not be the retained request's creator")
+        (with-redefs [artifact/get-bounded-value
+                      (fn [& _] (is false "Denied request citation reached artifact I/O")
+                        (throw (AssertionError. "Denied")))]
+          (is (= {:status :unavailable} (sources/request-list! (random-uuid) room-id request)))
+          (is (= {:status :unavailable} (sources/request-list! party room-id (random-uuid))))
+          (let [other (random-uuid)]
+            (d/transact conn [{:room/id other :room/owner [:party/id party] :room/parties [[:party/id party]]}])
+            (is (= {:status :unavailable} (sources/request-list! party other request)))))))))
+
+(deftest request-citations-never-read-unlisted-paths-or-fallback-to-live-memory
+  (with-sources
+    (fn [{:keys [conn party room-id request]}]
+      (doseq [path ["/in/knowledge/manifest.edn" "/workflows/memory/task.md" "inbox/evidence.md" "/out/wiki/existing.md"]]
+        (is (= {:status :unavailable} (sources/request-read! party room-id request {:path path}))))
+      (let [ref (:work.request/payload-ref (requests/get-request conn request))]
+        (k/bassoc (:store @conn) ref (markdown/source-bytes "unavailable original") {:sync? true})
+        (is (= {:status :unavailable} (sources/request-list! party room-id request)))
+        (is (= {:status :unavailable}
+               (sources/request-read! party room-id request {:path "/in/knowledge/sources/inbox/evidence.md"})))))))
+
+(deftest request-citations-recheck-permission-and-original-request-binding-after-read
+  (with-sources
+    (fn [{:keys [conn party room-id request]}]
+      (let [read artifact/get-bounded-value]
+        (with-redefs [artifact/get-bounded-value
+                      (fn [& args]
+                        (let [retained (apply read args)]
+                          (d/transact conn [{:db/id [:work.request/id request] :work.request/intent-id (random-uuid)}])
+                          retained))]
+          (is (= {:status :unavailable} (sources/request-list! party room-id request))))))))
+
+(deftest request-source-inbound-fixed-reads-capture-original-app-owner
+  (with-sources
+    (fn [{:keys [party room-id request]}]
+      (let [args {:room-id-str (str room-id) :request-id-str (str request)}
+            principal {:sub (str party)}]
+        (is (world/refused? (world/inbound! nil "list-request-sources!" args)))
+        (is (world/refused? (world/inbound! {:sub (str (random-uuid))} "list-request-sources!" args)))
+        (is (= :ok (get-in (world/inbound! principal "list-request-sources!" args) [:result :status])))
+        (is (= :ok (get-in (world/inbound! principal "read-request-source!"
+                                          (assoc args :options {:path "/in/knowledge/sources/inbox/evidence.md" :length 1}))
+                          [:result :status])))
+        (let [body (remote/prepare-request-source-operation party :list (str room-id) (str request) nil)]
+          (with-redefs [application/with-operation! (fn [& _] (throw (AssertionError. "Reacquired global App")))]
+            (is (= :ok (:status (body))))))))))
+
+(deftest request-citation-permission-revoked-during-artifact-read-prevents-response
+  (with-sources
+    (fn [{:keys [conn party room-id request]}]
+      (let [read artifact/get-bounded-value]
+        (with-redefs [artifact/get-bounded-value
+                      (fn [& args]
+                        (let [retained (apply read args)]
+                          (d/transact conn [[:db/retract [:room/id room-id] :room/owner [:party/id party]]
+                                            [:db/retract [:room/id room-id] :room/parties [:party/id party]]])
+                          retained))]
+          (is (= {:status :unavailable} (sources/request-list! party room-id request))))))))

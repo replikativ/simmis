@@ -1156,7 +1156,7 @@
                            (dq/evict-cache-for-entity! (uuid rid)))
                    :files (when-let [rid (:room-id data)]
                             (swap! drive-data dissoc (str rid)))
-                   :proposal-source (swap! retained-source-state
+                   (:proposal-source :request-source) (swap! retained-source-state
                                            #(into {} (remove (fn [[[_session owner-tab] _]] (= tab-id owner-tab))) %))
                    nil))]
          (swap! layout-columns

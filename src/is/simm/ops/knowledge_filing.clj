@@ -11,6 +11,7 @@
             [dvergr.room.store :as store]
             [geschichte.query :as query]
             [hasch.core :as hasch]
+            [is.simm.documents.files :as document-files]
             [is.simm.model.access :as access]
             [is.simm.model.knowledge-dispositions :as dispositions]
             [is.simm.model.knowledge-processing :as processing]
@@ -22,9 +23,11 @@
             [is.simm.ops.knowledge-admission :as admission]
             [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.knowledge-inputs :as inputs]
+            [is.simm.ops.knowledge-coverage :as coverage]
             [is.simm.ops.knowledge-outputs :as outputs]
             [is.simm.ops.knowledge-workspace :as workspace]
             [is.simm.ops.work :as work]
+            [is.simm.ops.work-request-checkpoints :as request-roots]
             [is.simm.ops.workflow-runs :as workflows]
             [org.replikativ.spindel.engine.core :as ec]))
 
@@ -95,14 +98,19 @@
                         (workspace/with-checkpoint (:world-setup prepared) checkpoint)
                         (:world-setup prepared))
         verifier (evaluation/evaluator-ref
-                  (outputs/with-publication-target (outputs/with-capture work/completion) target))
+                  (outputs/with-publication-target
+                   (workflows/completion-evaluator (:source input) workflow (:inputs input)
+                                                   (:knowledge/publication-basis input)) target))
         setup (evaluation/world-setup-ref
                (workspace/with-publication-target initial-setup target))]
     (when-not (and (= workflow (:workflow prepared)
                       (get-in definition [:environment/metadata :workflow]))
                    (= (:inputs input) (:inputs prepared))
                    (= (:source input) (:source prepared))
-                   (= (:environment/task definition) (:task prepared))
+                   (or (not (:knowledge/source-citations input))
+                       (= (:task prepared) (:knowledge/source-task input)))
+                   (= (:environment/task definition)
+                      (workflows/citation-task (:task prepared) (:knowledge/source-citations input)))
                    (= verifier (:environment/verifier definition))
                    (= setup (get-in definition [:environment/world :setup]))
                    (= :ctx (get-in definition [:environment/world :isolation]))
@@ -167,10 +175,15 @@
                      (= (:run/status candidate) (:attempt/status receipt))
                      (map? checks) (seq checks)
                      (true? (:knowledge-workspace? checks))
-                     (if (= :completed (:run/status candidate))
-                       (and (true? (:completed? checks)) (every? true? (vals checks)))
-                       (and (= {:completed? false :knowledge-workspace? true} checks)
-                            (zero? (:attempt/reward receipt))))
+                     (let [coverage? (some? (coverage/declaration (:source input)))
+                           ordinary (if coverage? (dissoc checks :original-evidence-covered?) checks)]
+                       (and (or (not coverage?) (boolean? (:original-evidence-covered? checks)))
+                            (if (= :completed (:run/status candidate))
+                              (and (true? (:completed? ordinary)) (every? true? (vals ordinary))
+                                   (or (not coverage?) (:original-evidence-covered? checks)
+                                       (zero? (:attempt/reward receipt))))
+                              (and (= {:completed? false :knowledge-workspace? true} ordinary)
+                                   (zero? (:attempt/reward receipt))))))
                      (<= (count trace) max-runs)
                      (= 1 (count trace-candidates))
                      (= (select-keys candidate [:run/id :run/parent :run/actor :run/status :run/agent-def-hash])
@@ -195,6 +208,9 @@
         _ (when-not (= (:work.request/intent-id row) (hasch/uuid retained))
             (refuse! :payload-mismatch))
         input (:input retained)
+        _ (when-let [citations (:knowledge/source-citations input)]
+            (when-not (= {:version 1 :room room-id :request request-id} citations)
+              (refuse! :citation-request-mismatch)))
         proof (when (or (:work.request/knowledge-batch row) (:work.request/knowledge-frozen row)
                         (contains? input :knowledge/batch) (contains? input :knowledge/batch-control))
                 (batch-proof/request! conn row retained))
@@ -223,6 +239,34 @@
      :request-binding binding :candidate (:attempt/run-id certified)
      :attempt-content (:attempt/content-id certified)}))
 
+(defn- retained-before-inputs
+  "Read only changed existing targets from the Request's verified immutable
+   checkpoint when v5/v6 did not copy wiki context into model inputs. Never
+   substitute current file contents or create a retention root during review."
+  [conn room-id room request-id input basis output]
+  (let [retained (:inputs input)
+        missing (into (sorted-map)
+                      (keep (fn [path]
+                              (let [before (inputs/publication-before basis path)]
+                                (when (and (:present? before)
+                                           (not (contains? retained (str "/in/knowledge/sources/" path))))
+                                  [path before]))))
+                      (keys (:files output)))]
+    (if (or (empty? missing) (not (:knowledge/checkpoint input))) retained
+      (do
+        (when (or (> (reduce + 0 (map :size (vals missing))) (:max-total-bytes outputs/policy))
+                  (some #(> (:size %) (:max-file-bytes outputs/policy)) (vals missing)))
+          (refuse! :historical-body-too-large))
+        (let [source (admission/default-binding room-id room)
+              snapshot (:db (request-roots/verify! conn @(:conn source) request-id))]
+          (reduce-kv
+           (fn [out path expected]
+             (let [actual (document-files/read-file-in snapshot path)]
+               (when-not (= (select-keys expected [:content :size :mode]) (:entry actual))
+                 (refuse! :historical-body-mismatch))
+               (assoc out (str "/in/knowledge/sources/" path) (:text actual))))
+           retained missing))))))
+
 (defn prepare
   "Certify ONE canonical request's successful direct durable Attempt and
    prepare exact retained filing data. A failed candidate can never file.
@@ -234,9 +278,18 @@
             (refuse! :candidate-not-completed))
         output (get-in certified [:attempt/evidence :knowledge-output])
         _ (outputs/validate! output)
+        retained-inputs (retained-before-inputs conn room-id room request-id input basis output)
+        _ (when (coverage/declaration (:source input))
+            (let [policy (get-in input [:workflow :input-selection :policy])
+                  captured (inputs/from-inputs policy (:inputs input))]
+              (coverage/require-ready! (coverage/with-existing-targets
+                                        (coverage/expected (:manifest captured)) basis
+                                        (inputs/output-scope policy))
+                                       (inputs/output-scope policy)
+                                       (:attempt/evidence certified))))
         planned (plans/plan {:request request-id :room room-id :attempt (:attempt/run-id certified)
                              :environment environment :workflow-bundle workflow-bundle
-                             :publication-basis basis :output output :retained-inputs (:inputs input)})
+                             :publication-basis basis :output output :retained-inputs retained-inputs})
         proposed? (seq (get-in planned [:manifest :entries]))
         disposition (dispositions/make
                      (cond-> {:request request-id :intent (:work.request/intent-id row)
@@ -245,6 +298,6 @@
                               :basis (:id basis) :output (:id output)
                               :kind (if proposed? :proposed :no-op)}
                        batch (assoc :batch (get-in batch [:origin :batch]))
-                       proposed? (assoc :manifest (get-in planned [:manifest :id]) :proposal (:proposal planned))))]
+                       proposed? (assoc :manifest (get-in planned [:manifest :id]) :proposal (:proposal planned))) (:version output))]
     {:request-binding binding :disposition disposition :plan (when proposed? planned) :batch batch
      :party party :room room-id :target (:target basis)}))

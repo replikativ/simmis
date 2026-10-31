@@ -77,6 +77,16 @@ special-purpose versions for every result, document or business object.
 
 ### Knowledge maintenance rollout boundaries
 
+The agreed next integration is captured in
+[Conversation digests and evidence-grounded knowledge maintenance](conversation-digests-and-knowledge.md).
+Build native expandable navigation and precise evidence links in Simmis; generate
+digests and maintain knowledge through ordinary editable, resource-controlled
+workflows. Original messages and capture observations remain independently
+eligible for wiki updates even when every digest omits them. The design's landing
+sequence refines stage 4 and adds progressively coarser timeline presentation
+after one exact-source batch/day view; it does not introduce another scheduler
+or make the current implementation's scope implicit.
+
 Default maintenance remains an ordinary workflow installed in a new canonical
 personal Room. The existing bootstrap already does this for the current alpha
 account lifecycle; do not create another maintenance agent or scheduler.

@@ -89,7 +89,7 @@
                   d/datoms (fn [& _] [{:v "in/knowledge"}])
                   d/index-range (fn [& _] (rows 0))]
       (is (= ["in/knowledge" "in/knowledge/0" "in/knowledge/1" "in/knowledge/2"]
-             (mapv :v (@#'staging/owned-rows nil :geschichte.work/path "in/knowledge"))))
+             (mapv :v (@#'staging/owned-rows nil :geschichte.work/path "in/knowledge" staging/cleanup-policy))))
       (is (= 3 @seen)))))
 
 (deftest cleanup-removes-owned-staging-but-keeps-unrelated-deliverables

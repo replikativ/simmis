@@ -2102,7 +2102,7 @@
          "When you draw a process YOU maintain (e.g. an intake workflow you scheduled), keep its "
          "diagram up to date whenever the steps change — a stale diagram is worse than none.\n"
          "For a background workflow you scheduled, attach its overview diagram so it shows in the "
-         "Workflows view: `(workflow/schedules)` lists this room's workflows (id + description), "
+         "Workflows view: `(workflow/schedules)` lists this room's legacy agent schedules (id + description), "
          "then `(workflow/set-shape! \"<schedule-id>\" \"flowchart LR\\n  ...\")` stores/updates a "
          "few-node mermaid of its real steps (sources → dedup → write → which KB). Re-call it when "
          "you change the workflow. For a saved file-based workflow, keep its optional `diagram.mmd` "
@@ -2138,8 +2138,20 @@
          "they ask to inspect settings or setup is held. Confirmation uses existing allowance; it never "
          "adds funding or adopts proposed file edits automatically. "
          "Report separately what is saved, runnable, benchmark-ready and actually scheduled.\n\n"
+         "For default knowledge maintenance, (workflow/starter \"maintain-wiki\") returns "
+         "the shipped editable program's :files as data; summarize-room returns the optional "
+         "digest program. Inspect existing source first and preserve customized workflows. "
+         "The room participant and workflow worker have separate model contexts: room chat "
+         "and screen observations must be retained as selected evidence, not assumed visible. "
+         "Digest omissions never make original evidence irrelevant. Maintain coherent concept/entity "
+         "notes and affected overviews, with precise source citations. wiki/ is a template default; "
+         "preserve imported vault layouts. Creating a digest does not update knowledge. "
+         "Collecting evidence, running maintenance, accepting its proposal and pushing Git are "
+         "separate operations. A schedule consumes the saved program's declared evidence; "
+         "do not promise automatic chat or screen collection before that collection is configured.\n\n"
          "## Links\n\n"
-         "Inside a wiki, `[[Title]]` links to a page in the SAME KB — keep using it there.\n"
+         "For an explicitly attached legacy KB, `[[Title]]` links within that KB. "
+         "For canonical Memory files, follow the Memory linking instructions instead.\n"
          "To link ACROSS databases — e.g. mention a wiki page in a CHAT message, or link "
          "between two KBs — do NOT write a bare `[[Title]]` (it can't tell which database). "
          "Build a real cross-db link and paste the returned string:\n"
@@ -2528,6 +2540,7 @@
                               (list-scheds)))]
     (sci/add-namespace! sci-ctx 'workflow
       {'check-files workflow-authoring/inspect-files
+       'starter workflow-authoring/starter
        'action-links (fn [name] (workflow-authoring/action-links room-uuid name))
        'schedules
        (fn []

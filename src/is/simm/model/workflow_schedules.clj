@@ -7,6 +7,7 @@
             [hasch.core :as hasch]
             [is.simm.model.knowledge-dispositions :as dispositions]
             [is.simm.model.knowledge-publication :as publication]
+            [is.simm.model.knowledge-scope :as scope]
             [is.simm.model.work-requests :as requests]
             [malli.core :as m])
   (:import [java.nio CharBuffer]
@@ -364,14 +365,19 @@
 (def ^:private owned-input-total-limit (* 2 1024 1024))
 (def ^:private owned-path-schema [:string {:min 1 :max 512}])
 (def ^:private owned-policy-schema
-  [:map {:closed true}
-   [:version [:= 1]]
-   [:trigger-roots [:vector {:min 1 :max 16} owned-path-schema]]
-   [:context-roots [:vector {:max 16} owned-path-schema]]
-   [:exclude-prefixes [:vector {:max 16} owned-path-schema]]])
+  [:or
+   [:map {:closed true} [:version [:= 1]]
+    [:trigger-roots [:vector {:min 1 :max 16} owned-path-schema]]
+    [:context-roots [:vector {:max 16} owned-path-schema]]
+    [:exclude-prefixes [:vector {:max 16} owned-path-schema]]]
+   [:map {:closed true} [:version [:= 2]]
+    [:trigger-roots [:vector {:min 1 :max 16} owned-path-schema]]
+    [:context-roots [:vector {:max 16} [:string {:max 512}]]]
+    [:exclude-prefixes [:vector {:min 1 :max 16} owned-path-schema]]
+    [:output-scope scope/schema]]])
 (def ^:private owned-manifest-schema
   [:map {:closed true}
-   [:version [:= 1]] [:repository :uuid] [:policy owned-policy-schema]
+   [:version [:enum 1 2]] [:repository :uuid] [:policy owned-policy-schema]
    [:trigger-id :uuid] [:execution-id :uuid]
    [:files [:vector {:max 99}
             [:map {:closed true}

@@ -8,6 +8,7 @@
             [is.simm.documents.space :as space]
             [is.simm.documents.view :as view]
             [is.simm.model.knowledge-publication :as publication]
+            [is.simm.model.knowledge-scope :as scope]
             [is.simm.ops.file-output-plan :as plans]
             [is.simm.ops.knowledge-outputs :as outputs]
             [malli.core :as m]))
@@ -46,9 +47,10 @@
   (let [{:keys [selection typed-scopes constraint-dependencies after]} witness]
     (when-not
      (and (map? witness)
-          (= #{:profile :preservation :manifest :target :selection :typed-scopes :constraint-dependencies :after}
+          (= (cond-> #{:profile :preservation :manifest :target :selection :typed-scopes :constraint-dependencies :after}
+               (:scope witness) (conj :scope))
              (set (keys witness)))
-          (= profile (:profile witness)) (= preservation/profile (:preservation witness))
+          (= (cond-> profile (:scope witness) (assoc :version 2)) (:profile witness)) (= preservation/profile (:preservation witness))
           (uuid? (:manifest witness))
           (map? selection) (= space/profile (:entity-profile selection))
           (= [""] (:roots selection)) (= [] (:exclude-prefixes selection))
@@ -64,7 +66,8 @@
           (map? after) (<= 1 (count after) (:max-files outputs/policy))
           (every? descriptor? (vals after)))
       (refuse! :invalid-validation-witness))
-    (doseq [path (keys after)] (outputs/target-path! path))
+    (doseq [path (keys after)]
+      (if (:scope witness) (scope/target-path! (:scope witness) path) (outputs/target-path! path)))
     witness))
 
 (defn prepare-in
@@ -101,11 +104,12 @@
            nodes)))
      0 bodies)
     (witness!
-     {:profile profile :preservation preservation/profile :manifest (:id manifest) :target (:target manifest)
+     (cond-> {:profile (cond-> profile (= 2 (:version manifest)) (assoc :version 2)) :preservation preservation/profile :manifest (:id manifest) :target (:target manifest)
       :selection (get-in preview [:basis :selection])
       :typed-scopes (get-in preview [:basis :typed-scopes])
       :constraint-dependencies (get-in preview [:basis :constraint-dependencies])
-      :after (into (sorted-map) (map (fn [[path value]] [path (entry (:after value))])) bodies)})))
+      :after (into (sorted-map) (map (fn [[path value]] [path (entry (:after value))])) bodies)}
+       (= 2 (:version manifest)) (assoc :scope (:scope manifest))))))
 
 (defn assert-after!
   "Validate complete actual AFTER source against the captured preflight, on the

@@ -14,11 +14,13 @@
             [is.simm.model.access :as access]
             [is.simm.model.knowledge-batches :as batches]
             [is.simm.model.knowledge-schedule-batches :as scheduled]
+            [is.simm.model.room-evidence-collections :as collections]
             [is.simm.model.work-requests :as requests]
             [is.simm.model.work-request-checkpoints :as request-checkpoints]
             [is.simm.model.work-limits :as work-limits]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.ops.knowledge-changes :as knowledge-changes]
+            [is.simm.ops.room-collection-policy :as collection-policy]
             [is.simm.ops.work-request-checkpoints :as checkpoint-roots]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-room-operation :as room-operation]
@@ -242,10 +244,18 @@
   ([conn host-ctx principal room-id room prepared]
    (let [party (batch-control-current! conn host-ctx principal room-id room prepared)]
      (scheduled-handoff-current! @conn prepared)
+     (when-let [receipt (get-in prepared [:basis :knowledge/collection])]
+       (collections/link-current-in! @conn
+                                     (requests/request-id party room-id (get-in prepared [:basis :submission :request-id]))
+                                     receipt))
      party))
   ([conn host-ctx principal room-id room prepared db]
    (let [party (batch-control-current! conn host-ctx principal room-id room prepared db)]
      (scheduled-handoff-current! db prepared)
+     (when-let [receipt (get-in prepared [:basis :knowledge/collection])]
+       (collections/link-current-in! db
+                                     (requests/request-id party room-id (get-in prepared [:basis :submission :request-id]))
+                                     receipt))
      party)))
 
 (defn- claim-batch-prepared!
@@ -357,6 +367,13 @@
             (batch-admission-current! conn host-ctx principal room-id room admission-prepared))
         journal (fn [f] (binding [ec/*execution-context* host-ctx] (f)))
         party (journal #(authorize! conn principal room-id))
+        _ (when (and (= :workflow (:request-kind prepared))
+                     (collection-policy/declaration (get-in prepared [:basis :source]))
+                     (nil? (get-in prepared [:basis :knowledge/collection])))
+            (invalid! "Original evidence collection must be available before admission"))
+        _ (when-let [receipt (get-in prepared [:basis :knowledge/collection])]
+            (collections/checked-link! conn party room-id
+                                       (requests/request-id party room-id (:request-id input)) receipt))
         construction-job (volatile! nil)
         ;; Retain only this native installation owner, never an App/lease or
         ;; the same-thread call-detached handoff. Completion may enter a NEW

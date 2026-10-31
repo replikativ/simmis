@@ -19,6 +19,7 @@
             [is.simm.ops.work :as work]
             [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.knowledge-outputs :as knowledge-outputs]
+            [is.simm.ops.knowledge-inputs :as knowledge-inputs]
             [is.simm.ops.worker-credentials :as credentials]
             [is.simm.ops.worker-files :as files]
             [is.simm.ops.worker-output :as output]
@@ -270,7 +271,7 @@
                            {:input-id (:input-id frozen)})})
         protocol (make-protocol conn host-ctx room room-id request-id pinned frozen basis)
         evaluator (cond-> (make-evaluator config (:limits input) basis)
-                    (get-in workflow [:workflow :input-selection]) knowledge-outputs/with-capture)
+                    (get-in workflow [:workflow :input-selection]) (knowledge-outputs/with-capture (knowledge-inputs/output-scope (get-in workflow [:workflow :input-selection :policy]))))
         verifier (evaluation/evaluator-ref evaluator)
         grant {admission-unit 1M}
         env (environment/make-environment

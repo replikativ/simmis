@@ -445,3 +445,41 @@
                                                                    proposal-id-str {:scope scope-str :branch branch :note note})]
                          (await (blocking/blocking operation)))
                   :cljs nil)))
+
+#?(:clj
+   (defn prepare-request-source-operation
+     "Authentication and the original application owner are captured before
+      queueing a fixed read. Room readers need not be the request creator."
+     [party operation room request options]
+     (when-not (uuid? party)
+       (throw (ex-info "Authentication required" {:type :authentication-required})))
+     (when-not (#{:list :read} operation)
+       (throw (ex-info "Unknown retained request operation" {:type :validation-error})))
+     (let [unavailable (fn [error]
+                         (when (adoption/causal-interruption? error) (.interrupt (Thread/currentThread)))
+                         {:status :unavailable})]
+       (try
+         (let [invoke (application/capture-operation) room (wire-uuid room) request (wire-uuid request)]
+           (fn []
+             (try
+               (invoke (fn [host]
+                         (case operation
+                           :list (retained-sources/request-list! host party room request)
+                           :read (retained-sources/request-read! host party room request options))))
+               (catch Throwable error (unavailable error)))))
+         (catch Throwable error
+           (let [result (unavailable error)] (constantly result)))))))
+
+(defn-spin-remote list-request-sources!
+  [server-id room-id-str request-id-str]
+  (spin-remote server-id [room-id-str request-id-str]
+               #?(:clj (let [body (prepare-request-source-operation (access/authenticated-party-id)
+                                                                     :list room-id-str request-id-str nil)]
+                         (await (blocking/blocking body))) :cljs nil)))
+
+(defn-spin-remote read-request-source!
+  [server-id room-id-str request-id-str options]
+  (spin-remote server-id [room-id-str request-id-str options]
+               #?(:clj (let [body (prepare-request-source-operation (access/authenticated-party-id)
+                                                                     :read room-id-str request-id-str options)]
+                         (await (blocking/blocking body))) :cljs nil)))

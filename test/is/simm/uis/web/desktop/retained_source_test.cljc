@@ -42,3 +42,20 @@
     (is (nil? (source/current-tab [{:id :left :tabs [(assoc tab :type :memory)]}] :a request-identity)))
     (is (nil? (source/current-tab [{:id :left :tabs [other]}] :a request-identity)))
     (is (nil? (source/current-tab [{:id :left :tabs [tab tab]}] :a request-identity)))))
+
+(deftest request-sources-reuse-owned-reader-with-exact-request-and-room-identity
+  (let [request "33333333-3333-4333-8333-333333333333"
+        identity {:room-id proposal :request-id request :path (:path request-identity)}
+        listing (-> listing (dissoc :proposal :component) (assoc :room proposal))
+        initial (source/accept-list identity {:status :listing} {:status :ok :data listing})
+        chunk (-> (payload-chunk 0 [65 66] nil) (update :data dissoc :proposal :component)
+                  (assoc-in [:data :room] proposal))
+        received (source/accept-chunk initial chunk [65 66])
+        tab {:id :r :type :request-source :data identity}]
+    (is (= :reading (:status initial)))
+    (is (= :received (:status received)))
+    (is (= :ready (:status (source/finish received "AB"))))
+    (is (= :left (:col-id (source/current-tab [{:id :left :tabs [tab]}] :r identity))))
+    (is (nil? (source/current-tab [{:id :left :tabs [(assoc tab :type :proposal-source)]}] :r identity)))
+    (is (= :unavailable (:status (source/accept-list (assoc identity :request-id component) {} {:status :ok :data listing}))))
+    (is (= :unavailable (:status (source/accept-chunk initial (assoc-in chunk [:data :room] component) [65 66]))))))

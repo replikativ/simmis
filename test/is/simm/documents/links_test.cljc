@@ -78,3 +78,13 @@
       (is (nil? (links/source-route (assoc ref :path path)))))
     (is (nil? (links/parse-source-query proposal component "path=%2Fin%2Fknowledge%2Fsources%2FA.md&path=other")))
     (is (nil? (links/parse-source-query proposal component "path=%2Fin%2Fknowledge%2Fsources%2FA.md&scope=other")))))
+
+(deftest request-source-addresses-are-known-before-any-proposal-exists
+  (let [request "abcdefab-1234-1234-1234-123456789abc"
+        ref {:kind :request-source :room room :request request :path "/in/knowledge/sources/inbox/A 🦋.md"}
+        url (links/request-source-route ref)]
+    (is (= ref (links/parse-request-source-query room request (subs url (inc (.indexOf url "?"))))))
+    (doseq [path ["inbox/A.md" "/in/knowledge/manifest.edn" "/in/knowledge/sources/../A.md"]]
+      (is (nil? (links/request-source-route (assoc ref :path path)))))
+    (is (nil? (links/parse-request-source-query room request "path=%2Fin%2Fknowledge%2Fsources%2FA.md&request=other")))
+    (is (nil? (links/request-source-route (assoc ref :request "wrong"))))))

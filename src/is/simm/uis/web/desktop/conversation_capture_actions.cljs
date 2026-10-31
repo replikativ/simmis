@@ -11,10 +11,10 @@
 
 (defn state-key [account room message] [(str account) (str room) (str message)])
 
-(defn controller [{:keys [room-id room-name message-id col-id tab-id thread-root-id frame]}]
+(defn controller [{:keys [room-id room-name message-id col-id tab-id thread-root-id frame room-evidence?]}]
   (let [ctx (or ec/*execution-context* runtime)
         session (web/current-session)
-        key (state-key (:account frame) room-id message-id)
+        key (state-key (:account frame) room-id (if room-evidence? :room-evidence message-id))
         ;; Spins may extend the execution environment without forking its
         ;; home. Compare native home ownership, not the wrapper map identity.
         own? #(and (some? (ec/home-context ctx))
@@ -40,7 +40,9 @@
                         (when (model/current-request? (state) (:connection frame) token
                                                       (if (= kind :preview) :preview-loading :publishing))
                           (update! model/hide))
-                        (update! (if (= kind :preview) model/receive-preview model/receive-publish)
+                        (update! (if (= kind :preview)
+                                   (if room-evidence? model/receive-room-preview model/receive-preview)
+                                   (if room-evidence? model/receive-room-publish model/receive-publish))
                                  (:connection frame) token reply)))))
         send! (fn [kind token invoke]
                 (try
@@ -52,24 +54,24 @@
        (binding [ec/*execution-context* ctx]
          (when (and (own?) (current-view?))
            (let [token (random-uuid)]
-             (update! model/begin-preview (:connection frame) token [message-id])
+             (update! (if room-evidence? model/begin-room-preview model/begin-preview) (:connection frame) token [message-id])
              (when (model/current-request? (state) (:connection frame) token :preview-loading)
                (send! :preview token
-                      #(remote/preview-conversation-capture! web/server-id (str room-id)
-                                                             {:message-ids [message-id]})))))))
+                      #((if room-evidence? remote/preview-room-evidence! remote/preview-conversation-capture!)
+                        web/server-id (str room-id) (if room-evidence? {} {:message-ids [message-id]}))))))))
      :publish
      (fn []
        (binding [ec/*execution-context* ctx]
          (when (and (own?) (current-view?))
            (let [token (random-uuid)]
-             (update! model/begin-publish (:connection frame) token)
+             (update! (if room-evidence? model/begin-room-publish model/begin-publish) (:connection frame) token)
              (when (model/current-request? (state) (:connection frame) token :publishing)
                (let [p (:preview (state))]
                  (send! :publish token
-                        #(remote/publish-conversation-capture!
+                        #((if room-evidence? remote/publish-room-evidence! remote/publish-conversation-capture!)
                           web/server-id (str room-id)
-                          {:message-ids (:message-ids p) :capture-id (:capture-id p)
-                           :expected-target-stamp (:target-stamp p)}))))))))
+                          (cond-> {:capture-id (:capture-id p) :expected-target-stamp (:target-stamp p)}
+                            (not room-evidence?) (assoc :message-ids (:message-ids p)))))))))))
      :hide #(binding [ec/*execution-context* ctx] (update! model/hide))
      :open
      (fn []
@@ -79,4 +81,4 @@
                  p (or (:saved s) (:preview s))]
              (when (and p (#{:saved :inspection-required} (:phase s)))
                ;; Independent authorized inspection, never a reconstructed ACK.
-               (navigation/open-file! room-id room-name (:path p) col-id (:target-stamp p)))))))}))
+               (navigation/open-file! room-id room-name (if room-evidence? (get-in s [:preview :artifacts 0 :path]) (:path p)) col-id (:target-stamp p)))))))}))

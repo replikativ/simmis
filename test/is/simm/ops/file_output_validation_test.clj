@@ -10,7 +10,8 @@
             [is.simm.documents.profile :as knowledge]
             [is.simm.documents.prospective-view-test :as fixture]
             [is.simm.documents.view :as view]
-            [is.simm.ops.file-output-validation :as validation])
+            [is.simm.ops.file-output-validation :as validation]
+            [is.simm.ops.file-output-plan :as plans])
   (:import [java.util Base64]))
 
 (defn- with-repository [f] (@#'fixture/with-repository f))
@@ -147,3 +148,26 @@
         (let [proposed (plan @conn {"wiki/blocks.md" before} {"wiki/blocks.md" after})]
           (is (= :metadata-not-preserved
                  (:reason (ex-data (failure #(validation/prepare-in @conn proposed)))))))))))
+
+(deftest scoped-root-publication-keeps-canonical-and-after-guards
+  (with-repository
+    (fn [conn defs]
+      (let [id (random-uuid)
+            before (text defs id {"rank" 0 "unknown" false} "Before")
+            after (text defs id {"rank" 1 "unknown" false} "After")
+            output-scope {:version 2 :output-root "out/knowledge" :destination-root ""
+                          :exclude-prefixes [".obsidian" "inbox"]}]
+        (write! conn "Topic.md" before)
+        (let [base @conn unsealed (plan base {"Topic.md" before} {"Topic.md" after})
+              manifest (-> (:manifest unsealed) (dissoc :id) (assoc :version 2 :scope output-scope))
+              id (hasch/uuid [(plans/manifest-tag 2) manifest])
+              proposed (assoc unsealed :manifest (assoc manifest :id id)
+                              :proposal (hasch/uuid [(plans/proposal-tag 2) id]))
+              witness (validation/prepare-in base proposed)]
+          (is (= output-scope (:scope witness)))
+          (is (= 2 (get-in witness [:profile :version])))
+          (is (failure #(validation/assert-after! base witness)))
+          (write! conn "Topic.md" after)
+          (is (true? (validation/assert-after! @conn witness)))
+          (is (failure #(validation/assert-after! @conn (dissoc witness :scope))))
+          (is (failure #(validation/assert-after! @conn (assoc-in witness [:scope :destination-root] "Elsewhere")))))))))

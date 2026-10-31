@@ -242,6 +242,11 @@
     (refuse! :invalid-envelope))
   (verify-selection batch)
   (publication/validate! publication-basis)
+  (let [scope (inputs/output-scope (get-in batch [:evidence :policy]))]
+    (when-not (if scope
+                (and (= 2 (:version publication-basis)) (= scope (:scope publication-basis)))
+                (= 1 (:version publication-basis)))
+      (refuse! :publication-policy-mismatch)))
   (when-not (and (= (select-keys (:target publication-basis) [:repository :store :backend :branch :ref])
                    (select-keys (:basis batch) [:repository :store :backend :branch :ref]))
                  (or (not (publication/host-target? (:target publication-basis)))
@@ -266,6 +271,6 @@
   ([db {:keys [status batch]} target-identity]
   (when-not (= :selected status) (refuse! :not-selected))
   (when-not (= (:basis batch) (changes/basis db)) (refuse! :source-changed))
-  (verify {:version 2 :batch batch :publication-basis (inputs/publication-basis db target-identity)
+  (verify {:version 2 :batch batch :publication-basis (inputs/publication-basis db target-identity (inputs/output-scope (get-in batch [:evidence :policy])))
            :captured (inputs/capture-files db (get-in batch [:evidence :policy])
                                            (mapv #(dissoc % :input) (get-in batch [:evidence :files])))})))

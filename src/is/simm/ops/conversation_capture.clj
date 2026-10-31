@@ -2,6 +2,7 @@
   "Explicit bounded human-message evidence for the canonical file workflow.
    No automatic ingestion, inference, cursor, activation or approval policy."
   (:require [clojure.string :as str]
+            [clojure.walk :as walk]
             [datahike.api :as d]
             [dvergr.room.store.datahike]
             [dvergr.runtime.preparation :as preparation]
@@ -9,6 +10,7 @@
             [is.simm.documents.files :as files]
             [is.simm.model.access :as access]
             [is.simm.ops.owned-reads :as reads]
+            [is.simm.ops.room-evidence :as evidence]
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.nio CharBuffer]
            [java.nio.charset CodingErrorAction StandardCharsets]
@@ -64,6 +66,7 @@
                             author (= (keyword "party" (str author)) (:message/from m))
                             (= :human (or (:actor/kind party) (:party/type party)))
                             (= :user (:message/role m))
+                            (not (contains? evidence/excluded-recipients (:message/to m)))
                             (contains? #{nil :mcp-user-message} (:message/metadata-kind m))
                             (not-any? #(some? (get m %))
                                       [:message/run-id :message/source :message/schedule-id
@@ -160,3 +163,128 @@
                                           {:authorize! authorize!})]
           {:capture-id capture-id :path (:path plan) :target-stamp expected-target-stamp
            :write receipt})))))
+
+
+(defn room-source [binding]
+  (let [room (:room binding) store (:store room)]
+    (when-not (instance? dvergr.room.store.datahike.DatahikeStore store)
+      (refuse! :source-unavailable))
+    (clojure.core/binding [ec/*execution-context* (:ctx room)]
+      (let [db @(:conn store)
+            chats (d/q '[:find [?e ...] :in $ ?slug :where [?e :room/slug ?slug]] db (:slug room))
+            _ (when-not (= 1 (count chats)) (refuse! :missing-source-room))
+            ;; Reference attributes are AVET indexed; bound before loading bodies.
+            refs (vec (take (inc evidence/max-scan-messages)
+                            (d/datoms db :avet :message/chat (first chats))))
+            source-store (get-in db [:config :store :id])
+            ;; Only public content and causal attribution belong to evidence.
+            ;; Do not recursively copy reasoning/tool payload components merely
+            ;; because the native message schema happens to contain them.
+            pattern (into [] (filter #(contains? (:schema db) %))
+                          [:message/id :message/from :message/to :message/role
+                           :message/content :message/created-at :message/in-reply-to
+                           :message/thread-root-id :message/run-id :message/source
+                           :message/source-user :message/metadata-kind
+                           :message/notification-type :message/object-kind])]
+        (when-not (uuid? source-store) (refuse! :invalid-source))
+        (if (> (count refs) evidence/max-scan-messages)
+          {:source-store source-store :rows [] :scan-held? true}
+          {:source-store source-store
+           :rows
+           (into []
+                 (keep
+                  (fn [ref]
+                    (let [m (d/pull db pattern (:e ref))
+                          author (access/actor->party-uuid (:message/from m))
+                          party (when author (d/entity (:control-db binding) [:party/id author]))
+                          kind (or (:actor/kind party) (:party/type party))
+                          timestamp (:message/created-at m)
+                          text (:message/content m)
+                          ;; Component entity ids are storage details, not provenance.
+                          metadata (walk/postwalk
+                                    #(cond (keyword? %) (str %)
+                                       (map? %) (into (sorted-map-by (fn [a b] (compare (pr-str a) (pr-str b))))
+                                                        (dissoc % :db/id))
+                                       (set? %) (into (sorted-set-by (fn [a b] (compare (pr-str a) (pr-str b)))) %)
+                                       :else %)
+                                    (dissoc m :db/id :message/chat :message/content :message/created-at))]
+                      (when-not (or (contains? evidence/excluded-kinds (:message/metadata-kind m))
+                                    (contains? evidence/excluded-recipients (:message/to m))
+                                    (:message/notification-type m))
+                        (cond-> {:id (:message/id m) :author author :actor-kind kind
+                                 :timestamp (if (instance? Date timestamp) (.getTime ^Date timestamp) 0)
+                                 :text (if (string? text) text "") :metadata metadata}
+                          (not (and (uuid? (:message/id m)) author
+                                    (= (keyword "party" (str author)) (:message/from m))
+                                    (#{:human :agent} kind)
+                                    (#{:user :assistant :tool-result} (:message/role m))
+                                    (instance? Date timestamp) (string? text)))
+                          (assoc :held :unsupported-message)))))) refs)})))))
+
+(defn room-plan
+  ([binding] (room-plan binding (room-source binding)))
+  ([binding {:keys [source-store rows scan-held?]}]
+  (let [plan (if scan-held?
+               {:artifacts [] :state :held :complete? false
+                :held {:reason :source-scan-limit :limit evidence/max-scan-messages}
+                :limitations evidence/limitations}
+               (evidence/select-next
+                (:room-id binding) source-store rows
+                (fn [artifact]
+                  (when (files/entry (:db binding) (:path artifact))
+                    (when-not (= (:text artifact) (:text (files/read-file-in (:db binding) (:path artifact))))
+                      (refuse! :evidence-destination-conflict))
+                    true))))]
+    (assoc plan :source-store source-store :source-room (:room-id binding)
+           :capture-id (hasch/uuid [:simmis/room-evidence-plan-v1 (:room-id binding) source-store plan])))))
+
+(defn preview-room!
+  "Authorized deterministic next original-evidence batch. Empty closed request.
+   No model, cursor, writes, or knowledge-processing acknowledgement."
+  [host principal handle request]
+  (when-not (= {} request) (refuse! :invalid-selection))
+  (with-capture! host principal handle
+    #(assoc (room-plan %) :target-stamp (:target-stamp %))))
+
+(defn selected-room-source
+  "HOST comparison data for selected originals only. Unrelated appends cannot
+   invalidate a retained batch; deletion, revision or author changes still do."
+  [source artifacts]
+  (let [ids (set (map :message-id artifacts))]
+    {:source-store (:source-store source) :scan-held? (boolean (:scan-held? source))
+     :rows (vec (sort-by (comp str :id) (filter #(contains? ids (:id %)) (:rows source))))}))
+
+(defn publish-room!
+  "Publish each inspected original independently through the native CAS writer.
+   Held batches never publish. Any thrown/pending result requires inspection;
+   never automatically retry this operation after an uncertain acknowledgement."
+  [host principal handle {:keys [capture-id expected-target-stamp] :as request}]
+  (when-not (and (map? request) (= #{:capture-id :expected-target-stamp} (set (keys request)))
+                 (uuid? capture-id) (uuid? expected-target-stamp))
+    (refuse! :invalid-selection))
+  (with-capture! host principal handle
+    (fn [binding]
+      (when-not (= expected-target-stamp (:target-stamp binding)) (refuse! :target-changed))
+      (let [source (room-source binding)
+            plan (room-plan binding source)]
+        (when-not (= capture-id (:capture-id plan)) (refuse! :selection-changed))
+        (when (= :held (:state plan)) (refuse! :evidence-held))
+        (let [authorize! #(do
+                           (reads/validate-host-write! host principal handle binding)
+                           (when-not (= (selected-room-source source (:artifacts plan))
+                                        (selected-room-source
+                                         (room-source (assoc binding :control-db (reads/current-host-control-db! host)))
+                                         (:artifacts plan)))
+                             (refuse! :selection-changed))
+                           true)
+              writes (mapv (fn [a]
+                             (let [receipt (files/save-file-to! (:room binding) (:system binding)
+                                                                {:path (:path a) :expected nil :text (:text a)}
+                                                                {:authorize! authorize!})]
+                               (when-not (true? (:saved? receipt)) (refuse! :inspection-required))
+                               {:message-id (:message-id a) :source-revision (:source-revision a)
+                                :path (:path a) :write receipt}))
+                           (:artifacts plan))]
+          {:capture-id capture-id :target-stamp expected-target-stamp
+           :writes writes :state (:state plan) :complete? (:complete? plan)
+           :limitations (:limitations plan)})))))

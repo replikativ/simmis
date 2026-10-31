@@ -53,3 +53,30 @@
     (is (= p (m/receive-preview p :socket :read preview))))
   (let [s (m/receive-publish (m/begin-publish (inspected) :socket :save) :socket :save saved)]
     (is (= :saved (:phase (m/begin-preview s :next-socket :again [message]))))))
+
+(def room-preview
+  {:status :room-preview :capture-id id :target-stamp stamp :source-room stamp :source-store id
+   :state :ready :complete? true :limitations [] :scan-count 1 :retained-count 0
+   :artifacts [{:message-id message :source-revision id :content-id id :source-bytes 5
+                :path (str "inbox/conversations/room-activity/" stamp "/" message "/" id ".md")
+                :text "inert evidence"}]})
+
+(deftest room-evidence-state-keeps-uncertain-acknowledgements-blocked
+  (let [s (-> nil (m/begin-room-preview :socket :read [message])
+              (m/receive-room-preview :socket :read room-preview))
+        publishing (m/begin-room-publish s :socket :write)
+        uncertain (m/receive-room-publish publishing :socket :write nil)]
+    (is (m/room-preview? room-preview))
+    (is (not (m/room-preview? (assoc room-preview :authority true))))
+    (is (= :publishing (:phase publishing)))
+    (is (= :inspection-required (:phase uncertain)))
+    (is (= :inspection-required (:phase (m/begin-room-preview (m/hide uncertain) :socket :again [message]))))
+    (is (= :preview (:phase (m/begin-room-publish (assoc-in s [:preview :state] :held) :socket :write))))
+    (let [a (first (:artifacts room-preview))
+          saved (assoc (select-keys room-preview [:capture-id :target-stamp :state :complete? :limitations])
+                       :status :room-saved
+                       :writes [(assoc (select-keys a [:message-id :source-revision :path])
+                                       :saved? true :commit (str id))])
+          complete (m/receive-room-publish publishing :socket :write saved)]
+      (is (= :saved (:phase complete)))
+      (is (= :preview-loading (:phase (m/begin-room-preview complete :socket :next [message])))))))
