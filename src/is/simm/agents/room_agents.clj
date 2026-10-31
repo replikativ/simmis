@@ -333,7 +333,8 @@
   (when-let [slug (:room/slug (rooms/get-room room-uuid))]
     (when slug
       (binding [rtc/*execution-context* ctx/server-context]
-        (drooms/register-prepared-room! room-uuid)))))
+        (drooms/register-prepared-room!
+         room-uuid ((requiring-resolve 'is.simm.documents.profile/registration-options)))))))
 
 ;; =============================================================================
 ;; Interim content-DB persistence (client render path — removed in Stage 5)

@@ -8,6 +8,8 @@
             [is.simm.documents.knowledge-upgrade-test :as fixture]
             [is.simm.documents.markdown :as md]
             [is.simm.documents.space :as space]
+            [is.simm.documents.profile :as profile]
+            [is.simm.documents.view :as view]
             [is.simm.model.memory-upgrades :as receipts]
             [is.simm.model.personal-rooms :as personal]
             [is.simm.ops.offline-memory-upgrade :as upgrade]))
@@ -115,3 +117,34 @@
                            :room/default-repository [:system/id system]}])
      (is (thrown? clojure.lang.ExceptionInfo (upgrade/inspect! control repo request)))
      (is (not (space/provisioned? @repo))))))
+
+(deftest registration-attests-both-stores-and-allows-authored-history-to-evolve
+  (with-upgrade
+   (fn [{:keys [control repo room system request]}]
+     (is (false? (profile/legacy-room-ready? @control room @repo)))
+     (upgrade/upgrade! control repo (upgrade/inspect! control repo request))
+     (is (true? (profile/legacy-room-ready? @control room @repo)))
+     (let [db @control repository @repo root (:db/id (query/repository repository))
+           id (:id request)]
+       (doseq [tx [[[:db/retract [:room/id room] :room/knowledge-upgrade id]]
+                   [[:db/retractEntity [:memory.upgrade/id id]]]
+                   [[:db/add [:memory.upgrade/id id] :memory.upgrade/state :preparing]]
+                   [[:db/add [:system/id system] :system/scope "/foreign"]]
+                   [[:db/add [:memory.upgrade/id id] :memory.upgrade/store (random-uuid)]]]]
+         (is (false? (profile/legacy-room-ready? (:db-after (d/with db tx)) room repository))))
+       (doseq [attribute [:document.repository/upgrade :document.repository/upgrade-basis]]
+         (is (false? (profile/legacy-room-ready?
+                      db room (:db-after (d/with repository [[:db/add root attribute (random-uuid)]]))))))
+       (is (false? (profile/legacy-room-ready?
+                    db room (assoc-in repository [:config :store :id] (random-uuid)))))
+       (repo/write! repo "README.md" (md/source-bytes "---\nsimmis-id: broken-authored-id\n---\n# Editable raw source\n"))
+       (repo/stage-all! repo)
+       (repo/commit! repo {:message "Legitimate later file edit, requiring raw repair"})
+       (is (not= :ready (:status (view/prepare @repo profile/selection-options))))
+       (is (true? (profile/legacy-room-ready? @control room @repo))
+           "Registration validates the foundation/receipt, never freezes history or requires parseable documents")))))
+
+(deftest registration-policy-cannot-initialize-a-repository
+  (let [hooks (get-in (profile/registration-options) [:repository-profiles space/profile])]
+    (is (identical? profile/legacy-room-ready? (:legacy-room-ready? hooks)))
+    (is (thrown? clojure.lang.ExceptionInfo ((:initialize! hooks) nil nil)))))

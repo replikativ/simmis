@@ -45,6 +45,13 @@ active occurrences and unresolved Git operations hold the operation.
 There is no live upgrade RPC or automatic page-open migration. The initial
 operator path requires a coordinated stopped-service maintenance interval:
 
+The compatible application must install the trusted profile's legacy Room
+registration attestation in both eager registry hydration and later `live-room`
+lookups. A Dvergr build that only accepts the original ready/version-1 flags is
+insufficient: an upgraded legacy Room deliberately retains its absent flags.
+Verification must exercise full cold native Room registration, not just opening
+the Datahike stores or reusing an already registered Room.
+
 1. Gate ingress, quiesce work, stop the service and verify its recursive cgroup
    is empty. Runtime-mask `simmis-dev` so the service cannot restart mid-upgrade.
 2. Retain a verified coordinated backup of control and repository data, code,
@@ -89,6 +96,12 @@ from a phase label. A mismatched target, changed source, changed implementation
 or absent receipt at a later phase holds the operation. Recovery after a
 successful publication returns its verified outcome without replaying source
 installation.
+
+Ordinary registration subsequently matches the completed control journal to the
+native upgrade ID/original basis, repository/store/system/scope, profile and
+mandatory foundation. It never requires current files to equal the historical
+upgrade source hash. Later edits, including malformed Markdown needing raw
+repair, must not make the Room itself unloadable.
 
 The fixed entrypoints live in `is.simm.ops.offline-memory-upgrade`. The private
 CLI is invoked from the staged compatible checkout, for example:

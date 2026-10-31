@@ -15,6 +15,7 @@
             [is.simm.documents.starter-bundle :as starter]
             [is.simm.documents.view :as view]
             [is.simm.model.accounting :as accounting]
+            [is.simm.model.memory-upgrades :as upgrades]
             [is.simm.model.crud :as crud]
             [is.simm.model.schema :as model-schema]
             [is.simm.model.store :as store]
@@ -164,6 +165,40 @@
    (repo/commit! conn {:message "Initialize knowledge workspace" :author "Simmis"})
    conn))
 
+(defn legacy-room-ready?
+  "Pure HOST attestation over prepared snapshots. The upgrade source/basis are
+   historical evidence; later file edits and malformed authored Markdown do not
+   invalidate Room admission. No seeding, recovery, permissions or writer IO."
+  [control room-id repository]
+  (let [room (d/entity control [:room/id room-id])
+        system (:room/default-repository room)
+        receipt (upgrades/in control (:room/knowledge-upgrade room))
+        native (query/repository repository)]
+    (boolean
+     (and (= space/profile (:system/repository-profile system))
+          (upgrades/published-for? control room-id (:system/id system))
+          (every? uuid? (map receipt [:memory.upgrade/id :memory.upgrade/by :memory.upgrade/basis
+                                     :memory.upgrade/source :memory.upgrade/control-basis
+                                     :memory.upgrade/definition-revision :memory.upgrade/plan]))
+          (inst? (:memory.upgrade/at receipt))
+          (= (:memory.upgrade/repository receipt) (:geschichte.repo/id native))
+          (= (:memory.upgrade/store receipt) (get-in repository [:config :store :id]))
+          (= space/profile (:document.repository/profile native))
+          (= (:memory.upgrade/id receipt) (:document.repository/upgrade native))
+          (= (:memory.upgrade/basis receipt) (:document.repository/upgrade-basis native))
+          (do (validate-foundation! repository) true)))))
+
+(defn- lifecycle-policy [initializer]
+  {:initialize! initializer :prepare-open! prepare-open! :legacy-room-ready? legacy-room-ready?
+   :abort-create! (fn [conn _] (governance/ungovern! conn))})
+
+(defn registration-options
+  "HOST registration-only policy. Room reads acquire no starter resources and
+   have no creation capability. Actual startup/preparation uses policies below."
+  []
+  {:repository-profiles
+   {space/profile (lifecycle-policy (fn [& _] (refuse! :registration-cannot-initialize)))}})
+
 (defn policies
   "Closed HOST map over already-owned immutable bundle data. Acquire/verify the
    packaged resource BEFORE Room intent. Never accept bundles from transports;
@@ -174,7 +209,4 @@
         wiki-source (wiki/source)
         digest-source (digest/source)
         daily-source (daily-summary/source)]
-    {space/profile {:initialize! (fn [conn options] (initialize! conn options bundle wiki-source digest-source daily-source)) :prepare-open! prepare-open!
-                  ;; Exclusive unpublished initialization only; no async worker
-                  ;; is started above. This synchronous detach is idempotent.
-                    :abort-create! (fn [conn _] (governance/ungovern! conn))}}))
+    {space/profile (lifecycle-policy (fn [conn options] (initialize! conn options bundle wiki-source digest-source daily-source)))}))

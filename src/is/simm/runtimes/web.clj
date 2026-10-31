@@ -795,7 +795,8 @@
           (merge ((requiring-resolve 'is.simm.documents.profile/policies)
                   ((requiring-resolve 'is.simm.documents.starter-bundle/read-packaged!)))
                  ((requiring-resolve 'is.simm.ops.benchmark-fixture/policies)))})
-        ((requiring-resolve 'dvergr.rooms/hydrate-registry!) ctx/server-context))
+        ((requiring-resolve 'dvergr.rooms/hydrate-registry!) ctx/server-context
+         ((requiring-resolve 'is.simm.documents.profile/registration-options))))
       (log/log! {:level :info :id ::rooms-hydrated
                  :msg "dvergr rooms hydrated (ctxs + live registry)"})
       (catch Exception e
