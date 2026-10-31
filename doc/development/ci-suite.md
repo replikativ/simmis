@@ -157,3 +157,13 @@ exactly and revalidated. Shared component ownership is corrupted last and never
 rolled back by deleting a relation. Unknown acknowledgments, native dispatch,
 terminal journal transitions, interruption and physical ownership keep their
 own scenarios; no terminal transition is reversed for fixture reuse.
+
+Further integration sharing removes 14 setup acquisitions: installer races
+restore exact scalar owner/default/profile values and positively inspect the
+original baseline between refusals; source customization is last. Direct
+`install!` still proves customized installed bundles cannot dispatch writes.
+Saved-view missing/positive reads recompute source request descriptors. Terminal
+notification outcomes each retain their own real request/client/job; only their
+immutable Scorecard and host are shared. Git's unchanged closure precedes a
+new independent incoming operation, and every automatic changed update checks
+identity of its planning/native budget. Irreversible ACK/lifetime cases remain.

@@ -235,22 +235,22 @@
                  [[{:proposal/id (random-uuid) :proposal/room (:room operation) :proposal/forks [fork]}]
                   nil]]]
           (let [observed (volatile! nil) lookups (atom 0)]
-           (try
-            (with-redefs [scoped/recover
-                          (fn [& args]
-                            (let [value (apply lookup args)]
-                              (swap! lookups inc)
-                              (d/transact conn corrupt)
-                              (vreset! observed @conn)
-                              value))]
-              (is (thrown? clojure.lang.ExceptionInfo (recover! state))))
-            (is (= 1 @lookups))
-            (is (= @observed @conn) "Refusal must not write beyond the injected corruption")
-            (is (= :applying (:file.adoption/state
-                              (d/pull @conn [:file.adoption/state] [:file.adoption/id (:id operation)]))))
-            (is (= :open (:proposal/status (proposals/get-proposal (:proposal operation)))))
-            (is (= target @workspace))
-            (finally (when restore (d/transact conn restore)))))
+            (try
+             (with-redefs [scoped/recover
+                           (fn [& args]
+                             (let [value (apply lookup args)]
+                               (swap! lookups inc)
+                               (d/transact conn corrupt)
+                               (vreset! observed @conn)
+                               value))]
+               (is (thrown? clojure.lang.ExceptionInfo (recover! state))))
+             (is (= 1 @lookups))
+             (is (= @observed @conn) "Refusal must not write beyond the injected corruption")
+             (is (= :applying (:file.adoption/state
+                               (d/pull @conn [:file.adoption/state] [:file.adoption/id (:id operation)]))))
+             (is (= :open (:proposal/status (proposals/get-proposal (:proposal operation)))))
+             (is (= target @workspace))
+             (finally (when restore (d/transact conn restore)))))
           ;; Shared component ownership is deliberately last and not undone.
           (when restore (valid!)))))))
 

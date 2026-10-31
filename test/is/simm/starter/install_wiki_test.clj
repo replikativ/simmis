@@ -67,7 +67,13 @@
 
 (deftest native-install-is-idempotent-does-not-touch-other-files-or-activation
   (with-canonical
-    (fn [{:keys [conn w host owned attached]}]
+    (fn [{:keys [conn w host owned attached hydrations]}]
+      ;; Membership alone must refuse before hydration, before the positive
+      ;; owner path below changes any source or native state.
+      (let [before (count @hydrations)]
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (install/install! host (ops/party-principal (:member w)) (str (:room w)))))
+        (is (= before (count @hydrations)) "Denied before hydration"))
       (let [handle (str (:room w))
             control-before (vec (d/datoms @conn :eavt))
             other-before (query/worktree @attached)
@@ -90,7 +96,14 @@
                (str (owned/source-id
                      (reads/resolve-host-install! host (principal w) handle)
                      starter/name (workflows/manifest-in @owned starter/name)))))
-        (is (= control-before (vec (d/datoms @conn :eavt))) "No activation, funding or schedule records")))))
+        (is (= control-before (vec (d/datoms @conn :eavt))) "No activation, funding or schedule records")
+        ;; An installed bundle with a later human customization must not
+        ;; dispatch a native write, including through the direct install API.
+        (repo/write! owned "workflows/maintain-wiki/custom.txt" (.getBytes "Human customization" "UTF-8"))
+        (let [customized (query/worktree @owned)]
+          (with-redefs [native/write-to-completion! (fn [& _] (throw (AssertionError. "Custom source must not write")))]
+            (is (= :customized (:status (install/install! host (principal w) handle)))))
+          (is (= customized (query/worktree @owned))))))))
 
 (deftest setup-service-inspects-installs-and-preserves-custom-source-under-real-owners
   (with-canonical
@@ -119,24 +132,7 @@
               (is (= before (vec (d/datoms @conn :eavt))))))
           (finally (lifetime/fence! owner) (lifetime/join! owner 30000)))))))
 
-(deftest customized-installed-source-is-preserved-without-a-native-dispatch
-  (with-canonical
-    (fn [{:keys [w host owned]}]
-      (let [handle (str (:room w))]
-        (install/install! host (principal w) handle)
-        (repo/write! owned "workflows/maintain-wiki/custom.txt" (.getBytes "Human customization" "UTF-8"))
-        (let [before (query/worktree @owned)]
-          (with-redefs [native/write-to-completion! (fn [& _] (throw (AssertionError. "Custom source must not write")))]
-            (is (= :customized (:status (install/install! host (principal w) handle)))))
-          (is (= before (query/worktree @owned))))))))
-
-(deftest room-membership-and-legacy-repositories-do-not-authorize-default-installation
-  (with-canonical
-    (fn [{:keys [w host hydrations]}]
-      (let [before (count @hydrations)]
-        (is (thrown? clojure.lang.ExceptionInfo
-                     (install/install! host (ops/party-principal (:member w)) (str (:room w)))))
-        (is (= before (count @hydrations)) "Denied before hydration"))))
+(deftest legacy-repositories-do-not-authorize-default-installation
   (@#'fixture/with-fixture true
                            (fn [{:keys [w host owned]}]
                              (let [before (query/worktree @owned)]
@@ -145,43 +141,85 @@
                                (is (not (space/provisioned? @owned)))))))
 
 (deftest source-and-ownership-races-are-rechecked-at-the-native-boundary
-  (doseq [race [:source :owner :profile :target]]
-    (with-canonical
-      (fn [{:keys [conn w host owned attached-descriptor]}]
-        (let [write authoring/install!
-              original (query/worktree @owned)
-              error (with-redefs [authoring/install!
-                                  (fn [& args]
-                                    (case race
-                                      :source (repo/write! owned "workflows/maintain-wiki/custom.txt" (.getBytes "Concurrent edit" "UTF-8"))
-                                      :owner (d/transact conn [{:room/id (:room w) :room/owner [:party/id (:member w)]}])
-                                      :profile (d/transact owned [[:db/retract (:db/id (query/repository @owned))
-                                                                   :document.repository/profile space/profile]])
-                                      :target (d/transact conn [{:room/id (:room w)
-                                                                 :room/default-repository [:system/id (:registry-system attached-descriptor)]}]))
-                                    (apply write args))]
-                      (failure #(install/install! host (principal w) (str (:room w)))))]
-          (is error)
-          (is (= (if (#{:source :target} race) ::authoring/conflict ::authoring/unavailable) (:type (ex-data error))))
-          (is (not (contains? (query/worktree @owned) "workflows/maintain-wiki/workflow.edn")))
-          (when (= :owner race) (is (= original (query/worktree @owned))))))))
-  (doseq [race [:owner :profile :target]]
-    (with-canonical
-      (fn [{:keys [conn w host owned attached-descriptor]}]
-        (let [validate reads/validate-host-install!
-              before (query/worktree @owned)
-              error (with-redefs [reads/validate-host-install!
-                                  (fn [& args]
-                                    (case race
-                                      :owner (d/transact conn [{:room/id (:room w) :room/owner [:party/id (:member w)]}])
-                                      :profile (d/transact owned [[:db/retract (:db/id (query/repository @owned))
-                                                                   :document.repository/profile space/profile]])
-                                      :target (d/transact conn [{:room/id (:room w)
-                                                                 :room/default-repository [:system/id (:registry-system attached-descriptor)]}]))
-                                    (apply validate args))]
-                      (failure #(install/install! host (principal w) (str (:room w)))))]
-          (is (= ::authoring/unavailable (:type (ex-data error))))
-          (is (= before (query/worktree @owned))))))))
+  ;; Each refusal precedes native writing. Restore only scalar authority /
+  ;; profile facts, prove the genuine owner/source baseline after restoration,
+  ;; and leave the irreversible source customization until the final case.
+  (with-canonical
+    (fn [{:keys [conn w host owned attached-descriptor]}]
+      (let [write authoring/install! handle (str (:room w)) p (principal w)
+            original (query/worktree @owned)
+            repository-id (:db/id (query/repository @owned))
+            original-profile (:document.repository/profile (query/repository @owned))
+            original-default (:system/id (:room/default-repository (d/entity @conn [:room/id (:room w)])))
+            original-owner (:party/id (:room/owner (d/entity @conn [:room/id (:room w)])))
+            restore! (fn [race]
+                       (case race
+                         :owner (d/transact conn [{:room/id (:room w) :room/owner [:party/id original-owner]}])
+                         :profile (d/transact owned [[:db/add repository-id :document.repository/profile original-profile]])
+                         :target (d/transact conn [{:room/id (:room w) :room/default-repository [:system/id original-default]}])
+                         :source nil))]
+        (is (= space/profile original-profile))
+        (is (= (:owner w) original-owner))
+        (is (uuid? original-default))
+        (is (= :missing (:status (install/inspect! host p handle))))
+        (doseq [race [:owner :profile :target :source]]
+          (let [calls (atom 0)]
+            (try
+              (let [error (with-redefs [authoring/install!
+                                        (fn [& args]
+                                          (swap! calls inc)
+                                          (case race
+                                            :source (repo/write! owned "workflows/maintain-wiki/custom.txt" (.getBytes "Concurrent edit" "UTF-8"))
+                                            :owner (d/transact conn [{:room/id (:room w) :room/owner [:party/id (:member w)]}])
+                                            :profile (d/transact owned [[:db/retract repository-id :document.repository/profile original-profile]])
+                                            :target (d/transact conn [{:room/id (:room w) :room/default-repository [:system/id (:registry-system attached-descriptor)]}]))
+                                          (apply write args))]
+                            (failure #(install/install! host p handle)))]
+                (is (= 1 @calls) (str race " reached the native writer boundary"))
+                (is (= (if (#{:source :target} race) ::authoring/conflict ::authoring/unavailable)
+                       (:type (ex-data error))))
+                (is (not (contains? (query/worktree @owned) "workflows/maintain-wiki/workflow.edn")))
+                (when-not (= :source race) (is (= original (query/worktree @owned)))))
+              (finally (restore! race)))
+            (if (= :source race)
+              (is (= :customized (:status (install/inspect! host p handle))))
+              (do (is (= :missing (:status (install/inspect! host p handle))))
+                  (is (= original (query/worktree @owned))))))))))
+  (with-canonical
+    (fn [{:keys [conn w host owned attached-descriptor]}]
+      (let [validate reads/validate-host-install! handle (str (:room w)) p (principal w)
+            before (query/worktree @owned)
+            repository-id (:db/id (query/repository @owned))
+            original-profile (:document.repository/profile (query/repository @owned))
+            original-default (:system/id (:room/default-repository (d/entity @conn [:room/id (:room w)])))
+            original-owner (:party/id (:room/owner (d/entity @conn [:room/id (:room w)])))
+            restore! (fn [race]
+                       (case race
+                         :owner (d/transact conn [{:room/id (:room w) :room/owner [:party/id original-owner]}])
+                         :profile (d/transact owned [[:db/add repository-id :document.repository/profile original-profile]])
+                         :target (d/transact conn [{:room/id (:room w) :room/default-repository [:system/id original-default]}])))]
+        (is (= space/profile original-profile))
+        (is (= (:owner w) original-owner))
+        (is (uuid? original-default))
+        (is (= :missing (:status (install/inspect! host p handle))))
+        (doseq [race [:owner :profile :target]]
+          (let [calls (atom 0)]
+            (try
+              (let [error (with-redefs [reads/validate-host-install!
+                                        (fn [& args]
+                                          (swap! calls inc)
+                                          (case race
+                                            :owner (d/transact conn [{:room/id (:room w) :room/owner [:party/id (:member w)]}])
+                                            :profile (d/transact owned [[:db/retract repository-id :document.repository/profile original-profile]])
+                                            :target (d/transact conn [{:room/id (:room w) :room/default-repository [:system/id (:registry-system attached-descriptor)]}]))
+                                          (apply validate args))]
+                            (failure #(install/install! host p handle)))]
+                (is (= 1 @calls) (str race " reached final install validation"))
+                (is (= ::authoring/unavailable (:type (ex-data error))))
+                (is (= before (query/worktree @owned))))
+              (finally (restore! race)))
+            (is (= :missing (:status (install/inspect! host p handle))))
+            (is (= before (query/worktree @owned)))))))))
 
 (deftest uncertain-completion-is-never-automatically-replayed
   (with-canonical

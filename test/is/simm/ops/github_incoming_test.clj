@@ -50,6 +50,14 @@
 (deftest local-and-incoming-edits-file-one-frozen-proposal-without-advancing-the-cursor
   (#'fixtures/with-imported
     (fn [{:keys [parent conn room-id stamp creator] :as environment}]
+      ;; An unchanged fetch closes its private copy without a proposal. This
+      ;; acknowledged closure precedes a distinct real incoming operation.
+      (let [cursor (integrations/current-in @conn room-id)
+            result (call environment :prepare {:client-id (random-uuid) :expected-target-stamp stamp})]
+        (is (= :closed (:status result)))
+        (is (nil? (:proposal-id result)))
+        (is (= cursor (integrations/current-in @conn room-id)))
+        (is (nil? (journal/active-in @conn room-id))))
       (repo/write! parent "local.md" (object/utf8 "Saved local knowledge\n"))
       (repo/stage-all! parent)
       (repo/commit! parent {:message "Local autosave"})
@@ -96,16 +104,6 @@
               (is (not= (:github.integration/head cursor) (:geschichte.commit/id (repo/head-commit parent)))
                   "Cursor names fetched upstream, not the merged local candidate")
               (is (:github.integration/sync cursor)))))))))
-
-(deftest unchanged-upstream-closes-the-private-copy-without-a-proposal
-  (#'fixtures/with-imported
-    (fn [{:keys [conn room-id stamp] :as environment}]
-      (let [cursor (integrations/current-in @conn room-id)
-            result (call environment :prepare {:client-id (random-uuid) :expected-target-stamp stamp})]
-        (is (= :closed (:status result)))
-        (is (nil? (:proposal-id result)))
-        (is (= cursor (integrations/current-in @conn room-id)))
-        (is (nil? (journal/active-in @conn room-id)))))))
 
 (deftest missing-base-is-an-explicit-not-started-response-before-preparation
   (#'fixtures/with-imported
