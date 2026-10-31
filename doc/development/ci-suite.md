@@ -24,13 +24,30 @@ No explicit GC, heap dumps or sampling threads are introduced by this plugin.
 Initial existing baseline: CircleCI job 1419 took 53m25, with backend execution
 shards of 52m30, 28m46, 33m58 and 35m02. Setup was roughly one minute. These
 numbers predate detailed instrumentation and do not establish the source of
-Circle's slower execution compared with GitHub. Namespace count currently
-controls partitioning, which explains part of the critical-path imbalance.
+Circle's slower execution compared with GitHub. Namespace count controlled
+partitioning before this cleanup, explaining part of the critical-path imbalance.
 
 The cleanup acceptance target is approximately 20 minutes of aggregate test
 execution work across backend shards, frontend, worker and Python jobs, and no
 more than 10 minutes for a backend shard. Report each component, their sum, and
 the longest shard separately; do not treat parallel wall time as serial cost.
+
+The first complete verification after cleanup, [CircleCI 1440](https://circleci.com/gh/replikativ/simmis/1440)
+at `3b6b3976`, passed 2,888 tests / 39,714 assertions across 441 namespaces.
+Backend command work was 112m52 aggregate (29m43 / 28m19 / 25m26 / 29m24),
+including about 5.9 minutes of process/loading overhead. This is an 18.2%
+aggregate reduction from the instrumented 138m01 baseline; the longest shard
+fell from 47m55 to 29m43. The frontend job separately took 7m20. Worker packaging,
+Python and job setup remain additional costs. **The 20-minute aggregate and
+10-minute shard targets are not achieved.** Duration history uses these measured
+post-cleanup namespace costs for subsequent partitioning.
+
+The same run's scalar snapshots ended with 84–157 Datahike registry entries and
+218–367 named memory stores per process. These are retention audit leads, not
+proof that every entry owns a live runtime. GC time remained roughly 1.2–2.5%
+of elapsed execution; low GC overhead does not discharge acquisition/owner
+cleanup obligations. Compare per-namespace registry deltas before changing
+fixture ownership or deleting known stores.
 
 ## Required checks
 
