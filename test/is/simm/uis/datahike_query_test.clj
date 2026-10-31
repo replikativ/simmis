@@ -323,3 +323,35 @@
     (is (= party-id (:S.Message/author-uuid result)))
     (is (= "Alice" (:S.Message/author-name result)))
     (is (= "old row" (:block/content result)))))
+
+(deftest private-run-inputs-never-enter-room-or-focused-thread-presentation
+  (let [root-id (random-uuid) private-id (random-uuid) public-id (random-uuid)
+        activity-id (random-uuid) run-id (random-uuid)
+        rows [{:entity/uuid root-id :timeline/type :message :message/to :_room-log
+               :message/metadata {:role :user} :block/content "Original human message"}
+              ;; Native program/start!'s private task has a human sender/user
+              ;; role and may have no Run ID or ancestry recorded on the row.
+              {:entity/uuid private-id :timeline/type :message :message/to :_runs
+               :message/in-reply-to root-id :message/thread-root-id root-id
+               :message/metadata {:role :user} :block/content "Private workflow task prompt"}
+              {:entity/uuid public-id :timeline/type :message :message/to :_room-log
+               :message/in-reply-to root-id :message/thread-root-id root-id
+               :message/run-id run-id :message/metadata {:role :assistant}
+               :block/content "Public agent reply"}
+              {:entity/uuid activity-id :timeline/type :activity :message/to :_activity
+               :message/thread-root-id root-id :message/run-id run-id
+               :message/activities [{:activity/kind :tool :activity/tool-name "clojure_eval"}]}]
+        annotated (query/annotate-message-threads rows)]
+    (is (= [root-id public-id activity-id] (mapv :entity/uuid annotated)))
+    (is (= 1 (:thread/reply-count (first annotated))) "Private task is not counted as a public reply")
+    (is (= [root-id public-id] (mapv :entity/uuid (query/timeline-items-for-scope annotated nil))))
+    (is (= [public-id activity-id] (mapv :entity/uuid (:items (query/select-message-thread annotated root-id)))))
+    (is (nil? (:root (query/select-message-thread rows private-id))))
+    (is (empty? (:items (query/select-message-thread rows private-id))))
+    (is (query/chat-message-visible? {:message/to :_activity :message/role :tool :message/run-id run-id}))
+    (is (query/chat-message-visible? {:message/to :_room-log :message/role :user :message/run-id run-id}))
+    ;; Classification for storage/Run inspection remains available unchanged.
+    (is (= "Private workflow task prompt"
+           (:content (query/canonical-message-entity->message
+                      {:message/id private-id :message/to :_runs :message/role :user
+                       :message/content "Private workflow task prompt"}))))))

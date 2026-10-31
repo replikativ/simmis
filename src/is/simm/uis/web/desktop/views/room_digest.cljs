@@ -110,11 +110,13 @@
   (let [a (actions/controller data) s digest-state]
     (el/details {:class "room-digest-result"}
       (el/summary {} (str "Generated digest · " content))
-      (el/p {} "Navigation synthesis by the digest workflow. Original messages remain available; knowledge processing is separate.")
+      (el/p {} "Generated summary. Original evidence is preserved; wiki updates are separate.")
       (if notification
         (el/div {}
-          (el/p {} (str "Request " (:request notification) " · digest " (:digest-id notification)))
-          (el/button {:type "button" :on-click (fn [e] (.stopPropagation e) ((:result a)))} "Load frozen digest and originals")
+          (el/details {}
+            (el/summary {} "Run details")
+            (el/p {} (str "Request " (:request notification) " · digest " (:digest-id notification))))
+          (el/button {:type "button" :on-click (fn [e] (.stopPropagation e) ((:result a)))} "Show summary and sources")
           (case (:phase s)
             :verified (result-card {:room-id room-id :result (:result s)})
             :result-loading (el/p {:role "status"} "Checking retained result and original revisions…")

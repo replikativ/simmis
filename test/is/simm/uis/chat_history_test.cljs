@@ -83,3 +83,42 @@
                       kind (:data (tab-heal/render-chat-tab {:type kind :data data} roster))
                       nil {} nil nil nil warm))))
         (is (empty? @calls) "Neither an unknown roster nor revocation admits cached history")))))
+
+(deftest private-run-prompts-and-their-legacy-mirrors-stay-out-of-chat-queries
+  (let [private-id #uuid "d595eb65-c930-4ac1-8a47-bbd11df96111"
+        agent-id #uuid "d595eb65-c930-4ac1-8a47-bbd11df96112"
+        activity-id #uuid "d595eb65-c930-4ac1-8a47-bbd11df96113"
+        run-id #uuid "d595eb65-c930-4ac1-8a47-bbd11df96114"
+        db (dc/db-with
+            (native-history)
+            [{:db/ident :message/to :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+             {:db/id -1 :entity/uuid room-id}
+             {:db/id -2 :entity/uuid author-id :S.User/display-name "Original human"}
+             {:message/id private-id :message/chat [:chat/id room-id]
+              :message/content "Private workflow task body" :message/created-at (js/Date. 2000)
+              :message/role :user :message/from (keyword "party" (str author-id)) :message/to :_runs
+              :message/in-reply-to message-id :message/thread-root-id message-id
+              ;; This is the old compatibility mirror which must not resurrect
+              ;; the private row after canonical selection filters it out.
+              :entity/uuid private-id :S.Message/room -1 :S.Message/author -2
+              :block/content "Private compatibility body" :S.Message/sent-at (js/Date. 2000)}
+             {:message/id agent-id :message/chat [:chat/id room-id]
+              :message/content "Public agent result" :message/created-at (js/Date. 3000)
+              :message/role :assistant :message/to :_room-log :message/run-id run-id
+              :message/in-reply-to message-id :message/thread-root-id message-id}
+             {:message/id activity-id :message/chat [:chat/id room-id]
+              :message/content "Public tool activity" :message/created-at (js/Date. 4000)
+              :message/role :tool :message/to :_activity :message/run-id run-id
+              :message/in-reply-to message-id :message/thread-root-id message-id}])]
+    (with-redefs [d/transact (fn [& _] (throw (js/Error. "Chat selection must not rewrite storage")))
+                  run-detail/query-room-tool-calls (constantly [])]
+      (doseq [make-query [query/make-room-messages-query query/make-room-timeline-query]]
+        (let [rows ((make-query room-id) db)
+              annotated (query/annotate-message-threads rows)]
+          (is (= [message-id agent-id activity-id] (mapv :entity/uuid rows)))
+          (is (= [agent-id activity-id]
+                 (mapv :entity/uuid (:items (query/select-message-thread annotated message-id)))))
+          (is (not-any? #(= private-id (:entity/uuid %)) rows))))
+      (is (= "Private workflow task body"
+             (d/q '[:find ?text . :in $ ?id :where [?m :message/id ?id] [?m :message/content ?text]] db private-id))
+          "Private Run evidence remains stored for its inspector"))))
