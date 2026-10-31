@@ -94,3 +94,26 @@ and loading separately using the resource uptime snapshots). Do not claim that
 summing only leaf tests or completed namespace durations measures the complete
 backend command. Namespace durations are appropriate for partition weights,
 since each isolated shard pays its own startup/loading cost.
+
+Resource snapshots also count already-loaded named memory stores and Datahike
+connections. A named memory store intentionally survives connection release;
+its fixture owner must explicitly delete it after safe physical retirement.
+An increasing store count is retention evidence, while GC time and heap trends
+help assess its performance impact. Never clear a global registry to make a
+measurement look clean or delete stores owned by unresolved native work.
+
+The shared work fixture owns the chat connection it creates. A successful Room
+close acknowledges native drain/context retirement before the fixture removes
+governance, releases that connection and deletes its named memory store. A
+failed close preserves that chat acquisition/store for explicit recovery.
+This is a chat-owner guarantee; older outer fixtures' control/repository
+teardown ordering needs separate auditing before claiming whole-host retention.
+
+Owned-workspace, MCP, owned-read and file-projection tests can explicitly select
+`:system-schema :core` in their fixture. This installs the real 146 core Simmis
+control attributes instead of all 517 feature attributes; every existing Dvergr
+system/actor/assignment/pricing/task group, full chat schema and real resource
+kernel stays. Unrelated fixture descendants and authority/provisioning defaults
+retain the full schema. New feature-journal tests must install their actual
+schemas or choose the full fixture, rather than accept an earlier storage error
+as a successful authority refusal.

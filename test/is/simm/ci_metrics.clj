@@ -8,6 +8,17 @@
             [kaocha.testable :as testable])
   (:import (java.lang.management ManagementFactory)))
 
+(defn- registered-count [s]
+  ;; Observe only already-loaded registries; never load a backend or retain its
+  ;; connections/stores in timing artifacts. Named memory stores intentionally
+  ;; outlive release until explicitly deleted by their fixture owner.
+  (when-let [n (find-ns (symbol (namespace s)))]
+    (when-let [v (ns-resolve n (symbol (name s)))]
+      (let [registry @v]
+        (when (instance? clojure.lang.IDeref registry)
+          (let [entries @registry]
+            (when (map? entries) (count entries))))))))
+
 (defn resources []
   (let [os (ManagementFactory/getOperatingSystemMXBean)
         heap (.getHeapMemoryUsage (ManagementFactory/getMemoryMXBean))]
@@ -21,6 +32,8 @@
      :heap-committed-bytes (.getCommitted heap)
      :heap-max-bytes (.getMax heap)
      :threads (.getThreadCount (ManagementFactory/getThreadMXBean))
+     :registries {:named-memory-stores (registered-count 'konserve.memory/memory-store-registry)
+                  :datahike-connections (registered-count 'datahike.connections/*connections*)}
      :gc (mapv (fn [gc] {:name (.getName gc) :count (.getCollectionCount gc)
                          :elapsed-ms (.getCollectionTime gc)})
                (ManagementFactory/getGarbageCollectorMXBeans))}))

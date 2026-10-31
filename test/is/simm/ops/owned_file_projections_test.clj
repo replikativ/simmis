@@ -15,7 +15,7 @@
   (let [configs (atom [])]
     (try
       (@#'fixture/with-fixture
-       owned-first?
+       owned-first? {:system-schema :core}
        (fn [{:keys [owned attached] :as data}]
          (reset! configs (mapv #(-> % deref :config) [owned attached]))
          (f data)))

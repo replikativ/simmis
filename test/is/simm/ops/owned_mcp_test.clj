@@ -39,15 +39,18 @@
   (let [db @conn]
     {:commit (d/commit-id db) :config (:config db) :worktree (query/worktree db)}))
 
-(defn- with-fixture [owned-first? f]
-  (let [configs (atom []) chat (atom nil) completed? (atom false)]
+(defn- with-fixture
+  ([owned-first? f] (with-fixture owned-first? {} f))
+  ([owned-first? options f]
+  (let [configs (atom []) completed? (atom false)]
     (try
       (let [result
             (@#'fixture/with-fixture
-             owned-first?
+             owned-first? options
              (fn [{:keys [conn w room owned attached] :as data}]
-               (reset! chat (:conn (:store room)))
-               (reset! configs (mapv #(-> % deref :config) [conn owned attached @chat]))
+               ;; work-test/with-room owns its chat connection/store. This
+               ;; wrapper owns only the control and two repository databases.
+               (reset! configs (mapv #(-> % deref :config) [conn owned attached]))
                (let [hydrations (atom [])
                      hydrate (fn [id]
                                (swap! hydrations conj id)
@@ -63,17 +66,16 @@
         ;; Only normal shared-fixture return acknowledges physical Room/store
         ;; cleanup. Preserve diagnostic stores if callback/teardown throws.
         (when @completed?
-          (when-let [c @chat] (d/release c))
           (doseq [cfg @configs]
             (when-not (and (= :memory (get-in cfg [:store :backend]))
                            (uuid? (get-in cfg [:store :id])))
               (throw (ex-info "Refuse non-fixture cleanup" {})))
-            (d/delete-database cfg)))))))
+            (d/delete-database cfg))))))))
 
 (deftest cold-uuid-and-slug-authority-never-hydrates-or-uses-selected-workspace
   (doseq [owned-first? [true false]]
     (with-fixture
-      owned-first?
+      owned-first? {:system-schema :core}
       (fn [{:keys [conn w room host attached hydrations]}]
         (let [member (principal w :member)
               uuid (str (:room w)) slug (:room/slug (d/entity @conn [:room/id (:room w)]))
@@ -95,7 +97,7 @@
 
 (deftest visibility-is-absence-of-args-not-malformed-call-or-retargeted-resource
   (with-fixture
-    true
+    true {:system-schema :core}
     (fn [{:keys [w host hydrations]}]
       (let [member (principal w :member) handle (str (:room w)) base (request handle)]
         (is (allow? host member (dissoc base :args)))
@@ -110,7 +112,7 @@
 
 (deftest invalid-identities-and-dtos-refuse-before-any-hydration
   (with-fixture
-    true
+    true {:system-schema :core}
     (fn [{:keys [w host hydrations]}]
       (let [member (principal w :member) handle (str (:room w))
             resolve-read (get-in host [:config :room-files :resolve-read])
@@ -134,7 +136,7 @@
 
 (deftest canonical-uuid-collisions-never-fall-back-but-ordinary-short-slugs-remain-slugs
   (with-fixture
-    true
+    true {:system-schema :core}
     (fn [{:keys [conn w host hydrations]}]
       (let [member (principal w :member) unknown (str (random-uuid))]
         (d/transact conn [{:room/id (:other-room w) :room/slug unknown
@@ -150,7 +152,7 @@
 
 (deftest current-human-kind-and-revocation-are-rechecked-in-the-same-control-snapshot
   (with-fixture
-    true
+    true {:system-schema :core}
     (fn [{:keys [conn w host hydrations]}]
       (let [member (principal w :member) handle (str (:room w))]
         (d/transact conn [[:db/add [:party/id (:member w)] :actor/kind :agent]])
@@ -167,7 +169,7 @@
 
 (deftest host-owner-and-drain-refusals-precede-hydration
   (with-fixture
-    true
+    true {:system-schema :core}
     (fn [{:keys [w host hydrations]}]
       (let [member (principal w :member) handle (str (:room w))]
         (doseq [replace [#(with-redefs [system-db/get-conn (constantly nil)] (%))
@@ -180,7 +182,7 @@
 (deftest control-mapping-and-authority-are-rechecked-after-fixed-hydration
   (doseq [change [:revoke :retarget :control-owner :context-owner]]
     (with-fixture
-      true
+      true {:system-schema :core}
       (fn [{:keys [conn w room host hydrations hydrate]}]
         (let [member (principal w :member) slug (:room/slug (d/entity @conn [:room/id (:room w)]))
               replaced? (atom false)]
@@ -207,7 +209,7 @@
 
 (deftest default-replacement-and-aba-change-the-stamp-without-selected-fallback
   (with-fixture
-    false
+    false {:system-schema :core}
     (fn [{:keys [conn w host attached attached-descriptor]}]
       (let [member (principal w :member) handle (str (:room w)) first (read! host member handle)
             selected (workspace/selected-system-id)]
@@ -223,7 +225,7 @@
 
 (deftest global-catalog-and-worker-delegation-retain-original-authority
   (with-fixture
-    true
+    true {:system-schema :core}
     (fn [{:keys [conn w host hydrations]}]
       (let [member (principal w :member)
             global {:op :catalog/list :action :read :resource [:global] :resolved nil :args {}}

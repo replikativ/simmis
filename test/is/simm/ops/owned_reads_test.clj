@@ -32,7 +32,7 @@
 
 (deftest writer-observation-uses-its-own-authority-snapshot-without-source-access
   (@#'fixture/with-fixture
-   true
+   true {:system-schema :core}
    (fn [{:keys [host conn w room]}]
      (let [principal (ops/party-principal (:owner w)) handle (str (:room w))
            original (reads/resolve-host-room! host principal handle)
@@ -47,7 +47,7 @@
 (deftest ordinary-human-and-mcp-share-one-owned-service-with-separate-transport-gates
   (doseq [owned-first? [true false]]
     (@#'fixture/with-fixture
-     owned-first?
+     owned-first? {:system-schema :core}
      (fn [{:keys [conn w room host attached hydrations]}]
        (let [browser (ops/party-principal (:member w))
              mcp (assoc browser :principal/mcp? true)
@@ -84,7 +84,7 @@
 
 (deftest workers-agents-local-and-noncanonical-human-identities-cannot-become-owner-reads
   (@#'fixture/with-fixture
-   true
+   true {:system-schema :core}
    (fn [{:keys [conn w room hydrations]}]
      (let [human (ops/party-principal (:member w)) handle (str (:room w))]
        (doseq [bad [(assoc human :principal/kind :worker :principal/mcp? true)
@@ -98,7 +98,7 @@
 
 (deftest current-host-owner-and-physical-worker-guards-are-shared-not-transport-bypassed
   (@#'fixture/with-fixture
-   true
+   true {:system-schema :core}
    (fn [{:keys [conn w room attached host hydrations]}]
      (let [principal (ops/party-principal (:member w)) handle (str (:room w))]
        (doseq [[control host-ctx] [[attached (:ctx room)] [conn nil] [conn (Object.)]]]
@@ -116,7 +116,7 @@
 (deftest post-hydration-current-authority-and-room-mapping-still-refuse-stale-binding
   (doseq [mode [:revoke :mapping :context]]
     (@#'fixture/with-fixture
-     true
+     true {:system-schema :core}
      (fn [{:keys [conn w room hydrations]}]
        (let [principal (ops/party-principal (:member w)) handle (str (:room w))
              hydrate (fn [id]
@@ -148,7 +148,7 @@
 
 (deftest rich-control-snapshot-is-exactly-the-final-owned-resolution-input
   (@#'fixture/with-fixture
-   true
+   true {:system-schema :core}
    (fn [{:keys [conn w room]}]
      (let [principal (ops/party-principal (:member w)) resolve! owned/resolve!
            observed (atom nil) handle (str (:room w))]
@@ -167,7 +167,7 @@
 (deftest room-only-resolution-and-validation-ignore-missing-default-and-selected-files
   (doseq [order [true false]]
     (@#'fixture/with-fixture
-     order
+     order {:system-schema :core}
      (fn [{:keys [conn w host room owned attached hydrations]}]
        (let [p (ops/party-principal (:owner w)) handle (str (:room w))
              slug (:room/slug (d/entity @conn [:room/id (:room w)]))
@@ -193,7 +193,7 @@
 
 (deftest leased-installation-refuses-a-mapping-switch-before-target-io
   (@#'fixture/with-fixture
-   true
+   true {:system-schema :core}
    (fn [{:keys [conn w host room]}]
      (let [p (ops/party-principal (:owner w)) handle (str (:room w))
            resolved (reads/resolve-host-install-room! host p handle)
@@ -211,7 +211,7 @@
 
 (deftest installation-room-gate-does-not-borrow-merge-permission
   (@#'fixture/with-fixture
-   true
+   true {:system-schema :core}
    (fn [{:keys [w host room hydrations]}]
      (let [principal (ops/party-principal (:owner w)) handle (str (:room w))
            can? access/can? actions (atom [])]
@@ -234,7 +234,7 @@
 
 (deftest room-only-requires-human-read-and-merge-before-hydration
   (@#'fixture/with-fixture
-   true (fn [{:keys [w host hydrations]}]
+   true {:system-schema :core} (fn [{:keys [w host hydrations]}]
           (let [owner (ops/party-principal (:owner w)) handle (str (:room w))]
             (doseq [principal [(ops/party-principal (:member w))
                                (ops/party-principal (:admin w))
@@ -246,7 +246,7 @@
 (deftest room-only-rechecks-revocation-slug-and-owner-expiry-after-hydration
   (doseq [change [:merge :slug :control :context]]
     (@#'fixture/with-fixture
-     true
+     true {:system-schema :core}
      (fn [{:keys [conn w host room]}]
        (let [p (ops/party-principal (:owner w)) handle (str (:room w))
              current! reads/current-control-db! calls (atom 0) hydrations (atom 0)]
@@ -274,7 +274,7 @@
 (deftest room-only-validator-never-rehydrates-after-revocation-or-slug-remapping
   (doseq [change [:merge :slug]]
     (@#'fixture/with-fixture
-     true
+     true {:system-schema :core}
      (fn [{:keys [conn w host]}]
        (let [p (ops/party-principal (:owner w)) handle (str (:room w))
              binding (reads/resolve-host-room! host p handle) calls (atom 0)]
@@ -302,7 +302,7 @@
 (deftest room-only-refuses-native-replacement-during-hydration-and-on-final-validation
   (doseq [phase [:hydrate :validate]]
     (@#'fixture/with-fixture
-     true
+     true {:system-schema :core}
      (fn [{:keys [w host room]}]
        (let [p (ops/party-principal (:owner w)) handle (str (:room w))]
          (if (= :hydrate phase)
@@ -331,7 +331,7 @@
 
 (deftest room-only-owner-expiry-and-drain-refuse-before-lookup-or-hydration
   (@#'fixture/with-fixture
-   true
+   true {:system-schema :core}
    (fn [{:keys [conn w host]}]
      (let [p (ops/party-principal (:owner w)) handle (str (:room w))
            binding (reads/resolve-host-room! host p handle)
@@ -350,7 +350,7 @@
 
 (deftest room-only-newly-valid-owner-cannot-adopt-an-earlier-binding
   (@#'fixture/with-fixture
-   true
+   true {:system-schema :core}
    (fn [{:keys [w host room]}]
      (let [p (ops/party-principal (:owner w)) handle (str (:room w))
            binding (reads/resolve-host-room! host p handle)
@@ -379,7 +379,7 @@
 
 (deftest room-only-refuses-a-reserved-native-lifecycle-and-a-wrong-room-context
   (@#'fixture/with-fixture
-   true
+   true {:system-schema :core}
    (fn [{:keys [w host]}]
      (let [p (ops/party-principal (:owner w)) handle (str (:room w))
            binding (reads/resolve-host-room! host p handle)
@@ -398,7 +398,7 @@
 
 (deftest room-only-binding-carries-the-final-control-snapshot-not-a-prehydrate-copy
   (@#'fixture/with-fixture
-   true
+   true {:system-schema :core}
    (fn [{:keys [conn w host room]}]
      (let [p (ops/party-principal (:owner w)) handle (str (:room w))
            after (atom nil) current! reads/current-control-db!]
@@ -412,7 +412,7 @@
 
 (deftest registered-metadata-binding-never-hydrates-and-retains-current-human-authority
   (@#'fixture/with-fixture
-   true
+   true {:system-schema :core}
    (fn [{:keys [conn w room host hydrations]}]
      (let [member (ops/party-principal (:member w)) handle (str (:room w))]
        (with-redefs [rooms/live-room (fn [& _] (throw (Exception. "Metadata must not hydrate")))]
