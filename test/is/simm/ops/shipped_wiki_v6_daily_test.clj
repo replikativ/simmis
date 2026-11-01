@@ -243,7 +243,12 @@
                                  :expected-frozen (:knowledge.batch/frozen-id batch)
                                  :request-id (random-uuid) :reason "Retry current evidence in a fresh update"}
                   original-request (requests/get-request conn (:work.request/id request))
-                  recover! #(dops/invoke host principal :simmis/workflow-failure-recover
+                  ;; This fixture's HOST is the MCP boundary. Exercise its
+                  ;; actual explicit work identity, not an ordinary browser
+                  ;; principal accidentally accepted by stale registrations.
+                  recovery-principal (assoc principal :principal/mcp? true :principal/scopes #{}
+                                            :principal/tools #{"simmis_workflow-failure-recover"})
+                  recover! #(dops/invoke host recovery-principal :simmis/workflow-failure-recover
                                          (assoc (update-vals recover-input (fn [v] (if (uuid? v) (str v) v))) :room handle))
                   recovered (recover!)]
               (is (= :recovered (:status recovered)))

@@ -753,6 +753,7 @@
      "upgrade-wiki-maintenance!" {:action :admin :resource (room :room-id-str)}
      "create-workflow-schedule!" {:action M :resource (room :room-id-str)}
      "set-workflow-schedule-enabled!" {:action M :resource (room :room-id-str)}
+     "recover-failed-workflow-update!" {:action M :resource (room :room-id-str)}
      "submit-workflow-benchmark!" {:action M :resource (room :room-id-str)}
      "submit-cli-workflow-benchmark!" {:action M :resource (room :room-id-str)}
      "provision-cli-workflow-allowance!" {:action M :resource (room :room-id-str)}

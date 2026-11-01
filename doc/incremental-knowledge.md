@@ -608,6 +608,18 @@ rows are not backfilled by observing absent owners. The unmerged model-based
 Spindel implementation is not required, and unavailable native capabilities are
 not reconstructed after restart.
 
+Native family return and Job settlement are distinct boundaries. The shared
+`native-execution-return/state` reader reports live, returned or unknown for an
+explicit Room and a bounded domain graph. Fixed worker recovery may inspect its
+pinned assignments after positive family return, then prove stop, world cleanup
+and fixture retirement before returning the Request. It never creates missing
+Job cleanup witnesses. Generic boot reconciliation may return available Run
+balances after family return, while keeping the Request pending if its original
+adapter retirement is unproven. Neither path certifies arbitrary callbacks from
+an absent owner. Submitted wiki-batch recovery requires the stronger complete Job
+proof above. Construction failures seal/cancel the native child family without
+marking the failed root as a user cancellation.
+
 One serialized, reauthorized mutation closes the old batch as `failed-requeued`,
 restores its exact claimed versions to pending, clears only its active hold and
 increments generation once. It preserves the discovery cursor/root/revision and

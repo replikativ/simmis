@@ -5,7 +5,6 @@
             [dvergr.agent.attempt :as attempt]
             [dvergr.agent.evaluation :as evaluation]
             [dvergr.agent.run :as run]
-            [dvergr.jobs :as jobs]
             [dvergr.room.registry :as registry]
             [dvergr.room.store :as store]
             [dvergr.rooms.forks :as forks]
@@ -14,6 +13,7 @@
             [is.simm.model.work-requests :as requests]
             [is.simm.model.workers :as workers]
             [is.simm.ops.benchmarks :as benchmarks]
+            [is.simm.ops.native-execution-return :as native-return]
             [is.simm.ops.worker-benchmarks :as worker-benchmarks]
             [is.simm.ops.worker-files :as files]
             [is.simm.ops.worker-work :as local]
@@ -194,23 +194,23 @@
 
 (defn- recover-benchmark! [conn host-ctx row room]
   (let [id (:work.request/id row) job (:work.request/job row)
-        status (jobs/status job)
         graph (binding [ec/*execution-context* (:ctx room)] (run/runs room {:root-run-id job :limit 10}))
         root (first (filter #(= job (:run/id %)) graph))
         children (vec (remove #(= job (:run/id %)) graph))
-        active (set (map :run/id (run/active-runs)))
         prepared (benchmark-intent! conn row)
         maximum (long (get (:resources prepared) local/admission-unit))]
     (when-not (and root (= :experiment (:run/kind root))
-                   (= (:id room) (:run/room root) (:room status))
+                   (= (:id room) (:run/room root))
+                   (every? #(= (:id room) (:run/room %)) graph)
                    (= (keyword "party" (str (:work.request/by row))) (:run/actor root))
                    (<= (count children) maximum) (< (count graph) 10)
                    (= (count graph) (count (set (map :run/id graph))))
                    (every? #(= job (:run/parent %)) children))
       (refuse! "Benchmark recovery requires the complete bounded experiment graph"))
-    (if (or (not (:settled? status)) (some #(active (:run/id %)) graph)
-            (not-every? #(contains? #{:completed :failed :cancelled} (:run/status %)) graph))
-      {:state :live}
+    (case (native-return/state room job graph)
+      :live {:state :live}
+      :unknown {:state :native-return-unknown}
+      :returned
       (let [fenced
             ;; Prove/fence siblings independently. One pre-binding crash must
             ;; not leave another, fully identified external lease running.
@@ -276,23 +276,21 @@
             (when-let [room (resolve-room (:work.request/room row))]
               (if (= :local-worker-benchmark (:work.request/kind row))
                 (recover-benchmark! conn host-ctx row room)
-                (let [status (jobs/status job)
-                    graph (binding [ec/*execution-context* (:ctx room)]
+                (let [graph (binding [ec/*execution-context* (:ctx room)]
                             (run/runs room {:root-run-id job :limit 3}))
                     root (first (filter #(= job (:run/id %)) graph))
-                    children (remove #(= job (:run/id %)) graph)
-                    active (set (map :run/id (run/active-runs)))]
+                    children (remove #(= job (:run/id %)) graph)]
                 (when-not (and root (= :workflow (:run/kind root))
                                (= (:id room) (:run/room root))
-                               (= (:id room) (:room status))
+                               (every? #(= (:id room) (:run/room %)) graph)
                                (< (count graph) 3)
                                (<= (count children) 1)
                                (every? #(= job (:run/parent %)) children))
                   (refuse! "Worker recovery requires one complete Job/Run graph"))
-                (if (or (not (:settled? status))
-                        (some #(active (:run/id %)) graph)
-                        (not-every? #(contains? #{:completed :failed :cancelled} (:run/status %)) graph))
-                  {:state :live}
+                (case (native-return/state room job graph)
+                  :live {:state :live}
+                  :unknown {:state :native-return-unknown}
+                  :returned
                   (let [pinned (intent! conn row)
                         assignment (:assignment pinned)
                         rows (associated conn id job)
