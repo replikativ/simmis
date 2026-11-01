@@ -284,3 +284,28 @@
            (is (nil? (:schedule.activation/last-processed-input after))))
          (operations/tick-owned! host due)
          (is (= [:certified :failed] @events)))))))
+
+(deftest native-failure-holds-the-exact-submitted-occurrence
+  (doseq [status [:failed :cancelled]]
+    (@#'occurrences/with-occurrence true saved/knowledge-source
+     (fn [{:keys [conn host due row]}]
+       (with-redefs [work/submit-prepared! settled-request-only]
+         (operations/tick-owned! host due))
+       (let [aid (:schedule.activation/id row)
+             before (schedules/activation conn aid)
+             oid (:schedule.activation/active-occurrence before)]
+         (with-redefs [jobs/status (constantly {:status status :settled? true :finished-at due})
+                       filing/candidate-outcome
+                       (fn [& _] (throw (ex-info "Native failure is not a candidate Attempt" {})))]
+           (operations/tick-owned! host due)
+           (let [after (schedules/activation conn aid)
+                 occurrence (schedules/occurrence conn oid)]
+             (is (false? (:schedule.activation/enabled? after)))
+             (is (= oid (:schedule.activation/last-terminal-failure after)))
+             (is (nil? (:schedule.activation/active-occurrence after)))
+             (is (= status (:schedule.occurrence/failed-job-status occurrence)))
+             (is (nil? (:schedule.occurrence/failed-candidate occurrence)))
+             (is (true? (:schedule.occurrence/announced? occurrence)))
+             (is (nil? (:schedule.activation/last-processed-input after)))
+             (operations/tick-owned! host due)
+             (is (= after (schedules/activation conn aid))))))))))
