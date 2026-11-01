@@ -7,6 +7,7 @@
             [dvergr.agent.evaluation :as evaluation]
             [is.simm.documents.view :as view]
             [is.simm.ops.checkers :as checkers]
+            [is.simm.ops.wiki-scoring :as scoring]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.knowledge-inputs :as inputs]
             [is.simm.ops.workflow-runs :as runs]
@@ -37,7 +38,7 @@
                          :content (blob/blob-id (.getBytes ^String text "UTF-8"))
                          :size (alength (.getBytes ^String text "UTF-8")) :mode 33188}) (sort-by key sources))
         by-role (fn [role] (into (sorted-map) (for [e entries :when (= role (:role e))]
-                                                              [(:path e) (select-keys e [:content :size :mode])])))
+                                                [(:path e) (select-keys e [:content :size :mode])])))
         trigger (hasch/uuid {:version 1 :repository repository :policy inputs/default-policy :files (by-role :trigger)})
         execution (hasch/uuid {:trigger trigger :context (by-role :context)})
         manifest {:version 1 :repository repository :policy inputs/default-policy
@@ -56,47 +57,47 @@
                                :quotes [{:source source-path :text source}] :sources {source-path source}}}
            "no-change" {:fixtures (frozen {"wiki/Company.md" changed "inbox/note.md" source})
                         :gold {:version 2 :no-change? true :required [] :preserved {}
-                                :forbidden [] :citations [] :quotes []}}}})
+                               :forbidden [] :citations [] :quotes []}}}})
 
 (defn verdict [b case files]
   (checkers/score b inputs/default-policy {:environment/metadata {:case case}} files checkers/policy))
 
 (deftest valid-old-page-new-page-and-no-change-all-pass
   (doseq [[case files] [["supported" {"/out/wiki/Company.md" changed}]
-                       ["supported" {"/out/wiki/Product.md" fresh}]
-                       ["no-change" {}]]]
+                        ["supported" {"/out/wiki/Product.md" fresh}]
+                        ["no-change" {}]]]
     (is (every? true? (vals (:checks (verdict (bundle) case files)))))))
 
 (deftest existing-metadata-and-block-structure-are-preserved-but-insertion-is-allowed
   (let [b (bundle)]
     (is (false? (get-in (verdict b "supported" {"/out/wiki/Company.md" (str/replace changed "active: false" "active: true")})
-                       [:checks :preserved-structure?])))
+                        [:checks :preserved-structure?])))
     (is (false? (get-in (verdict b "supported" {"/out/wiki/Company.md" (str/replace changed block-id other-page)})
-                       [:checks :preserved-structure?])))
+                        [:checks :preserved-structure?])))
     (is (true? (get-in (verdict b "supported" {"/out/wiki/Company.md" (str changed (block other-page "New section"))})
-                      [:checks :preserved-structure?])))
+                       [:checks :preserved-structure?])))
     (is (false? (get-in (verdict b "supported" {"/out/wiki/Product.md" (str/replace fresh other-page page)})
-                       [:checks :unique-identities?])))
+                        [:checks :unique-identities?])))
     (is (false? (get-in (verdict b "supported"
-                               {"/out/wiki/Company.md" (str/replace changed "# Company" "# Renamed")
-                                "/out/wiki/Product.md" (str fresh "\n# Company")})
-                       [:checks :preserved-content?])))))
+                                 {"/out/wiki/Company.md" (str/replace changed "# Company" "# Renamed")
+                                  "/out/wiki/Product.md" (str fresh "\n# Company")})
+                        [:checks :preserved-content?])))))
 
 (deftest unsupported-claims-and-citations-in-code-do-not-pass
   (let [b (bundle)]
     (is (false? (get-in (verdict b "supported" {"/out/wiki/Product.md" (str fresh "\nfive paying customers")})
-                       [:checks :forbidden-content?])))
+                        [:checks :forbidden-content?])))
     (is (false? (get-in (verdict b "supported" {"/out/wiki/Product.md" (str/replace fresh (str "[Note](" source-path ")")
-                                                                                             (str "`[Note](" source-path ")`"))})
-                       [:checks :citations?])))
+                                                                                    (str "`[Note](" source-path ")`"))})
+                        [:checks :citations?])))
     (is (false? (get-in (verdict b "supported" {"/out/wiki/Product.md" (str fresh "\n[Invented](/in/knowledge/sources/inbox/missing.md)")})
-                       [:checks :citations?])))
+                        [:checks :citations?])))
     (let [fake "A quotation not present in frozen evidence."
           stale (-> b
                     (assoc-in [:cases "supported" :gold :sources source-path] fake)
                     (assoc-in [:cases "supported" :gold :quotes] [{:source source-path :text fake}]))]
       (is (false? (get-in (verdict stale "supported" {"/out/wiki/Product.md" (str fresh "\n" fake)})
-                         [:checks :quotes?]))))))
+                          [:checks :quotes?]))))))
 
 (deftest baseline-is-verified-from-selected-fixtures-and-never-gold
   (let [b (bundle)]
@@ -109,7 +110,7 @@
           selected (assoc-in b [:cases "supported" :fixtures]
                              (frozen {"wiki/Company.md" replacement "inbox/note.md" source}))]
       (is (false? (get-in (verdict selected "supported" {"/out/wiki/Company.md" changed})
-                         [:checks :preserved-structure?]))))))
+                          [:checks :preserved-structure?]))))))
 
 (deftest host-observation-is-inside-the-sticky-scoring-account
   (let [calls (atom 0)]
@@ -132,7 +133,7 @@
 (deftest malformed-or-missing-case-gold-does-not-fall-back-to-root-gold
   (let [b (bundle)]
     (doseq [gold [nil false {:version 2 :no-change? true}
-                 (assoc (get-in b [:cases "supported" :gold]) :unknown true)]]
+                  (assoc (get-in b [:cases "supported" :gold]) :unknown true)]]
       (is (thrown? clojure.lang.ExceptionInfo
                    (verdict (-> b (assoc :gold (get-in b [:cases "supported" :gold]))
                                 (assoc-in [:cases "supported" :gold] gold)) "supported" {}))))))
@@ -193,6 +194,24 @@
       (is (get-in report [:damaged k :ok?]))
       (is (= (assoc-in (get-in report [:damaged k :verdict]) [:checks :completed?] true)
              ((:verify evaluator) {:environment/metadata {:case case}} {:files files :run-status :completed}))))))
+
+(deftest citation-profile-is-explicit-and-has-a-distinct-observation-basis
+  (let [legacy (bundle)
+        current (assoc-in legacy [:definition :params :simmis/checker-profile] :wiki-structure-v2)
+        environment {:environment/metadata {:case "supported"}}
+        text (str "---\nsimmis-id: " (random-uuid) "\n---\n# Proposed\n\n"
+                  "Visible claim [source](/in/knowledge/sources/inbox/evidence.md)\n\n"
+                  "![image](/in/not-a-citation.md)\n\n```\nhidden claim\n```\n")
+        observed (scoring/prepare-input current inputs/default-policy environment (constantly nil)
+                                        {:files {"/out/wiki/New.md" text}})]
+    (is (= scoring/profile (scoring/selected-profile legacy)))
+    (is (= scoring/citation-profile (get-in observed [:structure :profile])))
+    (is (= 2 (get-in observed [:structure :proposed :profile :version])))
+    (is (= ["/in/knowledge/sources/inbox/evidence.md"]
+           (get-in observed [:structure :proposed :files "wiki/New.md" :links])))
+    (is (not (str/includes? (get-in observed [:structure :proposed :files "wiki/New.md" :prose-text]) "hidden claim")))
+    (is (not= (evaluation/evaluator-ref (checkers/evaluator legacy inputs/default-policy))
+              (evaluation/evaluator-ref (checkers/evaluator current inputs/default-policy))))))
 
 (deftest invalid-multi-reference-calibration-is-refused-before-execution
   (let [b (calibrated-bundle)]

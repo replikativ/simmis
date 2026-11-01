@@ -8,6 +8,8 @@
 
 (def profile {:id :wiki-structure-v1 :version 1 :facts facts/profile})
 
+(def citation-profile {:id :wiki-structure-v2 :version 1 :facts facts/citation-profile})
+
 (def checkpoint-profile
   {:id :wiki-checkpoint-structure-v1 :version 1 :facts facts/profile
    :baseline {:source :selected-case-fixtures :root "/wiki/"}
@@ -16,7 +18,8 @@
 (defn selected-profile [bundle]
   (let [selected (get-in bundle [:definition :params :simmis/checker-profile])]
     (when (contains? (get-in bundle [:definition :params]) :simmis/checker-profile)
-      (or (get {(:id profile) profile (:id checkpoint-profile) checkpoint-profile} selected)
+      (or (get {(:id profile) profile (:id checkpoint-profile) checkpoint-profile
+                (:id citation-profile) citation-profile} selected)
           (throw (ex-info "Unknown checker observation profile" {:type ::invalid-profile}))))))
 
 (defn- markdown? [path]
@@ -72,6 +75,7 @@
   (when-not selection-policy
     (throw (ex-info "Wiki structural scoring requires explicit knowledge inputs" {:type ::missing-policy})))
   (let [observation-profile (or (selected-profile bundle) profile)
+        facts-version (if (= (:id citation-profile) (:id observation-profile)) 2 1)
         case-id (get-in environment [:environment/metadata :case])
         cases (:cases bundle)
         _ (when-not (if (seq cases) (contains? cases case-id) (nil? case-id))
@@ -97,7 +101,7 @@
                              :when (and (string? path) (str/starts-with? path "/out/wiki/")
                                         (markdown? path) (string? text))]
                          (do (guard!) [(subs path 5) text])))
-        baseline-facts (facts/documents repository baseline guard!)
+        baseline-facts (facts/documents repository baseline guard! facts-version)
         _ (when-not (every? :valid? (vals (:files baseline-facts)))
             (throw (ex-info "Frozen wiki fixture has invalid structure" {:type ::invalid-baseline})))
         ids (mapcat :ids (vals (:files baseline-facts)))
@@ -109,4 +113,4 @@
             :source-texts (into (sorted-map) (map (fn [{:keys [input]}] (guard!) [input (get fixtures input)])) evidence-entries)
             :baseline-texts baseline
             :baseline baseline-facts
-            :proposed (facts/documents repository proposed guard!)})))
+            :proposed (facts/documents repository proposed guard! facts-version)})))

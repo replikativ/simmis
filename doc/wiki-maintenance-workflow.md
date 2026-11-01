@@ -316,6 +316,27 @@ execution admission. Users can launch and preview schedules for the packaged
 workflow without editing that internal setting. An ordinary unqualified
 `:checker-profile` string parameter remains a user parameter.
 
+The opt-in `:wiki-structure-v2` profile gives custom checkers parser-derived
+citation and prose observations. Select it with
+`:params {:simmis/checker-profile :wiki-structure-v2}` in `workflow.edn`.
+Each observed file adds `:prose-text`; `:links` contains ordinary inline and
+reference-style Markdown link destinations, including angle-delimited URLs.
+Image, code and HTML subtrees are excluded from these two observations. The
+existing parser, file/byte limits and scoring resource guard still apply.
+This is a deliberately restricted text projection, not browser rendering or a
+semantic truth judgement. Repeated links remain repeated; unused reference
+link definitions do not count as citations.
+
+Its observation profile and verifier basis differ from `:wiki-structure-v1`.
+The default profile and `:wiki-checkpoint-structure-v1` retain their existing
+facts and meaning. A checker must explicitly use the new fields; merely
+selecting this profile does not make an old substring checker more reliable.
+Calibrate custom checkers against multiple valid Markdown spellings as well
+as image/code-only citations, invented sources and unsupported assertions.
+An exact-line rubric must not silently reject Markdown syntax that its task
+allows. When correcting such a rubric after a trial, preserve the original
+Attempt and Scorecard and identify any frozen-output recheck separately.
+
 The opt-in `:wiki-checkpoint-structure-v1` scoring profile also observes ordinary
 `/wiki/` Markdown from the selected case's shared and case-specific fixtures.
 This supplies a preservation baseline without copying those pages into the
