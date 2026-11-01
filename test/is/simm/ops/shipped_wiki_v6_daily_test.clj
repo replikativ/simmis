@@ -289,8 +289,8 @@
                             (assoc :expected-owned-source
                                    (parse-uuid (get-in (sources/details! host principal handle {:name starter/name}) [:data :revision]))))
               activation (schedules/create-owned! host principal handle
-                                                  {:request-id (random-uuid) :kind "workflow"
-                                                   :cadence {:interval-ms 60000 :tz "UTC"} :execution execution})
+                                                   {:request-id (random-uuid) :kind "workflow"
+                                                    :cadence {:interval-ms 60000 :tz "UTC"} :execution execution})
               due (:schedule.activation/next-fire activation)
               next-due (java.util.Date. (+ 60000 (.getTime ^java.util.Date due)))
               attached-before (@#'occurrence-fixture/state attached)
@@ -384,27 +384,27 @@
                            (throw (ex-info "v6 native filing returned an invalid proposal identity"
                                            {:status (:status filed)})))
                          (application/with-operation!
-                           (fn [_host]
-                             (is (= 2 (:version (dispositions/disposition (requests/get-request conn rid)))))
-                             (is (str/includes? (:text (files/read-file-in @owned "wiki/Company.md")) "Later human edit"))
-                             (let [failure (try (controller/preview-reviewed! conn (:owner w) (:room w) room proposal)
-                                                nil (catch clojure.lang.ExceptionInfo error (select-keys (ex-data error) [:type :reason])))]
-                               (is (= {:type :is.simm.documents.view/refused :reason :stale-or-unselected-change} failure)
-                                   "Changed live target refuses review before any adoption claim"))
-                             (is (empty? (d/datoms @conn :aevt :file.adoption/id)))
-                             (write! owned "wiki/Company.md" original-company)
-                             (let [review (controller/preview-reviewed! conn (:owner w) (:room w) room proposal)]
-                               (is (= :reviewed (:status review)))
-                               (write! owned "wiki/Company.md" (str original-company "\nLater human edit; do not overwrite.\n"))
-                               (let [failure (try (controller/adopt-reviewed! conn (:owner w) (:room w) room proposal (:revision review))
-                                                  nil (catch clojure.lang.ExceptionInfo error (select-keys (ex-data error) [:type :reason])))]
-                                 (is (= {:type :is.simm.documents.view/refused :reason :stale-or-unselected-change} failure)
-                                     "A real earlier review cannot authorize overwriting changed current bytes"))
-                               (is (empty? (d/datoms @conn :aevt :file.adoption/id)))
-                               (write! owned "wiki/Company.md" original-company)
-                               (let [fresh (controller/preview-reviewed! conn (:owner w) (:room w) room proposal)]
-                                 (is (= :reviewed (:status fresh)))
-                                 (is (= :accepted (:status (controller/adopt-reviewed! conn (:owner w) (:room w) room proposal (:revision fresh)))))))))))))
+                          (fn [_host]
+                       (is (= 2 (:version (dispositions/disposition (requests/get-request conn rid)))))
+                       (is (str/includes? (:text (files/read-file-in @owned "wiki/Company.md")) "Later human edit"))
+                       (let [failure (try (controller/preview-reviewed! conn (:owner w) (:room w) room proposal)
+                                          nil (catch clojure.lang.ExceptionInfo error (select-keys (ex-data error) [:type :reason])))]
+                         (is (= {:type :is.simm.documents.view/refused :reason :stale-or-unselected-change} failure)
+                             "Changed live target refuses review before any adoption claim"))
+                       (is (empty? (d/datoms @conn :aevt :file.adoption/id)))
+                       (write! owned "wiki/Company.md" original-company)
+                       (let [review (controller/preview-reviewed! conn (:owner w) (:room w) room proposal)]
+                         (is (= :reviewed (:status review)))
+                         (write! owned "wiki/Company.md" (str original-company "\nLater human edit; do not overwrite.\n"))
+                         (let [failure (try (controller/adopt-reviewed! conn (:owner w) (:room w) room proposal (:revision review))
+                                            nil (catch clojure.lang.ExceptionInfo error (select-keys (ex-data error) [:type :reason])))]
+                           (is (= {:type :is.simm.documents.view/refused :reason :stale-or-unselected-change} failure)
+                               "A real earlier review cannot authorize overwriting changed current bytes"))
+                         (is (empty? (d/datoms @conn :aevt :file.adoption/id)))
+                         (write! owned "wiki/Company.md" original-company)
+                         (let [fresh (controller/preview-reviewed! conn (:owner w) (:room w) room proposal)]
+                           (is (= :reviewed (:status fresh)))
+                           (is (= :accepted (:status (controller/adopt-reviewed! conn (:owner w) (:room w) room proposal (:revision fresh)))))))))))))
                   (let [company (:text (files/read-file-in @owned "wiki/Company.md"))
                         sam (:text (files/read-file-in @owned "wiki/Sam.md"))]
                     (is (str/starts-with? company original-company) "Exact identity, metadata and existing block survive")

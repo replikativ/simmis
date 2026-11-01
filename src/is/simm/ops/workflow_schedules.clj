@@ -441,25 +441,25 @@
   (if (summary-inputs/declaration (get-in target [:snapshot :files]))
     (room-summary/verify-resolution! target retained)
     (let [planned (when (= :workflow (:kind target))
-                    (workflows-run/plan-source (:snapshot target)
-                                               (select-keys (:execution target) workflows-run/source-fields)))
-          policy (:selection-policy planned)
-          frozen? (contains? (:inputs planned) "/in/knowledge/manifest.edn")]
-      (when retained
-        (when-not (and policy (= (:target-revision retained) (hasch/uuid target)))
-          (owned-unavailable!))
-        (let [captured (if frozen?
-                         (knowledge-inputs/from-inputs policy (:inputs planned))
-                         (knowledge-inputs/verify-capture policy (:captured retained)))
-              selection (dissoc captured :inputs)]
-          (when-not (and (= selection (:selection retained))
-                         (if frozen?
-                           (every? nil? ((juxt :captured :publication-basis :knowledge-origin) retained))
-                           (and (:captured retained) (:publication-basis retained)
-                                (= (:execution-id captured) (get-in retained [:knowledge-origin :selection-id])))))
-            (owned-unavailable!))))
-      (when (and policy (nil? retained)) (owned-unavailable!))
-      retained)))
+                  (workflows-run/plan-source (:snapshot target)
+                                             (select-keys (:execution target) workflows-run/source-fields)))
+        policy (:selection-policy planned)
+        frozen? (contains? (:inputs planned) "/in/knowledge/manifest.edn")]
+    (when retained
+      (when-not (and policy (= (:target-revision retained) (hasch/uuid target)))
+        (owned-unavailable!))
+      (let [captured (if frozen?
+                       (knowledge-inputs/from-inputs policy (:inputs planned))
+                       (knowledge-inputs/verify-capture policy (:captured retained)))
+            selection (dissoc captured :inputs)]
+        (when-not (and (= selection (:selection retained))
+                       (if frozen?
+                         (every? nil? ((juxt :captured :publication-basis :knowledge-origin) retained))
+                         (and (:captured retained) (:publication-basis retained)
+                              (= (:execution-id captured) (get-in retained [:knowledge-origin :selection-id])))))
+          (owned-unavailable!))))
+    (when (and policy (nil? retained)) (owned-unavailable!))
+    retained)))
 
 (def ^:private batch-binding-fields
   [:schedule.occurrence/knowledge-batch :schedule.occurrence/batch-ref :schedule.occurrence/batch-revision])
@@ -934,10 +934,10 @@
           reply (if (= :held (:status collection))
                   collection
                   (owned-storage!
-                   #(discovery/prepare-batch!
-                     host principal handle
-                     {:name (:name execution) :expected-source (:expected-owned-source execution)
-                      :expected-bundle (:expected-bundle execution) :epoch (:epoch declaration)})))]
+                 #(discovery/prepare-batch!
+                   host principal handle
+                   {:name (:name execution) :expected-source (:expected-owned-source execution)
+                    :expected-bundle (:expected-bundle execution) :epoch (:epoch declaration)})))]
       (cond
         (and (= #{:status :reason :stream :batch :batch-state} (set (keys reply)))
              (= :held (:status reply)) (= :active-batch (:reason reply))
@@ -992,14 +992,14 @@
             (throw (ex-info "Daily summaries select their own exact originals" {:type ::invalid})))
         period (summary-inputs/closed-day (:schedule.occurrence/intended-at o) (get-in target [:cadence :tz]))
         prepared (prepare-owned-summary! #(room-summary/prepare! host (:principal context) (:handle context)
-                                                                 room-binding period (java.util.Date.)))]
+                                                        room-binding period (java.util.Date.)))]
     (if (= :skip (:status prepared))
       (schedules/skip-batch! conn row (:schedule.occurrence/id o) claim (:reason prepared))
       (let [planned (owned-storage! #(workflows-run/plan-source
-                                      (:snapshot target) (select-keys execution workflows-run/source-fields)))
+                                        (:snapshot target) (select-keys execution workflows-run/source-fields)))
             _ (when (= "true" (get-in planned [:workflow :params "save-transcript"]))
                 (owned-storage! #(summary-publication/publish-transcript!
-                                  host (:principal context) (:handle context) room-binding prepared)))
+                                   host (:principal context) (:handle context) room-binding prepared)))
             _ (owned-execution-ready! host target context room-binding)
             frozen (:frozen prepared)
             revision (:schedule.activation/revision row)
@@ -1186,10 +1186,10 @@
               original (owned-storage! #(reads/resolve-host-room! host (:principal context) (:handle context)))
               _ (owned-room-current! host context target original nil)
               job (room-operation/with-current!
-                    host (:principal context) (:handle context) original
-                    #(or (binding [ec/*execution-context* (:ctx (:room original))]
-                           (jobs/status (:work.request/job request)))
-                         (durable-completion (:room original) request target)))]
+                   host (:principal context) (:handle context) original
+                   #(or (binding [ec/*execution-context* (:ctx (:room original))]
+                          (jobs/status (:work.request/job request)))
+                        (durable-completion (:room original) request target)))]
           (when (and (:settled? job) (#{:completed :failed :cancelled} (:status job)))
             (if-not (= :completed (:status job))
               (do (publish-completion-target! conn row o request job (:room original) target)

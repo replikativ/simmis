@@ -47,15 +47,15 @@
 
 (deftest blocked-deployments-may-be-paused-but-not-resumed
   (doseq [reason [:legacy-recreate :reconciliation-required]]
-    (with-state
-      (fn [ui _]
-        (let [requests (atom []) legacy (assoc row :resume-blocked reason)]
-          (with-redefs [remote/set-workflow-schedule-enabled! (deferred requests)]
-            ((:toggle ui) (assoc legacy :enabled? false))
-            (is (empty? @requests))
-            ((:toggle ui) legacy)
-            (is (= 1 (count @requests)))
-            (is (false? (:enabled? (nth (:args (first @requests)) 2))))))))))
+   (with-state
+    (fn [ui _]
+      (let [requests (atom []) legacy (assoc row :resume-blocked reason)]
+        (with-redefs [remote/set-workflow-schedule-enabled! (deferred requests)]
+          ((:toggle ui) (assoc legacy :enabled? false))
+          (is (empty? @requests))
+          ((:toggle ui) legacy)
+          (is (= 1 (count @requests)))
+          (is (false? (:enabled? (nth (:args (first @requests)) 2))))))))))
 
 (deftest refresh-cannot-erase-a-pending-toggle-or-restore-its-old-state
   (with-state
@@ -124,7 +124,7 @@
     (fn [ui _]
       (let [opened (atom []) proposal (str (random-uuid)) before @sig/schedules-data]
         (with-redefs [refs/open! (fn ([reference] (swap! opened conj reference))
-                                   ([reference _] (swap! opened conj reference)))]
+                                  ([reference _] (swap! opened conj reference)))]
           ((:open-proposal ui) proposal)
           (is (= [{:kind :proposal :id proposal}] @opened))
           (is (= before @sig/schedules-data) "Navigation neither files output nor changes schedule state")
@@ -134,46 +134,46 @@
 
 (deftest scheduled-filing-results-render-without-triggering-an-action
   (async done
-         (let [ctx (context/fork-context runtime/runtime) container (.createElement js/document "div")
-               opened (atom []) handle (atom nil) proposal (str (random-uuid))
-               row {:id "render-fixture" :room-id "room" :room-name "Fixture" :name "maintain-wiki"
-                    :kind :workflow :enabled? false :cadence {:interval-ms 60000 :tz "UTC"}
-                    :resume-blocked :reconciliation-required :reason :interrupted
-                    :revision "fixture-revision" :bundle "fixture-bundle" :next-fire 0
-                    :on-toggle (fn [& _] (throw (js/Error. "Render changed activation")))
-                    :on-open-run (fn [& _] (throw (js/Error. "Render opened Run")))
-                    :on-open-proposal #(swap! opened conj %)
-                    :occurrences [{:id "proposed" :intended-at 0 :state :linked :coalesced 0
-                                   :job "fixture-job" :filing {:status :proposed :proposal proposal}}
-                                  {:id "no-op" :intended-at 1 :state :linked :coalesced 0 :filing {:status :no-op}}]}
-               observer (js/MutationObserver.
-                         (fn [_ observer]
-                           (when-let [button (some #(when (= "Review proposal" (.-textContent %)) %)
-                                                   (array-seq (.querySelectorAll container "button")))]
-                             (when (.includes (.-textContent container) "No wiki changes")
-                               (.disconnect observer)
-                               (try
-                                 (is (empty? @opened) "Rendering never collects, opens or adopts anything")
-                                 (is (.includes (.-textContent container) "Results"))
-                                 (is (.includes (.-textContent container) "adding allowance does not resolve it"))
-                                 (let [resume (some #(when (= "Resume" (.-textContent %)) %)
-                                                    (array-seq (.querySelectorAll container "button")))]
-                                   (is (some? resume))
-                                   (is (true? (.-disabled resume))))
-                                 (.click button)
-                                 (is (= [proposal] @opened))
-                                 (finally
-                                   (when-let [stop (:stop! @handle)] (stop))
-                                   (.remove container)
-                                   (context/close-context! ctx)
-                                   (done)))))))]
+    (let [ctx (context/fork-context runtime/runtime) container (.createElement js/document "div")
+          opened (atom []) handle (atom nil) proposal (str (random-uuid))
+          row {:id "render-fixture" :room-id "room" :room-name "Fixture" :name "maintain-wiki"
+               :kind :workflow :enabled? false :cadence {:interval-ms 60000 :tz "UTC"}
+               :resume-blocked :reconciliation-required :reason :interrupted
+               :revision "fixture-revision" :bundle "fixture-bundle" :next-fire 0
+               :on-toggle (fn [& _] (throw (js/Error. "Render changed activation")))
+               :on-open-run (fn [& _] (throw (js/Error. "Render opened Run")))
+               :on-open-proposal #(swap! opened conj %)
+               :occurrences [{:id "proposed" :intended-at 0 :state :linked :coalesced 0
+                              :job "fixture-job" :filing {:status :proposed :proposal proposal}}
+                             {:id "no-op" :intended-at 1 :state :linked :coalesced 0 :filing {:status :no-op}}]}
+          observer (js/MutationObserver.
+                    (fn [_ observer]
+                      (when-let [button (some #(when (= "Review proposal" (.-textContent %)) %)
+                                             (array-seq (.querySelectorAll container "button")))]
+                        (when (.includes (.-textContent container) "No wiki changes")
+                          (.disconnect observer)
+                          (try
+                            (is (empty? @opened) "Rendering never collects, opens or adopts anything")
+                            (is (.includes (.-textContent container) "Results"))
+                            (is (.includes (.-textContent container) "adding allowance does not resolve it"))
+                            (let [resume (some #(when (= "Resume" (.-textContent %)) %)
+                                               (array-seq (.querySelectorAll container "button")))]
+                              (is (some? resume))
+                              (is (true? (.-disabled resume))))
+                            (.click button)
+                            (is (= [proposal] @opened))
+                            (finally
+                              (when-let [stop (:stop! @handle)] (stop))
+                              (.remove container)
+                              (context/close-context! ctx)
+                              (done)))))))]
       ;; Wait on the actual DOM mutation, not an arbitrary render delay.
-           (set! (.. container -style -display) "none")
-           (.appendChild (.-body js/document) container)
-           (.observe observer container #js {:childList true :subtree true})
-           (binding [ec/*execution-context* ctx]
-             (reset! handle (render/render-spin! container (spin (schedules/workflow-row row))
-                                                 (browser/make-dom-discharge js/document)))))))
+      (set! (.. container -style -display) "none")
+      (.appendChild (.-body js/document) container)
+      (.observe observer container #js {:childList true :subtree true})
+      (binding [ec/*execution-context* ctx]
+        (reset! handle (render/render-spin! container (spin (schedules/workflow-row row))
+                                           (browser/make-dom-discharge js/document)))))))
 
 (deftest workflows-overview-keeps-manual-room-discovery-and-agent-authored-diagrams
   (let [ctx (context/create-execution-context) container (.createElement js/document "div")
@@ -191,9 +191,9 @@
                       (el/div {} "Diagram"))]
         (binding [ec/*execution-context* ctx]
           (reset! discharge (browser/mount! container
-                                            (schedules/overview data [room]
-                                                                {:open-room (fn [room _] (swap! opened conj room))
-                                                                 :toggle (fn [& _] (throw (js/Error. "Opening overview changed a schedule")))} nil)))
+                             (schedules/overview data [room]
+                               {:open-room (fn [room _] (swap! opened conj room))
+                                :toggle (fn [& _] (throw (js/Error. "Opening overview changed a schedule")))} nil)))
           (is (= "Workflows" (.-textContent (.querySelector container "h2"))))
           (is (.includes (.-textContent container) "Mira"))
           (is (.includes (.-textContent container) "Invoked code"))
@@ -228,7 +228,7 @@
                           mermaid/diagram (fn [_] (throw (js/Error. "Stale diagram was rendered")))]
               ((:refresh ui))
               ((:ok (first @loads)) {:workflow-schedules [(assoc row :name "Obsolete workflow")]
-                                     :diagrams {"Removed room" "flowchart LR; Secret-->Output"}})
+                                    :diagrams {"Removed room" "flowchart LR; Secret-->Output"}})
               (is (= :ready (:index-status @sig/schedules-data)))
               (if (= :connection cause) (reset! replaced? true)
                   (reset! sig/user-rooms {:rooms []}))

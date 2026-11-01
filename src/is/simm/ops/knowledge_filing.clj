@@ -100,8 +100,8 @@
                         (:world-setup prepared))
         verifier (evaluation/evaluator-ref
                   (outputs/with-publication-target
-                    (workflows/completion-evaluator (:source input) workflow (:inputs input)
-                                                    (:knowledge/publication-basis input)) target))
+                   (workflows/completion-evaluator (:source input) workflow (:inputs input)
+                                                   (:knowledge/publication-basis input)) target))
         setup (evaluation/world-setup-ref
                (workspace/with-publication-target initial-setup target))]
     (when-not (and (= workflow (:workflow prepared)
@@ -217,7 +217,7 @@
         _ (when (or (contains? input :knowledge/checkpoint)
                     (contains? (:source input) "execution-origin.edn"))
             (when-not (and proof (= (:knowledge/checkpoint input)
-                                    (execution-origin/selection (:source input) proof)))
+                                   (execution-origin/selection (:source input) proof)))
               (refuse! :checkpoint-batch-mismatch)))
         {:keys [environment workflow-bundle]} (verify-frozen-workflow! input)]
     {:row row :binding binding :basis basis :input input :batch batch :retained-proof proof
@@ -284,19 +284,19 @@
                                   [path before]))))
                       (keys (:files output)))]
     (if (or (empty? missing) (not (:knowledge/checkpoint input))) retained
-        (do
-          (when (or (> (reduce + 0 (map :size (vals missing))) (:max-total-bytes outputs/policy))
-                    (some #(> (:size %) (:max-file-bytes outputs/policy)) (vals missing)))
-            (refuse! :historical-body-too-large))
-          (let [source (admission/default-binding room-id room)
-                snapshot (:db (request-roots/verify! conn @(:conn source) request-id))]
-            (reduce-kv
-             (fn [out path expected]
-               (let [actual (document-files/read-file-in snapshot path)]
-                 (when-not (= (select-keys expected [:content :size :mode]) (:entry actual))
-                   (refuse! :historical-body-mismatch))
-                 (assoc out (str "/in/knowledge/sources/" path) (:text actual))))
-             retained missing))))))
+      (do
+        (when (or (> (reduce + 0 (map :size (vals missing))) (:max-total-bytes outputs/policy))
+                  (some #(> (:size %) (:max-file-bytes outputs/policy)) (vals missing)))
+          (refuse! :historical-body-too-large))
+        (let [source (admission/default-binding room-id room)
+              snapshot (:db (request-roots/verify! conn @(:conn source) request-id))]
+          (reduce-kv
+           (fn [out path expected]
+             (let [actual (document-files/read-file-in snapshot path)]
+               (when-not (= (select-keys expected [:content :size :mode]) (:entry actual))
+                 (refuse! :historical-body-mismatch))
+               (assoc out (str "/in/knowledge/sources/" path) (:text actual))))
+           retained missing))))))
 
 (defn prepare
   "Certify ONE canonical request's successful direct durable Attempt and
@@ -314,8 +314,8 @@
             (let [policy (get-in input [:workflow :input-selection :policy])
                   captured (inputs/from-inputs policy (:inputs input))]
               (coverage/require-ready! (coverage/with-existing-targets
-                                         (coverage/expected (:manifest captured)) basis
-                                         (inputs/output-scope policy))
+                                        (coverage/expected (:manifest captured)) basis
+                                        (inputs/output-scope policy))
                                        (inputs/output-scope policy)
                                        (:attempt/evidence certified))))
         planned (plans/plan {:request request-id :room room-id :attempt (:attempt/run-id certified)

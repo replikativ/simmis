@@ -56,14 +56,14 @@
              (preparation/with-host-operation!
               ;; Recovery uses the original publisher's physical gate, derived
               ;; from canonical batch metadata. Authorization stays with ACTOR.
-               room {:exclusive-key [::discovery (or original-author (:party resolved))]}
-               (fn [lease]
-                 (binding [ec/*execution-context* (:ctx room)]
-                   (let [check! #(do (lifetime/check-current!)
-                                     (preparation/with-host-current! lease (constantly true))
-                                     (reads/validate-host-room! host principal handle resolved))]
-                     (check!)
-                     (f resolved lease lifetime/*ticket* check!))))))))))))
+              room {:exclusive-key [::discovery (or original-author (:party resolved))]}
+              (fn [lease]
+                (binding [ec/*execution-context* (:ctx room)]
+                  (let [check! #(do (lifetime/check-current!)
+                                    (preparation/with-host-current! lease (constantly true))
+                                    (reads/validate-host-room! host principal handle resolved))]
+                    (check!)
+                    (f resolved lease lifetime/*ticket* check!))))))))))))
 
 (defn ^:no-doc with-discovery-owner!
   "Fixed HOST recovery adapter: hold the original author's discovery gate,
@@ -104,8 +104,8 @@
           described (program/describe (:party binding) (:room-id binding) (:target binding)
                                       snapshot name expected-bundle epoch)]
       (assoc described :snapshot snapshot
-             :origin {:target (:target binding) :target-stamp (:target-stamp binding)
-                      :workflow name :source-revision expected-source}))))
+                       :origin {:target (:target binding) :target-stamp (:target-stamp binding)
+                                :workflow name :source-revision expected-source}))))
 
 (defn- plan! [control source-db value expected policy new]
   (if-let [root (:knowledge.stream/cursor-root expected)]
@@ -150,10 +150,10 @@
                    (refuse! :program-changed)))
         transact! (fn [fragment]
                     (d/transact control
-                                [[:db.fn/call (fn [db]
-                                                (writer-current! host principal handle resolved lease ticket db)
-                                                (owned/validate-control-in! db principal (:room-id binding) binding mapping)
-                                                (fragment db))]]))]
+                      [[:db.fn/call (fn [db]
+                                     (writer-current! host principal handle resolved lease ticket db)
+                                     (owned/validate-control-in! db principal (:room-id binding) binding mapping)
+                                     (fragment db))]]))]
     (check!)
     (assoc captured :control control :binding binding :mapping mapping :check! check! :transact! transact!)))
 
@@ -182,9 +182,9 @@
                     (let [{:keys [payload digest root claim] :as prepared}
                           (pins/preparation value expected basis origin)]
                       (artifact/publish-value! (artifact/datahike-store control) payload
-                                               (fn [ref]
-                                                 (check!)
-                                                 (transact! #(pins/prepare-tx % value expected digest ref root claim))))
+                        (fn [ref]
+                          (check!)
+                          (transact! #(pins/prepare-tx % value expected digest ref root claim))))
                       (pins/preparation-result @control prepared)))
                   _ (check!)
                   verified (if (:new? prepared)
@@ -201,9 +201,9 @@
                   (let [plan (plan! control (:db binding) value (:expected body) policy verified)]
                     (check!)
                     (artifact/publish-value! (artifact/datahike-store control) plan
-                                             (fn [ref]
-                                               (check!)
-                                               (transact! #(pins/discovery-tx % intent value (:expected body) plan (:origin body) ref))))))
+                      (fn [ref]
+                        (check!)
+                        (transact! #(pins/discovery-tx % intent value (:expected body) plan (:origin body) ref))))))
                 ;; Cleanup belongs to this captured physical source. It does
                 ;; not authorize more ingestion if the default/program changes.
                 (let [current (pins/intent @control (:knowledge.pin/id intent))
@@ -258,68 +258,68 @@
   ;; Validate opt-in before any discovery effect; do not acquire the discovery
   ;; gate recursively. Every subsequent physical extent repeats current gates.
   (if-let [held (with-stream! host principal handle request
-                  (fn [{:keys [control value] :as context}]
-                    (batch-declaration! request context)
-                    (let [db @control row (streams/stream db (:id value))]
-                      (streams/admissible! row)
-                      (active-batch-reply db value row))))]
+                 (fn [{:keys [control value] :as context}]
+                   (batch-declaration! request context)
+                   (let [db @control row (streams/stream db (:id value))]
+                     (streams/admissible! row)
+                     (active-batch-reply db value row))))]
     held
     (do
-      (refresh! host principal handle request)
-      (with-stream! host principal handle request
-        (fn [{:keys [control binding value policy planned snapshot origin mapping check! transact!] :as context}]
-          (let [declaration (batch-declaration! request context)
-                db @control
-                expected (streams/stream db (:id value))
-                _ (streams/admissible! expected)]
-            (if-let [held (active-batch-reply db value expected)]
-              held
-              (let [pinned (checkpoints/verify! control (:db binding) (:knowledge.stream/cursor-root expected))
-                    _ (when-not (= value (get-in pinned [:body :stream])) (refuse! :cursor-pin-mismatch))
-                    reserved {:files (count (:inputs planned))
-                              :bytes (reduce + 0 (map #(alength (.getBytes ^String % "UTF-8")) (vals (:inputs planned))))}
-                    selection (batch-inputs/selection (:db pinned) value expected
-                                                      (streams/pending-items @control (:id value)) policy (:policy declaration) reserved)]
-                (if (= :empty (:status selection))
-                  (do (check!) {:status :empty :stream (:id value)})
-                  (let [selected (:batch selection) claim (random-uuid)
+     (refresh! host principal handle request)
+  (with-stream! host principal handle request
+    (fn [{:keys [control binding value policy planned snapshot origin mapping check! transact!] :as context}]
+      (let [declaration (batch-declaration! request context)
+            db @control
+            expected (streams/stream db (:id value))
+            _ (streams/admissible! expected)]
+        (if-let [held (active-batch-reply db value expected)]
+          held
+          (let [pinned (checkpoints/verify! control (:db binding) (:knowledge.stream/cursor-root expected))
+                _ (when-not (= value (get-in pinned [:body :stream])) (refuse! :cursor-pin-mismatch))
+                reserved {:files (count (:inputs planned))
+                          :bytes (reduce + 0 (map #(alength (.getBytes ^String % "UTF-8")) (vals (:inputs planned))))}
+                selection (batch-inputs/selection (:db pinned) value expected
+                            (streams/pending-items @control (:id value)) policy (:policy declaration) reserved)]
+            (if (= :empty (:status selection))
+              (do (check!) {:status :empty :stream (:id value)})
+              (let [selected (:batch selection) claim (random-uuid)
                     ;; Reject deterministic occupancy bounds before claiming.
                     ;; Capture repeats this bounded metadata read on the SAME
                     ;; immutable snapshot when forming its retained envelope.
-                        _ (inputs/publication-basis (:db pinned)
-                                                    (select-keys (:target binding) [:registry-system :runtime-system])
-                                                    (inputs/output-scope policy))]
+                    _ (inputs/publication-basis (:db pinned)
+                                               (select-keys (:target binding) [:registry-system :runtime-system])
+                                               (inputs/output-scope policy))]
+                (check!)
+                (artifact/publish-value! (artifact/datahike-store control) selected
+                  (fn [ref]
                     (check!)
-                    (artifact/publish-value! (artifact/datahike-store control) selected
-                                             (fn [ref]
-                                               (check!)
-                                               (transact! #(batches/claim-tx % selected ref claim))))
-                    (let [{:keys [batch new?]} (batches/claim-result @control (:id selected) claim)]
-                      (when-not new? (refuse! :capture-not-owned))
-                      (check!)
-                      (let [frozen (batch-inputs/capture (:db pinned) selection
-                                                         (select-keys (:target binding) [:registry-system :runtime-system]))
-                            digest (hasch/uuid frozen)]
+                    (transact! #(batches/claim-tx % selected ref claim))))
+                (let [{:keys [batch new?]} (batches/claim-result @control (:id selected) claim)]
+                  (when-not new? (refuse! :capture-not-owned))
+                  (check!)
+                  (let [frozen (batch-inputs/capture (:db pinned) selection
+                                                   (select-keys (:target binding) [:registry-system :runtime-system]))
+                        digest (hasch/uuid frozen)]
+                    (check!)
+                    (artifact/publish-value! (artifact/datahike-store control) frozen
+                      (fn [ref]
                         (check!)
-                        (artifact/publish-value! (artifact/datahike-store control) frozen
-                                                 (fn [ref]
-                                                   (check!)
-                                                   (transact! #(batches/freeze-tx % batch ref digest))))
-                        (let [current (batches/batch @control (:id selected))
-                              retained (:value (artifact/get-bounded-value (artifact/datahike-store control)
-                                                                           (:knowledge.batch/frozen current) batch-inputs/max-frozen-bytes))]
-                          (when-not (and (= :ready (:knowledge.batch/state current))
-                                         (= digest (:knowledge.batch/frozen-id current) (hasch/uuid retained))
-                                         (= selected (:batch retained)))
-                            (refuse! :frozen-inputs-unconfirmed))
-                          (batch-inputs/verify retained)
-                          (check!)
-                          {:status :ready :stream (:id value) :batch (:id selected)
-                           :batch-origin {:batch (:id selected) :selection (:id selected) :frozen digest}
-                           :control-revision mapping
-                           :captured (:captured retained) :publication-basis (:publication-basis retained)
-                           :remaining (:remaining selected)
-                           :snapshot snapshot :source-origin origin})))))))))))))
+                        (transact! #(batches/freeze-tx % batch ref digest))))
+                    (let [current (batches/batch @control (:id selected))
+                          retained (:value (artifact/get-bounded-value (artifact/datahike-store control)
+                                              (:knowledge.batch/frozen current) batch-inputs/max-frozen-bytes))]
+                      (when-not (and (= :ready (:knowledge.batch/state current))
+                                     (= digest (:knowledge.batch/frozen-id current) (hasch/uuid retained))
+                                     (= selected (:batch retained)))
+                        (refuse! :frozen-inputs-unconfirmed))
+                      (batch-inputs/verify retained)
+                      (check!)
+                      {:status :ready :stream (:id value) :batch (:id selected)
+                       :batch-origin {:batch (:id selected) :selection (:id selected) :frozen digest}
+                       :control-revision mapping
+                       :captured (:captured retained) :publication-basis (:publication-basis retained)
+                       :remaining (:remaining selected)
+                       :snapshot snapshot :source-origin origin})))))))))))))
 
 (defn- original-source-db! [host target]
   (let [registered (native-rooms/registry-system-for (reads/current-host-control-db! host) (:runtime-system target))]
@@ -345,16 +345,16 @@
           (refuse! :unknown-operation))
         (let [{:keys [origin]} (pins/payload control intent)
               current (pins/intent @control operation)]
-          (when-not (#{:committed :retained :released} (:knowledge.pin/state current))
-            (refuse! :discovery-needs-refresh))
-          (if (#{:retained :released} (:knowledge.pin/state current))
-            (do (pins/finish-tx @control current)
-                {:status (:knowledge.pin/state current) :operation operation})
-            (let [source-db (original-source-db! host (:target origin))]
-              (finish! control source-db current check!
-                       (fn [fragment]
-                         (check!)
-                         (d/transact control [[:db.fn/call fragment]]))))))))))
+            (when-not (#{:committed :retained :released} (:knowledge.pin/state current))
+              (refuse! :discovery-needs-refresh))
+            (if (#{:retained :released} (:knowledge.pin/state current))
+              (do (pins/finish-tx @control current)
+                  {:status (:knowledge.pin/state current) :operation operation})
+              (let [source-db (original-source-db! host (:target origin))]
+                (finish! control source-db current check!
+                         (fn [fragment]
+                           (check!)
+                           (d/transact control [[:db.fn/call fragment]]))))))))))
 
 (def ^:private abandon-ready-schema
   [:map {:closed true} [:batch :uuid] [:expected-claim :uuid] [:expected-frozen :uuid]
@@ -380,59 +380,59 @@
     (refuse! :invalid-recovery))
   (try
     (room-operation/with-app!
-      host
-      (fn []
-        (let [{:keys [control-db room-id]} (reads/preflight-host-read! host principal handle)
-              _ (work/authorize-in! control-db principal room-id)
-              control (get-in host [::reads/owner :control-conn])
-              initial (batches/batch control-db (:batch request))
-              author (:knowledge.batch/by initial)]
-          (when-not (and (uuid? author) (= room-id (:knowledge.batch/room initial)))
-            (refuse! :batch-unavailable))
-          (with-room!
-            host principal handle author
-            (fn [resolved lease ticket check!]
-              (let [db (reads/current-host-control-db! host)
-                    _ (work/authorize-in! db principal room-id)
-                    b (batches/batch db (:batch request))
-                    transition (case [from mode]
-                                 [:ready :skip] recovery/abandon-tx
-                                 [:capturing :skip] recovery/abandon-capturing-tx
-                                 [:ready :requeue] recovery/requeue-ready-tx
-                                 [:capturing :requeue] recovery/requeue-capturing-tx)
-                    outcome (case mode :skip :abandoned-skip :requeue :abandoned-requeue)]
-                (when-not (and b (= [author room-id (:expected-claim request)]
-                                    (mapv b [:knowledge.batch/by :knowledge.batch/room :knowledge.batch/claim]))
-                               (or (= :capturing from) (= (:expected-frozen request) (:knowledge.batch/frozen-id b)))
-                               (or (= from (:knowledge.batch/state b))
-                                   (and (= :closed (:knowledge.batch/state b))
-                                        (= outcome (:knowledge.batch/outcome b))
-                                        (= from (:knowledge.batch/recovery-from b)))))
-                  (refuse! :batch-not-recoverable))
-                (let [origin {:batch (:knowledge.batch/id b) :selection (:knowledge.batch/selection-id b)
-                              :frozen (:knowledge.batch/frozen-id b)}
-                      proof (case from
-                              :ready (batch-proof/retained! control author room-id origin)
-                              :capturing (batch-proof/retained-selection! control author room-id (:batch request)))
-                      o (scheduled/bound-occurrence @control (:batch request))
-                      anchor (when o {:value (scheduled/retained control o) :reference (:schedule.occurrence/batch-ref o)})
-                      expected (recovery/expected proof anchor)
-                      value (recovery/decision {:batch (:batch request) :room room-id :by (:party resolved)
-                                                :client (:request-id request) :at (java.util.Date.)
-                                                :mode mode :reason (:reason request)})]
-                  (check!)
-                  (when (seq (transition @control expected value))
-                    (d/transact control
-                                [[:db.fn/call
-                                  (fn [current]
-                                    (writer-current! host principal handle resolved lease ticket current)
-                                    (transition current expected value))]]))
-                  (check!)
-                  (work/authorize-in! (reads/current-host-control-db! host) principal room-id)
+     host
+     (fn []
+       (let [{:keys [control-db room-id]} (reads/preflight-host-read! host principal handle)
+             _ (work/authorize-in! control-db principal room-id)
+             control (get-in host [::reads/owner :control-conn])
+             initial (batches/batch control-db (:batch request))
+             author (:knowledge.batch/by initial)]
+         (when-not (and (uuid? author) (= room-id (:knowledge.batch/room initial)))
+           (refuse! :batch-unavailable))
+         (with-room!
+          host principal handle author
+          (fn [resolved lease ticket check!]
+            (let [db (reads/current-host-control-db! host)
+                  _ (work/authorize-in! db principal room-id)
+                  b (batches/batch db (:batch request))
+                  transition (case [from mode]
+                               [:ready :skip] recovery/abandon-tx
+                               [:capturing :skip] recovery/abandon-capturing-tx
+                               [:ready :requeue] recovery/requeue-ready-tx
+                               [:capturing :requeue] recovery/requeue-capturing-tx)
+                  outcome (case mode :skip :abandoned-skip :requeue :abandoned-requeue)]
+              (when-not (and b (= [author room-id (:expected-claim request)]
+                               (mapv b [:knowledge.batch/by :knowledge.batch/room :knowledge.batch/claim]))
+                             (or (= :capturing from) (= (:expected-frozen request) (:knowledge.batch/frozen-id b)))
+                             (or (= from (:knowledge.batch/state b))
+                                 (and (= :closed (:knowledge.batch/state b))
+                                      (= outcome (:knowledge.batch/outcome b))
+                                      (= from (:knowledge.batch/recovery-from b)))))
+                (refuse! :batch-not-recoverable))
+              (let [origin {:batch (:knowledge.batch/id b) :selection (:knowledge.batch/selection-id b)
+                            :frozen (:knowledge.batch/frozen-id b)}
+                    proof (case from
+                            :ready (batch-proof/retained! control author room-id origin)
+                            :capturing (batch-proof/retained-selection! control author room-id (:batch request)))
+                    o (scheduled/bound-occurrence @control (:batch request))
+                    anchor (when o {:value (scheduled/retained control o) :reference (:schedule.occurrence/batch-ref o)})
+                    expected (recovery/expected proof anchor)
+                    value (recovery/decision {:batch (:batch request) :room room-id :by (:party resolved)
+                                              :client (:request-id request) :at (java.util.Date.)
+                                              :mode mode :reason (:reason request)})]
+                (check!)
+                (when (seq (transition @control expected value))
+                  (d/transact control
+                    [[:db.fn/call
+                      (fn [current]
+                        (writer-current! host principal handle resolved lease ticket current)
+                        (transition current expected value))]]))
+                (check!)
+                (work/authorize-in! (reads/current-host-control-db! host) principal room-id)
                 ;; This is observation of the complete terminal result, never a
                 ;; new native action or a reconstructed dispatch acknowledgement.
-                  (when-not (empty? (transition @control expected value)) (refuse! :recovery-unconfirmed))
-                  {:status :abandoned :batch (:batch request) :operation (:id value) :mode mode})))))))
+                (when-not (empty? (transition @control expected value)) (refuse! :recovery-unconfirmed))
+                {:status :abandoned :batch (:batch request) :operation (:id value) :mode mode})))))))
     (catch Throwable error (rethrow-interrupted! error))))
 
 (defn abandon-ready!
@@ -475,56 +475,56 @@
   (when-not (m/validate retire-schema request) (refuse! :invalid-retirement))
   (try
     (room-operation/with-app!
-      host
-      (fn []
-        (let [{:keys [control-db room-id]} (reads/preflight-host-read! host principal handle)
-              _ (work/authorize-in! control-db principal room-id)
-              control (get-in host [::reads/owner :control-conn])
-              initial (streams/stream control-db (:stream request))
-              author (:knowledge.stream/by initial)]
-          (when-not (and (uuid? author) (= room-id (:knowledge.stream/room initial))
-                         (= (:expected-cursor request) (:knowledge.stream/cursor-root initial)))
-            (refuse! :stream-unavailable))
-          (with-room!
-            host principal handle author
-            (fn [resolved lease ticket check!]
-              (let [db (reads/current-host-control-db! host)
-                    _ (work/authorize-in! db principal room-id)
-                    stream (streams/stream db (:stream request))
-                    _ (when-not (= [author room-id (:expected-cursor request)]
-                                   (mapv stream [:knowledge.stream/by :knowledge.stream/room :knowledge.stream/cursor-root]))
-                        (refuse! :stream-changed))
-                    pin (pins/intent db (:expected-cursor request))
-                    body (pins/payload control pin)
-                    expected (retirement/expected stream pin body)
-                    audit-by (if (= :active (:knowledge.stream/state stream))
-                               (:party resolved) (:knowledge.pin/retirement-by pin))
-                    value (retirement/decision {:stream (:stream request) :root (:expected-cursor request)
-                                                :by audit-by :client (:request-id request) :at (java.util.Date.)
-                                                :reason (:reason request)})
-                    write! (fn [fragment]
-                             (check!)
-                             (d/transact control [[:db.fn/call
-                                                   (fn [current]
-                                                     (writer-current! host principal handle resolved lease ticket current)
-                                                     (fragment current expected value))]]))]
-                (check!)
-                (when (seq (retirement/begin-tx @control expected value)) (write! retirement/begin-tx))
-                (check!)
-                (work/authorize-in! (reads/current-host-control-db! host) principal room-id)
-                (when (= :retiring (:knowledge.stream/state (streams/stream @control (:stream request))))
-                  (let [source-db (original-source-db! host (get-in body [:origin :target]))]
-                    (check!)
-                    (work/authorize-in! (reads/current-host-control-db! host) principal room-id)
-                    (checkpoints/release-retiring!
-                     control source-db expected value
-                     #(do (check!)
-                          (work/authorize-in! (reads/current-host-control-db! host) principal room-id)))
-                    (write! retirement/finish-tx)))
-                (check!)
-                (work/authorize-in! (reads/current-host-control-db! host) principal room-id)
-                (when-not (empty? (retirement/finish-tx @control expected value))
-                  (refuse! :retirement-unconfirmed))
-                {:status :retired :stream (:stream request) :root (:expected-cursor request)
-                 :operation (:id value)}))))))
+     host
+     (fn []
+       (let [{:keys [control-db room-id]} (reads/preflight-host-read! host principal handle)
+             _ (work/authorize-in! control-db principal room-id)
+             control (get-in host [::reads/owner :control-conn])
+             initial (streams/stream control-db (:stream request))
+             author (:knowledge.stream/by initial)]
+         (when-not (and (uuid? author) (= room-id (:knowledge.stream/room initial))
+                        (= (:expected-cursor request) (:knowledge.stream/cursor-root initial)))
+           (refuse! :stream-unavailable))
+         (with-room!
+          host principal handle author
+          (fn [resolved lease ticket check!]
+            (let [db (reads/current-host-control-db! host)
+                  _ (work/authorize-in! db principal room-id)
+                  stream (streams/stream db (:stream request))
+                  _ (when-not (= [author room-id (:expected-cursor request)]
+                                 (mapv stream [:knowledge.stream/by :knowledge.stream/room :knowledge.stream/cursor-root]))
+                      (refuse! :stream-changed))
+                  pin (pins/intent db (:expected-cursor request))
+                  body (pins/payload control pin)
+                  expected (retirement/expected stream pin body)
+                  audit-by (if (= :active (:knowledge.stream/state stream))
+                             (:party resolved) (:knowledge.pin/retirement-by pin))
+                  value (retirement/decision {:stream (:stream request) :root (:expected-cursor request)
+                                              :by audit-by :client (:request-id request) :at (java.util.Date.)
+                                              :reason (:reason request)})
+                  write! (fn [fragment]
+                           (check!)
+                           (d/transact control [[:db.fn/call
+                                                 (fn [current]
+                                                   (writer-current! host principal handle resolved lease ticket current)
+                                                   (fragment current expected value))]]))]
+              (check!)
+              (when (seq (retirement/begin-tx @control expected value)) (write! retirement/begin-tx))
+              (check!)
+              (work/authorize-in! (reads/current-host-control-db! host) principal room-id)
+              (when (= :retiring (:knowledge.stream/state (streams/stream @control (:stream request))))
+                (let [source-db (original-source-db! host (get-in body [:origin :target]))]
+                  (check!)
+                  (work/authorize-in! (reads/current-host-control-db! host) principal room-id)
+                  (checkpoints/release-retiring!
+                   control source-db expected value
+                   #(do (check!)
+                        (work/authorize-in! (reads/current-host-control-db! host) principal room-id)))
+                  (write! retirement/finish-tx)))
+              (check!)
+              (work/authorize-in! (reads/current-host-control-db! host) principal room-id)
+              (when-not (empty? (retirement/finish-tx @control expected value))
+                (refuse! :retirement-unconfirmed))
+              {:status :retired :stream (:stream request) :root (:expected-cursor request)
+               :operation (:id value)}))))))
     (catch Throwable error (rethrow-interrupted! error))))
