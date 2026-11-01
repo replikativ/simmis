@@ -409,7 +409,7 @@
                   (prepare snapshot (dissoc input :expected-owned-source) (:captured frozen) selected)
                   (select-keys frozen [:captured :publication-basis]))
         prepared (bind-source-citations
-                  prepared {:version 1 :room (get-in owner [:original :room-id])
+                  prepared {:version 2 :room (get-in owner [:original :room-id])
                             :request (requests/request-id (get-in owner [:original :party])
                                                           (get-in owner [:original :room-id])
                                                           (:request-id input))})

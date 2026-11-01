@@ -218,7 +218,7 @@
                                                       (:task planned) (:inputs planned)])]
                     (is (= expected-program (get-in (batch-proof/request! conn request retained) [:selection :stream :program]))
                         "HOST citation context does not change the semantic processing stream"))
-                  (is (= {:version 1 :room (:room w) :request rid} (get-in retained [:input :knowledge/source-citations])))
+                  (is (= {:version 2 :room (:room w) :request rid} (get-in retained [:input :knowledge/source-citations])))
                   (is (= 2 (:version manifest)))
                   (is (= 2 (count (:files manifest))))
                   (is (= #{:trigger} (set (map :role (:files manifest)))))

@@ -23,6 +23,7 @@
             [is.simm.ops.knowledge-admission :as admission]
             [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.knowledge-inputs :as inputs]
+            [is.simm.ops.knowledge-citations :as citations]
             [is.simm.ops.knowledge-coverage :as coverage]
             [is.simm.ops.knowledge-outputs :as outputs]
             [is.simm.ops.knowledge-workspace :as workspace]
@@ -208,8 +209,8 @@
         _ (when-not (= (:work.request/intent-id row) (hasch/uuid retained))
             (refuse! :payload-mismatch))
         input (:input retained)
-        _ (when-let [citations (:knowledge/source-citations input)]
-            (when-not (= {:version 1 :room room-id :request request-id} citations)
+        _ (when-let [context (:knowledge/source-citations input)]
+            (when-not (citations/valid-context? context room-id request-id)
               (refuse! :citation-request-mismatch)))
         proof (when (or (:work.request/knowledge-batch row) (:work.request/knowledge-frozen row)
                         (contains? input :knowledge/batch) (contains? input :knowledge/batch-control))
