@@ -14,6 +14,7 @@
             [is.simm.ops.file-output-adoption :as adoption]
             [is.simm.ops.file-output-storage :as storage]
             [is.simm.ops.knowledge-filing :as filing]
+            [is.simm.ops.knowledge-citations :as citations]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-workflows :as sources]
             [is.simm.ops.results :as results]
@@ -77,14 +78,9 @@
                    (= (:work.request/intent-id row) (hasch/uuid retained))
                    (= room (:work.request/room row))
                    (= request (:work.request/id row))
-                   (or (not (contains? input :knowledge/source-citations))
-                       (= {:version 1 :room room :request request} (:knowledge/source-citations input)))
                    (= (:id basis) (:work.request/publication-basis-id row))
                    (or (not (contains? input :knowledge/source-citations))
-                       (let [citation (:knowledge/source-citations input)]
-                         (and (= #{:version :room :request} (set (keys citation)))
-                              (= 1 (:version citation))
-                              (= room (:room citation)) (= request (:request citation)))))
+                       (citations/valid-context? (:knowledge/source-citations input) room request))
                    (publication/host-target? target)
                    (map? (:inputs input))
                    (<= (count (:inputs input)) (:max-input-files policy/policy))

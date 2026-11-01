@@ -343,6 +343,16 @@ the whole batch. An omitted digest entry, single saved human message or brief
 company capture remains eligible original evidence. Coverage claims do not prove
 understanding, factual truth or adoption.
 
+New native admissions use citation-context version 2: the invocation supplies a
+concrete root-relative Markdown link into its frozen Request sources, rather
+than asking the model to assemble a URL from an endpoint description. A literal
+`[HOST]` is not a URL prefix. The context is bound to both Room and Request;
+opening a citation still requires the reader's current Room permission. Retained
+version-1 instructions remain byte-for-byte verifiable. This changes invocation
+routing, not the editable workflow's semantic identity or evidence cursor.
+These instructions do not certify generated links or factual citation quality;
+review and benchmark those separately from original-input coverage.
+
 The default v2 input policy uses captures/inbox/transcripts as triggers and wiki
 as retained context. Its fixed disposable output root is `/out/knowledge/` and
 its destination is `wiki/`, so `/out/knowledge/People/Sam.md` proposes

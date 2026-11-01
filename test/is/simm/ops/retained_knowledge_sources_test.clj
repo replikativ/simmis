@@ -20,9 +20,11 @@
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.util Base64]))
 
-(defn- with-sources [f]
+(defn- with-sources
+  ([f] (with-sources {} f))
+  ([options f]
   (@#'fixture/with-fixture
-   {:retain-source-origin? true :evidence-text "A🦋 proposal\r\n"}
+   (merge options {:retain-source-origin? true :evidence-text "A🦋 proposal\r\n"})
    (fn [{:keys [conn party room-id principal room request] :as state}]
      (d/transact conn [{:db/id [:party/id party] :actor/kind :human}
                        {:db/id [:room/id room-id] :room/slug (str "sources-" room-id)}])
@@ -41,7 +43,21 @@
                        application/capture-operation (fn [] invoke)]
            (f (assoc state :proposal (:proposal filing) :component (:manifest filing)
                      :active active :operations operations :host host :owner-ctx owner-ctx)))
-         (finally (context/close-context! owner-ctx)))))))
+         (finally (context/close-context! owner-ctx))))))))
+
+(deftest both-citation-instruction-versions-remain-fileable-and-readable
+  (doseq [version [1 2]]
+    (with-sources
+      {:citation-version version}
+      (fn [{:keys [conn party room-id request]}]
+        (is (= version (get-in (requests/payload conn (requests/get-request conn request))
+                              [:input :knowledge/source-citations :version])))
+        (is (= :ok (:status (sources/request-list! party room-id request))))
+        (let [result (sources/request-read! party room-id request
+                                          {:path "/in/knowledge/sources/inbox/evidence.md"})]
+          (is (= :ok (:status result)))
+          (is (= "A🦋 proposal\r\n"
+                 (markdown/decode (.decode (Base64/getDecoder) ^String (get-in result [:data :base64]))))))))))
 
 (deftest inbound-source-rpcs-use-the-authenticated-room-reader
   (with-sources

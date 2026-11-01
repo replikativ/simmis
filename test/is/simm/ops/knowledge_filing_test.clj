@@ -88,12 +88,16 @@
                                   :timeout-ms 30000 :settlement "discard"}}
              prepared (workflows/prepare-source {:files source}
                                                 (select-keys submission workflows/source-fields) captured)
+             citation-context (when-let [version (:citation-version options)]
+                                {:version version :room logical-room
+                                 :request (requests/request-id party logical-room (:request-id submission))})
              evaluator (cond-> (outputs/with-capture work/completion)
                          (not (:unbound? options)) (outputs/with-publication-target (:target basis)))
              setup (cond-> (:world-setup prepared)
                      (not (:unbound? options)) (knowledge-workspace/with-publication-target (:target basis)))
              definition (environment/make-environment
-                         {:id (get options :environment-id :simmis/saved-workflow) :task (:task prepared)
+                         {:id (get options :environment-id :simmis/saved-workflow)
+                          :task (workflows/citation-task (:task prepared) citation-context)
                           :verifier (let [ref (evaluation/evaluator-ref evaluator)]
                                       {:id (:verifier/id ref) :version (:verifier/version ref)
                                        :basis (:verifier/basis ref)})
@@ -104,9 +108,11 @@
                        (roster/make-agent {:id :candidate :program {:kind :echo}})
                        (roster/agent :candidate))
              input ((get options :input-transform clojure.core/identity)
-                    {:candidate agent :environment definition :source source
-                     :inputs (:inputs prepared) :workflow (:workflow prepared) :submission submission
-                     :knowledge/publication-basis basis})
+                    (cond-> {:candidate agent :environment definition :source source
+                             :inputs (:inputs prepared) :workflow (:workflow prepared) :submission submission
+                             :knowledge/publication-basis basis}
+                      citation-context (assoc :knowledge/source-citations citation-context
+                                              :knowledge/source-task (:task prepared))))
              input (if (:retain-source-origin? options)
                      (let [stamp (random-uuid)
                            manifest (mapv (fn [[path text]]
