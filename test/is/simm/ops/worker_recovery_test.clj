@@ -5,8 +5,10 @@
             [dvergr.agent.run :as run]
             [dvergr.agent.world :as run-world]
             [dvergr.catalog.workspace :as workspace]
+            [dvergr.jobs :as jobs]
             [dvergr.resource :as resource]
             [dvergr.room.registry :as registry]
+            [dvergr.room.store :as store]
             [dvergr.rooms.forks :as forks]
             [hasch.core :as hasch]
             [is.simm.authority.world :as world]
@@ -94,9 +96,22 @@
   (world/with-world [conn w]
     (@#'fixture/with-worker conn w
                             (fn [options]
-                              (let [{:keys [room recover! finish!]} (orphan conn w options false)]
+                              (let [{:keys [room job recover! finish!]} (orphan conn w options false)]
                                 (finish!)
+                                (is (store/family-return-acknowledged? (run/run room job)))
+                                (is (not (:settled? (jobs/status job))))
+                                (let [runs run/runs]
+                                  (with-redefs [run/runs (fn [& args]
+                                                          (mapv #(dissoc % :run/family-return-ack)
+                                                                (apply runs args)))]
+                                    (is (= {:state :native-return-unknown} (recover!)))
+                                    (is (= 1M (get (resource/balance room) local/admission-unit)))))
                                 (is (= {:state :returned} (recover!)))
+                                ;; Fixed wallet reconciliation cannot certify
+                                ;; callbacks that were never configured.
+                                (is (not-any? #(contains? (run/run room job) %)
+                                              (vals store/job-cleanup-attributes)))
+                                (is (not (:settled? (jobs/status job))))
                                 (is (= 2M (get (resource/balance room) local/admission-unit))))))))
 
 (deftest detached-certification-must-physically-finish-before-world-disposal

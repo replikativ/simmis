@@ -338,7 +338,10 @@
         ;; parents and physical admission/settlement hooks (Dvergr #423).
         ;; Change dependencies only in a fresh runtime. Alpha stores require
         ;; classified wallets; no legacy wallet migration is implied.
-        org.replikativ/dvergr {:mvn/version "0.1.381"
+        ;; 0.1.384 retains dispatch accounting and native cleanup obligations,
+        ;; seals structural Run families, and records positive physical-return
+        ;; witnesses before a failed wiki update can be recovered.
+        org.replikativ/dvergr {:mvn/version "0.1.384"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.

@@ -65,6 +65,12 @@
                     (check!)
                     (f resolved lease lifetime/*ticket* check!))))))))))))
 
+(defn ^:no-doc with-discovery-owner!
+  "Fixed HOST recovery adapter: hold the original author's discovery gate,
+   keeping authorization with the current actor. No dispatch capability."
+  [host principal handle author f]
+  (with-room! host principal handle author f))
+
 (defn writer-current!
   "Short observations on a writer thread, never thread-entry admission or
    source IO. The original caller still owns and physically joins its lease."
@@ -349,7 +355,6 @@
                          (fn [fragment]
                            (check!)
                            (d/transact control [[:db.fn/call fragment]]))))))))))
-
 
 (def ^:private abandon-ready-schema
   [:map {:closed true} [:batch :uuid] [:expected-claim :uuid] [:expected-frozen :uuid]

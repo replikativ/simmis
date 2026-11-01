@@ -84,7 +84,7 @@
        :simmis/local-worker-list :simmis/local-worker-workflow
        :simmis/local-worker-benchmark :simmis/local-worker-allowance
        :simmis/workflow-schedule-create :simmis/workflow-schedule-list
-       :simmis/workflow-schedule-set-enabled}))
+       :simmis/workflow-schedule-set-enabled :simmis/workflow-failure-recover}))
 
 #?(:clj
    (defn- hydrate-control-room! [host principal handle operation wire]
@@ -329,4 +329,10 @@
   [server-id room-id-str request]
   (spin-remote server-id [room-id-str request]
                #?(:clj (await (workflow-on-worker room-id-str :simmis/workflow-schedule-set-enabled request))
+                  :cljs nil)))
+
+(defn-spin-remote recover-failed-workflow-update!
+  [server-id room-id-str request]
+  (spin-remote server-id [room-id-str request]
+               #?(:clj (await (workflow-on-worker room-id-str :simmis/workflow-failure-recover request))
                   :cljs nil)))

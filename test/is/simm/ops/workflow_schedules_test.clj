@@ -216,7 +216,12 @@
         (run/finish! id status)
         (store/-store-attempt! (:store room) (store/conversation-id room)
                                (attempt/make-attempt environment agent receipt {} :review))
-        (run/finish! job-id :completed)))))
+        ;; Synthetic cleanup boundary fixture: real Job owner tests cover the
+        ;; callbacks. Persist both native witnesses while retaining the lease.
+        (run/acknowledge-job-cleanup! room job-id :core)
+        (run/retain-finished! job-id :completed)
+        (run/acknowledge-job-cleanup! room job-id :adapter)
+        (run/release-finished! job-id)))))
 
 (defn- with-completed-input [f]
   (with-input-fixture
@@ -361,7 +366,8 @@
 
 (deftest cache-loss-recovers-from-the-owned-durable-root-only
   (doseq [change [nil [:run/actor :other] [:run/room :other] [:run/kind :task]
-                  [:run/parent (random-uuid)] [:run/ended-at nil]]]
+                  [:run/parent (random-uuid)] [:run/ended-at nil]
+                  [:run/job-core-cleanup-ack nil] [:run/job-adapter-cleanup-ack nil] [:run/family-return-ack nil]]]
     (with-completed-input
       (fn [{:keys [conn row request calls] :as fixture}]
         (let [read-run run/run]

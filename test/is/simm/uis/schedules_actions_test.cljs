@@ -242,3 +242,55 @@
               ((:ok (last @loads)) {:workflow-schedules [] :schedules [] :diagrams {} :shapes {}})
               (is (= :ready (:index-status @sig/schedules-data))))
             (finally (when @discharge (browser/unmount! @discharge)) (.remove container))))))))
+
+(def failed-update
+  {:request (str (random-uuid)) :batch (str (random-uuid))
+   :expected-claim (str (random-uuid)) :expected-frozen (str (random-uuid))})
+
+(deftest failed-update-recovery-retains-identical-command-without-resuming
+  (with-state
+    (fn [ui _]
+      (let [requests (atom []) loads (atom []) toggles (atom [])
+            held (assoc row :enabled? false :resume-blocked :batch-recovery-required :failed-update failed-update)]
+        (with-redefs [chat/load-schedules! (deferred loads)
+                      remote/recover-failed-workflow-update! (deferred requests)
+                      remote/set-workflow-schedule-enabled! (deferred toggles)]
+          ((:observe ui))
+          ((:recover-update ui) held)
+          ((:observe ui))
+          (is (= 1 (count @requests)))
+          (let [original (nth (:args (first @requests)) 2)]
+            ((:error (first @requests)) (js/Error. "Lost acknowledgement"))
+            ((:observe ui))
+            (is (= 1 (count @requests)) "Observation does not repeat a mutation")
+            (is (nil? (:updating @sig/schedules-data)))
+            ((:recover-update ui) held)
+            (is (= original (nth (:args (second @requests)) 2)))
+            ((:ok (second @requests))
+             {:status :recovered :mode :fresh-update :batch (:batch original) :request (:request original)
+              :operation (str (random-uuid)) :dispatched? false :schedule-resumed? false})
+            (is (nil? (:updating @sig/schedules-data)))
+            (is (nil? (get-in @sig/schedules-data [:recovery-commands (:id held)])))
+            (is (string? (:notice @sig/schedules-data)))
+            (is (empty? @toggles) "Recovery never enables a schedule")))))))
+
+(deftest disconnected-recovery-replies-cannot-publish-or-change-the-retry-intent
+  (with-state
+    (fn [ui _]
+      (let [socket (atom {:socket :first}) requests (atom []) loads (atom [])
+            held (assoc row :enabled? false :resume-blocked :batch-recovery-required :failed-update failed-update)]
+        (with-redefs [connection/snapshot #(deref socket)
+                      chat/load-schedules! (deferred loads)
+                      remote/recover-failed-workflow-update! (deferred requests)]
+          ((:observe ui))
+          ((:recover-update ui) held)
+          (let [original (nth (:args (first @requests)) 2)]
+            (reset! socket {:socket :replacement})
+            ((:observe ui))
+            (let [before @sig/schedules-data]
+              ((:ok (first @requests))
+               {:status :recovered :mode :fresh-update :batch (:batch original) :request (:request original)
+                :operation (str (random-uuid)) :dispatched? false :schedule-resumed? false})
+              (is (= before @sig/schedules-data)))
+            ((:recover-update ui) held)
+            (is (= original (nth (:args (second @requests)) 2)))))))))

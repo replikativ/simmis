@@ -192,19 +192,17 @@
         (refuse! :certification-mismatch))
       certified)))
 
-(defn- certified-request!
-  [conn principal room-id room request-id]
+(defn- retained-request-context!
+  [conn room-id request-id]
   (when-not (uuid? request-id) (refuse! :invalid-request))
-  (let [party (authorize! @conn principal room-id)
-        row (or (requests/get-request conn request-id) (refuse! :missing-request))
-        _ (when-not (and (= room-id (:work.request/room row)) (= party (:work.request/by row)))
+  (let [row (or (requests/get-request conn request-id) (refuse! :missing-request))
+        _ (when-not (= room-id (:work.request/room row))
             (refuse! :request-owner-mismatch))
         binding (dispositions/request-binding row)
         basis (or (requests/publication-basis conn request-id) (refuse! :missing-publication-basis))
         _ (when-not (= (:work.request/publication-basis-id row) (:id basis))
             (refuse! :publication-basis-mismatch))
         _ (when-not (publication/host-target? (:target basis)) (refuse! :unmarked-publication-basis))
-        _ (when-not (= (:target basis) (current-target room-id room)) (refuse! :target-mismatch))
         retained (requests/payload conn row)
         _ (when-not (= (:work.request/intent-id row) (hasch/uuid retained))
             (refuse! :payload-mismatch))
@@ -221,12 +219,44 @@
             (when-not (and proof (= (:knowledge/checkpoint input)
                                    (execution-origin/selection (:source input) proof)))
               (refuse! :checkpoint-batch-mismatch)))
-        {:keys [environment workflow-bundle]} (verify-frozen-workflow! input)
-        certified (certified-candidate! room row input)
-        _ (workspace/validate-proof! (:target basis)
-                                     (get-in certified [:attempt/evidence :knowledge-workspace]))]
-    {:party party :row row :binding binding :basis basis :input input :batch batch
-     :environment environment :workflow-bundle workflow-bundle :certified certified}))
+        {:keys [environment workflow-bundle]} (verify-frozen-workflow! input)]
+    {:row row :binding binding :basis basis :input input :batch batch :retained-proof proof
+     :environment environment :workflow-bundle workflow-bundle}))
+
+(defn- certified-request! [conn principal room-id room request-id]
+  (let [party (authorize! @conn principal room-id)
+        initial (or (requests/get-request conn request-id) (refuse! :missing-request))]
+    ;; Check the submitting principal before touching retained artifacts.
+    (when-not (and (= room-id (:work.request/room initial)) (= party (:work.request/by initial)))
+      (refuse! :request-owner-mismatch))
+    (let [{:keys [row input basis] :as context} (retained-request-context! conn room-id request-id)
+          _ (when-not (= initial row) (refuse! :request-changed))
+          _ (when-not (= (:target basis) (current-target room-id room)) (refuse! :target-mismatch))
+          certified (certified-candidate! room row input)]
+      (workspace/validate-proof! (:target basis) (get-in certified [:attempt/evidence :knowledge-workspace]))
+      (assoc context :party party :certified certified))))
+
+(defn recovery-context!
+  "HOST retained provenance after CURRENT actor read/merge authorization. The
+   original requester remains the execution author. This never files output and
+   deliberately does not require the historical target to be today's default."
+  [conn principal room-id request-id]
+  (let [actor (authorize! @conn principal room-id)
+        row (or (requests/get-request conn request-id) (refuse! :missing-request))]
+    (when-not (= room-id (:work.request/room row)) (refuse! :request-owner-mismatch))
+    (let [context (retained-request-context! conn room-id request-id)]
+      (when-not (= row (:row context)) (refuse! :request-changed))
+      (assoc context :recovery-actor actor))))
+
+(defn ^:no-doc failed-candidate-for-recovery!
+  "HOST certification using an already authorized retained context. It is not
+   authority to file, recover metadata or return resources. No Attempt is made."
+  [room {:keys [row input basis]}]
+  (let [certified (certified-candidate! room row input)]
+    (when-not (= :failed (get-in certified [:attempt/receipt :attempt/status]))
+      (refuse! :candidate-not-failed))
+    (workspace/validate-proof! (:target basis) (get-in certified [:attempt/evidence :knowledge-workspace]))
+    {:candidate (:attempt/run-id certified) :attempt-content (:attempt/content-id certified)}))
 
 (defn candidate-outcome
   "Read-only strict certification of the exact LIVE knowledge candidate.

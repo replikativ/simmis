@@ -304,7 +304,8 @@ and real native Job start/settlement. Altering the claim or deleting/corrupting
 joint linkage at the Job boundary prevents the body from starting. Disposable
 native echo tests now drain two bounded batches and then skip empty; scripted
 provider/SCI tests file a proposal, hold the stream for review, dismiss it, and
-process the next prefix. Recovery for linked batches remains pending. Application
+process the next prefix. Failed linked updates have the separate guarded recovery
+path below. Application
 startup uses the existing single owned scheduler; this installs no default
 schedule or execution allowance.
 
@@ -322,14 +323,16 @@ batch, and does not mark that evidence processed. Resuming a schedule cannot
 recover a submitted batch: the schedule projection reports
 `batch-recovery-required`, and both the human control and serialized writer
 refuse enabling it while that batch remains held. Additional allowance does not
-resolve this hold. Explicit submitted-failure requeue remains separate work;
-the existing unlinked capturing/ready recovery must not be used for it.
+resolve this hold. **Recover update** verifies native return and writes an exact
+failed-update receipt; only afterward can the user separately choose **Resume**.
+The existing unlinked capturing/ready recovery must not be used for this.
 
 The shipped v6 regression exercises a reviewed/adopted update, an unchanged
 scan, a new original with a coverage-certified no-change result, another empty
 scan, then a new original with a provider failure. It checks one truthful failure
-notice, preserved processing, explicit resume refusal, and no repeated requests,
-notices or spending after reconciliation. Provider transport is scripted; this
+notice, preserved processing, explicit resume refusal, then registered MCP
+recovery, exact historical replay and separately authorized Resume. Neither
+recovery nor reconciliation repeats requests, notices or spending. Provider transport is scripted; this
 validates execution contracts rather than model quality or large-wiki recall.
 
 
@@ -427,9 +430,9 @@ adoption records, and leaves later stream and schedule work untouched. A lost
 acknowledgement remains an error until the caller explicitly repeats that intent.
 Recovery does not resume a disabled schedule. Capturing batches have no installed
 scheduled binding, so recovery does not infer or repair their unbound occurrences.
-Explicit requeue is also available for either unlinked phase. Submitted recovery
-remains separate work. These alpha operations are
-not yet exposed or activated in the running UI.
+Explicit requeue is also available for either unlinked phase. Those internal
+alpha operations remain separate from the submitted-failure operation exposed
+through MCP and the scheduled workflow controls.
 
 Requeue closes the old batch with an `abandoned-requeue` audit, restores the exact
 selected items to the pending index, removes their old batch associations, clears
@@ -552,8 +555,8 @@ The browser reuses its existing Spindel observation coordinator and Memory/contr
 invalidation hints. Ineligible source retires the old observation frame, accepted
 token and display so returning to the same saved source requests fresh facts.
 Local source/form edits and pending commands remain untouched. There is no new
-polling loop, subscription or replicated state model. Guarded recovery remains
-separate work. The personal input-limit observation is described below.
+polling loop, subscription or replicated state model. Scheduled failed-update
+recovery uses the same existing observation and mutation state. The personal input-limit observation is described below.
 
 ### Personal next-batch input check
 
@@ -580,3 +583,59 @@ still independently checks retained source, resources and authority. The planner
 existing exact selection value, content identity and held errors remain intact.
 On-demand frozen context retrieval and dispatcher-produced schedule hold receipts
 are separate follow-up work; this check neither raises limits nor drops context.
+
+
+### Failed submitted update recovery
+
+`knowledge-submitted-recovery/requeue-tx` is a separate fixed transition; it never
+loosens the unlinked recovery guard. The original Request, Job, failure notice,
+Attempt when present, frozen input and scheduled occurrence remain history. The
+current actor needs room read/merge authority, while the physical discovery gate
+and semantic stream retain the original requester's identity.
+
+The HOST verifies retained source/checkpoint/Request bindings and either the
+exact certified failed direct candidate or a native failed/cancelled Job. Native
+family return, core cleanup, adapter return and execution-lease release must be
+positively acknowledged. Remaining Run wallet balances must be zero or have no
+allocation. This neither establishes provider usage consumption nor refunds a
+provider hold; native accounting remains its own authority.
+
+For a world-bearing Run, the narrow supported proof additionally requires the
+new native family witness, discarded status and a reason from a positive native
+program-discard path. Missing evidence, disappearing worlds, cleanup failures and
+evaluation projections written before physical disposal remain held. Historical
+rows are not backfilled by observing absent owners. The unmerged model-based
+Spindel implementation is not required, and unavailable native capabilities are
+not reconstructed after restart.
+
+Native family return and Job settlement are distinct boundaries. The shared
+`native-execution-return/state` reader reports live, returned or unknown for an
+explicit Room and a bounded domain graph. Fixed worker recovery may inspect its
+pinned assignments after positive family return, then prove stop, world cleanup
+and fixture retirement before returning the Request. It never creates missing
+Job cleanup witnesses. Generic boot reconciliation may return available Run
+balances after family return, while keeping the Request pending if its original
+adapter retirement is unproven. Neither path certifies arbitrary callbacks from
+an absent owner. Submitted wiki-batch recovery requires the stronger complete Job
+proof above. Construction failures seal/cancel the native child family without
+marking the failed root as a user cancellation.
+
+One serialized, reauthorized mutation closes the old batch as `failed-requeued`,
+restores its exact claimed versions to pending, clears only its active hold and
+increments generation once. It preserves the discovery cursor/root/revision and
+all evidence bytes. Discovery cannot advance this stream while its batch/items
+are claimed. After recovery, ordinary refresh can supersede or remove restored
+versions before a fresh selection. A later recovery replay verifies its complete
+typed receipt and performs no mutation, even after another batch was admitted.
+Request-side filing receipts, partial schedule links and conflicting decisions
+fail closed.
+
+The registered `:simmis/workflow-failure-recover` operation accepts canonical
+Request/batch IDs, inspected claim/frozen guards, a stable client `request-id` and
+reason. It starts no work, adds no allowance and enables no schedule. The Workflows
+overview offers **Recover update** to an authorized actor for the exact failed
+scheduled batch. Its command remains in Spindel state across an ambiguous reply;
+only an explicit retry sends it again. **Resume** remains a separate action and
+rechecks the latest failure, activation identity and original delegator's current
+permission. An agent can invoke the same operation through MCP; a fresh update
+under another actor belongs to that actor's own stream.

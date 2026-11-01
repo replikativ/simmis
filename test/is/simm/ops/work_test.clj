@@ -483,8 +483,9 @@
           (is (thrown? clojure.lang.ExceptionInfo
                        (work/submit-prepared! conn host-ctx owner (:room w) room input prepared)))
           (is (= [:admitted [:settled grant]] @events))
-          (is (= :failed (:status (jobs/status (:job (work/submit-prepared! conn host-ctx owner
-                                                                            (:room w) room input prepared))))))
+          (let [retry (work/submit-prepared! conn host-ctx owner (:room w) room input prepared)]
+            (is (= :failed (:status (jobs/status (:job retry)))))
+            (is (= "construction failed" (:run/error (run/run room (:job retry))))))
           (is (= [:admitted [:settled grant]] @events)))))))
 
 (deftest unstarted-adapter-provisioning-is-abandoned-without-a-job
@@ -534,6 +535,7 @@
               (is (:return-pending? (work/status conn host-ctx owner (:room w) (:id row))))
               (.countDown release)
               (is (:settled? (jobs/status job 25000)))
+              (is (= :cancelled (:status (jobs/status job))))
               (is (= 1 @retired))
               (is (= grant (resource/balance room))))
             (finally (.countDown release))))))))
@@ -572,8 +574,12 @@
                      (resource/balance room)))
               (is (= {resource/microdollars 2500M}
                      (resource/balance room [:kontor.resource-account/id (:wallet reservation)])))
-              (is (false? (:return-pending? (work/status conn host-ctx (ops/party-principal (:owner w))
-                                                         (:room w) (:work.request/id row)))))
+              ;; The family returned, so unused Run balances can return. The
+              ;; missing Job adapter witness remains unknown; financial
+              ;; reconciliation must not certify an unperformed callback.
+              (is (true? (:return-pending? (work/status conn host-ctx (ops/party-principal (:owner w))
+                                                        (:room w) (:work.request/id row)))))
+              (is (not (:settled? (jobs/observe-settlement room job))))
               (work/recover! conn host-ctx (constantly room))
               (is (= {resource/microdollars 7500M resource/model-dispatches 1M}
                      (resource/balance room))))))))))

@@ -20,6 +20,7 @@
             [is.simm.model.work-limits :as work-limits]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.ops.knowledge-changes :as knowledge-changes]
+            [is.simm.ops.native-execution-return :as native-return]
             [is.simm.ops.room-collection-policy :as collection-policy]
             [is.simm.ops.work-request-checkpoints :as checkpoint-roots]
             [is.simm.ops.owned-reads :as reads]
@@ -200,10 +201,12 @@
     (return-wallet! room (:work.request/job row) nil)))
 
 (defn- return-job! [conn host-ctx room row]
-  ;; Boot recovery has already established that no live Job/adapter remains.
+  ;; Family return permits remaining-wallet reconciliation, not certification
+  ;; of arbitrary adapter retirement lost with the original Job owner.
   (return-job-resources! room row)
-  (binding [ec/*execution-context* host-ctx]
-    (requests/mark-returned! conn (:work.request/id row))))
+  (when (:settled? (jobs/observe-settlement room (:work.request/job row)))
+    (binding [ec/*execution-context* host-ctx]
+      (requests/mark-returned! conn (:work.request/id row)))))
 
 (defn- batch-control-current!
   "Fixed native handoff observation, not a source lease across world fork.
@@ -439,13 +442,13 @@
                                                                :request-id id}}))))
                     (catch Throwable e
                  ;; Construction may already have admitted a child. Fence the
-                 ;; parent and cancel its own descendants before joining;
+                 ;; family and cancel its own descendants before joining;
                  ;; never infer quiescence from not having returned a Spin.
                       (try (binding [ec/*execution-context* (:ctx room)]
-                             (run/cancel-run! job-id)
-                             (doseq [child (run/runs room {:root-run-id job-id :limit 1000})
-                                     :when (not= job-id (:run/id child))]
-                               (run/cancel-run! (:run/id child))))
+                             ;; Construction failure is not caller cancellation
+                             ;; of the root. The canonical family seal also
+                             ;; covers children admitted after this fence.
+                             (run/cancel-family! room job-id))
                            (catch Throwable cleanup (.addSuppressed e cleanup)))
                       (throw e)))))
               :before-finish (fn [job-id _ _]
@@ -518,14 +521,10 @@
       (if-let [job (:work.request/job row)]
         (when (:work.request/return-pending? row)
           (when-let [room (resolve-room (:work.request/room row))]
-            (let [s (jobs/status job)
-                  active (set (map :run/id (run/active-runs)))
-                  descendants (binding [ec/*execution-context* (:ctx room)]
-                                (run/runs room {:root-run-id job :limit 100000}))
-                  terminal? #(contains? #{:completed :failed :cancelled} (:run/status %))]
-              (when (and (:settled? s) (seq descendants) (< (count descendants) 100000)
-                         (every? terminal? descendants)
-                         (not-any? #(contains? active (:run/id %)) descendants))
+            (let [descendants (binding [ec/*execution-context* (:ctx room)]
+                                (run/runs room {:root-run-id job :limit 100000}))]
+              (when (and (seq descendants) (< (count descendants) 100000)
+                         (= :returned (native-return/state room job descendants)))
                 ;; A dead process could not run its child cleanup. Reconcile
                 ;; remaining wallets bottom-up, never reservation exposure.
                 (let [children (group-by :run/parent descendants)]

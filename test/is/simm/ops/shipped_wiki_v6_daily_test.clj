@@ -10,6 +10,7 @@
             [dvergr.catalog.workspace :as native-catalog]
             [dvergr.discourse :as discourse]
             [dvergr.jobs :as jobs]
+            [dvergr.ops :as dops]
             [dvergr.model.api.codex-subscription :as codex]
             [dvergr.model.gateway :as gateway]
             [dvergr.model.providers :as providers]
@@ -24,6 +25,9 @@
             [is.simm.documents.space :as space]
             [is.simm.model.file-adoptions :as adoptions]
             [is.simm.model.knowledge-dispositions :as dispositions]
+            [is.simm.model.knowledge-batches :as batches]
+            [is.simm.model.knowledge-submitted-recovery :as submitted-model]
+            [is.simm.model.knowledge-batch-recovery :as unlinked-model]
             [is.simm.model.room-evidence-collections :as collections]
             [is.simm.model.workflow-schedules :as schedules-model]
             [is.simm.model.work-requests :as requests]
@@ -33,6 +37,8 @@
             [is.simm.ops.file-output-controller :as controller]
             [is.simm.ops.knowledge-output-service :as output]
             [is.simm.ops.knowledge-filing :as filing]
+            [is.simm.ops.knowledge-failed-settlement :as failed-settlement]
+            [is.simm.ops.owned-knowledge-submitted-recovery :as submitted-recovery]
             [is.simm.ops.knowledge-outputs :as outputs]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.ops.owned-schedule-fixture :as fixture]
@@ -229,12 +235,44 @@
             (is (= wallet (resource/balance room)))
             (is (= notices (count (discourse/messages room))) "Reconciliation never duplicates notices")
             (is (= (+ 2 original-count) (count (requests/requests conn))))
-            (is (= current-company (:text (files/read-file-in @owned "wiki/Company.md"))))))))))
+            (is (= current-company (:text (files/read-file-in @owned "wiki/Company.md"))))
+            (let [bid (:work.request/knowledge-batch request)
+                  batch (batches/batch @conn bid)
+                  recover-input {:request (:work.request/id request) :batch bid
+                                 :expected-claim (:knowledge.batch/claim batch)
+                                 :expected-frozen (:knowledge.batch/frozen-id batch)
+                                 :request-id (random-uuid) :reason "Retry current evidence in a fresh update"}
+                  original-request (requests/get-request conn (:work.request/id request))
+                  ;; This fixture's HOST is the MCP boundary. Exercise its
+                  ;; actual explicit work identity, not an ordinary browser
+                  ;; principal accidentally accepted by stale registrations.
+                  recovery-principal (assoc principal :principal/mcp? true :principal/scopes #{}
+                                            :principal/tools #{"simmis_workflow-failure-recover"})
+                  recover! #(dops/invoke host recovery-principal :simmis/workflow-failure-recover
+                                         (assoc (update-vals recover-input (fn [v] (if (uuid? v) (str v) v))) :room handle))
+                  recovered (recover!)]
+              (is (= :recovered (:status recovered)))
+              (is (false? (:dispatched? recovered)))
+              (is (false? (:schedule-resumed? recovered)))
+              (with-redefs [failed-settlement/verify! (fn [& _] (throw (AssertionError. "Historical replay entered native recovery")))]
+                (is (= recovered (recover!))))
+              (is (= row (schedules-model/activation conn (:schedule.activation/id activation))))
+              (is (nil? (schedules-model/resume-blocked-reason @conn row)))
+              (is (= recorded (schedules-model/occurrence conn (:schedule.occurrence/id failed))))
+              (is (= original-request (requests/get-request conn (:work.request/id request))))
+              (is (= before @calls))
+              (is (= wallet (resource/balance room)))
+              (is (= notices (count (discourse/messages room))))
+              (is (submitted-model/recovered? @conn bid (:work.request/id request)))
+              ;; Resume reauthorizes the original delegator and remains explicit.
+              (schedules/set-enabled-owned! host principal handle (:schedule.activation/id activation) true)
+              (is (true? (:schedule.activation/enabled? (schedules-model/activation conn (:schedule.activation/id activation)))))
+              (schedules/set-enabled-owned! host principal handle (:schedule.activation/id activation) false))))))))
 
 (deftest v6-automatic-room-originals-reach-reviewed-native-adoption-once
   (with-canonical-fixture
     (fn [{:keys [conn w host owned attached room]}]
-      (d/transact conn (concat schedules-model/schema collections/schema adoptions/schema))
+      (d/transact conn (concat schedules-model/schema collections/schema adoptions/schema unlinked-model/schema submitted-model/schema))
       (d/transact conn [{:party/id (:owner w) :party/role :admin}])
       (let [source (starter/source 6) principal (ops/party-principal (:owner w)) handle (str (:room w))
             calls (atom 0) observed (atom {}) historical (atom nil) start jobs/start!
