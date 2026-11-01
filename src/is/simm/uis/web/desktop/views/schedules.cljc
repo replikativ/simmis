@@ -171,8 +171,9 @@
                                      (when (:enabled? row) (str " · Next: " (.toLocaleString (js/Date. (:next-fire row)))))))
                        (when-let [reason (:reason row)] (el/p {:role "status"} (str "Held: " (name reason))))
                        (when (:resume-blocked row)
-                         (el/p {:role "status"} (if (= :legacy-recreate (:resume-blocked row))
-                                                 "Open the room workflow to recreate this older activation."
+                         (el/p {:role "status"} (case (:resume-blocked row)
+                                                 :legacy-recreate "Open the room workflow to recreate this older activation."
+                                                 :batch-recovery-required "The failed evidence batch needs recovery before this workflow can resume; adding allowance does not resolve it."
                                                  "Admission needs reconciliation before this workflow can resume; adding allowance does not resolve it.")))
                        (el/button {:disabled (boolean (or (:updating? row)
                                                           (and (not (:enabled? row)) (:resume-blocked row))))

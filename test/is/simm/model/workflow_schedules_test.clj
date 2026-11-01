@@ -1,6 +1,9 @@
 (ns is.simm.model.workflow-schedules-test
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
+            [is.simm.model.knowledge-batches :as batches]
+            [is.simm.model.knowledge-streams :as streams]
+            [is.simm.model.knowledge-schedule-batches :as scheduled]
             [is.simm.model.knowledge-dispositions :as dispositions]
             [is.simm.model.work-requests :as requests]
             [is.simm.model.workflow-schedules :as schedules]))
@@ -117,6 +120,45 @@
       (schedules/fail-certified! conn activation occurrence outcome)
       (is (false? (:schedule.activation/enabled?
                     (schedules/activation conn (:schedule.activation/id activation))))))))
+
+(deftest resume-refuses-missing-failure-and-stripped-batch-bindings
+  (with-failed-input
+    (fn [{:keys [conn activation occurrence outcome oid request]}]
+      (schedules/fail-certified! conn activation occurrence outcome)
+      (let [id (:schedule.activation/id activation)
+            held (schedules/activation conn id)
+            check! (fn [reason]
+                     (let [before @conn]
+                       (is (= reason (schedules/resume-blocked-reason before held)))
+                       (is (thrown? Exception (schedules/resume-managed! conn held)))
+                       (is (= before @conn))))]
+        ;; A missing last failure is not proof that no batch needs recovery.
+        (d/transact conn [[:db/add [:schedule.activation/id id]
+                           :schedule.activation/last-terminal-failure (random-uuid)]])
+        (is (= :reconciliation-required
+               (schedules/resume-blocked-reason @conn (schedules/activation conn id))))
+        (d/transact conn [[:db/add [:schedule.activation/id id] :schedule.activation/last-terminal-failure oid]])
+        (d/transact conn (concat batches/schema streams/schema scheduled/schema))
+        (let [bid (random-uuid) sid (random-uuid) frozen (random-uuid)]
+          (d/transact conn [{:knowledge.batch/id bid :knowledge.batch/stream sid
+                             :knowledge.batch/by (:schedule.activation/by activation)
+                             :knowledge.batch/room (:schedule.activation/room activation)
+                             :knowledge.batch/request (:work.request/id request) :knowledge.batch/state :submitted}
+                            {:knowledge.stream/id sid :knowledge.stream/active-batch bid}
+                            {:db/id [:work.request/id (:work.request/id request)]
+                             :work.request/knowledge-batch bid :work.request/knowledge-frozen frozen}])
+          ;; Canonical Request markers cannot be hidden by stripping occurrence columns.
+          (check! :reconciliation-required)
+          (d/transact conn [{:db/id [:schedule.occurrence/id oid]
+                             :schedule.occurrence/knowledge-batch bid
+                             :schedule.occurrence/batch-ref (random-uuid)
+                             :schedule.occurrence/batch-revision (random-uuid)}])
+          (check! :batch-recovery-required)
+          ;; Merely changing the phase cannot release another owner's active slot.
+          (d/transact conn [[:db/add [:knowledge.batch/id bid] :knowledge.batch/state :closed]])
+          (check! :batch-recovery-required)
+          (d/transact conn [[:db/retract [:knowledge.stream/id sid] :knowledge.stream/active-batch bid]])
+          (check! :reconciliation-required))))))
 
 (deftest failure-writer-refuses-changed-bindings-without-clearing-or-processing
   (doseq [field [:work.request/return-pending? :work.request/job :work.request/by

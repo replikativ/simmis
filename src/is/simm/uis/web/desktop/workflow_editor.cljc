@@ -76,6 +76,7 @@
 
 (defn activation-label [row]
   (cond
+    (= :batch-recovery-required (:resume-blocked row)) "Held · failed evidence batch needs recovery"
     (:reason row) (str "Held · " (name (:reason row)))
     (= :legacy-recreate (:resume-blocked row)) "Needs recreation · earlier schedule format"
     (= :reconciliation-required (:resume-blocked row)) "Held · admission requires reconciliation"

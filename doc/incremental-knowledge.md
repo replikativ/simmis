@@ -316,6 +316,22 @@ slot on the first completion pass, without advancing processing or rereading an
 Attempt after notification. Scripted shipped-workflow tests cover actual native
 certification and first-pass failure, alongside successful no-op and proposal paths.
 
+The chat notice distinguishes a failed certified candidate from a completed
+orchestration Job. Reconciliation retains the failed Request, Attempt and input
+batch, and does not mark that evidence processed. Resuming a schedule cannot
+recover a submitted batch: the schedule projection reports
+`batch-recovery-required`, and both the human control and serialized writer
+refuse enabling it while that batch remains held. Additional allowance does not
+resolve this hold. Explicit submitted-failure requeue remains separate work;
+the existing unlinked capturing/ready recovery must not be used for it.
+
+The shipped v6 regression exercises a reviewed/adopted update, an unchanged
+scan, a new original with a coverage-certified no-change result, another empty
+scan, then a new original with a provider failure. It checks one truthful failure
+notice, preserved processing, explicit resume refusal, and no repeated requests,
+notices or spending after reconciliation. Provider transport is scripted; this
+validates execution contracts rather than model quality or large-wiki recall.
+
 
 The dispatcher checks an exact historical request before discovery or provider
 preparation. A retained binding without the original positive acknowledgement

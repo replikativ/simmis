@@ -206,7 +206,7 @@
     (when-not (and current (uuid? fixture-id)
                    (= (dissoc current pointer) (dissoc expected pointer))
                    (= :admitting (:work.request/state current)) (nil? (:work.request/job current))
-                   (#{:benchmark :cli-benchmark :local-worker-benchmark} (:work.request/kind current))
+                   (#{:benchmark :cli-benchmark :local-worker-benchmark :coordinator} (:work.request/kind current))
                    (= (:work.request/id current)
                       (request-id (:work.request/by current) (:work.request/room current)
                                   (:work.request/client-id current)))

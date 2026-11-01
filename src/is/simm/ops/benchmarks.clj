@@ -312,7 +312,7 @@
           persistent-id (:work.request/fixture-room request)
           row (when (uuid? persistent-id) (d/entity @(system-db/get-conn) [:room/id persistent-id]))]
       (when-not (and request (uuid? persistent-id)
-                     (#{:benchmark :cli-benchmark :local-worker-benchmark} (:work.request/kind request))
+                     (#{:benchmark :cli-benchmark :local-worker-benchmark :coordinator} (:work.request/kind request))
                      (= request-id (requests/request-id (:work.request/by request) (:work.request/room request)
                                                         (:work.request/client-id request)))
                      (= (fixture-slug request-id) (:room/slug row))
@@ -469,7 +469,10 @@
   [conn host-ctx row]
   (let [job (:work.request/job row)
         status (when job (jobs/status job))]
-    (when (and (#{:benchmark :cli-benchmark :local-worker-benchmark} (:work.request/kind row))
+    (when (and (#{:benchmark :cli-benchmark :local-worker-benchmark :coordinator} (:work.request/kind row))
+               (or (not= :coordinator (:work.request/kind row))
+                   (:work.request/fixture-room row)
+                   (get-in (requests/payload conn row) [:input :benchmark-offer]))
                (if job
                  (and (false? (:work.request/return-pending? row)) (:settled? status)
                       (contains? #{:completed :failed :cancelled} (:status status)))

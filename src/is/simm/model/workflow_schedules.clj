@@ -198,6 +198,50 @@
                       (= (:schedule.activation/revision row) (:schedule.occurrence/revision occurrence))
                       (#{:pending :linked} (:schedule.occurrence/state occurrence)))))))
 
+(defn resume-blocked-reason
+  "Metadata advice, rechecked by the serialized resume writer. Enabling an
+   activation cannot recover a failed submitted batch or release its evidence."
+  [db row]
+  (let [active (when-let [id (:schedule.activation/active-occurrence row)]
+                 (pull-row db :schedule.occurrence/id id))
+        failure-id (:schedule.activation/last-terminal-failure row)
+        failed (when failure-id (pull-row db :schedule.occurrence/id failure-id))
+        request (when failed (requests/request-in db (:schedule.occurrence/request failed)))
+        bid (:schedule.occurrence/knowledge-batch failed)
+        batch-marked? (some some? [bid (:schedule.occurrence/batch-ref failed)
+                                   (:schedule.occurrence/batch-revision failed)
+                                   (:work.request/knowledge-batch request)
+                                   (:work.request/knowledge-frozen request)])]
+    (cond
+      (not (resumable-active? row active)) :reconciliation-required
+      (and failure-id
+           (not (and (= failure-id (:schedule.occurrence/id failed) (:work.request/client-id request))
+                     (= (:schedule.activation/id row) (:schedule.occurrence/activation failed))
+                     (= (:schedule.activation/revision row) (:schedule.occurrence/revision failed))
+                     (= (:schedule.activation/by row) (:work.request/by request))
+                     (= (:schedule.activation/room row) (:work.request/room request))
+                     (= :linked (:schedule.occurrence/state failed))
+                     (= :submitted (:work.request/state request))
+                     (every? uuid? (map failed [:schedule.occurrence/failed-candidate
+                                                :schedule.occurrence/failed-attempt-content])))))
+      :reconciliation-required
+      batch-marked?
+      (let [batch (when bid (pull-row db :knowledge.batch/id bid))
+            stream (when batch (pull-row db :knowledge.stream/id (:knowledge.batch/stream batch)))]
+        (if (and (every? uuid? [bid (:schedule.occurrence/batch-ref failed)
+                                (:schedule.occurrence/batch-revision failed)
+                                (:work.request/knowledge-frozen request)])
+                 (= bid (:work.request/knowledge-batch request))
+                 (= (:schedule.occurrence/request failed) (:knowledge.batch/request batch))
+                 (= (:schedule.activation/by row) (:knowledge.batch/by batch))
+                 (= (:schedule.activation/room row) (:knowledge.batch/room batch))
+                 stream)
+          ;; Submitted-failure recovery has no admitted transition yet. A
+          ;; changed phase or stripped stream pointer is not a recovery receipt.
+          (if (= bid (:knowledge.stream/active-batch stream))
+            :batch-recovery-required :reconciliation-required)
+          :reconciliation-required)))))
+
 (defn- resume-managed-tx [db id expected]
   (let [row (pull-row db :schedule.activation/id id)
         oid (:schedule.activation/active-occurrence row)
@@ -205,6 +249,8 @@
     (when-not (and row (= expected (select-keys row resume-identity-fields))
                    (resumable-active? row o))
       (throw (ex-info "Schedule changed or admission requires reconciliation" {:type ::conflict})))
+    (when-let [reason (resume-blocked-reason db row)]
+      (throw (ex-info "Recover the failed evidence batch before resuming" {:type ::conflict :reason reason})))
     (enabled-tx db id true)))
 
 (defn resume-managed!

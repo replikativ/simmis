@@ -1,5 +1,6 @@
 (ns is.simm.ops.workflow-schedules-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
             [datahike.api :as d]
             [dvergr.agent.attempt :as attempt]
             [dvergr.agent.environment :as environment]
@@ -518,16 +519,19 @@
     (with-fixture
       (fn [{:keys [conn row room] :as fixture}]
         (let [o (pending! fixture) messages (atom []) mark! model/mark-announced!
-              failed? (atom false) request {:work.request/job (random-uuid)}]
+              failed? (atom false) request {:work.request/job (random-uuid)}
+              job {:status :completed :candidate-outcome :failed :finished-at #inst "2026-10-19T08:00:00Z"}]
           (with-redefs [discourse/post! (fn [_ message] (swap! messages conj message))
                         model/mark-announced! (fn [conn oid]
                                                 (if (compare-and-set! failed? false true)
                                                   (throw (ex-info "Lost publication acknowledgement" {}))
                                                   (mark! conn oid)))]
-            (is (thrown? clojure.lang.ExceptionInfo (publish! conn row o request {:status :completed :finished-at #inst "2026-10-19T08:00:00Z"} room)))
-            (publish! conn row o request {:status :completed :finished-at #inst "2026-10-19T08:00:00Z"} room)
+            (is (thrown? clojure.lang.ExceptionInfo (publish! conn row o request job room)))
+            (publish! conn row o request job room)
             (is (= 2 (count @messages)))
             (is (= (first @messages) (second @messages)))
+            (is (str/includes? (:content (first @messages)) "candidate failed"))
+            (is (= :completed (:status job)) "Presentation does not change native Job status")
             (is (= (.getTime #inst "2026-10-19T08:00:00Z") (:ts (first @messages))))
             (is (= :_room-log (:to (first @messages))))
             (is (= (:work.request/job request) (get-in (first @messages) [:metadata :run-id])))

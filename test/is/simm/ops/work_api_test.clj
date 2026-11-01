@@ -18,7 +18,8 @@
 
 (deftest knowledge-selection-refusals-are-client-errors-not-server-failures
   (doseq [type [:is.simm.ops.knowledge-inputs/refused
-                :is.simm.documents.view/refused :is.simm.documents.files/invalid]]
+                :is.simm.documents.view/refused :is.simm.documents.files/invalid
+                :is.simm.ops.coordinator/invalid :is.simm.ops.coordinator-benchmark/refused]]
     (is (= 400 (try (api/guarded {:execution-ctx nil} #(throw (ex-info "Invalid selection" {:type type})))
                     (catch clojure.lang.ExceptionInfo e (dops/error-status e)))))))
 
@@ -137,3 +138,39 @@
              (doseq [op (concat (keys api/specifications) (keys control/specifications))]
                (if-let [spec (get previous op)] (dops/register-op! op spec) (dops/unregister-op! op)))
              (server/sync-op-tools!))))))))
+
+
+(deftest coordinator-benchmark-wire-pins-owned-source-and-keeps-the-original-room
+  (world/with-world [conn w]
+    (#'is.simm.ops.work-test/with-room
+     (fn [room]
+       (let [previous (dops/operations) calls (atom []) request-id (random-uuid)
+             bundle (random-uuid) revision (random-uuid) [input _] (#'is.simm.ops.work-test/fixture)
+             args (assoc input :room (str (:room w)) :request-id (str request-id)
+                         :benchmark {:name "echo" :expected-bundle (str bundle)
+                                     :expected-owned-source (str revision) :limits (:limits input)})
+             host (ops/host (:ctx room)) p (ops/party-principal (:owner w))]
+         (d/transact conn [{:room/id (:room w) :room/slug (store/room-id->slug (:id room))}])
+         (try
+           (api/install!)
+           (with-redefs [coordinator/submit-owned! (fn [actual principal handle input]
+                                                     (swap! calls conj [actual principal handle input]) {:id request-id})]
+             (is (m/validate api/coordinator-schema args))
+             (dops/invoke host p :simmis/coordinator args)
+             (let [[actual principal handle admitted] (first @calls)]
+               (is (identical? host actual))
+               (is (= p principal)) (is (= (str (:room w)) handle))
+               (is (= request-id (:request-id admitted)))
+               (is (= bundle (get-in admitted [:benchmark :expected-bundle])))
+               (is (= revision (get-in admitted [:benchmark :expected-owned-source]))))
+             (doseq [key [:world-parent :setup :authority :dataset]]
+               (is (false? (m/validate api/coordinator-schema (assoc-in args [:benchmark key] "forged"))))))
+           (finally
+             (doseq [op (keys api/specifications)]
+               (if-let [spec (get previous op)] (dops/register-op! op spec) (dops/unregister-op! op)))
+             (server/sync-op-tools!))))))))
+
+(deftest coordinator-benchmark-capacity-is-an-actionable-conflict
+  (is (= 409 (try (api/guarded {:execution-ctx nil}
+                               #(throw (ex-info "Invocation still active" {:type :is.simm.ops.coordinator-benchmark/busy})))
+                  (catch clojure.lang.ExceptionInfo error (dops/error-status error))))))
