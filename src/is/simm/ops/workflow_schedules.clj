@@ -526,7 +526,10 @@
                  (nil? (:run/parent r))
                  (contains? #{:completed :failed :cancelled} (:run/status r))
                  (instance? java.util.Date (:run/ended-at r)))
-        {:id id :status (:run/status r) :finished-at (:run/ended-at r) :settled? true}))))
+        (let [native (jobs/observe-settlement room id)]
+          (when (= (:run/status r) (:outcome native))
+            {:id id :status (:run/status r) :finished-at (:run/ended-at r)
+             :settled? (true? (:settled? native))}))))))
 
 (defn- file-input! [conn row occurrence request room & [notification-mode]]
   ;; The original delegator files, not the scheduler service or whoever
