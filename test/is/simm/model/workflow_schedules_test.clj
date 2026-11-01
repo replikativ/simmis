@@ -175,6 +175,57 @@
             (is (thrown? Exception (schedules/fail-certified! conn activation occurrence outcome)) (str field))
             (is (= before @conn))))))))
 
+(deftest native-failure-cannot-release-a-submitted-batch-through-resume
+  (with-failed-input
+    (fn [{:keys [conn activation oid request occurrence]}]
+      (d/transact conn (concat batches/schema streams/schema scheduled/schema))
+      (let [bid (random-uuid) sid (random-uuid) frozen (random-uuid)
+            aid (:schedule.activation/id activation)]
+        (d/transact conn [{:knowledge.batch/id bid :knowledge.batch/stream sid
+                           :knowledge.batch/by (:schedule.activation/by activation)
+                           :knowledge.batch/room (:schedule.activation/room activation)
+                           :knowledge.batch/request (:work.request/id request) :knowledge.batch/state :submitted}
+                          {:knowledge.stream/id sid :knowledge.stream/active-batch bid}
+                          {:db/id [:work.request/id (:work.request/id request)]
+                           :work.request/knowledge-batch bid :work.request/knowledge-frozen frozen}
+                          {:db/id [:schedule.occurrence/id oid]
+                           :schedule.occurrence/knowledge-batch bid
+                           :schedule.occurrence/batch-ref (random-uuid)
+                           :schedule.occurrence/batch-revision (random-uuid)}])
+        (let [o (schedules/occurrence conn oid) r (requests/get-request conn (:work.request/id request))]
+          (schedules/fail-native! conn activation o r :failed)
+          (let [held (schedules/activation conn aid) before @conn]
+            (is (= :batch-recovery-required (schedules/resume-blocked-reason before held)))
+            (is (thrown? Exception (schedules/resume-managed! conn held)))
+            (is (= before @conn))
+            (schedules/fail-native! conn activation o r :failed)
+            (is (= held (schedules/activation conn aid)))
+            (is (thrown? Exception (schedules/fail-native! conn activation o r :cancelled)))
+            (is (thrown? Exception (schedules/fail-native! conn activation occurrence request :failed)))
+            (is (= bid (:knowledge.stream/active-batch
+                         (d/pull @conn '[*] [:knowledge.stream/id sid]))))))))))
+
+(deftest native-failure-validates-its-marker-and-replay-cannot-disable-a-successor
+  (with-failed-input
+    (fn [{:keys [conn activation oid request occurrence]}]
+      (let [aid (:schedule.activation/id activation) before @conn]
+        (is (thrown? Exception (schedules/fail-native! conn activation occurrence request :completed)))
+        (is (thrown? Exception (schedules/fail-native! conn activation occurrence
+                                                     (assoc request :work.request/job (random-uuid)) :failed)))
+        (d/transact conn [[:db/retract [:schedule.occurrence/id oid] :schedule.occurrence/announced? true]])
+        (is (thrown? Exception (schedules/fail-native! conn activation occurrence request :failed)))
+        (schedules/mark-announced! conn oid)
+        (is (= (schedules/activation conn aid) (schedules/activation (atom before) aid)))
+        (schedules/fail-native! conn activation occurrence request :failed)
+        (let [held (schedules/activation conn aid) failed (schedules/occurrence conn oid)]
+          (is (= (:work.request/job request) (:schedule.occurrence/failed-job failed)))
+          (is (nil? (:schedule.occurrence/failed-attempt-content failed)))
+          (is (thrown? Exception (schedules/resume-managed! conn activation)))
+          (schedules/resume-managed! conn held)
+          (let [resumed (schedules/activation conn aid)]
+            (schedules/fail-native! conn activation occurrence request :failed)
+            (is (= resumed (schedules/activation conn aid)))))))))
+
 (deftest knowledge-cursor-requires-the-already-durable-filing
   (with-filed-input
     (fn [{:keys [conn activation oid file! input-id]}]

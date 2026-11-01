@@ -50,6 +50,8 @@
          [:schedule.occurrence/request :db.type/uuid]
          [:schedule.occurrence/announced? :db.type/boolean]
          [:schedule.occurrence/reason :db.type/keyword]
+         [:schedule.occurrence/failed-job :db.type/uuid]
+         [:schedule.occurrence/failed-job-status :db.type/keyword]
          [:schedule.occurrence/failed-candidate :db.type/uuid]
          [:schedule.occurrence/failed-attempt-content :db.type/uuid]]))
 
@@ -222,8 +224,11 @@
                      (= (:schedule.activation/room row) (:work.request/room request))
                      (= :linked (:schedule.occurrence/state failed))
                      (= :submitted (:work.request/state request))
-                     (every? uuid? (map failed [:schedule.occurrence/failed-candidate
-                                                :schedule.occurrence/failed-attempt-content])))))
+                     (or (every? uuid? (map failed [:schedule.occurrence/failed-candidate
+                                                    :schedule.occurrence/failed-attempt-content]))
+                         (and (= (:work.request/job request) (:schedule.occurrence/failed-job failed))
+                              (uuid? (:schedule.occurrence/failed-job failed))
+                              (#{:failed :cancelled} (:schedule.occurrence/failed-job-status failed)))))))
       :reconciliation-required
       batch-marked?
       (let [batch (when bid (pull-row db :knowledge.batch/id bid))
@@ -749,16 +754,28 @@
    :schedule.occurrence/input-id :schedule.occurrence/input-ref :schedule.occurrence/input-revision
    :schedule.occurrence/knowledge-batch :schedule.occurrence/batch-ref :schedule.occurrence/batch-revision])
 
-(defn- fail-certified-tx [db id expected occurrence outcome]
+(def ^:private failure-marker-fields
+  [:schedule.occurrence/failed-candidate :schedule.occurrence/failed-attempt-content
+   :schedule.occurrence/failed-job :schedule.occurrence/failed-job-status])
+
+(defn- fail-terminal-tx [db id expected occurrence outcome]
   (let [row (pull-row db :schedule.activation/id id)
         oid (:schedule.occurrence/id occurrence)
         current (pull-row db :schedule.occurrence/id oid)
         request (pull-row db :work.request/id (:schedule.occurrence/request current))
         candidate (:candidate outcome) content (:attempt-content outcome)
-        recorded? (and (= candidate (:schedule.occurrence/failed-candidate current))
-                       (= content (:schedule.occurrence/failed-attempt-content current)))]
-    (when-not (and row (uuid? oid) (uuid? candidate) (uuid? content)
-                   (= :failed (:outcome outcome))
+        native? (= :native-job (:kind outcome))
+        marker (if native?
+                 {:schedule.occurrence/failed-job (:job outcome)
+                  :schedule.occurrence/failed-job-status (:status outcome)}
+                 {:schedule.occurrence/failed-candidate candidate
+                  :schedule.occurrence/failed-attempt-content content})
+        recorded? (= marker (select-keys current failure-marker-fields))]
+    (when-not (and row (uuid? oid)
+                   (if native?
+                     (and (uuid? (:job outcome)) (= (:job outcome) (:work.request/job request))
+                          (#{:failed :cancelled} (:status outcome)))
+                     (and (uuid? candidate) (uuid? content) (= :failed (:outcome outcome))))
                    (= occurrence (select-keys current failure-occurrence-fields))
                    (= :linked (:schedule.occurrence/state current))
                    (= id (:schedule.occurrence/activation current))
@@ -769,20 +786,18 @@
                    (= (:schedule.activation/room row) (:work.request/room request))
                    (true? (:schedule.occurrence/announced? current))
                    (nil? (dispositions/disposition request)))
-      (throw (ex-info "Certified schedule failure binding changed" {:type ::conflict})))
+      (throw (ex-info "Terminal schedule failure binding changed" {:type ::conflict})))
     ;; An exact recorded reconciliation is a no-op even after a later human
     ;; resume. It must never disable new work or overwrite a newer failure.
     (when-not recorded?
       (when-not (and (= expected (select-keys row resume-identity-fields))
                      (= oid (:schedule.activation/active-occurrence row))
-                     (nil? (:schedule.occurrence/failed-candidate current))
-                     (nil? (:schedule.occurrence/failed-attempt-content current)))
+                     (empty? (select-keys current failure-marker-fields)))
         (throw (ex-info "Schedule changed before failure reconciliation" {:type ::conflict})))
       [{:db/id (:db/id row) :schedule.activation/enabled? false
         :schedule.activation/reason :execution-failed :schedule.activation/last-terminal-failure oid}
        [:db/retract (:db/id row) :schedule.activation/active-occurrence oid]
-       {:db/id (:db/id current) :schedule.occurrence/failed-candidate candidate
-        :schedule.occurrence/failed-attempt-content content}])))
+       (assoc marker :db/id (:db/id current))])))
 
 (defn fail-certified!
   "HOST-only reconciliation AFTER strict candidate/Attempt certification and
@@ -790,6 +805,17 @@
    preserve the failed occurrence/request/Attempt and never process its input.
    The outcome is not an authority token: the writer rechecks row bindings."
   [conn row occurrence outcome]
-  (d/transact conn [[:db.fn/call fail-certified-tx (:schedule.activation/id row)
+  (d/transact conn [[:db.fn/call fail-terminal-tx (:schedule.activation/id row)
                      (select-keys row resume-identity-fields)
                      (select-keys occurrence failure-occurrence-fields) outcome]]))
+
+(defn fail-native!
+  "HOST-only terminal Job failure reconciliation after physical return and
+   durable announcement. Records the exact Job without inventing an Attempt;
+   disabling the timer never releases its submitted batch or evidence."
+  [conn row occurrence request status]
+  (d/transact conn [[:db.fn/call fail-terminal-tx (:schedule.activation/id row)
+                     (select-keys row resume-identity-fields)
+                     (select-keys occurrence failure-occurrence-fields)
+                     {:kind :native-job :job (:work.request/job request) :status status
+                      :request-binding (dispositions/request-binding request)}]]))

@@ -570,7 +570,9 @@
       (if (input-processed? conn request room)
         (schedules/mark-input-processed! conn (:schedule.occurrence/id occurrence))
         (schedules/block! conn row :execution-failed)))
-    (schedules/block! conn row :execution-failed)))
+    (if (= :deferred notification-mode)
+      {::native-failure (:status job)}
+      (schedules/fail-native! conn row occurrence request (:status job)))))
 
 (defn- release-settled! [conn row resolve-room]
   (when-let [oid (:schedule.activation/active-occurrence row)]
@@ -1157,12 +1159,14 @@
                         (do (.addSuppressed ^Throwable original error) (throw original))
                         (throw error))))
                   (when-let [error (:error result)] (throw error))
-                  (if-let [outcome (::certified-failure (:value result))]
-                    ;; Attempt IO ended before posting. Failure reconciliation
-                    ;; requires the durable announcement ACK, then only these
-                    ;; already certified immutable facts and control metadata.
-                    (schedules/fail-certified! conn row o outcome)
-                    (schedules/clear-active! conn row oid)))))))))))
+                  ;; Record terminal failure only after the announcement ACK.
+                  ;; Native failures have no certified candidate/Attempt.
+                  (cond
+                    (::certified-failure (:value result))
+                    (schedules/fail-certified! conn row o (::certified-failure (:value result)))
+                    (::native-failure (:value result))
+                    (schedules/fail-native! conn row o request (::native-failure (:value result)))
+                    :else (schedules/clear-active! conn row oid)))))))))))
 
 (defn- release-owned-summary! [host conn row target]
   (when-let [oid (:schedule.activation/active-occurrence row)]
