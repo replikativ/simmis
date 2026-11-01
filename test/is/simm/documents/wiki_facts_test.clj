@@ -17,6 +17,43 @@
 
 (defn- observe [source] (facts/document repository "wiki/Company.md" source guard))
 
+(deftest version-two-keeps-only-real-links-and-visible-prose
+  (let [source (frontmatter
+                (str "# Company\n\nVisible claim [inline](/in/inline.md) and [reference][used].\n\n"
+                     "![image](/in/image.md) ![reference image][picture]\n\n"
+                     "![alt [nested link](/in/nested.md)](/in/outer-image.md)\n\n"
+                     "`inline-secret [code](/in/inline-code.md)`\n\n"
+                     "```md\nfenced-secret [code](/in/fenced.md)\n```\n\n"
+                     "~~~md\ntilde-secret [code](/in/tilde.md)\n~~~\n\n"
+                     "    indented-secret [code](/in/indented.md)\n\n"
+                     "<!-- comment-secret [comment](/in/comment.md) -->\n\n"
+                     "[used]: /in/reference.md\n[picture]: /in/reference-image.md\n[unused]: /in/unused.md\n"))
+        legacy (observe source)
+        current (facts/document repository "wiki/Company.md" source guard 2)]
+    (is (= legacy (facts/document repository "wiki/Company.md" source guard 1)))
+    (is (not (contains? legacy :prose-text)))
+    (is (some #{"/in/image.md"} (:links legacy)) "V1 keeps its historical image observation")
+    (is (= ["/in/inline.md" "/in/reference.md"] (:links current)))
+    (is (re-find #"Visible claim" (:prose-text current)))
+    (is (not (re-find #"secret|nested link|reference image" (:prose-text current))))
+    (is (= facts/citation-profile (:profile (facts/documents repository {"wiki/Company.md" source} guard 2))))
+    (is (= (:metadata-digest legacy) (:metadata-digest current)))
+    (is (= (:page-id legacy) (:page-id current)))))
+
+(deftest unsupported-observations-refuse-before-parsing
+  (with-redefs [markdown/parse (fn [& _] (throw (AssertionError. "Unsupported mode must not parse")))]
+    (is (thrown? clojure.lang.ExceptionInfo (facts/document repository "wiki/A.md" "A" guard 3)))
+    (is (thrown? clojure.lang.ExceptionInfo (facts/documents repository {} guard 3)))))
+
+(deftest version-two-traversal-respects-the-scoring-resource-guard
+  (let [calls (atom 0)
+        stopped (ex-info "Scoring traversal cancelled" {})
+        source (frontmatter (str "# Company\n\n" (apply str (repeat 100 "[text](/in/source.md) "))))]
+    (is (identical? stopped
+                    (try (facts/document repository "wiki/Company.md" source
+                                         #(when (> (swap! calls inc) 30) (throw stopped)) 2)
+                         nil (catch clojure.lang.ExceptionInfo error error))))))
+
 (deftest metadata-preservation-is-semantic-and-keeps-zero-and-false
   (let [source (frontmatter "# Company\n")
         a (observe source)
