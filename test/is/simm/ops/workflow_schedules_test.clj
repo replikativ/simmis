@@ -75,7 +75,8 @@
                                          :now (java.util.Date. 0) :next-fire (java.util.Date. 60000)})]
             (with-redefs [schedules/host-policy (constantly fixture-policy)
                           schedules/model-policy (constantly nil)
-                          schedules/publish-completion! (fn [& _] nil)
+                          schedules/publish-completion! (fn [connection _ occurrence & _]
+                                                          (model/mark-announced! connection (:schedule.occurrence/id occurrence)))
                           work/authorize! (fn [& _] owner)
                           resource/balance (fn [_] (work/resources (get-in target [:execution :limits])))
                           jobs/status (constantly nil)]
