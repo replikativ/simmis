@@ -1,6 +1,7 @@
 (ns is.simm.ops.work-api
   "Small external bindings over canonical chat and bounded work services."
-  (:require [datahike.api :as d]
+  (:require [clojure.walk :as walk]
+            [datahike.api :as d]
             [dvergr.mcp.server :as server]
             [dvergr.ops :as ops]
             [dvergr.room.store :as store]
@@ -10,6 +11,7 @@
             [is.simm.ops.benchmark-notifications :as benchmark-notifications]
             [is.simm.ops.chat :as chat]
             [is.simm.ops.coordinator :as coordinator]
+            [is.simm.ops.coordinator-benchmark :as coordinator-benchmark]
             [is.simm.ops.dvergr :as simmis-ops]
             [is.simm.ops.git-snapshot :as git-snapshot]
             [is.simm.ops.owned-benchmark-admission :as owned-benchmarks]
@@ -35,6 +37,9 @@
         (drop 2 schema)))
 
 (def task-schema (external-schema work/task-schema))
+(def coordinator-schema
+  (conj task-schema [:benchmark {:optional true}
+                     (walk/postwalk #(if (= :uuid %) uuid-string %) coordinator-benchmark/schema)]))
 (def benchmark-schema (external-schema benchmarks/schema))
 (def cli-benchmark-schema (external-schema benchmarks/cli-schema))
 (def cli-allowance-schema (external-schema benchmarks/cli-allowance-schema))
@@ -190,6 +195,10 @@
                                :is.simm.ops.git-snapshot/invalid 400
                                :is.simm.ops.git-snapshot/conflict 409
                                :is.simm.ops.git-snapshot/unavailable 503
+                               :is.simm.ops.coordinator/invalid 400
+                               :is.simm.ops.coordinator-benchmark/refused 400
+                               :is.simm.ops.coordinator-benchmark/conflict 409
+                               :is.simm.ops.coordinator-benchmark/busy 409
                                :is.simm.ops.benchmarks/denied 403
                                :is.simm.ops.benchmarks/conflict 409
                                :is.simm.ops.benchmarks/busy 409
@@ -306,6 +315,8 @@
                  [400 ::owned-model-unavailable "Select an available model with native dispatch accounting"]
                  :is.simm.ops.owned-workflow-admission/allowance
                  [409 ::owned-room-allowance "This room needs more execution allowance before running this workflow"]
+                 :is.simm.ops.workflow-schedules/batch-recovery-required
+                 [409 ::owned-batch-recovery "The failed wiki evidence batch needs recovery before this schedule can resume; adding allowance does not resolve it"]
                  (:is.simm.ops.owned-workflow-admission/invalid
                   :is.simm.ops.owned-benchmark-admission/invalid
                   :is.simm.ops.owned-worker-admission/invalid
@@ -619,13 +630,20 @@
                                             (:in-reply-to args) (assoc :in-reply-to (uuid! (:in-reply-to args))))
                                           :mcp))))}
     :simmis/coordinator
-    {:kind :write :schema task-schema :authz {:action :merge}
-     :doc "Opt-in bounded recursive coordinator in an inherited room fork. Same room merge authority and existing native money/dispatch allowance as simmis_task; never auto-funds or merges trunk. Can hire only file-worker/coordinator profiles with bounded tools/providers, and run up to eight completion-only experiment cells with parallelism two. Children split the conserved parent grant. Scoped immutable file results are available inside SCI. Completion is not task correctness. request-id retries observe identical intent."
+    {:kind :write :schema coordinator-schema :authz {:action :merge}
+     :doc "Opt-in bounded recursive coordinator in an inherited room fork. Same room merge authority and existing native money/dispatch allowance as simmis_task; never auto-funds or merges trunk. Can hire only file-worker/coordinator profiles with bounded tools/providers, and run up to eight completion-only experiment cells with parallelism two. Children split the conserved parent grant. Scoped immutable file results are available inside SCI. Completion is not task correctness. request-id retries observe identical intent. Optional benchmark pins an inspected owned name/bundle/source plus finite candidate limits; requires installation-operator and room authority, keeps checker/dataset fixed, and runs file-worker candidate revisions against clean fixture history through simmis.benchmarks/run!."
      :impl (fn [host args]
-             (checked! task-schema args)
-             (guarded host #(let [[conn id room] (room! host (:room args))]
-                              (coordinator/submit! conn (:execution-ctx host) ops/*principal* id room
-                                                   (-> (dissoc args :room) (update :request-id uuid!))))))}
+             (checked! coordinator-schema args)
+             (if (:benchmark args)
+               (guarded host #(coordinator/submit-owned!
+                               host ops/*principal* (:room args)
+                               (-> (dissoc args :room) (update :request-id uuid!)
+                                   (update :benchmark (fn [admission]
+                                                        (-> admission (update :expected-bundle uuid!)
+                                                            (update :expected-owned-source uuid!)))))))
+               (guarded host #(let [[conn id room] (room! host (:room args))]
+                                (coordinator/submit! conn (:execution-ctx host) ops/*principal* id room
+                                                     (-> (dissoc args :room) (update :request-id uuid!)))))))}
     :simmis/task
     {:kind :write :schema task-schema :authz {:action :merge}
      :doc "Submit ONE generic code/file candidate in an isolated fork with explicit limits. Requires room membership and merge authority, and existing work allowance. review/discard only; never auto-merges. Deliverables under /out are captured. Completion is NOT a correctness verifier. Reuse request-id only for identical intent; retries observe the same job, never re-execute."

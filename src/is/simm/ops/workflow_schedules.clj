@@ -382,7 +382,9 @@
     (assoc (discourse/message
             :simmis/workflows :_room-log
             (str "Scheduled " (name (:kind target)) " · " (get-in target [:execution :name])
-                 " · " (name (:status job))
+                 " · " (if (= :failed (:candidate-outcome job)) "failed" (name (:status job)))
+                 (when (= :failed (:candidate-outcome job))
+                   "\nThe candidate failed; its input remains unprocessed. Review the schedule before resuming.")
                  "\nOpen the Run for captured files, evaluation results and any proposal. Completion alone does not establish correctness.")
             nil {:role :system :kind :workflow/completed :source :workflow-schedule
                  :run-id (:work.request/job request)})
@@ -1097,7 +1099,9 @@
   (when job
     (owned-owner! host)
     (owned-room-current! host context target room-binding nil)
-    (publish-completion-target! conn row o request job (:room room-binding) target))
+    (publish-completion-target! conn row o request
+                                (cond-> job (::certified-failure value) (assoc :candidate-outcome :failed))
+                                (:room room-binding) target))
   (when (= :proposed (:kind value))
     ;; A completion observer may fence the App before this second post.
     (owned-owner! host)
@@ -1365,10 +1369,7 @@
                              (let [target (owned-control-target! control-conn original row)
                                    blocked (if (= 1 (:version target))
                                              :legacy-recreate
-                                             (when-not (schedules/resumable-active?
-                                                        row (when-let [oid (:schedule.activation/active-occurrence row)]
-                                                              (schedules/occurrence control-conn oid)))
-                                               :reconciliation-required))]
+                                             (schedules/resume-blocked-reason @control-conn row))]
                                (cond-> (schedule-summary control-conn (:room-id original) row target)
                                  blocked (assoc :resume-blocked blocked)
                                  (= 2 (:version target))
@@ -1395,6 +1396,9 @@
         (when enabled?
           (when-not (= 2 (:version target))
             (throw (ex-info "Recreate this legacy schedule before resuming" {:type ::legacy-recreate})))
+          (when (= :batch-recovery-required (owned-storage! #(schedules/resume-blocked-reason @control-conn row)))
+            (throw (ex-info "Recover the failed evidence batch before resuming this schedule"
+                            {:type ::batch-recovery-required})))
           (let [o (when-let [oid (:schedule.activation/active-occurrence row)]
                     (owned-storage! #(schedules/occurrence control-conn oid)))]
             (when-not (schedules/resumable-active? row o)

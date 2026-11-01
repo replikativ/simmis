@@ -24,19 +24,19 @@
   {:verifier/id :simmis/work-completion :verifier/version 1
    :verifier/basis "simmis-work-completion-v1"})
 
-(def policy {:version 1 :delegation delegation-policy :file-verifier completion-ref
+(def policy {:version 2 :delegation delegation-policy :file-verifier completion-ref
              :surface :scoped-recursive-files :no-shared-registries true})
 
 (def ^:private retained-agent-functions
   '#{roster make-agent revise-agent lookup ref list select environment environment-ref
-     dataset dataset-ref experiment experiment-ref room-id hire! run-experiment!
+     dataset dataset-ref experiment experiment-ref room-id hire! run-experiment! invoke-experiment!
      offered delegation-policy current-run-id observe inspect attempt-output cancel! balance split
      spend-by-role run-id result-spin owned-result-spin})
 
 (defn- refused! [message]
   (throw (ex-info message {:type ::denied})))
 
-(defn- read-captured [execution-ctx observe current-run-id project id opts]
+(defn- read-captured [execution-ctx observe current-run-id safe-verifiers project id opts]
   (when-not (uuid? id) (refused! "Attempt id must be a UUID"))
   (let [ctx (runtime/selected-context execution-ctx)]
     (binding [ec/*execution-context* ctx]
@@ -47,7 +47,7 @@
                       (store/-load-attempt (:store room) (store/conversation-id room) id))
             consumer (current-run-id)]
         (when-not (and (uuid? consumer) attempt
-                       (= completion-ref (get-in attempt [:attempt/environment :environment/verifier])))
+                       (contains? safe-verifiers (get-in attempt [:attempt/environment :environment/verifier])))
           (refused! "No captured output offered for this scoped certified Attempt"))
         (let [value (project {:id (str id) :run-id (str (:attempt/run-id attempt))
                               :content-id (str (:attempt/content-id attempt))
@@ -67,21 +67,38 @@
                                   [name (sci/eval-string* ctx (str "dvergr.agent/" name))]))
                         retained-agent-functions)
         observe (get functions 'observe)
-        current-run-id (get functions 'current-run-id)]
+        current-run-id (get functions 'current-run-id)
+        offers (vec (filter #(= :simmis/admitted-benchmark (:invocation/id %))
+                            (:invocations ((get functions 'offered)))))
+        safe-verifiers (into #{completion-ref} (keep #(get-in % [:invocation/basis :file-verifier])) offers)
+        invoke (get functions 'invoke-experiment!)]
     (worker/install! ctx execution-ctx)
     (sci/add-namespace! ctx 'dvergr.agent functions)
+    (sci/add-namespace!
+     ctx 'simmis.benchmarks
+     (doc/with-docs
+       {'offered (fn [] offers)
+        'run! (fn run!
+                ([team opts]
+                 (when-not (= 1 (count offers)) (refused! "Select one exact admitted benchmark offer"))
+                 (run! (first offers) team opts))
+                ([ref team opts]
+                 (when-not (some #{ref} offers) (refused! "Benchmark is not offered to this Run"))
+                 (invoke ref team opts)))}
+       {'offered ['([]) "Exact host-admitted benchmark refs. Empty means no scoring authority; authored checkers need separate inspected admission."]
+        'run! ['([team opts] [ref team opts]) "Benchmark one file-worker candidate prompt/model revision per call against one fixed admitted dataset/checker in clean fixture worlds. opts: :resources required aggregate grant, :parallelism optional 1. Returns native owned result Spin with Scorecard. Revise candidates, inspect results and repeat within your remaining balance."]}))
     (sci/add-namespace!
      ctx 'simmis.results
      (doc/with-docs
        {'attempt-files (fn attempt-files
                          ([id] (attempt-files id {}))
-                         ([id opts] (read-captured execution-ctx observe current-run-id results/captured-files id opts)))
-        'attempt-file (fn [id opts] (read-captured execution-ctx observe current-run-id results/captured-file id opts))}
+                         ([id opts] (read-captured execution-ctx observe current-run-id safe-verifiers results/captured-files id opts)))
+        'attempt-file (fn [id opts] (read-captured execution-ctx observe current-run-id safe-verifiers results/captured-file id opts))}
        {'attempt-files ['([id] [id opts])
-                        "List canonical immutable files from a descendant completion Attempt; takes a UUID and optional {:offset n}. No private verifier evidence or live world access."
+                        "List canonical immutable files from a descendant offered Attempt; takes a UUID and optional {:offset n}. No private verifier evidence or live world access."
                         [:function [:=> [:cat :uuid] :map] [:=> [:cat :uuid results/files-options-schema] :map]]]
         'attempt-file ['([id opts])
-                       "Read a descendant completion Attempt file as bounded base64 bytes. opts: :path required, :offset/:length optional; follow :next-offset. Records causal consumption."
+                       "Read a descendant offered Attempt file as bounded base64 bytes. opts: :path required, :offset/:length optional; follow :next-offset. Records causal consumption."
                        [:=> [:cat :uuid results/file-options-schema] :map]]})))
   ctx)
 

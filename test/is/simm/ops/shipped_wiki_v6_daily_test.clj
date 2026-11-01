@@ -135,6 +135,102 @@
                                            (keyword? (:reason data)) (assoc :reason (:reason data))))))
                    result))})))
 
+(defn- next-original-and-failure-hold!
+  [{:keys [conn w host owned room activation due principal handle execution observed]}]
+  (let [later #(java.util.Date. (+ (.getTime ^java.util.Date due) (* % 60000)))
+        calls (atom 0)
+        current-company (:text (files/read-file-in @owned "wiki/Company.md"))
+        original-count (count (requests/requests conn))
+        post! (fn [text]
+                (binding [ec/*execution-context* (:ctx room)]
+                  (let [m (discourse/message (keyword "party" (str (:owner w))) :_room-log text nil {:role :user})]
+                    (is (= :inserted (store/-store-message! (:store room) (:id room) m))) m)))
+        await! (fn [o message]
+                 (is (= :linked (:schedule.occurrence/state o)))
+                 (let [r (requests/get-request conn (:schedule.occurrence/request o))
+                       job (:work.request/job r) done (get @observed job)]
+                   (when-not (and (uuid? job) (instance? clojure.lang.IDeref done)
+                                  (true? (deref done 120000 false)))
+                     (throw (ex-info "Incremental v6 Job did not physically return" {:job job})))
+                   (@#'occurrence-fixture/join-fixture-jobs! room observed)
+                   (let [retained (requests/payload conn r)
+                         manifest (edn/read-string (get-in retained [:input :inputs "/in/knowledge/manifest.edn"]))]
+                     (is (= 1 (count (:files manifest))) "Only the newly arrived original is selected")
+                     (is (str/includes? (:path (first (:files manifest))) (str (:id message)))))
+                   {:request r :job (jobs/status job)}))]
+    ;; Fixture funding only. The production dispatcher never mints resources.
+    (resource/mint! room {:id (random-uuid) :resources (update-vals (work/resources (:limits execution)) #(* 2M %))})
+    (let [new-text "A meeting reminder only; no change to the earlier interview decision or customer status."
+          message (post! new-text)
+          previous (:schedule.occurrence/id (occurrence conn activation))
+          step (atom 0)
+          program (str "(let [m (read-string (slurp \"/in/knowledge/manifest.edn\")) "
+                       "entries (filter #(= :trigger (:role %)) (:files m))] "
+                       "(assert (= 1 (count entries))) "
+                       "(assert (.contains (slurp (:input (first entries))) " (pr-str new-text) ")) "
+                       "(assert (= (slurp \"/wiki/Company.md\") " (pr-str current-company) ")) "
+                       "(spit \"/out/coverage.edn\" (pr-str {:version 1 :trigger-id (:trigger-id m) "
+                       ":items (mapv (fn [e] {:input (:input e) :content (:content e) :status :no-change :targets [] "
+                       ":note \"Reminder only; no new supported knowledge.\"}) entries)})))")]
+      (with-redefs [gateway/*request-fn* (fn [& _]
+                                           (swap! calls inc)
+                                           (if (= 1 (swap! step inc))
+                                             (@#'scripted/tool-response program "v6-incremental-no-change")
+                                             (@#'scripted/final-response "No new supported factual change.")))]
+        (schedules/tick-owned! host (later 2))
+        (let [o (occurrence conn activation) _ (is (not= previous (:schedule.occurrence/id o)))
+              {:keys [request job]} (await! o message)]
+          (is (= :completed (:status job)))
+          (schedules/tick-owned! host (later 2))
+          (is (= :no-op (:kind (dispositions/disposition (requests/get-request conn (:work.request/id request)))))))
+        (let [before @calls wallet (resource/balance room)]
+          (schedules/tick-owned! host (later 3))
+          (is (= before @calls))
+          (is (= wallet (resource/balance room)))
+          (is (= :skipped (:schedule.occurrence/state (occurrence conn activation)))))
+        (is (= (inc original-count) (count (requests/requests conn))))))
+    (let [message (post! "Please incorporate the attached acquisition research when it becomes available.")]
+      (with-redefs [gateway/*request-fn* (fn [& _] (swap! calls inc) (throw (ex-info "Scripted provider unavailable" {})))]
+        (schedules/tick-owned! host (later 4))
+        (let [failed (occurrence conn activation)
+              {:keys [request job]} (await! failed message)
+              outcome (filing/candidate-outcome conn principal (:room w) room (:work.request/id request))]
+          (is (= :completed (:status job)) "The Job returned; the certified candidate failed")
+          (is (= :failed (:outcome outcome)))
+          (is (= (+ 2 original-count) (count (requests/requests conn))))
+          (schedules/tick-owned! host (later 4))
+          (let [summary (first (schedules/list-owned! host principal handle))
+                row (schedules-model/activation conn (:schedule.activation/id activation))
+                recorded (schedules-model/occurrence conn (:schedule.occurrence/id failed))
+                notices (count (discourse/messages room)) before @calls wallet (resource/balance room)]
+            (is (false? (:enabled? summary)))
+            (is (= :execution-failed (:reason summary)))
+            (is (= :batch-recovery-required (:resume-blocked summary)))
+            (is (nil? (:schedule.activation/active-occurrence row)))
+            (is (= (:candidate outcome) (:schedule.occurrence/failed-candidate recorded)))
+            (is (= (:attempt-content outcome) (:schedule.occurrence/failed-attempt-content recorded)))
+            (let [id (hasch/uuid [:simmis/schedule-completion-v1 (:schedule.occurrence/id failed)])
+                  messages (filterv #(= id (:id %)) (discourse/messages room))]
+              (is (= 1 (count messages)) "One truthful canonical failure notice")
+              (is (str/includes? (:content (first messages)) "failed")))
+            (is (nil? (dispositions/disposition (requests/get-request conn (:work.request/id request)))))
+            (is (nil? (schedules-model/processing-proof conn (:schedule.occurrence/id failed))))
+            (is (= :is.simm.ops.workflow-schedules/batch-recovery-required
+                   (try (schedules/set-enabled-owned! host principal handle (:schedule.activation/id activation) true)
+                        nil (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
+            ;; The writer repeats this hold; bypassing host advice cannot enable it.
+            (is (= :batch-recovery-required
+                   (try (schedules-model/resume-managed! conn row)
+                        nil (catch clojure.lang.ExceptionInfo e (:reason (ex-data e))))))
+            (schedules/recover-owned! host)
+            (schedules/tick-owned! host (later 5))
+            (is (= row (schedules-model/activation conn (:schedule.activation/id activation))))
+            (is (= before @calls) "Held failure never silently reruns")
+            (is (= wallet (resource/balance room)))
+            (is (= notices (count (discourse/messages room))) "Reconciliation never duplicates notices")
+            (is (= (+ 2 original-count) (count (requests/requests conn))))
+            (is (= current-company (:text (files/read-file-in @owned "wiki/Company.md"))))))))))
+
 (deftest v6-automatic-room-originals-reach-reviewed-native-adoption-once
   (with-canonical-fixture
     (fn [{:keys [conn w host owned attached room]}]
@@ -313,6 +409,12 @@
                 (is (= attached-before (@#'occurrence-fixture/state attached)))
                 (is (= 2 @calls))
                 (is (= 1 (count @observed)))
+                (@#'app-fixture/isolated
+                 (fn []
+                   (application/start!)
+                   (next-original-and-failure-hold!
+                    {:conn conn :w w :host host :owned owned :room room :activation activation
+                     :due due :principal principal :handle handle :execution execution :observed observed})))
                 (let [{:keys [input basis output request]} @historical
                       root (:work.checkpoint/id (request-roots/intent @conn request))]
                   (when-not (uuid? root) (throw (ex-info "Fixture lacks its real Request retention root" {})))
