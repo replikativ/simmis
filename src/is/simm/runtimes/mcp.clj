@@ -44,7 +44,7 @@
                      "simmis_work-status" "job_cancel"
                      "simmis_workflow-write" "simmis_workflow-check" "simmis_workflow-run"
                      "simmis_workflow-list" "simmis_workflow-source"
-                     "simmis_workflow-output-collect"
+                     "simmis_workflow-output-collect" "simmis_workflow-failure-recover"
                      "simmis_workflow-schedule-create" "simmis_workflow-schedule-set-enabled"
                      "simmis_benchmark" "simmis_cli-benchmark" "simmis_cli-allowance"}))
 
