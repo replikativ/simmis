@@ -10,6 +10,7 @@
             [dvergr.catalog.workspace :as native-catalog]
             [dvergr.discourse :as discourse]
             [dvergr.jobs :as jobs]
+            [dvergr.ops :as dops]
             [dvergr.model.api.codex-subscription :as codex]
             [dvergr.model.gateway :as gateway]
             [dvergr.model.providers :as providers]
@@ -24,6 +25,9 @@
             [is.simm.documents.space :as space]
             [is.simm.model.file-adoptions :as adoptions]
             [is.simm.model.knowledge-dispositions :as dispositions]
+            [is.simm.model.knowledge-batches :as batches]
+            [is.simm.model.knowledge-submitted-recovery :as submitted-model]
+            [is.simm.model.knowledge-batch-recovery :as unlinked-model]
             [is.simm.model.room-evidence-collections :as collections]
             [is.simm.model.workflow-schedules :as schedules-model]
             [is.simm.model.work-requests :as requests]
@@ -33,6 +37,8 @@
             [is.simm.ops.file-output-controller :as controller]
             [is.simm.ops.knowledge-output-service :as output]
             [is.simm.ops.knowledge-filing :as filing]
+            [is.simm.ops.knowledge-failed-settlement :as failed-settlement]
+            [is.simm.ops.owned-knowledge-submitted-recovery :as submitted-recovery]
             [is.simm.ops.knowledge-outputs :as outputs]
             [is.simm.ops.knowledge-batch-proof :as batch-proof]
             [is.simm.ops.owned-schedule-fixture :as fixture]
@@ -229,12 +235,39 @@
             (is (= wallet (resource/balance room)))
             (is (= notices (count (discourse/messages room))) "Reconciliation never duplicates notices")
             (is (= (+ 2 original-count) (count (requests/requests conn))))
-            (is (= current-company (:text (files/read-file-in @owned "wiki/Company.md"))))))))))
+            (is (= current-company (:text (files/read-file-in @owned "wiki/Company.md"))))
+            (let [bid (:work.request/knowledge-batch request)
+                  batch (batches/batch @conn bid)
+                  recover-input {:request (:work.request/id request) :batch bid
+                                 :expected-claim (:knowledge.batch/claim batch)
+                                 :expected-frozen (:knowledge.batch/frozen-id batch)
+                                 :request-id (random-uuid) :reason "Retry current evidence in a fresh update"}
+                  original-request (requests/get-request conn (:work.request/id request))
+                  recover! #(dops/invoke host principal :simmis/workflow-failure-recover
+                                         (assoc (update-vals recover-input (fn [v] (if (uuid? v) (str v) v))) :room handle))
+                  recovered (recover!)]
+              (is (= :recovered (:status recovered)))
+              (is (false? (:dispatched? recovered)))
+              (is (false? (:schedule-resumed? recovered)))
+              (with-redefs [failed-settlement/verify! (fn [& _] (throw (AssertionError. "Historical replay entered native recovery")))]
+                (is (= recovered (recover!))))
+              (is (= row (schedules-model/activation conn (:schedule.activation/id activation))))
+              (is (nil? (schedules-model/resume-blocked-reason @conn row)))
+              (is (= recorded (schedules-model/occurrence conn (:schedule.occurrence/id failed))))
+              (is (= original-request (requests/get-request conn (:work.request/id request))))
+              (is (= before @calls))
+              (is (= wallet (resource/balance room)))
+              (is (= notices (count (discourse/messages room))))
+              (is (submitted-model/recovered? @conn bid (:work.request/id request)))
+              ;; Resume reauthorizes the original delegator and remains explicit.
+              (schedules/set-enabled-owned! host principal handle (:schedule.activation/id activation) true)
+              (is (true? (:schedule.activation/enabled? (schedules-model/activation conn (:schedule.activation/id activation)))))
+              (schedules/set-enabled-owned! host principal handle (:schedule.activation/id activation) false))))))))
 
 (deftest v6-automatic-room-originals-reach-reviewed-native-adoption-once
   (with-canonical-fixture
     (fn [{:keys [conn w host owned attached room]}]
-      (d/transact conn (concat schedules-model/schema collections/schema adoptions/schema))
+      (d/transact conn (concat schedules-model/schema collections/schema adoptions/schema unlinked-model/schema submitted-model/schema))
       (d/transact conn [{:party/id (:owner w) :party/role :admin}])
       (let [source (starter/source 6) principal (ops/party-principal (:owner w)) handle (str (:room w))
             calls (atom 0) observed (atom {}) historical (atom nil) start jobs/start!
@@ -256,8 +289,8 @@
                             (assoc :expected-owned-source
                                    (parse-uuid (get-in (sources/details! host principal handle {:name starter/name}) [:data :revision]))))
               activation (schedules/create-owned! host principal handle
-                                                   {:request-id (random-uuid) :kind "workflow"
-                                                    :cadence {:interval-ms 60000 :tz "UTC"} :execution execution})
+                                                  {:request-id (random-uuid) :kind "workflow"
+                                                   :cadence {:interval-ms 60000 :tz "UTC"} :execution execution})
               due (:schedule.activation/next-fire activation)
               next-due (java.util.Date. (+ 60000 (.getTime ^java.util.Date due)))
               attached-before (@#'occurrence-fixture/state attached)
@@ -351,27 +384,27 @@
                            (throw (ex-info "v6 native filing returned an invalid proposal identity"
                                            {:status (:status filed)})))
                          (application/with-operation!
-                          (fn [_host]
-                       (is (= 2 (:version (dispositions/disposition (requests/get-request conn rid)))))
-                       (is (str/includes? (:text (files/read-file-in @owned "wiki/Company.md")) "Later human edit"))
-                       (let [failure (try (controller/preview-reviewed! conn (:owner w) (:room w) room proposal)
-                                          nil (catch clojure.lang.ExceptionInfo error (select-keys (ex-data error) [:type :reason])))]
-                         (is (= {:type :is.simm.documents.view/refused :reason :stale-or-unselected-change} failure)
-                             "Changed live target refuses review before any adoption claim"))
-                       (is (empty? (d/datoms @conn :aevt :file.adoption/id)))
-                       (write! owned "wiki/Company.md" original-company)
-                       (let [review (controller/preview-reviewed! conn (:owner w) (:room w) room proposal)]
-                         (is (= :reviewed (:status review)))
-                         (write! owned "wiki/Company.md" (str original-company "\nLater human edit; do not overwrite.\n"))
-                         (let [failure (try (controller/adopt-reviewed! conn (:owner w) (:room w) room proposal (:revision review))
-                                            nil (catch clojure.lang.ExceptionInfo error (select-keys (ex-data error) [:type :reason])))]
-                           (is (= {:type :is.simm.documents.view/refused :reason :stale-or-unselected-change} failure)
-                               "A real earlier review cannot authorize overwriting changed current bytes"))
-                         (is (empty? (d/datoms @conn :aevt :file.adoption/id)))
-                         (write! owned "wiki/Company.md" original-company)
-                         (let [fresh (controller/preview-reviewed! conn (:owner w) (:room w) room proposal)]
-                           (is (= :reviewed (:status fresh)))
-                           (is (= :accepted (:status (controller/adopt-reviewed! conn (:owner w) (:room w) room proposal (:revision fresh)))))))))))))
+                           (fn [_host]
+                             (is (= 2 (:version (dispositions/disposition (requests/get-request conn rid)))))
+                             (is (str/includes? (:text (files/read-file-in @owned "wiki/Company.md")) "Later human edit"))
+                             (let [failure (try (controller/preview-reviewed! conn (:owner w) (:room w) room proposal)
+                                                nil (catch clojure.lang.ExceptionInfo error (select-keys (ex-data error) [:type :reason])))]
+                               (is (= {:type :is.simm.documents.view/refused :reason :stale-or-unselected-change} failure)
+                                   "Changed live target refuses review before any adoption claim"))
+                             (is (empty? (d/datoms @conn :aevt :file.adoption/id)))
+                             (write! owned "wiki/Company.md" original-company)
+                             (let [review (controller/preview-reviewed! conn (:owner w) (:room w) room proposal)]
+                               (is (= :reviewed (:status review)))
+                               (write! owned "wiki/Company.md" (str original-company "\nLater human edit; do not overwrite.\n"))
+                               (let [failure (try (controller/adopt-reviewed! conn (:owner w) (:room w) room proposal (:revision review))
+                                                  nil (catch clojure.lang.ExceptionInfo error (select-keys (ex-data error) [:type :reason])))]
+                                 (is (= {:type :is.simm.documents.view/refused :reason :stale-or-unselected-change} failure)
+                                     "A real earlier review cannot authorize overwriting changed current bytes"))
+                               (is (empty? (d/datoms @conn :aevt :file.adoption/id)))
+                               (write! owned "wiki/Company.md" original-company)
+                               (let [fresh (controller/preview-reviewed! conn (:owner w) (:room w) room proposal)]
+                                 (is (= :reviewed (:status fresh)))
+                                 (is (= :accepted (:status (controller/adopt-reviewed! conn (:owner w) (:room w) room proposal (:revision fresh)))))))))))))
                   (let [company (:text (files/read-file-in @owned "wiki/Company.md"))
                         sam (:text (files/read-file-in @owned "wiki/Sam.md"))]
                     (is (str/starts-with? company original-company) "Exact identity, metadata and existing block survive")

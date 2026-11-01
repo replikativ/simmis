@@ -20,6 +20,7 @@
             [is.simm.ops.owned-workflow-authoring :as owned-authoring]
             [is.simm.ops.owned-workflows :as owned-workflows]
             [is.simm.ops.owned-knowledge-output :as knowledge-output]
+            [is.simm.ops.owned-knowledge-submitted-recovery :as knowledge-recovery]
             [is.simm.ops.work :as work]
             [is.simm.ops.workflow-runs :as workflow-runs]
             [is.simm.ops.workflow-schedules :as workflow-schedules]
@@ -45,6 +46,7 @@
 (def cli-allowance-schema (external-schema benchmarks/cli-allowance-schema))
 (def allowance-schema (external-schema work/allowance-schema))
 (def status-schema [:map {:closed true} room-entry [:id uuid-string]])
+(def workflow-recovery-schema (external-schema knowledge-recovery/schema))
 (def workflow-output-schema [:map {:closed true} [:room uuid-string] [:id uuid-string]])
 (def benchmark-report-prepare-schema (external-schema benchmark-reports/prepare-schema))
 (def benchmark-report-publish-schema (external-schema benchmark-reports/publish-schema))
@@ -284,7 +286,7 @@
          #(let [input (reduce (fn [input field]
                                 (if (contains? input field)
                                   (update input field (fn [value] (when (string? value) (parse-uuid value)))) input))
-                              (dissoc args :room) [:request-id :worker :expected-bundle :expected-owned-source])]
+                              (dissoc args :room) [:request-id :worker :expected-bundle :expected-owned-source :request :batch :expected-claim :expected-frozen])]
             {:input input :result (workflow-runs/transport-result schema input)}))]
     (cond
       (and (map? result) (= #{:status :reason} (set (keys result)))
@@ -322,7 +324,8 @@
                   :is.simm.ops.owned-worker-admission/invalid
                   :is.simm.ops.owned-workflow-authoring/invalid
                   :is.simm.ops.owned-workflows/invalid
-                  :is.simm.ops.workflow-schedules/invalid)
+                  :is.simm.ops.workflow-schedules/invalid
+                  :is.simm.ops.owned-knowledge-submitted-recovery/invalid)
                  [400 ::owned-operation-invalid "Invalid owned workflow arguments"]
                  (:is.simm.ops.owned-workflow-admission/conflict
                   :is.simm.ops.owned-benchmark-admission/conflict
@@ -330,7 +333,10 @@
                   :is.simm.ops.owned-workflow-authoring/conflict
                   :is.simm.ops.owned-workflows/conflict
                   :is.simm.ops.workflow-schedules/conflict
-                  :is.simm.ops.workflow-schedules/legacy-recreate)
+                  :is.simm.ops.workflow-schedules/legacy-recreate
+                  :is.simm.ops.owned-knowledge-submitted-recovery/held
+                  :is.simm.ops.knowledge-failed-settlement/held
+                  :is.simm.model.knowledge-submitted-recovery/held)
                  [409 ::owned-operation-conflict "Work or source changed; inspect metadata before retrying"]
                  :is.simm.ops.owned-workflow-authoring/pending
                  [503 ::owned-save-pending "Workflow save outcome is pending; do not retry automatically"]
@@ -572,6 +578,16 @@
                                                         (-> (dissoc args :room)
                                                             (update :request-id uuid!)
                                                             (update :expected-bundle uuid!))))))))}
+    :simmis/workflow-failure-recover
+    {:kind :write :schema workflow-recovery-schema :authz {:action :merge}
+     :doc "Recover one inspected failed wiki-update batch for a fresh update. Current room read/merge authority is required; another authorized actor never becomes its original requester. Supply canonical Request/batch UUIDs and inspected claim/frozen guards. Native family, cleanup, world and resource return must be verified. A stable request-id acknowledges retries. This only requeues the exact evidence and preserves failure history; it never executes, funds, resumes a schedule, adopts files or refunds resources. Resume or start a new update separately."
+     :impl (fn [host args]
+             (checked! workflow-recovery-schema args)
+             (when-not (owned-reads/owned-host? host)
+               (ops/op-error! "Owned workflow recovery unavailable" ::owned-workflow-unavailable 503))
+             (let [input (owned-transport! knowledge-recovery/schema args)]
+               (let [reply (owned-service-result! #(knowledge-recovery/recover! host ops/*principal* (:room args) input))]
+                 (update-vals reply #(if (uuid? %) (str %) %)))))}
     :simmis/workflow-output-collect
     {:kind :write :schema workflow-output-schema :authz {:action :merge}
      :doc "Collect an existing certified wiki-workflow output into a Proposal for review. room is the canonical Simmis room UUID; id is the canonical work-request UUID returned by workflow-run, not the caller's request-id or an Attempt ID. Requires the original request author and current room read/merge authority. Idempotent collection never starts inference, changes funding, recaptures inputs or adopts files."

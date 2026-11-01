@@ -367,7 +367,7 @@
 (deftest cache-loss-recovers-from-the-owned-durable-root-only
   (doseq [change [nil [:run/actor :other] [:run/room :other] [:run/kind :task]
                   [:run/parent (random-uuid)] [:run/ended-at nil]
-                  [:run/job-core-cleanup-ack nil] [:run/job-adapter-cleanup-ack nil]]]
+                  [:run/job-core-cleanup-ack nil] [:run/job-adapter-cleanup-ack nil] [:run/family-return-ack nil]]]
     (with-completed-input
       (fn [{:keys [conn row request calls] :as fixture}]
         (let [read-run run/run]

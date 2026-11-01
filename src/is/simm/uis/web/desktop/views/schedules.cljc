@@ -91,7 +91,7 @@
                      ;; A refresh begun before this mutation cannot restore its
                      ;; stale enabled state. Reload only after mutation settles.
                      (update! #(-> % (assoc :updating (:id row) :loading? false)
-                                   (dissoc :error) (update :requests dissoc :load)
+                                   (dissoc :error :notice) (update :requests dissoc :load)
                                    (assoc-in [:requests :toggle] token)))
                      (try
                        (binding [rtc/*execution-context* ctx rtc/*spin-id* nil]
@@ -107,6 +107,44 @@
                                     (load!))
                                   (catch :default error (fail! error))))
                               fail!)))
+                       (catch :default error (fail! error))))))
+               (recover-update! [row]
+                 (ensure!)
+                 (when (and (current?) (connection/snapshot) (:failed-update row) (not (:updating (state))))
+                   (let [inspected (:failed-update row)
+                         previous (get-in (state) [:recovery-commands (:id row)])
+                         request (if (= inspected (select-keys previous (keys inspected))) previous
+                                     (assoc inspected :request-id (str (random-uuid))
+                                            :reason "Make this evidence eligible for a fresh wiki update"))
+                         token (str (random-uuid)) socket (connection/snapshot)
+                         finish! (fn [f]
+                                   (when (and (connection/current? socket) (matches? :recover token))
+                                     (update! #(-> (f %) (dissoc :updating) (update :requests dissoc :recover)))
+                                     true))
+                         fail! (fn [_]
+                                 ;; Retain the exact command for an explicit
+                                 ;; retry if its acknowledgement was lost.
+                                 (finish! #(assoc % :error "Could not confirm recovery. Check updates before trying again.")))]
+                     (update! #(-> % (assoc :updating (:id row) :loading? false)
+                                   (dissoc :error :notice) (update :requests dissoc :load)
+                                   (assoc-in [:requests :recover] token)
+                                   (assoc-in [:recovery-commands (:id row)] request)))
+                     (try
+                       (binding [rtc/*execution-context* ctx rtc/*spin-id* nil]
+                         (let [operation (workflows-remote/recover-failed-workflow-update! web/server-id (:room-id row) request)]
+                           (operation
+                            (fn [reply]
+                              (try
+                                (when-not (and (= :recovered (:status reply)) (= :fresh-update (:mode reply))
+                                               (= (:batch request) (:batch reply)) (= (:request request) (:request reply))
+                                               (false? (:dispatched? reply)) (false? (:schedule-resumed? reply))
+                                               (string? (:operation reply)) (parse-uuid (:operation reply)))
+                                  (throw (js/Error. "Invalid recovery receipt")))
+                                (when (finish! #(-> % (assoc :notice "Evidence recovered. The workflow is still paused; Resume is a separate action.")
+                                                    (update :recovery-commands dissoc (:id row))))
+                                  (load!))
+                                (catch :default error (fail! error))))
+                            fail!)))
                        (catch :default error (fail! error))))))]
          {:session-id session-id :observe observe-all!
           :index-current? #(= (:index-generation %) (generation))
@@ -115,7 +153,7 @@
                             (update! update-in [:disclosures kind]
                                      (fn [ids] (if open? (conj (set ids) id) (disj (set ids) id))))))
           :refresh #(do (load!) (binding [rtc/*execution-context* ctx] (sync/retry! (connection/snapshot))))
-          :toggle toggle!
+          :toggle toggle! :recover-update recover-update!
           :open-room (fn [room event]
                        (binding [rtc/*execution-context* ctx]
                          (when (current?)
@@ -172,16 +210,22 @@
                        (when-let [reason (:reason row)] (el/p {:role "status"} (str "Held: " (name reason))))
                        (when (:resume-blocked row)
                          (el/p {:role "status"} (case (:resume-blocked row)
-                                                 :legacy-recreate "Open the room workflow to recreate this older activation."
-                                                 :batch-recovery-required "The failed evidence batch needs recovery before this workflow can resume; adding allowance does not resolve it."
-                                                 "Admission needs reconciliation before this workflow can resume; adding allowance does not resolve it.")))
+                                                  :legacy-recreate "Open the room workflow to recreate this older activation."
+                                                  :batch-recovery-required "The failed evidence batch needs recovery before this workflow can resume; adding allowance does not resolve it."
+                                                  "Admission needs reconciliation before this workflow can resume; adding allowance does not resolve it.")))
+                       (when (:failed-update row)
+                         (el/button {:disabled (boolean (:updating? row))
+                                     :on-click (fn [_] ((:on-recover-update row) row))}
+                                    (if (:this-updating? row) "Recovering…" "Recover update")))
+                       (when (and (:recovered-update? row) (not (:enabled? row)))
+                         (el/p {:role "status"} "The failed update was recovered. Resume schedules future work."))
                        (el/button {:disabled (boolean (or (:updating? row)
                                                           (and (not (:enabled? row)) (:resume-blocked row))))
                                    :on-click (fn [_] ((:on-toggle row) row))}
                                   (if (:this-updating? row) "Updating…" (if (:enabled? row) "Pause" "Resume")))
                        (when (:on-open-room row)
                          (el/button {:on-click (fn [event] ((:on-open-room row)
-                                                           {:room/id (:room-id row) :room/name (:room-name row)} event))}
+                                                            {:room/id (:room-id row) :room/name (:room-name row)} event))}
                                     "Open room workflows"))
                        (when-let [latest (first occurrences)] (occurrence-view row latest))
                        (el/details {:class "workflow-disclosure" :open (boolean (:history-open? row))
@@ -245,7 +289,7 @@
      (let [index-ready? (= :ready (:index-status data))
            rows (mapv #(assoc % :updating? (boolean (:updating data))
                               :this-updating? (= (:id %) (:updating data))
-                              :on-toggle (:toggle actions) :on-open-run (:open-run actions)
+                              :on-toggle (:toggle actions) :on-recover-update (:recover-update actions) :on-open-run (:open-run actions)
                               :on-open-room (:open-room actions) :on-open-proposal (:open-proposal actions)
                               :history-open? (contains? (get-in data [:disclosures :history]) (:id %))
                               :on-expand (:set-expanded actions))
@@ -257,6 +301,7 @@
                        (when (or (:error data) (:stream-error data) stream-problem)
                          (el/button {:disabled (boolean (:updating data))
                                      :on-click (fn [_] ((:refresh actions)))} "Retry updates")))
+               (when-let [notice (:notice data)] (el/p {:role "status"} notice))
                (el/p {:class "workflow-note"} "Reusable code agents can invoke. Open a room’s saved workflows, or review scheduled work and its results.")
                (when-let [error (:error data)] (el/p {:role "alert"} error))
                (when-let [error (or (:stream-error data) stream-problem)] (el/p {:role "alert"} error))
@@ -280,8 +325,8 @@
                              (mmd/diagram code)))
                (for [schedule schedules]
                  (schedule-row (assoc schedule :shape (get-in data [:shapes (:id schedule)])
-                                               :code-open? (contains? (get-in data [:disclosures :code]) (:id schedule))
-                                               :on-expand (:set-expanded actions))))))))
+                                      :code-open? (contains? (get-in data [:disclosures :code]) (:id schedule))
+                                      :on-expand (:set-expanded actions))))))))
 
 #?(:cljs
    (defn render-schedules

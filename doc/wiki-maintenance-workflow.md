@@ -402,3 +402,15 @@ score. The unchanged v5 example remains available for historical comparison.
 Fresh repositories receive v6. Existing pristine older source is an explicit
 upgrade offer; customized source is preserved. Upgrading source does not migrate
 processing streams, change a model, fund work, enable a schedule or adopt outputs.
+
+
+A failed scheduled update pauses with its input batch retained. In Workflows,
+**Recover update** verifies the original execution's settlement and makes its
+evidence eligible for a fresh update. It does not rerun the workflow or add
+funding. The schedule stays paused until **Resume** is explicitly chosen. The
+same fixed operation is available to authorized MCP clients as
+`:simmis/workflow-failure-recover`; opaque Request/batch guards come from the
+inspected failure, rather than a newly constructed request. Unsupported or
+incomplete native cleanup remains held. See
+[incremental knowledge](incremental-knowledge.md#failed-submitted-update-recovery)
+for the retained evidence and recovery contract.

@@ -17,6 +17,8 @@
             [is.simm.model.access :as access]
             [is.simm.model.work-requests :as requests]
             [is.simm.model.knowledge-dispositions :as dispositions]
+            [is.simm.model.knowledge-batches :as knowledge-batches]
+            [is.simm.model.knowledge-submitted-recovery :as submitted-recovery]
             [is.simm.model.knowledge-schedule-batches :as scheduled]
             [is.simm.model.knowledge-pins :as pins]
             [is.simm.model.workflow-schedules :as schedules]
@@ -439,25 +441,25 @@
   (if (summary-inputs/declaration (get-in target [:snapshot :files]))
     (room-summary/verify-resolution! target retained)
     (let [planned (when (= :workflow (:kind target))
-                  (workflows-run/plan-source (:snapshot target)
-                                             (select-keys (:execution target) workflows-run/source-fields)))
-        policy (:selection-policy planned)
-        frozen? (contains? (:inputs planned) "/in/knowledge/manifest.edn")]
-    (when retained
-      (when-not (and policy (= (:target-revision retained) (hasch/uuid target)))
-        (owned-unavailable!))
-      (let [captured (if frozen?
-                       (knowledge-inputs/from-inputs policy (:inputs planned))
-                       (knowledge-inputs/verify-capture policy (:captured retained)))
-            selection (dissoc captured :inputs)]
-        (when-not (and (= selection (:selection retained))
-                       (if frozen?
-                         (every? nil? ((juxt :captured :publication-basis :knowledge-origin) retained))
-                         (and (:captured retained) (:publication-basis retained)
-                              (= (:execution-id captured) (get-in retained [:knowledge-origin :selection-id])))))
-          (owned-unavailable!))))
-    (when (and policy (nil? retained)) (owned-unavailable!))
-    retained)))
+                    (workflows-run/plan-source (:snapshot target)
+                                               (select-keys (:execution target) workflows-run/source-fields)))
+          policy (:selection-policy planned)
+          frozen? (contains? (:inputs planned) "/in/knowledge/manifest.edn")]
+      (when retained
+        (when-not (and policy (= (:target-revision retained) (hasch/uuid target)))
+          (owned-unavailable!))
+        (let [captured (if frozen?
+                         (knowledge-inputs/from-inputs policy (:inputs planned))
+                         (knowledge-inputs/verify-capture policy (:captured retained)))
+              selection (dissoc captured :inputs)]
+          (when-not (and (= selection (:selection retained))
+                         (if frozen?
+                           (every? nil? ((juxt :captured :publication-basis :knowledge-origin) retained))
+                           (and (:captured retained) (:publication-basis retained)
+                                (= (:execution-id captured) (get-in retained [:knowledge-origin :selection-id])))))
+            (owned-unavailable!))))
+      (when (and policy (nil? retained)) (owned-unavailable!))
+      retained)))
 
 (def ^:private batch-binding-fields
   [:schedule.occurrence/knowledge-batch :schedule.occurrence/batch-ref :schedule.occurrence/batch-revision])
@@ -932,10 +934,10 @@
           reply (if (= :held (:status collection))
                   collection
                   (owned-storage!
-                 #(discovery/prepare-batch!
-                   host principal handle
-                   {:name (:name execution) :expected-source (:expected-owned-source execution)
-                    :expected-bundle (:expected-bundle execution) :epoch (:epoch declaration)})))]
+                   #(discovery/prepare-batch!
+                     host principal handle
+                     {:name (:name execution) :expected-source (:expected-owned-source execution)
+                      :expected-bundle (:expected-bundle execution) :epoch (:epoch declaration)})))]
       (cond
         (and (= #{:status :reason :stream :batch :batch-state} (set (keys reply)))
              (= :held (:status reply)) (= :active-batch (:reason reply))
@@ -990,14 +992,14 @@
             (throw (ex-info "Daily summaries select their own exact originals" {:type ::invalid})))
         period (summary-inputs/closed-day (:schedule.occurrence/intended-at o) (get-in target [:cadence :tz]))
         prepared (prepare-owned-summary! #(room-summary/prepare! host (:principal context) (:handle context)
-                                                        room-binding period (java.util.Date.)))]
+                                                                 room-binding period (java.util.Date.)))]
     (if (= :skip (:status prepared))
       (schedules/skip-batch! conn row (:schedule.occurrence/id o) claim (:reason prepared))
       (let [planned (owned-storage! #(workflows-run/plan-source
-                                        (:snapshot target) (select-keys execution workflows-run/source-fields)))
+                                      (:snapshot target) (select-keys execution workflows-run/source-fields)))
             _ (when (= "true" (get-in planned [:workflow :params "save-transcript"]))
                 (owned-storage! #(summary-publication/publish-transcript!
-                                   host (:principal context) (:handle context) room-binding prepared)))
+                                  host (:principal context) (:handle context) room-binding prepared)))
             _ (owned-execution-ready! host target context room-binding)
             frozen (:frozen prepared)
             revision (:schedule.activation/revision row)
@@ -1184,10 +1186,10 @@
               original (owned-storage! #(reads/resolve-host-room! host (:principal context) (:handle context)))
               _ (owned-room-current! host context target original nil)
               job (room-operation/with-current!
-                   host (:principal context) (:handle context) original
-                   #(or (binding [ec/*execution-context* (:ctx (:room original))]
-                          (jobs/status (:work.request/job request)))
-                        (durable-completion (:room original) request target)))]
+                    host (:principal context) (:handle context) original
+                    #(or (binding [ec/*execution-context* (:ctx (:room original))]
+                           (jobs/status (:work.request/job request)))
+                         (durable-completion (:room original) request target)))]
           (when (and (:settled? job) (#{:completed :failed :cancelled} (:status job)))
             (if-not (= :completed (:status job))
               (do (publish-completion-target! conn row o request job (:room original) target)
@@ -1362,6 +1364,22 @@
       (owned-unavailable!))
     target))
 
+(defn- failed-update-inspection [db activation]
+  (let [occurrence (when-let [id (:schedule.activation/last-terminal-failure activation)]
+                     (schedules/occurrence-in db id))
+        request (when occurrence (requests/request-in db (:schedule.occurrence/request occurrence)))
+        bid (:work.request/knowledge-batch request)
+        batch (when bid (knowledge-batches/batch db bid))]
+    (when (and (= (:schedule.activation/id activation) (:schedule.occurrence/activation occurrence))
+               (= (:schedule.activation/revision activation) (:schedule.occurrence/revision occurrence))
+               (= (:schedule.activation/by activation) (:work.request/by request) (:knowledge.batch/by batch))
+               (= (:schedule.activation/room activation) (:work.request/room request) (:knowledge.batch/room batch))
+               (= bid (:schedule.occurrence/knowledge-batch occurrence))
+               (= (:work.request/id request) (:knowledge.batch/request batch))
+               (every? uuid? [(:work.request/id request) bid (:knowledge.batch/claim batch) (:knowledge.batch/frozen-id batch)]))
+      {:request (str (:work.request/id request)) :batch (str bid)
+       :expected-claim (str (:knowledge.batch/claim batch)) :expected-frozen (str (:knowledge.batch/frozen-id batch))})))
+
 (defn list-owned!
   "HOST human schedule metadata. No room hydration, current default,
    live source, provider preparation or execution. Legacy targets stay legacy."
@@ -1376,9 +1394,16 @@
                              (let [target (owned-control-target! control-conn original row)
                                    blocked (if (= 1 (:version target))
                                              :legacy-recreate
-                                             (schedules/resume-blocked-reason @control-conn row))]
+                                             (schedules/resume-blocked-reason @control-conn row))
+                                   inspected (failed-update-inspection @control-conn row)]
                                (cond-> (schedule-summary control-conn (:room-id original) row target)
                                  blocked (assoc :resume-blocked blocked)
+                                 (and (= :batch-recovery-required blocked) inspected
+                                      (access/can? @control-conn (:party original) :merge {:room (:room-id original)}))
+                                 (assoc :failed-update inspected)
+                                 (and inspected (submitted-recovery/recovered? @control-conn
+                                                                               (parse-uuid (:batch inspected)) (parse-uuid (:request inspected))))
+                                 (assoc :recovered-update? true)
                                  (= 2 (:version target))
                                  (assoc :source-revision (str (get-in target [:source-origin :revision])))))) rows))
             current (owned-storage! #(reads/preflight-host-read! host principal handle))]

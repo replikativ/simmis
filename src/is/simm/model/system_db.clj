@@ -43,6 +43,7 @@
             [is.simm.model.room-evidence-collections :as room-evidence-collections]
             [is.simm.model.knowledge-processing :as knowledge-processing]
             [is.simm.model.knowledge-batch-recovery :as knowledge-batch-recovery]
+            [is.simm.model.knowledge-submitted-recovery :as knowledge-submitted-recovery]
             [is.simm.model.knowledge-schedule-batches :as knowledge-schedule-batches]
             [is.simm.model.knowledge-stream-retirement :as knowledge-stream-retirement]
             [is.simm.model.file-outputs :as file-outputs]
@@ -802,7 +803,7 @@
   (merge-schemas core-schema memory-upgrades/schema work-requests/schema work-request-checkpoints/schema benchmark-resolutions/schema github-sync/schema github-push/schema github-credentials/schema personal-connections/schema git-policy/schema github-integrations/schema github-pins/schema github-proposals/schema workers/schema workflow-schedules/schema
                  file-outputs/schema file-adoptions/schema knowledge-dispositions/schema
                  knowledge-streams/schema knowledge-pins/schema knowledge-batches/schema
-                 knowledge-processing/schema knowledge-batch-recovery/schema
+                 knowledge-processing/schema knowledge-batch-recovery/schema knowledge-submitted-recovery/schema
                  knowledge-schedule-batches/schema knowledge-stream-retirement/schema room-evidence-collections/schema))
 
 ;; =============================================================================

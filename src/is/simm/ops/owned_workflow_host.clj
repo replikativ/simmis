@@ -16,7 +16,7 @@
    :simmis/workflow-check :read :simmis/workflow-schedule-list :read
    :simmis/workflow-write :write
    :simmis/workflow-run :merge :simmis/benchmark :merge :simmis/cli-benchmark :merge
-   :simmis/workflow-output-collect :merge
+   :simmis/workflow-output-collect :merge :simmis/workflow-failure-recover :merge
    :simmis/workflow-schedule-create :merge :simmis/workflow-schedule-set-enabled :merge
    :simmis/work-status :merge
    :simmis/local-worker-workflow :write :simmis/local-worker-benchmark :write})

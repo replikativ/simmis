@@ -6,6 +6,7 @@
             [dvergr.scheduler.cron :as cron]
             [hasch.core :as hasch]
             [is.simm.model.knowledge-dispositions :as dispositions]
+            [is.simm.model.knowledge-submitted-recovery :as submitted-recovery]
             [is.simm.model.knowledge-publication :as publication]
             [is.simm.model.knowledge-scope :as scope]
             [is.simm.model.work-requests :as requests]
@@ -241,10 +242,12 @@
                  (= (:schedule.activation/by row) (:knowledge.batch/by batch))
                  (= (:schedule.activation/room row) (:knowledge.batch/room batch))
                  stream)
-          ;; Submitted-failure recovery has no admitted transition yet. A
-          ;; changed phase or stripped stream pointer is not a recovery receipt.
-          (if (= bid (:knowledge.stream/active-batch stream))
-            :batch-recovery-required :reconciliation-required)
+          ;; A changed phase or stripped stream pointer is insufficient. Only
+          ;; the exact complete failed-update receipt permits a separate Resume.
+          (cond
+            (submitted-recovery/recovered? db bid (:schedule.occurrence/request failed)) nil
+            (= bid (:knowledge.stream/active-batch stream)) :batch-recovery-required
+            :else :reconciliation-required)
           :reconciliation-required)))))
 
 (defn- resume-managed-tx [db id expected]
@@ -706,7 +709,7 @@
    preserve admission; unsupported targets may only disable their own slot."
   [conn activation oid claim reason]
   (when-not (#{:interrupted :restart :owned-dispatch-unavailable
-                    :period-capacity :period-byte-limit :source-scan-limit :unsupported-original} reason)
+               :period-capacity :period-byte-limit :source-scan-limit :unsupported-original} reason)
     (throw (ex-info "Invalid owned interruption reason" {:type ::conflict})))
   (d/transact conn [[:db.fn/call interrupt-owned-tx (select-keys activation owned-admission-identity) oid claim reason]]))
 
