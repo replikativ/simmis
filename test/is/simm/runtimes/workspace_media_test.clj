@@ -81,6 +81,29 @@
        (repo/write! owned path (.getBytes "replacement video fixture" "UTF-8"))
        (is (= 409 (:status (media/handle request))))))))
 
+(deftest pdf-preview-is-metadata-only-and-uses-the-owned-range-route
+  (with-fixture
+   (fn [{:keys [request owned]}]
+     (let [path "documents/Contract.PDF"
+           _ (repo/write! owned path (.getBytes "%PDF-1.4\nfixture" "UTF-8"))
+           metadata (with-redefs [content/read-by-id (fn [& _] (throw (ex-info "Opening a PDF must not read its body" {})))]
+                      (files/read-file-in @owned path))
+           request (-> request
+                       (assoc-in [:query-params "path"] path)
+                       (assoc-in [:query-params "content"] (str (get-in metadata [:entry :content]))))
+           response (media/handle request)]
+       (is (= :pdf (:kind metadata)))
+       (is (= "application/pdf" (get-in metadata [:media :content-type])))
+       (is (= 200 (:status response)))
+       (is (= "application/pdf" (get-in response [:headers "Content-Type"])))
+       (is (= "inline; filename=\"document.pdf\"; filename*=UTF-8''Contract.PDF"
+              (get-in response [:headers "Content-Disposition"])))
+       (is (= "%PDF-1.4\nfixture" (body-text response)))
+       (is (= 206 (:status (media/handle (assoc-in request [:headers "range"] "bytes=0-7")))))
+       (is (= 401 (:status (media/handle (dissoc request :test-party)))))
+       (repo/write! owned path (.getBytes "%PDF-1.4\nchanged" "UTF-8"))
+       (is (= 409 (:status (media/handle request))))))))
+
 (deftest exact-bytes-ranges-and-cache-hits-still-require-current-authority
   (with-fixture
    (fn [{:keys [request conn w resource]}]
