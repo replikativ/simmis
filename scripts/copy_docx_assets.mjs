@@ -1,0 +1,12 @@
+import {copyFileSync, mkdirSync} from 'node:fs';
+import {createRequire} from 'node:module';
+import {dirname, join} from 'node:path';
+const require = createRequire(import.meta.url);
+const target = new URL('../public/vendor/docx/', import.meta.url);
+mkdirSync(target, {recursive: true});
+const docx = dirname(require.resolve('docx-preview'));
+const zip = dirname(require.resolve('jszip/package.json'));
+copyFileSync(join(docx, 'docx-preview.min.js'), new URL('docx-preview.min.js', target));
+copyFileSync(join(docx, '..', 'LICENSE'), new URL('docx-preview.LICENSE', target));
+copyFileSync(join(zip, 'dist/jszip.min.js'), new URL('jszip.min.js', target));
+copyFileSync(join(zip, 'LICENSE.markdown'), new URL('jszip.LICENSE', target));

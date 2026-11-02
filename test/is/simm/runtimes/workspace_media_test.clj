@@ -10,6 +10,9 @@
             [is.simm.documents.capture-views :as capture-views]
             [is.simm.documents.capture-views-test :as archive-data]
             [is.simm.documents.files :as files]
+            [is.simm.documents.docx-test :as docx-fixtures]
+            [is.simm.documents.office :as office]
+            [is.simm.media.office :as office-package]
             [is.simm.documents.markdown :as markdown]
             [is.simm.ops.owned-mcp-test :as fixture]
             [is.simm.ops.owned-reads :as reads]
@@ -103,6 +106,43 @@
        (is (= 401 (:status (media/handle (dissoc request :test-party)))))
        (repo/write! owned path (.getBytes "%PDF-1.4\nchanged" "UTF-8"))
        (is (= 409 (:status (media/handle request))))))))
+
+(deftest docx-stays-an-office-document-with-validated-owned-preview-bytes
+  (with-fixture
+   (fn [{:keys [request owned]}]
+     (let [path "documents/Preview.docx"
+           bytes (office-package/write-parts (docx-fixtures/package-parts "<w:p><w:r><w:t>Preview</w:t></w:r></w:p>"))
+           _ (repo/write! owned path bytes)
+           metadata (with-redefs [content/read-by-id (fn [& _] (throw (ex-info "DOCX opening must remain metadata-only" {})))]
+                      (files/read-file-in @owned path))
+           request (-> request (assoc-in [:query-params "path"] path)
+                       (assoc-in [:query-params "content"] (str (get-in metadata [:entry :content]))))
+           response (media/handle request)]
+       (is (= :office (:kind metadata)))
+       (is (nil? (:media metadata)) "Office editor must not be bypassed by media rendering")
+       (is (= 200 (:status response)))
+       (is (= "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              (get-in response [:headers "Content-Type"])))
+       (let [buffer ^ByteBuffer (:body response) actual (byte-array (.remaining buffer))]
+         (.get buffer actual)
+         (is (java.util.Arrays/equals (office/preview-bytes-in @owned path (:entry metadata)) actual)))
+       (is (= 206 (:status (media/handle (assoc-in request [:headers "range"] "bytes=0-7")))))
+       (is (= 401 (:status (media/handle (dissoc request :test-party)))))))))
+
+(deftest docx-head-and-cache-hits-do-not-bypass-package-validation
+  (with-fixture
+   (fn [{:keys [request owned]}]
+     (let [bytes (.getBytes "not a DOCX" "UTF-8")
+           _ (repo/write! owned "bad.png" bytes)
+           _ (repo/write! owned "bad.docx" bytes)
+           entry (files/entry @owned "bad.docx")
+           request (assoc-in request [:query-params "content"] (str (:content entry)))
+           png (assoc-in request [:query-params "path"] "bad.png")
+           docx (assoc-in request [:query-params "path"] "bad.docx")]
+       (is (= 200 (:status (media/handle png))) "same bytes may already be in the raw media cache")
+       (is (= 409 (:status (media/handle (assoc docx :request-method :head)))))
+       (is (= 409 (:status (media/handle docx))))
+       (is (= 409 (:status (media/handle (assoc-in docx [:headers "range"] "bytes=0-1")))))))))
 
 (deftest exact-bytes-ranges-and-cache-hits-still-require-current-authority
   (with-fixture

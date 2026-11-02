@@ -422,6 +422,36 @@ survive edits. Evaluate an optional human editor adapter against preservation,
 visual fidelity, licensing and deployment cost; do not silently convert Office
 files into Markdown or deploy a full office service as part of this prototype.
 
+### Word preview and selective corrections
+
+Opening a `.docx` shows an approximate read-only layout using pinned
+`docx-preview` 0.4.1 and JSZip 3.10.2. Headers, footnotes, numbering and tables
+can render, but pagination, fields and review markup can differ from Word.
+**Text and corrections** opens the existing saved-document text editor;
+**Advanced XML** edits individual package parts. Neither preview HTML nor CSS
+is serialized back into the document. Untouched part payloads survive selective
+corrections; the saved DOCX and its ordinary download remain authoritative.
+
+The Spindel foreign element owns its frame, abort controller, message listener
+and deadline. It transfers bounded bytes to a script-only sandboxed iframe
+with an opaque origin. The frame receives no credentials or room handles, has
+no network access, disables HTML altChunks, and removes navigable external
+links before inserting rendered content. Detaching or losing authorization
+removes its resources. Only a same-owner, same-room, same-target revision
+refresh may retain the prior preview until replacement is ready.
+
+The owned workspace-media endpoint rechecks current authority and revision,
+validates ZIP inflation and all XML parts, then constructs a deterministic
+preview-only ZIP from validated payloads. Browser XML relationships must target
+validated `.xml` paths. The derived response has its own ETag and range length;
+HEAD also validates this representation. This avoids forwarding ambiguous ZIP
+central-directory metadata to a different parser. Limits are 8 MiB source and
+preview output, 1,000 entries, 4 MiB per inflated part, 24 MiB total inflation,
+and aggregate XML complexity limits. Nonempty ZIP directory entries are refused.
+The parent independently bounds streamed preview bytes before transfer. Vendor
+assets and licenses are copied locally by the CSS/release build; no CDN or
+external document service is involved.
+
 Meeting/screen transcription, broader learning loops, mobile clients and
 simulation remain on the overarching agenda. They consume these same
 source/proposal/workflow interfaces rather than blocking this milestone.

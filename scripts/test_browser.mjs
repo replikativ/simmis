@@ -8,6 +8,9 @@ import {once} from 'node:events';
 import {fileURLToPath} from 'node:url';
 
 const root = fileURLToPath(new URL('../target/browser-tests/', import.meta.url));
+const publicRoot = fileURLToPath(new URL('../public/', import.meta.url));
+const docxAssets = new Set(['/docx-preview.html', '/docx-preview-frame.js',
+  '/vendor/docx/jszip.min.js', '/vendor/docx/docx-preview.min.js']);
 let browser, browserClosed, socket, profile;
 let browserKillSent = false;
 let browserReceipt = '';
@@ -17,8 +20,10 @@ const pending = new Map();
 const abort = new AbortController();
 const server = createServer(async (req, res) => {
   try {
-    const path = resolve(root, '.' + decodeURIComponent(new URL(req.url, 'http://localhost').pathname));
-    if (!path.startsWith(root.endsWith(sep) ? root : root + sep)) throw Error('Invalid path');
+    const pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+    const base = docxAssets.has(pathname) ? publicRoot : root;
+    const path = resolve(base, '.' + pathname);
+    if (!path.startsWith(base.endsWith(sep) ? base : base + sep)) throw Error('Invalid path');
     const data = await readFile(path);
     res.writeHead(200, {'Content-Type': extname(path) === '.js' ? 'application/javascript' : 'text/html'});
     res.end(data);

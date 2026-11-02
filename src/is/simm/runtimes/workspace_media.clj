@@ -2,9 +2,11 @@
   "Read-only media from the currently authorized canonical room workspace.
    Content IDs are preconditions, never capabilities."
   (:require [clojure.string :as str]
+            [hasch.core :as hasch]
             [dvergr.runtime.preparation :as preparation]
             [geschichte.content :as content]
             [is.simm.documents.files :as files]
+            [is.simm.documents.office :as office]
             [is.simm.documents.media-range :as ranges]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-workspace :as owned]
@@ -26,10 +28,14 @@
 
 (defn response-in
   "Internal transport projection under an already admitted App/Room extent.
-   HEAD and unsatisfiable ranges do not materialize content."
+   Ordinary media HEAD/range refusals avoid materialization. DOCX previews
+   normalize the validated ZIP first, so all responses describe that copy."
   [resource binding path expected-content expected-target request]
   (let [metadata (metadata! binding path expected-content expected-target)
-        size (get-in metadata [:entry :size]) etag (str "\"" expected-content "\"")
+        ;; Browser and Java ZIP readers must consume the same validated inventory.
+        preview (when (= :docx (:kind metadata))
+                  (office/preview-bytes-in (:db binding) path (:entry metadata)))
+        size (if preview (alength ^bytes preview) (get-in metadata [:entry :size])) etag (str "\"" (if preview (hasch/uuid preview) expected-content) "\"")
         {:keys [status offset length content-range]}
         (ranges/plan size (:request-method request) (get-in request [:headers "range"])
                      (get-in request [:headers "if-range"]) etag)
@@ -49,9 +55,11 @@
                                   (str/replace "*" "%2A")))))]
     {:status status :headers headers
      :body (when (and (not= :head (:request-method request)) (not= 416 status))
-             (cache/slice (cache/materialize! resource expected-content size
-                                              #(content/copy-by-id! (:conn binding) expected-content %))
-                          offset length))}))
+             (if preview
+               (java.nio.ByteBuffer/wrap ^bytes preview (int offset) (int length))
+               (cache/slice (cache/materialize! resource expected-content size
+                                                #(content/copy-by-id! (:conn binding) expected-content %))
+                            offset length)))}))
 
 (defn- serve! [host principal room-handle path expected-content expected-target request]
   (let [resolved (reads/resolve-host-read-room! host principal room-handle)

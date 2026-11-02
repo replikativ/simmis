@@ -9208,6 +9208,13 @@ body.tab-dragging .column-drop-zone {
 .memory-detail { min-width: 0; }
 .memory-pdf-viewer { display: block; width: 100%; height: calc(100vh - 14rem); min-height: 24rem; border: 1px solid var(--mono-border); border-radius: 4px; }
 .memory-pdf-open { display: inline-block; margin: 8px 16px 8px 0; }
+.memory-docx-preview { display: block; }
+.docx-preview-status { color: inherit; opacity: .75; font-size: 12px; padding: 6px 0; }
+.docx-preview-body { position: relative; min-height: 24rem; }
+.docx-preview-frame { display: block; width: 100%; height: calc(100vh - 17rem); min-height: 24rem; border: 1px solid var(--mono-border); border-radius: 4px; }
+.docx-preview-pending { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
+.office-edit-details { margin-top: 12px; }
+.office-edit-details > summary { color: inherit; cursor: pointer; padding: 6px 0; }
 .memory-detail h3 { overflow-wrap: anywhere; }
 .memory-note, .memory-properties, .memory-outline small, .memory-source-region small { font-size: 12px; opacity: .75; }
 .office-mode-controls { display: flex; gap: 6px; margin-bottom: 10px; }

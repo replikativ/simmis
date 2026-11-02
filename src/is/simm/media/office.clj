@@ -143,7 +143,13 @@
           (when (>= n entry-cap)
             (fail! :too-many-entries (str "archive has more than " entry-cap " entries")))
           (if (.isDirectory e)
-            (do (safe-entry-name (.getName e)) (recur acc (inc n) total))
+            (do
+              (safe-entry-name (.getName e))
+              ;; getNextEntry otherwise silently drains directory payloads,
+              ;; bypassing every inflation cap in the file branch below.
+              (when-not (neg? (.read zis))
+                (fail! :directory-data "Archive directories must not contain data"))
+              (recur acc (inc n) total))
             (let [nm (safe-entry-name (.getName e))
                   _ (when (contains? acc nm) (fail! :duplicate-entry "Archive repeats a part name"))
                   buf (byte-array 65536)

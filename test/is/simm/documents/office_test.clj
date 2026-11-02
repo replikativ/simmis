@@ -15,6 +15,53 @@
 (defn- encoded [bytes] (.encodeToString (Base64/getEncoder) bytes))
 (defn- bytes-of [s] (.getBytes ^String s "UTF-8"))
 
+(deftest browser-preview-validates-and-normalizes-without-changing-source
+  (let [room (discourse/make-room {:id (keyword (str "word-preview-" (random-uuid))) :store (memory/make)})
+        parts (docx-fixtures/package-parts "<w:p><w:r><w:t>Preview &amp; corrections</w:t></w:r></w:p>")
+        original (office/write-parts parts)]
+    (try
+      (workspace/ensure-workspace! room)
+      (let [saved (files/save-file! room {:path "preview.docx" :expected nil :base64 (encoded original)})
+            db (files/with-workspace room deref)]
+        (let [preview (documents/preview-bytes-in db "preview.docx" (:entry saved))]
+          (is (= (set (keys parts)) (set (keys (office/read-parts preview)))))
+          (doseq [[name data] parts]
+            (is (Arrays/equals data (get (office/read-parts preview) name))))
+          (is (Arrays/equals preview (documents/preview-bytes-in db "preview.docx" (:entry saved)))))
+        (is (thrown? Exception (documents/preview-bytes-in db "preview.docx" (assoc (:entry saved) :content (random-uuid))))))
+      ;; A central-directory size claim can disagree with the local stream.
+      ;; It must never reach JSZip: only the newly generated inventory does.
+      (let [crafted (aclone original)
+            offset (first (filter #(and (= 0x50 (bit-and 255 (aget crafted %)))
+                                        (= 0x4b (bit-and 255 (aget crafted (+ % 1)))))
+                                  (filter #(and (= 1 (aget crafted (+ % 2)))
+                                                (= 2 (aget crafted (+ % 3))))
+                                          (range (- (alength crafted) 46)))))]
+        (is (some? offset))
+        (doseq [i (range 4)] (aset-byte crafted (+ offset 24 i) (unchecked-byte 127)))
+        (let [saved (files/save-file! room {:path "central-mismatch.docx" :expected nil :base64 (encoded crafted)})
+              db (files/with-workspace room deref)
+              preview (documents/preview-bytes-in db "central-mismatch.docx" (:entry saved))]
+          (is (not (Arrays/equals crafted preview)))
+          (is (Arrays/equals crafted (files/source-bytes db "central-mismatch.docx" (:entry saved))))
+          (doseq [[name data] parts]
+            (is (Arrays/equals data (get (office/read-parts preview) name))))))
+      (doseq [name ["word/./styles.xml" "word//styles.xml" "word\\styles.xml"]]
+        (is (thrown? Exception (@#'documents/preview-package {name (bytes-of "<s/>")}))))
+      (let [parts (assoc parts
+                         "word/styles.bin" (bytes-of "<!DOCTYPE s [<!ENTITY x 'no'>]><s>&x;</s>")
+                         "word/_rels/document.xml.rels"
+                         (bytes-of "<Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'><Relationship Id='s' Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles' Target='styles.bin'/></Relationships>"))
+            saved (files/save-file! room {:path "xml-alias.docx" :expected nil :base64 (encoded (office/write-parts parts))})]
+        (is (thrown? Exception (documents/preview-bytes-in (files/with-workspace room deref) "xml-alias.docx" (:entry saved)))))
+      (doseq [[name data] [["word/styles.xml" (bytes-of "<!DOCTYPE s [<!ENTITY x 'no'>]><s>&x;</s>")]
+                           ["word/numbering.xml" (bytes-of (str "<n>" (apply str (repeat 30001 "<i/>")) "</n>"))]]]
+        (let [bytes (office/write-parts (assoc parts name data))
+              path (str "invalid-" (last (str/split name #"/")) ".docx")
+              saved (files/save-file! room {:path path :expected nil :base64 (encoded bytes)})]
+          (is (thrown? Exception (documents/preview-bytes-in (files/with-workspace room deref) path (:entry saved))))))
+      (finally (discourse/close-room! room)))))
+
 (deftest whole-text-corrections-use-current-package-tokens-and-retain-noop-bytes
   (let [room (discourse/make-room {:id (keyword (str "word-correction-" (random-uuid))) :store (memory/make)})
         parts (-> (docx-fixtures/package-parts "<w:p><w:r><w:t> A &amp; B </w:t><w:t>Second</w:t></w:r></w:p>")
@@ -116,3 +163,11 @@
         (is (nil? (:text opened)))
         (is (nil? (:part opened))))
       (finally (discourse/close-room! room)))))
+
+(deftest directory-payloads-cannot-bypass-inflation-limits
+  (let [archive (office/write-parts (array-map "payload/" (byte-array (* 2 1024 1024))
+                                              "next.xml" (bytes-of "<x/>")))]
+    (is (= :directory-data
+           (try (office/read-parts archive {:max-entry-uncompressed 4 :max-total-uncompressed 8})
+                nil
+                (catch clojure.lang.ExceptionInfo e (:error (ex-data e))))))))
