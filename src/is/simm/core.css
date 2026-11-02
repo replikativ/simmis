@@ -9206,6 +9206,8 @@ body.tab-dragging .column-drop-zone {
 .memory-navigation .memory-tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .memory-navigation .memory-kind-knowledge .memory-file-kind { color: var(--mono-text-secondary); }
 .memory-detail { min-width: 0; }
+.memory-pdf-viewer { display: block; width: 100%; height: calc(100vh - 14rem); min-height: 24rem; border: 1px solid var(--mono-border); border-radius: 4px; }
+.memory-pdf-open { display: inline-block; margin: 8px 16px 8px 0; }
 .memory-detail h3 { overflow-wrap: anywhere; }
 .memory-note, .memory-properties, .memory-outline small, .memory-source-region small { font-size: 12px; opacity: .75; }
 .office-mode-controls { display: flex; gap: 6px; margin-bottom: 10px; }

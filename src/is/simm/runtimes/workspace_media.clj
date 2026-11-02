@@ -1,7 +1,8 @@
 (ns is.simm.runtimes.workspace-media
   "Read-only media from the currently authorized canonical room workspace.
    Content IDs are preconditions, never capabilities."
-  (:require [dvergr.runtime.preparation :as preparation]
+  (:require [clojure.string :as str]
+            [dvergr.runtime.preparation :as preparation]
             [geschichte.content :as content]
             [is.simm.documents.files :as files]
             [is.simm.documents.media-range :as ranges]
@@ -38,7 +39,14 @@
                          "X-Content-Type-Options" "nosniff"
                          "Content-Security-Policy" "sandbox"
                          "Referrer-Policy" "no-referrer"}
-                  content-range (assoc "Content-Range" content-range))]
+                  content-range (assoc "Content-Range" content-range)
+                  (= :pdf (:kind metadata))
+                  (assoc "Content-Disposition"
+                         (str "inline; filename=\"document.pdf\"; filename*=UTF-8''"
+                              (-> (last (str/split path #"/"))
+                                  (java.net.URLEncoder/encode "UTF-8")
+                                  (str/replace "+" "%20")
+                                  (str/replace "*" "%2A")))))]
     {:status status :headers headers
      :body (when (and (not= :head (:request-method request)) (not= 416 status))
              (cache/slice (cache/materialize! resource expected-content size
