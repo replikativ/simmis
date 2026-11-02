@@ -9267,6 +9267,14 @@ body.tab-dragging .column-drop-zone {
 .memory-document-toolbar button:disabled { opacity: .35; cursor: default; }
 .memory-document-toolbar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .memory-document-toolbar svg { width: 16px; height: 16px; }
+.memory-link-actions { position: fixed; z-index: 60; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; max-width: min(360px, calc(100vw - 16px)); padding: 5px; background: var(--mono-bg-elevated, #202124); color: var(--mono-text-primary); border: 1px solid var(--mono-border); border-radius: var(--radius-md); box-shadow: 0 4px 16px #0004; font-size: 12px; }
+.memory-link-actions button, .memory-link-actions input { font: inherit; color: inherit; border: 1px solid var(--mono-border); border-radius: var(--radius-sm); background: transparent; padding: 4px 7px; }
+.memory-link-actions button { cursor: pointer; }
+.memory-link-actions button:hover { background: var(--mono-bg-overlay); }
+.memory-link-actions button:disabled { opacity: .4; cursor: default; }
+.memory-link-actions :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.memory-link-actions input { min-width: 100px; width: 210px; max-width: 100%; }
+.memory-link-actions [role=status] { color: var(--mono-text-secondary); }
 .memory-semantic-block[data-active-block], .memory-continuous-region[data-active-block] { border-left-color: var(--accent); }
 .memory-semantic-block { border-left: 2px solid transparent; padding-left: 10px; margin: 4px 0; }
 .memory-semantic-block:hover, .memory-semantic-block:focus-within { border-left-color: var(--border-color); }
