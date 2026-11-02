@@ -4,6 +4,7 @@
             [is.simm.documents.workflow-links :as workflow-links]
             [is.simm.ops.workflows :as workflows]
             [is.simm.starter.wiki-maintenance :as wiki]
+            [is.simm.starter.evidence-check :as evidence]
             [is.simm.starter.conversation-digest :as digest]
             [is.simm.starter.daily-room-summary :as daily]))
 
@@ -12,10 +13,11 @@
    choose a model, execute, allocate resources or activate a schedule."
   [name]
   (case name
+    "evidence-check" {:name name :version evidence/version :files (evidence/source)}
     "maintain-wiki" {:name name :version wiki/version :files (wiki/source)}
     "summarize-room" {:name name :version 1 :files (digest/source)}
     "summarize-room-daily" {:name name :version daily/version :files (daily/source)}
-    (throw (ex-info "Choose maintain-wiki, summarize-room or summarize-room-daily" {:type ::unknown-starter}))))
+    (throw (ex-info "Choose evidence-check, maintain-wiki, summarize-room or summarize-room-daily" {:type ::unknown-starter}))))
 
 (defn inspect-files
   "Inspect the supplied relative file/text map only. Does not read a Room,
@@ -40,3 +42,15 @@
    :run (workflow-links/route {:room (str room) :workflow name :action :run})
    :schedule (workflow-links/route {:room (str room) :workflow name :action :schedule})
    :benchmark (workflow-links/route {:room (str room) :workflow name :action :benchmark})})
+
+(def docs
+  '{check-files [([files]) "Inspect a relative workflow file/text map without executing code, reading saved source or granting launch authority. Returns separate ordinary-program and benchmark readiness."
+                 [:=> [:cat [:map-of :string :string]] :map]]
+    starter [([name]) "Read an editable shipped program as {:name :version :files}. Names: evidence-check (generic task and synthetic benchmark example), maintain-wiki, summarize-room, summarize-room-daily. Does not install or execute."
+             [:=> [:cat [:enum "evidence-check" "maintain-wiki" "summarize-room" "summarize-room-daily"]] :map]]
+    action-links [([name]) "Room-scoped confirmation links for an existing saved workflow: Run once, Schedule and Benchmark. Merge proposed source first. No execution, scheduling or funding."
+                  [:=> [:cat :string] :map]]
+    schedules [([]) "List legacy agent schedules in this room as {:id :description}. Saved workflows are files under workflows/<name>/; these schedules are not workflow source."
+               [:=> :cat [:vector :map]]]
+    set-shape! [([schedule-id mermaid]) "Set a Mermaid overview for an existing legacy schedule owned by this room. This does not define workflow code. For saved workflows, write diagram.mmd beside workflow.edn."
+                [:=> [:cat :string :string] :map]]})
