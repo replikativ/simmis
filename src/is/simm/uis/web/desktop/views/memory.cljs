@@ -833,7 +833,12 @@
                                                     (case kind
                                                       :image (el/img {:src url :alt path :style {:max-width "100%" :max-height "70vh" :object-fit "contain"}})
                                                       :video (el/video {:src url :controls true :preload "metadata" :style {:max-width "100%" :max-height "70vh"}})
-                                                      :audio (el/audio {:src url :controls true :preload "metadata"}))
+                                                      :audio (el/audio {:src url :controls true :preload "metadata"})
+                                                      :pdf (el/element :iframe {:src url :title (str "PDF · " (last (str/split path #"/")))
+                                                                               :class "memory-pdf-viewer"}))
+                                                    (when (= :pdf kind)
+                                                      (el/a {:href url :target "_blank" :rel "noopener noreferrer"
+                                                             :class "memory-pdf-open"} "Open PDF in new tab"))
                                                     (el/a {:href url :download (last (str/split path #"/"))} "Download original"))
                                             (el/p {:class "memory-note"} "Reopen this media file in the current workspace.")))
                                         office?

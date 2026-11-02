@@ -8,6 +8,8 @@
   (is (= :image (media/kind "images/Future.JPG")))
   (is (= :video (media/kind "capture/recording.mp4")))
   (is (= "audio/ogg" (media/content-type "meeting.ogg")))
+  (is (= :pdf (media/kind "documents/Contract.PDF")))
+  (is (= "application/pdf" (media/content-type "documents/Contract.PDF")))
   (is (nil? (media/kind "diagram.svg")))
   (is (nil? (media/kind "page.html")))
   (is (nil? (media/kind "file.mp4?other"))))

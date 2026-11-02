@@ -8,7 +8,8 @@
    "gif" [:image "image/gif"] "webp" [:image "image/webp"]
    "mp4" [:video "video/mp4"] "webm" [:video "video/webm"] "ogv" [:video "video/ogg"]
    "mp3" [:audio "audio/mpeg"] "m4a" [:audio "audio/mp4"] "ogg" [:audio "audio/ogg"]
-   "wav" [:audio "audio/wav"] "flac" [:audio "audio/flac"]})
+   "wav" [:audio "audio/wav"] "flac" [:audio "audio/flac"]
+   "pdf" [:pdf "application/pdf"]})
 
 (defn format-of [path]
   (when (string? path)
