@@ -120,7 +120,7 @@
   (let [{:keys [team ids]} (workflow/candidates
                             {:models [model] :profile "developer"
                              :budget-dollars (/ (:budget-microdollars limits) 1000000.0)
-                             :prompt "Complete the task in this isolated workspace. Put deliverables under /out. You cannot publish externally or merge into the parent room."})
+                             :prompt work-sandbox/candidate-prompt})
         team (work-sandbox/restrict-team team)
         id (first ids)
         agent (get-in team [:roster/agents id])

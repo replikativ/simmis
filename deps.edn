@@ -341,7 +341,9 @@
         ;; 0.1.384 retains dispatch accounting and native cleanup obligations,
         ;; seals structural Run families, and records positive physical-return
         ;; witnesses before a failed wiki update can be recovered.
-        org.replikativ/dvergr {:mvn/version "0.1.384"
+        ;; 0.1.386 shares the caller-owned, bounded checker interpreter with
+        ;; catalog evaluations; Simmis retains its stricter result policy.
+        org.replikativ/dvergr {:mvn/version "0.1.386"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.

@@ -369,6 +369,12 @@ prevent authoring a workflow checker, but the exact saved source still requires
 operator admission before evaluation. An optimized task remains runnable
 without its optional evaluation pack.
 
+Checker interpretation uses Dvergr's caller-owned bounded executor. Simmis
+keeps its stricter nonempty check-map, capture and operator-admission policy.
+Verifier and calibration setup identities include the effective executor limits;
+new grading policy does not rewrite historical Attempts or Scorecards. A timeout
+is cooperative: physical execution remains owned until the checker exits.
+
 To measure that workflow, an installation operator with current room read/merge
 authority can use the separate bounded benchmark control.
 

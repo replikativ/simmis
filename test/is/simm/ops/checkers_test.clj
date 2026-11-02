@@ -234,3 +234,15 @@
       (is (= :evaluation (:allocation-scope error)))
       (is (= limit (:limit-bytes error)))
       (is (> (:allocated-bytes error) limit)))))
+
+(deftest shared-executor-keeps-the-apps-strict-verdict-contract
+  (is (thrown? clojure.lang.ExceptionInfo
+               (checkers/run-checker "(ns c) (defn check [_] {:checks {} :reward 1})" {})))
+  (is (= {:checks {:correct? true} :reward 1.0}
+         (checkers/run-checker
+          "(ns c) (defn check [_] {:checks {:correct? true} :reward 1 :explanation \"Extra host-catalog fields are not app grading authority\"})"
+          {})))
+  (let [ref (evaluation/evaluator-ref (checkers/evaluator {:name "identity" :id (random-uuid) :definition {}}))]
+    (is (= checkers/executor-policy (get-in ref [:verifier/basis :checker-executor])))
+    (is (= 1 (get-in ref [:verifier/basis :checker-executor :limits :min-checks])))
+    (is (= 100 (get-in ref [:verifier/basis :checker-executor :limits :max-checks])))))

@@ -64,6 +64,23 @@
   (with-redefs [workflow/candidates candidates runner/runtime-identity (constantly {:libraries {}})]
     (benchmarks/prepare (snapshot files) request)))
 
+(deftest ordinary-and-benchmarked-work-use-the-same-worker-definition
+  ;; Construct the real candidates through both host entrypoints, replacing
+  ;; only model admission. No provider request or checker execution is needed.
+  (with-redefs [workflow/admit-model! (fn [_ model] {:model model :provider :openai})
+                runner/runtime-identity (constantly {:libraries {}})]
+    (let [request (input fixture/fixture)
+          ordinary (work/prepare {:task "Read /docs/input.md and write /out/result.md"
+                                  :model "fixture-model" :limits (:limits request)
+                                  :request-id (random-uuid)})
+          benchmark (benchmarks/prepare (snapshot fixture/fixture) request)
+          worker (first (roster/agents (:team ordinary)))
+          measured (first (roster/agents (get-in benchmark [:plan :team])))]
+      (is (string? (:agent/prompt worker)))
+      (is (= (:agent/prompt worker) (:agent/prompt measured)))
+      (doseq [field [:agent/tools :agent/model-policy :agent/program :agent/sandbox]]
+        (is (= (get worker field) (get measured field)) (str field))))))
+
 (deftest declared-dataset-splits-are-enforced-and-frozen-in-experiment-metadata
   (let [files (assoc fixture/fixture
                      "cases/a/gold.edn" "{:expected 1}"

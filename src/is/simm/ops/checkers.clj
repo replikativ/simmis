@@ -5,77 +5,45 @@
   (:require [clojure.string :as str]
             [dvergr.agent.evaluation :as evaluation]
             [dvergr.catalog.room :as catalog]
+            [dvergr.catalog.checker :as checker]
             [dvergr.catalog.workspace :as workspace]
             [dvergr.rooms.files :as room-files]
             [dvergr.sandbox :as sandbox]
             [is.simm.ops.knowledge-workspace :as knowledge-workspace]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
-            [is.simm.ops.wiki-scoring :as wiki-scoring]
-            [sci.core :as sci])
-  (:import [java.util.concurrent.atomic AtomicBoolean]))
+            [is.simm.ops.wiki-scoring :as wiki-scoring]))
 
 (def policy
-  {:version 1 :timeout-ms 20000 :max-allocated-bytes 134217728
-   :max-checks 100 :max-check-key-length 100 :capture "/out" :max-files 100 :max-characters 2000000})
+  ;; App capture and strict grading policy remain separate from executor
+  ;; ownership. Include the complete effective policy in historical identities.
+  (merge checker/policy
+         {:version 2 :min-checks 1 :max-checks 100 :max-check-key-length 100
+          :capture "/out" :max-files 100 :max-characters 2000000}))
+
+(def executor-policy
+  {:id checker/policy-id
+   :limits (assoc (select-keys policy (keys checker/policy))
+                  :version (:version checker/policy))})
 
 (defn- refuse! [message]
   (throw (ex-info message {:type ::invalid})))
 
-(defn- run-checker*
-  "Execute and fully validate one checker ON THE CALLING scoring worker.
-   Caller must have explicitly admitted this exact source as trusted operator
-   code. Never invoke this on Spindel's event-drain thread. Options are a
-   trusted host test seam, not externally supplied checker permissions."
-  ([source input] (run-checker* source input policy))
-  ([source input {:keys [timeout-ms max-allocated-bytes max-checks max-check-key-length deadline-nanos allocation-check prepare-input]}]
-   (let [deadline (or deadline-nanos (+ (System/nanoTime) (* 1000000 (long timeout-ms))))
-         stopped (AtomicBoolean. false)
-         allocation-check (or allocation-check (sandbox/make-resource-limits :max-bytes max-allocated-bytes))
-         guard! (fn []
-                  (when (or (.get stopped)
-                            (.isInterrupted (Thread/currentThread))
-                            (<= deadline (System/nanoTime)))
-                    (.set stopped true)
-                    (refuse! "Checker deadline or interruption reached"))
-                  (try (allocation-check)
-                       (catch Exception e
-                         (.set stopped true)
-                         (throw e))))]
-     (guard!)
-     ;; Both context creation and its allocation-accounting origin belong to
-     ;; THIS worker, unlike a context created outside a detached future.
-     (let [input (if prepare-input (prepare-input guard! input) input)
-           _ (when prepare-input (guard!))
-           ctx (sandbox/create-base-ctx :load-fn (constantly nil) :resource-limits guard!)
-           {checker-ns :ns} (sci/eval-string+ ctx source)
-           _ (guard!)
-           checker (sci/eval-string* ctx (str "(ns-resolve '" checker-ns " 'check)"))
-           _ (when-not checker (refuse! "Checker defines no check function"))
-           verdict (@checker input)
-           _ (guard!)
-           checks (:checks verdict)
-           reward (:reward verdict)]
-       ;; Check shape/count BEFORE traversal. Do not realize arbitrary lazy
-       ;; values or print an invalid result into an unbounded error message.
-       (when-not (and (map? verdict) (map? checks)
-                      (<= 1 (count checks) max-checks)
-                      (every? (fn [[k v]] (and (keyword? k) (<= (count (str k)) max-check-key-length) (boolean? v))) checks)
-                      (number? reward) (Double/isFinite (double reward))
-                      (<= 0.0 (double reward) 1.0))
-         (refuse! "Checker must return bounded boolean checks and a finite reward in [0,1]"))
-       (guard!)
-       {:checks (into {} checks) :reward (double reward)}))))
-
 (defn run-checker
-  "Execute one checker in a fresh allocation extent on the calling scoring
-   worker, never on Spindel's event-drain thread. A non-nil :allocation-check
-   is a trusted host-owned account: its caller
-   must own the surrounding allocation extent, as calibration does."
+  "The app's strict checks/reward projection over Dvergr's caller-owned
+   executor. Host-only cumulative calibration guards retain their allocation
+   extent; no detached task or second execution authority is introduced."
   ([source input] (run-checker source input policy))
   ([source input options]
-   (if (:allocation-check options)
-     (run-checker* source input options)
-     (sandbox/call-with-allocation-scope #(run-checker* source input options)))))
+   (let [execution (-> (merge policy options)
+                       (select-keys (into (set (keys checker/policy))
+                                          #{:deadline-nanos :allocation-check :prepare-input}))
+                       (assoc :version (:version checker/policy)))]
+     (try
+       (select-keys (checker/run-checker source input execution) [:checks :reward])
+       (catch clojure.lang.ExceptionInfo e
+         (if (= :dvergr.catalog.checker/invalid (:type (ex-data e)))
+           (throw (ex-info (ex-message e) (assoc (ex-data e) :type ::invalid) e))
+           (throw e)))))))
 
 (def calibration-policy
   {:version 2 :budget-scaling :per-answer
@@ -243,7 +211,7 @@
         {:id (if (:calibration bundle) :simmis.workflow/calibrated-fixtures :simmis.workflow/structural-fixtures) :version 1
          :basis (cond-> {:fixtures (evaluation/world-setup-ref base)
                          :calibration-policy (if (structural-calibration? bundle) structural-calibration-policy calibration-policy)
-                         :checker-policy policy :case (get-in bundle [:calibration :case])}
+                         :checker-policy policy :checker-executor executor-policy :case (get-in bundle [:calibration :case])}
                   profile (assoc :observation-profile profile :selection-policy selection-policy))
          :prepare (fn [context]
                     (let [_ (when profile
@@ -273,7 +241,7 @@
    (let [profile (wiki-scoring/selected-profile bundle)]
      (evaluation/make-evaluator
       {:id (keyword "simmis.workflow" (:name bundle)) :version 1 :tier :ad-hoc
-       :basis (cond-> {:bundle (str (:id bundle)) :checker-policy policy
+       :basis (cond-> {:bundle (str (:id bundle)) :checker-policy policy :checker-executor executor-policy
                        ;; Grading-only parameters also change verifier identity.
                        :params (get-in bundle [:definition :params] {})}
                 profile (assoc :observation-profile profile :selection-policy selection-policy))
