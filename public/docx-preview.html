@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Document preview</title>
+  <style>
+    html,body {margin:0;min-height:100%;background:#e8e8e8;color:#222;font-family:system-ui,sans-serif}
+    .docx-wrapper {padding:20px!important}
+    .docx-wrapper>section.docx {margin-bottom:20px!important;box-shadow:0 1px 5px #0002!important}
+    #status {padding:16px;font-size:13px}
+  </style>
+  <script defer src="/vendor/docx/jszip.min.js"></script>
+  <script defer src="/vendor/docx/docx-preview.min.js"></script>
+  <script defer src="/docx-preview-frame.js"></script>
+</head>
+<body><div id="status" role="status">Preparing document preview…</div><div id="document"></div></body>
+</html>

@@ -27,7 +27,7 @@
 (defn- refuse! [kind message]
   (throw (ex-info message {:type kind})))
 
-(defn- xml-tree
+(defn xml-tree
   "Streaming limits apply before retaining additional tree nodes. The XML
    tokenizer itself is also bounded by the byte input cap and JAXP hardening."
   [^bytes bytes]

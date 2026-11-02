@@ -232,8 +232,13 @@
    Media returns metadata only; document source reads remain bounded."
   [db path]
   (path! path)
-  (if (media/kind path)
-    (media-metadata-in db path)
+  (if-let [preview-kind (media/kind path)]
+    (let [metadata (media-metadata-in db path)]
+      ;; DOCX uses the same owned byte transport, while remaining an Office
+      ;; document in the editor. Opening it never loads its ZIP into UI state.
+      (if (= :docx preview-kind)
+        (-> metadata (assoc :kind :office) (dissoc :media))
+        metadata))
     (let [selected (entry db path) bytes (source-bytes db path selected)
           kind (file-kind path)
           text (when (and (not= :office kind) (<= (alength ^bytes bytes) markdown/max-source-bytes))

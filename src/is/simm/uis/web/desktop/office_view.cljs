@@ -1,7 +1,10 @@
 (ns is.simm.uis.web.desktop.office-view
   "Native inert document reading and the existing explicit XML-part editor."
-  (:require [org.replikativ.spindel.dom.elements :as el]
+  (:require [clojure.string :as str]
+            [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.addressing :as addressing]
+            [is.simm.documents.links :as links]
+            [is.simm.uis.web.desktop.docx-preview :as docx-preview]
             [is.simm.uis.web.desktop.memory-editor :as editor]
             [is.simm.uis.web.desktop.source-editor :as source]))
 
@@ -97,7 +100,7 @@
                         :on-click (fn [_] ((:office-correct actions) path))} "Apply correction")
             (el/button {:disabled busy? :on-click (fn [_] ((:change actions) path dissoc :office-correction))} "Cancel"))))
 
-(defn view [{:keys [path draft state actions write? coherent?]}]
+(defn- editor-view [{:keys [path draft state actions write? coherent?]}]
   (let [office (:office draft) reading (:reading office)
         advanced? (or (nil? reading) (= :xml (:office-mode draft)))
         loading? (get-in state [:loading [:office path]])
@@ -150,3 +153,21 @@
                                 (when (and on-correct (seq (get-in reading [:corrections :tokens])))
                                   (el/p {:class "memory-note"} "Click ordinary text to make a selective correction."))
                                 (reading-view reading {:tokens (get-in reading [:corrections :tokens]) :on-correct on-correct}))))))))
+
+(defn view [{:keys [path draft state actions coherent? room] :as options}]
+  (if (and room (str/ends-with? (str/lower-case path) ".docx"))
+    (let [url (when coherent?
+                (links/media-route {:room room :path path
+                                    :content (get-in draft [:source :entry :content])
+                                    :target (get-in draft [:source :target-stamp])}))]
+      (el/div {:class "memory-office"}
+              (docx-preview/view [(:owner actions) path] url (get-in draft [:source :entry :size]))
+              (el/details {:class "office-edit-details"
+                           :on-toggle (fn [event]
+                                        (when (and (.. event -target -open) coherent?
+                                                   (not (:office draft))
+                                                   (not (get-in state [:loading [:office path]])))
+                                          ((:office-open actions) path nil)))}
+                          (el/summary {} "Text and corrections")
+                          (editor-view options))))
+    (editor-view options)))

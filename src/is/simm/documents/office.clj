@@ -7,11 +7,91 @@
             [is.simm.documents.docx :as docx]
             [is.simm.documents.markdown :as markdown]
             [is.simm.media.office :as office])
-  (:import [java.util Base64]))
+  (:import [java.util Base64]
+           [java.io ByteArrayOutputStream]
+           [java.util.zip ZipEntry ZipOutputStream]))
 
 (def limits {:max-entries 1000 :max-entry-uncompressed (* 4 1024 1024)
              :max-total-uncompressed (* 24 1024 1024)})
 (def max-xml-bytes (* 1024 1024))
+
+;; XML relationship kinds understood by pinned docx-preview 0.4.1.
+(def ^:private preview-xml-relations
+  #{"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
+    "http://schemas.microsoft.com/office/2007/relationships/stylesWithEffects"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/webSettings"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties"
+    "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties"
+    "http://schemas.openxmlformats.org/package/2006/relationships/metadata/custom-properties"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
+    "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"})
+
+(defn- preview-package
+  "Create a deterministic, preview-only ZIP from the validated inventory.
+   Do not forward attacker-controlled central-directory metadata to JSZip."
+  [parts]
+  (let [out (ByteArrayOutputStream.)]
+    (with-open [zip (ZipOutputStream. out)]
+      (doseq [[name data] (sort-by key parts)]
+        ;; JSZip normalizes slash paths. Refuse aliases rather than allowing
+        ;; two validated parts to become one browser-visible part.
+        (when (or (str/includes? name "\\")
+                  (some #{"" "." ".."} (str/split name #"/" -1)))
+          (throw (ex-info "DOCX preview contains an ambiguous part path" {:type ::unsupported})))
+        (let [entry (doto (ZipEntry. ^String name) (.setTime 0))]
+          (.putNextEntry zip entry)
+          (.write zip ^bytes data)
+          (.closeEntry zip))))
+    (let [bytes (.toByteArray out)]
+      (when (> (alength bytes) (* 8 1024 1024))
+        (throw (ex-info "DOCX preview exceeds the byte limit" {:type ::limit})))
+      bytes)))
+
+(defn preview-bytes-in
+  "Validate bounded DOCX input before sending it to an isolated browser
+   renderer. All XML parts share the existing parser complexity/DTD limits.
+   Returned bytes are a normalized preview copy. Canonical/download bytes are
+   untouched; all part payloads are preserved."
+  [db path expected]
+  (files/path! path)
+  (when-not (and (str/ends-with? (str/lower-case path) ".docx")
+                 (= expected (files/entry db path)))
+    (throw (ex-info "DOCX preview source changed or is unsupported" {:type ::conflict})))
+  (let [bytes (files/source-bytes db path expected)
+        parts (office/read-parts bytes limits)]
+    ;; XML beyond document.xml (styles, numbering, notes, relationships, …)
+    ;; also reaches the browser renderer. Bound every one, not just the body.
+    (let [nodes (volatile! 0)]
+      (doseq [[name data] parts
+              :when (or (str/ends-with? (str/lower-case name) ".xml")
+                        (str/ends-with? (str/lower-case name) ".rels"))]
+        (let [tree (docx/xml-tree data)
+              elements (tree-seq map? #(filter map? (:children %)) tree)
+              n (count elements)]
+          ;; The renderer dispatches XML by relationship type, not extension.
+          ;; Refuse aliases outside the fully parsed .xml inventory.
+          (when (str/ends-with? (str/lower-case name) ".rels")
+            (doseq [node elements
+                    :let [type (get-in node [:attrs ["" "Type"]])
+                          target (get-in node [:attrs ["" "Target"]])]
+                    :when (contains? preview-xml-relations type)]
+              (when-not (and (string? target)
+                             (str/ends-with? (str/lower-case target) ".xml"))
+                (throw (ex-info "DOCX preview XML relationship needs an XML part path" {:type ::unsupported})))))
+          (when (> (vswap! nodes + n) docx/max-xml-nodes)
+            (throw (ex-info "DOCX package exceeds the preview complexity limit" {:type ::limit}))))))
+    (when-not (= :ready (:status (docx/inspect-parts parts)))
+      (throw (ex-info "This DOCX cannot be previewed within the document limits" {:type ::unsupported})))
+    (preview-package parts)))
 
 (defn- parts-in! [db path expected]
   (when-not (= :office (files/file-kind (files/path! path)))

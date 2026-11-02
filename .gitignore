@@ -23,6 +23,7 @@ node_modules/
 /public/js
 /public/main.css
 /public/vendor/katex/
+/public/vendor/docx/
 .idea
 *.iml
 

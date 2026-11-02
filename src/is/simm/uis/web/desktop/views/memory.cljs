@@ -842,7 +842,8 @@
                                                     (el/a {:href url :download (last (str/split path #"/"))} "Download original"))
                                             (el/p {:class "memory-note"} "Reopen this media file in the current workspace.")))
                                         office?
-                                        (office-view/view {:path path :draft draft :state state :actions a :write? write? :coherent? coherent?})
+                                        (office-view/view {:path path :draft draft :state state :actions a :write? write? :coherent? coherent?
+                                                           :room (:room-id data)})
                                         (not text?) (el/p {:class "memory-note"} "Binary file. Download preserves the original bytes; document-specific editing is not available in this view yet.")
                                         (and clojure? (= :superficie code-view)) (superficie-view (:text draft))
                                         (= :source (:mode draft)) (source-view path draft a write?)

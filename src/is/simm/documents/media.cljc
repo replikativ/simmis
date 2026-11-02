@@ -9,7 +9,8 @@
    "mp4" [:video "video/mp4"] "webm" [:video "video/webm"] "ogv" [:video "video/ogg"]
    "mp3" [:audio "audio/mpeg"] "m4a" [:audio "audio/mp4"] "ogg" [:audio "audio/ogg"]
    "wav" [:audio "audio/wav"] "flac" [:audio "audio/flac"]
-   "pdf" [:pdf "application/pdf"]})
+   "pdf" [:pdf "application/pdf"]
+   "docx" [:docx "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]})
 
 (defn format-of [path]
   (when (string? path)
