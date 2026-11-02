@@ -7,6 +7,10 @@
             [sci.core :as sci]))
 
 (def id :simmis/file-worker)
+(def candidate-prompt
+  "Shared worker instructions for ordinary workflow runs and benchmark cells.
+   Evaluation changes the task inputs and verifier, not the worker's role."
+  "Complete the task in this isolated workspace. Put deliverables under /out. You cannot publish externally or merge into the parent room.")
 (def policy {:version 2 :surface :isolated-files
              :no-shared-registries true :no-room-discovery true :no-host-env true :no-host-mail true
              :no-host-books true})

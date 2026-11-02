@@ -211,6 +211,7 @@
           cell-limits (assoc limits :budget-microdollars dollars :max-dispatches dispatches)
           plan (catalog/experiment-plan bundle
                                         {:models models :cases selected :tier :ad-hoc
+                                         :prompt work-sandbox/candidate-prompt
                                          :budget-dollars (/ dollars 1000000.0)
                                          :timeout-ms (:timeout-ms limits)})
           plan (update plan :team work-sandbox/restrict-team)
