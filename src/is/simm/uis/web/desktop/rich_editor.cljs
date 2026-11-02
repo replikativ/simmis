@@ -12,6 +12,7 @@
             [is.simm.uis.web.desktop.code-highlight :as code-highlight]
             [is.simm.uis.web.desktop.source-preview :as source-preview]
             [is.simm.uis.web.desktop.file-links :as file-links]
+            [is.simm.uis.web.desktop.refs :as refs]
             [is.simm.uis.web.desktop.rich-cells :as cells]
             [is.simm.uis.web.desktop.rich-tables :as tables]
             [is.simm.uis.web.desktop.chart-view :as charts]
@@ -283,6 +284,8 @@
           true)))))
 
 (defn disconnect! [^js el]
+  (when-let [release (.-simmisReleaseLinks el)]
+    (release) (set! (.-simmisReleaseLinks el) nil))
   (when-let [release (.-simmisReleaseCells el)]
     (release) (set! (.-simmisReleaseCells el) nil))
   (when-let [release (.-simmisReleaseJump el)]
@@ -369,6 +372,7 @@
                        :onFocus (fn [event] (notify! el (.-editor event)))
                        :onSelectionUpdate (fn [event] (notify! el (.-editor event)))})]
       (set! (.-simmisRichEditor el) editor)
+      (set! (.-simmisReleaseLinks el) (file-links/attach! el editor))
       (set! (.-simmisReleaseCells el) (cells/attach! el))
       (set! (.-simmisReleaseJump el) (jump/attach! el))
       (set! (.-simmisReleaseControls el) (controls/attach! el editor))
@@ -428,12 +432,21 @@
            })" cells/set-presenter! mount! disconnect! sync!)))
 
 (defn view [{:keys [id model selection read-only? on-change document? on-blocked charts inline-charts block-links linked-block jump before-jump on-jumped cell-config on-run-cell source-previews file-base saved-view-config present-saved-view]}]
-  (foreign-node
+  (let [ctx ec/*execution-context*]
+   (foreign-node
    {:tag :simmis-rich-editor :key id :class "memory-rich-editor"
     :data-owner (pr-str [id (:fork-id ec/*execution-context*)])
     :data-focus-scope (pr-str [(first id) (second id) (:fork-id ec/*execution-context*)])
     :data-model (js/JSON.stringify (clj->js model))
     :data-file-base (when file-base (js/JSON.stringify (clj->js file-base)))
+    :on-simmis-follow-link
+    (fn [event]
+      (when (and ctx (= (.-target event) (.-currentTarget event)))
+        (when-let [ref (links/parse-route (.-detail event))]
+          (.preventDefault event)
+          (binding [ec/*execution-context* ctx]
+            (let [column (.closest (.-currentTarget event) "[data-col-id]")]
+              (refs/open! ref {:col-id (when column (.getAttribute column "data-col-id"))}))))))
     :data-source-previews (when source-previews (js/JSON.stringify (clj->js source-previews)))
     :data-cells (when cell-config (js/JSON.stringify (clj->js cell-config)))
     :data-saved-views (when saved-view-config (js/JSON.stringify (clj->js saved-view-config)))
@@ -458,6 +471,6 @@
                   (if (aget (.-detail event) "blocked")
                     (when on-blocked (on-blocked (aget (.-detail event) "reason")))
                     (on-change (js->clj (.. event -detail -model) :keywordize-keys true)
-                               (js->clj (.. event -detail -selection) :keywordize-keys true)))))}))
+                               (js->clj (.. event -detail -selection) :keywordize-keys true)))))})))
 
 (defn command! [event operation] (controls/command! event operation))
