@@ -357,6 +357,18 @@ a JSON map of canonical absolute workspace paths to text. The worker sees only
 the pinned workflow source and fixture/input overlays, not all room files.
 Authored checkers are not executed by this ordinary workflow control.
 
+The room's `workflow/*` authoring helpers carry discoverable SCI arglists,
+documentation and schemas. Inspect `(clojure.repl/doc workflow/starter)` before
+calling it. `(workflow/starter "evidence-check")` returns an inert editable
+ordinary task plus a small synthetic benchmark pack: source fixtures,
+evaluator-held gold, development/held-out partition, a meaningful checker and
+reference/damaged calibration. Adapt all of these to the real task; the toy
+score demonstrates the mechanism, not customer performance. Source inspection
+never runs or promotes a checker. An absent built-in domain evaluator does not
+prevent authoring a workflow checker, but the exact saved source still requires
+operator admission before evaluation. An optimized task remains runnable
+without its optional evaluation pack.
+
 To measure that workflow, an installation operator with current room read/merge
 authority can use the separate bounded benchmark control.
 

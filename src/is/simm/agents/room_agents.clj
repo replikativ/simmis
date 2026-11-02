@@ -31,6 +31,7 @@
             [dvergr.agent.room-context :as room-ctx]
             [dvergr.runtime.ctx :as runtime-ctx]
             [dvergr.sandbox :as sandbox]
+            [dvergr.sandbox.ns.doc :as sandbox-doc]
             [dvergr.rooms :as drooms]
             [dvergr.room.registry :as rreg]
             [dvergr.room.store :as rstore]
@@ -2139,6 +2140,11 @@
          "they ask to inspect settings or setup is held. Confirmation uses existing allowance; it never "
          "adds funding or adopts proposed file edits automatically. "
          "Report separately what is saved, runnable, benchmark-ready and actually scheduled.\n\n"
+         "For a generic editable task with a calibrated synthetic benchmark example, "
+         "(workflow/starter \"evidence-check\") returns :files. Read its README.md before adapting "
+         "task, cases, gold and calibration. (clojure.repl/doc workflow/starter) explains signatures. "
+         "A missing domain-specific host evaluator does not prevent authoring a workflow checker; "
+         "the exact saved checker still requires operator admission before execution. "
          "For default knowledge maintenance, (workflow/starter \"maintain-wiki\") returns "
          "the shipped editable program's :files as data; summarize-room returns the optional "
          "digest program. Inspect existing source first and preserve customized workflows. "
@@ -2540,7 +2546,8 @@
         room-ids (fn [] (into #{} (comp (filter #(= room-slug (:room %))) (map (comp str :id)))
                               (list-scheds)))]
     (sci/add-namespace! sci-ctx 'workflow
-      {'check-files workflow-authoring/inspect-files
+      (sandbox-doc/with-docs
+       {'check-files workflow-authoring/inspect-files
        'starter workflow-authoring/starter
        'action-links (fn [name] (workflow-authoring/action-links room-uuid name))
        'schedules
@@ -2561,7 +2568,8 @@
                      :workflow.shape/updated (java.util.Date.)}])
                  {:ok true :schedule (str id)})
              (throw (ex-info "Not a workflow scheduled in this room"
-                             {:schedule-id (str id)})))))})))
+                             {:schedule-id (str id)})))))}
+       workflow-authoring/docs))))
 
 (defn- make-link-reply-hook
   "The dvergr `:on-reply` hook for a room (see run-agent-turn!). Rewrites bare

@@ -1,0 +1,7 @@
+{:case "supported"
+ :reference {"/out/answer.edn" "{:decision :supported :evidence [\"The delivery is scheduled for Monday.\"]}"}
+ :damaged {:wrong-decision {:files {"/out/answer.edn" "{:decision :unknown :evidence []}"}
+                            :loses [:decision-correct? :evidence-grounded?]}
+           :invented-quote {:files {"/out/answer.edn" "{:decision :supported :evidence [\"Invented evidence.\"]}"}
+                            :loses [:evidence-grounded?]}
+           :missing-output {:files {} :loses [:output-contract?]}}}
