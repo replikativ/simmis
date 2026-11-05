@@ -120,6 +120,17 @@
   --text-2xl: 24px;
   --text-3xl: 28px;
 
+  /* Conversation geometry. A chat column on a wide screen centres at
+     --chat-column (tables, code and cards may use all of it); running prose
+     inside it stops at --chat-measure, a readable line length. */
+  --chat-column: 52rem;
+  --chat-measure: 75ch;
+  /* Documents centre every block in a --doc-measure column (rem, not ch:
+     ch follows each element's own font, so a heading's 75ch is far wider
+     than a paragraph's). */
+  --doc-measure: 42rem;
+  --doc-wide-measure: 64rem;
+
   /* Sidebar widths */
   --sidebar-width: 220px;
   --sidebar-right-width: 260px;
@@ -2256,7 +2267,9 @@ body {
   display: flex;
   flex-direction: column-reverse;
   overflow-y: auto;
-  padding: var(--spacing-md) var(--spacing-lg);
+  /* Centre the conversation at --chat-column when the panel is wider; the
+     padding (not a max-width on the list) keeps the scroller full-width. */
+  padding: var(--spacing-md) max(var(--spacing-lg), calc((100% - var(--chat-column)) / 2));
   min-height: 0; /* Required for flex shrink to work with overflow */
 }
 
@@ -3331,7 +3344,8 @@ body {
 /* Chat input */
 .chat-input,
 .chat-input-container {
-  padding: var(--spacing-sm) var(--spacing-lg) var(--spacing-md);
+  /* Aligned with the centred conversation column above it. */
+  padding: var(--spacing-sm) max(var(--spacing-lg), calc((100% - var(--chat-column)) / 2)) var(--spacing-md);
   border-top: 1px solid var(--mono-border-subtle);
   display: flex;
   gap: var(--spacing-sm);
@@ -4934,6 +4948,12 @@ body.tab-dragging .column-drop-zone {
 
 .chat-message-content {
   overflow-wrap: anywhere;
+}
+
+/* Running text keeps a readable line length; tables, code, charts and cards
+   are not prose and may use the full conversation column. */
+.chat-message-content :is(p, ul, ol, blockquote, h1, h2, h3, h4, h5, h6) {
+  max-width: var(--chat-measure);
 }
 
 .chat-message-content pre,
@@ -9173,6 +9193,14 @@ body.tab-dragging .column-drop-zone {
 .memory-file-menu-content { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; display: flex; flex-direction: column; gap: 4px; width: 240px; max-height: 65vh; overflow: auto; padding: 8px; background: var(--mono-bg-elevated, #202124); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: 0 8px 24px #0004; }
 .memory-file-menu-content > button { text-align: left; border: 0; }
 .memory-file-menu-content > button:hover { background: var(--mono-bg-overlay); }
+/* The Reports dropdown borrows the Memory menu only for its popover; its
+   trigger is a room-header icon button like its neighbours. Without this the
+   `.memory-file-menu > summary` rule above (more specific than
+   .chat-settings-btn) made it light, padded and 18px — and [data-lucide]
+   icons size at 1em, so the icon grew with it. */
+.chat-reports-menu > summary.chat-settings-btn { color: var(--mono-text-tertiary); border: none; padding: var(--spacing-xs); font-size: inherit; line-height: normal; }
+.chat-reports-menu > summary.chat-settings-btn:hover,
+.chat-reports-menu[open] > summary.chat-settings-btn { color: var(--accent); }
 .chat-reports-menu .memory-file-menu-content > button { padding: 6px 8px; background: transparent; color: var(--mono-text-primary); font: inherit; border-radius: var(--radius-sm); cursor: pointer; }
 .chat-reports-menu .memory-file-menu-content > button:hover { background: var(--mono-bg-overlay); }
 .memory-file-menu-content .memory-upload { border: 0; padding: 5px 8px; font-size: 12px; }
@@ -9279,6 +9307,31 @@ body.tab-dragging .column-drop-zone {
 .memory-semantic-block { border-left: 2px solid transparent; padding-left: 10px; margin: 4px 0; }
 .memory-semantic-block:hover, .memory-semantic-block:focus-within { border-left-color: var(--border-color); }
 .memory-continuous-region { min-height: 1em; }
+
+/* A document is a reading surface: every block shares one centred column of
+   readable width. Scoped under .memory-document so a block's own later margin
+   rule (e.g. .memory-chart's `margin: 12px 0`) cannot cancel the centring. */
+.memory-document :is(.memory-continuous-region, .memory-markdown-preview) > *,
+.memory-document > .memory-properties,
+:has(> .memory-document) > :not(.memory-document) { max-width: var(--doc-measure); margin-inline: auto; }
+
+/* `layout: wide` in the front matter widens the whole column — prose and data
+   alike, so the page keeps one width. Set on the parent so the typed
+   properties beside the document follow it. */
+:has(> .memory-document--wide) { --doc-measure: var(--doc-wide-measure); }
+
+/* A table or formula wider than the column scrolls inside it (code wraps
+   instead, see `.memory-document pre`). The edge shading shows there is more:
+   the `local` covers travel with the content and hide the `scroll` shades at
+   whichever end has been reached. */
+.memory-document :is(.tableWrapper, .memory-math-display) {
+  overflow-x: auto;
+  background:
+    linear-gradient(to right, var(--mono-bg-base) 30%, transparent) left / 2rem 100% no-repeat local,
+    linear-gradient(to left, var(--mono-bg-base) 30%, transparent) right / 2rem 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, color-mix(in srgb, var(--mono-text-primary) 22%, transparent), transparent) left / 0.75rem 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, color-mix(in srgb, var(--mono-text-primary) 22%, transparent), transparent) right / 0.75rem 100% no-repeat scroll;
+}
 .memory-chart { margin: 12px 0; padding: 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--mono-text-primary); background: transparent; }
 .memory-chart figcaption { font-weight: 500; margin-bottom: 6px; }
 .memory-chart-plot { display: block; width: 100%; max-width: 640px; height: auto; }
@@ -9397,7 +9450,8 @@ body.tab-dragging .column-drop-zone {
 .memory-document .memory-data-table p, .memory-rich-content .memory-data-table p { margin: 0; }
 .memory-data-table .selectedCell::after { content: ""; position: absolute; inset: 0; background: var(--mono-border); opacity: .4; pointer-events: none; }
 
-.memory-rich-editor .tableWrapper { max-width: 100%; overflow-x: auto; }
+/* Width comes from the document column above; a wider table scrolls inside it. */
+.memory-rich-editor .tableWrapper { overflow-x: auto; }
 
 /* Workflows: activity first, code and execution controls on demand. */
 .workflow-disclosure { margin: 12px 0; border: 1px solid var(--mono-border); border-radius: 8px; }
