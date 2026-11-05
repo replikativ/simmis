@@ -12,6 +12,7 @@
             [is.simm.documents.execution-view :as execution-view]
             [is.simm.model.work-requests :as requests]
             [is.simm.ops.work :as work]
+            [is.simm.ops.workflow-profiles :as profiles]
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
             [is.simm.ops.knowledge-coverage :as coverage]
             [is.simm.ops.knowledge-citations :as citations]
@@ -167,7 +168,7 @@
          :checker-executed? false :source-pinned? true})})))
 
 (defn- supported-definition? [definition]
-  (and (contains? #{nil "developer"} (:profile definition))
+  (and (contains? profiles/supported (:profile definition))
        (contains? #{nil ["/out"]} (:capture definition))
        (not-any? #(contains? definition %)
                  [:judge :web :fetched :allowed-sources :blocked-sources
@@ -188,7 +189,7 @@
   (let [bundle (catalog/bundle name (:files snapshot) :program)
         definition (:definition bundle)]
     (when-not (supported-definition? definition)
-      (invalid! "Ordinary workflows require developer /out capture and no web, judge or adoption policy"))
+      (invalid! "Ordinary workflows require developer or coordinator /out capture and no web, judge or adoption policy"))
     (when-not (if (seq (:cases bundle)) (contains? (:cases bundle) case) (nil? case))
       (invalid! "Select an explicit existing case for a case-pack workflow, and no case otherwise"))
     (let [params (effective-parameters definition params)
@@ -341,10 +342,10 @@
         (when-not (and policy output-scope)
           (invalid! "Original coverage requires scoped knowledge inputs"))
         (coverage/with-capture
-         base (coverage/with-existing-targets
-               (coverage/expected (:manifest (knowledge-inputs/from-inputs policy inputs)))
-               publication-basis output-scope)
-         output-scope))
+          base (coverage/with-existing-targets
+                 (coverage/expected (:manifest (knowledge-inputs/from-inputs policy inputs)))
+                 publication-basis output-scope)
+          output-scope))
       base)))
 
 (defn citation-task
@@ -355,33 +356,37 @@
 
 (defn- bind-source-citations [prepared citation-context]
   (if-not (coverage/declaration (get-in prepared [:basis :source])) prepared
-    (let [old (environment/validate-environment (:environment prepared))
-          verifier (:environment/verifier old)
-          env (environment/make-environment
-               {:id (:environment/id old) :version (:environment/version old)
-                :task (citation-task (:environment/task old) citation-context)
-                :limits (:environment/limits old)
-                :verifier {:id (:verifier/id verifier) :version (:verifier/version verifier)
-                           :basis (:verifier/basis verifier)}
-                :world (:environment/world old) :metadata (:environment/metadata old)})]
-      (-> prepared (assoc :environment env)
-          (assoc-in [:basis :environment] env)
-          (assoc-in [:basis :knowledge/source-task] (:environment/task old))
-          (assoc-in [:basis :knowledge/source-citations] citation-context)))))
+          (let [old (environment/validate-environment (:environment prepared))
+                verifier (:environment/verifier old)
+                env (environment/make-environment
+                     {:id (:environment/id old) :version (:environment/version old)
+                      :task (citation-task (:environment/task old) citation-context)
+                      :limits (:environment/limits old)
+                      :verifier {:id (:verifier/id verifier) :version (:verifier/version verifier)
+                                 :basis (:verifier/basis verifier)}
+                      :world (:environment/world old) :metadata (:environment/metadata old)})]
+            (-> prepared (assoc :environment env)
+                (assoc-in [:basis :environment] env)
+                (assoc-in [:basis :knowledge/source-task] (:environment/task old))
+                (assoc-in [:basis :knowledge/source-citations] citation-context)))))
 
 (defn prepare
   "Construct from ONE immutable source snapshot. The bundle is task data;
    provider, tool/effect surface, limits and evaluator remain host policy."
   [snapshot {:keys [model limits] :as input} & [captured checkpoint-selection]]
   (when-not (m/validate schema input) (invalid! "Invalid workflow execution"))
-  (let [{:keys [task inputs source world-setup workflow]} (prepare-source snapshot (select-keys input source-fields) captured)
+  (let [{:keys [bundle task inputs source world-setup workflow]} (prepare-source snapshot (select-keys input source-fields) captured)
         checkpoint-policy (execution-origin/validate-execution! source limits)
+        _ (when (and checkpoint-policy (profiles/recursive? (:definition bundle)))
+            (invalid! "Coordinator workflows require copied-context execution"))
         _ (when-not (= (some? checkpoint-policy) (some? checkpoint-selection))
             (invalid! "Checkpoint workflows require the fixed retained-batch HOST admission"))
         world-setup (if checkpoint-selection
                       (knowledge-workspace/with-checkpoint world-setup checkpoint-selection)
                       world-setup)
-        prepared (work/prepare {:request-id (:request-id input) :task task :model model :limits limits})
+        prepared (profiles/prepare
+                  (work/prepare {:request-id (:request-id input) :task task :model model :limits limits})
+                  (:definition bundle))
         base (:environment prepared)
         evaluator (completion-evaluator source workflow inputs)
         verifier (evaluation/evaluator-ref evaluator)

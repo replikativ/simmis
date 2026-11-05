@@ -52,6 +52,46 @@ deployment. The coordinator is still an LLM AgentDef whose Clojure tool programs
 the shared harness; removing the need for that outer model is the next program
 interpreter step. Capture transcription remains a separate room workflow.
 
+## Saved composite workflows
+
+A saved workflow can request the same bounded composition policy in
+`workflow.edn`:
+
+```clojure
+{:title "Solve and critique"
+ :profile "coordinator"
+ :task "Read /inputs/case.edn. Hire a solver and an internal critic, then write /out/answer.edn."
+ :capture ["/out"]}
+```
+
+The ordinary workflow and native benchmark admissions compile this declaration
+through the same closed host profile. Existing developer workflows retain their
+file-worker policy. A declaration requests capabilities; current room authority,
+finite money/dispatch grants and native family admission still authorize every
+execution. It does not give the workflow its own funding or merge permission.
+
+A benchmark's composite candidate receives completion-only child verification,
+separately from the private outer evaluator and fixture setup. An internal critic
+is part of the measured candidate, including its cost and failures. It cannot
+access hidden grading references. An independently calibrated grading workflow
+is a separate evaluation of frozen answer evidence; completion alone never
+establishes answer correctness.
+
+Run ownership, wallets and causal records remain with the exact original control
+Room even when the candidate forks a clean independent fixture. File and database
+operations continue to use the selected working world. The native control owner
+is ephemeral supervisor authority, never a serializable workflow input. Child
+result consumption can be explicit: await the solver, then pass its returned
+value or certified output to the critic's task. Neither child implicitly sees
+its sibling's discarded files.
+
+The source bundle and evaluation basis remain pinned together for an ordinary
+MCP benchmark. Repeated admitted coordinator invocations may revise candidate
+prompts and models against the fixed offer; this does not yet admit arbitrary
+workflow-source revisions against an independently selected evaluation package.
+Recursive CLI benchmarks and checkpoint-origin composite workflows are refused. This change adds no new scheduler or
+automatic background execution.
+
 ## An inspected benchmark inside a coordinator
 
 An optional `benchmark` on `simmis_coordinator` admits one existing owned
@@ -63,6 +103,12 @@ Ordinary coordinators need no benchmark admission and keep completion-only
 child experiments.
 
 The coordinator's outer grant covers its own model calls and every child.
+The declared workflow profile also selects the candidate sandbox: developer
+requires `#{:simmis/file-worker}`, and coordinator requires
+`#{:simmis/coordinator}`. Read the offered candidate profile before constructing
+the candidate; broader requested tools or sandboxes are refused before profile
+compilation.
+
 Candidate limits are an aggregate ceiling for each invocation; they do not
 provision funds. This first interface admits one candidate and parallelism one
 per invocation. Compare prompt/model revisions by invoking it repeatedly within
