@@ -85,20 +85,37 @@
          (is (thrown? Exception (processing/filing-tx @conn expected value))))))))
 
 (deftest complete-membership-and-source-identity-are-checked-in-the-writer
-  (doseq [damage [:extra-member :changed-content :changed-frozen :changed-owner :selection-ref :frozen-ref :stray-adoption]]
-    (fixture :no-op
-     (fn [{:keys [conn ready expected value]}]
-       (let [items (streams/items @conn (:stream ready))
-             selected (first (filter #(= (:batch ready) (:knowledge.item/batch %)) items))
-             pending (first (filter #(= :pending (:knowledge.item/state %)) items))
-             batch (batches/batch @conn (:batch ready))]
-         (d/transact conn
-           (case damage
-             :extra-member [{:db/id (:db/id pending) :knowledge.item/batch (:batch ready)}]
-             :changed-content [{:db/id (:db/id selected) :knowledge.item/content (random-uuid)}]
-             :changed-frozen [{:db/id (:db/id batch) :knowledge.batch/frozen-id (random-uuid)}]
-             :changed-owner [{:db/id (:db/id batch) :knowledge.batch/by (random-uuid)}]
-             :selection-ref [{:db/id (:db/id batch) :knowledge.batch/selection (random-uuid)}]
-             :frozen-ref [{:db/id (:db/id batch) :knowledge.batch/frozen (random-uuid)}]
-             :stray-adoption [{:db/id (:db/id batch) :knowledge.batch/adoption (random-uuid)}]))
-         (is (thrown? Exception (processing/filing-tx @conn expected value))))))))
+  (fixture :no-op
+           (fn [{:keys [conn ready expected value] :as data}]
+             (let [baseline @conn
+                   items (streams/items baseline (:stream ready))
+                   selected (first (filter #(= (:batch ready) (:knowledge.item/batch %)) items))
+                   pending (first (filter #(= :pending (:knowledge.item/state %)) items))
+                   batch (batches/batch baseline (:batch ready))
+                   valid-tx (processing/filing-tx baseline expected value)]
+               (is (seq valid-tx) "The genuine submitted state reaches the writer's positive path")
+               ;; This writer is pure: each corruption gets its own immutable DB derived
+               ;; from one real producer. Never mutate/rewind the live canonical batch.
+               (doseq [damage [:extra-member :changed-content :changed-frozen :changed-owner :selection-ref :frozen-ref :stray-adoption]]
+                 (let [facts (case damage
+                               :extra-member [{:db/id (:db/id pending) :knowledge.item/batch (:batch ready)}]
+                               :changed-content [{:db/id (:db/id selected) :knowledge.item/content (random-uuid)}]
+                               :changed-frozen [{:db/id (:db/id batch) :knowledge.batch/frozen-id (random-uuid)}]
+                               :changed-owner [{:db/id (:db/id batch) :knowledge.batch/by (random-uuid)}]
+                               :selection-ref [{:db/id (:db/id batch) :knowledge.batch/selection (random-uuid)}]
+                               :frozen-ref [{:db/id (:db/id batch) :knowledge.batch/frozen (random-uuid)}]
+                               :stray-adoption [{:db/id (:db/id batch) :knowledge.batch/adoption (random-uuid)}])
+                       variant (:db-after (d/with baseline facts))
+                       error (try (processing/filing-tx variant expected value) nil
+                                  (catch clojure.lang.ExceptionInfo error error))]
+                   (is (= {:type ::processing/held
+                           :reason (if (= :stray-adoption damage) :batch-not-submitted :canonical-binding-mismatch)}
+                          (ex-data error))
+                       (str damage))))
+               (is (= baseline @conn) "Synthetic corruption never changes the canonical fixture")
+               (is (= valid-tx (processing/filing-tx baseline expected value))
+                   "Every variant leaves the original positive writer result intact")
+               (commit! data)
+               (is (= :closed (:knowledge.batch/state (batches/batch @conn (:batch ready)))))
+               (is (= [] (processing/filing-tx @conn expected value))
+                   "The actual joint writer still commits and replays from its valid state")))))
