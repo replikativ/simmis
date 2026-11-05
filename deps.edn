@@ -349,7 +349,7 @@
         ;; Reviewed native #436 adds scoped child Job receipts and await_child.
         ;; Replace with the coordinated Maven release.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr.git"
-                               :git/sha "2ac5c2530dab03982c8d0735a9f2c515008551ef"
+                               :git/sha "199b41a1dd2e6597eaec856cb4e06e4dac10fe76"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.
