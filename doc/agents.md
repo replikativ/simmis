@@ -705,7 +705,12 @@ agent does not join — it never runs the built-in default instead. Boot logs on
 model version. Clearing that override physically removes the agent's model keys
 and returns it to inheritance; existing explicit choices are not migrated or
 rewritten. The agent picker presents inheritance as its own first row and names
-whether the current state is inherited or an explicit override.
+whether the current state is inherited or an explicit override. An exact
+override may carry a reasoning effort, `codex-subscription-luna-6@high`: it is
+accepted for a curated exact model whose registry entry declares that effort,
+with the base model's availability, and resolves at turn time like any exact
+id. The picker does not offer efforts yet, so it is set through the same
+agent-config call with the explicit value.
 
 “Latest” stores the family, not the concrete model id. At resolution time it
 chooses the newest version in that provider/family that is simultaneously

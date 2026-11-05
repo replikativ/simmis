@@ -7,6 +7,7 @@
             [dvergr.model.registry :as registry]
             [is.simm.agents.workflows :as agent-workflows]
             [is.simm.model.candidate-models :as candidate-models]
+            [is.simm.model.model-catalog :as model-catalog]
             [is.simm.ops.owned-workflow-host :as policy]
             [is.simm.ops.work :as work]
             [is.simm.ops.work-api :as api]
@@ -60,3 +61,13 @@
   (testing "agents: workflow/models returns the same listing and is documented"
     (is (= (candidate-models/options) (agent-workflows/models)))
     (is (contains? agent-workflows/docs 'models))))
+
+(deftest an-agent-may-choose-a-curated-model-at-a-declared-effort
+  (let [row (model-catalog/choice (str luna "@high"))]
+    (is (= (str luna "@high") (:value row) (:resolves row)))
+    (is (= :model (:kind row)))
+    (is (= (:available? (model-catalog/choice luna)) (:available? row))
+        "An effort is as available as its curated base model"))
+  (is (nil? (model-catalog/choice (str luna "@turbo"))) "Undeclared effort")
+  (is (nil? (model-catalog/choice "gpt-*-luna@high")) "Families take no effort")
+  (is (nil? (model-catalog/choice "not-curated@high")) "Only curated base models"))
