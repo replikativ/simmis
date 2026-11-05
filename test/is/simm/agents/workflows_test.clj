@@ -13,10 +13,12 @@
 (deftest supplied-file-checks-are-inert-and-do-not-certify-saved-source
   (let [files {"workflow.edn" "{:title \"Task\" :task \"Write /out/result.md\"}"
                "checker.clj" "(throw (ex-info \"This must not run\" {}))"
-               "fixtures/input.md" "evidence"}
+               "fixtures/input.md" "evidence π 🦋"}
         result (workflows/inspect-files files)]
     (is (:ok result))
     (is (:benchmark-ready? result))
+    (is (= 3 (:files result)))
+    (is (= 100 (:bytes result)))
     (is (false? (:checker-executed? result)))
     (is (false? (:saved-source-verified? result)))
     (is (= :supplied-files (:observation result))))
