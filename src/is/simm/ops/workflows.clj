@@ -191,12 +191,24 @@
           (contains? seen cause) false
           :else (recur (.getCause ^Throwable cause) (conj seen cause)))))
 
+(def ^:private validator-types
+  "Validators that throw fixed, hand-written sentences about the author's own
+   files. Their messages are diagnostics to show back; any other exception
+   text stays private (see `details-of`)."
+  #{:is.simm.ops.benchmarks/invalid ::invalid :dvergr.catalog.room/invalid-bundle})
+
+(defn- validator-problems [e]
+  (let [{:keys [type problems]} (ex-data e)]
+    (when (contains? validator-types type)
+      (vec (take 10 (if (seq problems) problems [(ex-message e)]))))))
+
 (defn inspect-snapshot
   ([name snapshot] (inspect-snapshot name snapshot :benchmark))
   ([name snapshot purpose]
   (let [problems (catalog/check-files (:files snapshot) purpose)]
     (if (seq problems)
-      {:ok false :name name :checker-executed? false :problems problems}
+      {:ok false :name name :checker-executed? false :problems problems
+       :validator-problems (vec (take 10 problems))}
       (try
         (let [bundle (catalog/bundle name (:files snapshot) purpose)
               evaluation (dataset/manifest (:files snapshot) (keys (:cases bundle)))]
@@ -215,7 +227,8 @@
           (when (interrupted-failure? e)
             (.interrupt (Thread/currentThread))
             (throw e))
-          {:ok false :name name :checker-executed? false :problems [(ex-message e)]}))))))
+          (cond-> {:ok false :name name :checker-executed? false :problems [(ex-message e)]}
+            (validator-problems e) (assoc :validator-problems (validator-problems e)))))))))
 
 (defn program-diagnostics
   "Fixed diagnostics derived from authored bytes, never arbitrary exception text."
@@ -258,10 +271,16 @@
                                          :benchmark-ready? (boolean (:ok benchmark))
                                          :benchmark-problems (if (:ok benchmark) []
                                                                (let [known (benchmark-diagnostics (:files source))]
-                                                                 (if (seq known) known ["Benchmark source has invalid definition, fixture or evaluation metadata."]))))
+                                                                 (cond (seq known) known
+                                                                       (seq (:validator-problems benchmark)) (:validator-problems benchmark)
+                                                                       :else ["Benchmark source has invalid definition, fixture or evaluation metadata."]))))
                      (seq problems) (assoc :ok false :problems problems)
+                     ;; A validator's own sentence tells the author what to fix;
+                     ;; arbitrary exception text never leaves this function.
                      (and (not (:ok program)) (empty? problems))
-                     (assoc :problems ["Workflow source has invalid definition, fixture or evaluation metadata."]))]
+                     (assoc :problems (or (:validator-problems program)
+                                          ["Workflow source has invalid definition, fixture or evaluation metadata."])))
+        inspection (dissoc inspection :validator-problems)]
     (cond-> {:name name :revision revision
              :files (:files source) :inspection inspection
              :setup (try {:status :ready :intent (proposal/read-intent (get-in source [:files "proposal.edn"]))}

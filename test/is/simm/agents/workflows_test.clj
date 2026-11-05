@@ -23,6 +23,21 @@
   (doseq [files [{"../outside.md" "bad"} {"workflow.edn" 42} {}]]
     (is (thrown? Exception (workflows/inspect-files files)))))
 
+(deftest a-validator-sentence-reaches-the-author-instead-of-a-generic-refusal
+  ;; A Luna author got only "invalid definition, fixture or evaluation
+  ;; metadata" for a split naming cases it had not written yet, and stopped.
+  ;; Fixed validator sentences are diagnostics; other exception text is not.
+  (let [files (assoc (:files (workflows/starter "evidence-check"))
+                     "benchmark.edn" "{:version 1 :splits {:development [\"supported\" \"refuted\" \"unknown\" \"not-written-yet\"] :held-out [\"held-out\"]}}\n")
+        result (workflows/inspect-files files)
+        message "Benchmark splits must partition all named cases without duplicates"]
+    (is (false? (:ok result)))
+    (is (= [message] (:problems result)))
+    (is (= [message] (:benchmark-problems result)))
+    (is (not (contains? result :validator-problems))))
+  (let [files (assoc (:files (workflows/starter "evidence-check")) "benchmark.edn" "{:version 1 :splits #unknown/tag []}")]
+    (is (some #(str/includes? % "benchmark") (:problems (workflows/inspect-files files))))))
+
 (deftest action-links-only-name-the-bound-room-and-human-setup
   (let [room "b985a235-9699-4389-b3f3-b05d1b5e2c36"
         result (workflows/action-links room "competitor-analysis")]
