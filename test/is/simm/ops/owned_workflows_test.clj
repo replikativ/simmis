@@ -151,7 +151,8 @@
                        dataset/manifest (if (= stage :dataset) forged dataset/manifest)]
            (doseq [read [owned/details! owned/source!]]
              (let [result (read host p handle {:name "echo"})]
-               (is (false? (get-in result [:data :inspection :ok])))
+               (is (= (= stage :dataset) (get-in result [:data :inspection :ok])))
+               (is (false? (get-in result [:data :inspection :benchmark-ready?])))
                (is (not (str/includes? (pr-str (:data result)) "SECRET")))))))))))
 
 (deftest source-identities-ignore-unrelated-head-but-track-content-mode-name-and-list
@@ -240,7 +241,7 @@
                      interrupted? (.isInterrupted (Thread/currentThread))]
                  (is (= ::owned/unavailable (:type (ex-data error))))
                  (is interrupted?))
-               (is (= {:snapshot 1 :bundle 1 :dataset (if (= stage :bundle) 0 1)
+               (is (= {:snapshot 1 :bundle (if (= stage :bundle) 1 2) :dataset (if (= stage :bundle) 0 1)
                        :body (count workflow-fixture/fixture) :page 0} @calls)))
              (finally (Thread/interrupted)))))))))
 

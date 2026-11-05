@@ -64,17 +64,8 @@
   [binding name snapshot]
   (let [revision (str (source-id binding name (:manifest snapshot)))
         details (workflows/details-of name snapshot)]
-    (-> (cond-> details
-          (seq (get-in details [:inspection :problems]))
-          (update-in [:inspection :problems]
-                     (fn [problems]
-                       (mapv #(if (contains? #{"workflow.edn is missing."
-                                              "workflow.edn is not valid EDN."
-                                              "workflow.edn needs a title, task and supported definition fields."
-                                              "Ordinary workflow parameters must use unqualified names and literal string values."
-                                              "Workflow source has invalid definition, fixture or evaluation metadata."} %)
-                                % "Workflow source is incomplete or invalid; inspect its files")
-                             (take 10 problems)))))
+    (-> details
+        (update :inspection workflows/sanitize-inspection)
         (assoc :revision revision)
         (assoc-in [:inspection :revision] revision))))
 
