@@ -46,6 +46,7 @@
       (throw (ex-info "A complete benchmark display is required to prepare its report"
                       {:type ::unavailable :reason (:reason prepared)})))
     (let [provenance (:provenance prepared)
+          composite? (= "coordinator" (get-in definition [:experiment/metadata :simmis/execution-profile :declared]))
           workflow (:workflow provenance)
           name (when workflow (str/capitalize (str/replace (:name workflow) "-" " ")))
           title (str (or name "Saved") " benchmark results")
@@ -61,6 +62,9 @@
                                                                                 :path (str "workflows/" (:name workflow) "/workflow.edn")})
                                    "). This benchmark used a saved revision."))
                             "\n\nCost is recorded model usage; list-price cost is shown separately. "
+                            (when composite?
+                              (str "This workflow can spend in child Runs. These columns show the recorded "
+                                   "candidate receipt, not complete execution-tree or independent grading cost. "))
                             "Use Save snapshot on the table for portable result values. "
                             "Exact record and revision identities are retained in the document's metadata.")
           metadata (cond-> {"scorecard" (str scorecard)

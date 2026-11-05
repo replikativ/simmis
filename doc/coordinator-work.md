@@ -164,3 +164,19 @@ missing or uncertain ownership remains held. A failed physical gate release
 keeps the child Job, result and parent acknowledgement pending until explicit
 native recovery succeeds. Completion is still distinct from task correctness,
 and benchmark results do not adopt proposed changes.
+
+## Interpreting composite cost
+
+The existing Scorecard `:spend` retains its historical receipt meaning. For an
+LLM candidate it currently describes the root Run's model usage; it does not
+establish complete solver/critic subtree or independent grading cost. Generated
+composite reports state this limit, and coordinator instructions prohibit using
+that field alone to select a cheaper composite. Do not replace it with wallet
+allocations, returns or outstanding grants.
+
+The control-store chat usage ledger retains observed per-model token quantities
+after discard, so a dated diagnostic can inspect them independently of candidate
+files. Missing provider dimensions/completeness information is not a known zero.
+Durable own-Run measurements followed by a bounded, explicitly scoped subtree
+projection remain the next accounting-observation step; existing immutable
+Attempts and Scorecards must not be rewritten.

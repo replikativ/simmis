@@ -23,6 +23,8 @@
        "with simmis.benchmarks/run! and its declared candidate profile plus an explicit "
        ":resources grant from your current balance. You may revise prompts/candidates, "
        "but cannot replace its checker, dataset or fixtures. "
+       "Scorecard spend may omit child Runs and independent grading; do not treat it as "
+       "whole-workflow cost or select a composite as cheaper using that field alone. "
        "Prefer small saved Clojure forms, parse them before load-string, and retain partial work. "
        "Use simmis.results/attempt-files and simmis.results/attempt-file for certified "
        "completion outputs (base64 byte chunks), or agent/attempt-output for explicitly "

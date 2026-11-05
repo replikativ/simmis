@@ -98,7 +98,16 @@ class MCP:
 
     def call(self, name, arguments):
         result = self.request("tools/call", {"name": name, "arguments": arguments})
-        if not isinstance(result, dict) or result.get("isError"):
+        if not isinstance(result, dict):
+            raise ValueError("Workspace read refused; check access or restart after workspace changes")
+        if result.get("isError"):
+            structured = result.get("structuredContent")
+            error = structured.get("error") if isinstance(structured, dict) else None
+            if isinstance(error, dict) and error.get("type") == "result-too-large":
+                raise ValueError(
+                    "MCP result too large; the operation may have completed. "
+                    "Request a bounded summary or artifact chunks; do not resubmit a write with a new request id."
+                )
             raise ValueError("Workspace read refused; check access or restart after workspace changes")
         content = result.get("content", [])
         # Dvergr's text contains the original value. A map may legitimately
