@@ -333,10 +333,24 @@
                        :no-reasoning? (reasoning-disabled-for-tools? provider model)})]))
                 curated)))
 
-(defn choice
-  "Picker row for `value`, or nil when the value is outside the curated list."
+(defn- effort-choice
+  "`<curated model id>@<effort>`: the curated exact-model row for the base id,
+   restated as that candidate. Only an effort the base model declares is a
+   choice; families and versioned rows take no effort suffix."
   [value]
-  (some #(when (= value (:value %)) %) (choices)))
+  (when-let [[_ base effort] (re-matches #"(.+)@([a-z]+)" (str value))]
+    (let [row (some #(when (and (= :model (:kind %)) (= base (:value %))) %) (choices))]
+      (when (and row (some #{effort} (:reasoning-efforts (registry/get-model base))))
+        (assoc row :value value :resolves value
+               :label (str (:label row) " · " effort " effort"))))))
+
+(defn choice
+  "Picker row for `value`, or nil when the value is outside the curated list.
+   A curated exact model with a declared reasoning effort (`<id>@<effort>`) is
+   a choice of its own, with the base model's availability."
+  [value]
+  (or (some #(when (= value (:value %)) %) (choices))
+      (effort-choice value)))
 
 (defn require-available-choice!
   "Return the curated available row, or reject an unavailable/unknown choice."

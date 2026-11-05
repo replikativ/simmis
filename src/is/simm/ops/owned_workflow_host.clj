@@ -14,6 +14,7 @@
    :simmis/benchmark-result-retry :write
    :simmis/workflow-list :read :simmis/workflow-source :read
    :simmis/workflow-check :read :simmis/workflow-schedule-list :read
+   :simmis/models :read
    :simmis/workflow-write :write
    :simmis/workflow-run :merge :simmis/benchmark :merge :simmis/cli-benchmark :merge
    :simmis/workflow-output-collect :merge :simmis/workflow-failure-recover :merge

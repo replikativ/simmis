@@ -1,48 +1,18 @@
 (ns is.simm.ops.workflow-readiness
   "Read-only workflow choices and the actual shared Room wallet observation."
-  (:require [clojure.string :as str]
-            [datahike.api :as d]
-            [dvergr.model.registry :as registry]
+  (:require [datahike.api :as d]
             [dvergr.resource :as resource]
             [dvergr.runtime.preparation :as preparation]
-            [is.simm.model.model-catalog :as catalog]
+            [is.simm.model.candidate-models :as candidate-models]
             [is.simm.model.model-selection :as selection]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.file-output-adoption :as adoption]
-            [is.simm.ops.work :as work]
             [is.simm.runtimes.application-ops :as application]
             [org.replikativ.spindel.engine.core :as ec])
   (:import [java.math BigDecimal BigInteger]))
 
 (defn- refuse! []
   (throw (ex-info "Workflow readiness unavailable" {:type ::unavailable})))
-
-(defn- local-model-options
-  "Local registered metadata and credential presence only. No catalog refresh,
-   provider initialization, token refresh, model request or implicit selection."
-  []
-  (let [models (->> (registry/list-models)
-                    (filter (fn [{:keys [id provider api-type]}]
-                              (and (string? id) (<= 1 (count id) 200)
-                                   (not (str/blank? id)) (not (re-find #"[\p{Cntrl}]" id))
-                                   (contains? work/dispatch-accounted-providers provider)
-                                   (contains? (:implemented-api-types (selection/provider-contract provider)) api-type))))
-                    (sort-by :id) vec)
-        present (into {} (map (fn [provider] [provider (selection/credential-present? provider)]))
-                      (set (map :provider models)))]
-    {:models
-     (mapv (fn [{:keys [id provider api-type]}]
-             (let [label (str (catalog/model-label id))]
-              {:id id :provider provider :api-type api-type
-              :label (subs label 0 (min 200 (count label)))
-              :provider-label (catalog/provider-label provider)
-              :credential-status (if (get present provider) :present :undetected)
-              :credential-label (if (get present provider)
-                                  (if (= :codex-subscription provider) "Login present; connection not tested"
-                                      "Credential configured; account access not checked")
-                                  "Default credential not detected; connection not verified")}))
-           models)
-     :models-truncated? (> (count models) 256)}))
 
 (defn- exact-quantity [value]
   (let [value (if (nil? value) 0 value)
@@ -82,7 +52,7 @@
    page. No catalog refresh or claim of account access."
   ([] (exact-model-options nil))
   ([choice]
-   (let [{:keys [models] :as data} (local-model-options)
+   (let [{:keys [models] :as data} (candidate-models/options)
          selected (selection/registered-choice choice models)
          first-page (vec (take 256 models))
          selected-row (some #(when (= selected (:id %)) %) models)]

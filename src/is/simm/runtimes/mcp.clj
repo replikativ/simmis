@@ -35,7 +35,7 @@
           "scorecard_list" "scorecard_detail" "experiment_progress" "experiment_report"
           "catalog_list" "simmis_attempt-files" "simmis_attempt-file"
           "simmis_workspace-bundle" "simmis_workspace-bundle-chunk"
-          "simmis_workflow-schedule-list"}))
+          "simmis_workflow-schedule-list" "simmis_models"}))
 
 (def work-tools
   (into read-tools #{"simmis_post" "simmis_task" "simmis_coordinator" "simmis_work-allowance"

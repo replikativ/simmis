@@ -950,7 +950,9 @@ UUID. UUIDs resolve through the current system database before authorization
 and Attempt lookup; an unknown UUID never falls back to a same-spelled slug.
 
 The selected MCP surface authors, runs and benchmarks named workflows;
-freshly minted read credentials additionally expose `simmis_workflow-schedule-list`.
+freshly minted read credentials additionally expose `simmis_workflow-schedule-list`
+and the metadata-only `simmis_models` (installed models and their reasoning
+efforts; Room read is its authorization scope, and it grants no spending).
 Fresh work credentials expose `simmis_workflow-schedule-create` and
 `simmis_workflow-schedule-set-enabled`; older credentials keep their literal
 tool ceilings. Schedule writes require room merge authority and benchmarks also
