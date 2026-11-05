@@ -15,6 +15,21 @@ spec.loader.exec_module(workspace)
 
 
 class WorkspaceTest(unittest.TestCase):
+    def test_oversized_result_explains_uncertain_outcome_without_retrying(self):
+        client = workspace.MCP("http://127.0.0.1:47990/mcp", "synthetic-token")
+        calls = []
+
+        def request(*args):
+            calls.append(args)
+            return {"isError": True, "structuredContent": {
+                "error": {"type": "result-too-large", "message": "DO-NOT-EXPOSE"}}}
+
+        client.request = request
+        with self.assertRaisesRegex(ValueError, "operation may have completed") as caught:
+            client.call("attempt_detail", {"id": "synthetic"})
+        self.assertNotIn("DO-NOT-EXPOSE", str(caught.exception))
+        self.assertEqual(len(calls), 1)
+
     def test_native_business_result_is_not_unwrapped_as_an_rpc_envelope(self):
         client = workspace.MCP("http://127.0.0.1:47990/mcp", "synthetic-token")
         attempt = {"id": "attempt", "reward": 1, "result": {"summary": "Done"}}
