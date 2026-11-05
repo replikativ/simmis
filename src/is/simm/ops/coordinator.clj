@@ -1,10 +1,7 @@
 (ns is.simm.ops.coordinator
   "Explicit recursive work admission through the existing work journal and Jobs."
-  (:require [dvergr.agent.environment :as environment]
-            [dvergr.agent.evaluation :as evaluation]
-            [dvergr.agent.roster :as roster]
-            [is.simm.model.work-requests :as requests]
-            [is.simm.ops.coordinator-sandbox :as sandbox]
+  (:require [is.simm.model.work-requests :as requests]
+            [is.simm.ops.workflow-profiles :as profiles]
             [is.simm.ops.coordinator-benchmark :as benchmark]
             [is.simm.ops.owned-reads :as reads]
             [is.simm.ops.owned-room-operation :as room-operation]
@@ -16,41 +13,10 @@
 (def schema (conj work/task-schema [:benchmark {:optional true} benchmark/schema]))
 
 (defn prepare [input]
-  (let [base (work/prepare input)
-        team (sandbox/restrict-team (:team base))
-        agent (:agent base)
-        team (roster/revise-agent
-              team agent
-              {:prompt (str "Coordinate bounded work in your isolated workspace using dvergr.agent. "
-                            "Read agent/delegation-policy, agent/offered and agent/balance first. "
-                            "Children must select exactly #{:simmis/file-worker} or #{:simmis/coordinator}, "
-                            "permitted tools and an explicit permitted native provider. Split your existing "
-                            "money/dispatch balance; nothing funds itself. Child experiments use offered "
-                            "completion verification only, not a claim of task correctness. "
-                            "Put discard settlement in each Environment's :world {:isolation :ctx :settlement :discard}; "
-                            "Experiment metadata does not select settlement. "
-                            "If simmis.benchmarks/offered is nonempty, its exact admitted benchmark can be run "
-                            "with simmis.benchmarks/run! and a file-worker candidate roster plus an explicit "
-                            ":resources grant from your current balance. You may revise prompts/candidates, "
-                            "but cannot replace its checker, dataset or fixtures. "
-                            "Prefer small saved Clojure forms, parse them before load-string, and retain partial work. "
-                            "Use simmis.results/attempt-files and simmis.results/attempt-file for certified "
-                            "completion outputs (base64 byte chunks), or agent/attempt-output for explicitly "
-                            "published data. Put final deliverables under /out. Do not publish externally or merge trunk.")})
-        original (:environment base)
-        env (environment/make-environment
-             {:id :simmis/coordinated-work :task (:environment/task original)
-              :verifier {:id :simmis/work-completion :version 1 :basis "simmis-work-completion-v1"}
-              :limits (:environment/limits original)
-              :world (update (:environment/world original) :effects update :admit conj :lifecycle)})
-        capabilities {:evaluators {(evaluation/evaluator-ref work/completion) work/completion}
-                      :world-setups {}}]
-    (assoc base :team team :environment env :request-kind :coordinator
-           :execution-kind :workflow-coordinator
-           :delegation-policy sandbox/delegation-policy :experiment-capabilities capabilities
-           :basis {:submission input :candidate (roster/agent team agent) :environment env
-                   :sandbox-policy sandbox/policy
-                   :verifiers (set (keys (:evaluators capabilities)))})))
+  (let [base (profiles/prepare (work/prepare input) {:profile "coordinator"})]
+    (-> base
+        (assoc :request-kind :coordinator :execution-kind :workflow-coordinator)
+        (assoc-in [:basis :submission] input))))
 
 (defn submit! [conn host-ctx principal room-id room input]
   (when-not (m/validate work/task-schema input)

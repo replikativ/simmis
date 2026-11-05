@@ -86,7 +86,7 @@
                  (when-not (some #{ref} offers) (refused! "Benchmark is not offered to this Run"))
                  (invoke ref team opts)))}
        {'offered ['([]) "Exact host-admitted benchmark refs. Empty means no scoring authority; authored checkers need separate inspected admission."]
-        'run! ['([team opts] [ref team opts]) "Benchmark one file-worker candidate prompt/model revision per call against one fixed admitted dataset/checker in clean fixture worlds. opts: :resources required aggregate grant, :parallelism optional 1. Returns native owned result Spin with Scorecard. Revise candidates, inspect results and repeat within your remaining balance."]}))
+        'run! ['([team opts] [ref team opts]) "Benchmark one candidate prompt/model revision per call using the offer's declared candidate profile against one fixed admitted dataset/checker in clean fixture worlds. opts: :resources required aggregate grant, :parallelism optional 1. Returns native owned result Spin with Scorecard. Revise candidates, inspect results and repeat within your remaining balance."]}))
     (sci/add-namespace!
      ctx 'simmis.results
      (doc/with-docs

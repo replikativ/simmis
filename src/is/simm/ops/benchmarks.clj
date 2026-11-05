@@ -22,6 +22,7 @@
             [is.simm.ops.knowledge-inputs :as knowledge-inputs]
             [is.simm.ops.knowledge-execution-origin :as execution-origin]
             [is.simm.ops.work :as work]
+            [is.simm.ops.workflow-profiles :as profiles]
             [is.simm.ops.work-sandbox :as work-sandbox]
             [is.simm.ops.workflows :as workflows]
             [is.simm.runtimes.operation-lifetime :as lifetime]
@@ -200,21 +201,26 @@
       (invalid! "Each benchmark cell needs one explicit CLI Run admission"))
     (when-not (and (= "discard" (:settlement limits))
                    (<= 1 (count (catalog/task bundle {})) 16000)
-                   (contains? #{nil "developer"} (:profile definition))
+                   (contains? profiles/supported (:profile definition))
                    (contains? #{nil ["/out"]} (:capture definition))
                    (not-any? #(contains? definition %)
                              [:judge :web :fetched :allowed-sources :blocked-sources]))
-      (invalid! "Initial benchmarks require offline developer workflows, /out capture and discard settlement; no judge or web effects"))
+      (invalid! "Initial benchmarks require offline developer or coordinator workflows, /out capture and discard settlement; no judge or web effects"))
+    (when (and (profiles/recursive? definition) (not= :native execution))
+      (invalid! "Coordinator workflows require native copied-fixture execution"))
     (let [setup (checkers/world-setup bundle selection-policy)
           evaluator (checkers/evaluator bundle selection-policy)
           verifier (evaluation/evaluator-ref evaluator)
           cell-limits (assoc limits :budget-microdollars dollars :max-dispatches dispatches)
           plan (catalog/experiment-plan bundle
                                         {:models models :cases selected :tier :ad-hoc
-                                         :prompt work-sandbox/candidate-prompt
+                                         :prompt (if (profiles/recursive? definition) profiles/coordinator-prompt
+                                                     work-sandbox/candidate-prompt)
                                          :budget-dollars (/ dollars 1000000.0)
                                          :timeout-ms (:timeout-ms limits)})
-          plan (update plan :team work-sandbox/restrict-team)
+          compiled (profiles/compile-team (:team plan) definition)
+          plan (-> plan (assoc :team (:team compiled))
+                   (merge (select-keys compiled [:delegation-policy :experiment-capabilities])))
           _ (when-not (every? #(contains? (if cli? #{:claude-code} work/dispatch-accounted-providers)
                                           (get-in % [:agent/model-policy :provider]))
                               (roster/agents (:team plan)))
@@ -246,8 +252,8 @@
                                    {:max-model-steps (:max-model-steps limits)
                                     :budget-dollars (/ dollars 1000000.0)})
                     :world (assoc (:environment/world env)
-                                  :effects work/effects :resources (if cli? {"cli-run-admission" 1M}
-                                                                       (work/resources cell-limits))
+                                  :effects (:effects compiled) :resources (if cli? {"cli-run-admission" 1M}
+                                                                              (work/resources cell-limits))
                                   :setup (evaluation/world-setup-ref setup))
                     :metadata (:environment/metadata env)}))
                 (:environments plan))
@@ -266,7 +272,8 @@
                                                                     :accounting :cli-run-admission :provider-policy provider-policy :owner owner
                                                                     :limits limits}
                                                                    {:adapter :native-provider :program :llm})
-                                               :worker-sandbox work-sandbox/policy
+                                               :worker-sandbox (get-in compiled [:basis :sandbox-policy])
+                                               :simmis/execution-profile (:basis compiled)
                                                :simmis/workflow {:name name
                                                                  :title (some-> (:title definition) (subs 0 (min 256 (count (:title definition)))))
                                                                  :bundle (str expected-bundle)}

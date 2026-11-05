@@ -343,7 +343,11 @@
         ;; witnesses before a failed wiki update can be recovered.
         ;; 0.1.386 shares the caller-owned, bounded checker interpreter with
         ;; catalog evaluations; Simmis retains its stricter result policy.
-        org.replikativ/dvergr {:mvn/version "0.1.386"
+        ;; Reviewed PR #431: independent child-verifier scope and original
+        ;; Run control owner for recursive candidates on clean fixtures.
+        ;; Replace with its coordinated Maven release after landing upstream.
+        org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr.git"
+                               :git/sha "4d1a6678bd2a54b258427e9892ae71eeb78d02c1"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.

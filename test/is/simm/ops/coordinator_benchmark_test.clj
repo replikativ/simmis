@@ -290,3 +290,54 @@
 
 (deftest nested-coordinator-inherits-the-offer-and-keeps-private-history-out-of-candidates
   (exercise-recursive-proof true))
+
+(deftest recursive-offer-preserves-candidate-revision-and-separates-child-authority
+  (let [scorer (evaluation/make-evaluator
+                {:id :test/private-recursive :observe (fn [{:keys [default]}] default)
+                 :verify (fn [& _] {:checks {:private true} :reward 1.0})})
+        setup (evaluation/make-world-setup {:id :test/recursive-fixed :basis :fixture :prepare (fn [_] {})})
+        env (environment/make-environment
+             {:id :test/recursive-fixed :task :work :verifier {:id :test/private-recursive :version 1}
+              :world {:isolation :ctx :settlement :discard}})
+        definition (experiment/make-experiment
+                    {:id :test/recursive-fixed
+                     :dataset (experiment/make-dataset {:id :test/recursive-fixed :environments [env]})
+                     :candidates [{:agent/id :candidate :agent/version 1}]})
+        slot (Semaphore. 1)
+        offer {:basis {:limits cell-limits}
+               :prepared {:bundle {:definition {:profile "coordinator"}} :plan {:experiment definition}}
+               :evaluator scorer :setup setup :invocation-slot slot}
+        authority {:delegation-policy sandbox/delegation-policy}
+        team (roster/make-agent (roster/make-roster)
+                                {:id :candidate :prompt "Revised composite instructions"
+                                 :program {:kind :echo} :sandbox #{:simmis/coordinator}})
+        captured (atom nil)]
+    (with-redefs [subexperiment/start!
+                  (fn [control working compiled _ _ admission host]
+                    (reset! captured {:control control :working working :team compiled
+                                      :admission admission :host host})
+                    ((:admit! host) (random-uuid))
+                    :native-child)]
+      (is (= :native-child
+             (benchmark/invoke! offer :control (constantly :fixture) (fn [])
+                                {:control-room :control :work-room :caller :authority authority}
+                                team {:resources {"microUSD" 10000M "model-dispatch" 2M}})))
+      (let [{:keys [control working team admission host]} @captured
+            child (:candidate-options host)]
+        (is (= [:control :caller :fixture] [control working (:world-parent host)]))
+        (is (= "Revised composite instructions" (:agent/prompt (first (roster/agents team)))))
+        (is (= #{:experiment-capabilities :delegation-policy} (set (keys child))))
+        (is (= sandbox/delegation-policy (:delegation-policy child)))
+        (is (= #{(evaluation/evaluator-ref work/completion)}
+               (set (keys (get-in child [:experiment-capabilities :evaluators])))))
+        (is (= {} (get-in child [:experiment-capabilities :world-setups])))
+        (is (not (contains? (get-in child [:experiment-capabilities :evaluators])
+                            (evaluation/evaluator-ref scorer))))
+        (is (= #{(evaluation/evaluator-ref scorer)}
+               (set (keys (get-in admission [:experiment-capabilities :evaluators])))))
+        (is (= #{(evaluation/world-setup-ref setup)}
+               (set (keys (get-in admission [:experiment-capabilities :world-setups])))))
+        (is (= 0 (.availablePermits slot)))
+        ((:settled! host) :completed nil)
+        ((:settled! host) :completed nil)
+        (is (= 1 (.availablePermits slot)))))))

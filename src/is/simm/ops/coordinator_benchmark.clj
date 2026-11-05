@@ -16,6 +16,7 @@
             [is.simm.ops.work :as work]
             [is.simm.ops.work-sandbox :as worker]
             [is.simm.ops.workflows :as workflows]
+            [is.simm.ops.workflow-profiles :as profiles]
             [is.simm.runtimes.operation-lifetime :as lifetime]
             [malli.core :as m]
             [org.replikativ.spindel.engine.core :as ec])
@@ -30,8 +31,8 @@
    [:limits work/limits-schema]])
 
 (def invocation-id :simmis/admitted-benchmark)
-(def policy {:version 1 :source :owned-inspected-snapshot :origin :clean-fixture
-             :candidates :file-worker-only :dataset :fixed :funding :parent-run
+(def policy {:version 2 :source :owned-inspected-snapshot :origin :clean-fixture
+             :candidates :declared-profile :dataset :fixed :funding :parent-run
              :capture :exact-admitted-verifier :max-candidates 1 :max-parallelism 1
              :max-active-invocations 1})
 
@@ -70,7 +71,8 @@
                :limits (:limits admission) :policy policy}
         ref {:invocation/id invocation-id :invocation/version 1
              :invocation/basis {:admission-id (hasch/uuid basis)
-                                :file-verifier (evaluation/evaluator-ref evaluator)}}]
+                                :file-verifier (evaluation/evaluator-ref evaluator)
+                                :candidate-profile (get-in prepared [:plan :experiment :experiment/metadata :simmis/execution-profile])}}]
     {:ref ref :basis basis :prepared prepared :evaluator evaluator :setup setup}))
 
 (defn current!
@@ -88,21 +90,29 @@
     (benchmarks/authorize-in! (:control-db binding) principal (:room-id original)))
   nil)
 
-(defn candidate-team
+(defn- candidate-profile
   "Normalize candidate values through ordinary constructors and reject any
    broader sandbox, interpreter, tools or transport before native admission."
-  [team parent-authority]
+  [team parent-authority definition]
   (when-not (and (map? team) (roster/data-value? team)
                  (<= 1 (count (roster/agents team)) (:max-candidates policy)))
     (refuse! :invalid-candidates))
   (let [team (reduce roster/make-agent (roster/make-roster) (roster/agents team))
+        recursive? (profiles/recursive? definition)
         ceiling {:tools #{:clojure_eval :read_file :write_file :edit_file}
-                 :sandboxes #{#{worker/id}} :providers work/dispatch-accounted-providers}]
+                 :sandboxes #{#{(if recursive? :simmis/coordinator worker/id)}}
+                 :providers work/dispatch-accounted-providers}]
     (doseq [candidate (roster/agents team)]
       (authority/check-agent! candidate {:delegation-policy ceiling})
       (authority/check-agent! candidate parent-authority))
-    ;; Register the existing installer, preserving exactly this sandbox.
-    (worker/restrict-team team)))
+    ;; Compile only AFTER checking the requested surface: never hide a request
+    ;; for broader authority by silently replacing it with a restricted agent.
+    (profiles/compile-team team definition)))
+
+(defn candidate-team
+  "Existing fixed file-worker candidate constructor."
+  [team parent-authority]
+  (:team (candidate-profile team parent-authority {})))
 
 (defn invoke!
   "Trusted fixed-plan handler. The generic native bridge never validates these
@@ -121,7 +131,9 @@
       (refuse! :grant-exceeds-admission)))
   (when-not (identical? original-room control-room) (refuse! :control-owner-changed))
   (authorize!)
-  (let [team (candidate-team team authority)
+  (let [source-definition (get-in offer [:prepared :bundle :definition])
+        compiled (candidate-profile team authority source-definition)
+        team (:team compiled)
         original (get-in offer [:prepared :plan :experiment])
         definition (experiment/make-experiment
                     {:id :simmis/coordinator-benchmark
@@ -136,16 +148,20 @@
         _ (when-not (instance? Semaphore slot) (refuse! :missing-physical-owner))
         held (AtomicBoolean. false)]
     ;; This scope is never offered to arbitrary agent-built EnvironmentDefs.
-    ;; Candidates have the file-worker sandbox and cannot hire coordinators.
+    ;; Recursive candidates get completion-only child offers, independently
+    ;; of the private evaluator/setup used to admit and score this experiment.
     (subexperiment/start! control-room work-room team definition (assoc opts :parallelism 1)
                           (assoc authority :experiment-capabilities scope)
-                          {:world-parent (fixture-parent)
-                           :admit! (fn [_]
-                                     (when-not (.tryAcquire ^Semaphore slot)
-                                       (throw (ex-info "Another benchmark invocation is still physically active" {:type ::busy})))
-                                     (.set held true))
-                           :settled! (fn [_ _]
-                                       (when (.compareAndSet held true false) (.release ^Semaphore slot)))})))
+                          (cond-> {:world-parent (fixture-parent)
+                                   :admit! (fn [_]
+                                             (when-not (.tryAcquire ^Semaphore slot)
+                                               (throw (ex-info "Another benchmark invocation is still physically active" {:type ::busy})))
+                                             (.set held true))
+                                   :settled! (fn [_ _]
+                                               (when (.compareAndSet held true false) (.release ^Semaphore slot)))}
+                            (profiles/recursive? source-definition)
+                            (assoc :candidate-options
+                                   (select-keys compiled [:experiment-capabilities :delegation-policy]))))))
 
 (defn attach
   "One exact fixture/capacity owner for the outer coordinator's physical
