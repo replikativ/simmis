@@ -578,7 +578,7 @@
                 interrupted? (.isInterrupted (Thread/currentThread))]
             (is (identical? failure error))
             (is interrupted?))
-          (is (= {:bundle 1 :dataset (if (= stage :bundle) 0 1)} @calls)))
+          (is (= {:bundle (if (= stage :bundle) 1 2) :dataset (if (= stage :bundle) 0 1)} @calls)))
         (finally (Thread/interrupted))))))
 
 (deftest ordinary-programs-and-benchmark-packs-have-distinct-readiness
@@ -595,3 +595,21 @@
     (let [source (workflows/details-of "broken" {:files {"workflow.edn" definition} :manifest []})]
       (is (false? (get-in source [:inspection :ok])))
       (is (seq (get-in source [:inspection :problems]))))))
+
+(deftest unfinished-benchmark-metadata-does-not-block-an-ordinary-program
+  (doseq [manifest ["{:version 1 :splits {:development [\"not-written\"]}}" "{:unclosed"]]
+    (let [files (assoc fixture "benchmark.edn" manifest)
+          result (workflows/details-of "echo" {:files files :manifest []})]
+      (is (true? (get-in result [:inspection :ok])))
+      (is (false? (get-in result [:inspection :benchmark-ready?])))
+      (is (seq (get-in result [:inspection :benchmark-problems])))
+      (is (false? (:ok (workflows/inspect-snapshot "echo" {:files files :manifest []})))))))
+
+(deftest unexpected-diagnostics-cannot-be-published-under-validator-tags
+  (with-redefs [dataset/manifest (fn [& _]
+                                  (throw (ex-info "SECRET/native/config"
+                                                  {:type :is.simm.ops.benchmarks/invalid})))]
+    (let [result (workflows/details-of "echo" {:files fixture :manifest []})]
+      (is (true? (get-in result [:inspection :ok])))
+      (is (false? (get-in result [:inspection :benchmark-ready?])))
+      (is (not (clojure.string/includes? (pr-str result) "SECRET"))))))

@@ -1224,6 +1224,10 @@ validation purpose. They do not require a benchmark checker or fixtures. Strict
 benchmark validation remains independent: evaluation requires executable cases
 or fixtures and a checker. Inspection reports ordinary and benchmark readiness
 separately with bounded fixed diagnostics; it never evaluates the checker.
+An unfinished or malformed `benchmark.edn` affects benchmark readiness only;
+it does not invalidate the ordinary program. Fixed diagnostics have the same
+meaning through the agent helper, owned editor and MCP. Structural benchmark
+readiness does not establish gold completeness, calibration or scientific validity.
 
 Benchmark setup admits one pinned workflow revision with one to three explicit
 model candidates. All candidates share the same selected cases and repetitions,

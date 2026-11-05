@@ -211,7 +211,8 @@
        :validator-problems (vec (take 10 problems))}
       (try
         (let [bundle (catalog/bundle name (:files snapshot) purpose)
-              evaluation (dataset/manifest (:files snapshot) (keys (:cases bundle)))]
+              evaluation (when (= :benchmark purpose)
+                           (dataset/manifest (:files snapshot) (keys (:cases bundle))))]
           (when-not (m/validate catalog/Definition (:definition bundle))
             (invalid! "workflow.edn must be a valid workflow definition map"))
           (cond-> {:ok true :name name :bundle (str (:id bundle))
@@ -257,6 +258,36 @@
                     (str/starts-with? % "cases/")) (keys files)))
     (conj "Add executable fixtures or cases; Markdown evaluation examples alone are not a benchmark.")))
 
+(def ^:private fixed-diagnostics
+  ;; A helper's exception type is not permission to publish its message. Keep
+  ;; these literal author-facing sentences identical across SCI, MCP and UI.
+  #{"workflow.edn is missing."
+    "workflow.edn is not valid EDN."
+    "workflow.edn needs a title, task and supported definition fields."
+    "Ordinary workflow parameters must use unqualified names and literal string values."
+    "Workflow source has invalid definition, fixture or evaluation metadata."
+    "Benchmark source has invalid definition, fixture or evaluation metadata."
+    "Add checker.clj to score benchmark outputs."
+    "Add executable fixtures or cases; Markdown evaluation examples alone are not a benchmark."
+    "benchmark.edn must be bounded EDN text"
+    "Invalid benchmark.edn"
+    "Invalid benchmark split manifest"
+    "Benchmark splits must partition all named cases without duplicates"})
+
+(defn sanitize-inspection
+  "Only fixed bounded diagnostics cross the authoring boundary. Helper error
+   tags and arbitrary messages never establish diagnostic authority."
+  [inspection]
+  (reduce (fn [result key]
+            (if (contains? result key)
+              (update result key
+                      #(mapv (fn [message]
+                               (if (contains? fixed-diagnostics message) message
+                                   "Workflow source is incomplete or invalid; inspect its files"))
+                             (take 10 %)))
+              result))
+          inspection [:problems :benchmark-problems]))
+
 (defn details-of
   "HOST INTERNAL pure formatting of an already captured snapshot. No live
    Room, DB or content-store reads; checker text remains inert. Captured data
@@ -280,7 +311,7 @@
                      (and (not (:ok program)) (empty? problems))
                      (assoc :problems (or (:validator-problems program)
                                           ["Workflow source has invalid definition, fixture or evaluation metadata."])))
-        inspection (dissoc inspection :validator-problems)]
+        inspection (sanitize-inspection (dissoc inspection :validator-problems))]
     (cond-> {:name name :revision revision
              :files (:files source) :inspection inspection
              :setup (try {:status :ready :intent (proposal/read-intent (get-in source [:files "proposal.edn"]))}
