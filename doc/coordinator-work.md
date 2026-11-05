@@ -132,13 +132,30 @@ Inside the coordinator's SCI interpreter:
              :model-policy {:provider :codex-subscription
                             :model "codex-subscription-luna-6"}
              :program {:kind :llm :max-model-steps 4 :auto-compact? false}})]
-  @(simmis.benchmarks/run!
+  (simmis.benchmarks/start!
     team {:resources {"microUSD" 20000M "model-dispatch" 4M}}))
 ```
 
 Use an installed, admitted provider/model and a grant sufficient for the fixed
 case set, within the benchmark's admitted ceiling and the current parent
-balance. The result is the ordinary native result Spin containing its Scorecard.
+balance. `start!` returns a receipt with `:job`, `:owner-run` and the exact
+`:invocation`. Next call the model tool `await_child` with that Job UUID. It waits
+in the supervised native worker, outside the SCI evaluation timeout, without
+spending model turns on polling. It returns only after acknowledged native
+settlement, with the exact Scorecard ID and up to 32 entries (`:next-offset`
+continues the result). Save that ID and the conclusions in an `/out` report.
+
+If a start response is lost, call `await_child` without a Job to list this Run's
+admitted child receipts; follow `:next-offset` if present. Never start another
+experiment merely to recover a missing response. Held cleanup, cancellation,
+expired deadlines, incomplete results and missing settlement witnesses are not
+successful benchmarks. A process restart does not resume a lost continuation.
+The legacy Spin-returning `run!` remains available to explicitly managed code;
+LLM coordinators should use `start!` followed by the native tool.
+
+This await surface covers exact admitted invocation Jobs. It does not grant a
+recursive candidate the outer private evaluator, nor general access to sibling
+Runs. Completion-only child experiments keep their existing API.
 Its entries use `:attempt/id`; `simmis.results/attempt-files` and
 `simmis.results/attempt-file` read only captured `/out` files for descendants
 certified by the exact admitted verifier. They never expose checker gold,

@@ -6,6 +6,7 @@
             [dvergr.agent.evaluation :as evaluation]
             [dvergr.agent.environment :as environment]
             [dvergr.agent.experiment :as experiment]
+            [dvergr.agent.experiment-observation :as observation]
             [dvergr.agent.subexperiment :as subexperiment]
             [dvergr.runtime.preparation :as preparation]
             [dvergr.agent.roster :as roster]
@@ -143,15 +144,29 @@
                                                 (fn [] (throw (AssertionError. "No authority read")))
                                                 {} {} {:resources {} key :forged}))))))
 
-(defn- exercise-recursive-proof [nested?]
+(def receipt-start-code
+  (str "(def bench-team (dvergr.agent/make-agent (dvergr.agent/roster) "
+       "{:id :candidate :prompt \"First candidate\" :tools #{:clojure_eval} :sandbox #{:simmis/file-worker} "
+       ":model-policy {:provider :codex-subscription :model \"codex-subscription-luna-6\"} "
+       ":program {:kind :llm :max-model-steps 2 :auto-compact? false}})) "
+       "(simmis.benchmarks/start! bench-team {:resources {\"microUSD\" 10000M \"model-dispatch\" 2M}})"))
+
+(defn- await-response [receipt id model]
+  (response [{:type "response.output_item.done"
+              :item {:type "function_call" :call_id id :name "await_child"
+                     :arguments (json/write-value-as-string {:job (str (:job receipt))})}}
+             {:type "response.completed" :response {:id id :model model :usage {:input_tokens 1 :output_tokens 1}}}]))
+
+(defn- exercise-recursive-proof [nested? & [receipt?]]
   (owned-fixture/with-fixture
     false
     (fn [{:keys [conn w host room owned attached]}]
       (d/transact conn [{:party/id (:owner w) :party/role :admin}])
       (seed! owned)
-      (let [p (ops/party-principal (:owner w)) request (input host w)
+      (let [p (ops/party-principal (:owner w)) request (cond-> (input host w) receipt? (assoc-in [:limits :max-model-steps] 6))
             clean (discourse/make-room {:id (keyword (str "coordinator-clean-" (random-uuid))) :store (memory/make)})
             clean-conn (atom nil) slot (Semaphore. 1) retired (atom 0) closed? (atom false)
+            receipts (atom []) observed (atom []) native-start subexperiment/start! native-await observation/await!
             parent-calls (atom 0) delegated-calls (atom 0) child-calls (atom 0) completions (atom {}) start jobs/start!
             owned-before (query/worktree @owned) attached-before (query/worktree @attached)
             provider (codex/create {:credentials (gateway/static-credentials :fixture {} #{"https://chatgpt.com"})})
@@ -166,7 +181,9 @@
           (reset! clean-conn (:conn (workspace/current-workspace))))
         (resource/mint! room {:id (random-uuid) :resources (work/resources limits)})
         (with-redefs-fn
-          {#'benchmarks/checker-slot slot #'benchmarks/pending-retirements (atom {})
+          {#'subexperiment/start! (fn [& args] (let [result (apply native-start args)] (when (map? result) (swap! receipts conj result)) result))
+           #'observation/await! (fn [& args] (let [result (apply native-await args)] (swap! observed conj result) result))
+           #'benchmarks/checker-slot slot #'benchmarks/pending-retirements (atom {})
            #'fixture/validate-receipt! (fn [_ _ value] value)
            #'fixture/create! (fn [& _] {:room clean :persistent-id (random-uuid)})
            #'fixture/retire! (fn [& _] (retire!))
@@ -175,7 +192,20 @@
            (fn [http]
              (let [body (json/read-value (:body http) json/keyword-keys-object-mapper) model (:model body)]
                (if (= "gpt-5.6-sol" model)
-                 (if (= 1 (swap! parent-calls inc)) (tool (if nested? nested-parent-code parent-code) "parent-benchmark-loop" model) (final "parent-done" model))
+                 (if receipt?
+                   (case (swap! parent-calls inc)
+                     1 (tool receipt-start-code "start-first" model)
+                     2 (await-response (first @receipts) "await-first" model)
+                     3 (do (is (str/includes? (pr-str body) (str (:scorecard-id (first @observed)))))
+                           (tool "(simmis.benchmarks/start! (dvergr.agent/revise-agent bench-team :candidate {:prompt \"Second candidate\"}) {:resources {\"microUSD\" 10000M \"model-dispatch\" 2M}})" "start-second" model))
+                     4 (await-response (second @receipts) "await-second" model)
+                     5 (do (is (str/includes? (pr-str body) (str (:scorecard-id (second @observed)))))
+                           (tool (str "(babashka.fs/create-dirs \"/out\") (spit \"/out/benchmark-review.edn\" "
+                                      (pr-str (pr-str {:rewards (mapv #(get-in % [:entries 0 :reward]) @observed)
+                                                       :scorecards (mapv :scorecard-id @observed)})) ")") "write-report" model))
+                     6 (final "parent-done" model)
+                     (throw (ex-info "Unexpected coordinator dispatch" {})))
+                   (if (= 1 (swap! parent-calls inc)) (tool (if nested? nested-parent-code parent-code) "parent-benchmark-loop" model) (final "parent-done" model)))
                  (if (= "gpt-6.1-sol" model)
                    (if (= 1 (swap! delegated-calls inc)) (tool delegated-code "delegated-benchmark" model)
                        (final "delegated-done" model))
@@ -205,12 +235,15 @@
                       (pr-str {:result-keys (keys (:result status))
                                :attempts (mapv #(select-keys % [:attempt/id :attempt/environment :attempt/evidence :attempt/receipt])
                                                (store/-list-attempts (:store room) (store/conversation-id room) {}))}))
-                  (is (= 2 @parent-calls)) (is (= 4 @child-calls))
+                  (is (= (if receipt? 6 2) @parent-calls))
+                  (when receipt?
+                    (is (= (mapv :scorecard-id @observed) (:scorecards report)))
+                    (is (every? #(some? (experiment/scorecard room %)) (:scorecards report)))) (is (= 4 @child-calls))
                   (is (= (if nested? 2 0) @delegated-calls))
                   (is (= 1 @retired)) (is (= 1 (.availablePermits slot)))
                   (is (= owned-before (query/worktree @owned)))
                   (is (= attached-before (query/worktree @attached)))
-                  (is (= {resource/microdollars 100000M resource/model-dispatches (if nested? 4M 6M)} (resource/balance room)))
+                  (is (= {resource/microdollars 100000M resource/model-dispatches (cond receipt? 2M nested? 4M :else 6M)} (resource/balance room)))
                   (with-redefs [benchmark/compile! (fn [& _] (throw (AssertionError. "Retry cannot read new source")))
                                 work/prepare (fn [& _] (throw (AssertionError. "Retry cannot resolve a model")))]
                     (is (= (:job result) (:job (coordinator/submit-owned! host p (str (:room w)) request)))))))
@@ -341,3 +374,6 @@
         ((:settled! host) :completed nil)
         ((:settled! host) :completed nil)
         (is (= 1 (.availablePermits slot)))))))
+
+(deftest coordinator-native-await-retains-an-exact-report-file
+  (exercise-recursive-proof false true))
