@@ -243,6 +243,12 @@
                (:revision analysis) (= (:revision analysis) (:revision (chart-state/saved-analysis draft))))
       (saved-positions/rich-positions analysis (:document base)))))
 
+(defn- wide-layout?
+  "Does the document ask for the wide reading column (`layout: wide` in its
+   front matter)? Front matter is parsed with string keys and values."
+  [analysis]
+  (= "wide" (get-in analysis [:frontmatter :properties "layout"])))
+
 (defn- document-view
   ([path draft a write?] (document-view path draft a write? nil nil {}))
   ([path draft a write? image-urls file-base] (document-view path draft a write? image-urls file-base {}))
@@ -289,7 +295,7 @@
                                           (if (get-in state [:saved-view-source [path (:view entry)]]) "Hide source" "Show source"))
                                (when (get-in state [:saved-view-source [path (:view entry)]])
                                  (el/pre {} (el/code {} (subs source (:from entry) (:to entry)))))))]
-    (el/div {:class "memory-document"}
+    (el/div {:class (if (wide-layout? analysis) "memory-document memory-document--wide" "memory-document")}
             (when (#{:read :rich} (:mode draft))
               (when-let [unplaced (seq (remove #(contains? placed [(:from %) (:to %)]) (saved-view-state/entries state path)))]
                 (el/section {:aria-label "Views from saved version"}
