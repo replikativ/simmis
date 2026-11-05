@@ -45,7 +45,7 @@
 
 (defn attach! [^js host ^js editor]
   (let [popup (.createElement js/document "div")
-        current (volatile! nil)
+        current (volatile! nil) press (volatile! nil)
         close! (fn [] (vreset! current nil) (.remove popup))
         anchor-at (fn [target]
                     (let [a (when (instance? js/Element target) (.closest target "a[data-memory-source-href]"))]
@@ -118,15 +118,34 @@
                   (.appendChild (.-body js/document) popup)
                   (position! anchor)))
         over! (fn [e] (when-let [anchor (anchor-at (.-target e))] (show! anchor)))
+        down! (fn [e]
+                (when (= 0 (.-button e))
+                  (vreset! press {:pointer (.-pointerId e) :x (.-clientX e) :y (.-clientY e) :down? true})
+                  (when (and (anchor-at (.-target e)) (not (.-shiftKey e)))
+                    ;; Focusing the editor can publish a selection and replace
+                    ;; its DOM between press and release, losing the click.
+                    ;; Links navigate without first entering the text editor.
+                    (.preventDefault e))))
+        move! (fn [e]
+                (when (and (:down? @press) (= (:pointer @press) (.-pointerId e))
+                           (> (+ (js/Math.abs (- (.-clientX e) (:x @press)))
+                                 (js/Math.abs (- (.-clientY e) (:y @press)))) 5))
+                  (vswap! press assoc :dragged? true)))
+        up! (fn [e]
+              (when (= (:pointer @press) (.-pointerId e))
+                (move! e)
+                (vswap! press assoc :down? false)))
+        cancel-press! (fn [_] (vreset! press nil))
         click! (fn [e]
                  (when-let [anchor (anchor-at (.-target e))]
                    (.preventDefault e)
                    ;; Shift-click extends a text selection. Preserve dragging
                    ;; through a link instead of turning a copy gesture into navigation.
-                   (when-not (or (.-shiftKey e) (and (not (or (.-ctrlKey e) (.-metaKey e)))
-                                                                    (some-> (js/window.getSelection) .-isCollapsed not)))
-                     (.stopPropagation e)
-                     (follow! host anchor (or (.-ctrlKey e) (.-metaKey e))) (close!))))
+                   (let [dragged? (:dragged? @press)]
+                     (vreset! press nil)
+                     (when-not (or (.-shiftKey e) dragged?)
+                       (.stopPropagation e)
+                       (follow! host anchor (or (.-ctrlKey e) (.-metaKey e))) (close!)))))
         key! (fn [e]
                (cond
                  (= "Escape" (.-key e)) (do (close!) (when (.contains popup (.-target e)) (.focus (.-view editor))))
@@ -144,6 +163,10 @@
     (set! (.-simmisCloseLinkActions host) close!)
     (.addEventListener popup "keydown" key!)
     (doseq [event ["pointerover" "focusin"]] (.addEventListener host event over!))
+    (.addEventListener host "pointerdown" down! true)
+    (.addEventListener js/document "pointermove" move! true)
+    (.addEventListener js/document "pointerup" up! true)
+    (.addEventListener js/document "pointercancel" cancel-press! true)
     (.addEventListener host "click" click! true)
     (.addEventListener host "keydown" key!)
     (.addEventListener host "simmis-follow-link" bridge!)
@@ -154,8 +177,13 @@
     (.on editor "update" close!)
     (fn []
       (close!)
+      (vreset! press nil)
       (set! (.-simmisCloseLinkActions host) nil)
       (doseq [event ["pointerover" "focusin"]] (.removeEventListener host event over!))
+      (.removeEventListener host "pointerdown" down! true)
+      (.removeEventListener js/document "pointermove" move! true)
+      (.removeEventListener js/document "pointerup" up! true)
+      (.removeEventListener js/document "pointercancel" cancel-press! true)
       (.removeEventListener host "click" click! true)
       (.removeEventListener host "keydown" key!)
       (.removeEventListener host "simmis-follow-link" bridge!)
