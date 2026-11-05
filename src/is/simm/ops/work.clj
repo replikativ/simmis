@@ -12,6 +12,7 @@
             [dvergr.model.registry :as models]
             [dvergr.resource :as resource]
             [is.simm.model.access :as access]
+            [is.simm.model.candidate-models :as candidate-models]
             [is.simm.model.knowledge-batches :as batches]
             [is.simm.model.knowledge-schedule-batches :as scheduled]
             [is.simm.model.room-evidence-collections :as collections]
@@ -55,10 +56,9 @@
    :speculative true :allow-hosts #{} :quota-bytes 10000000})
 
 (def dispatch-accounted-providers
-  "Native transports whose individual model HTTP attempts use Dvergr's
-   admission gateway. Subscription dollars are zero incremental spend, not
-   zero usage; dispatch, model-step and wall limits still apply. No CLI."
-  #{:openai :anthropic :fireworks :codex-subscription})
+  "See `candidate-models/dispatch-accounted-providers`; one definition shared
+   with the model listing so it cannot offer a model this refuses."
+  candidate-models/dispatch-accounted-providers)
 
 (defn model-eligibility
   "Metadata-only native candidate eligibility, preserving ordinary aliases.

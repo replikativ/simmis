@@ -2128,6 +2128,9 @@
          "{:every \"week\" :on \"monday\" :at \"09:00\" :tz \"America/Vancouver\"}}. "
          "For an executable benchmark, use {:version 1 :action :benchmark}; omit the model to use "
          "the confirming human's preference, or add :models [\"exact-model-id\" ...] (at most three), "
+         "taking ids from (workflow/models), which lists installed models with their :reasoning-efforts. "
+         "To compare reasoning efforts of one model, name each as its own candidate: "
+         "[\"codex-subscription-luna-6@low\" \"codex-subscription-luna-6@high\"]. "
          ":case \"case-id\" and :repetitions 1 or 2. This offers inline confirmation, not execution; "
          "the confirming human must be an installation operator with room authority and existing allowance. "
          "The result summary returns to chat; a Memory report can then be created explicitly. "
@@ -2550,6 +2553,7 @@
        {'check-files workflow-authoring/inspect-files
        'starter workflow-authoring/starter
        'action-links (fn [name] (workflow-authoring/action-links room-uuid name))
+       'models workflow-authoring/models
        'schedules
        (fn []
          ;; This room's workflows (id + description) — find the id to shape.

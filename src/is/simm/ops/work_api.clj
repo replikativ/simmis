@@ -5,6 +5,7 @@
             [dvergr.mcp.server :as server]
             [dvergr.ops :as ops]
             [dvergr.room.store :as store]
+            [is.simm.model.candidate-models :as candidate-models]
             [is.simm.model.system-db :as system-db]
             [is.simm.ops.benchmarks :as benchmarks]
             [is.simm.ops.benchmark-reports :as benchmark-reports]
@@ -97,6 +98,7 @@
    [:path {:optional true} [:string {:min 1 :max 512}]]
    [:offset {:optional true} [:int {:min 0 :max workflows/max-file-bytes}]]
    [:expected-revision {:optional true} uuid-string]])
+(def models-schema [:map {:closed true} room-entry])
 (def workflow-list-schema
   [:map {:closed true} room-entry
    [:offset {:optional true} [:int {:min 0 :max workflows/max-list-entries}]]
@@ -505,6 +507,14 @@
                                 (schedule-receipt
                                  (workflow-schedules/set-enabled! conn (:execution-ctx host) ops/*principal* id
                                                                   (uuid! (:id args)) (:enabled? args)))))))}
+    :simmis/models
+    {:kind :read :schema models-schema :authz {:action :read}
+     :doc (str "Models this installation can name for simmis_workflow-run, simmis_benchmark and schedules: id, label, provider, credential presence and :reasoning-efforts. "
+               candidate-models/effort-syntax
+               " Metadata only: no provider call, credential test or selection; room is the authorization scope.")
+     :impl (fn [_host args]
+             (checked! models-schema args)
+             (candidate-models/options))}
     :simmis/workflow-list
     {:kind :read :schema workflow-list-schema :authz {:action :read}
      :doc "List25 room-local workflow names, including invalid drafts, without loading file contents. Scans at most20000 workflow path entries; refuses larger indices. expected-revision pins the sorted name set across pages. Never executes checker source."
@@ -566,7 +576,7 @@
                                                          (-> (dissoc args :room) (update :request-id uuid!))))))}
     :simmis/benchmark
     {:kind :write :schema benchmark-route-schema :authz {:action :merge}
-     :doc "Admit an exact inspected workflow bundle as an OFFLINE benchmark. Requires installation operator AND current room merge authority: checker code is trusted-operator SCI, cooperatively bounded, NOT hard OS isolation. Maximum eight cells, one at a time, native providers only, explicit aggregate money/dispatch allowance, /out capture, discard settlement. Optional calibration.edn runs reference/damaged answers before each candidate without exposing them to it. Results use the room's existing Attempts, Scorecards and experiment reports. request-id retries observe the same job; expected-bundle pins the reviewed revision. No judge, live web, arbitrary eval or automatic checker promotion. On the Simmis owned host, fresh execution also REQUIRES expected-owned-source: copy the source revision UUID from the same workflow-check inspection as expected-bundle. Retain both original guards on retry."
+     :doc "Admit an exact inspected workflow bundle as an OFFLINE benchmark. models are candidate ids from simmis_models; <id>@<effort> (e.g. codex-subscription-luna-6@low and @high) compares reasoning efforts of one model as separate candidates. Requires installation operator AND current room merge authority: checker code is trusted-operator SCI, cooperatively bounded, NOT hard OS isolation. Maximum eight cells, one at a time, native providers only, explicit aggregate money/dispatch allowance, /out capture, discard settlement. Optional calibration.edn runs reference/damaged answers before each candidate without exposing them to it. Results use the room's existing Attempts, Scorecards and experiment reports. request-id retries observe the same job; expected-bundle pins the reviewed revision. No judge, live web, arbitrary eval or automatic checker promotion. On the Simmis owned host, fresh execution also REQUIRES expected-owned-source: copy the source revision UUID from the same workflow-check inspection as expected-bundle. Retain both original guards on retry."
      :impl (fn [host args]
              (checked! benchmark-route-schema args)
              (if (owned-reads/owned-host? host)
@@ -598,7 +608,7 @@
              (knowledge-output/collect! host ops/*principal* (uuid! (:room args)) (uuid! (:id args))))}
     :simmis/workflow-run
     {:kind :write :schema workflow-run-route-schema :authz {:action :merge}
-     :doc "Run ONE exact inspected saved workflow in an inherited room fork, with explicit case, literal declared string params, optional bounded canonical file inputs and finite limits. Same read/merge authority and file-worker policy as simmis_task. Pinned bundle source and selected inputs are materialized ONLY inside the fork and appear in its proposed diff. Never executes checker/calibration or claims correctness; uses ordinary completion capture under /out. review/discard only, no automatic merge. Identical request-id retries observe the old Job even after source edits; changed intent conflicts. Not benchmark isolation: other inherited room files remain visible. On the Simmis owned host, fresh execution also REQUIRES expected-owned-source: copy the source revision UUID from the same workflow-check inspection as expected-bundle. Retain both original guards on retry."
+     :doc "Run ONE exact inspected saved workflow in an inherited room fork, with an explicit model id from simmis_models (<id>@<effort> selects a reasoning effort), explicit case, literal declared string params, optional bounded canonical file inputs and finite limits. Same read/merge authority and file-worker policy as simmis_task. Pinned bundle source and selected inputs are materialized ONLY inside the fork and appear in its proposed diff. Never executes checker/calibration or claims correctness; uses ordinary completion capture under /out. review/discard only, no automatic merge. Identical request-id retries observe the old Job even after source edits; changed intent conflicts. Not benchmark isolation: other inherited room files remain visible. On the Simmis owned host, fresh execution also REQUIRES expected-owned-source: copy the source revision UUID from the same workflow-check inspection as expected-bundle. Retain both original guards on retry."
      :impl (fn [host args]
              (checked! workflow-run-route-schema args)
              (if (owned-reads/owned-host? host)

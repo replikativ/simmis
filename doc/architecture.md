@@ -1228,11 +1228,20 @@ separately with bounded fixed diagnostics; it never evaluates the checker.
 Benchmark setup admits one pinned workflow revision with one to three explicit
 model candidates. All candidates share the same selected cases and repetitions,
 with at most eight total cells and the existing finite parent resource ceiling.
+A reasoning effort is part of the candidate identity, written `<id>@<effort>`
+(`codex-subscription-luna-6@low`): Dvergr's registry derives it from the base
+model, refuses an effort the model does not declare, sends only the base id to
+the provider and keeps the full id in attribution and Scorecards, so two
+efforts of one model are two comparable candidates. The same form is accepted
+for a single workflow run, a schedule and `proposal.edn` `:models`.
+`is.simm.model.candidate-models/options` is the one listing of runnable models
+with their `:reasoning-efforts`; the Workflows view, MCP `simmis_models` and
+the agents' `workflow/models` all read it.
 Different workflow/prompt revisions are not yet candidates in one experiment.
 The existing experiment, Attempt, Scorecard and leaderboard remain authoritative.
 
-Room agents have bounded pure `workflow/check-files` and Room-scoped
-`workflow/action-links` authoring helpers. Supplied-byte checks do not establish
+Room agents have bounded pure `workflow/check-files`, metadata-only
+`workflow/models` and Room-scoped `workflow/action-links` authoring helpers. Supplied-byte checks do not establish
 saved-source identity or launch authority. Human browser/MCP admission retains
 the current policy. Agent-supervised child execution and durable agent schedule
 delegation are separate capabilities and are not implied by these links.

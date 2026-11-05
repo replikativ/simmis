@@ -1,6 +1,7 @@
 (ns is.simm.agents.workflows
   "Bounded pure workflow authoring helpers. No execution or schedule authority."
   (:require [is.simm.documents.links :as links]
+            [is.simm.model.candidate-models :as candidate-models]
             [is.simm.documents.workflow-links :as workflow-links]
             [is.simm.ops.workflows :as workflows]
             [is.simm.starter.wiki-maintenance :as wiki]
@@ -34,6 +35,13 @@
            :setup-status (get-in details [:setup :status])
            :observation :supplied-files :saved-source-verified? false)))
 
+(defn models
+  "Installed models a workflow run or benchmark may name, with their reasoning
+   efforts. Metadata only: does not call a provider, test a credential, choose
+   a model or grant spending."
+  []
+  (candidate-models/options))
+
 (defn action-links [room name]
   (when-not (and (links/uuid-text? (str room)) (workflow-links/name? name))
     (throw (ex-info "Use a lowercase workflow name with letters, digits and dashes" {})))
@@ -48,6 +56,8 @@
                  [:=> [:cat [:map-of :string :string]] :map]]
     starter [([name]) "Read an editable shipped program as {:name :version :files}. Names: evidence-check (generic task and synthetic benchmark example), maintain-wiki, summarize-room, summarize-room-daily. Does not install or execute."
              [:=> [:cat [:enum "evidence-check" "maintain-wiki" "summarize-room" "summarize-room-daily"]] :map]]
+    models [([]) "Installed models a workflow run or benchmark may name: {:models [{:id :label :provider :reasoning-efforts :credential-status} ...] :effort-syntax}. Select an effort as <id>@<effort>, e.g. codex-subscription-luna-6@low; each effort is its own benchmark candidate. Metadata only: no provider call, selection or spending."
+            [:=> :cat :map]]
     action-links [([name]) "Room-scoped confirmation links for an existing saved workflow: Run once, Schedule and Benchmark. Merge proposed source first. No execution, scheduling or funding."
                   [:=> [:cat :string] :map]]
     schedules [([]) "List legacy agent schedules in this room as {:id :description}. Saved workflows are files under workflows/<name>/; these schedules are not workflow source."

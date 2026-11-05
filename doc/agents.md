@@ -369,6 +369,12 @@ prevent authoring a workflow checker, but the exact saved source still requires
 operator admission before evaluation. An optimized task remains runnable
 without its optional evaluation pack.
 
+`(workflow/models)` lists the installed models a run or benchmark may name, each
+with its `:reasoning-efforts`. To compare efforts of one model, name each as its
+own candidate, e.g. `:models ["codex-subscription-luna-6@low"
+"codex-subscription-luna-6@high"]` in `proposal.edn`; an effort the model does
+not declare is refused. The listing is metadata only and grants no spending.
+
 Checker interpretation uses Dvergr's caller-owned bounded executor. Simmis
 keeps its stricter nonempty check-map, capture and operator-admission policy.
 Verifier and calibration setup identities include the effective executor limits;
