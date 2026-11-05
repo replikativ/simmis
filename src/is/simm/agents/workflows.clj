@@ -32,6 +32,9 @@
     (throw (ex-info "Supply at most 100 relative UTF-8 workflow files, 512 KiB per file and 2 MiB total" {})))
   (let [details (workflows/details-of "draft" {:files files :manifest []})]
     (assoc (workflows/public-inspection (:inspection details))
+           ;; This pure caller has supplied bodies, not a captured store manifest.
+           :files (count files)
+           :bytes (reduce + 0 (map #(alength (.getBytes ^String % "UTF-8")) (vals files)))
            :setup-status (get-in details [:setup :status])
            :observation :supplied-files :saved-source-verified? false)))
 
