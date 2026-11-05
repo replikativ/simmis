@@ -14,7 +14,7 @@
 
 (def id :simmis/coordinator)
 (def delegation-policy
-  {:tools #{:clojure_eval :read_file :write_file :edit_file}
+  {:tools #{:clojure_eval :read_file :write_file :edit_file :await_child}
    :sandboxes #{#{worker/id} #{id}}
    :providers #{:openai :anthropic :fireworks :codex-subscription}
    :max-attempts 8 :max-parallelism 2})
@@ -24,7 +24,7 @@
   {:verifier/id :simmis/work-completion :verifier/version 1
    :verifier/basis "simmis-work-completion-v1"})
 
-(def policy {:version 2 :delegation delegation-policy :file-verifier completion-ref
+(def policy {:version 3 :delegation delegation-policy :file-verifier completion-ref
              :surface :scoped-recursive-files :no-shared-registries true})
 
 (def ^:private retained-agent-functions
@@ -78,6 +78,13 @@
      ctx 'simmis.benchmarks
      (doc/with-docs
        {'offered (fn [] offers)
+        'start! (fn start!
+                  ([team opts]
+                   (when-not (= 1 (count offers)) (refused! "Select one exact admitted benchmark offer"))
+                   (start! (first offers) team opts))
+                  ([ref team opts]
+                   (when-not (some #{ref} offers) (refused! "Benchmark is not offered to this Run"))
+                   (invoke ref team (assoc opts :result-mode :receipt))))
         'run! (fn run!
                 ([team opts]
                  (when-not (= 1 (count offers)) (refused! "Select one exact admitted benchmark offer"))
@@ -86,6 +93,7 @@
                  (when-not (some #{ref} offers) (refused! "Benchmark is not offered to this Run"))
                  (invoke ref team opts)))}
        {'offered ['([]) "Exact host-admitted benchmark refs. Empty means no scoring authority; authored checkers need separate inspected admission."]
+        'start! ['([team opts] [ref team opts]) "Start one exact offered benchmark and return a Job receipt. opts: :resources aggregate grant, optional :parallelism 1. Next use the await_child model tool with its Job UUID; do not dereference or poll from SCI. If the start reply is lost, use await_child without job to recover receipts, following next-offset; never restart as recovery."]
         'run! ['([team opts] [ref team opts]) "Benchmark one candidate prompt/model revision per call using the offer's declared candidate profile against one fixed admitted dataset/checker in clean fixture worlds. opts: :resources required aggregate grant, :parallelism optional 1. Returns native owned result Spin with Scorecard. Revise candidates, inspect results and repeat within your remaining balance."]}))
     (sci/add-namespace!
      ctx 'simmis.results

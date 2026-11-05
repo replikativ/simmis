@@ -15,6 +15,7 @@
             [is.simm.ops.owned-workspace :as owned]
             [is.simm.ops.work :as work]
             [is.simm.ops.work-sandbox :as worker]
+            [is.simm.ops.coordinator-sandbox :as coordinator-sandbox]
             [is.simm.ops.workflows :as workflows]
             [is.simm.ops.workflow-profiles :as profiles]
             [is.simm.runtimes.operation-lifetime :as lifetime]
@@ -99,7 +100,8 @@
     (refuse! :invalid-candidates))
   (let [team (reduce roster/make-agent (roster/make-roster) (roster/agents team))
         recursive? (profiles/recursive? definition)
-        ceiling {:tools #{:clojure_eval :read_file :write_file :edit_file}
+        ceiling {:tools (if recursive? (:tools coordinator-sandbox/delegation-policy)
+                            #{:clojure_eval :read_file :write_file :edit_file})
                  :sandboxes #{#{(if recursive? :simmis/coordinator worker/id)}}
                  :providers work/dispatch-accounted-providers}]
     (doseq [candidate (roster/agents team)]
@@ -118,7 +120,8 @@
   "Trusted fixed-plan handler. The generic native bridge never validates these
    domain options for us. Candidates cannot substitute task/case/setup/origin."
   [offer original-room fixture-parent authorize! {:keys [control-room work-room authority]} team opts]
-  (when-not (and (map? opts) (every? #{:resources :parallelism} (keys opts))
+  (when-not (and (map? opts) (every? #{:resources :parallelism :result-mode} (keys opts))
+                 (or (not (contains? opts :result-mode)) (= :receipt (:result-mode opts)))
                  (map? (:resources opts))
                  (or (not (contains? opts :parallelism))
                      (= 1 (:parallelism opts))))
@@ -150,9 +153,11 @@
     ;; This scope is never offered to arbitrary agent-built EnvironmentDefs.
     ;; Recursive candidates get completion-only child offers, independently
     ;; of the private evaluator/setup used to admit and score this experiment.
-    (subexperiment/start! control-room work-room team definition (assoc opts :parallelism 1)
+    (subexperiment/start! control-room work-room team definition (assoc (dissoc opts :result-mode) :parallelism 1)
                           (assoc authority :experiment-capabilities scope)
-                          (cond-> {:world-parent (fixture-parent)
+                          (cond-> {:observation-ref (:ref offer)
+                                   :return-receipt? (= :receipt (:result-mode opts))
+                                   :world-parent (fixture-parent)
                                    :admit! (fn [_]
                                              (when-not (.tryAcquire ^Semaphore slot)
                                                (throw (ex-info "Another benchmark invocation is still physically active" {:type ::busy})))
