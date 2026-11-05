@@ -19,6 +19,7 @@
             [dvergr.resource :as resource]
             [dvergr.room.store :as store]
             [dvergr.room.store.memory :as memory]
+            [dvergr.room.registry :as registry]
             [dvergr.substrate.geschichte :as workspace]
             [geschichte.query :as query]
             [geschichte.repo :as repo]
@@ -36,7 +37,9 @@
             [is.simm.ops.work-test :as work-fixture]
             [is.simm.ops.workflows :as workflows]
             [jsonista.core :as json]
-            [org.replikativ.spindel.engine.core :as ec])
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as context]
+            [org.replikativ.spindel.yggdrasil :as ygg])
   (:import [java.util.concurrent Semaphore]))
 
 (def files
@@ -163,8 +166,18 @@
     (fn [{:keys [conn w host room owned attached]}]
       (d/transact conn [{:party/id (:owner w) :party/role :admin}])
       (seed! owned)
-      (let [p (ops/party-principal (:owner w)) request (cond-> (input host w) receipt? (assoc-in [:limits :max-model-steps] 6))
-            clean (discourse/make-room {:id (keyword (str "coordinator-clean-" (random-uuid))) :store (memory/make)})
+      (let [p (ops/party-principal (:owner w))
+            request (cond-> (input host w)
+                      receipt? (assoc-in [:limits :max-model-steps] 6)
+                      receipt? (assoc-in [:benchmark :public-feedback]
+                                         {:version 1 :checks [{:check "correct?" :description "The output matches the reference."}
+                                                              {:check "not-recorded?" :description "This optional criterion may be unavailable."}]}))
+            ;; Match production: a clean system selection in the same host
+            ;; root, rather than an independent root with another Room registry.
+            clean-fork (binding [ec/*execution-context* (:execution-ctx host)]
+                         (ygg/fork! {:systems :none :purpose :room :forkable-components #{}}))
+            clean (discourse/make-room {:id (keyword (str "coordinator-clean-" (random-uuid)))
+                                        :ctx (:child-ctx clean-fork) :store (memory/make)})
             clean-conn (atom nil) slot (Semaphore. 1) retired (atom 0) closed? (atom false)
             receipts (atom []) observed (atom []) native-start subexperiment/start! native-await observation/await!
             parent-calls (atom 0) delegated-calls (atom 0) child-calls (atom 0) completions (atom {}) start jobs/start!
@@ -172,13 +185,23 @@
             provider (codex/create {:credentials (gateway/static-credentials :fixture {} #{"https://chatgpt.com"})})
             retire! (fn [] (when (compare-and-set! closed? false true)
                              (let [cfg (:config @@clean-conn)]
-                               (discourse/close-room! clean) (d/release @clean-conn)
+                               (discourse/close-room! clean {:close-context? false})
+                               (binding [ec/*execution-context* (:execution-ctx host)]
+                                 (ygg/discard-fork! clean-fork))
+                               (d/release @clean-conn)
                                (when (and (= :memory (get-in cfg [:store :backend])) (uuid? (get-in cfg [:store :id])))
-                                 (d/delete-database cfg)))
+                                 (d/delete-database cfg))
+                               (context/close-context! (:ctx clean)))
                              (swap! retired inc)))]
         (binding [ec/*execution-context* (:ctx clean)]
-          (catalog/ensure-workspace! clean)
-          (reset! clean-conn (:conn (workspace/current-workspace))))
+          ;; Admission inherited only a logical selection, whose system was
+          ;; deliberately excluded. HOST initializes and selects the new repo
+          ;; explicitly; unavailable selection must not trigger fallback.
+          (reset! clean-conn (catalog/open-memory-workspace! clean))
+          (is (= 1 (count (ygg/registered-systems))))
+          (workspace/select-workspace! (first (keys (ygg/registered-systems)))))
+        (binding [ec/*execution-context* (:ctx room)]
+          (is (identical? clean (registry/lookup (:id clean)))))
         (resource/mint! room {:id (random-uuid) :resources (work/resources limits)})
         (with-redefs-fn
           {#'subexperiment/start! (fn [& args] (let [result (apply native-start args)] (when (map? result) (swap! receipts conj result)) result))
@@ -197,12 +220,21 @@
                      1 (tool receipt-start-code "start-first" model)
                      2 (await-response (first @receipts) "await-first" model)
                      3 (do (is (str/includes? (pr-str body) (str (:scorecard-id (first @observed)))))
+                           (is (= {:checks {:correct? true} :unavailable-checks [:not-recorded?]}
+                                  (get-in (first @observed) [:entries 0 :feedback])))
+                           (is (str/includes? (pr-str body) "The output matches the reference."))
+                           (is (not (str/includes? (pr-str body) "PRIVATE-CHECKER-GOLD")))
                            (tool "(simmis.benchmarks/start! (dvergr.agent/revise-agent bench-team :candidate {:prompt \"Second candidate\"}) {:resources {\"microUSD\" 10000M \"model-dispatch\" 2M}})" "start-second" model))
                      4 (await-response (second @receipts) "await-second" model)
                      5 (do (is (str/includes? (pr-str body) (str (:scorecard-id (second @observed)))))
+                           (is (= {:checks {:correct? false} :unavailable-checks [:not-recorded?]}
+                                  (get-in (second @observed) [:entries 0 :feedback])))
                            (tool (str "(babashka.fs/create-dirs \"/out\") (spit \"/out/benchmark-review.edn\" "
                                       (pr-str (pr-str {:rewards (mapv #(get-in % [:entries 0 :reward]) @observed)
-                                                       :scorecards (mapv :scorecard-id @observed)})) ")") "write-report" model))
+                                                       :scorecards (mapv :scorecard-id @observed)
+                                                       :feedback (mapv #(get-in % [:entries 0 :feedback]) @observed)
+                                                       :statuses (mapv #(select-keys (first (:entries %))
+                                                                                    [:attempt/status :run/status :run/settlement-status]) @observed)})) ")") "write-report" model))
                      6 (final "parent-done" model)
                      (throw (ex-info "Unexpected coordinator dispatch" {})))
                    (if (= 1 (swap! parent-calls inc)) (tool (if nested? nested-parent-code parent-code) "parent-benchmark-loop" model) (final "parent-done" model)))
@@ -238,6 +270,10 @@
                   (is (= (if receipt? 6 2) @parent-calls))
                   (when receipt?
                     (is (= (mapv :scorecard-id @observed) (:scorecards report)))
+                    (is (= [true false] (mapv #(get-in % [:checks :correct?]) (:feedback report))))
+                    (is (every? #(= [:not-recorded?] (:unavailable-checks %)) (:feedback report)))
+                    (is (every? #(= {:attempt/status :completed :run/status :completed :run/settlement-status :discarded} %)
+                                (:statuses report)))
                     (is (every? #(some? (experiment/scorecard room %)) (:scorecards report)))) (is (= 4 @child-calls))
                   (is (= (if nested? 2 0) @delegated-calls))
                   (is (= 1 @retired)) (is (= 1 (.availablePermits slot)))
@@ -377,3 +413,19 @@
 
 (deftest coordinator-native-await-retains-an-exact-report-file
   (exercise-recursive-proof false true))
+
+(deftest feedback-requires-an-explicit-bounded-public-declaration
+  (let [verifier {:verifier/id :test/check :verifier/version 1}
+        declaration {:version 1 :checks [{:check "correct?" :description "Reference agreement, not independent correctness."}]}]
+    (is (nil? (benchmark/public-feedback nil verifier)))
+    (is (= {:version 1 :verifier verifier :checks {:correct? "Reference agreement, not independent correctness."}}
+           (benchmark/public-feedback declaration verifier)))
+    (doseq [invalid [(assoc declaration :secret true)
+                     (assoc declaration :checks [])
+                     (update declaration :checks into (:checks declaration))
+                     (assoc-in declaration [:checks 0 :check] "bad name")
+                     (assoc-in declaration [:checks 0 :check] ":bad")
+                     (assoc-in declaration [:checks 0 :check] "bad\n")
+                     (assoc-in declaration [:checks 0 :check] "bad/too/many")
+                     (assoc-in declaration [:checks 0 :description] "  ")]]
+      (is (thrown? clojure.lang.ExceptionInfo (benchmark/public-feedback invalid verifier))))))

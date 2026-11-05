@@ -4,6 +4,7 @@
   (:require [dvergr.agent.authority :as authority]
             [dvergr.agent.evaluation :as evaluation]
             [dvergr.agent.experiment :as experiment]
+            [dvergr.agent.public-feedback :as feedback]
             [dvergr.agent.roster :as roster]
             [dvergr.agent.subexperiment :as subexperiment]
             [hasch.core :as hasch]
@@ -24,12 +25,40 @@
   (:import [java.util.concurrent Semaphore]
            [java.util.concurrent.atomic AtomicBoolean]))
 
+(def public-feedback-schema
+  [:map {:closed true} [:version [:= 1]]
+   [:checks [:vector {:min 1 :max feedback/max-checks}
+             [:map {:closed true}
+              [:check [:and [:string {:min 1 :max 99}]
+                       ;; Malli uses re-find. This strict end assertion also
+                       ;; works in JSON Schema, including for trailing newlines.
+                       [:re #"^[A-Za-z0-9_?!.*+<>=-]+(?:/[A-Za-z0-9_?!.*+<>=-]+)?(?![\s\S])"]]]
+              [:description [:string {:min 1 :max 512}]]]]]])
+
 (def schema
   [:map {:closed true} [:name workflows/name-schema]
    [:expected-bundle :uuid] [:expected-owned-source :uuid]
    [:split {:optional true} dataset/split-schema]
    [:cases {:optional true} [:vector {:min 1 :max 4} [:string {:min 1 :max 100}]]]
+   [:public-feedback {:optional true} public-feedback-schema]
    [:limits work/limits-schema]])
+
+(defn public-feedback
+  "Explicit operator disclosure bound to the prepared verifier. Never infer
+   keys or meanings from checker output, calibration, gold or authored files."
+  [declaration verifier]
+  (when declaration
+    (when-not (m/validate public-feedback-schema declaration)
+      (throw (ex-info "Invalid public benchmark feedback declaration"
+                      {:type ::refused :reason :invalid-public-feedback})))
+    (let [checks (:checks declaration)
+          projected {:version 1 :verifier verifier
+                     :checks (into {} (map (juxt (comp keyword :check) :description)) checks)}]
+      (when-not (and (= (count checks) (count (:checks projected)))
+                     (feedback/valid? projected))
+        (throw (ex-info "Invalid public benchmark feedback declaration"
+                        {:type ::refused :reason :invalid-public-feedback})))
+      projected)))
 
 (def invocation-id :simmis/admitted-benchmark)
 (def policy {:version 2 :source :owned-inspected-snapshot :origin :clean-fixture
@@ -60,20 +89,23 @@
         source (retained/retain (:name admission) (:files snapshot))
         _ (retained/validate-manifest! source manifest)
         prepared (benchmarks/prepare snapshot
-                                     (-> admission (dissoc :expected-owned-source)
+                                     (-> admission (dissoc :expected-owned-source :public-feedback)
                                          (assoc :request-id (:request-id input) :models [(:model input)] :repetitions 1)))
         origin {:revision revision :target-stamp (:target-stamp binding)
                 :target (:target binding) :manifest manifest}
         _ (owned/validate! (:control-db (reads/preflight-host-read! host principal handle))
                            principal :merge room-id (:room original) binding)
         evaluator (get-in prepared [:plan :capabilities :evaluator])
+        disclosure (public-feedback (:public-feedback admission) (evaluation/evaluator-ref evaluator))
         setup (get-in prepared [:plan :capabilities :world-setup])
-        basis {:source source :source-origin origin :experiment (get-in prepared [:plan :experiment])
-               :limits (:limits admission) :policy policy}
-        ref {:invocation/id invocation-id :invocation/version 1
+        basis (cond-> {:source source :source-origin origin :experiment (get-in prepared [:plan :experiment])
+                       :limits (:limits admission) :policy policy}
+                disclosure (assoc :public-feedback disclosure))
+        ref (cond-> {:invocation/id invocation-id :invocation/version 1
              :invocation/basis {:admission-id (hasch/uuid basis)
                                 :file-verifier (evaluation/evaluator-ref evaluator)
-                                :candidate-profile (get-in prepared [:plan :experiment :experiment/metadata :simmis/execution-profile])}}]
+                                :candidate-profile (get-in prepared [:plan :experiment :experiment/metadata :simmis/execution-profile])}}
+              disclosure (assoc :invocation/public-feedback disclosure))]
     {:ref ref :basis basis :prepared prepared :evaluator evaluator :setup setup}))
 
 (defn current!

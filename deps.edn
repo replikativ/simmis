@@ -346,10 +346,11 @@
         ;; Reviewed native fixes #431–434: independent child scope, original
         ;; Run control ownership, composed MCP schemas and acknowledged
         ;; pre-admission cleanup and bounded MCP result errors.
-        ;; Reviewed native #436 adds scoped child Job receipts and await_child.
+        ;; Reviewed native #437 adds exact, explicitly admitted criterion
+        ;; feedback to the existing scoped child Job observation path.
         ;; Replace with the coordinated Maven release.
         org.replikativ/dvergr {:git/url "https://github.com/replikativ/dvergr.git"
-                               :git/sha "199b41a1dd2e6597eaec856cb4e06e4dac10fe76"
+                               :git/sha "830936a8aa69142ba9b3a87a886e3f883612fc2a"
                                ;; Kabel supplies the maintained HTTP-kit fork.
                                ;; The original contains the same org.httpkit
                                ;; classes and can shadow its WebSocket fixes.

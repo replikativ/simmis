@@ -9,11 +9,13 @@
             [is.simm.authority.world :as world]
             [is.simm.ops.dvergr :as ops]
             [is.simm.ops.coordinator :as coordinator]
+            [is.simm.ops.coordinator-benchmark :as benchmark]
             [is.simm.ops.work-api :as api]
             [is.simm.ops.work-test]
             [is.simm.ops.worker-control :as control]
             [is.simm.runtimes.auth-config :as auth]
             [is.simm.runtimes.worker-maintenance :as maintenance]
+            [jsonista.core :as json]
             [malli.core :as m]))
 
 (deftest knowledge-selection-refusals-are-client-errors-not-server-failures
@@ -146,9 +148,14 @@
      (fn [room]
        (let [previous (dops/operations) calls (atom []) request-id (random-uuid)
              bundle (random-uuid) revision (random-uuid) [input _] (#'is.simm.ops.work-test/fixture)
-             args (assoc input :room (str (:room w)) :request-id (str request-id)
-                         :benchmark {:name "echo" :expected-bundle (str bundle)
-                                     :expected-owned-source (str revision) :limits (:limits input)})
+             disclosure {:version 1 :checks [{:check "label-correct?" :description "Reference-label agreement."}]}
+             args (json/read-value
+                   (json/write-value-as-string
+                    (assoc input :room (str (:room w)) :request-id (str request-id)
+                           :benchmark {:name "echo" :expected-bundle (str bundle)
+                                       :expected-owned-source (str revision) :limits (:limits input)
+                                       :public-feedback disclosure}))
+                   json/keyword-keys-object-mapper)
              host (ops/host (:ctx room)) p (ops/party-principal (:owner w))]
          (d/transact conn [{:room/id (:room w) :room/slug (store/room-id->slug (:id room))}])
          (try
@@ -162,7 +169,11 @@
                (is (= p principal)) (is (= (str (:room w)) handle))
                (is (= request-id (:request-id admitted)))
                (is (= bundle (get-in admitted [:benchmark :expected-bundle])))
-               (is (= revision (get-in admitted [:benchmark :expected-owned-source]))))
+               (is (= revision (get-in admitted [:benchmark :expected-owned-source])))
+               (is (= disclosure (get-in admitted [:benchmark :public-feedback])))
+               (is (= {:label-correct? "Reference-label agreement."}
+                      (:checks (benchmark/public-feedback (get-in admitted [:benchmark :public-feedback])
+                                                          {:verifier/id :test/check :verifier/version 1})))))
              (doseq [key [:world-parent :setup :authority :dataset]]
                (is (false? (m/validate api/coordinator-schema (assoc-in args [:benchmark key] "forged"))))))
            (finally
