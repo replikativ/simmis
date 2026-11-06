@@ -1,0 +1,2 @@
+{:packet-id "synthetic-review-example-v1"
+ :cases [{:id "example-001" :sources [{:id "note" :text "The delivery is scheduled for Monday."}]}]}

@@ -1,0 +1,9 @@
+flowchart TD
+  A[Frozen authorized evidence packet] --> B[Bounded advisory review Run]
+  B --> C[Validate output structure and citations]
+  C --> D[Record diagnosis and proposed changes]
+  D --> E{Reference or grading change?}
+  E -->|yes| F[Human adjudication of exact proposal]
+  F --> G[New inspected benchmark version]
+  E -->|no| H[Workflow or harness investigation]
+  H --> I[New bounded trial]
