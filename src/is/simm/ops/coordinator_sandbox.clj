@@ -24,8 +24,9 @@
   {:verifier/id :simmis/work-completion :verifier/version 1
    :verifier/basis "simmis-work-completion-v1"})
 
-(def policy {:version 3 :delegation delegation-policy :file-verifier completion-ref
-             :surface :scoped-recursive-files :no-shared-registries true})
+(def policy {:version 4 :delegation delegation-policy :file-verifier completion-ref
+             :surface :scoped-recursive-files :codecs #{:base64-encode :base64-decode}
+             :no-shared-registries true})
 
 (def ^:private retained-agent-functions
   '#{roster make-agent revise-agent lookup ref list select environment environment-ref
@@ -68,16 +69,31 @@
                         retained-agent-functions)
         observe (get functions 'observe)
         current-run-id (get functions 'current-run-id)
+        codecs (into {} (map (fn [name] [name (sci/eval-string* ctx (str "dvergr.codec/" name))]))
+                     '[base64-encode base64-decode])
         offers (vec (filter #(= :simmis/admitted-benchmark (:invocation/id %))
                             (:invocations ((get functions 'offered)))))
-        safe-verifiers (into #{completion-ref} (keep #(get-in % [:invocation/basis :file-verifier])) offers)
+        reviews (vec (filter #(= :simmis/admitted-benchmark-review (:invocation/id %))
+                             (:invocations ((get functions 'offered)))))
+        safe-verifiers (into #{completion-ref} (keep #(get-in % [:invocation/basis :file-verifier])) (concat offers reviews))
         invoke (get functions 'invoke-experiment!)]
     (worker/install! ctx execution-ctx)
     (sci/add-namespace! ctx 'dvergr.agent functions)
+    ;; Captured files are bounded base64 chunks. Restore only these two pure
+    ;; codecs, not the denied host/API namespace surface or arbitrary classes.
+    (sci/add-namespace! ctx 'dvergr.codec codecs)
     (sci/add-namespace!
      ctx 'simmis.benchmarks
      (doc/with-docs
        {'offered (fn [] offers)
+        'reviews-offered (fn [] reviews)
+        'start-review! (fn start-review!
+                         ([opts]
+                          (when-not (= 1 (count reviews)) (refused! "Select one exact admitted development review"))
+                          (start-review! (first reviews) opts))
+                         ([ref opts]
+                          (when-not (some #{ref} reviews) (refused! "Development review is not offered to this Run"))
+                          (invoke ref (roster/make-roster) (assoc opts :result-mode :receipt))))
         'start! (fn start!
                   ([team opts]
                    (when-not (= 1 (count offers)) (refused! "Select one exact admitted benchmark offer"))
@@ -93,6 +109,8 @@
                  (when-not (some #{ref} offers) (refused! "Benchmark is not offered to this Run"))
                  (invoke ref team opts)))}
        {'offered ['([]) "Exact host-admitted benchmark refs. Empty means no scoring authority; authored checkers need separate inspected admission."]
+        'reviews-offered ['([]) "Explicit gold-aware exposed-development review offers. Empty means no reference disclosure was admitted. Never use for held-out tuning."]
+        'start-review! ['([opts] [ref opts]) "Start one pinned reviewer child experiment. opts: :subject {:job uuid :scorecard uuid :attempt uuid} from this Run's exact settled benchmark child, :resources explicit grant; optional :parallelism 1. The operator pins reviewer source/model/prompt; callers cannot replace its team. Next use await_child with the returned Job UUID. Structural checks validate format/binding/quotes/advisory status, not semantic truth. Reference/rubric changes still need human adjudication."]
         'start! ['([team opts] [ref team opts]) "Start one exact offered benchmark and return a Job receipt. opts: :resources aggregate grant, optional :parallelism 1. Next use the await_child model tool with its Job UUID; do not dereference or poll from SCI. If the start reply is lost, use await_child without job to recover receipts, following next-offset; never restart as recovery."]
         'run! ['([team opts] [ref team opts]) "Benchmark one candidate prompt/model revision per call using the offer's declared candidate profile against one fixed admitted dataset/checker in clean fixture worlds. opts: :resources required aggregate grant, :parallelism optional 1. Returns native owned result Spin with Scorecard. Revise candidates, inspect results and repeat within your remaining balance."]}))
     (sci/add-namespace!

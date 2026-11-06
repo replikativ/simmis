@@ -197,3 +197,89 @@ files. Missing provider dimensions/completeness information is not a known zero.
 Durable own-Run measurements followed by a bounded, explicitly scoped subtree
 projection remain the next accounting-observation step; existing immutable
 Attempts and Scorecards must not be rewritten.
+
+## Advisory review during benchmark development
+
+An operator may additionally admit `benchmark.development-review` on the
+coordinator request. This is an explicit **gold-aware development** mode,
+requiring `benchmark.split = "development"` and:
+
+```clojure
+{:version 1 :data-use "exposed-development"
+ :name "review-template"
+ :expected-bundle inspected-review-bundle-uuid
+ :expected-owned-source inspected-review-source-uuid
+ :model "codex-subscription-luna-6@high"
+ :limits {:budget-microdollars 200000 :max-dispatches 16
+          :max-model-steps 16 :timeout-ms 240000 :settlement "discard"}}
+```
+
+Install the ordinary `benchmark-review` starter as that inspected template.
+Its checker and executable calibration are mandatory. The operator pins the
+reviewer source, prompt, model and maximum grant; the coordinator cannot supply
+a replacement reviewer team, expected answer, checker or fixture. The parent
+still pays from its one finite allowance. No review runs implicitly.
+
+Reserve enough of the parent allowance for coordinator, solver and reviewer
+calls; a written report followed by step exhaustion remains a failed execution.
+The following is a finite example, not a validated default for every dataset.
+
+After awaiting an exact benchmark child, the coordinator can request:
+
+```clojure
+(simmis.benchmarks/reviews-offered)
+(simmis.benchmarks/start-review!
+ {:subject {:job benchmark-job-uuid :scorecard exact-scorecard-uuid
+            :attempt exact-attempt-uuid}
+  :resources {"microUSD" 200000M "model-dispatch" 16M}})
+;; Next use the await_child tool with the returned :job.
+;; Then read /out/review.edn from that review's certified Attempt using
+;; simmis.results/attempt-file. base64-decode is available in dvergr.codec.
+```
+
+The subject must be this coordinator's direct, completed and physically settled
+child from the admitted benchmark. Native cell certification binds its exact
+Job, Scorecard, Attempt, candidate, Environment and verifier. Only retained
+source, reference, scoring contract and captured output enter the bounded
+review packet. Source quotations refer to literal serialized fixture file text;
+decoded EDN string spans and escaped file bytes are different coordinates.
+The reviewer's expected packet comes from trusted setup evidence, never a
+candidate-written expected-data file.
+
+The reviewer is another native child experiment, awaited through the same
+receipt path and sharing the benchmark's physical slot. It forks the clean
+fixture parent rather than the coordinator's files or Git history. Neither
+solver nor reviewer inherits benchmark/review offers. Both starts recheck
+current human authority and the original Room incarnation. Causal edges record
+consumption of the original Attempt. Native ownership, cancellation, cleanup and
+resource settlement remain the existing Dvergr machinery.
+
+The five public checks establish completion, output structure, packet/case
+binding, exact source quotations and an advisory-only declaration. Failed
+execution receives zero scalar reward while preserving individual structural
+facts. These checks **do not establish diagnosis or legal correctness**. Validate
+reviewer usefulness separately against frozen, independently reviewed examples,
+including missing evidence, citation defects and plausible reference errors.
+
+Captured advice may intentionally disclose reference information to the outer
+coordinator. Clean sibling execution does not make subsequent tuning on these
+cases blind or held-out. Preserve that exposed-development provenance, freeze
+workflow revisions before fresh validation, and report structural conformance
+separately from semantic quality. Reference or rubric changes remain proposals
+for human adjudication; this API never promotes them, rewrites prior scores,
+merges files or enables a schedule.
+
+
+```mermaid
+flowchart TD
+  O[Operator pins benchmark and reviewer] --> C[Development coordinator]
+  C --> S[Solver in clean fixture fork]
+  S --> A[Certified Attempt and original score]
+  A --> P[Exact evidence packet plus disclosed reference]
+  P --> R[Pinned advisory reviewer in separate fork]
+  R --> V[Completion and structural verification]
+  V --> C
+  C --> D[Diagnosis and proposed workflow or grading change]
+  D --> H[Human adjudication for grading changes]
+  H --> N[New version and fresh validation]
+```

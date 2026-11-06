@@ -94,6 +94,7 @@
              (try
                (is (= sandbox/delegation-policy (sci/eval-string* interpreter "(dvergr.agent/delegation-policy)")))
                (is (= parent (sci/eval-string* interpreter "(dvergr.agent/current-run-id)")))
+               (is (= "λ🦋" (sci/eval-string* interpreter "(dvergr.codec/base64-decode (dvergr.codec/base64-encode \"λ🦋\"))")))
                (is (re-find #"base64" (dvergr-sandbox/ns-doc-md interpreter 'simmis.results)))
                (let [chunk (sci/eval-string* interpreter (expression "attempt-file" public-id {:path "/out/code.clj"}))
                      human-shape {:id (str public-id) :run-id (str public-id)
@@ -104,6 +105,7 @@
                  (is (contains? (:run/caused-by (run/run room parent)) public-id)))
                (doseq [code [(expression "attempt-file" sibling {:path "/out/code.clj"})
                              (expression "attempt-file" (:run/id private) {:path "/gold"})
+                             "(dvergr.codec/decode :arbitrary-host-codec)"
                              "(dvergr.tasks/list)" "(env/get \"HOME\")" "(dvergr.room/rooms)"
                              "(dvergr.agent/hire! (dvergr.agent/make-agent (dvergr.agent/roster) {:id :escape :program {:kind :echo}}) :escape {:task :escape})"]]
                  (is (thrown? Exception (sci/eval-string* interpreter code))))

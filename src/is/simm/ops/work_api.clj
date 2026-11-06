@@ -203,6 +203,9 @@
                                :is.simm.ops.coordinator-benchmark/refused 400
                                :is.simm.ops.coordinator-benchmark/conflict 409
                                :is.simm.ops.coordinator-benchmark/busy 409
+                               :is.simm.ops.coordinator-review/refused 400
+                               :is.simm.ops.coordinator-review/conflict 409
+                               :is.simm.ops.coordinator-review/busy 409
                                :is.simm.ops.benchmarks/denied 403
                                :is.simm.ops.benchmarks/conflict 409
                                :is.simm.ops.benchmarks/busy 409
@@ -657,7 +660,7 @@
                                           :mcp))))}
     :simmis/coordinator
     {:kind :write :schema coordinator-schema :authz {:action :merge}
-     :doc "Opt-in bounded recursive coordinator in an inherited room fork. Same room merge authority and existing native money/dispatch allowance as simmis_task; never auto-funds or merges trunk. Can hire only file-worker/coordinator profiles with bounded tools/providers, and run up to eight completion-only experiment cells with parallelism two. Children split the conserved parent grant. Scoped immutable file results are available inside SCI. Completion is not task correctness. request-id retries observe identical intent. Optional benchmark pins an inspected owned name/bundle/source plus finite candidate limits; requires installation-operator and room authority, keeps checker/dataset fixed, and runs file-worker candidate revisions against clean fixture history. Use simmis.benchmarks/start! then await_child for native waiting. Optional benchmark.public-feedback explicitly declares up to 16 public check names/descriptions for this exact offer; otherwise criteria remain private. Missing checks are unavailable, not false. Descriptions state the admitted rubric, not independently validated semantics. Private gold/checker/evidence are never returned by this projection."
+     :doc "Opt-in bounded recursive coordinator in an inherited room fork. Same room merge authority and existing native money/dispatch allowance as simmis_task; never auto-funds or merges trunk. Can hire only file-worker/coordinator profiles with bounded tools/providers, and run up to eight completion-only experiment cells with parallelism two. Children split the conserved parent grant. Scoped immutable file results are available inside SCI. Completion is not task correctness. request-id retries observe identical intent. Optional benchmark pins an inspected owned name/bundle/source plus finite candidate limits; requires installation-operator and room authority, keeps checker/dataset fixed, and runs file-worker candidate revisions against clean fixture history. Use simmis.benchmarks/start! then await_child for native waiting. Optional benchmark.public-feedback explicitly declares up to 16 public check names/descriptions for this exact offer; otherwise criteria remain private. Missing checks are unavailable, not false. Descriptions state the admitted rubric, not independently validated semantics. Private gold/checker/evidence are never returned by this projection. Optional benchmark.development-review separately opts into gold-aware exposed-development review, requires split development, and pins reviewer source/model/limits. Use simmis.benchmarks/start-review! with the exact settled child subject, then await_child. Its structural checks do not certify semantic truth or authorize reference/rubric promotion; held-out review is refused in this iterative scope."
      :impl (fn [host args]
              (checked! coordinator-schema args)
              (if (:benchmark args)
@@ -665,8 +668,13 @@
                                host ops/*principal* (:room args)
                                (-> (dissoc args :room) (update :request-id uuid!)
                                    (update :benchmark (fn [admission]
-                                                        (-> admission (update :expected-bundle uuid!)
-                                                            (update :expected-owned-source uuid!)))))))
+                                                        (cond-> (-> admission (update :expected-bundle uuid!)
+                                                                    (update :expected-owned-source uuid!))
+                                                          (:development-review admission)
+                                                          (update :development-review
+                                                                  (fn [review]
+                                                                    (-> review (update :expected-bundle uuid!)
+                                                                        (update :expected-owned-source uuid!))))))))))
                (guarded host #(let [[conn id room] (room! host (:room args))]
                                 (coordinator/submit! conn (:execution-ctx host) ops/*principal* id room
                                                      (-> (dissoc args :room) (update :request-id uuid!)))))))}
