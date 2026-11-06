@@ -1,0 +1,10 @@
+{:version 1
+ :packet-id "synthetic-review-example-v1"
+ :authority :advisory-only
+ :cases [{:id "example-001"
+          :task-contract "Determine whether the note states a delivery date. Return a supported or unsupported decision and cite the note."
+          :sources [{:id "note" :text "The delivery is scheduled for Monday."}]
+          :submitted-answer {:decision :unsupported :evidence []}
+          :reference {:decision :supported :evidence ["The delivery is scheduled for Monday."]}
+          :recorded-results {:status :completed :checks {:label-correct? false} :reward 0.0}
+          :provenance {:kind :synthetic-demonstration}}]}

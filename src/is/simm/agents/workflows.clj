@@ -6,6 +6,7 @@
             [is.simm.ops.workflows :as workflows]
             [is.simm.starter.wiki-maintenance :as wiki]
             [is.simm.starter.evidence-check :as evidence]
+            [is.simm.starter.benchmark-review :as benchmark-review]
             [is.simm.starter.conversation-digest :as digest]
             [is.simm.starter.daily-room-summary :as daily]))
 
@@ -15,10 +16,11 @@
   [name]
   (case name
     "evidence-check" {:name name :version evidence/version :files (evidence/source)}
+    "benchmark-review" {:name name :version benchmark-review/version :files (benchmark-review/source)}
     "maintain-wiki" {:name name :version wiki/version :files (wiki/source)}
     "summarize-room" {:name name :version 1 :files (digest/source)}
     "summarize-room-daily" {:name name :version daily/version :files (daily/source)}
-    (throw (ex-info "Choose evidence-check, maintain-wiki, summarize-room or summarize-room-daily" {:type ::unknown-starter}))))
+    (throw (ex-info "Choose evidence-check, benchmark-review, maintain-wiki, summarize-room or summarize-room-daily" {:type ::unknown-starter}))))
 
 (defn inspect-files
   "Inspect the supplied relative file/text map only. Does not read a Room,
@@ -57,8 +59,8 @@
 (def docs
   '{check-files [([files]) "Inspect a relative workflow file/text map without executing code, reading saved source or granting launch authority. Returns separate ordinary-program and benchmark readiness."
                  [:=> [:cat [:map-of :string :string]] :map]]
-    starter [([name]) "Read an editable shipped program as {:name :version :files}. Names: evidence-check (generic task and synthetic benchmark example), maintain-wiki, summarize-room, summarize-room-daily. Does not install or execute."
-             [:=> [:cat [:enum "evidence-check" "maintain-wiki" "summarize-room" "summarize-room-daily"]] :map]]
+    starter [([name]) "Read an editable shipped program as {:name :version :files}. Names: evidence-check (generic task and synthetic benchmark example), benchmark-review (advisory diagnosis and grading-change proposals), maintain-wiki, summarize-room, summarize-room-daily. Does not install, execute or approve grading changes."
+             [:=> [:cat [:enum "evidence-check" "benchmark-review" "maintain-wiki" "summarize-room" "summarize-room-daily"]] :map]]
     models [([]) "Installed models a workflow run or benchmark may name: {:models [{:id :label :provider :reasoning-efforts :credential-status} ...] :effort-syntax}. Select an effort as <id>@<effort>, e.g. codex-subscription-luna-6@low; each effort is its own benchmark candidate. Metadata only: no provider call, selection or spending."
             [:=> :cat :map]]
     action-links [([name]) "Room-scoped confirmation links for an existing saved workflow: Run once, Schedule and Benchmark. Merge proposed source first. No execution, scheduling or funding."
