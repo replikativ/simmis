@@ -15,6 +15,7 @@
             [is.simm.ops.owned-workflows :as sources]
             [is.simm.ops.owned-workspace :as owned]
             [is.simm.ops.work :as work]
+            [is.simm.ops.coordinator-review :as review]
             [is.simm.ops.work-sandbox :as worker]
             [is.simm.ops.coordinator-sandbox :as coordinator-sandbox]
             [is.simm.ops.workflows :as workflows]
@@ -41,6 +42,7 @@
    [:split {:optional true} dataset/split-schema]
    [:cases {:optional true} [:vector {:min 1 :max 4} [:string {:min 1 :max 100}]]]
    [:public-feedback {:optional true} public-feedback-schema]
+   [:development-review {:optional true} review/schema]
    [:limits work/limits-schema]])
 
 (defn public-feedback
@@ -68,7 +70,7 @@
 
 (defn- refuse! [reason]
   (throw (ex-info "Coordinator benchmark is not admitted"
-                  {:type (if (= :source-changed reason) ::conflict ::refused) :reason reason})))
+                  {:type (if (contains? #{:source-changed :review-source-changed} reason) ::conflict ::refused) :reason reason})))
 
 (defn compile!
   "Read exactly one guarded owned source snapshot. Called under the captured
@@ -89,7 +91,7 @@
         source (retained/retain (:name admission) (:files snapshot))
         _ (retained/validate-manifest! source manifest)
         prepared (benchmarks/prepare snapshot
-                                     (-> admission (dissoc :expected-owned-source :public-feedback)
+                                     (-> admission (dissoc :expected-owned-source :public-feedback :development-review)
                                          (assoc :request-id (:request-id input) :models [(:model input)] :repetitions 1)))
         origin {:revision revision :target-stamp (:target-stamp binding)
                 :target (:target binding) :manifest manifest}
@@ -98,15 +100,23 @@
         evaluator (get-in prepared [:plan :capabilities :evaluator])
         disclosure (public-feedback (:public-feedback admission) (evaluation/evaluator-ref evaluator))
         setup (get-in prepared [:plan :capabilities :world-setup])
+        _ (when (and (:development-review admission) (not= "development" (:split admission)))
+            (refuse! :review-requires-exposed-development))
+        development-review (when-let [declaration (:development-review admission)]
+                             (review/compile-source binding declaration))
         basis (cond-> {:source source :source-origin origin :experiment (get-in prepared [:plan :experiment])
                        :limits (:limits admission) :policy policy}
-                disclosure (assoc :public-feedback disclosure))
+                disclosure (assoc :public-feedback disclosure)
+                development-review (assoc :development-review (dissoc development-review :evaluator)))
         ref (cond-> {:invocation/id invocation-id :invocation/version 1
              :invocation/basis {:admission-id (hasch/uuid basis)
                                 :file-verifier (evaluation/evaluator-ref evaluator)
                                 :candidate-profile (get-in prepared [:plan :experiment :experiment/metadata :simmis/execution-profile])}}
               disclosure (assoc :invocation/public-feedback disclosure))]
-    {:ref ref :basis basis :prepared prepared :evaluator evaluator :setup setup}))
+    (cond-> {:ref ref :basis basis :prepared prepared :evaluator evaluator :setup setup}
+      development-review
+      (assoc :review (let [compiled (assoc development-review :evaluator (review/evaluator (:source development-review) ref))]
+                       (assoc compiled :ref (review/reference compiled ref)))))))
 
 (defn current!
   "Recheck source identity and authority after provider preparation, under a
@@ -121,6 +131,12 @@
                       (sources/source-id binding (:name source) manifest)))
       (refuse! :source-changed))
     (benchmarks/authorize-in! (:control-db binding) principal (:room-id original)))
+  (when-let [review (:review offer)]
+    (let [binding (reads/resolve-host-read! host principal handle)
+          manifest (workflows/manifest-in (:db binding) (get-in review [:source :name]))]
+      (when-not (= (get-in review [:origin :revision])
+                   (sources/source-id binding (get-in review [:source :name]) manifest))
+        (refuse! :review-source-changed))))
   nil)
 
 (defn- candidate-profile
@@ -198,13 +214,20 @@
                                                (when (.compareAndSet held true false) (.release ^Semaphore slot)))}
                             (profiles/recursive? source-definition)
                             (assoc :candidate-options
-                                   (select-keys compiled [:experiment-capabilities :delegation-policy]))))))
+                                   (select-keys compiled [:experiment-capabilities :delegation-policy]))
+                            (and (:review offer) (not (profiles/recursive? source-definition)))
+                            (assoc :candidate-options review/worker-child-options)))))
 
 (defn attach
   "One exact fixture/capacity owner for the outer coordinator's physical
    lifetime. Child grants still come solely from its current Run wallet."
-  [conn host-ctx principal room-id room host base input offer]
-  (let [transport (benchmarks/fixture-transport conn host-ctx principal room-id)
+  [conn host-ctx principal room-id original host base input offer]
+  (let [room (:room original)
+        check-current! (fn []
+                         (binding [ec/*execution-context* host-ctx]
+                           (reads/validate-host-room! host principal (str room-id) original)
+                           (benchmarks/authorize! conn principal room-id)))
+        transport (benchmarks/fixture-transport conn host-ctx principal room-id)
         create! (:job-context! transport)
         offered (assoc offer :invocation-slot (Semaphore. (:max-active-invocations policy)))
         with-operation (get-in host [:config :host-lifecycle :with-operation])
@@ -214,16 +237,23 @@
                     #(lifetime/call-detached
                       (fn [within-operation!]
                         (invoke! offered room (:world-parent transport)
-                                 (fn [] (within-operation!
-                                         (fn [] (binding [ec/*execution-context* host-ctx]
-                                                  (benchmarks/authorize! conn principal room-id)))))
+                                 (fn [] (within-operation! check-current!))
                                  current team opts)))))
-        capabilities (assoc (:experiment-capabilities base) :invocations {(:ref offer) handler})]
+        review-handler (when (:review offered)
+                         (fn [current team opts]
+                           (with-operation
+                             #(lifetime/call-detached
+                               (fn [within-operation!]
+                                 (review/invoke! offered room (:world-parent transport)
+                                                (fn [] (within-operation! check-current!))
+                                                candidate-team current team opts))))))
+        capabilities (assoc (:experiment-capabilities base) :invocations
+                            (cond-> {(:ref offer) handler}
+                              review-handler (assoc (get-in offered [:review :ref]) review-handler)))]
     (-> base
         (merge (select-keys transport [:admit! :settled! :abandon!]))
         (assoc :admit! (fn [id]
-                         (binding [ec/*execution-context* host-ctx]
-                           (benchmarks/authorize! conn principal room-id))
+                         (check-current!)
                          ((:admit! transport) id))
                :experiment-capabilities capabilities
                :job-context! (fn [request] (create! request) (:ctx room)))

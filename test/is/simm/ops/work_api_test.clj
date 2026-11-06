@@ -147,14 +147,19 @@
     (#'is.simm.ops.work-test/with-room
      (fn [room]
        (let [previous (dops/operations) calls (atom []) request-id (random-uuid)
-             bundle (random-uuid) revision (random-uuid) [input _] (#'is.simm.ops.work-test/fixture)
+             bundle (random-uuid) revision (random-uuid) review-bundle (random-uuid) review-source (random-uuid) [input _] (#'is.simm.ops.work-test/fixture)
              disclosure {:version 1 :checks [{:check "label-correct?" :description "Reference-label agreement."}]}
              args (json/read-value
                    (json/write-value-as-string
                     (assoc input :room (str (:room w)) :request-id (str request-id)
                            :benchmark {:name "echo" :expected-bundle (str bundle)
                                        :expected-owned-source (str revision) :limits (:limits input)
-                                       :public-feedback disclosure}))
+                                       :public-feedback disclosure
+                                       :development-review {:version 1 :data-use "exposed-development"
+                                                            :name "review-template" :model "codex-subscription-luna-6"
+                                                            :expected-bundle (str review-bundle)
+                                                            :expected-owned-source (str review-source)
+                                                            :limits (:limits input)}}))
                    json/keyword-keys-object-mapper)
              host (ops/host (:ctx room)) p (ops/party-principal (:owner w))]
          (d/transact conn [{:room/id (:room w) :room/slug (store/room-id->slug (:id room))}])
@@ -171,6 +176,10 @@
                (is (= bundle (get-in admitted [:benchmark :expected-bundle])))
                (is (= revision (get-in admitted [:benchmark :expected-owned-source])))
                (is (= disclosure (get-in admitted [:benchmark :public-feedback])))
+               (is (= review-bundle (get-in admitted [:benchmark :development-review :expected-bundle])))
+               (is (= review-source (get-in admitted [:benchmark :development-review :expected-owned-source])))
+               (is (= "codex-subscription-luna-6" (get-in admitted [:benchmark :development-review :model])))
+               (is (= (:limits input) (get-in admitted [:benchmark :development-review :limits])))
                (is (= {:label-correct? "Reference-label agreement."}
                       (:checks (benchmark/public-feedback (get-in admitted [:benchmark :public-feedback])
                                                           {:verifier/id :test/check :verifier/version 1})))))

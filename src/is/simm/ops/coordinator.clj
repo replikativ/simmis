@@ -63,7 +63,7 @@
                     host principal handle room-binding
                     #(benchmark/current! host principal handle room-binding offer))
                 prepared (benchmark/attach control-conn execution-ctx principal room-id
-                                           (:room room-binding) host base input offer)]
+                                           room-binding host base input offer)]
             (work/submit-prepared! control-conn execution-ctx principal room-id
                                    (:room room-binding) input prepared)))))))
 
