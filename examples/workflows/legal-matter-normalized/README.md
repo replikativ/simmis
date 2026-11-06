@@ -105,3 +105,45 @@ Keep artifact-contract revisions separate from historical results. A
 counterfactual check of an existing answer under v2 does not change its v1
 Scorecard or repair substantive contradictions and omissions. Later evidence
 belongs to a separate phase with the initial output identity retained.
+
+## Question-level evidence comparison
+
+`question-judge-checker.clj` checks a more explicit question-review contract.
+Each trusted target includes its exact public question, complete answer prose,
+original submitted row (when available), and a host-declared source-absence
+policy. Preserve submitted citations/status in that row; they need not be
+repeated inside the prose. The full source packet is supplied once.
+
+Rows emit a finding and a specific reason, with separate `:candidate-quotes`
+and `:source-quotes`. Candidate quotations must occur in that exact target's
+answer prose. Source quotations name a document and exact one-based line
+range. Neither another answer nor the source corpus can substitute for
+candidate evidence. The checker cannot establish relevance or whether a
+selected fragment conceals an incompatible statement elsewhere.
+
+Findings derive verdicts: supported passes; contradiction, unsupported
+inference and omission fail; uncertain remains unassessable. A supplied
+verdict is optional and must agree. Normalize only after trusted structural
+validation, using `matter-grading/with-derived-verdicts`; keep raw receipts.
+
+Supported findings require candidate and source quotations, except for a
+trusted target that permits reasoning from absence across the whole packet.
+Internal contradictions and unsupported certainty require candidate quotes
+without forcing nonexistent source evidence. Omissions require source
+support for the missing requirement, without forcing a quotation of absent
+candidate text. These are provenance constraints, not automatic semantic
+grading. A genuine short fragment can still hide a serious contradiction;
+paired judge controls must test that behavior separately.
+
+The current question checker is contract v3. The exact `:packet-id` remains
+mandatory; repeating `:subject-id` is optional. Any supplied subject ID,
+including null or a foreign value, must match. After trusted structural and
+provenance checks, `matter-grading/bind-question-assessment` verifies the
+**full** packet body's content ID and fills an absent subject ID from that
+packet, then derives verdicts. The reduced checker gold cannot recompute the
+full packet's content ID; the host must retain and verify the whole packet.
+
+This is a read-only projection. Preserve raw output, original checker bytes
+and native Scorecard. A v3 interpretation of an earlier v2 assessment must be
+labelled separately and applied uniformly when comparing candidates; it does
+not turn the historical native format failure into a successful v2 Attempt.
