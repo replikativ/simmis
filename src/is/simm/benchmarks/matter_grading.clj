@@ -1,11 +1,40 @@
 (ns is.simm.benchmarks.matter-grading
   "Pure aggregation of independently scoped assessment batches.
-   No inference, accounting, authority or rewriting of original Scorecards.")
+   No inference, accounting, authority or rewriting of original Scorecards."
+  (:require [hasch.core :as hasch]))
 
 (def required-checks
   #{:packet-valid? :assessment-shape? :subject-bound? :criterion-coverage? :allowed-quotes?})
 
+(def finding-verdict
+  {:supported :pass :contradiction :fail :unsupported :fail :omission :fail :uncertain :unassessable})
+
+(defn with-derived-verdicts
+  "Normalize a structurally validated question assessment for aggregation.
+   A supplied verdict must agree with its finding; raw receipts stay intact."
+  [assessment]
+  (update assessment :criteria
+          (fn [rows]
+            (mapv (fn [row]
+                    (let [verdict (get finding-verdict (:finding row))]
+                      (when-not (and verdict (or (not (contains? row :verdict)) (= verdict (:verdict row))))
+                        (throw (ex-info "Inconsistent assessment finding/verdict" {:type ::invalid-finding})))
+                      (assoc row :verdict verdict))) rows))))
+
 (defn- nonblank? [x] (and (string? x) (boolean (re-find #"\S" x))))
+
+(defn bind-question-assessment
+  "Project a question assessment after trusted structural/provenance checks.
+   Verify the FULL packet-body hash, then fill only absent host-owned metadata.
+   This does not certify a new native Attempt or change a historical Scorecard."
+  [packet assessment checks]
+  (when-not (and (= required-checks (set (keys checks))) (every? true? (vals checks))
+                 (= (:packet-id packet) (str (hasch/uuid (dissoc packet :packet-id))))
+                 (= (:packet-id packet) (:packet-id assessment)) (nonblank? (:subject-id packet))
+                 (or (not (contains? assessment :subject-id)) (= (:subject-id packet) (:subject-id assessment))))
+    (throw (ex-info "Question assessment is not bound to its verified packet" {:type ::invalid-packet-binding})))
+  (with-derived-verdicts (assoc assessment :subject-id (:subject-id packet))))
+
 (defn aggregate
   "Packets must partition the frozen criterion universe exactly. A missing,
    unsettled, foreign or structurally invalid batch contributes no verdicts.
