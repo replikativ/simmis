@@ -165,7 +165,15 @@
                                (let [note (.createElement js/document "p")]
                                  (set! (.-className note) "memory-note")
                                  (set! (.-textContent note) diagnostic) (.appendChild result note)))
-                             (.appendChild result output))))))))
+                             ;; A rendered table already shows the value; the printed
+                             ;; receipt stays one click away rather than repeating it.
+                             (if presentation
+                               (let [details (.createElement js/document "details")
+                                     summary (.createElement js/document "summary")]
+                                 (set! (.-textContent summary) "Printed value")
+                                 (.append details summary output)
+                                 (.appendChild result details))
+                               (.appendChild result output)))))))))
           paint-language! (fn [node]
                             (let [lang (aget (.-attrs node) "language")]
                               (set! (.-className code) (if (seq lang) (str "language-" lang) ""))))]
