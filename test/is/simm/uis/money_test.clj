@@ -17,6 +17,28 @@
 
 (def ^:private nbsp "\u00a0")
 
+(deftest metering-commodities-read-as-dollars-and-counts
+  (testing "microUSD moves the decimal point, exactly"
+    (is (= ["5.050001" "USD"] (money/display-amount "5050001.00" "microUSD")))
+    (is (= ["8.475" "USD"] (money/display-amount "8475000.00" "microUSD")))
+    (is (= ["-17.91" "USD"] (money/display-amount "-17910000.00" "microUSD")))
+    (is (= ["0.00" "USD"] (money/display-amount "0" "microUSD")))
+    (is (= ["0.000001" "USD"] (money/display-amount "1" "microUSD")))
+    (is (= [(str "1" nbsp "234.567891") "USD"] (money/display-amount "1234567891" "microUSD"))))
+  (testing "dispatch counts are whole numbers when whole"
+    (is (= ["298" "model calls"] (money/display-amount "298.00" "model-dispatch")))
+    (is (= ["-406" "model calls"] (money/display-amount "-406.00" "model-dispatch")))
+    (is (= ["2.50" "model calls"] (money/display-amount "2.5" "model-dispatch"))))
+  (testing "other commodities are untouched"
+    (is (= [(str "885" nbsp "300.00") "SEK"] (money/display-amount "885300" "SEK")))
+    (is (= ["n/a" "microUSD"] (money/display-amount "n/a" "microUSD")))))
+
+(deftest wallet-accounts-get-reading-labels
+  (is (= "Wallet (available)" (money/account-label "Resources:Wallet:ce7e9fd5-bdcd-3b90-94fa-d328bf9cf2f8")))
+  (is (= "Consumed" (money/account-label "Resources:Consumed")))
+  (is (= "Granted (source)" (money/account-label "Resources:Source")))
+  (is (nil? (money/account-label "Assets:Bank"))))
+
 (deftest thousands-are-grouped-and-decimals-are-shown
   (testing "the four figures the Kestrel book actually renders"
     (is (= (str "536" nbsp "511.00") (money/format-amount "536511")))

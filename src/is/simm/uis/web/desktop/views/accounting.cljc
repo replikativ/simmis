@@ -70,19 +70,21 @@
          error (el/div {:class "proposal-error"}
                  (str "This book could not be read — " error))
          (empty? accounts)
-         (el/div {:class "acct-empty"}
-           "No postings yet. The ledger is set up — an agent with `kontor/entry!`
-            or its verbs can post to it.")
+         (el/div {:class "acct-empty"} "No postings yet.")
          :else
          (el/div {:class "acct-rows"}
-           (for [[i a] (map-indexed vector accounts)]
+           (for [[i a] (map-indexed vector accounts)
+                 :let [path (:path a)
+                       label (money/account-label path)
+                       ;; A figure, not the BigDecimal's digit string: `885300 SEK`
+                       ;; where the number is 885 300.00 SEK invites the reader to be
+                       ;; wrong by an order of magnitude. Metering units read as
+                       ;; dollars and call counts. See `desktop.money`.
+                       [figure unit] (money/display-amount (:amount a) (:commodity a))]]
              (el/div {:key (str i) :class "acct-row"}
-               (el/span {:class "acct-path"} (:path a))
-               ;; A figure, not the BigDecimal's digit string: `885300 SEK`
-               ;; where the number is 885 300.00 SEK invites the reader to be
-               ;; wrong by an order of magnitude. See `desktop.money`.
-               (el/span {:class "acct-amount"} (money/format-amount (:amount a)))
-               (el/span {:class "acct-commodity"} (:commodity a)))))))))
+               (el/span {:class "acct-path" :title path} (or label path))
+               (el/span {:class "acct-amount"} figure)
+               (el/span {:class "acct-commodity"} unit))))))))
 
 (defn accounting-view []
   #?(:cljs
