@@ -43,6 +43,15 @@
   --mono-text-tertiary: #9a9a99;
   --mono-text-quaternary: #c0c0bf;
 
+  /* Syntax colours (GitHub light / dark), shared by CodeMirror's tok-* classes
+     and highlight.js in Memory pages, so code reads the same everywhere. */
+  --syntax-keyword: #cf222e;
+  --syntax-atom: #0550ae;
+  --syntax-string: #0a3069;
+  --syntax-builtin: #8250df;
+  --syntax-def: #953800;
+  --syntax-comment: #6e7781;
+
   /* Tier 1: Brand accent (single hue, used sparingly) */
   --accent: #2563eb;
   --accent-muted: rgba(37, 99, 235, 0.2);
@@ -184,6 +193,12 @@ a:hover {
     --mono-text-secondary: #888888;
     --mono-text-tertiary: #555555;
     --mono-text-quaternary: #3a3a3a;
+    --syntax-keyword: #ff7b72;
+    --syntax-atom: #79c0ff;
+    --syntax-string: #a5d6ff;
+    --syntax-builtin: #d2a8ff;
+    --syntax-def: #ffa657;
+    --syntax-comment: #8b949e;
   }
 }
 
@@ -200,6 +215,12 @@ a:hover {
   --mono-text-secondary: #888888;
   --mono-text-tertiary: #555555;
   --mono-text-quaternary: #3a3a3a;
+  --syntax-keyword: #ff7b72;
+  --syntax-atom: #79c0ff;
+  --syntax-string: #a5d6ff;
+  --syntax-builtin: #d2a8ff;
+  --syntax-def: #ffa657;
+  --syntax-comment: #8b949e;
 }
 
 /* =============================================================================
@@ -9273,17 +9294,32 @@ body.tab-dragging .column-drop-zone {
 .memory-rich-content:focus { box-shadow: inset 2px 0 0 var(--accent, #7893ce); padding-left: 8px; }
 .memory-rich-content p { margin: 8px 0; }
 .memory-document pre .hljs-comment,
-.memory-document pre .hljs-quote { color: var(--mono-text-tertiary); font-style: italic; }
+.memory-document pre .hljs-quote { color: var(--syntax-comment); font-style: italic; }
 .memory-document pre .hljs-keyword,
 .memory-document pre .hljs-built_in,
-.memory-document pre .hljs-name,
-.memory-document pre .hljs-title { color: var(--accent); }
+.memory-document pre .hljs-name { color: var(--syntax-keyword); }
+.memory-document pre .hljs-title { color: var(--syntax-def); }
 .memory-document pre .hljs-string,
-.memory-document pre .hljs-regexp { color: var(--accent-success); }
+.memory-document pre .hljs-regexp { color: var(--syntax-string); }
 .memory-document pre .hljs-number,
 .memory-document pre .hljs-literal,
 .memory-document pre .hljs-symbol,
-.memory-document pre .hljs-attr { color: var(--mono-text-primary); font-weight: 500; }
+.memory-document pre .hljs-attr { color: var(--syntax-atom); }
+
+/* CodeMirror source editor: classHighlighter's stable tok-* classes (source_editor.cljs) */
+.cm-editor .tok-keyword { color: var(--syntax-keyword); }
+.cm-editor .tok-atom, .cm-editor .tok-bool, .cm-editor .tok-number,
+.cm-editor .tok-literal { color: var(--syntax-atom); }
+.cm-editor .tok-string, .cm-editor .tok-string2 { color: var(--syntax-string); }
+.cm-editor .tok-variableName2, .cm-editor .tok-macroName { color: var(--syntax-builtin); }
+.cm-editor .tok-definition, .cm-editor .tok-typeName, .cm-editor .tok-className,
+.cm-editor .tok-meta, .cm-editor .tok-propertyName { color: var(--syntax-def); }
+.cm-editor .tok-comment { color: var(--syntax-comment); font-style: italic; }
+.cm-editor .tok-heading { font-weight: 600; color: var(--syntax-keyword); }
+.cm-editor .tok-emphasis { font-style: italic; }
+.cm-editor .tok-strong { font-weight: 600; }
+.cm-editor .tok-link, .cm-editor .tok-url { color: var(--syntax-atom); text-decoration: underline; }
+.cm-editor .tok-invalid { color: var(--status-error, #cf222e); }
 .memory-document { position: relative; }
 .memory-document-toolbar { position: absolute; z-index: 20; display: flex; align-items: center; flex-wrap: wrap; gap: 3px; max-width: calc(100% - 8px); padding: 4px; background: var(--mono-bg-elevated, #202124); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: 0 4px 16px #0003; }
 .memory-document-toolbar:not([data-visible=true]) { visibility: hidden; pointer-events: none; }

@@ -5,7 +5,8 @@
   (:require ["@codemirror/state" :refer [EditorState Compartment]]
             ["@codemirror/view" :refer [EditorView keymap lineNumbers drawSelection]]
             ["@codemirror/commands" :refer [defaultKeymap history historyKeymap]]
-            ["@codemirror/language" :refer [StreamLanguage syntaxHighlighting defaultHighlightStyle]]
+            ["@codemirror/language" :refer [StreamLanguage syntaxHighlighting]]
+            ["@lezer/highlight" :refer [classHighlighter]]
             ["@codemirror/lang-markdown" :refer [markdown]]
             ["@codemirror/lang-json" :refer [json]]
             ["@codemirror/legacy-modes/mode/clojure" :refer [clojure]]
@@ -68,7 +69,9 @@
                                                                    (do (.dispatchEvent el (js/CustomEvent. "input" #js {:bubbles true :composed true :detail #js {:evaluate true}})) true)
                                                                    false))}]
                                                 defaultKeymap historyKeymap))
-                                   (syntaxHighlighting defaultHighlightStyle)
+                                   ;; Stable tok-* classes coloured in core.css for light and
+                                   ;; dark; CodeMirror's default style is light-only.
+                                   (syntaxHighlighting classHighlighter)
                                    (.of lang (language-extension (.getAttribute el "data-language")))
                                    (.of permissions #js [(.of (.-readOnly EditorState) (readonly? el))
                                                         (.of (.-editable EditorView) (not (readonly? el)))])
