@@ -48,6 +48,47 @@
                    :native-room room :control control}))))
         (finally (discourse/close-room! room))))))
 
+(deftest freeze-commits-only-the-forks-own-changes
+  ;; A fork copies its parent's worktree, uncommitted files included. Those are
+  ;; not the fork's work; staging them put 645 unrelated files into a one-page
+  ;; proposal (2026-11-17).
+  (with-repo
+    (fn [{:keys [conn scope]}]
+      (repo/write! conn "inherited.txt" (.getBytes "left by an earlier turn" "UTF-8"))
+      (let [branch :own-changes
+            sys (branching/get-repo-system scope)
+            _ (systems/branch! sys branch :main)
+            fork (branching/open-repo-fork! scope branch)]
+        (try
+          (let [private (branching/repo-fork-conn fork)]
+            (is (some? (repo/read private "inherited.txt")) "the fork sees the parent's untracked file")
+            (repo/write! private "wiki/page.md" (.getBytes "# Page" "UTF-8"))
+            (repo/write! private "base.txt" (.getBytes "after" "UTF-8"))
+            (is (= ["base.txt" "wiki/page.md"] (branching/fork-changed-paths fork)))
+            (let [head (parse-uuid (branching/freeze-repo-fork! fork "Own changes"))]
+              (is (= "# Page" (String. ^bytes (repo/read-at private head "wiki/page.md") "UTF-8")))
+              (is (= "after" (String. ^bytes (repo/read-at private head "base.txt") "UTF-8")))
+              (is (nil? (repo/read-at private head "inherited.txt")) "inherited dirt stays out of the commit")))
+          (finally
+            (branching/close-repo-fork! fork)
+            (when (contains? (systems/branches sys) branch) (branching/discard-repo-branch! scope branch))))))))
+
+(deftest freeze-without-own-changes-commits-nothing
+  (with-repo
+    (fn [{:keys [conn scope]}]
+      (repo/write! conn "inherited.txt" (.getBytes "left by an earlier turn" "UTF-8"))
+      (let [base (str (:geschichte.commit/id (repo/head-commit conn)))
+            branch :no-changes
+            sys (branching/get-repo-system scope)
+            _ (systems/branch! sys branch :main)
+            fork (branching/open-repo-fork! scope branch)]
+        (try
+          (is (= [] (branching/fork-changed-paths fork)))
+          (is (= base (branching/freeze-repo-fork! fork "Nothing")))
+          (finally
+            (branching/close-repo-fork! fork)
+            (when (contains? (systems/branches sys) branch) (branching/discard-repo-branch! scope branch))))))))
+
 (deftest dirty-files-freeze-and-survive-branch-removal-and-gc
   (with-repo
     (fn [{:keys [conn scope]}]

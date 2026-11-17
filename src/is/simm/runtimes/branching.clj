@@ -799,6 +799,8 @@
 ;; rather than simmis just calling `merge-fork!`.
 ;; ============================================================================
 
+(declare repo-fork-conn)
+
 (defn open-repo-fork!
   "Fork only repo `scope` from its owning room, with no interpreter components.
    This is a file workspace, not an execution world. Excluding unrelated
@@ -835,7 +837,11 @@
                                  :error (.getMessage e)}}))))
          (log/log! {:level :info :id ::repo-fork-opened
                     :data {:scope (str scope) :branch (some-> branch-kw str)}})
-         fork)))))
+         ;; The worktree the fork STARTS with. A fork copies its parent's
+         ;; worktree, uncommitted files included, and those are not this
+         ;; fork's work: `freeze-repo-fork!` commits only what differs from
+         ;; this baseline.
+         (assoc fork :baseline (some-> (repo-fork-conn fork) grepo/worktree)))))))
 
 (defn repo-fork-conn
   "The forked workspace's geschichte connection — where this fork's writes go.
@@ -866,14 +872,36 @@
                      :repository {:conn conn :config (:config @conn)}}]
       {:workspace workspace :filesystem (gsub workspace)})))
 
+(defn fork-changed-paths
+  "Paths whose worktree entry differs from the fork's `:baseline` — added,
+   modified or removed since `open-repo-fork!`. These are the fork's own work."
+  [{:keys [baseline] :as fork}]
+  (let [conn (or (repo-fork-conn fork)
+                 (throw (ex-info "Proposal workspace is unavailable" {:type ::missing-workspace})))
+        current (grepo/worktree conn)]
+    (when-not (map? baseline)
+      (throw (ex-info "Proposal workspace has no recorded baseline" {:type ::missing-baseline})))
+    (->> (into (set (keys baseline)) (keys current))
+         (filter #(not= (get baseline %) (get current %)))
+         sort vec)))
+
 (defn freeze-repo-fork!
-  "Commit the complete private worktree before handing it to review. The caller
-   serializes the owning proposal's writers. No checkout or canonical edit."
+  "Commit the fork's OWN changes before handing them to review. The caller
+   serializes the owning proposal's writers. No checkout or canonical edit.
+
+   Only paths that differ from the worktree the fork started with are staged
+   (`fork-changed-paths`). Files left uncommitted in the parent's worktree —
+   another turn's or another agent's writes — are copied into every fork, and
+   staging all of them put hundreds of unrelated files into one proposal.
+
+   Not handled: a parent index already holding STAGED, uncommitted changes.
+   `commit!` commits the whole index, so those still ride along."
   [fork message]
   (let [conn (or (repo-fork-conn fork)
-                 (throw (ex-info "Proposal workspace is unavailable" {:type ::missing-workspace})))]
-    (when-not (:clean? (grepo/status conn))
-      (grepo/stage-all! conn)
+                 (throw (ex-info "Proposal workspace is unavailable" {:type ::missing-workspace})))
+        own (fork-changed-paths fork)]
+    (when (seq own)
+      (grepo/stage! conn own)
       ;; Staging can itself reveal that index-only edits were undone in the
       ;; worktree. In that case HEAD already represents the requested files.
       (when (seq (:staged (grepo/status conn)))
