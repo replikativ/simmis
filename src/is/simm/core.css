@@ -9418,6 +9418,9 @@ body.tab-dragging .column-drop-zone {
 .memory-property-readonly { color: var(--mono-text-secondary); }
 
 .memory-cell-table { max-height: 320px; overflow: auto; margin: 6px 0; }
+.memory-code-cell-result .memory-cell-table { color: var(--mono-text-primary); }
+.memory-code-cell-result .memory-cell-table table { font-size: 13px; }
+.memory-code-cell-result details > summary { cursor: pointer; margin-top: 4px; }
 .memory-cell-table table { border-collapse: collapse; font-size: 12px; width: 100%; }
 .memory-cell-table th, .memory-cell-table td { text-align: left; vertical-align: top; padding: 4px 8px; border-bottom: 1px solid var(--border-color); white-space: pre-wrap; overflow-wrap: anywhere; }
 .memory-saved-view { margin: 8px 0; padding: 8px; border: 1px solid var(--mono-border); border-radius: 6px; }
