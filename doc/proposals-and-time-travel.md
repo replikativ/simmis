@@ -119,9 +119,14 @@ proposal drive ops), `proposal/file!` (semantic diff → cheap-llm summary
 → registry row), `proposal/abandon!`.
 
 **Code filing and retained evidence.** `proposal/file!` serializes with the
-proposal's file-tool writers, stages the complete private worktree (including
-additions, deletions and modes), and commits dirty files before publication.
-Agents need not remember a separate Git commit. Empty code-only proposals refuse
+proposal's file-tool writers, stages the fork's OWN changes (additions,
+deletions and modes relative to the worktree the fork started with, recorded
+as `:baseline` by `open-repo-fork!`), and commits them before publication.
+A fork copies its parent's worktree, uncommitted files included; those are
+not the fork's work and stay out of the commit (`fork-changed-paths`). Staged
+but uncommitted changes already in the parent's index still ride along,
+because a commit takes the whole index. Agents need not remember a separate
+Git commit. Empty code-only proposals refuse
 filing without dropping their workspace. Publication/storage failures preserve
 private handles and an identical prepared filing value for retry; cleanup happens
 only after the canonical Proposal acknowledges that handoff. Native file-tool
