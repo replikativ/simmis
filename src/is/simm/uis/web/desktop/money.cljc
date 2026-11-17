@@ -65,3 +65,54 @@
                          reverse
                          (str/join group-sep))]
         (str (when neg? "-") grouped "." frac)))))
+
+(defn- shift-decimal-left
+  "The plain decimal string `s` divided by 10^n, exactly — digits move, nothing
+   is computed. Trailing fractional zeros are dropped; `format-amount` pads back
+   to two. Returns nil for anything that is not a plain decimal."
+  [s n]
+  (when-let [[_ sign int-part frac] (re-matches #"([+-]?)(\d+)(?:\.(\d+))?" (str/trim (str s)))]
+    (let [digits (str int-part frac)
+          scale (+ (count (or frac "")) n)
+          padded (if (<= (count digits) scale)
+                   (str (apply str (repeat (- (inc scale) (count digits)) "0")) digits)
+                   digits)
+          cut (- (count padded) scale)
+          i (str/replace (subs padded 0 cut) #"^0+(?=\d)" "")
+          f (str/replace (subs padded cut) #"0+$" "")]
+      (str (when (= "-" sign) "-") i (when (seq f) (str "." f))))))
+
+(def ^:private commodity-display
+  "Resource commodities the wallet books keep, as people read them.
+   `microUSD` is how a budget is metered; a reader thinks in dollars."
+  {"microUSD" {:unit "USD" :shift 6}
+   "model-dispatch" {:unit "model calls" :count? true}})
+
+(defn display-amount
+  "`[figure unit]` for a ledger amount in `commodity`.
+
+   Metering commodities are converted for reading — microUSD to USD by moving
+   the decimal point (never through a float, never truncated), dispatch counts
+   as whole numbers when they are whole. Every other commodity is shown as
+   `format-amount` shows it, under its own name."
+  [amount commodity]
+  (let [{:keys [unit shift count?]} (get commodity-display commodity)]
+    (cond
+      shift (if-let [v (shift-decimal-left amount shift)]
+              [(format-amount v) unit]
+              [(format-amount amount) commodity])
+      count? (let [f (format-amount amount)]
+               [(str/replace f #"\.0+$" "") unit])
+      :else [(format-amount amount) commodity])))
+
+(defn account-label
+  "A short reading label for a wallet-book account path; nil for paths without
+   one, which the view shows as written. The full path stays available to the
+   view (as a tooltip) — the label abbreviates, it does not rename the account."
+  [path]
+  (let [p (str path)]
+    (cond
+      (str/starts-with? p "Resources:Wallet:") "Wallet (available)"
+      (= p "Resources:Consumed") "Consumed"
+      (= p "Resources:Source") "Granted (source)"
+      :else nil)))
